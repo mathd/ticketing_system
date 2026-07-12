@@ -2,9 +2,11 @@
   "key": "TKT-28",
   "type": "Story",
   "summary": "US-004: Checkout with fake PSP and append-only order journal",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "Codex",
   "pr": null,
   "parent": "TKT-1",
   "classification": "complex",
@@ -53,6 +55,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Backlog grilling 2026-07-12 (owner decisions): GDPR-by-design: journal carries pseudonymous IDs only, PII in an erasable store (ADR-003 amended, TKT-33 carries the machinery)."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed TKT-28 after TKT-27 reached Done. Selected because it is the next unblocked P0 walking-skeleton story and establishes the first money path plus the append-only journal required by later commerce work. Classification remains complex; plan review and the human plan gate apply."
     }
   ],
   "links": [
