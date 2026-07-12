@@ -1,0 +1,39 @@
+{
+  "key": "TKT-29",
+  "type": "Story",
+  "summary": "US-005: QR e-ticket issued and delivered",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-1",
+  "classification": "simple",
+  "description": "**As** a buyer, **I want** my ticket with a QR code by email and on a web page after purchase. Mailer is a port with log transport (brief non-goal: no notifications service).\n\n**Priority:** P1\n**Depends on:** US-004 (TKT-28)\n\n**Acceptance Criteria:**\n- [ ] Access service issues a signed QR payload per paid ticket, triggered by the order-completed event\n- [ ] Mailer port (log transport) records a delivery with ticket link; buyer ticket page renders the QR (browser-verified)\n- [ ] Tickets are re-retrievable by order reference (guest flow, no account)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-002",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — Milestone 1 walking skeleton stories",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Product brief — outcome, non-goals, success metric",
+        "link": "docs/product/brief.md"
+      }
+    ],
+    "capturedAt": "2026-07-12"
+  },
+  "comments": [],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-30"
+    }
+  ]
+}
