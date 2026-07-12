@@ -10,6 +10,7 @@ export function remainingMilliseconds(hold: Pick<Hold, 'expires_at' | 'server_ti
 export default function HoldPicker({ organizerId, slotId, locale }: Props) {
   const [quantity, setQuantity] = useState(1);
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [holdId, setHoldId] = useState<string | null>(null);
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const deadline = useRef(0);
@@ -18,14 +19,17 @@ export default function HoldPicker({ organizerId, slotId, locale }: Props) {
     : { reserve: 'Reserve', quantity: 'Quantity', held: 'Held for', expired: 'Hold expired', unavailable: 'Quantity unavailable' };
 
   useEffect(() => {
-    if (remaining === null || remaining <= 0) return;
+    if (holdId === null) return;
     const timer = window.setInterval(() => {
       const next = Math.max(0, deadline.current - performance.now());
       setRemaining(next);
-      if (next === 0) setStatus(t.expired);
+      if (next === 0) {
+        window.clearInterval(timer);
+        setStatus(t.expired);
+      }
     }, 250);
     return () => window.clearInterval(timer);
-  }, [remaining === null, status]);
+  }, [holdId, t.expired]);
 
   async function reserve() {
     setBusy(true); setStatus('');
@@ -39,7 +43,7 @@ export default function HoldPicker({ organizerId, slotId, locale }: Props) {
       const hold = await response.json() as Hold;
       const duration = remainingMilliseconds(hold);
       deadline.current = performance.now() + duration;
-      setRemaining(duration); setStatus(t.held);
+      setRemaining(duration); setHoldId(hold.hold_id); setStatus(t.held);
     } catch { setStatus('Service unavailable'); }
     finally { setBusy(false); }
   }

@@ -24,7 +24,8 @@ quantity may never exceed pool capacity.
 
 Hold creation requires an organizer-scoped idempotency key. Its canonical request fingerprint is
 persisted: the same key and request replay the original result; the same key with different input
-conflicts. Catalog publication provisions a generic dated-slot `capacity` snapshot over JetStream;
+conflicts. A key is single-use across the claim's full lifecycle: replay after release or expiry
+returns that terminal claim and never creates a new reservation. Catalog publication provisions a generic dated-slot `capacity` snapshot over JetStream;
 the durable inventory consumer records event IDs and never reads the catalog database.
 
 ## Consequences
