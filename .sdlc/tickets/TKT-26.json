@@ -2,9 +2,11 @@
   "key": "TKT-26",
   "type": "Story",
   "summary": "US-002: Create and publish a GA event",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude",
   "pr": null,
   "parent": "TKT-1",
   "classification": "simple",
@@ -64,6 +66,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**DoR verdict: Ready-eligible.** 6/7 items `met`, `uncertainties` `deferred` (all plan-resolvable, no pending product decision - the 2026-07-12 grilling already settled i18n-from-birth, ADR-004 tiers, and the ADR-005 slot shape; ADR-006 settled the shell framework).\n\nGrounded in code (not assumed): catalog `main.go` is a skeleton with chi/pgx/NATS wired but zero domain routes; gateway route table already reserves `/api/catalog/` for this story's contract; `web/storefront` is the nginx placeholder and is NOT in the pnpm workspace (only `web/scanner` is) - the Astro app must join workspace + `make check` + compose; no migration tooling exists anywhere - this story births the first schema.\n\n**Blockers: none open.** TKT-39 Done (ADR-006 Accepted, PR #4 merged @ 603ae00).\n\n**risk:low NOT suggested** - production code across three surfaces (catalog service, gateway contract, storefront rebuild), first DB schema, workspace/CI surface, well over 5 files. The plan gate applies."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed TKT-26** - US-002: Create and publish a GA event.\n\n- **Selection reason:** owner directive this session (\"Let's go and take TKT-26\"); P0, head of the M1 walking skeleton queue; its only blocker TKT-39 is Done (ADR-006 Accepted, PR #4 merged @ 603ae00). Gate 1 was the owner's explicit chat instruction; DoR verdict posted above (6 met / 1 deferred).\n- **No risk:low** - production code on three surfaces (catalog domain routes + first DB schema, gateway public contract, storefront rebuilt as Astro 7 shell), joins the pnpm workspace and make check. Plan gate applies (Gate 2).\n- **Worktree:** `~/sources/ticketing_system.TKT-26-ga-event` (branch `TKT-26-ga-event` off origin/main, via worktrunk).\n- **Drive style:** gates only (asked once at run start)."
     }
   ],
   "links": [
