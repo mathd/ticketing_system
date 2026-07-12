@@ -1,0 +1,17 @@
+{
+  "key": "TKT-18",
+  "type": "Epic",
+  "summary": "Epic: Ticket delivery & fulfillment",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "QR/barcode e-tickets, anti-screenshot rotating barcodes, static PDF fallback, provider-abstracted mailer (log transport locally).\n\n**Conditions of Success:**\n- Tickets deliver by email and in the web wallet; re-send and re-retrieve by order reference\n- Rotating barcode mode invalidates screenshots (time-boxed codes); PDF mode stays static by choice\n- Mailer is a port: log transport locally, real provider swappable\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
