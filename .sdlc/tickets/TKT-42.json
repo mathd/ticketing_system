@@ -4,7 +4,7 @@
   "summary": "Speed up the local/CI gate (make check: 10.5m -> ~2m warm)",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "claude",
   "pr": {
@@ -99,6 +99,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\nCodex adversarial review of the diff: 0 critical, 2 important, 1 suggestion — all three fixed in ba4fb82 (hermetic workflow now triggers on ALL in-Docker build inputs incl. go.mod/go.sum + pnpm manifests; linter sha256 digests pinned in-repo, independent of the download source; golangci cache key derived from the Makefile version). 0 findings rejected, 0 deferred. Install script re-verified end-to-end; lint-go green with the pinned binary. Review-guide posted on PR #3. Gate 3 is the human's: review + merge."
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\nCI red on PR #3: pnpm/action-setup@v6 self-installer crash (known open bug pnpm/action-setup#276) when switching runner-preinstalled pnpm 11.7.0 -> packageManager's 11.12.0. Not our code — both jobs died in action setup. Swapping back to agent:coding to apply the standard workaround (standalone: true) and re-green; will re-set needs:human after (new SHA => re-review delta)."
     }
   ]
 }
