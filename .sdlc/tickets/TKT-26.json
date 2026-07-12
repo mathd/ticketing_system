@@ -8,7 +8,7 @@
   "pr": null,
   "parent": "TKT-1",
   "classification": "simple",
-  "description": "**As** an organizer, **I want** to create a venue, event, performance and GA ticket type via the catalog API and see it listed on the storefront.\n\n**Priority:** P0\n**Depends on:** US-001 (TKT-25)\n\n**Acceptance Criteria:**\n- [ ] Catalog API: create venue (GA capacity), event, dated performance, ticket type with EUR price; persisted; OpenAPI contract published\n- [ ] Publishing a performance emits a domain event; storefront lists published performances with name/date/price (browser-verified)\n- [ ] Entities carry an organizer_id even though v1 has one organizer\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "description": "**As** an organizer, **I want** to create a venue, event, performance and GA ticket type via the catalog API and see it listed on the storefront.\n\n**Priority:** P0\n**Depends on:** US-001 (TKT-25)\n\n**Acceptance Criteria:**\n- [ ] Catalog API: create venue (GA capacity), event, dated performance, ticket type with EUR price; persisted; OpenAPI contract published\n- [ ] Publishing a performance emits a domain event; storefront lists published performances with name/date/price (browser-verified)\n- [ ] Public catalog reads (event list, event detail) carry explicit Cache-Control TTLs per ADR-004 tiers; the storefront page issues one aggregated call and does not re-fetch within the TTL\n- [ ] Entities carry an organizer_id even though v1 has one organizer\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
   "context": {
     "binding": [
       {
@@ -19,6 +19,11 @@
       {
         "id": "ADR-002",
         "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-004",
+        "rule": "Every public read endpoint declares a volatility-tiered TTL with explicit Cache-Control (seat maps: hours; event lists/detail: minutes; price display: ~1 min; availability: seconds; hold/order/scan state: never cached); hot events are served from in-memory structures refreshed/invalidated from the write path; frontends make few aggregated calls (one per page view, not per widget) and refresh on the endpoint's TTL cadence; writes are never cached.",
         "date": "2026-07-12"
       }
     ],
@@ -34,7 +39,13 @@
     ],
     "capturedAt": "2026-07-12"
   },
-  "comments": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Scope amended pre-Gate-1 (owner directive 2026-07-12): public catalog reads must be cacheable with ADR-004 TTL tiers, storefront call-frugal. New AC added; ADR-004 baked into context binding."
+    }
+  ],
   "links": [
     {
       "type": "blocks",
