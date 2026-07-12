@@ -1,0 +1,17 @@
+{
+  "key": "TKT-37",
+  "type": "Epic",
+  "summary": "Epic: Observability & load testing",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Builds on US-001's logs/traces/metrics foundation: dashboards, distributed tracing UX, SLOs for the sales path, and an on-sale load-test harness that runs the festival-scale NFR profile. Design-target on-sale (owner NFR): ~50-100k capacity event, 100k+ concurrent buyers in the waiting room, thousands of checkout attempts/min sustained.\n\n**Conditions of Success:**\n- A simulated on-sale run yields traces/dashboards that localize the bottleneck service\n- Load harness replays the NFR profile (100k+ queue, thousands of checkouts/min) against Compose and reports pass/fail vs targets\n- Golden-signal alerts fire locally during induced failures\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map). Origin: backlog grilling 2026-07-12.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Blind spot found in review: five services + an event bus with nobody owning how you debug them."
+    }
+  ]
+}
