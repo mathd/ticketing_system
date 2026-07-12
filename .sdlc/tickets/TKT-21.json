@@ -1,0 +1,17 @@
+{
+  "key": "TKT-21",
+  "type": "Epic",
+  "summary": "Epic: Customer accounts & wallet",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Guest checkout + optional accounts, ticket wallet, the identity substrate for transfers, resale and purchase limits.\n\n**Conditions of Success:**\n- Guest can buy with email only; account creation optional and retroactively claims guest orders\n- Account wallet lists tickets, passes, lodging and wristbands\n- Identity model supports per-customer purchase limits (TKT-20) and transfers (TKT-9)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
