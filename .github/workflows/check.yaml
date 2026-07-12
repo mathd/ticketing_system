@@ -19,9 +19,10 @@ jobs:
         with:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
-      - uses: pnpm/action-setup@v6   # version comes from packageManager
-        with:
-          standalone: true # workaround pnpm/action-setup#276 (v6 self-installer crash)
+      # pnpm via corepack (version from packageManager, like the scanner
+      # Dockerfile) — pnpm/action-setup v6 is broken both in default and
+      # standalone mode (pnpm/action-setup#276)
+      - run: corepack enable pnpm && corepack install
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -44,9 +45,10 @@ jobs:
         with:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
-      - uses: pnpm/action-setup@v6   # version comes from packageManager
-        with:
-          standalone: true # workaround pnpm/action-setup#276 (v6 self-installer crash)
+      # pnpm via corepack (version from packageManager, like the scanner
+      # Dockerfile) — pnpm/action-setup v6 is broken both in default and
+      # standalone mode (pnpm/action-setup#276)
+      - run: corepack enable pnpm && corepack install
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
