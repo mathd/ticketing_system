@@ -22,6 +22,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Backlog grilling 2026-07-12 (owner decisions): children US-001/002/004/005 amended pre-Gate-1 (observability foundation, FR/EN plumbing, pseudonymous trails); readiness verdict unchanged in substance — sizing concern on US-001 grows slightly with the observability AC."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Implementation readiness — refresh (final review, still CONCERNS)\nSupersedes the graph description in the earlier verdict; criteria table otherwise unchanged.\n- Dependency graph is no longer a pure chain: TKT-25 (scaffold) and TKT-39 (Astro spike) are two independent entry points; TKT-39 blocks TKT-26 (US-002) so the storefront shell is decided before storefront UI is built. Cycle check re-run: clean.\n- US-001 (TKT-25) has grown again (observability ACs) — the sizing concern stands; consider splitting the tracing/metrics stack into its own slice at planning if it balloons.\n- US-002 (TKT-26) now also carries ADR-004 caching + FR/EN plumbing ACs and gained the ADR-005 binding.\n**Verdict:** CONCERNS — proceedable eyes-open. Gate 1: TKT-25 and TKT-39 are the claimable starting points."
     }
   ]
 }
