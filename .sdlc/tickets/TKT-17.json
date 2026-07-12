@@ -1,0 +1,17 @@
+{
+  "key": "TKT-17",
+  "type": "Epic",
+  "summary": "Epic: Sales channels & reseller API",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Channel registry (web, POS, presale, reseller) with per-channel price/fee rules and sales windows; presale/unlock codes; external reseller API selling from shared inventory.\n\n**Conditions of Success:**\n- A channel = allocation + price/fee rules + window, all overridable per TKT-5 hierarchy\n- Presale codes gate access to configured windows\n- Reseller API sells from shared inventory with the same no-oversell guarantee and per-reseller attribution\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
