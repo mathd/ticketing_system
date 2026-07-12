@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "Guest checkout + optional accounts, ticket wallet, the identity substrate for transfers, resale and purchase limits.\n\n**Conditions of Success:**\n- Guest can buy with email only; account creation optional and retroactively claims guest orders\n- Account wallet lists tickets, passes, lodging and wristbands\n- Identity model supports per-customer purchase limits (TKT-20) and transfers (TKT-9)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "description": "Guest checkout + optional accounts, ticket wallet, the identity substrate for transfers, resale and purchase limits.\n\n**Conditions of Success:**\n- Guest can buy with email only; account creation optional and retroactively claims guest orders\n- Account wallet lists tickets, passes, lodging and wristbands\n- Identity model supports per-customer purchase limits (TKT-20) and transfers (TKT-9)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** strict-limit events can require an account to purchase (TKT-20); the accounts model must support per-event login requirements without breaking the guest-first default.",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): account-required-for-limited-events lands on the accounts model."
     }
   ]
 }
