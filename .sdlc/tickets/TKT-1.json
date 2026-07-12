@@ -17,6 +17,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "### Implementation readiness — CONCERNS\n| Criterion | Status | Note |\n|---|---|---|\n| Quality gates extracted | OK | PRD §Quality gates; concretized by US-001 |\n| Vertical slices | OK | each US demoable alone |\n| Sizing | WARN | US-001 (TKT-25) will exceed the ~400-line guide — scaffolding is bulky config; splitting it horizontally would be worse |\n| Prefactoring first | OK | US-001 is the prefactor slice |\n| Dependency order | WARN | strictly serial chain US-001→…→US-006: no parallel M1 work; US-005/US-006 UI shells could start early against contract stubs if parallelism is wanted |\n| AC verifiable | OK | all criteria observable/testable |\n| Links + cycle check | OK | linear chain TKT-25→30, no cycles |\n| Context-mémo baked | OK | ADR bindings verbatim + PRD refs on each child |\n| Unvalidated assumptions | WARN | brief lists: services-on-Compose overhead for a solo team (ADR-002), NF525 ISCA characterization inferred not verified (ADR-003/TKT-11) |\n\n**Concerns:** 1) TKT-25 oversized vs review guide (accepted: scaffold). 2) Serial M1 chain limits parallelism (accepted for a walking skeleton). 3) NF525 referential not yet verified against source text — tracked in TKT-11 COS.\n\n**Verdict:** CONCERNS — proceedable eyes-open; Gate 1: prioritize TKT-25…TKT-30 (and any epics) by dragging to Ready."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): children US-001/002/004/005 amended pre-Gate-1 (observability foundation, FR/EN plumbing, pseudonymous trails); readiness verdict unchanged in substance — sizing concern on US-001 grows slightly with the observability AC."
     }
   ]
 }
