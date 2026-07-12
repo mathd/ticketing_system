@@ -20,6 +20,8 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
       - uses: pnpm/action-setup@v6   # version comes from packageManager
+        with:
+          standalone: true # workaround pnpm/action-setup#276 (v6 self-installer crash)
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -43,6 +45,8 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
       - uses: pnpm/action-setup@v6   # version comes from packageManager
+        with:
+          standalone: true # workaround pnpm/action-setup#276 (v6 self-installer crash)
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
