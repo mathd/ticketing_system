@@ -149,8 +149,10 @@ func TestTracePropagation(t *testing.T) {
 	})
 }
 
-// TestJetStreamPersists proves the bus is JetStream (not core NATS): create
-// a stream, publish, then consume durably.
+// TestJetStreamPersists proves the bus is JetStream and that stack init
+// provisioned the PLATFORM stream (nats-init, ADR-007) — the test asserts
+// the stream exists rather than creating it, then publishes and consumes
+// durably through it.
 func TestJetStreamPersists(t *testing.T) {
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
@@ -164,11 +166,9 @@ func TestJetStreamPersists(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: "PLATFORM", Subjects: []string{"platform.>"},
-	})
+	stream, err := js.Stream(ctx, "PLATFORM")
 	if err != nil {
-		t.Fatalf("create stream: %v", err)
+		t.Fatalf("PLATFORM stream must be provisioned at stack init (nats-init): %v", err)
 	}
 	if _, err := js.Publish(ctx, "platform.smoke.ping", []byte("pong")); err != nil {
 		t.Fatalf("publish: %v", err)

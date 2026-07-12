@@ -19,6 +19,8 @@ x-go-service: &go-service
       condition: service_healthy
     nats:
       condition: service_healthy
+    nats-init:
+      condition: service_completed_successfully
   healthcheck:
     test: ["CMD", "/app", "healthcheck"]
     interval: 5s
@@ -33,7 +35,7 @@ services:
     environment:
       POSTGRES_PASSWORD: postgres
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql
@@ -44,24 +46,43 @@ services:
       retries: 10
 
   nats:
-    image: nats:alpine
+    image: nats:2.14-alpine
     restart: unless-stopped
-    command: ["-js", "-m", "8222"]
+    # file-backed JetStream store on a named volume: streams survive
+    # container recreation (ADR-007 durability)
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
-      - "${NATS_PORT:-4222}:4222"
+      - "127.0.0.1:${NATS_PORT:-4222}:4222"
+    volumes:
+      - natsdata:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8222/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  # One-shot: provisions the PLATFORM stream (ADR-007) at stack init.
+  # Idempotent; the smoke suite asserts the stream EXISTS, it no longer creates it.
+  nats-init:
+    image: natsio/nats-box:latest
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        nats --server nats://nats:4222 stream info PLATFORM >/dev/null 2>&1 ||
+        nats --server nats://nats:4222 stream add PLATFORM
+        --subjects "platform.>" --storage file --retention limits --defaults
+
   lgtm:
     image: grafana/otel-lgtm
     restart: unless-stopped
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"   # Grafana UI
-      - "${OTLP_PORT:-4318}:4318"      # OTLP http (for local debugging)
-      - "${PROM_PORT:-9090}:9090"      # Prometheus query API (smoke asserts metrics)
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"   # Grafana UI
+      - "127.0.0.1:${OTLP_PORT:-4318}:4318"      # OTLP http (for local debugging)
+      - "127.0.0.1:${PROM_PORT:-9090}:9090"      # Prometheus query API (smoke asserts metrics)
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
       interval: 10s
@@ -126,7 +147,7 @@ services:
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/gateway/cmd/gateway } }
     restart: unless-stopped
     ports:
-      - "${GATEWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
       CATALOG_URL: http://catalog:8080
@@ -153,3 +174,4 @@ services:
 
 volumes:
   pgdata:
+  natsdata:

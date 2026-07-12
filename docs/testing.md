@@ -9,7 +9,8 @@ browser evidence on UI stories).
 
 | Stage | Go | TS |
 |---|---|---|
-| lint | golangci-lint per module (`--build-tags smoke`) | `oxlint --deny-warnings` |
+| deps | — | `pnpm install --frozen-lockfile` |
+| lint | golangci-lint (pinned) per module (`--build-tags smoke`) | `oxlint --deny-warnings` |
 | test | `go test` per module | `vitest run` (jsdom + testing-library) |
 | build | `go build` + `go vet` per module | `tsc -b && vite build` |
 | smoke | `smoke/` suite via `scripts/smoke.sh` | — |
@@ -22,7 +23,7 @@ the gateway, plus named infra assertions:
 - `/healthz/all` — all five services up
 - storefront and scanner served through the gateway
 - trace propagation — a caller-chosen trace id appears in gateway **and** service JSON logs
-- JetStream — publish + durable consume on the `PLATFORM` stream
+- JetStream — the `PLATFORM` stream exists from stack init (nats-init) + publish/durable consume
 - DB credential isolation — service A's role cannot connect to service B's database
 - metrics ingestion — `http_server_*` series queryable in Prometheus after traffic
 

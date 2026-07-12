@@ -73,10 +73,13 @@ func run() error {
 
 	mux := http.NewServeMux()
 
-	// Gateway self-health is independent of downstreams (no circularity with
-	// compose healthchecks); /healthz/all is the aggregated view.
+	// /healthz = liveness (self only, no downstream circularity with compose
+	// healthchecks). /readyz and /healthz/all = readiness: the downstream
+	// fan-out, 200 iff every service is up.
+	all := healthzAll(log)
 	mux.Handle("GET /healthz", httpx.Healthz(serviceName))
-	mux.Handle("GET /healthz/all", healthzAll(log))
+	mux.Handle("GET /healthz/all", all)
+	mux.Handle("GET /readyz", all)
 
 	// Longest-prefix registration; ServeMux ordering handles it.
 	for prefix, envVar := range routes {

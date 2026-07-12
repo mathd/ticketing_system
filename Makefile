@@ -5,6 +5,8 @@ GO_MODULES := shared/go services/catalog services/inventory services/commerce se
 # smoke's tests are build-tagged and run in the smoke stage, not test-go
 GO_TEST_MODULES := $(filter-out smoke,$(GO_MODULES))
 BIN := $(CURDIR)/bin
+# pinned so local and CI runs use the same linter (latest at time of pinning)
+GOLANGCI_VERSION := v2.12.2
 GOLANGCI := $(BIN)/golangci-lint
 
 # The smoke stack runs isolated (own compose project + shifted ports);
@@ -12,13 +14,17 @@ GOLANGCI := $(BIN)/golangci-lint
 
 .PHONY: check lint test build smoke lint-go lint-ts test-go test-ts build-go build-ts up down clean
 
-check: lint test build smoke
+check: deps lint test build smoke
+
+## ---- deps (self-contained gate: clean clone needs nothing pre-installed) ----
+deps:
+	pnpm install --frozen-lockfile
 
 ## ---- lint ----
 lint: lint-go lint-ts
 
 $(GOLANGCI):
-	GOBIN=$(BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	GOBIN=$(BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 
 lint-go: $(GOLANGCI)
 	@for m in $(GO_MODULES); do \
@@ -47,7 +53,7 @@ build: build-go build-ts
 build-go:
 	@for m in $(GO_MODULES); do \
 		echo "go build: $$m"; \
-		(cd $$m && go build ./... && go vet -tags smoke ./...) || exit 1; \
+		(cd $$m && { [ -d cmd ] && go build -o $(BIN)/gate/ ./... || go build ./...; } && go vet -tags smoke ./...) || exit 1; \
 	done
 
 build-ts:
