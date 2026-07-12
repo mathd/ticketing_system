@@ -1,0 +1,17 @@
+{
+  "key": "TKT-15",
+  "type": "Epic",
+  "summary": "Epic: Cashless on-site wallet",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Wristband-linked wallet: top-up, spend at points of sale, balance refund after the event. A cash path — full NF525 journal treatment.\n\n**Conditions of Success:**\n- Top-up/spend/refund are journal entries; wallet balance is a projection that always reconciles\n- Spend works at simulated POS latency, offline-tolerant with reconciliation\n- Post-event balance refund flow completes to the original payment method (fake PSP)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
