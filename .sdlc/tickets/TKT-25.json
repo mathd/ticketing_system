@@ -4,7 +4,7 @@
   "summary": "US-001: Platform scaffold — one command, all services up",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "claude",
   "pr": {
@@ -75,6 +75,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n### Coding summary — TKT-25\n\nAll 5 ACs implemented and verified; `make check` green end-to-end (8 modules lint-clean, unit tests, builds, 7/7 smoke tests, gate self-test catches all 5 seeded failures). PR #1 open.\n\nNotable in-flight findings (all fixed): oxlint warnings don't fail by default -> `--deny-warnings`; pnpm 11 supply-chain release-age policy rejected a pnpm-10 lockfile -> pinned pnpm 11 via packageManager and re-resolved; nginx IPv4-only listen vs localhost=::1 healthchecks; gateway must not strip the /scanner prefix; OTel resource schema conflict -> schemaless service resource; selftest must pnpm-install its own worktree (symlinked node_modules gets rewired by pnpm).\n\nDeviation from plan (minor): the PLATFORM JetStream stream is created idempotently by the smoke suite rather than a one-shot compose bootstrap container - fewer moving parts, same proof. Browser evidence in docs/evidence/TKT-25/."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n### AI review summary — TKT-25\n\nCodex adversarial review of the diff: **8 findings (5 blocking, 3 minor) — all accepted and fixed** in e85bd44, none rejected, none deferred:\n1. Gate not self-contained (pnpm install hidden in CI) -> `make deps` stage, CI runs exactly `make check`.\n2. Committed build artifacts: 69MB golangci-lint binary, 6 service binaries, 4,267 node_modules files -> untracked + .gitignore; `go build` outputs to bin/gate/.\n3. PLATFORM stream only created by the test (test manufacturing its own evidence) -> one-shot `nats-init` provisions at stack init; smoke asserts existence.\n4. JetStream had no volume (durable bus losing data on recreate) -> file-backed named volume.\n5. Postgres/NATS published on 0.0.0.0 -> all published ports bind 127.0.0.1.\n6. Floating tool versions -> golangci-lint pinned, pnpm from packageManager, nats:2.14-alpine.\n7. Gateway liveness/readiness conflated -> /readyz added (aggregate fan-out).\n8. Logging wrapper dropped Flusher/Hijacker -> Unwrap() for http.ResponseController + Flush passthrough.\n\n`make check` re-green end-to-end (incl. 7/7 smoke, selftest 5/5). Review-guide posted on PR #1. Diff: +4756/-827, 75 files. Ball is now at Gate 3: human review + squash-merge of PR #1, then drag to PO Review."
     }
   ],
   "links": [
