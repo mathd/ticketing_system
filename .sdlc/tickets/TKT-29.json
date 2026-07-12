@@ -8,12 +8,17 @@
   "pr": null,
   "parent": "TKT-1",
   "classification": "simple",
-  "description": "**As** a buyer, **I want** my ticket with a QR code by email and on a web page after purchase. Mailer is a port with log transport (brief non-goal: no notifications service).\n\n**Priority:** P1\n**Depends on:** US-004 (TKT-28)\n\n**Acceptance Criteria:**\n- [ ] Access service issues a signed QR payload per paid ticket, triggered by the order-completed event\n- [ ] Mailer port (log transport) records a delivery with ticket link; buyer ticket page renders the QR (browser-verified)\n- [ ] Tickets are re-retrievable by order reference (guest flow, no account)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "description": "**As** a buyer, **I want** my ticket with a QR code by email and on a web page after purchase. Mailer is a port with log transport (brief non-goal: no notifications service).\n\n**Priority:** P1\n**Depends on:** US-004 (TKT-28)\n\n**Acceptance Criteria:**\n- [ ] Access service issues a signed QR payload per paid ticket, triggered by the order-completed event\n- [ ] Mailer port (log transport) records a delivery with ticket link; buyer ticket page renders the QR (browser-verified)\n- [ ] Issuance and delivery are recorded as append-only ticket lifecycle events linked to the order (ADR-003); the ticket's history is queryable\n- [ ] Tickets are re-retrievable by order reference (guest flow, no account)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
   "context": {
     "binding": [
       {
         "id": "ADR-002",
         "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-003",
+        "rule": "Two append-only trails, one discipline: (1) money journal — every money-relevant record immutable, sequence-numbered, hash-chained, signed; corrections are compensating entries, never updates; read models are projections; verify-journal runs in the local gate from US-004 onward. (2) ticket lifecycle trace — every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated, pass entry) is an append-only lifecycle event linked to its order/journal entries; redemption/reissue decisions are made from the trace, not a mutable flag. (3) NF525 is a later-phase profile that must layer on without schema or flow changes.",
         "date": "2026-07-12"
       }
     ],
@@ -29,7 +34,13 @@
     ],
     "capturedAt": "2026-07-12"
   },
-  "comments": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Scope amended pre-Gate-1 (owner directive 2026-07-12): NF525 is NOT an immediate goal — it becomes a later-phase French-market profile. The underlying requirement is generalized: traceability is a must, with the same audit-trail thinking for money AND tickets (ADR-003 reworked accordingly). New AC: issuance/delivery recorded as append-only lifecycle events."
+    }
+  ],
   "links": [
     {
       "type": "blocks",
