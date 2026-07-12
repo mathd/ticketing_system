@@ -30,9 +30,13 @@ experiment stays valid.
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`
   (see `registry.bindingPath` in `.claude/sdlc.config.json`; template in `docs/adr/[template].md`).
-- **Documentation lives in `docs/`** — the py-moov `python_base` docs structure (architecture,
+- **Documentation is 100% in-repo.** No Confluence or external wiki is attached to this project:
+  PRDs and briefs live in `docs/product/`, ADRs in `docs/adr/`, learnings/process notes in `docs/`,
+  and ticket-level context on the `.sdlc/` board. Anything the sdlc-ticket skill would send to a
+  wiki goes to `docs/` instead.
+- **Documentation lives in `docs/`** — a standard docs scaffold (architecture,
   ADRs, learnings, roadmap, solution design, conventions). Note: `configuration.md`,
-  `development.md`, `docker.md`, and `testing.md` describe the py-moov Python scaffold, which is
+  `development.md`, `docker.md`, and `testing.md` describe a Python scaffold, which is
   not implemented here yet — treat them as aspirational until a stack decision (ADR) lands.
 - The `sdlc-ticket` skill and the git-derived board (`.sdlc/`) are the default workflow scaffolding
   for planning and tracking work here.

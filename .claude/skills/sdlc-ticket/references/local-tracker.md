@@ -35,8 +35,13 @@ creates the `sdlc-state` branch (tracking origin's if present) and a worktree at
 python3 .sdlc/server.py      # background; board on http://localhost:8787/board.html
 ```
 
-Endpoints: `GET /board` (assembled config + tickets) · `POST /ticket` (upsert one ticket file,
-auto-committed). Requires git ≥ 2.5. If bootstrap fails with "already checked out", someone has the
+Endpoints: `GET /board` (assembled config + tickets, each with `_rev`) · `POST /ticket` (upsert one
+ticket file, auto-committed) · `POST /archive` (move all Done tickets to `.sdlc/tickets/archive/`,
+one commit — no UI over the archive; read/grep the files directly). Requires git ≥ 2.5.
+
+**Optimistic concurrency:** every ticket from `GET /board` carries `_rev` (content hash). POST the
+object back *with* `_rev`: the server answers **409** if the ticket changed since your read — re-fetch
+`/board`, re-apply your change, retry. Always read-then-write; never POST from a stale copy. If bootstrap fails with "already checked out", someone has the
 state branch checked out in another worktree — point them back to their normal branch.
 
 ## Mutating tickets — one write path
@@ -75,8 +80,11 @@ graph and writes via the same `POST /ticket`.
   **only `status`**; labels and comments remain the agent's job.
 
 ## The one-ticket run (identical to Jira mode)
-1. **Backlog** — COS in a `kind=readiness` comment; suggest `risk:low` if trivial.
-2. ⛔ Gate 1 — human prioritizes → `Ready`.
+1. **Backlog** — shape per `shaping.md`: COS + the 7-item `readiness` object on the ticket,
+   spikes (`type:"Spike"`, parent `blocked-by` them) for investigations, `owner:"human"` items for
+   pending decisions; `kind=readiness` verdict comment; suggest `risk:low` if trivial.
+2. ⛔ Gate 1 — human prioritizes → `Ready`. The board **hard-blocks** the drag while any
+   `readiness` item is `open` or a blocker is open (`deferred` passes).
 3. **Ready** — verify no open blockers, claim: `assignee`, `kind=claim`, → `Planning` + `agent:planning`.
 4. **Planning** — `kind=plan` → `agent:plan-review` (codex critique) → `kind=plan-final` → `needs:human` (skip if `risk:low`).
 5. ⛔ Gate 2 — human approves → `Building`, swap to `agent:coding`.
@@ -84,6 +92,8 @@ graph and writes via the same `POST /ticket`.
 7. ⛔ Gate 3 — human merges → `pr.state:"merged"`, → `PO Review`.
 8. **PO Review** — `kind=summary` validation note; stop.
 9. ⛔ Gate 4 — PO accepts → `Done`; remove `needs:human`; `kind=metrics` (with `learnings:` + `retro:`).
+   The board **refuses** moving a non-spike ticket to Done without a `kind=metrics` comment — post the
+   closeout *before* the PO clears the gate.
 
 `BLOCKED` transversal: status `BLOCKED`, keep the prior pipeline label, `kind=blocker` comment.
 

@@ -19,6 +19,7 @@ git history of the ticket's file. Computations are cached per state-branch HEAD.
 Localhost-only. Run from any checkout: python3 .sdlc/server.py [port]
 """
 
+import hashlib
 import json
 import re
 import subprocess  # noqa: S404 — fixed git commands, validated args only
@@ -91,7 +92,29 @@ def validate(t):
     if not isinstance(t.get("labels"), list):
         msg = "labels must be a list"
         raise ValueError(msg)
+    readiness = t.get("readiness")
+    if readiness is not None:
+        if not isinstance(readiness, dict):
+            msg = "readiness must be an object"
+            raise ValueError(msg)
+        for item, v in readiness.items():
+            if not isinstance(v, dict) or v.get("state") not in {
+                "met",
+                "open",
+                "deferred",
+            }:
+                msg = f"readiness.{item}.state must be met|open|deferred"
+                raise ValueError(msg)
     return key
+
+
+def file_rev(path):
+    """Content revision of a ticket file, for optimistic concurrency.
+
+    Returns:
+        First 12 hex chars of the file's sha256.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
 def commit_state(key, message):
@@ -215,6 +238,7 @@ class Handler(SimpleHTTPRequestHandler):
                 a = analysis.get(t["key"])
                 if a:
                     t["_since"] = a["since"]
+                t["_rev"] = file_rev(p)
                 tickets.append(t)
             board["tickets"] = sorted(tickets, key=sort_key)
             board["now"] = int(time.time())
@@ -240,7 +264,12 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
-        if self.path.split("?")[0] != "/ticket":
+        url = urlparse(self.path)
+        route = url.path
+        if route == "/archive":
+            self._archive(url.query)
+            return
+        if route != "/ticket":
             self.send_error(404)
             return
         try:
@@ -251,7 +280,13 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(400, f"invalid ticket: {e}")
             return
         t.pop("_since", None)  # server-computed, never stored
+        rev = t.pop("_rev", None)  # optimistic concurrency: reject stale writes
         path = TICKETS / f"{key}.json"
+        if rev is not None and path.exists() and rev != file_rev(path):
+            self.send_error(
+                409, "stale write: ticket changed since read - re-fetch /board"
+            )
+            return
         old = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
         tmp = path.with_suffix(".json.tmp")  # atomic replace
         tmp.write_text(
@@ -266,6 +301,44 @@ class Handler(SimpleHTTPRequestHandler):
             msg = "update"
         commit_state(key, msg)
         self._json(200, {"ok": True, "key": key, "commit": msg})
+
+    def _archive(self, query=""):
+        """Move Done tickets to .sdlc/tickets/archive/ (one commit).
+
+        ?before=YYYY-MM-DD archives only tickets that entered Done before that day;
+        no param archives all Done tickets.
+        """
+        before = parse_qs(query).get("before", [""])[0]
+        cutoff = None
+        if before:
+            try:
+                cutoff = time.mktime(time.strptime(before, "%Y-%m-%d"))
+            except ValueError:
+                self.send_error(400, "bad before date (want YYYY-MM-DD)")
+                return
+        analysis = all_analysis()
+        arch = TICKETS / "archive"
+        arch.mkdir(exist_ok=True)
+        moved = []
+        for p in TICKETS.glob("*.json"):
+            t = json.loads(p.read_text(encoding="utf-8"))
+            if t.get("status") != "Done":
+                continue
+            a = analysis.get(t["key"])
+            done_since = a["since"] if a else 0  # last status change = Done entry
+            if cutoff is not None and done_since >= cutoff:
+                continue
+            p.rename(arch / p.name)
+            moved.append(t["key"])
+        if moved:
+            git("add", "-A", cwd=STATE_WT)
+            git(
+                "commit",
+                "-m",
+                f"chore(sdlc): archive {len(moved)} done ticket(s) [skip ci]",
+                cwd=STATE_WT,
+            )
+        self._json(200, {"ok": True, "archived": sorted(moved)})
 
     def log_message(self, *a):
         pass
