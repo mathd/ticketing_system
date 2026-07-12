@@ -2,7 +2,7 @@
   "key": "TKT-26",
   "type": "Story",
   "summary": "US-002: Create and publish a GA event",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -10,7 +10,8 @@
   "pr": {
     "number": 5,
     "url": "https://github.com/mathd/ticketing_system/pull/5",
-    "state": "open"
+    "state": "merged",
+    "mergeCommit": "f4e7ee2"
   },
   "parent": "TKT-1",
   "classification": "simple",
@@ -95,6 +96,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Codex review triaged — 7 findings: 5 fixed & re-verified, 2 rejected as approved deferrals. → needs:human (Gate 3).**\n\n| # | Finding | Verdict | Action |\n|---|---|---|---|\n| 1 | Not at-least-once; retry/race emits new envelope id (no dedup) | partially valid | **Fixed the fixable half:** envelope id now deterministic per publication (uuid5 of perf id + published_at) + doubles as Nats-Msg-Id (stream-window dedup). **Rejected the rest:** crash-between-commit-and-ack has no recovery — that is the Gate-2-approved deferral, recorded in ADR-009, owed to US-004's outbox. |\n| 2 | Publish-before-priced emits an event for a slot the storefront hides; never corrected | valid, blocking | **Fixed:** publish without a ticket type -> 409 (spec + store + tests). Event and visibility can no longer disagree. |\n| 3 | SSR cache stampede on concurrent miss (hot event at on-sale boundary) | valid | **Fixed:** single-flight; failures shared but never cached. 2 new vitest cases. |\n| 4 | int64 Money exceeds JS safe integers | valid | **Fixed:** contract bounds amount to 2^53-1 (validated at the API edge). |\n| 5 | Unauthenticated writes, caller-supplied organizer_id | valid observation | **Rejected for this PR:** explicit DoR/plan deferral approved at Gate 2 (\"v1 trusted local API\"); auth is owned by the back-office/RBAC epic (TKT-22). |\n| 6 | No request body size limit | valid | **Fixed:** 1 MiB MaxBytesReader on the API surface. |\n| 7 | Committed .astro/ generated file w/ trailing whitespace | valid | **Fixed:** untracked + gitignored. |\n\nOne codex pass per stage (rule followed — fixes verified by the gate, not a second codex run). `make check` green after fixes, warm ~1m12s. Fix commit pushed; review-guide posted on PR #5. **Stopped pushing.**\n\n**Gate 3 is yours:** review + squash-merge PR #5, then move the ticket to PO Review."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Validation note — COS met, from the user-visible output:**\n- AC1/AC2: created + published \"Nuit Électrique\" through the public API; it appears on the storefront in a real browser (screenshots in the PR and `docs/verification/TKT-26/`). The publication event was observed on the PLATFORM stream, correlated by performance id (smoke, part of the merged gate).\n- AC3: `curl -sI /api/catalog/public/events?locale=fr` and the event pages show the minutes tier; two page hits show `X-Page-Data-Age` advancing with remaining-freshness `max-age` (no re-fetch within TTL).\n- AC4: FR/EN locale switch preserves the deep route; date renders in the performance's timezone per locale; money renders from integer minor units (45,50 EUR / EUR45.50).\n- AC5: every entity row carries organizer_id; cross-organizer wiring rejected (smoke-asserted).\nDemo stack: localhost:8080 (Postgres host port 15433 this run). **PO accepted in-session (owner, 2026-07-12).**"
     }
   ],
   "links": [
