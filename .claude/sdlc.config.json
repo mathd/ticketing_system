@@ -2,5 +2,5 @@
   "tracker": "local",
   "confluence": null,
   "code": { "repo": "ticketing_system", "defaultBranch": "main", "localGate": "pre-commit run --all-files" },
-  "registry": { "bindingPath": "docs/decisions/", "referenceLocation": "local" }
+  "registry": { "bindingPath": "docs/adr/", "referenceLocation": "local" }
 }
