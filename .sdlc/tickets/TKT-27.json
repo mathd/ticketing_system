@@ -4,7 +4,7 @@
   "summary": "US-003: Contention-safe GA reservation with cart holds",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "Codex",
   "pr": {
@@ -75,6 +75,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nImplemented TKT-27 and opened PR #6. Catalog publication schema v2 carries generic capacity; inventory durably provisions pools and serializes claims in PostgreSQL with organizer-scoped idempotency, deterministic database-time expiry, pool-first locks, confirm/release terminal semantics, seconds-tier availability, and readiness tied to the JetStream consumer. Storefront adds a quantity picker and server-time/monotonic-clock countdown. ADR-010 records the claim transaction.\n\nVerification: make check green, including real Compose/PostgreSQL contention (10 of 40 demand granted, never oversold); deterministic rerun green after correcting a flaky test-key assumption; 16 storefront tests green; browser screenshot committed at docs/verification/TKT-27/hold-picker.png. Diff: 27 files, +1004/-41 (includes dependency sums/generated code)."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\nIndependent review triaged: no blocking findings and the reviewer judged the core lifecycle safe to merge after the build. Five observations: (1) fragile countdown effect — accepted and fixed by keying the timer lifecycle to hold identity; (2) single-use idempotency keys — accepted and documented in ADR-010; (3) non-locking pool discovery — retained, explicitly required for uniform lock ordering; (4) venue capacity snapshot — retained as the approved first quantity-pool adapter; (5) verification claim — resolved by a clean local gate. No findings silently dropped; no incidental backlog tickets needed.\n\nFinal SHA: 2d0fabb. Full validation: lint, unit tests, generated-contract drift, builds, and smoke all green. Smoke proves exact capacity under parallel demand and idempotency branches. Browser evidence committed. PR #6 review guide posted. Stopped pushing; Gate 3 is now human-owned."
     }
   ],
   "links": [
