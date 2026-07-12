@@ -1,6 +1,7 @@
-// Service skeleton (US-001). Owns: organizers/tenants, venues, seat maps,
-// events, performances, series/seasons, festival structure, rule definitions
-// (ADR-002). No domain routes yet — those arrive with their stories.
+// Catalog service. Owns: organizers/tenants, venues, seat maps, events,
+// performances, series/seasons, festival structure, rule definitions
+// (ADR-002). US-002 (TKT-26): venues/events/performances/ticket types,
+// publish + domain event, aggregated public reads (contract in api/openapi.yaml).
 package main
 
 import (
@@ -13,11 +14,15 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // IANA zones inside distroless images (timezone validation)
 
 	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
 
+	"ticketing/services/catalog/internal/api"
+	"ticketing/services/catalog/internal/events"
+	"ticketing/services/catalog/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 )
@@ -73,12 +78,30 @@ func run() error {
 	}
 	defer func() { _ = db.Close() }()
 
+	// Migrate before listening; fail fast on a bad migration (ADR-008).
+	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer mcancel()
+	if err := store.Migrate(mctx, db); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	log.InfoContext(ctx, "migrations applied")
+
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
 	if err != nil {
 		return fmt.Errorf("nats connect: %w", err)
 	}
 	defer nc.Close()
+
+	publisher, err := events.NewJetStream(nc)
+	if err != nil {
+		return fmt.Errorf("jetstream: %w", err)
+	}
+
+	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log))
+	if err != nil {
+		return fmt.Errorf("api router: %w", err)
+	}
 
 	r := chi.NewRouter()
 	r.Method(http.MethodGet, "/healthz", httpx.Healthz(serviceName,
@@ -94,6 +117,7 @@ func run() error {
 			return nil
 		}),
 	))
+	r.Mount("/", apiHandler)
 
 	srv := &http.Server{
 		Addr:              ":" + port(),

@@ -1,2 +1,5 @@
 packages:
   - web/scanner
+  - web/storefront
+allowBuilds:
+  esbuild: true

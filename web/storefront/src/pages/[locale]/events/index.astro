@@ -1,0 +1,112 @@
+---
+// Event list — one aggregated read, SSR-embedded, minutes tier (ADR-004/006).
+import Layout from '../../../layouts/Layout.astro';
+import { getPublicEvents, type PublicEventList } from '../../../lib/api';
+import { formatMoney, formatStartsAt } from '../../../lib/format';
+import { UI_STRINGS, isLocale } from '../../../lib/locales';
+
+const { locale } = Astro.params;
+if (!locale || !isLocale(locale)) {
+  return new Response(null, { status: 404 });
+}
+const t = UI_STRINGS[locale];
+
+// Catalog unreachable is an explicit 503 (no-store via middleware), not an
+// Astro default error page.
+let events: PublicEventList['events'];
+try {
+  ({ events } = await getPublicEvents(Astro, locale));
+} catch {
+  return new Response('Service unavailable', { status: 503 });
+}
+---
+
+<Layout locale={locale} title={t.events}>
+  <h1>{t.events}</h1>
+  {events.length === 0 && <p class="empty">{t.noEvents}</p>}
+  <ul class="events">
+    {
+      events.map((event) => (
+        <li>
+          <a class="card" href={`/${locale}/events/${event.id}`}>
+            <h2>{event.name}</h2>
+            {event.description && <p class="description">{event.description}</p>}
+            <ul class="performances">
+              {event.performances.map((perf) => (
+                <li>
+                  <span class="when">{formatStartsAt(perf.starts_at, perf.timezone, locale)}</span>
+                  <span class="where">{perf.venue_name}</span>
+                  <span class="price">
+                    {t.from} {formatMoney(perf.from_price.amount, perf.from_price.currency, locale)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</Layout>
+
+<style>
+  h1 {
+    font-size: 1.6rem;
+    margin: 0 0 1.4rem;
+  }
+  .empty {
+    color: var(--muted);
+  }
+  .events {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1rem;
+  }
+  .card {
+    display: block;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 120ms ease;
+  }
+  .card:hover {
+    border-color: var(--accent);
+  }
+  .card h2 {
+    margin: 0 0 0.2rem;
+    font-size: 1.15rem;
+  }
+  .description {
+    margin: 0 0 0.6rem;
+    color: var(--muted);
+    font-size: 0.92rem;
+  }
+  .performances {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .performances li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+    font-size: 0.92rem;
+    padding-top: 0.35rem;
+  }
+  .when {
+    color: var(--ink);
+  }
+  .where {
+    color: var(--muted);
+  }
+  .price {
+    margin-left: auto;
+    font-weight: 600;
+    color: var(--accent);
+  }
+</style>

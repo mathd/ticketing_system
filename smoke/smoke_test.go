@@ -97,10 +97,26 @@ func TestHealthzAllUp(t *testing.T) {
 	})
 }
 
+// The storefront root redirects into the default locale (Astro i18n). The
+// redirect is asserted without following it so this test never warms the
+// storefront's page-data cache before the US-002 flow publishes its fixture
+// (us002_test.go owns the rendered-page assertions).
 func TestStorefrontServedThroughGateway(t *testing.T) {
-	code, body := get(t, gatewayURL+"/", nil)
-	if code != http.StatusOK || !strings.Contains(string(body), "Ticketing storefront") {
-		t.Fatalf("storefront via gateway: status %d, body %.120s", code, body)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(gatewayURL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	loc := resp.Header.Get("Location")
+	redirect := resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound
+	if !redirect || !strings.HasPrefix(loc, "/en") {
+		t.Fatalf("storefront via gateway: status %d, location %q", resp.StatusCode, loc)
 	}
 }
 

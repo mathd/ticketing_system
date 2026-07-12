@@ -1,0 +1,8 @@
+# oapi-codegen config (ADR-009). Regenerate: make generate
+package: api
+output: ../internal/api/openapi_gen.go
+generate:
+  chi-server: true
+  models: true
+output-options:
+  skip-prune: true

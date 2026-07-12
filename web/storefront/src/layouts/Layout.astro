@@ -1,0 +1,99 @@
+---
+import { LOCALES, LOCALE_LABELS, UI_STRINGS, type Locale } from '../lib/locales';
+
+interface Props {
+  locale: Locale;
+  title: string;
+}
+
+const { locale, title } = Astro.props;
+const t = UI_STRINGS[locale];
+
+// Locale switch preserves the current route: /fr/events/x <-> /en/events/x.
+const switchTarget = (target: Locale) =>
+  Astro.url.pathname.replace(/^\/[a-z]{2}(?=\/|$)/, `/${target}`) || `/${target}/events`;
+---
+
+<!doctype html>
+<html lang={locale}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href={`/${locale}/events`}>{t.events}</a>
+      <nav class="locales" aria-label="Language">
+        {
+          LOCALES.map((l) => (
+            <a href={switchTarget(l)} aria-current={l === locale ? 'true' : undefined} lang={l}>
+              {LOCALE_LABELS[l]}
+            </a>
+          ))
+        }
+      </nav>
+    </header>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --bg: #faf9f7;
+    --ink: #1a1a1f;
+    --muted: #6b6b76;
+    --card: #ffffff;
+    --line: #e6e3dd;
+    --accent: #0f4c81;
+    color-scheme: light;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family:
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      sans-serif;
+    line-height: 1.55;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 1.1rem 1.5rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--card);
+  }
+  .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 0.01em;
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .locales a {
+    margin-left: 0.9rem;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+  }
+  .locales a[aria-current='true'] {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
+  }
+  main {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+</style>

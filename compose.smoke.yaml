@@ -18,3 +18,5 @@ services:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: gateway } }
   scanner:
     build: { context: ., dockerfile: web/scanner/Dockerfile.smoke }
+  storefront:
+    build: { context: ., dockerfile: web/storefront/Dockerfile.smoke }

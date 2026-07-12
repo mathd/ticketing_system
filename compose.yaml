@@ -126,8 +126,14 @@ services:
       DATABASE_URL: postgres://access:access@postgres:5432/access
 
   storefront:
-    build: ./web/storefront
+    # Astro 7 SSR shell (ADR-006). Root build context: the pnpm workspace
+    # lockfile lives at the repo root (scanner pattern).
+    build: { context: ., dockerfile: web/storefront/Dockerfile }
     restart: unless-stopped
+    environment:
+      # SSR reads go through the gateway: the storefront consumes the public
+      # contract (ADR-002). No startup deadlock: both healthchecks are self-only.
+      GATEWAY_URL: http://gateway:8080
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
       interval: 5s
