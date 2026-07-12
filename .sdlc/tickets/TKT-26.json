@@ -25,6 +25,11 @@
         "id": "ADR-004",
         "rule": "Every public read endpoint declares a volatility-tiered TTL with explicit Cache-Control (seat maps: hours; event lists/detail: minutes; price display: ~1 min; availability: seconds; hold/order/scan state: never cached); hot events are served from in-memory structures refreshed/invalidated from the write path; frontends make few aggregated calls (one per page view, not per widget) and refresh on the endpoint's TTL cadence; writes are never cached.",
         "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-005",
+        "rule": "Every admission-granting offer (performance, festival day, park operating day) is a dated slot in one inventory machinery; passes are entitlements to claim slot entries; lodging/day resources reserve through the same contention-safe core; slot attributes carry domain specifics — the claim primitive does not fork.",
+        "date": "2026-07-12"
       }
     ],
     "reference": [
@@ -49,6 +54,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Backlog grilling 2026-07-12 (owner decisions): FR+EN locale plumbing is born in this story (owner: i18n from the start)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Final review fix: ADR-005 (unified dated-slot) baked into context — the 'performance' created here is the first dated slot — its shape must not preclude park days/festival days."
     }
   ],
   "links": [
