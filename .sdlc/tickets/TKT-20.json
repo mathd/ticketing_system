@@ -6,7 +6,7 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "Virtual queue for hot on-sales with fair ordering, purchase limits (per customer/card/event), rate limiting and suspicious-order flagging.\n\n**Conditions of Success:**\n- Queue admits fairly (no line-jumping) and meters load into checkout\n- Purchase limits enforce at checkout across guest/account identities\n- Abuse signals flag orders for staff review without blocking legitimate buyers\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** Design-target on-sale (owner NFR): ~50-100k capacity event, 100k+ concurrent buyers in the waiting room, thousands of checkout attempts/min sustained. Purchase-limit identity: limits key on customer accounts; events with strict limits can require login (guest checkout stays available elsewhere). Card/device fingerprinting NOT in v1.",
+  "description": "Virtual queue for hot on-sales with fair ordering, purchase limits (per customer account / per event), rate limiting and suspicious-order flagging.\n\n**Conditions of Success:**\n- Queue admits fairly (no line-jumping) and meters load into checkout\n- Purchase limits enforce at checkout across guest/account identities\n- Abuse signals flag orders for staff review without blocking legitimate buyers\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** Design-target on-sale (owner NFR): ~50-100k capacity event, 100k+ concurrent buyers in the waiting room, thousands of checkout attempts/min sustained. Purchase-limit identity: limits key on customer accounts; events with strict limits can require login (guest checkout stays available elsewhere). Card/device fingerprinting NOT in v1.",
   "comments": [
     {
       "stage": "backlog",
@@ -17,6 +17,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Backlog grilling 2026-07-12 (owner decisions): festival-scale NFR quantified; limit identity = account-required for strict-limit events."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Final review fix: original description still said limits keyed 'per customer/card/event', contradicting the grilling amendment (account-keyed, no card/device fingerprinting in v1). Original text corrected."
     }
   ]
 }
