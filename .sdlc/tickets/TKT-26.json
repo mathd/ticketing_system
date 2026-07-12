@@ -1,0 +1,44 @@
+{
+  "key": "TKT-26",
+  "type": "Story",
+  "summary": "US-002: Create and publish a GA event",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-1",
+  "classification": "simple",
+  "description": "**As** an organizer, **I want** to create a venue, event, performance and GA ticket type via the catalog API and see it listed on the storefront.\n\n**Priority:** P0\n**Depends on:** US-001 (TKT-25)\n\n**Acceptance Criteria:**\n- [ ] Catalog API: create venue (GA capacity), event, dated performance, ticket type with EUR price; persisted; OpenAPI contract published\n- [ ] Publishing a performance emits a domain event; storefront lists published performances with name/date/price (browser-verified)\n- [ ] Entities carry an organizer_id even though v1 has one organizer\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "We adopt Go for all backend services and TypeScript + React for the three frontends (storefront, back office, scanner). Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-002",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — Milestone 1 walking skeleton stories",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-002 service map (five services, gateway, event bus)",
+        "link": "docs/adr/ADR-002-services-from-day-one.md"
+      }
+    ],
+    "capturedAt": "2026-07-12"
+  },
+  "comments": [],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-27"
+    }
+  ]
+}
