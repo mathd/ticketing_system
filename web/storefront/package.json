@@ -1,0 +1,30 @@
+{
+  "name": "storefront",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "lint": "oxlint --deny-warnings",
+    "preview": "astro preview",
+    "test": "vitest run",
+    "generate:api": "openapi-typescript ../../services/catalog/api/openapi.yaml -o src/lib/api-types.gen.ts"
+  },
+  "dependencies": {
+    "@astrojs/node": "^11.0.2",
+    "@astrojs/react": "^6.0.1",
+    "astro": "^7.0.7",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.6",
+    "@types/node": "^24.13.2",
+    "openapi-typescript": "^7.10.1",
+    "oxlint": "^1.71.0",
+    "typescript": "~6.0.2",
+    "vitest": "^4.1.10"
+  },
+  "packageManager": "pnpm@11.12.0"
+}

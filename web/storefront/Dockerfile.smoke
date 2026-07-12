@@ -1,0 +1,9 @@
+# Smoke-only packaging image: runs the host-built dist (make build-ts)
+# instead of running pnpm install + astro build inside Docker. The hermetic
+# build stays in web/storefront/Dockerfile. Build context = repo root.
+FROM node:24-alpine
+ENV HOST=0.0.0.0 PORT=8080 NODE_ENV=production
+WORKDIR /app
+COPY web/storefront/dist ./dist
+EXPOSE 8080
+CMD ["node", "dist/server/entry.mjs"]

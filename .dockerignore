@@ -2,6 +2,7 @@
 **/node_modules
 **/dist
 !web/scanner/dist
+!web/storefront/dist
 bin/*
 !bin/gate
 docs

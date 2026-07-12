@@ -1,0 +1,9 @@
+---
+import { isLocale } from '../../lib/locales';
+
+const { locale } = Astro.params;
+if (!locale || !isLocale(locale)) {
+  return new Response(null, { status: 404 });
+}
+return Astro.redirect(`/${locale}/events`, 302);
+---

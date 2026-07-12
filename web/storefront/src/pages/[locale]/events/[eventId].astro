@@ -1,0 +1,109 @@
+---
+// Event detail — one aggregated read carrying prices (single-source rule:
+// no independently-cached API copy is fetched browser-side), minutes tier.
+import Layout from '../../../layouts/Layout.astro';
+import { getPublicEvent, type PublicEventDetail } from '../../../lib/api';
+import { UpstreamError } from '../../../lib/cache';
+import { formatMoney, formatStartsAt } from '../../../lib/format';
+import { UI_STRINGS, isLocale } from '../../../lib/locales';
+
+const { locale, eventId } = Astro.params;
+if (!locale || !isLocale(locale) || !eventId) {
+  return new Response(null, { status: 404 });
+}
+const t = UI_STRINGS[locale];
+
+let event: PublicEventDetail;
+try {
+  event = await getPublicEvent(Astro, locale, eventId);
+} catch (err) {
+  if (err instanceof UpstreamError && (err.status === 404 || err.status === 400)) {
+    return new Response(null, { status: 404 });
+  }
+  return new Response('Service unavailable', { status: 503 });
+}
+---
+
+<Layout locale={locale} title={event.name}>
+  <a class="back" href={`/${locale}/events`}>← {t.backToEvents}</a>
+  <h1>{event.name}</h1>
+  {event.description && <p class="description">{event.description}</p>}
+  {
+    event.performances.map((perf) => (
+      <section class="performance">
+        <h2>{formatStartsAt(perf.starts_at, perf.timezone, locale)}</h2>
+        <p class="venue">
+          {t.venue}: {perf.venue.name}
+        </p>
+        <h3>{t.tickets}</h3>
+        <ul class="tickets">
+          {perf.ticket_types.map((tt) => (
+            <li>
+              <span>{tt.name}</span>
+              <span class="price">{formatMoney(tt.price.amount, tt.price.currency, locale)}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ))
+  }
+</Layout>
+
+<style>
+  .back {
+    display: inline-block;
+    margin-bottom: 1rem;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+  }
+  .back:hover {
+    color: var(--accent);
+  }
+  h1 {
+    font-size: 1.6rem;
+    margin: 0 0 0.3rem;
+  }
+  .description {
+    color: var(--muted);
+    margin: 0 0 1.4rem;
+  }
+  .performance {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+    margin-bottom: 1rem;
+  }
+  .performance h2 {
+    font-size: 1.05rem;
+    margin: 0 0 0.15rem;
+  }
+  .venue {
+    color: var(--muted);
+    margin: 0 0 0.8rem;
+    font-size: 0.92rem;
+  }
+  .performance h3 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 0.4rem;
+  }
+  .tickets {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .tickets li {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.4rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .price {
+    font-weight: 600;
+    color: var(--accent);
+  }
+</style>
