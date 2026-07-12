@@ -13,3 +13,6 @@ services/*/commerce
 services/*/payments
 services/*/access
 docs/reviews/
+
+# TKT-39 Astro spike — throwaway prototype, not committed
+spike/

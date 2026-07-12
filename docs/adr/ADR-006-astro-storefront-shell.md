@@ -4,7 +4,9 @@ Date: 2026-07-12
 
 ## Status
 
-Proposed — pending spike TKT-39. If accepted, this **amends ADR-001** (which stands: React remains the UI library; this decision only changes the storefront's shell framework). Back office and scanner are unaffected — they stay React SPAs.
+**Accepted** (2026-07-12, by spike TKT-39 — see `docs/spikes/TKT-39-astro7-storefront-shell.md`). This **amends ADR-001** (which stands: React remains the UI library; this decision only changes the storefront's shell framework). Back office and scanner are unaffected — they stay React SPAs.
+
+**API-name correction (from the spike):** this ADR was drafted against an announcement naming `src/fetch.ts` (per-route request pipeline) and `Astro.cache` (route caching). Those names do **not** exist in the shipped `astro@7.0.7`. The real equivalents, used by the spike and required going forward, are **`src/middleware.ts`** (`defineMiddleware` / `onRequest`, mutating the returned `Response`'s headers) for per-route-class `Cache-Control`, SSR via **`@astrojs/node`** for cacheable pages, and the real **`i18n.routing`** config for locale routing. Read every `src/fetch.ts` / `Astro.cache` reference below as those real APIs.
 
 ## Context
 
@@ -26,7 +28,22 @@ The open question the spike must answer: do the browse-half gains survive contac
 
 ## Decision
 
-**Deferred to spike TKT-39** (timeboxed). Acceptance criteria for choosing Option 1, to be evidenced by the spike:
+**Option 1 is chosen — Astro 7 storefront shell, React islands, SPA checkout.** The timeboxed spike
+(TKT-39) evidenced all five acceptance criteria below: page HTML at the minutes tier with availability as a
+seconds-tier React island (headers captured through real nginx); hold-countdown state surviving MPA
+navigation into a React checkout SPA with every failure state handled and the seam boundary documented;
+FR/EN localized routing with locale-preserving links; a caching-ownership rule that makes stale-page/
+fresh-API mismatch impossible by construction (availability is structurally absent from cached HTML); and a
+v7 early-adopter tax with **zero** genuine Astro/architecture blockers. Full report + evidence:
+`docs/spikes/TKT-39-astro7-storefront-shell.md`, `spike/EVIDENCE.md`.
+
+**Scope of this acceptance:** the *shell hypothesis* is proven, **not** integration. The prototype ran
+behind a mock API (the Go catalog service has no domain routes yet). Real gateway wiring, generated API
+contracts, hold identity/security, seat-selection state (TKT-35), the SSR deploy adapter under on-sale
+load, and CDN `s-maxage` honoring remain unproven — carried as the risk register for the first real
+storefront slice (spike report, "Untested integration costs").
+
+Acceptance criteria (all met — evidenced by the spike):
 
 1. Event list + event detail render in Astro 7 with correct ADR-004 tiers — page HTML cached at the minutes tier, availability as a React island polling the seconds tier — with `Cache-Control` set per route class via `src/fetch.ts`.
 2. The hold-countdown state survives MPA navigation into a React checkout surface without fragile seams (documented honestly, including what breaks).
