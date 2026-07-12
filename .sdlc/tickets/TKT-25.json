@@ -61,6 +61,11 @@
       "stage": "plan-review",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=plan-review kind=plan-final -->\n### Plan amendment (owner steering, 2026-07-12) — supersedes prior plan-final on these points only\n\n1. **ADR-007: PostgreSQL 18.4** (was 17). Cluster/database-per-service design unchanged.\n2. **New standing policy (owner directive): latest stable versions by default, platform-wide.** Greenfield project — every language, runtime and dependency (Go, Node, TypeScript, Vite, Postgres, Redis, NATS, tooling) targets its latest stable release; versions are looked up at implementation time, not assumed. Deviations require a stated compatibility reason. Applies to this ticket's Dockerfiles, go.mod, package.json, CI, and to ADR-007's wording; will be recorded in docs/conventions during this ticket's docs step.\n\nEverything else in the prior plan-final stands. Ticket remains at Gate 2 awaiting plan approval."
+    },
+    {
+      "stage": "plan-review",
+      "kind": "plan-final",
+      "body": "<!-- sdlc:stage=plan-review kind=plan-final -->\n### Plan amendment #2 (owner steering, 2026-07-12) — supersedes prior plan-final on these points only\n\n1. **Go 1.26** (latest stable 1.26.5, go.dev/doc/devel/release) for all services and the gateway.\n2. **Router: chi (v5, latest) for the five services** — net/http-compatible, stdlib handlers, standard middleware (incl. otelhttp) works unmodified; chosen over stdlib ServeMux for subrouters + per-group middleware we know are coming (tenant extraction, auth groups, ADR-004 cache-header layer per route class). Rejected: Fiber (fasthttp breaks the otel/net-http ecosystem), Gin/Echo (custom contexts, no added value over OpenAPI codegen). **Gateway stays bare stdlib** (ReverseProxy + explicit route table). Owner approved 2026-07-12 after online research.\n3. Latest-by-default policy (amendment #1) explicitly extends to Go frameworks and all Go module dependencies.\n\nEverything else stands. Ticket remains at Gate 2 awaiting plan approval."
     }
   ],
   "links": [
