@@ -2,9 +2,12 @@
   "key": "TKT-39",
   "type": "Spike",
   "summary": "SPIKE: Astro 7 storefront shell — prove or reject ADR-006",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning",
+    "risk:low"
+  ],
+  "assignee": "claude",
   "pr": null,
   "classification": "complex",
   "description": "Timeboxed spike (2 days) with a throwaway prototype — no production code, no scaffold dependency. Decides the storefront shell framework (Astro 7 + React islands vs React SPA) before US-002 (TKT-26) builds storefront UI. Outcome = ADR-006 moved from Proposed to Accepted or Rejected, with evidence.\n\n**Priority:** P1   **Depends on:** — (independent; blocks TKT-26)\n\n**Acceptance Criteria:**\n- [ ] Prototype: event list + event detail in Astro 7 — page HTML cached at the ADR-004 minutes tier, availability as a React island polling the seconds tier, Cache-Control set per route class via src/fetch.ts\n- [ ] Buy-half seam test: hold-countdown state survives MPA navigation into a React checkout surface; seams documented honestly, including what breaks\n- [ ] FR/EN locale routing demonstrated on localized event content (TKT-36 shape)\n- [ ] Written caching ownership rule (page layer vs API layer per ADR-004 tier) resolving the TKT-31 overlap — stale-page/fresh-API mismatch impossible by construction\n- [ ] Early-adopter tax log: compiler strictness, Rolldown/plugin gaps, bugs hit during the spike, with a tolerable/not-tolerable judgment\n- [ ] ADR-006 completed (Accepted or Rejected) from the evidence; report posted on this ticket\n\nQuality gates: n/a (throwaway prototype); the deliverable is the report + the ADR decision.",
@@ -48,6 +51,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS = the ACs above; deliverable is evidence + the ADR-006 decision, not code. Suggest risk:low — throwaway prototype, zero production code, isolated from the repo; the plan gate adds little to a timeboxed exploration. Set the label only if the owner agrees. Note: this ticket blocks TKT-26 (US-002) — the storefront slice should not be built before its shell framework is decided. If you'd rather not gate M1 on the spike, remove the link and accept possible storefront rework."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed TKT-39** — Astro 7 storefront spike.\n\n- **Selection reason:** requested by the owner; independent (zero open blockers) and blocks TKT-26 (US-002 storefront), so it should resolve before storefront UI is built. Sits in `Ready`, ready to pull.\n- **risk:low set** — throwaway prototype, **zero production code**, isolated from the scaffold (lives in a gitignored `spike/` dir in the worktree). No auth / data-migration / CI / deploy surface. Per the invariant, the plan gate is skipped; I still post a plan below, then proceed to prototype without waiting. Deliverable is the report + the ADR-006 Accept/Reject decision, not shippable code.\n- **Worktree:** `~/sources/ticketing_system.TKT-39-astro-spike` (branch `TKT-39-astro-spike` off `main`). A second agent is on TKT-42 in its own worktree; no shared checkout.\n- **Drive style:** gates only."
     }
   ]
 }
