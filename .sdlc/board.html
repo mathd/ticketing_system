@@ -6,17 +6,22 @@
 <title>Ticketing System — board</title>
 <style>
   :root {
-    /* Charte Moov AI (theme du template officiel) */
+    /* Charte graphique du board */
     --bg:#F3F1ED; --panel:#fff; --col:#EAE7E0; --ink:#181829; --muted:#5d5d6e;
     --line:#dcd8cf; --shadow:0 1px 3px rgba(24,24,41,.13); --shadow-lg:0 8px 28px rgba(24,24,41,.26);
     --accent:#61A0AF; --brand:#181829; --brand-ink:#F8F7FD;
     --teal:#61A0AF; --green:#60C093; --orange:#F68A4B; --gold:#E3B23A;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#181829; --panel:#242438; --col:#1e1e30; --ink:#F8F7FD; --muted:#9a9ab0;
+    :root:not([data-theme="light"]) {
+            --bg:#181829; --panel:#242438; --col:#1e1e30; --ink:#F8F7FD; --muted:#9a9ab0;
             --line:#353542; --shadow:0 1px 3px rgba(0,0,0,.5); --shadow-lg:0 10px 34px rgba(0,0,0,.65);
             --accent:#61A0AF; --brand:#61A0AF; --brand-ink:#181829; }
   }
+  :root[data-theme="dark"] {
+            --bg:#181829; --panel:#242438; --col:#1e1e30; --ink:#F8F7FD; --muted:#9a9ab0;
+            --line:#353542; --shadow:0 1px 3px rgba(0,0,0,.5); --shadow-lg:0 10px 34px rgba(0,0,0,.65);
+            --accent:#61A0AF; --brand:#61A0AF; --brand-ink:#181829; }
   * { box-sizing:border-box; }
   body { margin:0; font:14px/1.5 "Nunito Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
          background:var(--bg); color:var(--ink);
@@ -28,7 +33,6 @@
   .wordmark { display:flex; align-items:baseline; gap:10px; }
   .wordmark .logo { font-family:"Playfair Display",Georgia,serif; font-weight:800; font-size:19px;
                     letter-spacing:.02em; color:var(--ink); }
-  .wordmark .logo::after { content:""; color:var(--green); }
   .wordmark h1 { font-size:15px; font-weight:600; margin:0; color:var(--ink); }
   .wordmark h1 .demo { font-size:10.5px; font-weight:700; letter-spacing:.09em; color:var(--brand);
                        border:1px solid var(--brand); border-radius:20px; padding:1px 8px;
@@ -52,7 +56,19 @@
                       border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
   .column > h2 .wip.over { color:#9c7a15; border-color:#E3B23A; background:#E3B23A18; }
   .column.blocked { flex-basis:280px; border-color:#dc696655; }
+  /* focus mode: Backlog/Done collapse to slim strips (click to expand back) */
+  .column.min { flex:0 0 34px; cursor:pointer; align-items:center; justify-content:flex-start;
+                padding-top:12px; }
+  .column.min:hover { border-color:var(--accent); }
+  .column.min .mlabel { writing-mode:vertical-rl; transform:rotate(180deg); font-size:10px;
+                        font-weight:800; letter-spacing:.14em; color:var(--muted);
+                        text-transform:uppercase; white-space:nowrap; }
+  .mbtn.on { border-color:var(--green); color:#37956a; background:#60C09318; }
   .cards { padding:0 10px 12px; display:flex; flex-direction:column; gap:9px; min-height:48px; }
+  .colhint { color:var(--muted); font-size:11.5px; font-style:italic; text-align:center;
+             padding:22px 10px; opacity:.75; }
+  .archdate { border:1px solid var(--line); background:var(--panel); color:var(--muted);
+              border-radius:6px; font:inherit; font-size:10.5px; padding:1px 4px; max-width:118px; }
 
   /* --- gate dividers (the signature) --- */
   .gate { flex:0 0 30px; display:flex; align-items:center; justify-content:center;
@@ -81,7 +97,13 @@
   @media (prefers-reduced-motion: reduce) {
     .card.moved { animation:none; }
     .card:hover { transform:none; }
+    ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+      animation:none !important;
+    }
+    .overlay.show, .overlay.show .modal { animation:none; }
+    .yourmove .ym.new { animation:none; }
   }
+  ::view-transition-group(*) { animation-duration:.28s; }
   .card .top { display:flex; align-items:center; gap:7px; margin-bottom:6px; }
   .card .key { font-size:11.5px; color:var(--muted); font-weight:700; letter-spacing:.03em; }
   .card .spacer { flex:1; }
@@ -125,7 +147,10 @@
   /* --- modal detail view --- */
   .overlay { position:fixed; inset:0; background:rgba(9,30,66,.55); display:none;
              align-items:flex-start; justify-content:center; padding:6vh 16px; z-index:50; }
-  .overlay.show { display:flex; }
+  .overlay.show { display:flex; animation:overlay-fade .16s ease-out; }
+  .overlay.show .modal { animation:modal-pop .24s cubic-bezier(.2,.85,.3,1.15); }
+  @keyframes overlay-fade { from { opacity:0; } }
+  @keyframes modal-pop { from { opacity:0; transform:translateY(14px) scale(.97); } }
   .modal { background:var(--panel); color:var(--ink); width:min(680px,100%); max-height:88vh; overflow:auto;
            border-radius:14px; box-shadow:var(--shadow-lg); }
   .modal .mhead { padding:20px 22px 14px; border-bottom:1px solid var(--line); position:sticky; top:0;
@@ -152,6 +177,29 @@
   .cmt .text { font-size:13.5px; line-height:1.55; }
   .empty { color:var(--muted); font-style:italic; }
 
+  /* --- spikes (preparation work) + DoR readiness --- */
+  .card.spike { border:1px dashed color-mix(in srgb, var(--muted) 55%, transparent);
+                border-left:3px dashed var(--teal); box-shadow:none;
+                background:color-mix(in srgb, var(--panel) 82%, transparent); }
+  .card.sub { margin-left:16px; }
+  .ticon.spike { background:#8899a6; }
+  .dorchip { font-size:10.5px; font-weight:700; border-radius:20px; padding:2px 8px; white-space:nowrap; }
+  .dorchip.open { background:#E3B23A22; color:#9c7a15; }
+  .dorchip.pass { background:#60C09322; color:#37956a; }
+  .dorlist { margin:0 0 22px; }
+  .dorlist h3 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+                margin:0 0 10px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  .dorrow { display:flex; gap:9px; align-items:baseline; padding:4px 0; font-size:13px; }
+  .dorrow .st { flex:0 0 16px; text-align:center; font-weight:800; }
+  .dorrow .st.met { color:#37956a; } .dorrow .st.open { color:#9c7a15; } .dorrow .st.deferred { color:var(--muted); }
+  .dorrow .dk { font-weight:700; min-width:150px; }
+  .dorrow.open .dk { color:#9c7a15; }
+  .dorrow .note { color:var(--muted); }
+  .dorrow .who { font-size:10px; font-weight:800; letter-spacing:.05em; color:#9c7a15;
+                 border:1px solid #E3B23A; border-radius:4px; padding:0 5px; white-space:nowrap; }
+  .dorrow .spk { cursor:pointer; font-size:11px; font-weight:700; color:var(--teal);
+                 white-space:nowrap; text-decoration:underline dotted; }
+
   /* --- age + blocker chips --- */
   .age { font-size:10.5px; color:var(--muted); white-space:nowrap; }
   .age.hot { color:#9c7a15; font-weight:700; }
@@ -168,6 +216,11 @@
                   border-radius:20px; padding:3px 11px; box-shadow:var(--shadow); }
   .yourmove .ym b { color:var(--ink); }
   .yourmove .ym:hover { border-color:var(--gold); }
+  @keyframes ym-pulse {
+    0% { box-shadow:0 0 0 0 color-mix(in srgb, var(--gold) 70%, transparent); }
+    100% { box-shadow:0 0 0 12px transparent; }
+  }
+  .yourmove .ym.new { animation:ym-pulse 1.2s ease-out 1; border-color:var(--gold); }
 
   /* --- modal tabs + gate actions --- */
   .tabs { display:flex; gap:4px; margin:0 0 14px; border-bottom:1px solid var(--line); }
@@ -220,6 +273,8 @@
     <span class="badge b-risk">risk:low</span>
     <span class="badge b-blk">BLOCKED</span>
     <span class="meta">· drag to move · click for details</span>
+    <button class="mbtn" onclick="toggleTheme()" title="light/dark (projector-friendly)">🌗</button>
+    <button class="mbtn" id="focusbtn" onclick="toggleFocus()" title="hide Backlog + Done — just the work in flight">🎯 Focus</button>
     <button class="mbtn" onclick="openMetrics()">📊 Metrics</button>
   </div>
 </header>
@@ -259,6 +314,17 @@ const SEAMS = {
   "PO Review": { kind:"human", label:"⛔ GATE 4 · PO ACCEPTS" }
 };
 
+/* empty lanes narrate the flow (demo-friendly) */
+const COLHINTS = {
+  "Backlog":   "intake — the agent shapes here (COS, DoR, spikes)",
+  "Ready":     "prioritized queue — the agent claims from here",
+  "Planning":  "agent drafts the plan · Codex critiques · you approve",
+  "Building":  "TDD → PR → AI review → your review + merge",
+  "PO Review": "PO validates the COS on the merged work",
+  "Done":      "accepted — metrics + learnings posted",
+  "BLOCKED":   "nothing blocked 🎉"
+};
+
 /* workflow graph: the only legal moves (mirrors the skill + setup.md) */
 const TRANSITIONS = {
   "Backlog":   ["Ready"],
@@ -270,7 +336,26 @@ const TRANSITIONS = {
   "BLOCKED":   ["Ready", "Planning", "Building"]
 };
 
-const TICONS = { "Story":["story","S"], "Task":["task","T"], "Bug":["bug","B"], "Epic":["epic","E"] };
+const TICONS = { "Story":["story","S"], "Task":["task","T"], "Bug":["bug","B"], "Epic":["epic","E"], "Spike":["spike","?"] };
+
+/* DoR — the 7 readiness items (mirrors shaping.md); missing item = open */
+const DOR = [
+  ["objective","Clear objective"], ["scope","Stabilized scope"],
+  ["uncertainties","Uncertainties identified"], ["dependencies","Dependencies identified"],
+  ["approach","Technical approach"], ["first_slice","First deliverable slice"],
+  ["success","Success criteria (COS)"]
+];
+function dorState(t){
+  if (!t.readiness) return null;
+  const items = DOR.map(([k, label]) => ({ k, label, state:"open", ...(t.readiness[k] || {}) }));
+  const met = items.filter(i => i.state !== "open").length;
+  return { items, met, total: DOR.length, pass: met === DOR.length };
+}
+/* the parent a spike prepares = the ticket blocked by it */
+function spikeParent(t){
+  if (t.type !== "Spike") return null;
+  return BOARD.tickets.find(x => (x.links || []).some(l => l.type === "blocked-by" && l.key === t.key)) || null;
+}
 function ticon(type){
   const [cls, g] = TICONS[type] || ["task","•"];
   return `<span class="ticon ${cls}" title="${esc(type)}">${g}</span>`;
@@ -316,20 +401,28 @@ function ageChip(t){
   const hot = t.labels.includes("needs:human") && s > 4*3600;  // waiting on a human > 4h
   return `<span class="age ${hot?'hot':''}" title="time in ${esc(t.status)}">⏱ ${fmtDur(s)}</span>`;
 }
-function card(t){
+function card(t, sub){
   const n = t.comments ? t.comments.length : 0;
   const pr = t.pr ? `<span class="pr">PR #${t.pr.number} · <span class="${t.pr.state}">${t.pr.state}</span></span>` : "";
   const blk = openBlockers(t);
   const blkChip = blk.length ? `<span class="blkchip" title="blocked by ${blk.map(b=>b.key).join(", ")}">🔗 ${blk.map(b=>esc(b.key)).join(", ")}</span>` : "";
+  const dor = dorState(t);
+  const dorChip = dor ? `<span class="dorchip ${dor.pass?'pass':'open'}" title="Definition of Ready — ${dor.met}/${dor.total} items met or deferred">${dor.pass ? "DoR ✓" : `DoR ${dor.met}/${dor.total}`}</span>` : "";
   const moved = movedKeys.has(t.key) ? " moved" : "";
-  return `<div class="card ${pipelineClass(t.labels)}${moved}" draggable="true"
+  const spike = t.type === "Spike" ? " spike" : "";
+  /* spike away from its parent's column: keep the attachment visible on the card */
+  const par = sub ? null : spikeParent(t);
+  const prepChip = par ? `<span class="spk" onclick="event.stopPropagation();openTicket('${par.key}')"
+      title="readiness spike — prepares ${esc(par.key)}">⤴ ${esc(par.key)}</span>` : "";
+  return `<div class="card ${pipelineClass(t.labels)}${spike}${sub ? " sub" : ""}${moved}" draggable="true"
+            style="view-transition-name:${vtName("card-" + t.key)}"
             ondragstart="dragStart(event,'${t.key}')" ondragend="dragEnd(event)"
             onclick="openTicket('${t.key}')">
     <div class="top">${ticon(t.type)}<span class="key">${esc(t.key)}</span>
       <span class="spacer"></span>${ageChip(t)}${avatar(t.assignee)}</div>
-    <div class="summary">${esc(t.summary)}</div>
+    <div class="summary">${t.type === "Spike" ? "🔍 " : ""}${esc(t.summary)}</div>
     <div class="foot">
-      <span class="badges">${t.labels.map(badge).join("")}${blkChip}</span>
+      <span class="badges">${dorChip}${prepChip}${t.labels.map(badge).join("")}${blkChip}</span>
       <span class="spacer"></span>
       ${pr}<span class="cmts">💬 ${n}</span>
     </div>
@@ -346,21 +439,55 @@ function wipTag(name, list){
 function column(name, tickets, blocked){
   const list = tickets.filter(t => t.status === name);
   const s = name.replace(/'/g, "\\'");
+  /* spikes render grouped under the ticket they prepare, when both sit in this column */
+  const inCol = new Set(list.map(t => t.key));
+  const kids = {}, tops = [];
+  list.forEach(t => {
+    const p = spikeParent(t);
+    if (p && inCol.has(p.key)) (kids[p.key] = kids[p.key] || []).push(t);
+    else tops.push(t);
+  });
+  const cards = list.length
+    ? tops.map(t => card(t) + (kids[t.key] || []).map(sp => card(sp, true)).join("")).join("")
+    : `<div class="colhint">${COLHINTS[name] || ""}</div>`;
   return `<div class="column ${blocked?'blocked':''}" data-status="${esc(name)}"
+            style="view-transition-name:${vtName(name)}"
             ondragover="allowDrop(event,this)" ondragleave="this.classList.remove('dragover')"
             ondrop="drop(event,'${s}',this)">
-    <h2>${esc(name)} ${wipTag(name, list)} <span class="cnt">${list.length}</span></h2>
-    <div class="cards">${list.map(card).join("")}</div>
+    <h2>${esc(name)} ${wipTag(name, list)}${name === "Done" && list.length
+      ? ` <input type="date" class="archdate" value="${archBefore}" onchange="archBefore=this.value"
+            title="cutoff: archive tickets closed before this date (empty = all)">
+          <button class="mbtn" onclick="archiveDone(event)" title="move Done tickets to .sdlc/tickets/archive/ on the state branch">🗂</button>` : ""}
+      <span class="cnt">${list.length}</span></h2>
+    <div class="cards">${cards}</div>
   </div>`;
 }
 function gate(afterStatus){
   const g = SEAMS[afterStatus];
   if (!g) return "";
-  return `<div class="gate ${g.kind}"><span class="glabel">${g.label}</span></div>`;
+  return `<div class="gate ${g.kind}" style="view-transition-name:${vtName('gate-' + afterStatus)}">
+    <span class="glabel">${g.label}</span></div>`;
 }
 
 /* --- drag & drop (persists via POST /save) --- */
-function canMove(from, to){ return (TRANSITIONS[from] || []).includes(to); }
+function canMove(t, to){
+  if ((TRANSITIONS[t.status] || []).includes(to)) return true;
+  /* spikes close on their answer — no PO Review ceremony; the parent's Gate 1 judges the result */
+  return t.type === "Spike" && t.status === "Building" && to === "Done";
+}
+/* Done requires the agent's closeout (metrics + learnings + retro); spikes close on their spike-result */
+function noCloseout(t){
+  return t.type !== "Spike" && !(t.comments || []).some(c => c.kind === "metrics");
+}
+/* Gate 1 hard block: DoR items still open, or open blockers (spikes). Returns the reason or "". */
+function notReady(t){
+  const d = dorState(t);
+  const open = d ? d.items.filter(i => i.state === "open") : [];
+  if (open.length) return `DoR open: ${open.map(i => i.label).join(", ")} (resolve or mark deferred)`;
+  const blk = openBlockers(t);
+  if (blk.length) return `open blockers: ${blk.map(b => b.key).join(", ")}`;
+  return "";
+}
 function dragStart(e, key){
   dragKey = key; didDrag = true;
   e.dataTransfer.effectAllowed = "move";
@@ -368,7 +495,7 @@ function dragStart(e, key){
   const t = BOARD && BOARD.tickets.find(x => x.key === key);
   if (t) document.querySelectorAll(".column").forEach(col => {
     const s = col.dataset.status;
-    if (s !== t.status && !canMove(t.status, s)) col.classList.add("dim");
+    if (s !== t.status && !canMove(t, s)) col.classList.add("dim");
   });
 }
 function dragEnd(e){
@@ -382,17 +509,22 @@ function drop(e, status, el){
   e.preventDefault(); el.classList.remove("dragover");
   const t = BOARD && BOARD.tickets.find(x => x.key === dragKey);
   if (t && t.status !== status){
-    if (!canMove(t.status, status)){
-      const ok = TRANSITIONS[t.status] || [];
+    if (!canMove(t, status)){
+      const ok = (TRANSITIONS[t.status] || []).concat(
+        t.type === "Spike" && t.status === "Building" ? ["Done"] : []);
       toast(`✋ ${t.key}: ${t.status} → ${status} is not in the workflow` +
             (ok.length ? ` (allowed: ${ok.join(", ")})` : " (Done is terminal)"));
     } else if (status === "Planning" && openBlockers(t).length){
       toast(`✋ ${t.key} has open blockers (${openBlockers(t).map(b=>b.key).join(", ")}) — never claim a blocked ticket`);
+    } else if (status === "Ready" && notReady(t)){
+      toast(`✋ ${t.key} isn't Ready — ${notReady(t)}`);
+    } else if (status === "Done" && noCloseout(t)){
+      toast(`✋ ${t.key} has no kind=metrics closing comment — have the agent close it out (metrics + learnings + retro)`);
     } else {
       const from = t.status;
       t.status = status;
       dragKey = null;                  // clear before render (render skips while dragging)
-      paint();
+      paintMoved();
       save(t, `${t.key}: ${from} → ${status}`);
     }
   }
@@ -401,10 +533,22 @@ function drop(e, status, el){
 async function save(ticket, msg){
   try {
     const r = await fetch("/ticket", { method:"POST", headers:{"Content-Type":"application/json"},
-                                       body: JSON.stringify(ticket) });
+                                       body: JSON.stringify(ticket) });  // carries _rev from /board
+    if (r.status === 409){ toast("⚠ ticket changed underneath — reloaded, try again"); render(); return; }
     if (!r.ok) throw new Error(await r.text());
     toast(msg || "saved");
   } catch(err){ toast("save failed: " + err.message); }
+}
+let archBefore = "";  // survives repaints (the board redraws every 1.5s)
+async function archiveDone(e){
+  e.stopPropagation();
+  try {
+    const q = archBefore ? `?before=${archBefore}` : "";
+    const d = await (await fetch("/archive" + q, { method:"POST" })).json();
+    toast(d.archived.length ? `🗂 archived ${d.archived.join(", ")}`
+                            : archBefore ? `nothing closed before ${archBefore}` : "nothing to archive");
+    render();
+  } catch(err){ toast("archive failed: " + err.message); }
 }
 function toast(msg){
   const el = document.getElementById("toast");
@@ -441,11 +585,15 @@ async function gateAction(key){
     t.status = "PO Review";  // needs:human stays: ball moves to the PO
     t.comments.push({stage:"building", kind:"summary", body:"Gate 3 — PR reviewed + merged by human (via board)."});
   } else if (t.status === "PO Review"){
+    if (noCloseout(t)){
+      toast(`✋ ${t.key} has no kind=metrics closing comment — have the agent close it out first`);
+      return;
+    }
     t.status = "Done";
     t.labels = t.labels.filter(l => l !== "needs:human");
     t.comments.push({stage:"po-review", kind:"summary", body:"Gate 4 — PO validated the COS and accepted (via board)."});
   } else return;
-  paint();
+  paintMoved();
   await save(t, `${t.key}: gate cleared → ${t.status}`);
   delete HIST[key];
   loadHistory(key);
@@ -465,13 +613,27 @@ function renderModal(){
     : "";
   const ga = t.labels.includes("needs:human") && GATE_ACTIONS[t.status];
   const gate = ga ? `<div class="gaterow"><button class="gatebtn" onclick="gateAction('${t.key}')">${ga.btn}</button><span class="hint">${ga.hint}</span></div>` : "";
+  const parent = spikeParent(t);
+  const prepares = parent ? `<span class="k">Prepares</span><span class="v"><span class="spk" onclick="openTicket('${parent.key}')">🔍 ${esc(parent.key)}</span> — readiness spike</span>` : "";
+  const dor = dorState(t);
+  const DOR_ICON = { met:"✓", open:"○", deferred:"–" };
+  const dorHtml = dor ? `<div class="dorlist">
+      <h3>Definition of Ready — ${dor.pass ? "✓ passes Gate 1" : `${dor.met}/${dor.total} · Gate 1 blocked`}</h3>
+      ${dor.items.map(i => `<div class="dorrow ${i.state}">
+        <span class="st ${i.state}" title="${i.state}">${DOR_ICON[i.state]}</span>
+        <span class="dk">${esc(i.label)}</span>
+        <span class="note">${esc(i.note || "")}${i.state === "deferred" ? " (deferred to Planning)" : ""}</span>
+        ${i.owner === "human" && i.state === "open" ? `<span class="who">HUMAN DECISION</span>` : ""}
+        ${i.spike ? `<span class="spk" onclick="openTicket('${esc(i.spike)}')">🔍 ${esc(i.spike)}</span>` : ""}
+      </div>`).join("")}
+    </div>` : "";
   let body;
   if (modalTab === "history"){
     const ev = HIST[t.key];
     body = ev == null ? `<p class="empty">Loading history…</p>`
       : !ev.length ? `<p class="empty">No history yet.</p>`
       : ev.map(e => `<div class="hist"><div class="hnode"></div>
-          <span class="hts">${new Date(e.ts*1000).toLocaleString()}</span>
+          <span class="hts">${new Date(e.ts*1000).toLocaleString([], {hour12:false})}</span>
           <div><b>${esc(e.subject)}</b><br><span class="empty">${esc(e.status)} · ${e.labels.map(esc).join(", ") || "no labels"}</span></div>
         </div>`).join("");
   } else {
@@ -499,7 +661,9 @@ function renderModal(){
         <span class="k">Labels</span><span class="v">${labels}</span>
         <span class="k">Pull request</span><span class="v">${pr}</span>
         ${blockedBy ? `<span class="k">Blocked by</span><span class="v">${blockedBy}</span>` : ""}
+        ${prepares}
       </div>
+      ${dorHtml}
       <div class="tabs">
         <button class="tab ${modalTab==='thread'?'on':''}" onclick="setTab('thread')">Thread (${t.comments ? t.comments.length : 0})</button>
         <button class="tab ${modalTab==='history'?'on':''}" onclick="setTab('history')">History${HIST[t.key] ? ` (${HIST[t.key].length})` : ""}</button>
@@ -521,17 +685,63 @@ document.addEventListener("keydown", e => { if (e.key === "Escape"){ closeTicket
 function paintYourMove(){
   const el = document.getElementById("yourmove");
   const waiting = BOARD.tickets.filter(t => t.labels.includes("needs:human") && t.status !== "Done");
-  if (!waiting.length){ el.hidden = true; return; }
+  /* shaping decisions: open DoR items only a human can answer (owner:"human") */
+  const decisions = BOARD.tickets.flatMap(t =>
+    t.status !== "Done" && t.readiness
+      ? Object.values(t.readiness).filter(v => v.state === "open" && v.owner === "human")
+          .map(v => ({ t, note: v.note }))
+      : []);
+  if (!waiting.length && !decisions.length){ el.hidden = true; prevYM.clear(); return; }
   el.hidden = false;
-  el.innerHTML = `<span class="ymt">🖐 Your move (${waiting.length})</span>` +
-    waiting.map(t => `<span class="ym" onclick="openTicket('${t.key}')">
-      <b>${esc(t.key)}</b> — ${needText(t)}${t._since && BOARD.now ? ` <span class="age">⏱ ${fmtDur(BOARD.now - t._since)}</span>` : ""}</span>`).join("");
+  const fresh = k => prevYM.size && !prevYM.has(k) ? " new" : "";  // pulse only genuinely new chips
+  el.innerHTML = `<span class="ymt">🖐 Your move (${waiting.length + decisions.length})</span>` +
+    waiting.map(t => `<span class="ym${fresh(t.key)}" onclick="openTicket('${t.key}')">
+      <b>${esc(t.key)}</b> — ${needText(t)}${t._since && BOARD.now ? ` <span class="age">⏱ ${fmtDur(BOARD.now - t._since)}</span>` : ""}</span>`).join("") +
+    decisions.map(d => `<span class="ym${fresh(d.t.key + ":" + d.note)}" onclick="openTicket('${d.t.key}')">
+      <b>${esc(d.t.key)}</b> — decide: ${esc(d.note || "open shaping question")}</span>`).join("");
+  prevYM = new Set([...waiting.map(t => t.key), ...decisions.map(d => d.t.key + ":" + d.note)]);
+}
+let prevYM = new Set();
+/* focus mode: devs' view — Backlog & Done collapse to slim strips */
+let FOCUS = localStorage.getItem("sdlc-focus") === "1";
+function toggleFocus(){
+  FOCUS = !FOCUS;
+  localStorage.setItem("sdlc-focus", FOCUS ? "1" : "0");
+  /* native View Transition: columns morph between wide and slim (no-op where unsupported) */
+  if (document.startViewTransition) document.startViewTransition(() => paint());
+  else paint();
+}
+const vtName = s => `vt-${s.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+/* animate any status move: cards glide to their new column (same View Transition machinery) */
+function paintMoved(){
+  if (document.startViewTransition) document.startViewTransition(() => paint());
+  else paint();
+}
+/* manual theme override (projectors wash out dark mode); default = follow the OS */
+let THEME = localStorage.getItem("sdlc-theme") || "";
+if (THEME) document.documentElement.dataset.theme = THEME;
+function toggleTheme(){
+  const dark = THEME ? THEME === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  THEME = dark ? "light" : "dark";
+  document.documentElement.dataset.theme = THEME;
+  localStorage.setItem("sdlc-theme", THEME);
+}
+function colMin(name){
+  const n = BOARD.tickets.filter(t => t.status === name).length;
+  return `<div class="column min" onclick="toggleFocus()" title="hidden by focus mode — click to expand"
+            style="view-transition-name:${vtName(name)}">
+    <span class="mlabel">${esc(name)} · ${n}</span></div>`;
 }
 /* paint = draw current BOARD; render = fetch + paint */
 function paint(){
   const cols = [];
-  BOARD.statuses.forEach(s => { cols.push(column(s, BOARD.tickets, false)); cols.push(gate(s)); });
+  BOARD.statuses.forEach(s => {
+    const hide = FOCUS && (s === "Backlog" || s === "Done");
+    cols.push(hide ? colMin(s) : column(s, BOARD.tickets, false));
+    cols.push(gate(s));
+  });
   cols.push(column(BOARD.blocked || "BLOCKED", BOARD.tickets, true));
+  document.getElementById("focusbtn").classList.toggle("on", FOCUS);
   document.getElementById("board").innerHTML = cols.join("");
   paintYourMove();
   if (selectedKey) renderModal();
@@ -578,14 +788,16 @@ async function openMetrics(){
 function closeMetrics(){ document.getElementById("moverlay").classList.remove("show"); }
 async function render(){
   if (dragKey) return;                        // don't wipe drag state mid-drag
+  if (document.activeElement && document.activeElement.classList.contains("archdate")) return;  // date picker open
   try {
     BOARD = await (await fetch("/board?t="+Date.now())).json();
     BOARD.tickets.forEach(t => {
       if (prevStatus[t.key] && prevStatus[t.key] !== t.status) movedKeys.add(t.key);
     });
-    paint();
+    if (movedKeys.size) paintMoved();   // agent moved something: card glides to its new column
+    else paint();
     const now = new Date();
-    document.getElementById("stamp").innerHTML = `<span class="dot"></span>live · ${now.toLocaleTimeString()}`;
+    document.getElementById("stamp").innerHTML = `<span class="dot"></span>live · ${now.toLocaleTimeString([], {hour12:false})}`;
   } catch(e){
     document.getElementById("board").innerHTML =
       `<p style="padding:20px;color:#F68A4B">Can't load the board — is .sdlc/server.py running?<br>${esc(e.message)}</p>`;

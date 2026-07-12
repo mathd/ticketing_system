@@ -94,7 +94,7 @@
 <body>
 <div class="wrap">
 
-  <p class="eyebrow">Moov AI · Processus produit</p>
+  <p class="eyebrow">Processus produit</p>
   <h1>Workflow de développement assisté par IA</h1>
   <p class="sub">L'humain <b>cadre et arbitre</b>, la machine <b>génère et exécute</b>, du carnet de produit jusqu'à la mise en production. Chaque carte donne le <b>quoi</b> en un coup d'œil ; ouvre <em>Détails</em> pour le <b>comment</b>.</p>
   <span class="pill">↻ Processus itératif — boucle continue</span>
@@ -416,7 +416,7 @@
       <li><b>Outil de backlog = Jira</b>, board <b>Scrum</b> ; context-mémo dans les <em>entity properties</em> Jira ; PRD d'epic en Confluence.</li>
       <li><b>Skill réécrit</b> en version Jira générique (<b>6 statuts</b> : Backlog→Ready→Planning→Building→PO Review→Done, + <code>BLOCKED</code> transversal ; piloté par <code>.claude/sdlc.config.json</code>) — <b>remplace le plan à 9 colonnes</b> (trop complexe, validé en équipe).</li>
       <li><b>Registre :</b> git + markdown pour le <em>contraignant</em> (l'agent agit dessus) ; Confluence pour la <em>référence</em>.</li>
-      <li><b>Emplacement du skill : par projet, exprès.</b> Chaque projet garde sa copie et l'adapte à ses règles internes / client — un <em>fork point</em> assumé, distribué via py-moov. Flexibilité &gt; version unique. Mécanisme détaillé : section « Où vit le skill » ci-dessous.</li>
+      <li><b>Emplacement du skill : par projet, exprès.</b> Chaque projet garde sa copie et l'adapte à ses règles internes / client — un <em>fork point</em> assumé, distribué via le registre d'équipe. Flexibilité &gt; version unique. Mécanisme détaillé : section « Où vit le skill » ci-dessous.</li>
       <li><b>Revue stratégique pré-pilote intégrée</b> (juil. 2026) — durcissements dans le skill : fallback context-mémo en description, garde-fou <code>risk:low</code> contestable, section <code>learnings:</code> obligatoire au Done. La revue cross-model est actée comme <b>prérequis</b> : client incompatible ⇒ ce SDLC ne s'applique pas (pas de mode dégradé).</li>
     </ul>
     <p style="margin:10px 0 4px"><b>À venir :</b></p>
@@ -432,10 +432,10 @@
   <div class="card plain">
     <table class="mini">
       <tr><th>Quoi</th><th>Où / comment</th></tr>
-      <tr><td><b>Version canonique</b></td><td>Le registre <b>py-moov</b> (<code>skills/project/</code>) — c'est là que le skill est versionné et amélioré pour tous.</td></tr>
-      <tr><td><b>Copie de travail</b></td><td>Dans chaque projet (<code>.claude/skills/</code>), installée via <code>moov skills install</code>. <b>L'adapter aux règles internes / client est attendu</b> — c'est la raison d'être du modèle par projet.</td></tr>
-      <tr><td><b>Mise à jour</b></td><td><code>moov skills update</code> détecte les éditions locales (hash de contenu) et <b>les protège</b> : un skill modifié localement est sauté sauf <code>--force</code>. Une copie divergente n'est jamais écrasée en silence.</td></tr>
-      <tr><td><b>Remontée</b></td><td>Une amélioration qui généralise (pas spécifique au client) remonte au registre py-moov via PR — c'est ainsi que les 10 équipes capitalisent sans centraliser.</td></tr>
+      <tr><td><b>Version canonique</b></td><td>Le registre d'équipe (<code>skills/project/</code>) — c'est là que le skill est versionné et amélioré pour tous.</td></tr>
+      <tr><td><b>Copie de travail</b></td><td>Dans chaque projet (<code>.claude/skills/</code>), installée via la CLI du registre. <b>L'adapter aux règles internes / client est attendu</b> — c'est la raison d'être du modèle par projet.</td></tr>
+      <tr><td><b>Mise à jour</b></td><td>La commande de mise à jour du registre détecte les éditions locales (hash de contenu) et <b>les protège</b> : un skill modifié localement est sauté sauf <code>--force</code>. Une copie divergente n'est jamais écrasée en silence.</td></tr>
+      <tr><td><b>Remontée</b></td><td>Une amélioration qui généralise (pas spécifique au client) remonte au registre d'équipe via PR — c'est ainsi que les 10 équipes capitalisent sans centraliser.</td></tr>
     </table>
     <div class="note"><b>En clair :</b> si la copie de ton projet diffère du registre, ce n'est pas une erreur à « corriger » — c'est probablement une adaptation client voulue. Lis le diff avant de forcer une mise à jour.</div>
   </div>
@@ -454,7 +454,7 @@
     <div class="note" style="margin-top:12px"><b>Règle d'or pour l'automatisation :</b> une barrière ⛔ = un statut Jira où l'agent <b>s'arrête</b> et ne fait plus rien jusqu'à la décision humaine. Tout le reste (génération, revue IA, déplacement de labels) est automatique de barrière en barrière.</div>
   </div>
 
-  <footer>Moov AI · Workflow de développement assisté par IA — version bonnes pratiques. Boucle continue : ⑥ réalimente ①. Maj 2026-07-03 : revue stratégique pré-pilote intégrée (durcissements skill, prérequis cross-model, décision de distribution par projet). Maj 2026-07-06 : découpage en tranches verticales (tracer bullets) + préfactoring ; choix du seam de test et grilling des décisions au planning ; voie rapide « synthétiser sans ré-interroger » à l'exploration (inspiré des skills mattpocock).</footer>
+  <footer>Workflow de développement assisté par IA — version bonnes pratiques. Boucle continue : ⑥ réalimente ①. Maj 2026-07-03 : revue stratégique pré-pilote intégrée (durcissements skill, prérequis cross-model, décision de distribution par projet). Maj 2026-07-06 : découpage en tranches verticales (tracer bullets) + préfactoring ; choix du seam de test et grilling des décisions au planning ; voie rapide « synthétiser sans ré-interroger » à l'exploration (inspiré des skills mattpocock).</footer>
 
 </div>
 </body>
