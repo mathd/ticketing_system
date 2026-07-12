@@ -1,0 +1,155 @@
+# Ticketing platform — local stack (US-001).
+# `docker compose up` from a clean clone brings up: postgres + NATS JetStream
+# + otel-lgtm + the five Go services + gateway + storefront + scanner.
+# Published ports are env-overridable so `make smoke` can run an isolated
+# copy (-p ticketing-smoke) next to a running dev stack.
+name: ticketing
+
+x-go-service: &go-service
+  restart: unless-stopped
+  environment: &go-env
+    NATS_URL: nats://nats:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+    # fast export cadence so telemetry is queryable within seconds (smoke)
+    OTEL_METRIC_EXPORT_INTERVAL: "5000"
+    OTEL_BSP_SCHEDULE_DELAY: "1000"
+    OTEL_BLRP_SCHEDULE_DELAY: "1000"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    nats:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "/app", "healthcheck"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+    start_period: 5s
+
+services:
+  postgres:
+    image: postgres:18.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:alpine
+    restart: unless-stopped
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "${NATS_PORT:-4222}:4222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lgtm:
+    image: grafana/otel-lgtm
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"   # Grafana UI
+      - "${OTLP_PORT:-4318}:4318"      # OTLP http (for local debugging)
+      - "${PROM_PORT:-9090}:9090"      # Prometheus query API (smoke asserts metrics)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  catalog:
+    <<: *go-service
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/catalog/cmd/catalog } }
+    environment:
+      <<: *go-env
+      DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
+
+  inventory:
+    <<: *go-service
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/inventory/cmd/inventory } }
+    environment:
+      <<: *go-env
+      DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
+
+  commerce:
+    <<: *go-service
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/commerce/cmd/commerce } }
+    environment:
+      <<: *go-env
+      DATABASE_URL: postgres://commerce:commerce@postgres:5432/commerce
+
+  payments:
+    <<: *go-service
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/payments/cmd/payments } }
+    environment:
+      <<: *go-env
+      DATABASE_URL: postgres://payments:payments@postgres:5432/payments
+
+  access:
+    <<: *go-service
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
+    environment:
+      <<: *go-env
+      DATABASE_URL: postgres://access:access@postgres:5432/access
+
+  storefront:
+    build: ./web/storefront
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  scanner:
+    build: { context: ., dockerfile: web/scanner/Dockerfile }
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/gateway/cmd/gateway } }
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      CATALOG_URL: http://catalog:8080
+      INVENTORY_URL: http://inventory:8080
+      COMMERCE_URL: http://commerce:8080
+      PAYMENTS_URL: http://payments:8080
+      ACCESS_URL: http://access:8080
+      STOREFRONT_URL: http://storefront:8080
+      SCANNER_URL: http://scanner:8080
+    depends_on:
+      catalog: { condition: service_healthy }
+      inventory: { condition: service_healthy }
+      commerce: { condition: service_healthy }
+      payments: { condition: service_healthy }
+      access: { condition: service_healthy }
+      storefront: { condition: service_healthy }
+      scanner: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  pgdata:
