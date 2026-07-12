@@ -1,0 +1,17 @@
+{
+  "key": "TKT-19",
+  "type": "Epic",
+  "summary": "Epic: Access control & scanning",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Gate scanning (web UI + API): redemption state, duplicate detection, offline tolerance, validation of single tickets, season/park passes (multi-entry) and RFID wristbands.\n\n**Conditions of Success:**\n- Single-entry tickets redeem exactly once; passes follow their multi-entry semantics\n- Gates keep scanning through connectivity loss and reconcile without double-admits\n- Scan decisions return in <500ms locally with reason codes\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
