@@ -2,10 +2,8 @@
   "key": "TKT-42",
   "type": "Task",
   "summary": "Speed up the local/CI gate (make check: 10.5m -> ~2m warm)",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude",
   "pr": {
     "number": 3,
@@ -114,6 +112,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\nPR #3 merged (0a63eea, +225/-16, 12 files); owner confirmed all green on main. COS validation: CI `make check` 3m25 warm / 5m14 cold (was 10m32); gate-selftest 45s (was 2m32); local warm 1m29 (was ~10m); node20 warning structurally gone (action removed); hermetic path green on the PR itself; gate semantics unchanged (codex-verified); timings documented in docs/testing.md. Owner accepted in chat (Gate 4)."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout metrics — TKT-42 (Gate speedup)\n\nDurations from the `sdlc-state` changelog (2026-07-12, UTC−4):\n\n| stage | duration |\n|---|---|\n| Backlog | 15s (pre-shaped at creation) |\n| Ready | 1s (claim on prioritization) |\n| Planning | 8m (15:31 → 15:39) |\n| — agent:planning | 3m |\n| — agent:plan-review | 3m30 |\n| — needs:human (Gate 2) | 2m |\n| Building | 32m (15:39 → 16:11 merge) |\n| — agent:coding | 6m |\n| — agent:ai-review | 3m30 |\n| — needs:human + CI-red re-green cycles | ~22m (2 external-action failures) |\n| PO Review (Gate 4) | ~3m |\n\n**human-wait total:** ~6m (Gate 2: 2m · Gate 3: 1m · Gate 4: 3m)\n**diff:** +225/−16 (12 files) — PR [#3](https://github.com/mathd/ticketing_system/pull/3), merge 0a63eea\n\n**Outcome vs COS:** CI check 10m32 → 3m25 warm (5m14 cold); gate-selftest 2m32 → 45s; local warm ~10m → 1m29; node20 warning gone; gate semantics unchanged.\n\n**learnings:**\n- (technical → 🧠 TKT-41) pnpm/action-setup@v6 is broken in both default and standalone modes (its issue #276). Use corepack on CI runners — version from `packageManager`, same mechanism as the Dockerfiles. Generalization: when bumping a pinned GH Action across a major, scan its open issues first; the failure mode surfaces only post-push.\n- (technical → 🧠 TKT-41) GH Actions' `type=gha` Docker layer cache does not persist `RUN --mount=type=cache` contents; in-Docker compiles are always cold in CI. Package host-built artifacts instead — pattern documented in docs/testing.md §Smoke build paths (its house).\n- (process) Codex plan-review caught a true blocker (.dockerignore) the author pre-mortem missed; second consecutive ticket where cross-model review paid for itself.\n\n**retro:**\n1. *What would have made this faster/better:* ~22m of the 32m Building was two blind CI failures inside a third-party action. Concrete change: the learning above is recorded in TKT-41; no skill edit — the pipeline handled it correctly (swap back to agent:coding, fix, re-green).\n2. *What should the humans change:* nothing — both gates cleared in ≤3m, the ticket was pre-shaped, and the owner decision (host-built vs hermetic) was made at exactly the right moment (plan-time, one question). `nothing` earned this time."
     }
   ]
 }
