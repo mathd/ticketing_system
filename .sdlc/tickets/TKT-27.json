@@ -8,7 +8,7 @@
   "pr": null,
   "parent": "TKT-1",
   "classification": "complex",
-  "description": "**As** a buyer, **I want** to reserve N GA tickets held for me briefly; **as** the owner, I want oversell to be impossible under load. This story establishes the inventory service's single-writer claim core that every later inventory model (seats, entitlements, lodging, wristbands) reuses.\n\n**Priority:** P0\n**Depends on:** US-002 (TKT-26)\n\n**Acceptance Criteria:**\n- [ ] Inventory service exposes hold/confirm/release on performance capacity; hold has a TTL and expiry returns capacity\n- [ ] Concurrency proof: automated test slams a capacity-C performance with far more than C parallel hold requests; granted holds never exceed C; test runs in make check\n- [ ] Storefront: pick quantity → hold created → countdown visible (browser-verified)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "description": "**As** a buyer, **I want** to reserve N GA admissions briefly; **as** the owner, I want oversell to remain impossible under contention. This establishes the inventory service single-writer claim primitive reused by every dated-slot inventory model.\n\n**Priority:** P0\n**Depends on:** US-002 (TKT-26, Done)\n\n**Conditions of Success:**\n- [ ] Inventory exposes contract-first hold, confirm, and release operations for a dated slot; every request is organizer-scoped and mutations are idempotent.\n- [ ] A successful hold returns an opaque hold identifier and absolute expiry; unavailable or invalid quantities fail without consuming capacity.\n- [ ] Expired holds return capacity, and confirm/release racing expiry produces one deterministic terminal outcome.\n- [ ] Automated contention proof submits far more demand than capacity in parallel; active plus confirmed quantity never exceeds configured capacity, and the test runs in make check.\n- [ ] Storefront event detail allows quantity selection, creates a hold through the gateway, and displays a client-side countdown based on the server expiry; expiry and insufficient-capacity states are browser-verified.\n- [ ] Inventory bootstraps a published dated slot capacity without reading the catalog database; the service boundary is covered by a contract/integration test.\n\n**Out of scope:** cart persistence and checkout orchestration (TKT-28); pricing, fees, payments, or fiscal journal work; reserved seating; waiting-room and abuse controls; availability caching beyond the write-path correctness needed here.\n\nQuality gates: make check green; generated-contract drift check for touched APIs; contract tests for touched service boundaries; deterministic database-backed contention test; browser verification with screenshot in the PR.",
   "context": {
     "binding": [
       {
@@ -39,6 +39,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Final review fix: ADR-005 (unified dated-slot) baked into context — the claim core built here is THE single claim primitive for all slot types."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — PASS\n\nAll 7 DoR items pass: 6 met, uncertainties deferred to Planning with explicit decision rules. TKT-26 is Done and there are no open blockers.\n\nGrounded findings: inventory is currently a health-only chi/pgx/NATS skeleton; gateway already proxies /api/inventory; catalog capacity currently lives on venue and the performance-published event carries identifiers only, so the plan must establish capacity bootstrap without a cross-service DB read. The storefront detail page is SSR with no interactive island yet.\n\nScope was tightened: removed the premature US-004/NF525 quality gate; added organizer scoping, idempotency, deterministic expiry races, invalid/unavailable quantity behavior, and the capacity-bootstrap boundary.\n\nNo risk:low: this introduces the inventory schema and concurrency primitive, extends a cross-service contract, adds an interactive storefront path, and will touch well over five files. The plan and human Gate 2 remain mandatory.\n\nVerdict: PASS — Ready-eligible for Gate 1."
     }
   ],
   "links": [
@@ -46,5 +51,35 @@
       "type": "blocks",
       "key": "TKT-28"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "First real inventory write path: temporary GA claims with a hard no-oversell invariant."
+    },
+    "scope": {
+      "state": "met",
+      "note": "One dated-slot GA hold vertical slice; checkout, money, reserved seating, waiting room, and read caching explicitly excluded."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Plan must settle catalog publication payload/capacity bootstrap, idempotency keys, TTL/expiry cleanup, and expiry-vs-confirm locking; all are engineering choices with testable decision rules, not pending product decisions."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "TKT-26 is Done; no open blocker. TKT-27 blocks TKT-28."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Inventory-owned PostgreSQL transaction is the correctness boundary; contract-first API through the gateway; no cross-service database reads; storefront countdown uses server absolute expiry."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One reviewable vertical GA path: published dated slot capacity -> atomic hold -> visible countdown -> release/confirm/expiry and contention proof."
+    },
+    "success": {
+      "state": "met",
+      "note": "Six verifiable COS cover API semantics, terminal races, no-oversell proof, UI flow, and service-boundary bootstrap."
+    }
+  }
 }
