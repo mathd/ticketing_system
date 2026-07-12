@@ -2,9 +2,11 @@
   "key": "TKT-42",
   "type": "Task",
   "summary": "Speed up the local/CI gate (make check: 10.5m -> ~2m warm)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude",
   "pr": null,
   "classification": "standard",
   "description": "**As** a developer, **I want** `make check` to finish in ~2 minutes on a warm cache (local and CI) **so that** the gate stays cheap enough to run on every change.\n\nMeasured on CI run 29205106777 (green, 2026-07-12): total 10m32s — smoke `compose up --build` 5m35 (tests themselves <1s), `pnpm install` 2m05 (no store cache), lint-go 2m15 (8 serial cold golangci-lint runs). Actual test+build work: ~40s.\n\n**Priority:** P1\n\n**Acceptance Criteria:**\n- [ ] Service Dockerfiles use BuildKit cache mounts (go mod + go build cache); a code-only change does not re-download modules or rebuild unchanged layers\n- [ ] CI reuses Docker layer cache across runs (gha cache or equivalent); warm-cache smoke stage well under 2m\n- [ ] pnpm store cached in CI (`setup-node` with `cache: pnpm`); deps stage seconds on warm cache\n- [ ] lint-go parallelized or single-run (go.work or `make -j`); golangci-lint cache persisted in CI\n- [ ] Redundant `go vet -tags smoke` removed from build-go (golangci-lint already runs govet)\n- [ ] Node 20 deprecation warning gone: bump `pnpm/action-setup` (and any other actions pinned to node20 runtimes) to current major\n- [ ] Gate semantics unchanged: same checks, same failure behavior; gate-selftest still passes; `make check` still green from a clean clone\n- [ ] Warm/cold timings documented in docs (before/after table)\n\nQuality gates: `make check` green; gate-selftest green; no UI/money paths touched.",
@@ -68,6 +70,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness — READY\nAll 7 DoR items met; `uncertainties` deferred (gha-cache wiring detail + action major versions — doc-lookup during Planning, no redesign risk). No blockers, no spikes, no human decisions pending.\n\nNot `risk:low`: touches CI/deploy config (explicit exclusion) — plan gate applies.\n\nOrigin: TKT-25 closeout + owner request 2026-07-12 ('this will pay very quickly'). Node 20 deprecation warning folded in as CI hygiene."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed by agent. Selection reason: owner prioritized in chat (2026-07-12, 'this will pay very quickly') — gate cost taxes every future ticket, so payoff compounds. Zero open blockers. Branch: TKT-42-gate-speedup off origin/main. Not risk:low (CI/deploy config) — plan gate applies."
     }
   ]
 }
