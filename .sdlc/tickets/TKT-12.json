@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "Venue season tickets; park season passes (unlimited entries during validity, named holder with photo binding, anti-sharing); multi-park passes valid across parks.\n\n**Conditions of Success:**\n- Venue season ticket grants the holder's seat across a season's performances\n- Park pass admits the named holder unlimited times within validity; gate shows holder photo\n- Multi-park pass validates at any covered park; entitlement checks go through the inventory core\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "description": "Venue season tickets; park season passes (unlimited entries during validity, named holder with photo binding, anti-sharing); multi-park passes valid across parks.\n\n**Conditions of Success:**\n- Venue season ticket grants the holder's seat across a season's performances\n- Park pass admits the named holder unlimited times within validity; gate shows holder photo\n- Multi-park pass validates at any covered park; entitlement checks go through the inventory core\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** per ADR-005, passes are entitlements to claim slot entries (park pass = unlimited entry claims on operating-day slots; venue season ticket = seat claims across a season's slots).",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): pass semantics grounded in ADR-005 dated-slot model."
     }
   ]
 }
