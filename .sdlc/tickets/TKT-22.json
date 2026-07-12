@@ -1,0 +1,17 @@
+{
+  "key": "TKT-22",
+  "type": "Epic",
+  "summary": "Epic: Back office & staff RBAC",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Staff identity with roles (box office / admin / finance), the event & inventory builder UI, order management console (lookup, refund, exchange, resend, holds).\n\n**Conditions of Success:**\n- Role matrix enforced server-side; box-office staff cannot touch settlement\n- Organizer builds a sellable event end-to-end in the UI without API calls\n- Console handles the full order lifecycle staff-side\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
