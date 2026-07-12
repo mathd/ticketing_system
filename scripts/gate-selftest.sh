@@ -16,8 +16,9 @@ trap cleanup EXIT INT TERM
 
 git -C "$ROOT" worktree add --detach "$WORK/tree" HEAD >/dev/null
 cd "$WORK/tree"
-ln -s "$ROOT/node_modules" node_modules 2>/dev/null || true
-ln -s "$ROOT/web/scanner/node_modules" web/scanner/node_modules 2>/dev/null || true
+# Real install (NOT a symlink to the main tree — pnpm running in the worktree
+# would rewire the main tree's links); pnpm's shared store keeps this fast.
+pnpm install --prefer-offline >/dev/null
 
 fail_count=0
 expect_fail() {
