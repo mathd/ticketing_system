@@ -3,9 +3,7 @@
   "type": "Story",
   "summary": "US-003: Contention-safe GA reservation with cart holds",
   "status": "Done",
-  "labels": [
-    "needs:human"
-  ],
+  "labels": [],
   "assignee": "Codex",
   "pr": {
     "number": 6,
@@ -91,6 +89,11 @@
       "stage": "done",
       "kind": "metrics",
       "body": "<!-- sdlc:stage=done kind=metrics -->\n## Closeout metrics — TKT-27\n\nDurations are derived from the sdlc-state changelog and PR timestamps (through 2026-07-12T19:51:24-04:00).\n\n| stage | duration |\n|---|---:|\n| Backlog | 7h18m52s (includes priority wait; final shaping pass ~39s) |\n| Ready | 39s |\n| Planning — agent:planning | 1m55s |\n| Planning — agent:plan-review | 9m55s (includes two failed Claude attempts + successful Gemini review) |\n| Planning — needs:human (Gate 2) | 7m07s |\n| Building — agent:coding | 12m13s |\n| Building — agent:ai-review | 21m48s |\n| Building — needs:human (Gate 3) | 6m48s |\n| PO Review / Gate 4 | ~2m through closeout comment |\n\n**human-wait total:** ~16m (Gate 2 + Gate 3 + Gate 4 through this comment).\n**diff:** +1009/−41 (27 files), PR #6, squash merge `71f0c90`.\n**newly unblocked:** TKT-28 (checkout with fake PSP and append-only order journal); it remains Backlog for Gate 1 prioritization.\n\n### Learnings\n\n- **Technical → repo (applied):** pool-row-first locking, DB-time expiry, single-use idempotency keys, and non-authoritative cleanup are recorded in ADR-010.\n- **Technical → repo (applied):** a durable consumer must be part of service readiness when its replay establishes required local state; inventory healthcheck now probes `/readyz`.\n- **Technical → repo (applied):** countdowns use `expires_at - server_time` plus a browser monotonic clock, never the buyer device wall clock.\n- **Process → TKT-41 / skill candidate:** external reviewer sessions can attach stale project context. Review prompts should require a fresh project plus repository fingerprints before findings are accepted.\n- **Process → skill candidate:** chat approval and board transition are distinct at human gates; gate prompts should explicitly say that approval text does not perform the drag/status transition.\n\n### Retro\n\n1. **What would have made this ticket faster or better?** The first Claude review attached stale project context, and its retry exited without a verdict. Concrete change: amend `.claude/skills/sdlc-ticket/SKILL.md` cross-model sections to require a fresh external-tool project and verify HEAD plus two repository fingerprints before review. **Status: proposed, not applied.**\n2. **What should the humans change?** Gate 2 approval arrived before the board transition, causing an avoidable stop-and-return. Concrete change: amend the skill gate-response template to say: `Approve and move <ticket> to <target status>; chat approval alone does not mutate the board.` **Status: proposed, not applied.**\n\nPO may now perform the final PO Review → Done transition. After Done, the agent will remove `needs:human`, verify closure, and delete the merged branch."
+    },
+    {
+      "stage": "done",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=done kind=summary -->\nClosure verified: PR #6 squash-merged as 71f0c90; check, gate-selftest, and hermetic-smoke all succeeded; project DoD satisfied; needs:human removed. TKT-28 is newly unblocked but remains Backlog for human prioritization."
     }
   ],
   "links": [
