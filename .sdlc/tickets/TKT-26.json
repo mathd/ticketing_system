@@ -2,10 +2,8 @@
   "key": "TKT-26",
   "type": "Story",
   "summary": "US-002: Create and publish a GA event",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude",
   "pr": {
     "number": 5,
@@ -101,6 +99,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Validation note — COS met, from the user-visible output:**\n- AC1/AC2: created + published \"Nuit Électrique\" through the public API; it appears on the storefront in a real browser (screenshots in the PR and `docs/verification/TKT-26/`). The publication event was observed on the PLATFORM stream, correlated by performance id (smoke, part of the merged gate).\n- AC3: `curl -sI /api/catalog/public/events?locale=fr` and the event pages show the minutes tier; two page hits show `X-Page-Data-Age` advancing with remaining-freshness `max-age` (no re-fetch within TTL).\n- AC4: FR/EN locale switch preserves the deep route; date renders in the performance's timezone per locale; money renders from integer minor units (45,50 EUR / EUR45.50).\n- AC5: every entity row carries organizer_id; cross-organizer wiring rejected (smoke-asserted).\nDemo stack: localhost:8080 (Postgres host port 15433 this run). **PO accepted in-session (owner, 2026-07-12).**"
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n**Close-out — TKT-26** (durations from the sdlc-state changelog + PR timestamps, 2026-07-12)\n\n| stage | duration |\n|---|---|\n| Backlog (shaping) | 5h13m wall (blocked on TKT-39 most of it; active shaping ~12m) |\n| Ready | <1m |\n| Planning — agent:planning | ~3m |\n| Planning — agent:plan-review (codex critique + revision) | ~5m |\n| Planning — needs:human (Gate 2) | 38m |\n| Building — agent:coding | 34m |\n| Building — agent:ai-review (codex review + fixes) | 9m |\n| Building — needs:human (Gate 3) | 26m |\n| PO Review | ~2m (accepted in-session) |\n\n**human-wait total:** ~1h06m (Gates 2+3+4) — the dominant cost after the TKT-39 dependency, as expected.\n**diff:** +8192/−214 (51 files; ~1/3 generated + lockfile) — PR #5, squash-merged f4e7ee2.\n\n**learnings:**\n- *(technical → repo, lands with this merge)* Runtime web images ship `dist` only: `vite ssr.noExternal` makes Astro SSR output self-contained — the pattern for any future SSR app here.\n- *(technical → repo, lands with this merge)* Adding a web app to the stack touches four wiring points at once: pnpm-workspace, `.dockerignore` whitelist (`!web/<app>/dist`), `compose.smoke.yaml` override, `scripts/smoke.sh` preflight. Missing any one fails only at the smoke stage.\n- *(process → TKT-41 memory ticket)* Event-identity precedent: envelope ids must be deterministic per business fact (not per emission attempt) or consumer dedup is impossible — set as ADR-009 §5 precedent; US-003+ must follow it.\n- *(process → TKT-41 memory ticket)* The codex plan critique earned its stage: 12/12 findings valid, one a genuine correctness bug (cache-key aliasing). Keep plan-review mandatory even under time pressure.\n\n**retro:**\n1. *What would have made this faster/better?* (a) The ticket's quality gate cited \"NF525 journal chain verifies (from US-004)\" — machinery that won't exist until two stories later; shaping had to interpret it away. **Appliable change:** in `references/decomposition.md`, add to the sizing/quality-gates guidance: \"a story's quality gates may only reference machinery that exists by that story.\" (b) pnpm 11 moved build-script approval to `allowBuilds` in pnpm-workspace.yaml; two failed installs finding that. **Appliable change:** none to the skill (project-specific tooling churn) — recorded as an agent memory instead.\n2. *What should the humans change?* Nothing this run — both gate turnarounds were fast and the Gate-2 approval was unambiguous. `nothing` (earned: no human-side friction observed).\n\nBranch deleted; PR merged; project DoD (gate green in CI mirrors local) pending the in-flight CI run on main — no further agent action required."
     }
   ],
   "links": [
