@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "PSP port with fake provider (incl. 3DS-like challenge and failure simulation), multi-currency orders and per-currency settlement. Real PSP adapter is the epic's tail, kept out of M-early scope.\n\n**Conditions of Success:**\n- Orders price and settle in any configured currency; no float arithmetic anywhere\n- Fake PSP simulates success/decline/timeout/challenge deterministically for tests\n- PSP port proven swappable: fake and (later) real adapter behind the same contract\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "description": "PSP port with fake provider (incl. 3DS-like challenge and failure simulation), multi-currency orders and per-currency settlement. Real PSP adapter is the epic's tail, kept out of M-early scope.\n\n**Conditions of Success:**\n- Orders price and settle in any configured currency; no float arithmetic anywhere\n- Fake PSP simulates success/decline/timeout/challenge deterministically for tests\n- PSP port proven swappable: fake and (later) real adapter behind the same contract\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** currency model pinned — each event sells in exactly one currency; the platform supports many currencies across events; settlement per currency; no FX conversion inside an order.",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): one currency per event; no FX inside an order."
     }
   ]
 }
