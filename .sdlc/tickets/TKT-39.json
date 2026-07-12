@@ -2,7 +2,7 @@
   "key": "TKT-39",
   "type": "Spike",
   "summary": "SPIKE: Astro 7 storefront shell — prove or reject ADR-006",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
