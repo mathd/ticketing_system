@@ -22,6 +22,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**From TKT-26 (US-002), 2026-07-12:**\n- **Event envelope precedent (ADR-009 §5):** `{id, type, occurred_at, schema, data}`; id is deterministic per business fact (uuid5 of entity id + transition timestamp) and doubles as `Nats-Msg-Id`; subjects `platform.<service>.<entity>.<fact>`. All future emitters copy this.\n- **Publish gating rule:** a state transition that emits a public event must validate the entity is coherent for consumers at transition time (US-002: no ticket type -> 409) — never emit for a state the read path will hide.\n- **New web app wiring checklist (4 points):** pnpm-workspace + .dockerignore whitelist + compose.smoke override + smoke.sh preflight.\n- **Astro SSR ships dist-only** via `vite ssr.noExternal` (runtime images need no node_modules).\n- **SSR page caching rule made code:** cache key = full URL; single cache owner per tier; outgoing HTML TTL = remaining data freshness; single-flight on miss. `web/storefront/src/lib/cache.ts` is the reference implementation for TKT-31."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "TKT-27 learning (2026-07-12): external AI review sessions may attach stale project context and confidently cite nonexistent files. Require a fresh external-tool project plus repository fingerprint checks (HEAD and known file/toolchain facts) before accepting review findings. Candidate promotion target: project-local sdlc-ticket cross-model review instructions."
     }
   ]
 }
