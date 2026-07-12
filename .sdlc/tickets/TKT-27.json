@@ -2,7 +2,7 @@
   "key": "TKT-27",
   "type": "Story",
   "summary": "US-003: Contention-safe GA reservation with cart holds",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
