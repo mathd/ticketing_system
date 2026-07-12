@@ -2,7 +2,7 @@
   "key": "TKT-25",
   "type": "Story",
   "summary": "US-001: Platform scaffold — one command, all services up",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -10,7 +10,7 @@
   "pr": {
     "number": 1,
     "url": "https://github.com/mathd/ticketing_system/pull/1",
-    "state": "open"
+    "state": "merged"
   },
   "parent": "TKT-1",
   "classification": "complex",
@@ -80,6 +80,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n### AI review summary — TKT-25\n\nCodex adversarial review of the diff: **8 findings (5 blocking, 3 minor) — all accepted and fixed** in e85bd44, none rejected, none deferred:\n1. Gate not self-contained (pnpm install hidden in CI) -> `make deps` stage, CI runs exactly `make check`.\n2. Committed build artifacts: 69MB golangci-lint binary, 6 service binaries, 4,267 node_modules files -> untracked + .gitignore; `go build` outputs to bin/gate/.\n3. PLATFORM stream only created by the test (test manufacturing its own evidence) -> one-shot `nats-init` provisions at stack init; smoke asserts existence.\n4. JetStream had no volume (durable bus losing data on recreate) -> file-backed named volume.\n5. Postgres/NATS published on 0.0.0.0 -> all published ports bind 127.0.0.1.\n6. Floating tool versions -> golangci-lint pinned, pnpm from packageManager, nats:2.14-alpine.\n7. Gateway liveness/readiness conflated -> /readyz added (aggregate fan-out).\n8. Logging wrapper dropped Flusher/Hijacker -> Unwrap() for http.ResponseController + Flush passthrough.\n\n`make check` re-green end-to-end (incl. 7/7 smoke, selftest 5/5). Review-guide posted on PR #1. Diff: +4756/-827, 75 files. Ball is now at Gate 3: human review + squash-merge of PR #1, then drag to PO Review."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n### PO validation note — TKT-25 (US-001: Platform scaffold)\n\nPR [#1](https://github.com/mathd/ticketing_system/pull/1) **merged** to main at 2026-07-12 19:04 UTC (merge commit df23330, +4756/−827, 75 files). Validate from a clean checkout of .\n\n**How to check each Condition of Success:**\n\n| COS | How to validate |\n|---|---|\n| One-command stack |  from a clean clone → gateway + 5 services + storefront + scanner up; aggregated health green at <http://localhost:8080/healthz/all> |\n| Storefront through gateway | Open <http://localhost:8080/> (placeholder page) and <http://localhost:8080/scanner/> — browser evidence already in the PR per the UI quality gate |\n| Local gate |  passes (lint + test + build, Go & TS, incl. gateway smoke suite); CI ran the same gate green on the PR |\n| Observability | Services emit structured JSON logs with propagated trace IDs; local stack in Compose — Grafana at <http://localhost:3000/> (traces/logs/metrics) |\n| Docs | Repo layout + service ownership in ; Python-scaffold docs superseded; ADR-007 (Postgres 17 per-service DBs + NATS JetStream) recorded in  |\n\nCodex adversarial review findings were triaged and fixed in-PR (e85bd44: untracked artifacts, self-contained gate, persisted PLATFORM stream, localhost-bound ports, pinned versions, gateway /readyz).\n\n**Ball is with the PO** — validate the COS above and drag to Done when satisfied (metrics closeout will be posted before the gate clears)."
     }
   ],
   "links": [
