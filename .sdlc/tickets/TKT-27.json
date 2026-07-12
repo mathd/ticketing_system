@@ -2,9 +2,11 @@
   "key": "TKT-27",
   "type": "Story",
   "summary": "US-003: Contention-safe GA reservation with cart holds",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "Codex",
   "pr": null,
   "parent": "TKT-1",
   "classification": "complex",
@@ -44,6 +46,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — PASS\n\nAll 7 DoR items pass: 6 met, uncertainties deferred to Planning with explicit decision rules. TKT-26 is Done and there are no open blockers.\n\nGrounded findings: inventory is currently a health-only chi/pgx/NATS skeleton; gateway already proxies /api/inventory; catalog capacity currently lives on venue and the performance-published event carries identifiers only, so the plan must establish capacity bootstrap without a cross-service DB read. The storefront detail page is SSR with no interactive island yet.\n\nScope was tightened: removed the premature US-004/NF525 quality gate; added organizer scoping, idempotency, deterministic expiry races, invalid/unavailable quantity behavior, and the capacity-bootstrap boundary.\n\nNo risk:low: this introduces the inventory schema and concurrency primitive, extends a cross-service contract, adds an interactive storefront path, and will touch well over five files. The plan and human Gate 2 remain mandatory.\n\nVerdict: PASS — Ready-eligible for Gate 1."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed TKT-27 — US-003: Contention-safe GA reservation with cart holds.\n\nSelection reason: owner selected the next logical ticket; TKT-27 is P0 at the head of the M1 chain, TKT-26 is Done, there are zero open blockers, and TKT-27 unlocks checkout (TKT-28). No risk:low: first inventory schema and concurrency primitive plus cross-service contract and interactive storefront work.\n\nBranch: TKT-27-ga-holds from origin/main. Worktree: /home/mathieu/sources/ticketing_system.TKT-27-ga-holds. Drive style: gates only. Independent plan/code reviewer: Claude Opus 4.6 (Thinking) through agy, per owner direction."
     }
   ],
   "links": [
