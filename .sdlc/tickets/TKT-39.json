@@ -2,16 +2,16 @@
   "key": "TKT-39",
   "type": "Spike",
   "summary": "SPIKE: Astro 7 storefront shell — prove or reject ADR-006",
-  "status": "Building",
+  "status": "Done",
   "labels": [
-    "needs:human",
     "risk:low"
   ],
   "assignee": "claude",
   "pr": {
     "number": 4,
     "url": "https://github.com/mathd/ticketing_system/pull/4",
-    "state": "open"
+    "state": "merged",
+    "mergeCommit": "603ae00"
   },
   "classification": "complex",
   "description": "Timeboxed spike (2 days) with a throwaway prototype — no production code, no scaffold dependency. Decides the storefront shell framework (Astro 7 + React islands vs React SPA) before US-002 (TKT-26) builds storefront UI. Outcome = ADR-006 moved from Proposed to Accepted or Rejected, with evidence.\n\n**Priority:** P1   **Depends on:** — (independent; blocks TKT-26)\n\n**Acceptance Criteria:**\n- [ ] Prototype: event list + event detail in Astro 7 — page HTML cached at the ADR-004 minutes tier, availability as a React island polling the seconds tier, Cache-Control set per route class via src/fetch.ts\n- [ ] Buy-half seam test: hold-countdown state survives MPA navigation into a React checkout surface; seams documented honestly, including what breaks\n- [ ] FR/EN locale routing demonstrated on localized event content (TKT-36 shape)\n- [ ] Written caching ownership rule (page layer vs API layer per ADR-004 tier) resolving the TKT-31 overlap — stale-page/fresh-API mismatch impossible by construction\n- [ ] Early-adopter tax log: compiler strictness, Rolldown/plugin gaps, bugs hit during the spike, with a tolerable/not-tolerable judgment\n- [ ] ADR-006 completed (Accepted or Rejected) from the evidence; report posted on this ticket\n\nQuality gates: n/a (throwaway prototype); the deliverable is the report + the ADR decision.",
@@ -85,6 +85,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Codex review triaged — 3 blocking findings all fixed & verified. → needs:human (Gate 3).**\n\n| Finding | Verdict | Fix (verified) |\n|---|---|---|\n| AC4 \"impossible by construction\" overstated; price double-source | blocking, valid | One aggregated page read carries price; standalone `/price` → `no-store`. Ownership rule rewritten with an explicit **single-source** clause. Re-tested: only the page is a cacheable price copy. |\n| Page caching asserted, not demonstrated | blocking, valid | nginx `proxy_cache` added; evidence now shows real HTML reuse `X-Cache-Status: MISS`→`HIT`, not header emission. |\n| Checkout trusts client deadline | blocking, valid | Checkout re-validates against `GET /api/holds/:id`; forged future-deadline hold now renders \"no longer valid\" (verified in-browser). |\n| ADR body still names fictional APIs | incidental, valid | Corrected the ADR **body** (Context + AC1 + References), not just the preamble. |\n| integer-money / availability-absence | (review confirmed correct) | no change needed |\n\nFollowed the \"fix in PR, don't re-run codex on my own fixes\" rule; fixes verified by clean Astro build + real-browser re-test through real nginx. **Decision stays ACCEPT** — the four gating criteria are now genuinely met, honestly scoped (\"shell hypothesis proven, not integration\").\n\n**Ball is with the human (Gate 3):** review PR #4 and, if good, **squash-merge** in the repo, then move TKT-39 → PO Review. Review-guide posted on the PR. Note: this is a spike — the merged artifacts are the report + ADR decision only; the prototype is throwaway/gitignored."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n**TKT-39 Done.** ADR-006 Accepted; PR #4 squash-merged to main (`603ae00`); TKT-26 unblocked.\n\n### Durations (from the sdlc-state changelog)\n| stage | duration |\n|---|---|\n| Backlog | 12:02 → 12:21 · ~19 min (shape + readiness) |\n| Ready (priority wait) | 12:21 → 15:36 · ~3h15m (session gap, not a real queue) |\n| Planning (`agent:planning`+`agent:plan-review`) | 15:36 → 15:39 · ~3 min (plan + codex critique) |\n| Building (`agent:coding`+`agent:ai-review`) | 15:39 → 16:10 · ~31 min (prototype build, evidence, codex review, fixes) |\n| needs:human → merged (Gate 3) | 16:10 → 16:19 · ~9 min |\n| PO Review → Done | immediate (spike; owner gave final go) |\n| **human-wait total** | **~9 min** (Gate 3 only; Gate 2 skipped via risk:low) |\n| **diff** | **+130 / −7 (3 files)** — docs only; prototype throwaway/gitignored |\n\n### learnings\n- **technical (→ AGENTS.md, via a normal gated ticket):** ADR-006's `src/fetch.ts`/`Astro.cache` are fictional; real `astro@7.0.7` uses `src/middleware.ts` + `i18n.routing` + `@astrojs/node`. The **caching single-source rule** (any value embedded in cached HTML must have no independently-cached API copy) is the reusable pattern every storefront story inherits — candidate for an AGENTS.md storefront note when TKT-26 starts.\n- **process:** delegating the mechanical prototype build to gpt-5.5/codex while keeping verification + the ADR judgment on Claude worked well; the codex sandbox can't open TCP listeners, so **runtime verification must stay on the Claude side** — build-only delegation for anything that must be *run*.\n- **repo-local:** none beyond the above.\n\n### retro\n1. *What would have made this faster/better?* The ticket/ADR shipped **fictional API names** as if real; I burned ~10 min reconciling `src/fetch.ts`/`Astro.cache` against the shipped package. **Appliable change:** when a ticket references a near-future tool version, the `context.reference` block should flag which API names are aspirational vs verified — or the shaping step (shaping.md DoR) should add a \"verify external API names exist\" item for spikes touching brand-new releases. *(applied to memory; suggested for shaping.md.)*\n2. *What should the humans change?* The **codex ai-review caught 3 real blocking issues on a risk:low ticket** — a good reminder that risk:low correctly skips the *plan* gate but the *ai-review* cross-model pass is where quality was actually enforced. **Appliable change:** none to the rules (they worked as designed); worth noting in the skill that risk:low's value is concentrated on the plan gate, and ai-review should never be softened for it. No config/template edit needed — the process held."
     }
   ]
 }
