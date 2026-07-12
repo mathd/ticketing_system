@@ -8,7 +8,7 @@
   "pr": null,
   "parent": "TKT-1",
   "classification": "complex",
-  "description": "**As** a buyer, **I want** to pay for my held tickets and get an order confirmation. First money-path story: the ADR-003 journal is born here and every later money feature builds on it.\n\n**Priority:** P0\n**Depends on:** US-003 (TKT-27)\n\n**Acceptance Criteria:**\n- [ ] Commerce turns a hold into an order (EUR total, no fees); payments service authorizes/captures via the fake PSP port; success confirms the hold, failure/timeout releases it\n- [ ] Order + payment records are append-only, hash-chained and signed per ADR-003 (traceability requirement; NF525-ready by design); a verify-journal command validates the chain end-to-end and joins make check\n- [ ] Declined-card path returns the buyer to a retriable state (browser-verified both paths)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "description": "**As** a buyer, **I want** to pay for my held tickets and get an order confirmation. First money-path story: the ADR-003 journal is born here and every later money feature builds on it.\n\n**Priority:** P0\n**Depends on:** US-003 (TKT-27)\n\n**Acceptance Criteria:**\n- [ ] Commerce turns a hold into an order (EUR total, no fees); payments service authorizes/captures via the fake PSP port; success confirms the hold, failure/timeout releases it\n- [ ] Order + payment records are append-only, hash-chained and signed per ADR-003 (traceability requirement; NF525-ready by design); a verify-journal command validates the chain end-to-end and joins make check\n- [ ] Journal records reference the buyer by pseudonymous ID only; PII (name, email) lives in a separate erasable store (ADR-003 §3)\n- [ ] Declined-card path returns the buyer to a retriable state (browser-verified both paths)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
   "context": {
     "binding": [
       {
@@ -23,7 +23,7 @@
       },
       {
         "id": "ADR-003",
-        "rule": "Two append-only trails, one discipline: (1) money journal — every money-relevant record immutable, sequence-numbered, hash-chained, signed; corrections are compensating entries, never updates; read models are projections; verify-journal runs in the local gate from US-004 onward. (2) ticket lifecycle trace — every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated, pass entry) is an append-only lifecycle event linked to its order/journal entries; redemption/reissue decisions are made from the trace, not a mutable flag. (3) NF525 is a later-phase profile that must layer on without schema or flow changes.",
+        "rule": "Append-only trails, one discipline: (1) money journal — every money-relevant record immutable, sequence-numbered, hash-chained, signed; corrections are compensating entries; read models are projections; verify-journal in the local gate from US-004. (2) ticket lifecycle trace — every ticket/entitlement state change is an append-only lifecycle event linked to its order; redemption/reissue decisions are made from the trace. (3) trails are pseudonymous: records reference customers by pseudonymous ID only, PII lives in a separate erasable store; no raw PII in any append-only record (enforced invariant from US-004). (4) NF525 is a later-phase profile that must layer on without schema or flow changes.",
         "date": "2026-07-12"
       }
     ],
@@ -48,6 +48,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Scope amended pre-Gate-1 (owner directive 2026-07-12): NF525 is NOT an immediate goal — it becomes a later-phase French-market profile. The underlying requirement is generalized: traceability is a must, with the same audit-trail thinking for money AND tickets (ADR-003 reworked accordingly). US-004 unchanged in substance: the journal was already the trail; it is now motivated by traceability, with NF525 as a later profile."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): GDPR-by-design: journal carries pseudonymous IDs only, PII in an erasable store (ADR-003 amended, TKT-33 carries the machinery)."
     }
   ],
   "links": [
