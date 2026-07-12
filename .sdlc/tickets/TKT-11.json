@@ -1,0 +1,17 @@
+{
+  "key": "TKT-11",
+  "type": "Epic",
+  "summary": "Epic: NF525 fiscal compliance (certification-ready)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "ISCA mechanics on all cash paths (web, POS, cashless): the ADR-003 journal plus period closures (Z/daily/monthly/fiscal-year), fiscal archives, audit export. Certification itself out of scope; verify mechanics against the actual NF525 referential (brief flags ISCA as inferred).\n\n**Conditions of Success:**\n- Closures compute and seal period totals; sealed periods are provably inalterable\n- Fiscal archive export in an auditor-consumable format\n- Requirements traceable to the NF525 referential text, gaps explicitly listed\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
