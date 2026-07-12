@@ -159,13 +159,26 @@ func (p *Postgres) CreateTicketType(ctx context.Context, in TicketTypeInput) (Ti
 }
 
 func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Performance, bool, error) {
-	// Single atomic statement: flips draft->published exactly once; the
-	// returned row also says whether the domain event is still owed.
-	_, err := p.db.ExecContext(ctx,
+	// The transition is gated on a sellable offer existing (ErrNotSellable
+	// otherwise): the publication event and public visibility must never
+	// disagree. Single atomic statement flips draft->published exactly
+	// once; the returned row also says whether the domain event is owed.
+	res, err := p.db.ExecContext(ctx,
 		`UPDATE performances SET status = 'published', published_at = now()
-		 WHERE id = $1 AND status = 'draft'`, id)
+		 WHERE id = $1 AND status = 'draft'
+		   AND EXISTS (SELECT 1 FROM ticket_types t WHERE t.performance_id = $1)`, id)
 	if err != nil {
 		return Performance{}, false, fmt.Errorf("publish: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Nothing flipped: not found, already published, or unpriced draft.
+		perf, _, err := p.getPerformance(ctx, id)
+		if err != nil {
+			return Performance{}, false, err
+		}
+		if perf.Status == "draft" {
+			return Performance{}, false, ErrNotSellable
+		}
 	}
 	perf, emittedAt, err := p.getPerformance(ctx, id)
 	if err != nil {

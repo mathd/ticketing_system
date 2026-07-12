@@ -83,8 +83,11 @@ paths:
       description: >
         Flips draft to published and emits the
         platform.catalog.performance.published domain event exactly on the
-        draft-to-published transition. Publishing an already-published
-        performance returns 200 without re-emitting.
+        draft-to-published transition (envelope id is deterministic per
+        publication, so retried or raced emissions de-duplicate). Publishing
+        an already-published performance returns 200 without re-emitting.
+        Publishing a performance with no ticket type is a 409 — the
+        publication event and public visibility must never disagree.
       parameters:
         - $ref: '#/components/parameters/PerformanceId'
       responses:
@@ -96,6 +99,12 @@ paths:
                 $ref: '#/components/schemas/Performance'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: No sellable offer — create a ticket type before publishing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /ticket-types:
     post:
       operationId: createTicketType
@@ -242,6 +251,9 @@ components:
           type: integer
           format: int64
           minimum: 0
+          # bounded to JavaScript's safe-integer range: every consumer of
+          # this contract (storefront included) must represent it exactly
+          maximum: 9007199254740991
         currency:
           type: string
           pattern: '^[A-Z]{3}$'

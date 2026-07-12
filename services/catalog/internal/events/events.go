@@ -53,13 +53,27 @@ func NewJetStream(nc *nats.Conn) (*JetStream, error) {
 	return &JetStream{js: js}, nil
 }
 
+// EventID derives the envelope id deterministically from the publication
+// (performance id + published_at): an emission retried after a failed ack —
+// or raced by a concurrent publish request — carries the SAME id, so
+// consumers de-duplicate on it and JetStream's Nats-Msg-Id window drops
+// exact re-publishes at the stream.
+func EventID(perf store.Performance) string {
+	key := SubjectPerformancePublished + ":" + perf.ID.String()
+	if perf.PublishedAt != nil {
+		key += ":" + perf.PublishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+}
+
 func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Performance) error {
 	occurred := time.Now().UTC()
 	if perf.PublishedAt != nil {
 		occurred = *perf.PublishedAt
 	}
+	id := EventID(perf)
 	body, err := json.Marshal(Envelope{
-		ID:         uuid.NewString(),
+		ID:         id,
 		Type:       SubjectPerformancePublished,
 		OccurredAt: occurred,
 		Schema:     1,
@@ -72,7 +86,9 @@ func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Perform
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
-	if _, err := p.js.Publish(ctx, SubjectPerformancePublished, body); err != nil {
+	msg := &nats.Msg{Subject: SubjectPerformancePublished, Data: body}
+	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
+	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
 		return fmt.Errorf("publish %s: %w", SubjectPerformancePublished, err)
 	}
 	return nil

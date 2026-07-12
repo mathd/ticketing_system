@@ -97,6 +97,9 @@ func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.P
 	if !ok {
 		return store.Performance{}, false, store.ErrNotFound
 	}
+	if p.Status == "draft" && !f.hasTicketType(id) {
+		return store.Performance{}, false, store.ErrNotSellable
+	}
 	if p.Status != "published" {
 		now := time.Now().UTC()
 		p.Status = "published"
@@ -104,6 +107,15 @@ func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.P
 		f.performances[id] = p
 	}
 	return p, !f.emitted[id], nil
+}
+
+func (f *fakeStore) hasTicketType(performanceID uuid.UUID) bool {
+	for _, tt := range f.ticketTypes {
+		if tt.PerformanceID == performanceID {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeStore) MarkPerformanceEventEmitted(_ context.Context, id uuid.UUID) error {
@@ -419,11 +431,12 @@ func TestPublicListIsLocalizedAndCacheTiered(t *testing.T) {
 	}
 }
 
-func TestPublicListExcludesDraftsAndUnpriced(t *testing.T) {
+func TestPublicListExcludesDraftsAndPublishRequiresPrice(t *testing.T) {
 	e := newEnv(t)
 	e.createFixture(false) // draft: not listed
 
-	// Published but without a ticket type: no sellable offer, no listing.
+	// Publishing without a ticket type is refused (409): the publication
+	// event and public visibility must never disagree.
 	venue := decode[Venue](e.t, e.do("POST", "/venues",
 		VenueCreate{OrganizerId: orgID, Name: "Halle B", GaCapacity: 50}))
 	event := decode[Event](e.t, e.do("POST", "/events", EventCreate{
@@ -433,11 +446,16 @@ func TestPublicListExcludesDraftsAndUnpriced(t *testing.T) {
 		OrganizerId: orgID, EventId: event.Id, VenueId: venue.Id,
 		StartsAt: time.Now().UTC(), Timezone: "Europe/Paris",
 	}))
-	e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil)
+	if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("unpriced publish: want 409, got %d", rec.Code)
+	}
+	if len(e.pub.published) != 0 {
+		t.Fatalf("refused publish must not emit, got %d emissions", len(e.pub.published))
+	}
 
 	list := decode[PublicEventList](t, e.do("GET", "/public/events?locale=en", nil))
 	if len(list.Events) != 0 {
-		t.Fatalf("draft/unpriced performances must not be listed, got %d events", len(list.Events))
+		t.Fatalf("draft performances must not be listed, got %d events", len(list.Events))
 	}
 }
 

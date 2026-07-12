@@ -62,6 +62,42 @@ describe('PageDataCache', () => {
     expect(aEn.data.id).toBe('/public/events/A');
   });
 
+  it('coalesces concurrent misses into one upstream call (no stampede)', async () => {
+    let release!: (r: Response) => void;
+    const gate = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const fetchSpy = vi.fn(() => gate);
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+
+    const burst = Promise.all(
+      Array.from({ length: 5 }, () => cache.get<{ ok: boolean }>('http://gw/hot')),
+    );
+    release(jsonResponse({ ok: true }, 'public, max-age=300'));
+    const results = await burst;
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(results.every((r) => r.data.ok)).toBe(true);
+  });
+
+  it('shares a coalesced failure but retries upstream on the next call', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('boom', { status: 502 }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }, 'public, max-age=300'));
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+
+    const [a, b] = await Promise.allSettled([cache.get('http://gw/hot'), cache.get('http://gw/hot')]);
+    expect(a.status).toBe('rejected');
+    expect(b.status).toBe('rejected');
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // the failure was shared...
+
+    await expect(cache.get<{ ok: boolean }>('http://gw/hot')).resolves.toMatchObject({
+      data: { ok: true },
+    }); // ...but never cached
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('never caches no-store responses', async () => {
     const fetchSpy = vi.fn(async () => jsonResponse({}, 'no-store'));
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);

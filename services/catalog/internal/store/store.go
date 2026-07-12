@@ -16,6 +16,11 @@ var (
 	// ErrOrganizerMismatch: entities wired together must belong to the same
 	// organizer (ADR-002 tenancy invariant).
 	ErrOrganizerMismatch = errors.New("organizer mismatch")
+	// ErrNotSellable: publishing requires at least one ticket type —
+	// otherwise the publication event and public visibility would disagree
+	// forever ("no sellable offer, no listing" would hide a published slot
+	// whose event consumers already saw).
+	ErrNotSellable = errors.New("performance has no ticket type")
 )
 
 // LocalizedText is locale-keyed text; adding a locale is data, not schema (TKT-36).

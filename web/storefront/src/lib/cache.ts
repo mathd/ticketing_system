@@ -38,6 +38,10 @@ export function parseMaxAge(cacheControl: string | null): number {
 
 export class PageDataCache {
   #entries = new Map<string, Entry>();
+  // Single-flight: concurrent misses for the same URL share one upstream
+  // call — a hot event page expiring under an on-sale burst must not
+  // stampede the catalog (ADR-004's whole point at that moment).
+  #inFlight = new Map<string, Promise<CachedResult<unknown>>>();
   #fetch: typeof fetch;
   #now: () => number;
 
@@ -57,6 +61,18 @@ export class PageDataCache {
       }
       this.#entries.delete(url);
     }
+    const inFlight = this.#inFlight.get(url);
+    if (inFlight) {
+      return inFlight as Promise<CachedResult<T>>;
+    }
+    const flight = this.#fetchThrough<T>(url, nowMs).finally(() => this.#inFlight.delete(url));
+    // Failures are shared with every coalesced caller but never cached:
+    // the next request retries upstream.
+    this.#inFlight.set(url, flight);
+    return flight;
+  }
+
+  async #fetchThrough<T>(url: string, nowMs: number): Promise<CachedResult<T>> {
     const response = await this.#fetch(url, { headers: { accept: 'application/json' } });
     if (!response.ok) {
       throw new UpstreamError(response.status, url);

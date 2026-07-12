@@ -58,9 +58,16 @@ func NewRouter(s *Server) (http.Handler, error) {
 		},
 	})
 	r := chi.NewRouter()
+	// Unauthenticated public surface: bound request bodies before any read.
+	limitBody := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
+			next.ServeHTTP(w, req)
+		})
+	}
 	return HandlerWithOptions(s, ChiServerOptions{
 		BaseRouter:  r,
-		Middlewares: []MiddlewareFunc{validator},
+		Middlewares: []MiddlewareFunc{validator, limitBody},
 		ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
 		},
@@ -82,6 +89,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusNotFound, Error{Error: "referenced entity not found"})
 	case errors.Is(err, store.ErrOrganizerMismatch):
 		writeJSON(w, http.StatusBadRequest, Error{Error: "entities must belong to the same organizer"})
+	case errors.Is(err, store.ErrNotSellable):
+		writeJSON(w, http.StatusConflict, Error{Error: "performance has no ticket type; create one before publishing"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})

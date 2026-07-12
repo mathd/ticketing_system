@@ -69,7 +69,7 @@ export interface paths {
         put?: never;
         /**
          * Publish a performance (idempotent)
-         * @description Flips draft to published and emits the platform.catalog.performance.published domain event exactly on the draft-to-published transition. Publishing an already-published performance returns 200 without re-emitting.
+         * @description Flips draft to published and emits the platform.catalog.performance.published domain event exactly on the draft-to-published transition (envelope id is deterministic per publication, so retried or raced emissions de-duplicate). Publishing an already-published performance returns 200 without re-emitting. Publishing a performance with no ticket type is a 409 — the publication event and public visibility must never disagree.
          */
         post: operations["publishPerformance"];
         delete?: never;
@@ -433,6 +433,15 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            /** @description No sellable offer — create a ticket type before publishing */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     createTicketType: {
