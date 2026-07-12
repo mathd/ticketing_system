@@ -171,11 +171,32 @@
   .cmt::before { content:""; position:absolute; left:6px; top:16px; bottom:-2px; width:2px; background:var(--line); }
   .cmt:last-child::before { display:none; }
   .cmt .node { flex:0 0 14px; height:14px; border-radius:50%; background:var(--brand); margin-top:2px; z-index:1; }
-  .cmt .cbody { flex:1; }
+  .cmt .cbody { flex:1; min-width:0; }  /* min-width:0 so a wide code block scrolls, not the modal */
   .cmt .marker { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; font-weight:700;
                  color:var(--brand); margin-bottom:3px; }
   .cmt .text { font-size:13.5px; line-height:1.55; }
   .empty { color:var(--muted); font-style:italic; }
+
+  /* --- rendered Markdown inside a comment body --- */
+  .md { max-width:100%; }
+  .md > :first-child { margin-top:0; }
+  .md > :last-child { margin-bottom:0; }
+  .md p { margin:0 0 9px; }
+  .md h3, .md h4, .md h5, .md h6 { margin:16px 0 7px; line-height:1.3; font-weight:800; }
+  .md h3 { font-size:15px; }
+  .md h4 { font-size:13.5px; color:var(--ink); }
+  .md h5, .md h6 { font-size:12.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .md ul, .md ol { margin:0 0 10px; padding-left:20px; }
+  .md li { margin:3px 0; }
+  .md li::marker { color:var(--muted); }
+  .md strong { font-weight:800; }
+  .md code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
+             background:color-mix(in srgb, var(--muted) 16%, transparent); border-radius:4px;
+             padding:1px 5px; }
+  .md pre { background:color-mix(in srgb, var(--muted) 12%, transparent); border:1px solid var(--line);
+            border-radius:8px; padding:11px 13px; overflow-x:auto; margin:0 0 11px; }
+  .md pre code { background:none; padding:0; font-size:11.5px; line-height:1.5;
+                 white-space:pre; color:var(--ink); }
 
   /* --- spikes (preparation work) + DoR readiness --- */
   .card.spike { border:1px dashed color-mix(in srgb, var(--muted) 55%, transparent);
@@ -299,6 +320,46 @@ let prevStatus = {};        // key -> status at last render (for the moved pulse
 let movedKeys = new Set();  // cards to pulse on this render only
 
 const esc = s => (s??"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+/* Minimal, escape-first Markdown → HTML for comment bodies (the agent writes rich plans).
+   Scope = what the pipeline actually emits: #..#### headings, **bold**, `code`,
+   ```fenced``` blocks, - / * bullets, 1. ordered lists, blank-line paragraphs.
+   Everything is esc()'d before any tag is added, so no comment content can inject markup. */
+function mdInline(s){
+  return esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+function renderMd(src){
+  /* drop the leading sdlc marker line — it's already shown as the styled chip above */
+  const text = (src ?? "").replace(/^\s*<!--\s*sdlc:[^>]*-->\s*\n?/, "");
+  const lines = text.split("\n");
+  const out = [];
+  let para = [], list = null, inFence = false, fence = [];
+  const flushPara = () => { if (para.length){ out.push(`<p>${para.map(mdInline).join(" ")}</p>`); para = []; } };
+  const flushList = () => { if (list){ out.push(`<${list.tag}>${list.items.map(i => `<li>${mdInline(i)}</li>`).join("")}</${list.tag}>`); list = null; } };
+  const flushAll = () => { flushPara(); flushList(); };
+  for (const raw of lines){
+    if (raw.trim().startsWith("```")){
+      if (inFence){ out.push(`<pre><code>${esc(fence.join("\n"))}</code></pre>`); fence = []; inFence = false; }
+      else { flushAll(); inFence = true; }
+      continue;
+    }
+    if (inFence){ fence.push(raw); continue; }
+    const line = raw.trim();
+    if (!line){ flushAll(); continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h){ flushAll(); const lvl = Math.min(h[1].length + 2, 6); out.push(`<h${lvl}>${mdInline(h[2])}</h${lvl}>`); continue; }
+    const ul = line.match(/^[-*]\s+(.*)$/);
+    if (ul){ flushPara(); if (!list || list.tag !== "ul"){ flushList(); list = {tag:"ul", items:[]}; } list.items.push(ul[1]); continue; }
+    const ol = line.match(/^\d+\.\s+(.*)$/);
+    if (ol){ flushPara(); if (!list || list.tag !== "ol"){ flushList(); list = {tag:"ol", items:[]}; } list.items.push(ol[1]); continue; }
+    flushList(); para.push(line);
+  }
+  if (inFence) out.push(`<pre><code>${esc(fence.join("\n"))}</code></pre>`);
+  flushAll();
+  return out.join("");
+}
 
 const STATUS_CLASS = {
   "Backlog":"s-todo", "Ready":"s-todo", "Planning":"s-prog", "Building":"s-prog",
@@ -639,8 +700,8 @@ function renderModal(){
   } else {
     body = (t.comments && t.comments.length)
       ? t.comments.map(c => `<div class="cmt"><div class="node"></div><div class="cbody">
-          <div class="marker">&lt;!-- sdlc:stage=${esc(c.stage)} kind=${esc(c.kind)} --&gt;</div>
-          <div class="text">${esc(c.body)}</div></div></div>`).join("")
+          <div class="marker">stage=${esc(c.stage)} · kind=${esc(c.kind)}</div>
+          <div class="text md">${renderMd(c.body)}</div></div></div>`).join("")
       : `<p class="empty">No comments yet.</p>`;
   }
   modal.innerHTML = `
