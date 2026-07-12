@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "The ADR-004 machinery beyond the per-endpoint discipline (which every epic carries as a quality gate): TTL tier registry per endpoint class, in-memory hot-event structures (availability counters, event snapshots) with write-path invalidation, hot-event designation (manual + automatic), cache kill-switch for incidents, staleness tests, and an on-sale read load test proving database reads stay flat while buyer traffic scales.\n\n**Conditions of Success:**\n- On-sale load test: buyer-facing read RPS scales while database read load stays near-flat for hot events\n- A stale 'sold out'/'available' display decays within its declared tier TTL; correctness always restored at claim time (ADR-002)\n- Kill-switch bypasses caches per service without redeploy; staleness/invalidation covered by automated tests\n- Storefront call budget audited: one aggregated call per page view, client refresh cadence driven by response TTLs\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map) · docs/adr/ADR-004-cache-first-read-path.md",
+  "description": "The ADR-004 machinery beyond the per-endpoint discipline (which every epic carries as a quality gate): TTL tier registry per endpoint class, in-memory hot-event structures (availability counters, event snapshots) with write-path invalidation, hot-event designation (manual + automatic), cache kill-switch for incidents, staleness tests, and an on-sale read load test proving database reads stay flat while buyer traffic scales.\n\n**Conditions of Success:**\n- On-sale load test at the festival-scale NFR (~50-100k capacity, 100k+ queued buyers): buyer-facing read RPS scales while database read load stays near-flat for hot events\n- A stale 'sold out'/'available' display decays within its declared tier TTL; correctness always restored at claim time (ADR-002)\n- Kill-switch bypasses caches per service without redeploy; staleness/invalidation covered by automated tests\n- Storefront call budget audited: one aggregated call per page view, client refresh cadence driven by response TTLs\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map) · docs/adr/ADR-004-cache-first-read-path.md",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1). Note: the per-endpoint TTL discipline itself is NOT deferred to this epic — it is a quality gate on every read-endpoint story from US-002 onward (ADR-004)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): load-test COS quantified at festival scale."
     }
   ]
 }
