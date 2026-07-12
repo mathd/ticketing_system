@@ -2,8 +2,10 @@
   "key": "TKT-25",
   "type": "Story",
   "summary": "US-001: Platform scaffold — one command, all services up",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "claude",
   "pr": null,
   "parent": "TKT-1",
