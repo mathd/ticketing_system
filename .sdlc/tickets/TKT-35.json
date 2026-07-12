@@ -1,0 +1,17 @@
+{
+  "key": "TKT-35",
+  "type": "Epic",
+  "summary": "Epic: Interactive seat selection (storefront)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Buyer-facing seat picker: render TKT-3 seat maps, live availability via ADR-004 cached tiers, pick-your-own with adjacency/orphan-seat rules, atomic claims on selection.\n\n**Conditions of Success:**\n- Buyer picks specific seats on a large map under festival-scale read load; availability staleness within its ADR-004 tier\n- Selected seats claim atomically — two buyers can't both hold the same seat (TKT-4 core)\n- Orphan-single-seat prevention rules configurable per map\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map). Origin: backlog grilling 2026-07-12.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Blind spot found in review: designer (TKT-3) and best-available (TKT-4) existed, but nobody owned the buyer-facing picker."
+    }
+  ]
+}
