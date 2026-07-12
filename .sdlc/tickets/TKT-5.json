@@ -1,0 +1,17 @@
+{
+  "key": "TKT-5",
+  "type": "Epic",
+  "summary": "Epic: Pricing & overridable rules hierarchy",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Price levels per ticket type, time-based/tiered pricing, and the rule hierarchy venue → series → event → price level with explicit overrides. Includes a spike: DSL vs declarative config for complex event programming (owner is open to a DSL).\n\n**Conditions of Success:**\n- A price resolves deterministically through the hierarchy with visible provenance (which level won)\n- Scheduled price changes (early-bird tiers) apply without manual intervention\n- DSL-vs-config spike concluded with an ADR\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
