@@ -1,0 +1,17 @@
+{
+  "key": "TKT-38",
+  "type": "Epic",
+  "summary": "Epic: Waitlists & returns",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Sold-out waitlist: join, position visibility, auto-offer with expiry when returns/releases/kills free inventory, offer cascade on decline/expiry. Rides on TKT-4 holds machinery; honors TKT-20 purchase limits.\n\n**Conditions of Success:**\n- Freed inventory triggers a time-boxed offer to the head of the waitlist; expiry cascades to the next\n- Waitlist honors per-event purchase limits and account requirements\n- Waitlist-to-purchase conversion is traceable end-to-end (ADR-003)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map). Origin: backlog grilling 2026-07-12.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Owner confirmed in grilling: in scope (was absent)."
+    }
+  ]
+}
