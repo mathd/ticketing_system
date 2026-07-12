@@ -4,7 +4,7 @@
   "summary": "SPIKE: Astro 7 storefront shell — prove or reject ADR-006",
   "status": "Building",
   "labels": [
-    "agent:coding",
+    "needs:human",
     "risk:low"
   ],
   "assignee": "claude",
@@ -80,6 +80,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Codex adversarial review — 3 blocking findings, all valid. Fixing, not defending.**\n\n1. **AC4 \"impossible by construction\" was overstated (BLOCKING).** True only for *availability* (structurally absent from HTML). I wrongly generalized it, then **embedded price into cached HTML while ALSO exposing an independently-cached price API** — two copies of one value with independent cache lifetimes = a real stale-page/fresh-API mismatch. Since ADR-006's rule makes AC4 failure → Reject, I can't Accept on the old wording.\n2. **Page caching was asserted, not demonstrated (BLOCKING).** The spike nginx was a pass-through proxy with no `proxy_cache`; I proved header *emission*, not cache *reuse*.\n3. **\"Every failure state handled\" overclaimed (BLOCKING).** One of five is the happy path; more materially, checkout trusts the stored deadline and never re-validates against `GET /api/holds/:id` — a server-revoked hold with a future client deadline renders \"valid\". That's a seam demo, not rehydration *correctness*.\n+ incidental: ADR body still literally names the fictional `src/fetch.ts`/`Astro.cache`.\n\n**Fixes in progress:** (a) close the price double-source so AC4's guarantee is real (single-source: price lives only in the page, no independently-cached price endpoint on the browse path); (b) add nginx `proxy_cache` and demonstrate actual HTML reuse + availability bypass; (c) add server-side hold re-validation on checkout rehydration and downgrade the claim wording; (d) correct the ADR body, not just a preamble. Then re-green evidence and re-post."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Codex review triaged — 3 blocking findings all fixed & verified. → needs:human (Gate 3).**\n\n| Finding | Verdict | Fix (verified) |\n|---|---|---|\n| AC4 \"impossible by construction\" overstated; price double-source | blocking, valid | One aggregated page read carries price; standalone `/price` → `no-store`. Ownership rule rewritten with an explicit **single-source** clause. Re-tested: only the page is a cacheable price copy. |\n| Page caching asserted, not demonstrated | blocking, valid | nginx `proxy_cache` added; evidence now shows real HTML reuse `X-Cache-Status: MISS`→`HIT`, not header emission. |\n| Checkout trusts client deadline | blocking, valid | Checkout re-validates against `GET /api/holds/:id`; forged future-deadline hold now renders \"no longer valid\" (verified in-browser). |\n| ADR body still names fictional APIs | incidental, valid | Corrected the ADR **body** (Context + AC1 + References), not just the preamble. |\n| integer-money / availability-absence | (review confirmed correct) | no change needed |\n\nFollowed the \"fix in PR, don't re-run codex on my own fixes\" rule; fixes verified by clean Astro build + real-browser re-test through real nginx. **Decision stays ACCEPT** — the four gating criteria are now genuinely met, honestly scoped (\"shell hypothesis proven, not integration\").\n\n**Ball is with the human (Gate 3):** review PR #4 and, if good, **squash-merge** in the repo, then move TKT-39 → PO Review. Review-guide posted on the PR. Note: this is a spike — the merged artifacts are the report + ADR decision only; the prototype is throwaway/gitignored."
     }
   ]
 }
