@@ -1,0 +1,17 @@
+{
+  "key": "TKT-8",
+  "type": "Epic",
+  "summary": "Epic: Cart, combos/packages & cross-sell",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Multi-item cart spanning inventory models; combos/packages with bundle pricing; parking and merchandise cross-sell attached to ticket purchases.\n\n**Conditions of Success:**\n- One cart mixes tickets, lodging, parking and merch and checks out atomically (all-or-nothing holds)\n- Combos price as a bundle and decompose correctly for settlement/refunds\n- Cross-sell suggestions configurable per event/venue\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
