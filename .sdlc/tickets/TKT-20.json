@@ -1,0 +1,17 @@
+{
+  "key": "TKT-20",
+  "type": "Epic",
+  "summary": "Epic: Waiting room & abuse protection",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Virtual queue for hot on-sales with fair ordering, purchase limits (per customer/card/event), rate limiting and suspicious-order flagging.\n\n**Conditions of Success:**\n- Queue admits fairly (no line-jumping) and meters load into checkout\n- Purchase limits enforce at checkout across guest/account identities\n- Abuse signals flag orders for staff review without blocking legitimate buyers\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
