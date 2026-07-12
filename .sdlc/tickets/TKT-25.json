@@ -4,7 +4,7 @@
   "summary": "US-001: Platform scaffold — one command, all services up",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "claude",
   "pr": null,
