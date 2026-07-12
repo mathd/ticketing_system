@@ -8,7 +8,7 @@
   "pr": null,
   "parent": "TKT-1",
   "classification": "simple",
-  "description": "**As** an organizer, **I want** to create a venue, event, performance and GA ticket type via the catalog API and see it listed on the storefront.\n\n**Priority:** P0\n**Depends on:** US-001 (TKT-25)\n\n**Acceptance Criteria:**\n- [ ] Catalog API: create venue (GA capacity), event, dated performance, ticket type with EUR price; persisted; OpenAPI contract published\n- [ ] Publishing a performance emits a domain event; storefront lists published performances with name/date/price (browser-verified)\n- [ ] Public catalog reads (event list, event detail) carry explicit Cache-Control TTLs per ADR-004 tiers; the storefront page issues one aggregated call and does not re-fetch within the TTL\n- [ ] Entities carry an organizer_id even though v1 has one organizer\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "description": "**As** an organizer, **I want** to create a venue, event, performance and GA ticket type via the catalog API and see it listed on the storefront.\n\n**Priority:** P0\n**Depends on:** US-001 (TKT-25)\n\n**Acceptance Criteria:**\n- [ ] Catalog API: create venue (GA capacity), event, dated performance, ticket type with EUR price; persisted; OpenAPI contract published\n- [ ] Publishing a performance emits a domain event; storefront lists published performances with name/date/price (browser-verified)\n- [ ] Public catalog reads (event list, event detail) carry explicit Cache-Control TTLs per ADR-004 tiers; the storefront page issues one aggregated call and does not re-fetch within the TTL\n- [ ] Event content fields are localizable; the storefront renders FR and EN (locale switch) with locale-aware date/money formatting (TKT-36 plumbing born here)\n- [ ] Entities carry an organizer_id even though v1 has one organizer\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
   "context": {
     "binding": [
       {
@@ -44,6 +44,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Scope amended pre-Gate-1 (owner directive 2026-07-12): public catalog reads must be cacheable with ADR-004 TTL tiers, storefront call-frugal. New AC added; ADR-004 baked into context binding."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): FR+EN locale plumbing is born in this story (owner: i18n from the start)."
     }
   ],
   "links": [
