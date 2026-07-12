@@ -1,0 +1,44 @@
+{
+  "key": "TKT-25",
+  "type": "Story",
+  "summary": "US-001: Platform scaffold — one command, all services up",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-1",
+  "classification": "complex",
+  "description": "**As** a developer, **I want** a monorepo where `docker compose up` starts the five Go services, gateway, storefront and scanner shells with health checks, and `make check` runs the full local gate.\n\nThis is the prefactoring slice: it defines the repo layout, the gate (`make check` becomes `config.code.localGate`) and CI. It also supersedes the Python-scaffold docs (`docs/{configuration,development,docker,testing}.md`) with Go/TS equivalents.\n\n**Priority:** P0\n**Depends on:** —\n\n**Acceptance Criteria:**\n- [ ] `docker compose up` from a clean clone brings up gateway + 5 service skeletons + storefront + scanner shell; `/healthz` green on all\n- [ ] Storefront placeholder page served through the gateway in a browser\n- [ ] `make check` (lint + test + build, Go & TS) passes, and fails correctly on seeded lint/test errors; documented in README; CI runs the same gate\n- [ ] Repo layout + service ownership documented in docs/architecture.md\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "We adopt Go for all backend services and TypeScript + React for the three frontends (storefront, back office, scanner). Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-002",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — Milestone 1 walking skeleton stories",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-002 service map (five services, gateway, event bus)",
+        "link": "docs/adr/ADR-002-services-from-day-one.md"
+      }
+    ],
+    "capturedAt": "2026-07-12"
+  },
+  "comments": [],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-26"
+    }
+  ]
+}
