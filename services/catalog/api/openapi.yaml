@@ -1,0 +1,483 @@
+# Catalog public contract (US-002 / TKT-26) — source of truth per ADR-009.
+# Served by the service at /openapi.yaml; public URL /api/catalog/openapi.yaml
+# (the gateway strips the /api/catalog prefix). Regenerate code with `make generate`.
+openapi: 3.0.3
+info:
+  title: Catalog service API
+  description: >
+    Venues, events, performances (dated slots per ADR-005) and ticket types.
+    Write endpoints are v1-trusted (no auth yet, recorded in TKT-26). Public
+    reads are aggregated (one call per storefront page view, ADR-004) and carry
+    volatility-tiered Cache-Control headers. Money is integer minor units +
+    ISO-4217 currency (ADR-001); floats never appear on money paths.
+  version: 1.0.0
+paths:
+  /venues:
+    post:
+      operationId: createVenue
+      summary: Create a general-admission venue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VenueCreate'
+      responses:
+        '201':
+          description: Venue created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Venue'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /events:
+    post:
+      operationId: createEvent
+      summary: Create an event (localizable content)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventCreate'
+      responses:
+        '201':
+          description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /performances:
+    post:
+      operationId: createPerformance
+      summary: Create a dated performance (draft)
+      description: >
+        A performance is the catalog's first dated slot (ADR-005): a datable,
+        admission-granting offer. Its shape deliberately carries no
+        concert-specific fields so festival days and park operating days fit
+        the same machinery later.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PerformanceCreate'
+      responses:
+        '201':
+          description: Performance created in draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Performance'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /performances/{performanceId}/publish:
+    post:
+      operationId: publishPerformance
+      summary: Publish a performance (idempotent)
+      description: >
+        Flips draft to published and emits the
+        platform.catalog.performance.published domain event exactly on the
+        draft-to-published transition. Publishing an already-published
+        performance returns 200 without re-emitting.
+      parameters:
+        - $ref: '#/components/parameters/PerformanceId'
+      responses:
+        '200':
+          description: Performance is published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Performance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /ticket-types:
+    post:
+      operationId: createTicketType
+      summary: Create a ticket type with a price
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketTypeCreate'
+      responses:
+        '201':
+          description: Ticket type created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketType'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /public/events:
+    get:
+      operationId: listPublicEvents
+      summary: Aggregated storefront list read (minutes tier)
+      description: >
+        Everything the storefront list page needs in one call (ADR-004 rule 3).
+        Only events with at least one publicly listable performance appear —
+        published AND carrying at least one ticket type (no sellable offer, no
+        listing). An event with several such performances appears once,
+        listing each slot.
+        Cache-Control: public, max-age=300, s-maxage=300 (minutes tier).
+      parameters:
+        - $ref: '#/components/parameters/Locale'
+      responses:
+        '200':
+          description: Published events, localized
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicEventList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /public/events/{eventId}:
+    get:
+      operationId: getPublicEvent
+      summary: Aggregated storefront detail read (minutes tier)
+      description: >
+        Everything the storefront detail page needs in one call, including
+        ticket types and prices. 404 unless the event has at least one
+        publicly listable performance (published + priced). Cache-Control: public, max-age=300,
+        s-maxage=300 (minutes tier).
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+        - $ref: '#/components/parameters/Locale'
+      responses:
+        '200':
+          description: Published event detail, localized
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicEventDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      summary: This contract, as committed (ADR-009)
+      responses:
+        '200':
+          description: The OpenAPI document, byte-identical to the repo file
+          content:
+            application/yaml:
+              schema:
+                type: string
+components:
+  parameters:
+    Locale:
+      name: locale
+      in: query
+      required: true
+      description: BCP-47 primary subtag; supported set is data, not schema (TKT-36)
+      schema:
+        type: string
+        pattern: '^[a-z]{2}$'
+    PerformanceId:
+      name: performanceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  headers:
+    CacheControl:
+      description: ADR-004 volatility tier, explicit on every public read
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Referenced entity does not exist (or is not published, on public reads)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    LocalizedString:
+      description: Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
+      type: object
+      additionalProperties:
+        type: string
+    Money:
+      description: Integer minor units + ISO-4217 code (ADR-001); no floats, ever
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+    VenueCreate:
+      type: object
+      required: [organizer_id, name, ga_capacity]
+      properties:
+        organizer_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+        ga_capacity:
+          type: integer
+          format: int32
+          minimum: 1
+    Venue:
+      type: object
+      required: [id, organizer_id, name, ga_capacity, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizer_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        ga_capacity:
+          type: integer
+          format: int32
+        created_at:
+          type: string
+          format: date-time
+    EventCreate:
+      type: object
+      required: [organizer_id, name]
+      properties:
+        organizer_id:
+          type: string
+          format: uuid
+        name:
+          $ref: '#/components/schemas/LocalizedString'
+        description:
+          $ref: '#/components/schemas/LocalizedString'
+    Event:
+      type: object
+      required: [id, organizer_id, name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizer_id:
+          type: string
+          format: uuid
+        name:
+          $ref: '#/components/schemas/LocalizedString'
+        description:
+          $ref: '#/components/schemas/LocalizedString'
+        created_at:
+          type: string
+          format: date-time
+    PerformanceCreate:
+      type: object
+      required: [organizer_id, event_id, venue_id, starts_at, timezone]
+      properties:
+        organizer_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        venue_id:
+          type: string
+          format: uuid
+        starts_at:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          description: IANA zone name, e.g. Europe/Paris
+          minLength: 1
+    Performance:
+      type: object
+      required: [id, organizer_id, event_id, venue_id, starts_at, timezone, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizer_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        venue_id:
+          type: string
+          format: uuid
+        starts_at:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        status:
+          type: string
+          enum: [draft, published]
+        published_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    TicketTypeCreate:
+      type: object
+      required: [organizer_id, performance_id, name, price]
+      properties:
+        organizer_id:
+          type: string
+          format: uuid
+        performance_id:
+          type: string
+          format: uuid
+        name:
+          $ref: '#/components/schemas/LocalizedString'
+        price:
+          $ref: '#/components/schemas/Money'
+    TicketType:
+      type: object
+      required: [id, organizer_id, performance_id, name, price, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizer_id:
+          type: string
+          format: uuid
+        performance_id:
+          type: string
+          format: uuid
+        name:
+          $ref: '#/components/schemas/LocalizedString'
+        price:
+          $ref: '#/components/schemas/Money'
+        created_at:
+          type: string
+          format: date-time
+    PublicEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicEventSummary'
+    PublicEventSummary:
+      type: object
+      required: [id, name, performances]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        performances:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicPerformanceSummary'
+    PublicPerformanceSummary:
+      type: object
+      required: [id, starts_at, timezone, venue_name, from_price]
+      properties:
+        id:
+          type: string
+          format: uuid
+        starts_at:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        venue_name:
+          type: string
+        from_price:
+          $ref: '#/components/schemas/Money'
+    PublicEventDetail:
+      type: object
+      required: [id, name, performances]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        performances:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicPerformanceDetail'
+    PublicPerformanceDetail:
+      type: object
+      required: [id, starts_at, timezone, venue, ticket_types]
+      properties:
+        id:
+          type: string
+          format: uuid
+        starts_at:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        venue:
+          $ref: '#/components/schemas/PublicVenue'
+        ticket_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicTicketType'
+    PublicVenue:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+    PublicTicketType:
+      type: object
+      required: [id, name, price]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        price:
+          $ref: '#/components/schemas/Money'
