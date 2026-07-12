@@ -8,7 +8,7 @@
   "pr": null,
   "parent": "TKT-1",
   "classification": "simple",
-  "description": "**As** a buyer, **I want** my ticket with a QR code by email and on a web page after purchase. Mailer is a port with log transport (brief non-goal: no notifications service).\n\n**Priority:** P1\n**Depends on:** US-004 (TKT-28)\n\n**Acceptance Criteria:**\n- [ ] Access service issues a signed QR payload per paid ticket, triggered by the order-completed event\n- [ ] Mailer port (log transport) records a delivery with ticket link; buyer ticket page renders the QR (browser-verified)\n- [ ] Issuance and delivery are recorded as append-only ticket lifecycle events linked to the order (ADR-003); the ticket's history is queryable\n- [ ] Tickets are re-retrievable by order reference (guest flow, no account)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "description": "**As** a buyer, **I want** my ticket with a QR code by email and on a web page after purchase. Mailer is a port with log transport (brief non-goal: no notifications service).\n\n**Priority:** P1\n**Depends on:** US-004 (TKT-28)\n\n**Acceptance Criteria:**\n- [ ] Access service issues a signed QR payload per paid ticket, triggered by the order-completed event\n- [ ] Mailer port (log transport) records a delivery with ticket link; buyer ticket page renders the QR (browser-verified)\n- [ ] Issuance and delivery are recorded as append-only ticket lifecycle events linked to the order (ADR-003); the ticket's history is queryable; lifecycle events carry pseudonymous IDs only — delivery address resolved from the PII store at send time\n- [ ] Tickets are re-retrievable by order reference (guest flow, no account)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
   "context": {
     "binding": [
       {
@@ -18,7 +18,7 @@
       },
       {
         "id": "ADR-003",
-        "rule": "Two append-only trails, one discipline: (1) money journal — every money-relevant record immutable, sequence-numbered, hash-chained, signed; corrections are compensating entries, never updates; read models are projections; verify-journal runs in the local gate from US-004 onward. (2) ticket lifecycle trace — every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated, pass entry) is an append-only lifecycle event linked to its order/journal entries; redemption/reissue decisions are made from the trace, not a mutable flag. (3) NF525 is a later-phase profile that must layer on without schema or flow changes.",
+        "rule": "Append-only trails, one discipline: (1) money journal — every money-relevant record immutable, sequence-numbered, hash-chained, signed; corrections are compensating entries; read models are projections; verify-journal in the local gate from US-004. (2) ticket lifecycle trace — every ticket/entitlement state change is an append-only lifecycle event linked to its order; redemption/reissue decisions are made from the trace. (3) trails are pseudonymous: records reference customers by pseudonymous ID only, PII lives in a separate erasable store; no raw PII in any append-only record (enforced invariant from US-004). (4) NF525 is a later-phase profile that must layer on without schema or flow changes.",
         "date": "2026-07-12"
       }
     ],
@@ -39,6 +39,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Scope amended pre-Gate-1 (owner directive 2026-07-12): NF525 is NOT an immediate goal — it becomes a later-phase French-market profile. The underlying requirement is generalized: traceability is a must, with the same audit-trail thinking for money AND tickets (ADR-003 reworked accordingly). New AC: issuance/delivery recorded as append-only lifecycle events."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): lifecycle events pseudonymous per amended ADR-003."
     }
   ],
   "links": [
