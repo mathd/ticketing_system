@@ -4,10 +4,14 @@
   "summary": "US-001: Platform scaffold — one command, all services up",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "claude",
-  "pr": null,
+  "pr": {
+    "number": 1,
+    "url": "https://github.com/mathd/ticketing_system/pull/1",
+    "state": "open"
+  },
   "parent": "TKT-1",
   "classification": "complex",
   "description": "**As** a developer, **I want** a monorepo where `docker compose up` starts the five Go services, gateway, storefront and scanner shells with health checks, and `make check` runs the full local gate.\n\nThis is the prefactoring slice: it defines the repo layout, the gate (`make check` becomes `config.code.localGate`) and CI. It also supersedes the Python-scaffold docs (`docs/{configuration,development,docker,testing}.md`) with Go/TS equivalents.\n\n**Priority:** P0\n**Depends on:** —\n\n**Acceptance Criteria:**\n- [ ] `docker compose up` from a clean clone brings up gateway + 5 service skeletons + storefront + scanner shell; `/healthz` green on all\n- [ ] Storefront placeholder page served through the gateway in a browser\n- [ ] `make check` (lint + test + build, Go & TS) passes, and fails correctly on seeded lint/test errors; documented in README; CI runs the same gate\n- [ ] Services emit structured JSON logs with correlation/trace IDs propagated across service calls; a local tracing/metrics stack runs in Compose (concrete tooling chosen in the plan)\n- [ ] Repo layout + service ownership documented in docs/architecture.md\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).\n\n*Planning note:* the US-001 plan must propose the database(s) and event bus as an ADR, approved at the plan gate.",
@@ -66,6 +70,11 @@
       "stage": "plan-review",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=plan-review kind=plan-final -->\n### Plan amendment #2 (owner steering, 2026-07-12) — supersedes prior plan-final on these points only\n\n1. **Go 1.26** (latest stable 1.26.5, go.dev/doc/devel/release) for all services and the gateway.\n2. **Router: chi (v5, latest) for the five services** — net/http-compatible, stdlib handlers, standard middleware (incl. otelhttp) works unmodified; chosen over stdlib ServeMux for subrouters + per-group middleware we know are coming (tenant extraction, auth groups, ADR-004 cache-header layer per route class). Rejected: Fiber (fasthttp breaks the otel/net-http ecosystem), Gin/Echo (custom contexts, no added value over OpenAPI codegen). **Gateway stays bare stdlib** (ReverseProxy + explicit route table). Owner approved 2026-07-12 after online research.\n3. Latest-by-default policy (amendment #1) explicitly extends to Go frameworks and all Go module dependencies.\n\nEverything else stands. Ticket remains at Gate 2 awaiting plan approval."
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n### Coding summary — TKT-25\n\nAll 5 ACs implemented and verified; `make check` green end-to-end (8 modules lint-clean, unit tests, builds, 7/7 smoke tests, gate self-test catches all 5 seeded failures). PR #1 open.\n\nNotable in-flight findings (all fixed): oxlint warnings don't fail by default -> `--deny-warnings`; pnpm 11 supply-chain release-age policy rejected a pnpm-10 lockfile -> pinned pnpm 11 via packageManager and re-resolved; nginx IPv4-only listen vs localhost=::1 healthchecks; gateway must not strip the /scanner prefix; OTel resource schema conflict -> schemaless service resource; selftest must pnpm-install its own worktree (symlinked node_modules gets rewired by pnpm).\n\nDeviation from plan (minor): the PLATFORM JetStream stream is created idempotently by the smoke suite rather than a one-shot compose bootstrap container - fewer moving parts, same proof. Browser evidence in docs/evidence/TKT-25/."
     }
   ],
   "links": [
