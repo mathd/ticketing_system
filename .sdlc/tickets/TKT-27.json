@@ -1,0 +1,39 @@
+{
+  "key": "TKT-27",
+  "type": "Story",
+  "summary": "US-003: Contention-safe GA reservation with cart holds",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-1",
+  "classification": "complex",
+  "description": "**As** a buyer, **I want** to reserve N GA tickets held for me briefly; **as** the owner, I want oversell to be impossible under load. This story establishes the inventory service's single-writer claim core that every later inventory model (seats, entitlements, lodging, wristbands) reuses.\n\n**Priority:** P0\n**Depends on:** US-002 (TKT-26)\n\n**Acceptance Criteria:**\n- [ ] Inventory service exposes hold/confirm/release on performance capacity; hold has a TTL and expiry returns capacity\n- [ ] Concurrency proof: automated test slams a capacity-C performance with far more than C parallel hold requests; granted holds never exceed C; test runs in make check\n- [ ] Storefront: pick quantity → hold created → countdown visible (browser-verified)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-002",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — Milestone 1 walking skeleton stories",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-002 service map (five services, gateway, event bus)",
+        "link": "docs/adr/ADR-002-services-from-day-one.md"
+      }
+    ],
+    "capturedAt": "2026-07-12"
+  },
+  "comments": [],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-28"
+    }
+  ]
+}
