@@ -1,0 +1,34 @@
+{
+  "key": "TKT-30",
+  "type": "Story",
+  "summary": "US-006: Gate scan with duplicate rejection",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-1",
+  "classification": "simple",
+  "description": "**As** gate staff, **I want** to scan a ticket and get an unambiguous accept/reject. Closes the walking skeleton: the brief's end-to-end demo script lands here.\n\n**Priority:** P1\n**Depends on:** US-005 (TKT-29)\n\n**Acceptance Criteria:**\n- [ ] Scan API validates signature, marks the ticket redeemed atomically; second scan rejects with reason + original scan time; invalid/forged payload rejects\n- [ ] Scanner web page: camera-or-paste input, green/red result (browser-verified)\n- [ ] End-to-end demo script (brief success metric, incl. verify-journal step) passes on a clean machine and runs in CI\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-002",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — Milestone 1 walking skeleton stories",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Product brief — outcome, non-goals, success metric",
+        "link": "docs/product/brief.md"
+      }
+    ],
+    "capturedAt": "2026-07-12"
+  },
+  "comments": [],
+  "links": []
+}
