@@ -4,7 +4,7 @@
   "summary": "US-003: Contention-safe GA reservation with cart holds",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "Codex",
   "pr": null,
