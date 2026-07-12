@@ -1,0 +1,17 @@
+{
+  "key": "TKT-9",
+  "type": "Epic",
+  "summary": "Epic: Orders & post-purchase lifecycle",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Refunds full/partial, exchanges with price-difference settlement, transfers and controlled resale, event-cancellation bulk flows — all as compensating journal entries (ADR-003).\n\n**Conditions of Success:**\n- Refund/exchange restore inventory and write compensating entries; chain still verifies\n- Exchanges settle price differences in either direction\n- Cancellation flow processes an event's full order book with per-order outcomes\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
