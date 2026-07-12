@@ -15,6 +15,12 @@ on:
       - .dockerignore
       - go.work
       - go.work.sum
+      - "**/go.mod"
+      - "**/go.sum"
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - web/scanner/package.json
       - web/scanner/Dockerfile
       - web/storefront/Dockerfile
       - .github/workflows/hermetic.yaml

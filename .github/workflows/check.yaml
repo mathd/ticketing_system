@@ -24,13 +24,14 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
-      # golangci-lint analysis cache; version key must match GOLANGCI_VERSION
-      # in the Makefile
+      # golangci-lint analysis cache, keyed on the Makefile's pinned version
+      - id: golangci-version
+        run: echo "v=$(sed -n 's/^GOLANGCI_VERSION := //p' Makefile)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
         with:
           path: ~/.cache/golangci-lint
-          key: golangci-v2.12.2-${{ runner.os }}-${{ hashFiles('**/go.sum', 'go.work.sum') }}
-          restore-keys: golangci-v2.12.2-${{ runner.os }}-
+          key: golangci-${{ steps.golangci-version.outputs.v }}-${{ runner.os }}-${{ hashFiles('**/go.sum', 'go.work.sum') }}
+          restore-keys: golangci-${{ steps.golangci-version.outputs.v }}-${{ runner.os }}-
       - run: make check
 
   gate-selftest:
