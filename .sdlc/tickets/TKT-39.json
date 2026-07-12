@@ -4,7 +4,7 @@
   "summary": "SPIKE: Astro 7 storefront shell — prove or reject ADR-006",
   "status": "Building",
   "labels": [
-    "agent:ai-review",
+    "agent:coding",
     "risk:low"
   ],
   "assignee": "claude",
@@ -75,6 +75,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Prototype built + evidence captured; PR #4 open.**\n\nBuilt (throwaway, gitignored `spike/`): Node mock API with ADR-004-tiered `Cache-Control` + fault injection, an nginx gateway (captured through real nginx 1.27), and an Astro 7.0.7 SSR app (list/detail + availability React island + hold-countdown → React SPA checkout + i18n middleware). Delegated the mechanical build to gpt-5.5/codex; drove verification myself (codex sandbox can't open TCP listeners).\n\n**Verified in a real browser through real nginx** (`spike/EVIDENCE.md`): per-surface cache tiers (minutes HTML / seconds availability / `no-store` transactional), availability provably absent from cached HTML, hold-countdown surviving MPA nav into the React checkout (115s→111s, no reset), and all 5 checkout failure states (valid/expired/missing/corrupt/storage-disabled). Money is integer minor units + ISO currency (ADR-001).\n\nCommitted deliverables only: spike report (`docs/spikes/`), ADR-006 flipped to Accepted with fictional API names corrected to real `astro@7.0.7`, and `.gitignore`. Next: codex adversarial review of the diff."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Codex adversarial review — 3 blocking findings, all valid. Fixing, not defending.**\n\n1. **AC4 \"impossible by construction\" was overstated (BLOCKING).** True only for *availability* (structurally absent from HTML). I wrongly generalized it, then **embedded price into cached HTML while ALSO exposing an independently-cached price API** — two copies of one value with independent cache lifetimes = a real stale-page/fresh-API mismatch. Since ADR-006's rule makes AC4 failure → Reject, I can't Accept on the old wording.\n2. **Page caching was asserted, not demonstrated (BLOCKING).** The spike nginx was a pass-through proxy with no `proxy_cache`; I proved header *emission*, not cache *reuse*.\n3. **\"Every failure state handled\" overclaimed (BLOCKING).** One of five is the happy path; more materially, checkout trusts the stored deadline and never re-validates against `GET /api/holds/:id` — a server-revoked hold with a future client deadline renders \"valid\". That's a seam demo, not rehydration *correctness*.\n+ incidental: ADR body still literally names the fictional `src/fetch.ts`/`Astro.cache`.\n\n**Fixes in progress:** (a) close the price double-source so AC4's guarantee is real (single-source: price lives only in the page, no independently-cached price endpoint on the browse path); (b) add nginx `proxy_cache` and demonstrate actual HTML reuse + availability bypass; (c) add server-side hold re-validation on checkout rehydration and downgrade the claim wording; (d) correct the ADR body, not just a preamble. Then re-green evidence and re-post."
     }
   ]
 }
