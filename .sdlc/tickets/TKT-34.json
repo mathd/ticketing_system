@@ -1,0 +1,17 @@
+{
+  "key": "TKT-34",
+  "type": "Epic",
+  "summary": "Epic: Invoicing & B2B payment terms",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Sequentially numbered invoice/receipt documents for orders (gapless numbering — feeds the NF525 profile later); agency/B2B accounts with pay-later reservations, due dates, partial payments, dunning. Completes TKT-4's group/agency reservation story.\n\n**Conditions of Success:**\n- Invoice numbering gapless per series; documents localized (TKT-36) and VAT-correct (TKT-32)\n- Agency reservation → invoice → (partial) payments reconcile in the journal\n- Overdue flow: reminders, hold expiry policy on non-payment\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map). Origin: backlog grilling 2026-07-12.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Blind spot found in review: group/agency pay-later existed with no billing counterpart."
+    }
+  ]
+}
