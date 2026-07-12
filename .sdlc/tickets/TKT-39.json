@@ -1,0 +1,53 @@
+{
+  "key": "TKT-39",
+  "type": "Spike",
+  "summary": "SPIKE: Astro 7 storefront shell — prove or reject ADR-006",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "complex",
+  "description": "Timeboxed spike (2 days) with a throwaway prototype — no production code, no scaffold dependency. Decides the storefront shell framework (Astro 7 + React islands vs React SPA) before US-002 (TKT-26) builds storefront UI. Outcome = ADR-006 moved from Proposed to Accepted or Rejected, with evidence.\n\n**Priority:** P1   **Depends on:** — (independent; blocks TKT-26)\n\n**Acceptance Criteria:**\n- [ ] Prototype: event list + event detail in Astro 7 — page HTML cached at the ADR-004 minutes tier, availability as a React island polling the seconds tier, Cache-Control set per route class via src/fetch.ts\n- [ ] Buy-half seam test: hold-countdown state survives MPA navigation into a React checkout surface; seams documented honestly, including what breaks\n- [ ] FR/EN locale routing demonstrated on localized event content (TKT-36 shape)\n- [ ] Written caching ownership rule (page layer vs API layer per ADR-004 tier) resolving the TKT-31 overlap — stale-page/fresh-API mismatch impossible by construction\n- [ ] Early-adopter tax log: compiler strictness, Rolldown/plugin gaps, bugs hit during the spike, with a tolerable/not-tolerable judgment\n- [ ] ADR-006 completed (Accepted or Rejected) from the evidence; report posted on this ticket\n\nQuality gates: n/a (throwaway prototype); the deliverable is the report + the ADR decision.",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "We adopt Go for all backend services and TypeScript + React for the three frontends (storefront, back office, scanner). Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-004",
+        "rule": "Every public read endpoint declares a volatility-tiered TTL with explicit Cache-Control (seat maps: hours; event lists/detail: minutes; price display: ~1 min; availability: seconds; hold/order/scan state: never cached); hot events are served from in-memory structures refreshed/invalidated from the write path; frontends make few aggregated calls and refresh on the endpoint's TTL cadence; writes are never cached.",
+        "date": "2026-07-12"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "ADR-006 (Proposed) — options, spike acceptance criteria 1-5, decision rule",
+        "link": "docs/adr/ADR-006-astro-storefront-shell.md"
+      },
+      {
+        "summary": "Astro 7.0 announcement (2026-06-22): Rust compiler, Vite 8/Rolldown, stable route caching, src/fetch.ts",
+        "link": "https://astro.build/blog/astro-7/"
+      },
+      {
+        "summary": "Astro v7 upgrade guide - breaking changes (compiler strictness, Satteri, compressHTML)",
+        "link": "https://docs.astro.build/en/guides/upgrade-to/v7/"
+      }
+    ],
+    "capturedAt": "2026-07-12"
+  },
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-26"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS = the ACs above; deliverable is evidence + the ADR-006 decision, not code. Suggest risk:low — throwaway prototype, zero production code, isolated from the repo; the plan gate adds little to a timeboxed exploration. Set the label only if the owner agrees. Note: this ticket blocks TKT-26 (US-002) — the storefront slice should not be built before its shell framework is decided. If you'd rather not gate M1 on the spike, remove the link and accept possible storefront rework."
+    }
+  ]
+}
