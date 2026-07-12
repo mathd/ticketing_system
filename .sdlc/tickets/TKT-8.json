@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "Multi-item cart spanning inventory models; combos/packages with bundle pricing; parking and merchandise cross-sell attached to ticket purchases.\n\n**Conditions of Success:**\n- One cart mixes tickets, lodging, parking and merch and checks out atomically (all-or-nothing holds)\n- Combos price as a bundle and decompose correctly for settlement/refunds\n- Cross-sell suggestions configurable per event/venue\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "description": "Multi-item cart spanning inventory models; combos/packages with bundle pricing; parking and merchandise cross-sell attached to ticket purchases.\n\n**Conditions of Success:**\n- One cart mixes tickets, lodging, parking and merch and checks out atomically (all-or-nothing holds)\n- Combos price as a bundle and decompose correctly for settlement/refunds\n- Cross-sell suggestions configurable per event/venue\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** scope includes a refund-protection add-on (buyer-paid insurance as a cross-sell line item) with its own refund/settlement semantics — coordinate with TKT-9 refund flows.",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): refund-protection add-on added to cross-sell scope."
     }
   ]
 }
