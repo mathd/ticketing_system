@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "Events, dated performances, series, seasons and festival structure in the catalog service; tenant-aware entities.\n\n**Conditions of Success:**\n- Organizer can model a single show, a run, a series/season and a festival skeleton via API\n- Publishing lifecycle (draft/published/archived) with domain events\n- Every entity carries organizer/tenant id (ADR-002)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "description": "Events, dated performances, series, seasons and festival structure in the catalog service; tenant-aware entities.\n\n**Conditions of Success:**\n- Organizer can model a single show, a run, a series/season and a festival skeleton via API\n- Publishing lifecycle (draft/published/archived) with domain events\n- Every entity carries organizer/tenant id (ADR-002)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** per ADR-005, performances, festival days and park operating days are all dated slots in one model; the catalog's slot abstraction must be pressure-tested against re-entry, mid-day capacity changes and weather closures during planning.",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): unified dated-slot admission model (ADR-005) governs this epic's core abstraction."
     }
   ]
 }
