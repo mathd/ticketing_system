@@ -1,0 +1,53 @@
+{
+  "key": "TKT-28",
+  "type": "Story",
+  "summary": "US-004: Checkout with fake PSP and append-only order journal",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-1",
+  "classification": "complex",
+  "description": "**As** a buyer, **I want** to pay for my held tickets and get an order confirmation. First money-path story: the ADR-003 journal is born here and every later money feature builds on it.\n\n**Priority:** P0\n**Depends on:** US-003 (TKT-27)\n\n**Acceptance Criteria:**\n- [ ] Commerce turns a hold into an order (EUR total, no fees); payments service authorizes/captures via the fake PSP port; success confirms the hold, failure/timeout releases it\n- [ ] Order + payment records are append-only, hash-chained and signed per ADR-003; a verify-journal command validates the chain end-to-end and joins make check\n- [ ] Declined-card path returns the buyer to a retriable state (browser-verified both paths)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "We adopt Go for all backend services and TypeScript + React for the three frontends (storefront, back office, scanner). Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-002",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-003",
+        "rule": "Append-only journal for every money-relevant record: immutable, sequence-numbered, hash-chained and signed; corrections are compensating entries, never updates; read models are projections. verify-journal runs in the local gate from US-004 onward.",
+        "date": "2026-07-12"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — Milestone 1 walking skeleton stories",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-002 service map (five services, gateway, event bus)",
+        "link": "docs/adr/ADR-002-services-from-day-one.md"
+      },
+      {
+        "summary": "Product brief — outcome, non-goals, success metric",
+        "link": "docs/product/brief.md"
+      }
+    ],
+    "capturedAt": "2026-07-12"
+  },
+  "comments": [],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-29"
+    }
+  ]
+}
