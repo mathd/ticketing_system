@@ -1,4 +1,7 @@
-# CI = exactly the local gate (`make check`), plus the gate self-test.
+# CI = the local gate (`make check`), plus the gate self-test.
+# Per-PR smoke runs against host-built artifacts (compose.smoke.yaml);
+# the hermetic in-Docker build path is covered by hermetic.yaml
+# (scheduled + triggered on PRs touching the build files).
 # Triggers are scoped to main + PRs; sdlc-state commits never reach CI.
 name: check
 
@@ -16,11 +19,22 @@ jobs:
         with:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
-      - uses: pnpm/action-setup@v4   # version comes from packageManager
+      # pnpm via corepack (version from packageManager, like the scanner
+      # Dockerfile) — pnpm/action-setup v6 is broken both in default and
+      # standalone mode (pnpm/action-setup#276)
+      - run: corepack enable pnpm && corepack install
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: pnpm
+      # golangci-lint analysis cache, keyed on the Makefile's pinned version
+      - id: golangci-version
+        run: echo "v=$(sed -n 's/^GOLANGCI_VERSION := //p' Makefile)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-${{ steps.golangci-version.outputs.v }}-${{ runner.os }}-${{ hashFiles('**/go.sum', 'go.work.sum') }}
+          restore-keys: golangci-${{ steps.golangci-version.outputs.v }}-${{ runner.os }}-
       - run: make check
 
   gate-selftest:
@@ -31,7 +45,10 @@ jobs:
         with:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
-      - uses: pnpm/action-setup@v4   # version comes from packageManager
+      # pnpm via corepack (version from packageManager, like the scanner
+      # Dockerfile) — pnpm/action-setup v6 is broken both in default and
+      # standalone mode (pnpm/action-setup#276)
+      - run: corepack enable pnpm && corepack install
       - uses: actions/setup-node@v6
         with:
           node-version: "24"

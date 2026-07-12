@@ -1,0 +1,37 @@
+# Hermetic smoke: the full in-Docker build path (compose.yaml only, no
+# host-built artifacts). Per-PR `make check` uses the fast host-built path
+# (TKT-42), so this workflow keeps the hermetic builds honest: weekly on
+# main, and on any PR that touches the build files themselves.
+name: hermetic-smoke
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  pull_request:
+    paths:
+      - build/go.Dockerfile
+      - compose.yaml
+      - compose.smoke.yaml
+      - .dockerignore
+      - go.work
+      - go.work.sum
+      - "**/go.mod"
+      - "**/go.sum"
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - web/scanner/package.json
+      - web/scanner/Dockerfile
+      - web/storefront/Dockerfile
+      - .github/workflows/hermetic.yaml
+
+jobs:
+  hermetic-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache-dependency-path: "**/go.sum"
+      - run: make smoke-hermetic

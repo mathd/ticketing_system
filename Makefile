@@ -12,7 +12,7 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: check lint test build smoke lint-go lint-ts test-go test-ts build-go build-ts up down clean
+.PHONY: check lint test build smoke smoke-hermetic lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux up down clean
 
 check: deps lint test build smoke
 
@@ -24,7 +24,7 @@ deps:
 lint: lint-go lint-ts
 
 $(GOLANGCI):
-	GOBIN=$(BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
+	./scripts/install-golangci-lint.sh $(GOLANGCI_VERSION) $(BIN)
 
 lint-go: $(GOLANGCI)
 	@for m in $(GO_MODULES); do \
@@ -59,9 +59,34 @@ build-go:
 build-ts:
 	pnpm -r build
 
+# Static linux binaries for the smoke packaging images (compose.smoke.yaml).
+# Separate from build-go: smoke images run distroless/static, so these must
+# be CGO-free and linux-targeted regardless of the host.
+GO_GATE_PKGS := \
+	catalog=ticketing/services/catalog/cmd/catalog \
+	inventory=ticketing/services/inventory/cmd/inventory \
+	commerce=ticketing/services/commerce/cmd/commerce \
+	payments=ticketing/services/payments/cmd/payments \
+	access=ticketing/services/access/cmd/access \
+	gateway=ticketing/gateway/cmd/gateway
+
+build-gate-linux:
+	@mkdir -p $(BIN)/gate
+	@for e in $(GO_GATE_PKGS); do \
+		n=$${e%%=*}; p=$${e#*=}; \
+		echo "go build (linux static): $$n"; \
+		CGO_ENABLED=0 GOOS=linux go build -trimpath -o $(BIN)/gate/$$n $$p || exit 1; \
+	done
+
 ## ---- smoke (integration seam; owns the stack lifecycle) ----
-smoke:
+# Per-PR smoke runs against host-built artifacts (fast). The hermetic
+# in-Docker build path is covered by `smoke-hermetic` (scheduled CI +
+# triggered on PRs touching the build files) — see docs/testing.md.
+smoke: build-gate-linux build-ts
 	./scripts/smoke.sh
+
+smoke-hermetic:
+	SMOKE_HERMETIC=1 ./scripts/smoke.sh
 
 ## ---- dev conveniences ----
 up:
