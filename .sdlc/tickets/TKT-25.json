@@ -4,7 +4,7 @@
   "summary": "US-001: Platform scaffold — one command, all services up",
   "status": "Ready",
   "labels": [],
-  "assignee": null,
+  "assignee": "claude",
   "pr": null,
   "parent": "TKT-1",
   "classification": "complex",
@@ -39,6 +39,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Backlog grilling 2026-07-12 (owner decisions): observability foundation (structured logs, trace propagation, local metrics stack) added as AC; DB + event bus chosen via ADR in the US-001 plan."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed by agent. Selection reason: Gate-1 owner decision (2026-07-12) moved TKT-25 and TKT-39 to Ready; TKT-25 is the P0 prefactoring slice with zero open blockers and it blocks the rest of the M1 chain (TKT-26...TKT-30). Branch: TKT-25-platform-scaffold off origin/main. Not risk:low (classification: complex) - plan gate applies; the plan must propose DB(s) + event bus as an ADR."
     }
   ],
   "links": [
