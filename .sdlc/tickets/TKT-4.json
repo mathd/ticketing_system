@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "The contention hot path: atomic claims for every inventory model, cart holds with TTL, operational holds (house/artist/kills), channel allocations with caps/release rules, group/agency long-lived reservations, best-available seat selection.\n\n**Conditions of Success:**\n- No oversell under adversarial concurrent load (sustained load test in the gate)\n- Staff can place/release/convert named operational holds\n- Inventory splits across channels with per-channel caps and scheduled releases\n- Best-available returns contiguous seats honoring map adjacency\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "description": "The contention hot path: atomic claims for every inventory model, cart holds with TTL, operational holds (house/artist/kills), channel allocations with caps/release rules, group/agency long-lived reservations, best-available seat selection.\n\n**Conditions of Success:**\n- No oversell under adversarial concurrent load (sustained load test in the gate)\n- Staff can place/release/convert named operational holds\n- Inventory splits across channels with per-channel caps and scheduled releases\n- Best-available returns contiguous seats honoring map adjacency\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** Design-target on-sale (owner NFR): ~50-100k capacity event, 100k+ concurrent buyers in the waiting room, thousands of checkout attempts/min sustained. Load-test COS use these numbers. Per ADR-005, this core claims slots for every vertical (shows, festivals, parks, lodging, passes).",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): festival-scale NFR quantified; ADR-005 single claim core confirmed."
     }
   ]
 }
