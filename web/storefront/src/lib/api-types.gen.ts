@@ -276,6 +276,8 @@ export interface components {
         PublicEventDetail: {
             /** Format: uuid */
             id: string;
+            /** Format: uuid */
+            organizer_id: string;
             name: string;
             description?: string;
             performances: components["schemas"]["PublicPerformanceDetail"][];

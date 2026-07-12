@@ -31,6 +31,7 @@ type PerformancePublishedData struct {
 	PerformanceID uuid.UUID `json:"performance_id"`
 	EventID       uuid.UUID `json:"event_id"`
 	OrganizerID   uuid.UUID `json:"organizer_id"`
+	Capacity      int32     `json:"capacity"`
 }
 
 // Publisher is the emission port; the API layer emits through it so tests
@@ -76,11 +77,12 @@ func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Perform
 		ID:         id,
 		Type:       SubjectPerformancePublished,
 		OccurredAt: occurred,
-		Schema:     1,
+		Schema:     2,
 		Data: PerformancePublishedData{
 			PerformanceID: perf.ID,
 			EventID:       perf.EventID,
 			OrganizerID:   perf.OrganizerID,
+			Capacity:      perf.Capacity,
 		},
 	})
 	if err != nil {

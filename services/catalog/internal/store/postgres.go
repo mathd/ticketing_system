@@ -191,11 +191,11 @@ func (p *Postgres) getPerformance(ctx context.Context, id uuid.UUID) (Performanc
 	var perf Performance
 	var emitted sql.NullTime
 	err := p.db.QueryRowContext(ctx,
-		`SELECT id, organizer_id, event_id, venue_id, starts_at, timezone,
-		        status, published_at, event_emitted_at, created_at
-		 FROM performances WHERE id = $1`, id).
+		`SELECT p.id, p.organizer_id, p.event_id, p.venue_id, p.starts_at, p.timezone,
+		        p.status, p.published_at, p.event_emitted_at, p.created_at, v.ga_capacity
+		 FROM performances p JOIN venues v ON v.id = p.venue_id WHERE p.id = $1`, id).
 		Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.StartsAt,
-			&perf.Timezone, &perf.Status, &perf.PublishedAt, &emitted, &perf.CreatedAt)
+			&perf.Timezone, &perf.Status, &perf.PublishedAt, &emitted, &perf.CreatedAt, &perf.Capacity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, nil, fmt.Errorf("performance: %w", ErrNotFound)
 	}

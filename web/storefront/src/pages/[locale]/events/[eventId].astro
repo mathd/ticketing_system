@@ -6,6 +6,7 @@ import { getPublicEvent, type PublicEventDetail } from '../../../lib/api';
 import { UpstreamError } from '../../../lib/cache';
 import { formatMoney, formatStartsAt } from '../../../lib/format';
 import { UI_STRINGS, isLocale } from '../../../lib/locales';
+import HoldPicker from '../../../components/HoldPicker';
 
 const { locale, eventId } = Astro.params;
 if (!locale || !isLocale(locale) || !eventId) {
@@ -44,6 +45,7 @@ try {
             </li>
           ))}
         </ul>
+        <HoldPicker client:load organizerId={event.organizer_id} slotId={perf.id} locale={locale} />
       </section>
     ))
   }
@@ -105,5 +107,41 @@ try {
   .price {
     font-weight: 600;
     color: var(--accent);
+  }
+</style>
+
+<style is:global>
+  .hold-picker {
+    display: grid;
+    grid-template-columns: auto 5rem auto 1fr;
+    align-items: center;
+    gap: 0.65rem;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+  }
+  .hold-picker label { display: contents; color: var(--muted); font-size: 0.9rem; }
+  .hold-picker input {
+    width: 5rem;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+  }
+  .hold-picker button {
+    padding: 0.5rem 0.9rem;
+    border: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    color: white;
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .hold-picker button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .hold-picker [aria-live] { color: var(--muted); font-size: 0.9rem; }
+  @media (max-width: 36rem) {
+    .hold-picker { grid-template-columns: auto 1fr; }
+    .hold-picker [aria-live] { grid-column: 1 / -1; }
   }
 </style>

@@ -101,6 +101,7 @@ type PublicEventDetail struct {
 	Description  *string                   `json:"description,omitempty"`
 	Id           openapi_types.UUID        `json:"id"`
 	Name         string                    `json:"name"`
+	OrganizerId  openapi_types.UUID        `json:"organizer_id"`
 	Performances []PublicPerformanceDetail `json:"performances"`
 }
 

@@ -54,6 +54,9 @@ type Performance struct {
 	Status      string // draft | published
 	PublishedAt *time.Time
 	CreatedAt   time.Time
+	// Capacity is the publication-time snapshot used to provision the
+	// inventory-owned dated-slot pool. It is not persisted on performances.
+	Capacity int32
 }
 
 type TicketType struct {

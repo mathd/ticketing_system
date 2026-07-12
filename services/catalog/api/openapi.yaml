@@ -442,9 +442,12 @@ components:
           $ref: '#/components/schemas/Money'
     PublicEventDetail:
       type: object
-      required: [id, name, performances]
+      required: [id, organizer_id, name, performances]
       properties:
         id:
+          type: string
+          format: uuid
+        organizer_id:
           type: string
           format: uuid
         name:
