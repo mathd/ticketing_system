@@ -1,0 +1,3 @@
+# SDLC state worktree lives in a sibling dir (<repo>.<branch>), not here
+__pycache__/
+*.pyc

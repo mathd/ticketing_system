@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow IA — bonnes pratiques</title>
+<style>
+  :root{
+    --bg:#f2f1ec; --card:#fff; --ink:#1f2d3d; --muted:#6b7682;
+    --orange:#ef7d4f; --orange-soft:#fbe7da; --green:#2e7d5b; --green-soft:#e3f0e9;
+    --line:#e4e2da; --amber-soft:#f7f1da; --blue:#3d6b8a; --blue-soft:#e6eef3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:840px;margin:0 auto;padding:48px 24px 80px}
+  h1,h2,h3{font-family:Georgia,"Times New Roman",serif;color:var(--ink);font-weight:700}
+  h1{font-size:40px;line-height:1.1;margin:0 0 8px}
+  .sub{color:var(--muted);font-size:18px;margin:0 0 20px}
+  .eyebrow{letter-spacing:.12em;text-transform:uppercase;font-size:12px;color:var(--muted);font-weight:700}
+  .pill{display:inline-block;background:var(--orange-soft);color:#b4521f;border-radius:999px;
+    padding:6px 14px;font-size:13px;font-weight:700}
+
+  /* boucle */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:6px;margin:26px 0 8px}
+  .node{flex:1 1 0;min-width:96px;background:#fff;border:1px solid var(--line);border-radius:10px;
+    padding:10px 8px;text-align:center}
+  .node .n{display:inline-flex;width:24px;height:24px;background:var(--orange);color:#fff;font-weight:700;
+    border-radius:6px;align-items:center;justify-content:center;font-size:13px;margin-bottom:4px}
+  .node .t{font-size:12.5px;font-weight:600;line-height:1.25;display:block}
+  .node .g{display:block;margin-top:4px;font-size:11px;color:#b4521f}
+  .loopback{text-align:center;color:var(--muted);font-size:13px;margin:2px 0 0}
+
+  /* legende */
+  .legend{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:18px 0 6px;
+    display:flex;flex-wrap:wrap;gap:18px;font-size:13px}
+  .legend b{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+  .legend .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .tag{display:inline-block;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700}
+  .tag.po{background:var(--orange-soft);color:#b4521f}
+  .tag.tl{background:var(--blue-soft);color:var(--blue)}
+  .tag.ag{background:#ecebe4;color:#555}
+  .tag.hu{background:var(--green-soft);color:var(--green)}
+
+  details.box{background:#fff;border:1px solid var(--line);border-radius:12px;margin:10px 0 0;padding:0 16px}
+  details.box>summary{cursor:pointer;padding:12px 0;font-weight:700;list-style:none}
+  details.box>summary::-webkit-details-marker{display:none}
+  details.box>summary::before{content:"▸ ";color:var(--orange)}
+  details.box[open]>summary::before{content:"▾ "}
+  details.box .inner{padding:0 0 16px}
+
+  .principles{background:var(--ink);color:#eef1f3;border-radius:14px;padding:24px 26px;margin:26px 0 32px}
+  .principles h2{color:#fff;font-size:20px;margin:0 0 12px}
+  .principles ul{margin:0;padding-left:18px}.principles li{margin:8px 0}.principles b{color:var(--orange)}
+
+  .card{background:var(--card);border-radius:14px;border-top:4px solid var(--orange);
+    padding:22px 24px;margin:18px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .card.plain{border-top:none;border:1px solid var(--line)}
+  .head{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .hex{width:34px;height:34px;background:var(--orange);color:#fff;font-weight:700;
+    display:flex;align-items:center;justify-content:center;border-radius:8px;flex:0 0 auto}
+  .head h2{font-size:24px;margin:0;flex:1}
+  .owner{background:#eceae3;color:#555;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:700;white-space:nowrap}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+  .field .lbl{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+  .gate{grid-column:1/-1;background:var(--green-soft);border-radius:10px;padding:12px 14px}
+  .gate .lbl{color:var(--green)}
+  .artifact{grid-column:1/-1;border-top:1px dashed var(--line);padding-top:10px;font-size:14px;color:var(--muted)}
+
+  /* details internals */
+  .det-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:6px 0}
+  .det-grid>div{background:#faf9f5;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px}
+  .pipe{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px;margin:8px 0}
+  .pipe .col{background:var(--blue-soft);color:var(--blue);font-weight:700;border-radius:6px;padding:4px 10px}
+  .pipe .arr{color:var(--muted)}
+  table.mini{width:100%;border-collapse:collapse;margin:8px 0;font-size:13.5px}
+  table.mini th,table.mini td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  table.mini th{background:#faf9f5;font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
+  ul.tight{margin:8px 0 0;padding-left:18px}ul.tight li{margin:5px 0;font-size:14px}
+  code{background:#eceae3;padding:1px 6px;border-radius:5px;font-size:13px}
+  .gateflag{color:var(--green);font-weight:700}
+
+  .note{background:var(--amber-soft);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:14px}.note b{color:#8a6d1a}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+  .dark{background:var(--ink);color:#eef1f3;border-radius:14px;padding:22px 24px}.dark h3{color:#fff;margin:0 0 10px}
+  .dark .owner{background:#34465a;color:#cdd6df}
+  .open{background:#fff;border:1px solid var(--orange);border-radius:14px;padding:22px 24px;margin-top:18px}
+  .open h3{margin:0 0 10px;color:#b4521f}.open li{margin:7px 0}
+  footer{margin-top:40px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  @media(max-width:640px){.grid,.two,.det-grid{grid-template-columns:1fr}h1{font-size:32px}.node{min-width:44%}}
+  @media print{body{background:#fff}.card,.principles,.dark,.open,.legend,details.box{box-shadow:none}details.box[open]{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Moov AI · Processus produit</p>
+  <h1>Workflow de développement assisté par IA</h1>
+  <p class="sub">L'humain <b>cadre et arbitre</b>, la machine <b>génère et exécute</b>, du carnet de produit jusqu'à la mise en production. Chaque carte donne le <b>quoi</b> en un coup d'œil ; ouvre <em>Détails</em> pour le <b>comment</b>.</p>
+  <span class="pill">↻ Processus itératif — boucle continue</span>
+
+  <!-- bandeau de phases -->
+  <div style="display:flex;gap:6px;margin-top:24px;font-size:12px;font-weight:700;text-align:center">
+    <div style="flex:3;background:var(--blue-soft);color:var(--blue);border-radius:8px;padding:6px 4px">Avant le sprint · préparation</div>
+    <div style="flex:1;background:var(--amber-soft);color:#8a6d1a;border-radius:8px;padding:6px 4px">En continu</div>
+    <div style="flex:2;background:var(--green-soft);color:var(--green);border-radius:8px;padding:6px 4px">Pendant le sprint</div>
+  </div>
+
+  <!-- diagramme de boucle -->
+  <div class="flow" style="margin-top:8px">
+    <div class="node"><span class="n">1</span><span class="t">Carnet de produit</span><span class="g">⛔ valide PRD</span></div>
+    <div class="node"><span class="n">2</span><span class="t">Plan</span><span class="g">⛔ stamp TL</span></div>
+    <div class="node"><span class="n">3</span><span class="t">Backlog</span><span class="g">⇄ routage</span></div>
+    <div class="node"><span class="n">4</span><span class="t">Mise à jour</span><span class="g">⏲ hebdo</span></div>
+    <div class="node"><span class="n">5</span><span class="t">Développement</span><span class="g">⛔ revue + fusion</span></div>
+    <div class="node"><span class="n">6</span><span class="t">En prod &amp; doc</span><span class="g">⛔ valide</span></div>
+  </div>
+  <p class="loopback">↻ l'étape ⑥ réalimente l'étape ① — la boucle ne s'arrête pas. La préparation (①–③) se fait <b>pendant le sprint courant, pour le prochain</b>.</p>
+
+  <!-- legende -->
+  <div class="legend">
+    <div class="row"><b>Rôles</b>
+      <span class="tag po">PO</span><span class="tag tl">TL</span>
+      <span class="tag ag">Agent / Machine</span><span class="tag hu">Humain</span>
+    </div>
+    <div class="row"><b>Natures</b>
+      <span>⛔ barrière (bloquante)</span><span>⇄ routage</span><span>⏲ cadence</span><span>✎ cadrage</span>
+    </div>
+  </div>
+
+  <details class="box"><summary>Glossaire</summary><div class="inner">
+    <table class="mini">
+      <tr><th>Terme</th><th>Sens</th></tr>
+      <tr><td>PRD</td><td>Product Requirements Document — le quoi/pourquoi d'une feature, pas le comment technique.</td></tr>
+      <tr><td>COS</td><td>Critères d'acceptation / de succès — conditions vérifiables pour considérer le travail fait.</td></tr>
+      <tr><td>Registre de décision</td><td>Mémoire durable des décisions, découplée des tickets. Versionnée, lisible par humains et agents.</td></tr>
+      <tr><td>Contraignant vs référence</td><td>Contraignant = l'agent <em>doit</em> obéir (poussé en contexte). Référence = l'agent <em>peut</em> consulter (tiré à la demande).</td></tr>
+      <tr><td>Context-mémo</td><td>Contexte agent attaché au ticket (pointeurs vers décisions/composants), invisible aux humains.</td></tr>
+      <tr><td>Cross-model</td><td>Revue par un modèle différent (ex. Codex revoit le code écrit par Claude) — angle adverse.</td></tr>
+      <tr><td><code>risk:low</code></td><td>Étiquette : ticket à faible risque → saute la barrière d'approbation du plan. <b>Contestable, pas parole d'évangile :</b> l'agent justifie le risque au claim et retire l'étiquette (la barrière de plan revient) si le travail touche auth, migrations de données, CI/déploiement ou &gt; 5 fichiers.</td></tr>
+      <tr><td>DDC</td><td><em>(sigle à confirmer — « gestion des DDC » du whiteboard ; à préciser avec l'équipe.)</em></td></tr>
+    </table>
+  </div></details>
+
+  <!-- principes -->
+  <div class="principles">
+    <h2>Principes transversaux</h2>
+    <ul>
+      <li><b>Humain cadre, machine génère.</b> L'humain pose l'intention et tranche ; la machine produit le volume et exécute. On n'inverse jamais ces rôles.</li>
+      <li><b>Les barrières suivent le risque, pas l'étape.</b> On met le jugement humain là où une erreur coûte le plus cher : priorité, fusion, sécurité. Un ticket à faible risque passe sans barrière de plan.</li>
+      <li><b>Connaissance contraignante ≠ référence.</b> Contraignante → <b>poussée</b>, toujours en contexte, <b>verbatim</b> (jamais résumée par un petit modèle). Référence → <b>tirée</b>, recherchée à la demande.</li>
+      <li><b>Flux ≠ connaissance durable.</b> Tickets/backlog portent le <em>flux</em> ; le registre de décision porte la <em>connaissance</em>. Deux outils, deux modèles mentaux.</li>
+    </ul>
+  </div>
+
+  <!-- barrières -->
+  <h2 style="margin:30px 0 4px">Les barrières (gates)</h2>
+  <p class="sub" style="font-size:16px">Toute intervention humaine n'est pas une barrière. Distinguer la nature, c'est savoir quoi automatiser — <b>seules les barrières bloquantes deviennent un gate Jira.</b></p>
+  <table class="mini">
+    <tr><th>Nature</th><th>Comportement</th><th>Comment ça s'automatise</th></tr>
+    <tr><td><b>⛔ Barrière</b></td><td>La machine s'arrête et attend une approbation.</td><td>Statut « en attente d'approbation » + transition gardée par rôle.</td></tr>
+    <tr><td><b>⇄ Routage</b></td><td>Décision qui aiguille ; n'arrête pas la machine.</td><td>Règle de triage automatique + override humain.</td></tr>
+    <tr><td><b>⏲ Cadence</b></td><td>Rythme planifié, pas lié à un ticket.</td><td>Déclencheur planifié / tâche récurrente.</td></tr>
+    <tr><td><b>✎ Cadrage</b></td><td>L'humain alimente l'entrée d'une étape.</td><td>Champ d'entrée — aucun blocage à automatiser.</td></tr>
+  </table>
+
+  <p style="font-weight:700;margin:18px 0 4px">Les 4 barrières bloquantes du cycle</p>
+  <table class="mini">
+    <tr><th>Barrière</th><th>Étape</th><th>Déclencheur (la machine a fini…)</th><th>Acteur</th><th>Issues</th><th>Sortie / retour</th></tr>
+    <tr><td><b>G1 · Approbation PRD</b></td><td>①</td><td>PRD + feature request générés</td><td>PO</td><td>approuver / renvoyer</td><td>→ backlog ③ ; sinon → re-génération</td></tr>
+    <tr><td><b>G2 · Stamp du plan</b></td><td>②</td><td>plan retenu par l'agent arbitre</td><td>TL + équipe</td><td>stamp / réviser</td><td>→ dev ⑤ ; sinon → re-brainstorm</td></tr>
+    <tr><td><b>G3 · Revue + fusion</b></td><td>⑤</td><td><code>needs:human</code> : PR prête, CI verte, revue cross-model faite</td><td>dev / reviewer</td><td>fusionner / demander changements</td><td>→ done ; sinon → <code>agent:coding</code></td></tr>
+    <tr><td><b>G4 · Validation prod</b></td><td>⑥</td><td>correctif (sur log) ou doc de transfert proposé</td><td>humain</td><td>valider / rejeter</td><td>→ diffusé ; un correctif redevient un ticket ⑤</td></tr>
+  </table>
+  <div class="note"><b>Pas des barrières :</b> la classification simple/complexe (③) est un <b>routage ⇄</b> ; la revue hebdo du registre (④) est une <b>cadence ⏲</b>. Le choix du ticket à prioriser (⑤) est du <b>cadrage ✎</b>. Ils s'automatisent autrement (voir tableau du haut).</div>
+
+  <!-- deux altitudes -->
+  <h2 style="margin:30px 0 4px">Du workflow au ticket : deux altitudes</h2>
+  <p class="sub" style="font-size:16px">Le même système vu de deux hauteurs. Le vocabulaire se répète exprès (« plan », « backlog », « priorité ») ; voici la correspondance.</p>
+  <div class="card plain">
+    <table class="mini">
+      <tr><th>Altitude</th><th>Étapes</th><th>Barrières</th></tr>
+      <tr><td><b>Feature</b> (epic, pré-sprint)</td><td>①②③</td><td>G1 PRD (①) · G2 stamp du plan-<em>feature</em> (②) · découpage (③)</td></tr>
+      <tr><td><b>Ticket</b> (chaque enfant, dans ⑤)</td><td>pipeline 6-statuts du skill</td><td>priorité (<code>Backlog→Ready</code>) · plan d'<em>exécution</em> · revue+fusion · validation PO</td></tr>
+    </table>
+    <ul class="tight">
+      <li><b>« Plan » apparaît deux fois, exprès :</b> le plan de <em>feature</em> (② — comment aborder la feature, stampé par le TL) ≠ le plan d'<em>exécution</em> par ticket (dans ⑤ — DoD/fichiers/tests, approuvé au gate). <code>risk:low</code> saute le plan d'<em>exécution</em>, pas le stamp de feature.</li>
+      <li><b>« Backlog » a deux sens :</b> l'étape macro ③ (découpage) et le statut <code>Backlog</code> d'un ticket (créé, en attente de priorité). Le passage <code>Backlog→Ready</code> d'un ticket vit dans la préparation (①–③), pas dans ⑤.</li>
+      <li><b>« priorité » vs « prioriser » :</b> la barrière priorité = transition <code>Backlog→Ready</code> (le ticket est approuvé) ; le « choix du ticket » en ⑤ = sélection de sprint parmi les <code>Ready</code> (cadrage), un acte distinct.</li>
+      <li><b>4 barrières à chaque altitude :</b> au niveau feature, G1–G4 (PRD / stamp du plan / revue+fusion / validation prod) ; au niveau ticket, le skill en porte aussi 4 (priorité / plan d'exécution / revue+fusion / validation PO). La validation PO du ticket est le petit frère du G4 feature.</li>
+    </ul>
+  </div>
+
+  <!-- 1 -->
+  <div class="card">
+    <div class="head"><div class="hex">1</div><h2>Carnet de produit</h2><span class="owner">PO + IA</span></div>
+    <div class="grid">
+      <div class="field"><div class="lbl">Cadrage (humain)</div>Le PO décrit l'intention et la valeur de la feature.</div>
+      <div class="field"><div class="lbl">Machine</div>Skill « carnet de produit » : génère <em>feature request</em> + <em>PRD</em> ; <b>flag explicite des inconnues</b>.</div>
+      <div class="gate"><div class="lbl">Barrière ⛔</div>Le PO valide le PRD. <em>Écueil :</em> surveiller l'altitude — rester produit, ne pas dériver vers la solution.</div>
+      <div class="artifact"><b>Artefact :</b> PRD + feature request, inconnues signalées.</div>
+    </div>
+    <details class="box"><summary>Détails</summary><div class="inner">
+      <b>Ce que contient un PRD :</b>
+      <ul class="tight">
+        <li>Problème et utilisateur visé · valeur attendue</li>
+        <li><b>COS</b> (critères de succès vérifiables)</li>
+        <li>Portée <em>et</em> hors-portée explicites</li>
+        <li><b>Inconnues signalées</b> — ce qu'on ne sait pas encore, rendu visible pour les étapes suivantes plutôt que deviné</li>
+      </ul>
+      <div class="note"><b>Idée brute (pas encore une spec) :</b> explorer d'abord — brainstorm coaché / brief / PRFAQ (working backwards). <b>Chaque idée vient de l'humain</b> ; l'agent facilite, ne pitche pas. Sortie = un brief qui alimente le PRD. <b>Voie rapide :</b> si la conversation contient déjà le problème, la direction et les contraintes, on <b>synthétise le brief sans ré-interroger</b> — inutile de redemander ce qui est sur la table.</div>
+      <div class="note" style="background:var(--blue-soft)"><b style="color:var(--blue)">Granularité flexible :</b> tout n'est pas un epic. <b>Epic</b> (feature multi-sprint) → PRD complet. <b>Story</b> → « PRD » léger = description enrichie (problème + COS). <b>Tâche simple</b> → pas de PRD, G1 peut être sauté (comme <code>risk:low</code>). La barrière existe toujours ; son poids suit la taille.</div>
+      <div class="note" style="background:var(--green-soft)"><b style="color:var(--green)">Déclenchement (V0) :</b> manuel — le PO/dev demande à Claude de créer l'unité (epic/story) ; le skill démarre via le MCP Atlassian.</div>
+      <div class="note"><b>Écueil d'altitude :</b> le skill doit rester au niveau produit (le <em>quoi/pourquoi</em>). Dès qu'il propose une solution technique, il a trop descendu — c'est le rôle de l'étape ② Plan.</div>
+    </div></details>
+  </div>
+
+  <!-- 2 -->
+  <div class="card">
+    <div class="head"><div class="hex">2</div><h2>Plan</h2><span class="owner">TL</span></div>
+    <div class="grid">
+      <div class="field"><div class="lbl">Cadrage (humain)</div>L'humain soumet les grandes lignes du plan — brainstorm.</div>
+      <div class="field"><div class="lbl">Machine</div>Génère plusieurs variantes de plan ; un <b>agent arbitre</b> ressort le meilleur.</div>
+      <div class="gate"><div class="lbl">Barrière ⛔</div><b>Stamp TL + équipe</b> avant tout code. Modulée par le risque.</div>
+      <div class="artifact"><b>Artefact :</b> plan d'exécution validé.</div>
+    </div>
+    <details class="box"><summary>Détails</summary><div class="inner">
+      <b>Patron brainstorm → arbitrage :</b>
+      <ul class="tight">
+        <li>L'humain donne les grandes lignes (contraintes, intention), pas un plan fini.</li>
+        <li>La machine génère <b>N variantes</b> sous des angles différents (MVP d'abord, risque d'abord, etc.).</li>
+        <li>Un <b>agent arbitre</b> sélectionne / fusionne la meilleure variante et justifie le choix.</li>
+        <li><b>Stamp</b> = le TL et l'équipe valident le plan retenu → ça devient la barrière de plan du pipeline (étape ⑤).</li>
+      </ul>
+      <div class="note"><b>Modulation par le risque :</b> un plan étiqueté <code>risk:low</code> peut être pré-approuvé et sauter la barrière humaine de plan en aval.</div>
+    </div></details>
+  </div>
+
+  <!-- 3 -->
+  <div class="card">
+    <div class="head"><div class="hex">3</div><h2>Backlog</h2><span class="owner">Jira · +++ machine</span></div>
+    <div class="grid">
+      <div class="field"><div class="lbl">Cadrage (humain)</div>Cadre l'intention ; valide la découpe.</div>
+      <div class="field"><div class="lbl">Machine</div>Propose le découpage <b>épic → story → tâche → sous-tâche</b> (bonne grosseur), l'ordre et les dépendances ; rédige description / COS.</div>
+      <div class="gate" style="background:var(--blue-soft)"><div class="lbl" style="color:var(--blue)">Routage ⇄ — filtre &amp; classification (non bloquant)</div><b>Simple →</b> machine seule. &nbsp; <b>Complexe →</b> co-work machine + humain.</div>
+      <div class="artifact"><b>Artefact :</b> backlog Jira découpé, dimensionné, ordonné (dépendances) et classé simple / complexe.</div>
+    </div>
+    <details class="box"><summary>Détails</summary><div class="inner">
+      <b>Découpage de la fonctionnalité (machine propose, humain valide) :</b>
+      <ul class="tight">
+        <li><b>Hiérarchie :</b> épic → story → tâche → sous-tâche.</li>
+        <li><b>Tranches verticales (règle n°1) :</b> 1 ticket = 1 <em>tracer bullet</em> — une tranche fine qui traverse <b>toutes</b> les couches qu'elle touche (schéma → backend → UI → tests), démontrable seule. <b>Pas</b> une tranche horizontale d'une seule couche : un ticket « schéma seul » arrive en <em>PO review</em> sans rien à démontrer, alors que le gate G4 exige les COS depuis la sortie utilisateur. Coût toujours borné à une PR revue d'un coup d'œil (~≤ 400 lignes) ; trop gros → tranche plus <b>étroite</b> mais toujours de bout en bout. Ni sur-découpé : une colonne + sa migration = un seul ticket.</li>
+        <li><b>Préfactoring d'abord :</b> « rends le changement facile, puis fais le changement facile » — si les tranches ont besoin d'un socle (extraire un <em>seam</em>, remodeler une interface), c'est le <b>premier</b> ticket. Ordre <b>par dépendance</b>, jamais par couche ; l'ordre des couches (schéma → backend → UI → agrégat) ne sert qu'à sous-découper une tranche devenue trop grosse. <b>Jamais dépendre d'une story ultérieure.</b></li>
+        <li><b>Dépendances :</b> liens Jira <code>blocked by</code> / <code>blocks</code> / <code>relates to</code> → graphe d'exécution + ordre de prise (vérifier l'acyclicité).</li>
+        <li><b>AC vérifiables uniquement :</b> « ajoute la colonne X (défaut Y) », pas « fonctionne bien » / « gère les cas limites ».</li>
+        <li>Tout ça se fait <b>en préparation</b> : un ticket n'entre dans le sprint (⑤) que découpé et ordonné.</li>
+      </ul>
+      <b>Critères de classification (qui tranche : l'humain) :</b>
+      <table class="mini">
+        <tr><th>Simple → machine</th><th>Complexe → co-work</th></tr>
+        <tr><td>Périmètre clair, isolé</td><td>Ambigu ou transverse</td></tr>
+        <tr><td>Faible risque, pas de décision d'archi</td><td>Risque, sécurité, ou décision d'architecture</td></tr>
+        <tr><td>COS évidents</td><td>COS à négocier avec l'humain</td></tr>
+      </table>
+      <div class="note" style="background:var(--amber-soft)"><b style="color:#8a6d1a">Verdict de préparation (avant le gate priorité) :</b> le découpage se clôt par un verdict <b>PASS / CONCERNS / FAIL</b> sur l'epic. En priorisant les enfants, l'humain approuve d'un coup brief + PRD + découpage — le verdict rend visible toute faiblesse (story trop grosse, AC non vérifiable, cycle de dépendances, hypothèse non validée). <b>FAIL → on ne demande pas le gate, on corrige.</b></div>
+      <div class="note"><b>Context-mémo par ticket — revue registre + Confluence, faite une fois :</b> à la création, l'agent interroge le <b>registre de décision</b> et la doc Confluence selon les composants du ticket, et écrit le résultat dans l'<em>entity property</em> Jira <code>agent-context</code> :
+        <ul class="tight">
+          <li><b>Contraignant → verbatim</b> : <code>{id, règle, date}</code> — jamais résumé.</li>
+          <li><b>Référence → résumé + lien</b> Confluence.</li>
+        </ul>
+        Ainsi l'agent d'exécution (⑤) <b>n'a plus à relire la doc à chaque itération</b> — le contexte est déjà dans le ticket.
+        <br><b>Péremption :</b> ③ est pré-sprint, ⑤ vient plus tard — d'où les <b>dates + IDs</b> : à la prise, l'agent <b>revalide seulement</b> qu'aucune décision n'a été remplacée (comparaison de dates, pas de relecture complète). <em>(entity property : API, invisible aux humains, ≤ 32 Ko, lisible par tout utilisateur authentifié — rien de sensible.)</em>
+        <br><b>Fallback :</b> si l'écriture d'entity properties est bloquée chez le client (pas de token API), le même payload va en bloc de commentaire HTML <code>&lt;!-- sdlc:context --&gt;</code> en fin de description du ticket. Les lecteurs vérifient la property d'abord, puis la description.</div>
+    </div></details>
+  </div>
+
+  <!-- 4 -->
+  <div class="card">
+    <div class="head"><div class="hex">4</div><h2>Mise à jour</h2><span class="owner">Hebdomadaire</span></div>
+    <div class="grid">
+      <div class="field"><div class="lbl">Cadrage (humain)</div>Passe humaine <b>1× par semaine</b>.</div>
+      <div class="field"><div class="lbl">Machine</div>Tient à jour le <b>registre de décision</b> et le <b>registre de sécurité</b> ; met à jour le backlog non-actif.</div>
+      <div class="gate" style="background:var(--amber-soft)"><div class="lbl" style="color:#8a6d1a">Cadence ⏲ — revue hebdo (pas un gate par ticket)</div>L'humain valide les décisions consignées. Capture réunion → l'agent rédige → 👍 → consigné.</div>
+      <div class="artifact"><b>Artefact :</b> registre à jour — partie <em>contraignante</em> poussée en contexte, partie <em>référence</em> consultable.</div>
+    </div>
+    <details class="box"><summary>Détails</summary><div class="inner">
+      <b>Schéma d'un enregistrement de décision :</b>
+      <table class="mini">
+        <tr><th>Champ</th><th>Rôle</th></tr>
+        <tr><td>id · date</td><td>Identité et fraîcheur</td></tr>
+        <tr><td>fait</td><td>La décision prise</td></tr>
+        <tr><td>recommandation</td><td>L'action <b>contraignante</b> qui en découle (ce que l'agent doit faire)</td></tr>
+        <tr><td>statut · supersedes</td><td>Actif / remplacé — gère la péremption</td></tr>
+        <tr><td>tags · composants</td><td>Routage de pertinence (quel ticket/zone est concerné)</td></tr>
+        <tr><td>provenance</td><td>source (humain / réunion Teams), référence, date</td></tr>
+      </table>
+      <b>Pousser vs tirer :</b>
+      <table class="mini">
+        <tr><th>Contraignant (doit obéir)</th><th>Référence (peut consulter)</th></tr>
+        <tr><td><span class="gateflag">Poussé</span> — toujours en contexte, injecté à la prise du ticket, <b>verbatim</b></td><td><span class="gateflag">Tiré</span> — recherche à la demande, sous-agent / RAG OK</td></tr>
+        <tr><td>Jamais résumé par un petit modèle (perte = le risque qu'on veut éviter)</td><td>Résumé acceptable</td></tr>
+      </table>
+      <ul class="tight">
+        <li><b>Registre de sécurité :</b> même schéma, revue séparée — les décisions de sécurité sont contraignantes par défaut.</li>
+        <li><b>Capture sans cérémonie :</b> une décision de réunion n'a pas de PR de code → l'agent rédige l'entrée, un 👍 humain la consigne (barrière légère, pas de revue de code).</li>
+        <li><b>« Forcer une convention de travail ? »</b> — oui pour le contraignant (poussé déterministe­ment, pas une consigne polie) ; inutile pour la référence.</li>
+        <li><b>Mémoire patterns (cross-ticket) :</b> les apprentissages réutilisables vont dans une mémoire append-only ; un pattern éprouvé sur quelques tickets est <b>promu</b> dans le registre contraignant / <code>AGENTS.md</code> via un ticket gated. Working memory ≠ gospel.</li>
+        <li><b>La promotion est un pas obligatoire du Done, pas du best-effort :</b> le commentaire de clôture de chaque ticket contient une section <code>learnings:</code> — items promouvables (avec leur maison cible) ou le mot explicite <code>none</code>. C'est ce qui amorce le registre ; le sauter est le mode d'échec « démarrage à froid ».</li>
+        <li><b>Rétrospective agent (<code>retro:</code>) au même endroit :</b> deux questions fixes que l'agent se pose à la clôture — (1) qu'est-ce qui aurait rendu ce ticket plus rapide/meilleur (contexte manquant au mémo, COS ambigu, trou dans le skill)? (2) qu'est-ce que les humains devraient changer (process, config, rédaction du ticket)? L'introspection porte sur la <em>collaboration</em>, pas sur le code, et chaque item est formulé comme un <b>changement concret applicable</b> (quel fichier, quelle modification) — pas un constat. <b>Le V0 interactif permet de fermer la boucle sur-le-champ :</b> l'agent propose d'appliquer les changements tout de suite ; l'humain approuve → le skill/config/template est patché dans la même session (item marqué <code>applied</code>). Les items non appliqués vont à la revue hebdo ; un item récurrent = arrêter de le noter, le patcher.</li>      </ul>
+    </div></details>
+  </div>
+
+  <!-- 5 -->
+  <div class="card">
+    <div class="head"><div class="hex">5</div><h2>Développement</h2><span class="owner">Agent + humain</span></div>
+    <div class="grid">
+      <div class="field"><div class="lbl">Cadrage (humain)</div>L'humain identifie le ticket à prioriser — planif du sprint.</div>
+      <div class="field"><div class="lbl">Machine</div><b>Simple →</b> ready for agent (autonome). &nbsp; <b>Complexe →</b> co-work humain + IA.</div>
+      <div class="gate"><div class="lbl">Barrière ⛔ — révision en 2 étapes</div><b>Étape 1 :</b> revue agent (cross-model). &nbsp; <b>Étape 2 :</b> revue humaine + fusion <em>(dans le dépôt de code, pas Jira)</em>. <b>L'agent ne fusionne jamais.</b></div>
+      <div class="artifact"><b>Artefact :</b> PR fusionnée ; connaissance de travail capturée (context-mémo).</div>
+    </div>
+    <details class="box"><summary>Détails — pipeline d'exécution du ticket</summary><div class="inner">
+      <b>Règle :</b> les <b>humains déplacent les colonnes</b>, les <b>agents déplacent les labels</b>.
+      <div class="pipe">
+        <span class="col">backlog</span><span class="arr">→</span>
+        <span class="col">ready</span><span class="arr">→</span>
+        <span class="col">planning</span><span class="arr">→</span>
+        <span class="col">building</span><span class="arr">→</span>
+        <span class="col">po review</span><span class="arr">→</span>
+        <span class="col">done</span>
+        <span class="arr">(+ <code>BLOCKED</code> transversal)</span>
+      </div>
+      <div class="note" style="background:var(--blue-soft)"><b style="color:var(--blue)">Préparation vs exécution :</b> <code>backlog</code> et <code>ready</code> appartiennent à la <b>préparation</b> (①–③, pré-sprint) ; seuls <code>planning → building → done</code> tournent <b>dans le sprint</b>. Le board Scrum ne met que ces trois en colonnes ; backlog/ready vivent dans le backlog produit.</div>
+      <table class="mini">
+        <tr><th>Colonne</th><th>Labels agent (machine d'état)</th><th>Barrière</th></tr>
+        <tr><td>backlog</td><td>—</td><td><span class="gateflag">⛔ priorité</span> → ready</td></tr>
+        <tr><td>ready</td><td>—</td><td>l'agent réclame</td></tr>
+        <tr><td>planning</td><td><code>agent:planning</code> → <code>agent:plan-review</code> → <code>needs:human</code></td><td><span class="gateflag">⛔ plan</span> → building <em>(sauté si <code>risk:low</code>)</em></td></tr>
+        <tr><td>building</td><td><code>agent:coding</code> → <code>agent:ai-review</code> → <code>needs:human</code></td><td><span class="gateflag">⛔ revue + fusion</span> → po review</td></tr>
+        <tr><td>po review</td><td><code>needs:human</code> (balle au PO)</td><td><span class="gateflag">⛔ validation PO</span> — les COS sont démontrés → done</td></tr>
+        <tr><td>done</td><td>—</td><td>—</td></tr>
+      </table>
+      <p style="font-size:13px;color:var(--muted);margin:4px 0 0"><code>BLOCKED</code> est transversal : un humain y déplace tout ticket actif qui heurte un bloqueur ouvert, et le ramène par contexte. L'agent garde son label et s'arrête.</p>
+      <ul class="tight">
+        <li><code>needs:human</code> = l'agent s'est arrêté, la balle est à l'humain. La colonne désambiguïse : en <em>planning</em> = approbation du plan ; en <em>building</em> = revue de PR.</li>
+        <li>Une fois <code>needs:human</code> posé, l'agent <b>ne pousse plus de commit</b> (sinon l'humain revoit une cible mouvante).</li>
+        <li><b>Gate local avant PR</b> (miroir CI) : <code>type-check</code> + <code>lint</code> + <code>test</code> au vert.</li>
+        <li><b>Revue IA = cross-model</b> (Codex revoit le diff de manière adverse : exactitude, sécurité, couverture). C'est un <b>prérequis du SDLC, pas une option</b> : un environnement qui interdit l'envoi de code à un modèle externe n'est pas compatible avec ce SDLC — on ne construit pas de variante dégradée.</li>
+        <li><b>Règle dure :</b> l'agent ne fusionne jamais ; la fusion (squash) reste humaine.</li>
+      </ul>
+      <p style="font-weight:700;margin:12px 0 4px">Bonnes pratiques d'exécution</p>
+      <ul class="tight">
+        <li><b>Le thread du ticket = la mémoire.</b> Chaque étape poste un commentaire marqué avant de bouger le label ; toute reprise lit <b>tableau + thread</b> (pas la conversation). N'importe quelle session reprend un ticket en vol.</li>
+        <li><b>Prise dépendance-aware :</b> zéro bloqueur ouvert avant de réclamer (colonne = priorité, pas faisabilité) ; sélection = en-vol d'abord, puis priorité, puis pouvoir de déblocage.</li>
+        <li><b>Choix du seam de test d'abord :</b> où la feature est exercée — <b>réutiliser</b> un seam existant, le <b>plus haut</b> possible, le <b>moins</b> de seams (idéal : un). L'agent d'exécution teste à travers lui ; un mauvais seam = une réécriture.</li>
+        <li><b>Grilling des décisions ouvertes</b> (tickets complexes, interactif, avant le pré-mortem) : mettre à l'humain <b>une question à la fois</b>, chacune avec la réponse recommandée ; chercher les <em>faits</em> dans le code soi-même, ne soumettre que les <em>décisions</em>. Extrait le contexte humain que le pré-mortem (contexte interne) et Codex (contexte neuf) ratent tous deux.</li>
+        <li><b>Pré-mortem sur le plan</b> (avant Codex) : « suppose que ça a été rejeté — pourquoi ? », puis patcher.</li>
+        <li><b>Triage des findings :</b> bloquant → corrige dans la PR ; incident → ticket backlog ; rejeté → raison. <b>Aucun finding ignoré en silence.</b></li>
+        <li><b>Correct-course :</b> sur rejet, régénérer depuis la couche fautive — <b>intention / plan / implémentation</b> — jamais patcher en bas.</li>
+        <li><b>Review-guide :</b> le « prêt pour revue » est un walkthrough <b>par risque</b>, pas un pointeur sur le diff.</li>
+      </ul>
+    </div></details>
+  </div>
+
+  <!-- 6 -->
+  <div class="card">
+    <div class="head"><div class="hex">6</div><h2>En prod &amp; documentation</h2><span class="owner">Agent + humain</span></div>
+    <div class="grid">
+      <div class="field"><div class="lbl">Machine — en prod</div>Monitoring continu des logs → <b>recommandation de correction</b>.</div>
+      <div class="field"><div class="lbl">Machine — documentation</div>Génère le guide d'opérationnalisation et le transfert de connaissance.</div>
+      <div class="gate"><div class="lbl">Barrière ⛔</div>L'humain valide les correctifs et le transfert de connaissance avant diffusion.</div>
+      <div class="artifact"><b>Artefact :</b> guide d'op + transfert de connaissance ; la boucle réalimente le carnet de produit ①.</div>
+    </div>
+    <details class="box"><summary>Détails</summary><div class="inner">
+      <ul class="tight">
+        <li><b>Monitoring → recommandation :</b> l'agent observe les logs et <em>propose</em> un correctif ; il ne corrige pas en prod sans barrière (un correctif redevient un ticket à l'étape ⑤).</li>
+        <li><b>Guide d'opérationnalisation :</b> comment exploiter/surveiller la feature en prod.</li>
+        <li><b>Transfert de connaissance :</b> ce qui doit remonter au registre (④) et au carnet de produit (①) — c'est le bouclage.</li>
+        <li><b>Métriques :</b> durées par étape via les events <code>labeled</code>/<code>unlabeled</code> du timeline ; le <b>temps d'attente humain</b> aux gates est une métrique de premier ordre — le goulot est probablement là.</li>
+      </ul>
+    </div></details>
+  </div>
+
+  <!-- secondary -->
+  <div class="two">
+    <div class="dark">
+      <h3>Next steps</h3>
+      <ul class="tight" style="color:#dfe5ea">
+        <li>Définir l'environnement / l'outil <span class="owner">TL</span></li>
+        <li>Développer le flow + tester sur le projet actuel <span class="owner">TL · V0</span></li>
+        <li>★ Steph + MC : staff pour challenger</li>
+      </ul>
+    </div>
+    <div class="card plain">
+      <h3 style="margin-top:0">Nice to have</h3>
+      <ul class="tight">
+        <li>Enregistrer les réunions pour nourrir les documents
+          <ul class="tight">
+            <li>Partage info · rapport hebdo</li>
+            <li>Alimenter le registre d'actions</li>
+            <li>Gestion des DDC</li>
+            <li>Mise à jour Jira (backlog)</li>
+          </ul>
+        </li>
+        <li>Test front-end</li>
+      </ul>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:0"><b>Parking :</b> estimations.</p>
+    </div>
+  </div>
+
+  <!-- open decisions -->
+  <div class="open">
+    <h3>Décisions — état</h3>
+    <p style="margin:0 0 4px"><b>Décidé :</b></p>
+    <ul class="tight">
+      <li><b>Outil de backlog = Jira</b>, board <b>Scrum</b> ; context-mémo dans les <em>entity properties</em> Jira ; PRD d'epic en Confluence.</li>
+      <li><b>Skill réécrit</b> en version Jira générique (<b>6 statuts</b> : Backlog→Ready→Planning→Building→PO Review→Done, + <code>BLOCKED</code> transversal ; piloté par <code>.claude/sdlc.config.json</code>) — <b>remplace le plan à 9 colonnes</b> (trop complexe, validé en équipe).</li>
+      <li><b>Registre :</b> git + markdown pour le <em>contraignant</em> (l'agent agit dessus) ; Confluence pour la <em>référence</em>.</li>
+      <li><b>Emplacement du skill : par projet, exprès.</b> Chaque projet garde sa copie et l'adapte à ses règles internes / client — un <em>fork point</em> assumé, distribué via py-moov. Flexibilité &gt; version unique. Mécanisme détaillé : section « Où vit le skill » ci-dessous.</li>
+      <li><b>Revue stratégique pré-pilote intégrée</b> (juil. 2026) — durcissements dans le skill : fallback context-mémo en description, garde-fou <code>risk:low</code> contestable, section <code>learnings:</code> obligatoire au Done. La revue cross-model est actée comme <b>prérequis</b> : client incompatible ⇒ ce SDLC ne s'applique pas (pas de mode dégradé).</li>
+    </ul>
+    <p style="margin:10px 0 4px"><b>À venir :</b></p>
+    <ul class="tight">
+      <li><b>Automatisation</b> (webhooks / custom code) : quand le V0 manuel a fait ses preuves.</li>
+      <li><b>Côté organisation</b> (hors skill, soulevé par la revue) : cartographier les propriétaires de gates par mandat (PO souvent côté client ; qui fusionne si le client possède le repo ?), vérifier les <b>prérequis</b> avant de démarrer quand l'environnement appartient au client (création Jira/Confluence, entity properties, branch protection, revue cross-model autorisée — un prérequis manquant ⇒ ce SDLC n'est pas le bon cadre pour ce mandat), pilote → playbook → formation pour l'adoption, désigner un responsable de l'entretien hebdo du registre, trancher la question IP/responsabilité du code généré (décision org).</li>
+    </ul>
+  </div>
+
+  <!-- distribution du skill -->
+  <h2 style="margin:30px 0 4px">Où vit le skill — le mécanisme de fork</h2>
+  <p class="sub" style="font-size:16px">Le skill est l'actif réutilisable ; sa copie dans chaque projet est un <b>point de fork assumé</b>, pas une dérive.</p>
+  <div class="card plain">
+    <table class="mini">
+      <tr><th>Quoi</th><th>Où / comment</th></tr>
+      <tr><td><b>Version canonique</b></td><td>Le registre <b>py-moov</b> (<code>skills/project/</code>) — c'est là que le skill est versionné et amélioré pour tous.</td></tr>
+      <tr><td><b>Copie de travail</b></td><td>Dans chaque projet (<code>.claude/skills/</code>), installée via <code>moov skills install</code>. <b>L'adapter aux règles internes / client est attendu</b> — c'est la raison d'être du modèle par projet.</td></tr>
+      <tr><td><b>Mise à jour</b></td><td><code>moov skills update</code> détecte les éditions locales (hash de contenu) et <b>les protège</b> : un skill modifié localement est sauté sauf <code>--force</code>. Une copie divergente n'est jamais écrasée en silence.</td></tr>
+      <tr><td><b>Remontée</b></td><td>Une amélioration qui généralise (pas spécifique au client) remonte au registre py-moov via PR — c'est ainsi que les 10 équipes capitalisent sans centraliser.</td></tr>
+    </table>
+    <div class="note"><b>En clair :</b> si la copie de ton projet diffère du registre, ce n'est pas une erreur à « corriger » — c'est probablement une adaptation client voulue. Lis le diff avant de forcer une mise à jour.</div>
+  </div>
+
+  <!-- automatisation -->
+  <h2 style="margin:30px 0 4px">Vers l'automatisation</h2>
+  <p class="sub" style="font-size:16px">Maintenant que les barrières sont nettes, chaque couche a un rôle clair. Le détail viendra plus tard.</p>
+  <div class="card plain">
+    <div class="note" style="background:var(--green-soft);margin:0 0 12px"><b style="color:var(--green)">V0 — démarrage manuel, zéro custom code :</b> tout est déclenché par un dev/PO dans <b>Claude Code via le MCP Atlassian</b> (« crée un epic », « prends le prochain ticket », « fais la revue hebdo »). Seules les couches <b>Jira</b> et <b>Skills</b> sont nécessaires. Le custom code vient quand le flux manuel a fait ses preuves.</div>
+    <table class="mini">
+      <tr><th>Couche</th><th>Ce qu'elle porte</th></tr>
+      <tr><td><b>Jira</b></td><td>les statuts + transitions gardées (barrières ⛔), les règles de triage (routage ⇄), les déclencheurs planifiés (cadence ⏲)</td></tr>
+      <tr><td><b>Skills</b></td><td>ce que la machine génère/exécute à chaque étape (carnet de produit, plan, revue cross-model, capture de décision…)</td></tr>
+      <tr><td><b>Custom code</b> <span style="color:var(--muted);font-weight:400">(plus tard)</span></td><td>la colle : webhooks Jira ↔ agents, injection du registre contraignant en contexte, déréférencement des pointeurs (context-mémo → registre)</td></tr>
+    </table>
+    <div class="note" style="margin-top:12px"><b>Règle d'or pour l'automatisation :</b> une barrière ⛔ = un statut Jira où l'agent <b>s'arrête</b> et ne fait plus rien jusqu'à la décision humaine. Tout le reste (génération, revue IA, déplacement de labels) est automatique de barrière en barrière.</div>
+  </div>
+
+  <footer>Moov AI · Workflow de développement assisté par IA — version bonnes pratiques. Boucle continue : ⑥ réalimente ①. Maj 2026-07-03 : revue stratégique pré-pilote intégrée (durcissements skill, prérequis cross-model, décision de distribution par projet). Maj 2026-07-06 : découpage en tranches verticales (tracer bullets) + préfactoring ; choix du seam de test et grilling des décisions au planning ; voie rapide « synthétiser sans ré-interroger » à l'exploration (inspiré des skills mattpocock).</footer>
+
+</div>
+</body>
+</html>

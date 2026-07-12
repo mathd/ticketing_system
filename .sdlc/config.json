@@ -1,0 +1,15 @@
+{
+  "project": "Ticketing System",
+  "statuses": [
+    "Backlog",
+    "Ready",
+    "Planning",
+    "Building",
+    "PO Review",
+    "Done"
+  ],
+  "blocked": "BLOCKED",
+  "state": {
+    "branch": "sdlc-state"
+  }
+}
