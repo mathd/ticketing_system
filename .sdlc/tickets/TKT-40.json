@@ -1,0 +1,17 @@
+{
+  "key": "TKT-40",
+  "type": "Epic",
+  "summary": "Epic: SEO, GEO & agent-first access",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Owner directive (2026-07-12): SEO, GEO (generative engine optimization) and agent-first capability are a MUST. Three fronts: (1) search/generative-engine discoverability — server-rendered event content, structured data (schema.org Event & offers), sitemaps, GEO-friendly page structure; (2) agent-first access — LLM agents are first-class clients that can discover events and complete purchases through a documented, machine-readable agent surface (clean APIs; evaluate llms.txt / MCP-style affordances); (3) the balance policy with TKT-20 — bot countermeasures must distinguish scalper automation (fought) from legitimate, limit-abiding agents (served); blanket bot-blocking is off the table. The distinction mechanism (declared-agent lane with enforced purchase limits and queue fairness vs undeclared automation) is this epic's hardest design problem — flagged as an unvalidated assumption in the brief.\n\n**Conditions of Success:**\n- Event pages validate for structured data and render full content server-side (works without JS execution)\n- An LLM agent can find an event and complete a purchase end-to-end via the documented agent surface, with purchase limits and queue fairness enforced\n- A written agent-vs-scalper policy: how agents identify, what lane they get, what remains blocked — testable, and honored by TKT-20 countermeasures\n- On-sale protections demonstrably do not lock out declared agents during a hot sale (load-test scenario includes agent traffic)\n\nInteracts with: TKT-20 (bot protection), TKT-39/ADR-006 (server-rendered storefront weighs in), TKT-17 (reseller API patterns), TKT-31 (agent traffic is cacheable read traffic too).\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md («Discovery & agents»).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Owner note recorded pre-commit: the TKT-20/TKT-40 balance (fight scalpers, serve agents) is a design problem to solve, not a solved one — expect a spike at decomposition."
+    }
+  ]
+}
