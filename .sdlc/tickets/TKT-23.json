@@ -1,0 +1,17 @@
+{
+  "key": "TKT-23",
+  "type": "Epic",
+  "summary": "Epic: Reporting & settlement",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Sales/revenue reports, per-event settlement with fee-split breakdowns (TKT-6), exports.\n\n**Conditions of Success:**\n- Per-event settlement statement matches the journal to the cent, splits per payee\n- Sales reports by event/channel/period with export (CSV)\n- Reports read from projections, never lock the sales path\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
