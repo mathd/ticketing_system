@@ -2,10 +2,8 @@
   "key": "TKT-25",
   "type": "Story",
   "summary": "US-001: Platform scaffold — one command, all services up",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude",
   "pr": {
     "number": 1,
@@ -85,6 +83,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\n### PO validation note — TKT-25 (US-001: Platform scaffold)\n\nPR [#1](https://github.com/mathd/ticketing_system/pull/1) **merged** to main at 2026-07-12 19:04 UTC (merge commit df23330, +4756/−827, 75 files). Validate from a clean checkout of `main`.\n\n**How to check each Condition of Success:**\n\n| COS | How to validate |\n|---|---|\n| One-command stack | `docker compose up` from a clean clone → gateway + 5 services + storefront + scanner up; aggregated health green at <http://localhost:8080/healthz/all> |\n| Storefront through gateway | Open <http://localhost:8080/> (placeholder page) and <http://localhost:8080/scanner/> — browser evidence already in the PR per the UI quality gate |\n| Local gate | `make deps && make check` passes (lint + test + build, Go & TS, incl. gateway smoke suite); CI ran the same gate green on the PR |\n| Observability | Services emit structured JSON logs with propagated trace IDs; local stack in Compose — Grafana at <http://localhost:3000/> (traces/logs/metrics) |\n| Docs | Repo layout + service ownership in `docs/architecture.md`; Python-scaffold docs superseded; ADR-007 (Postgres 17 per-service DBs + NATS JetStream) recorded in `docs/adr/` |\n\nCodex adversarial review findings were triaged and fixed in-PR (e85bd44: untracked artifacts, self-contained gate, persisted PLATFORM stream, localhost-bound ports, pinned versions, gateway /readyz).\n\n**Ball is with the PO** — validate the COS above and drag to Done when satisfied (metrics closeout will be posted before the gate clears)."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout metrics — TKT-25 (US-001: Platform scaffold)\n\nDurations from the `sdlc-state` changelog (2026-07-12, UTC−4):\n\n| stage | duration |\n|---|---|\n| Backlog | 52m (11:29 → 12:21) |\n| Ready | 6m (12:21 → 12:27) |\n| Planning | 1h30 (12:27 → 13:57) |\n| — agent:planning | 2m |\n| — agent:plan-review | 40m |\n| — needs:human (Gate 2, plan approval) | 47m |\n| Building | 1h10 (13:57 → 15:06) |\n| — agent:coding | 35m |\n| — agent:ai-review | 9m |\n| — needs:human (Gate 3, PR review + merge) | 25m |\n| PO Review (Gate 4) | 6m (15:06 → 15:12) |\n\n**human-wait total:** ~1h18 (Gate 2: 47m · Gate 3: 25m · Gate 4: 6m)\n**diff:** +4756/−827 (75 files) — PR [#1](https://github.com/mathd/ticketing_system/pull/1), merge df23330\n\n**learnings:**\n- (repo-local → AGENTS.md, via gated ticket) The working agreement still says \"No app exists yet. There is no stack…\" — false since this merge. Update it to state the actual stack (Go services + gateway, TS frontends, Postgres 17 per-service, NATS JetStream, Compose, `make check` gate) and drop the stale Python-scaffold docs note (those docs were superseded in this PR).\n- (technical → decision registry) ADR-007 (Postgres 17 database-per-service + NATS JetStream) landed with the plan gate and is recorded in `docs/adr/` — already in its house, nothing further to promote.\n- (technical, codebase pattern → 🧠 agent memory) Codex review consistently flagged: self-contained gate (`make deps`), localhost-bound published ports, pinned tool versions, untracked build artifacts. Bake these into the next service slices from the start.\n\n**retro:**\n1. *What would have made this faster/better:* Posting ticket comments through inline shell corrupted a Markdown body (backticks got command-substituted); cost a repair write. Concrete change: in `sdlc-ticket/references/local-tracker.md` §\"Mutating tickets\", recommend building the JSON payload in a script file (python/jq) instead of inline shell heredocs whenever the body contains Markdown.\n2. *What should the humans change:* Gate-2 wait (47m) was the single biggest human wait and the plan carried an embedded ADR — expected for the prefactor slice, nothing to change. But AGENTS.md is now materially stale (see learnings); ticket it promptly so future runs don't plan against \"no app exists\"."
     }
   ],
   "links": [
