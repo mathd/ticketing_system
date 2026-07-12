@@ -1,0 +1,12 @@
+go 1.26
+
+use (
+	./gateway
+	./services/access
+	./services/catalog
+	./services/commerce
+	./services/inventory
+	./services/payments
+	./shared/go
+	./smoke
+)

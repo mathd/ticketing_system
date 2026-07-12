@@ -1,6 +1,13 @@
 {
   "tracker": "local",
   "confluence": null,
-  "code": { "repo": "ticketing_system", "defaultBranch": "main", "localGate": "pre-commit run --all-files" },
-  "registry": { "bindingPath": "docs/adr/", "referenceLocation": "local" }
+  "code": {
+    "repo": "ticketing_system",
+    "defaultBranch": "main",
+    "localGate": "make check"
+  },
+  "registry": {
+    "bindingPath": "docs/adr/",
+    "referenceLocation": "local"
+  }
 }

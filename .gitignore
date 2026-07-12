@@ -1,3 +1,15 @@
 # SDLC state worktree lives in a sibling dir (<repo>.<branch>), not here
 __pycache__/
 *.pyc
+
+# build artifacts & dependencies
+bin/
+node_modules/
+dist/
+gateway/gateway
+services/*/catalog
+services/*/inventory
+services/*/commerce
+services/*/payments
+services/*/access
+docs/reviews/

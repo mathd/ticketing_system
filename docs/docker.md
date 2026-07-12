@@ -1,126 +1,28 @@
-# Docker Guide
+# Docker & Compose
 
-This guide covers building and running the application with Docker.
+One stack file at the repo root (`compose.yaml`, project `ticketing`):
 
-## Building the Image
+| Service | Image / build | Notes |
+|---|---|---|
+| postgres | `postgres:18.4` | init script creates 5 DBs + roles, CONNECT revoked cross-service (ADR-007) |
+| nats | `nats:2.14-alpine` `-js -sd /data` | file-backed JetStream on a named volume; monitoring on 8222 |
+| nats-init | `natsio/nats-box` (one-shot) | provisions the `PLATFORM` stream at stack init (ADR-007) |
+| lgtm | `grafana/otel-lgtm` | collector + Tempo + Loki + Prometheus + Grafana (:3000) |
+| catalog…access | `build/go.Dockerfile` (arg `PKG`) | distroless static; healthcheck = `/app healthcheck` subcommand (no shell in image) |
+| gateway | `build/go.Dockerfile` | only published app port (:8080) |
+| storefront | `web/storefront/Dockerfile` | nginx + static HTML, `/healthz` |
+| scanner | `web/scanner/Dockerfile` | pnpm build stage → nginx under `/scanner/`, `/healthz` |
 
-```bash
-make docker-build
-# or
-docker build -t ticketing_system:latest .
-```
+Published host ports are env-overridable (`GATEWAY_PORT`, `POSTGRES_PORT`, `NATS_PORT`,
+`GRAFANA_PORT`, `PROM_PORT`, `OTLP_PORT`) — published infra ports bind to `127.0.0.1` only; that's how `make smoke` runs an isolated copy
+(project `ticketing-smoke`, ports 18080/15432/14222/13000/19090/14318) beside your dev stack.
 
-## Running the Container
+Gotchas already paid for:
 
-```bash
-make docker-run
-# or
-docker run -d --name ticketing_system ticketing_system:latest
-```
-
-## How Files Are Handled
-
-The Docker image does **not** copy source files directly. Instead:
-
-1. **The project is built** and installed into a virtual environment (`.venv`)
-2. **Only the `.venv`** is copied to the final image
-3. **The `conf/` directory** is explicitly copied to `/app/conf/`
-
-This means your Python code is compiled and included in the venv, but other files (static assets, data files, etc.) are **not** included by default.
-
-### Including Static Files
-
-If you need static files available at runtime, place them in the `conf/` directory and reference them using the configuration path:
-
-```python
-from ticketing_system.app_config import AppConfig
-
-config = AppConfig.instance()
-
-# Correct - uses the configured path
-file_path = config.config_path / "my-file.txt"
-
-# Incorrect - hardcoded path won't work in Docker
-# file_path = Path("./conf/my-file.txt")
-```
-
-This ensures the path works correctly both locally (`./conf/`) and in Docker (`/app/conf/`).
-
-### Including Files Outside `conf/`
-
-If you need to include files from other directories, update the Dockerfile to copy them:
-
-```dockerfile
-# Add after the COPY ${PROJECT_CONF_DIR} line
-COPY ./my-data-dir /app/my-data-dir/
-```
-
-## Environment Variables
-
-Pass environment variables to configure the application:
-
-```bash
-docker run -d \
-  --name ticketing_system \
-  -e ENV=prod \
-  -e APP_NAME="Production App" \
-  ticketing_system:latest
-```
-
-The image sets these defaults:
-- `CONFIG_SOURCE=/app/conf`
-- `ENVIRONMENT=prod`
-
-## Common Operations
-
-### View Logs
-
-```bash
-docker logs ticketing_system
-docker logs -f ticketing_system  # Follow logs
-```
-
-### Stop Container
-
-```bash
-docker stop ticketing_system
-docker rm ticketing_system
-```
-
-### Rebuild and Run
-
-```bash
-docker stop ticketing_system && docker rm ticketing_system
-make docker-build
-make docker-run
-```
-
-## Production Deployment
-
-For production deployments, consider:
-
-1. **Multi-stage builds** - The Dockerfile uses multi-stage builds to minimize image size
-2. **Environment configuration** - Use environment variables or mounted config files
-3. **Health checks** - Configure container health checks
-4. **Resource limits** - Set memory and CPU limits
-
-```bash
-docker run -d \
-  --name ticketing_system \
-  --memory=512m \
-  --cpus=1.0 \
-  -e ENV=prod \
-  ticketing_system:latest
-```
-
-## Mounting Configuration
-
-To override configuration at runtime without rebuilding:
-
-```bash
-docker run -d \
-  --name ticketing_system \
-  -v /path/to/local/conf:/app/conf:ro \
-  -e ENV=prod \
-  ticketing_system:latest
-```
+- Distroless images have no shell/curl: container healthchecks exec the service binary's
+  `healthcheck` subcommand.
+- nginx must listen on `[::]` too — healthcheck probes hit `127.0.0.1` explicitly.
+- Go images build from the repo root context (go.work workspace); the scanner also builds
+  from the root context to see the pnpm workspace lockfile.
+- OTel export cadence is tightened via env (`OTEL_METRIC_EXPORT_INTERVAL=5000` etc.) so
+  telemetry is queryable within seconds locally.

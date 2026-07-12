@@ -1,120 +1,40 @@
-# Testing Guide
+# Testing
 
-This guide covers running tests and writing new tests for the project.
+The gate is `make check` = **lint → test → build → smoke**; CI runs exactly the same target
+(`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
+§Quality gates (contract tests per touched boundary from US-002; journal invariants from US-004;
+browser evidence on UI stories).
 
-## Running Tests
+## Stages
 
-### Basic Commands
+| Stage | Go | TS |
+|---|---|---|
+| deps | — | `pnpm install --frozen-lockfile` |
+| lint | golangci-lint (pinned) per module (`--build-tags smoke`) | `oxlint --deny-warnings` |
+| test | `go test` per module | `vitest run` (jsdom + testing-library) |
+| build | `go build` + `go vet` per module | `tsc -b && vite build` |
+| smoke | `smoke/` suite via `scripts/smoke.sh` | — |
 
-```bash
-# Run all tests
-make test
-# or: uv run pytest
+## The smoke seam
 
-# Run with verbose output
-uv run pytest -v
+`smoke/smoke_test.go` (build tag `smoke`) is black-box against the composed stack through
+the gateway, plus named infra assertions:
 
-# Run with coverage report
-uv run pytest --cov=src/ticketing_system
-```
+- `/healthz/all` — all five services up
+- storefront and scanner served through the gateway
+- trace propagation — a caller-chosen trace id appears in gateway **and** service JSON logs
+- JetStream — the `PLATFORM` stream exists from stack init (nats-init) + publish/durable consume
+- DB credential isolation — service A's role cannot connect to service B's database
+- metrics ingestion — `http_server_*` series queryable in Prometheus after traffic
 
-### Running Specific Tests
+## The gate self-test
 
-```bash
-# Run a single test file
-uv run pytest tests/ticketing_system/test_app_config.py
+`scripts/gate-selftest.sh` proves the gate actually fails: it seeds, one at a time in a
+disposable git worktree (never your tree, trap-cleaned), a Go lint violation, a failing Go
+test, a TS lint violation, a failing vitest test and a TS type error — and requires the
+corresponding `make` stage to exit non-zero.
 
-# Run a specific test function
-uv run pytest tests/ticketing_system/test_app_config.py::test_app_config
+## Concurrency proofs (coming)
 
-# Run tests matching a pattern
-uv run pytest -k "test_config"
-
-# Run tests in a specific directory
-uv run pytest tests/ticketing_system/
-```
-
-### Test Options
-
-```bash
-# Stop on first failure
-uv run pytest -x
-
-# Run last failed tests
-uv run pytest --lf
-
-# Run tests in parallel (if pytest-xdist installed)
-uv run pytest -n auto
-
-# Show local variables in tracebacks
-uv run pytest -l
-
-# Generate HTML coverage report
-uv run pytest --cov=src/ticketing_system --cov-report=html
-```
-
-## Writing Tests
-
-### Test Structure
-
-Tests are located in `tests/` and mirror the `src/` structure:
-
-```
-tests/
-├── conftest.py              # Shared fixtures
-└── ticketing_system/
-    └── test_app_config.py   # Tests for app_config module
-```
-
-### Fixtures
-
-Common fixtures are defined in `tests/conftest.py`:
-
-```python
-import pytest
-from ticketing_system.app_config import AppConfig
-
-@pytest.fixture
-def app_config(monkeypatch: pytest.MonkeyPatch) -> AppConfig:
-    monkeypatch.setenv("ENV", "test")
-    return AppConfig()
-```
-
-### Example Test
-
-```python
-from ticketing_system.app_config import AppConfig
-
-def test_app_config(app_config: AppConfig):
-    assert app_config is not None
-    assert "test" in app_config.settings.app_name
-```
-
-### Environment Variables
-
-Use `monkeypatch` for environment variable manipulation:
-
-```python
-def test_with_custom_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("ENV", "prod")
-    monkeypatch.setenv("APP_NAME", "Custom App")
-    # ... test code
-```
-
-## Test Configuration
-
-Test settings are loaded from `conf/test/` directory. The test environment is activated by setting `ENV=test`.
-
-### pytest Configuration
-
-pytest is configured in `pyproject.toml`. Key settings:
-- `pytest-asyncio` for async test support
-- `pytest-cov` for coverage reporting
-
-## Best Practices
-
-1. **Naming**: Prefix test functions with `test_`
-2. **Fixtures**: Use fixtures for common setup
-3. **Isolation**: Each test should be independent
-4. **Environment**: Use `monkeypatch` for env vars, don't modify global state
-5. **Assertions**: Use clear, specific assertions
+From US-003 the inventory no-oversell property gets an automated contention test inside
+`make check`; load tests at the festival-scale NFR live in TKT-4/TKT-20/TKT-31/TKT-37.
