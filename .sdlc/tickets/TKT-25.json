@@ -8,7 +8,7 @@
   "pr": null,
   "parent": "TKT-1",
   "classification": "complex",
-  "description": "**As** a developer, **I want** a monorepo where `docker compose up` starts the five Go services, gateway, storefront and scanner shells with health checks, and `make check` runs the full local gate.\n\nThis is the prefactoring slice: it defines the repo layout, the gate (`make check` becomes `config.code.localGate`) and CI. It also supersedes the Python-scaffold docs (`docs/{configuration,development,docker,testing}.md`) with Go/TS equivalents.\n\n**Priority:** P0\n**Depends on:** —\n\n**Acceptance Criteria:**\n- [ ] `docker compose up` from a clean clone brings up gateway + 5 service skeletons + storefront + scanner shell; `/healthz` green on all\n- [ ] Storefront placeholder page served through the gateway in a browser\n- [ ] `make check` (lint + test + build, Go & TS) passes, and fails correctly on seeded lint/test errors; documented in README; CI runs the same gate\n- [ ] Repo layout + service ownership documented in docs/architecture.md\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
+  "description": "**As** a developer, **I want** a monorepo where `docker compose up` starts the five Go services, gateway, storefront and scanner shells with health checks, and `make check` runs the full local gate.\n\nThis is the prefactoring slice: it defines the repo layout, the gate (`make check` becomes `config.code.localGate`) and CI. It also supersedes the Python-scaffold docs (`docs/{configuration,development,docker,testing}.md`) with Go/TS equivalents.\n\n**Priority:** P0\n**Depends on:** —\n\n**Acceptance Criteria:**\n- [ ] `docker compose up` from a clean clone brings up gateway + 5 service skeletons + storefront + scanner shell; `/healthz` green on all\n- [ ] Storefront placeholder page served through the gateway in a browser\n- [ ] `make check` (lint + test + build, Go & TS) passes, and fails correctly on seeded lint/test errors; documented in README; CI runs the same gate\n- [ ] Services emit structured JSON logs with correlation/trace IDs propagated across service calls; a local tracing/metrics stack runs in Compose (concrete tooling chosen in the plan)\n- [ ] Repo layout + service ownership documented in docs/architecture.md\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).\n\n*Planning note:* the US-001 plan must propose the database(s) and event bus as an ADR, approved at the plan gate.",
   "context": {
     "binding": [
       {
@@ -34,7 +34,13 @@
     ],
     "capturedAt": "2026-07-12"
   },
-  "comments": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): observability foundation (structured logs, trace propagation, local metrics stack) added as AC; DB + event bus chosen via ADR in the US-001 plan."
+    }
+  ],
   "links": [
     {
       "type": "blocks",
