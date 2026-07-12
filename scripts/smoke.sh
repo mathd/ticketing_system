@@ -18,6 +18,7 @@ if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
     [ -x "$ROOT/bin/gate/$b" ] || { echo "smoke: missing bin/gate/$b — run 'make smoke' (or 'make build-gate-linux')" >&2; exit 1; }
   done
   [ -f "$ROOT/web/scanner/dist/index.html" ] || { echo "smoke: missing web/scanner/dist — run 'make build-ts'" >&2; exit 1; }
+  [ -f "$ROOT/web/storefront/dist/server/entry.mjs" ] || { echo "smoke: missing web/storefront/dist — run 'make build-ts'" >&2; exit 1; }
   COMPOSE_FILES+=(-f "$ROOT/compose.smoke.yaml")
 fi
 

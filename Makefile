@@ -12,13 +12,23 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: check lint test build smoke smoke-hermetic lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux up down clean
+.PHONY: check lint test build smoke smoke-hermetic lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate up down clean
 
-check: deps lint test build smoke
+check: deps check-generate lint test build smoke
 
 ## ---- deps (self-contained gate: clean clone needs nothing pre-installed) ----
 deps:
 	pnpm install --frozen-lockfile
+
+## ---- generate (contract-first, ADR-009: spec is the source of truth) ----
+generate:
+	cd services/catalog/api && go tool oapi-codegen -config codegen.yaml openapi.yaml
+	pnpm --filter storefront generate:api
+
+# The gate fails when committed generated code drifts from the spec.
+check-generate: generate
+	@git diff --exit-code -- services/catalog/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts \
+		|| { echo "generated code drifted from the OpenAPI spec — commit the output of 'make generate'" >&2; exit 1; }
 
 ## ---- lint ----
 lint: lint-go lint-ts
@@ -96,4 +106,4 @@ down:
 	docker compose down -v
 
 clean: down
-	rm -rf bin web/scanner/dist
+	rm -rf bin web/scanner/dist web/storefront/dist
