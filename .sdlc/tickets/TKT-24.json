@@ -1,0 +1,17 @@
+{
+  "key": "TKT-24",
+  "type": "Epic",
+  "summary": "Epic: Audit log & analytics pipeline",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Immutable who-did-what on sensitive operations (orders, holds, refunds, settlement, RBAC changes); domain event stream into a local warehouse for analytics beyond operational reports.\n\n**Conditions of Success:**\n- Sensitive mutations produce audit entries with actor, before/after, timestamp\n- Domain events stream to a queryable local store; sales funnel analysis possible\n- Audit entries are append-only and exportable\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
