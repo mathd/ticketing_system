@@ -1,0 +1,17 @@
+{
+  "key": "TKT-41",
+  "type": "Task",
+  "summary": "🧠 Agent memory — cross-ticket learnings",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Working memory for reusable codebase patterns and gotchas discovered during pipeline runs. Append-only comments; promote proven patterns per the 3-houses rule (technical -> docs/adr/, process -> docs/, repo guidance -> AGENTS.md via gated ticket). Working memory != gospel. Never moves past Backlog.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFrom TKT-25 (codex review patterns to bake into future service slices): self-contained local gate (`make deps` before `make check`), publish Compose ports on 127.0.0.1 only, pin tool versions, never track build artifacts/node_modules. Source: PR #1 review fixes (e85bd44)."
+    }
+  ]
+}
