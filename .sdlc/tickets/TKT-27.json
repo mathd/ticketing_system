@@ -15,6 +15,11 @@
         "id": "ADR-002",
         "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only.",
         "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-005",
+        "rule": "Every admission-granting offer (performance, festival day, park operating day) is a dated slot in one inventory machinery; passes are entitlements to claim slot entries; lodging/day resources reserve through the same contention-safe core; slot attributes carry domain specifics — the claim primitive does not fork.",
+        "date": "2026-07-12"
       }
     ],
     "reference": [
@@ -29,7 +34,13 @@
     ],
     "capturedAt": "2026-07-12"
   },
-  "comments": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Final review fix: ADR-005 (unified dated-slot) baked into context — the claim core built here is THE single claim primitive for all slot types."
+    }
+  ],
   "links": [
     {
       "type": "blocks",
