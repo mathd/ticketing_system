@@ -1,0 +1,17 @@
+{
+  "key": "TKT-16",
+  "type": "Epic",
+  "summary": "Epic: Box office / POS",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Staff counter sales including cash, POS-specific channel allocation, NF525 receipt path, offline tolerance.\n\n**Conditions of Success:**\n- Staff sells from the POS UI against the box-office allocation, cash and card (fake PSP)\n- Every POS receipt lands in the NF525 journal; daily Z closure covers the till\n- Short network outages don't stop sales; reconciliation on reconnect\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
