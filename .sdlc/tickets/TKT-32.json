@@ -1,0 +1,17 @@
+{
+  "key": "TKT-32",
+  "type": "Epic",
+  "summary": "Epic: Taxes & VAT",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Per-product-class VAT rates (tickets vs merchandise vs lodging vs parking — EU classes differ), tax-inclusive/exclusive display, VAT breakdown lines in the money journal, settlement and invoices. Rates resolve through the TKT-5 rules hierarchy.\n\n**Conditions of Success:**\n- Order totals carry per-line VAT at the correct product-class rate; inclusive/exclusive display configurable\n- Settlement reports VAT collected per rate and reconciles with the journal to the cent\n- Changing a rate never rewrites history — rate versions apply by sale date (ADR-003 discipline)\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map). Origin: backlog grilling 2026-07-12.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Blind spot found in review: fee splits and settlement were in scope with no tax treatment."
+    }
+  ]
+}
