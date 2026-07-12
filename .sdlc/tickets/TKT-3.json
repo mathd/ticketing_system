@@ -1,0 +1,17 @@
+{
+  "key": "TKT-3",
+  "type": "Epic",
+  "summary": "Epic: Venues & seat map designer",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Venue model with GA capacities and full reserved seating: in-house authoring of sections/rows/seats, map versioning safe against sold inventory.\n\n**Conditions of Success:**\n- Staff can author and edit a seat map in the back office UI\n- Maps are versioned; edits never orphan or duplicate sold/held seats\n- GA and seated configurations coexist per venue\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
