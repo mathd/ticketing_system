@@ -1,0 +1,17 @@
+{
+  "key": "TKT-36",
+  "type": "Epic",
+  "summary": "Epic: Internationalization (FR + EN)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Per-locale event content in the catalog, localized storefront/back-office UI strings, localized emails and documents, locale-aware date/money formatting. Plumbing is born in US-002; this epic carries the breadth.\n\n**Conditions of Success:**\n- Full purchase path (browse → checkout → email → ticket) completable in FR and EN\n- Event copy editable per locale in the back office; missing-translation fallback defined\n- Adding a third locale requires no schema change\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map). Origin: backlog grilling 2026-07-12.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Owner: FR+EN from the start (French market later, international buyers now)."
+    }
+  ]
+}
