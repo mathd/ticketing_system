@@ -10,7 +10,8 @@
   "pr": {
     "number": 6,
     "url": "https://github.com/mathd/ticketing_system/pull/6",
-    "state": "open"
+    "state": "merged",
+    "mergeCommit": "71f0c90a59d33bb1ca0093eb70031851b0bd5d76"
   },
   "parent": "TKT-1",
   "classification": "complex",
@@ -80,6 +81,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\nIndependent review triaged: no blocking findings and the reviewer judged the core lifecycle safe to merge after the build. Five observations: (1) fragile countdown effect — accepted and fixed by keying the timer lifecycle to hold identity; (2) single-use idempotency keys — accepted and documented in ADR-010; (3) non-locking pool discovery — retained, explicitly required for uniform lock ordering; (4) venue capacity snapshot — retained as the approved first quantity-pool adapter; (5) verification claim — resolved by a clean local gate. No findings silently dropped; no incidental backlog tickets needed.\n\nFinal SHA: 2d0fabb. Full validation: lint, unit tests, generated-contract drift, builds, and smoke all green. Smoke proves exact capacity under parallel demand and idempotency branches. Browser evidence committed. PR #6 review guide posted. Stopped pushing; Gate 3 is now human-owned."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\nValidation note — TKT-27 COS are met from user-visible output and executable proof.\n\n- Hold/confirm/release contract is organizer-scoped and idempotent; conflicting terminal/idempotency outcomes are explicit.\n- Hold response carries opaque ID, absolute expiry, and server time; invalid quantity and insufficient capacity do not consume inventory.\n- Expiry is decided by PostgreSQL time inside the pool-locked transaction; capacity recovers without relying on a sweeper.\n- Real-stack smoke submits demand far above capacity and grants exactly 10 units; active plus confirmed quantity never exceeds the pool.\n- Storefront quantity picker creates holds through the gateway and renders a clock-skew-safe countdown; browser evidence is in docs/verification/TKT-27/hold-picker.png.\n- Inventory capacity is provisioned from the durable catalog publication event without cross-service database access.\n\nPR #6 squash-merged after check, gate-selftest, and hermetic-smoke all passed. PO validation can now transition the ticket to Done."
     }
   ],
   "links": [
