@@ -146,6 +146,7 @@ func TestUS002CreatePublishAndStorefront(t *testing.T) {
 			PerformanceID string `json:"performance_id"`
 			EventID       string `json:"event_id"`
 			OrganizerID   string `json:"organizer_id"`
+			Capacity      int32  `json:"capacity"`
 		} `json:"data"`
 	}
 	msg, err := cons.Next(jetstream.FetchMaxWait(15 * time.Second))
@@ -157,7 +158,7 @@ func TestUS002CreatePublishAndStorefront(t *testing.T) {
 		t.Fatalf("envelope: %v (%s)", err, msg.Data())
 	}
 	if envelope.Type != "platform.catalog.performance.published" ||
-		envelope.Schema != 1 || envelope.ID == "" ||
+		envelope.Schema != 2 || envelope.ID == "" || envelope.Data.Capacity != 500 ||
 		envelope.Data.PerformanceID != perf["id"] ||
 		envelope.Data.EventID != event["id"] ||
 		envelope.Data.OrganizerID != organizerID {

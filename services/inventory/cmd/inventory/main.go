@@ -16,7 +16,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
+	"ticketing/services/inventory/internal/api"
+	"ticketing/services/inventory/internal/consumer"
+	"ticketing/services/inventory/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 )
@@ -37,7 +41,7 @@ func main() {
 // shell/curl, so the binary probes itself (compose exec's this subcommand).
 func healthcheck() int {
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://localhost:" + port() + "/healthz")
+	resp, err := client.Get("http://localhost:" + port() + "/readyz")
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return 1
 	}
@@ -71,6 +75,11 @@ func run() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer mcancel()
+	if err := store.Migrate(mctx, db); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
@@ -78,6 +87,22 @@ func run() error {
 		return fmt.Errorf("nats connect: %w", err)
 	}
 	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return fmt.Errorf("jetstream: %w", err)
+	}
+	ttl := 10 * time.Minute
+	if raw := os.Getenv("HOLD_TTL"); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil || parsed <= 0 {
+			return fmt.Errorf("invalid HOLD_TTL %q", raw)
+		}
+		ttl = parsed
+	}
+	st := store.New(db, ttl)
+	cons := consumer.New(js, st, log)
+	consumerErr := make(chan error, 1)
+	go func() { consumerErr <- cons.Run(ctx) }()
 
 	r := chi.NewRouter()
 	r.Method(http.MethodGet, "/healthz", httpx.Healthz(serviceName,
@@ -93,6 +118,19 @@ func run() error {
 			return nil
 		}),
 	))
+	r.Method(http.MethodGet, "/readyz", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !cons.Ready() {
+			http.Error(w, "consumer not ready", http.StatusServiceUnavailable)
+			return
+		}
+		httpx.Healthz(serviceName, httpx.Check("db", db.Ping), httpx.Check("nats", func() error {
+			if !nc.IsConnected() {
+				return errors.New("not connected")
+			}
+			return nil
+		})).ServeHTTP(w, req)
+	}))
+	r.Mount("/", api.New(st).Router())
 
 	srv := &http.Server{
 		Addr:              ":" + port(),
@@ -106,6 +144,8 @@ func run() error {
 
 	select {
 	case err := <-errCh:
+		return err
+	case err := <-consumerErr:
 		return err
 	case <-ctx.Done():
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

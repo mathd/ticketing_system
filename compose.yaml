@@ -103,6 +103,7 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
+      HOLD_TTL: ${HOLD_TTL:-10m}
 
   commerce:
     <<: *go-service

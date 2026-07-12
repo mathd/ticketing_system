@@ -324,6 +324,7 @@ func (s *Server) GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId 
 	}
 	detail := PublicEventDetail{
 		Id:           agg.Event.ID,
+		OrganizerId:  agg.Event.OrganizerID,
 		Name:         resolve(agg.Event.Name, params.Locale),
 		Performances: make([]PublicPerformanceDetail, 0, len(agg.Performances)),
 	}

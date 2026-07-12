@@ -1,0 +1,44 @@
+openapi: 3.1.0
+info: {title: Inventory API, version: 0.1.0}
+paths:
+  /holds:
+    post:
+      summary: Atomically hold dated-slot capacity
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/HoldCreate'}}}}
+      responses:
+        '201': {description: Created}
+        '200': {description: Idempotent replay}
+        '400': {description: Invalid input}
+        '404': {description: Slot not provisioned}
+        '409': {description: Insufficient capacity or idempotency conflict}
+  /holds/{holdId}/confirm:
+    post:
+      summary: Confirm a live hold idempotently
+      parameters: [{$ref: '#/components/parameters/HoldId'}]
+      responses: {'200': {description: Confirmed}, '404': {description: Not found}, '409': {description: Expired or conflicting terminal state}}
+  /holds/{holdId}/release:
+    post:
+      summary: Release a live hold idempotently
+      parameters: [{$ref: '#/components/parameters/HoldId'}]
+      responses: {'200': {description: Released}, '404': {description: Not found}, '409': {description: Conflicting terminal state}}
+  /slots/{slotId}/availability:
+    get:
+      summary: Public seconds-tier availability
+      parameters:
+        - {name: slotId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Availability}, '404': {description: Not provisioned}}
+components:
+  parameters:
+    HoldId: {name: holdId, in: path, required: true, schema: {type: string, format: uuid}}
+  schemas:
+    HoldCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, slot_id, quantity]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
