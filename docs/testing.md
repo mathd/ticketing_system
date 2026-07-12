@@ -29,8 +29,14 @@ still what `make up` uses, and is exercised end-to-end by `make smoke-hermetic` 
 files (Dockerfiles, `compose*.yaml`, `.dockerignore`, `go.work*`), so hermetic regressions
 cannot merge silently through the fast path.
 
-Gate timings (CI, `make check` job): 10m32 before TKT-42 (smoke 5m35, linter compiled from
-source ~1m+, cold lint cache) → measured after on the TKT-42 PR (target ≲5m; local warm ≲2m).
+Gate timings measured on TKT-42 (before → after):
+
+| run | before | after |
+|---|---|---|
+| CI `make check` | 10m32 | 5m14 (cold caches; warm is lower) |
+| CI `gate-selftest` | 2m32 | 45s |
+| local `make check` (warm) | ~10m | 1m29 |
+| hermetic smoke | in every PR run | 6m20, weekly + build-file PRs only |
 
 ## The smoke seam
 
