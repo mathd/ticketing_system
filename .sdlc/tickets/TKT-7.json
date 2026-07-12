@@ -1,0 +1,17 @@
+{
+  "key": "TKT-7",
+  "type": "Epic",
+  "summary": "Epic: Promotions & discount codes",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Single-use and multi-use codes, percentage/fixed discounts, comps, redemption limits and windows.\n\n**Conditions of Success:**\n- Single-use codes are single-use under concurrent redemption attempts\n- Multi-use codes enforce max-redemption and validity windows\n- Discounts compose correctly with fees and appear in the journal breakdown\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
