@@ -2,7 +2,7 @@
   "key": "TKT-42",
   "type": "Task",
   "summary": "Speed up the local/CI gate (make check: 10.5m -> ~2m warm)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
