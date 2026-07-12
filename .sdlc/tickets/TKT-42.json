@@ -2,7 +2,7 @@
   "key": "TKT-42",
   "type": "Task",
   "summary": "Speed up the local/CI gate (make check: 10.5m -> ~2m warm)",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -10,7 +10,7 @@
   "pr": {
     "number": 3,
     "url": "https://github.com/mathd/ticketing_system/pull/3",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "standard",
   "description": "**As** a developer, **I want** `make check` to finish in ~2 minutes on a warm cache (local and CI) **so that** the gate stays cheap enough to run on every change.\n\nMeasured on CI run 29205106777 (green, 2026-07-12): total 10m32s — smoke `compose up --build` 5m35 (tests themselves <1s), `pnpm install` 2m05 (no store cache), lint-go 2m15 (8 serial cold golangci-lint runs). Actual test+build work: ~40s.\n\n**Priority:** P1\n\n**Acceptance Criteria:**\n- [ ] Service Dockerfiles use BuildKit cache mounts (go mod + go build cache); a code-only change does not re-download modules or rebuild unchanged layers\n- [ ] CI reuses Docker layer cache across runs (gha cache or equivalent); warm-cache smoke stage well under 2m\n- [ ] pnpm store cached in CI (`setup-node` with `cache: pnpm`); deps stage seconds on warm cache\n- [ ] lint-go parallelized or single-run (go.work or `make -j`); golangci-lint cache persisted in CI\n- [ ] Redundant `go vet -tags smoke` removed from build-go (golangci-lint already runs govet)\n- [ ] Node 20 deprecation warning gone: bump `pnpm/action-setup` (and any other actions pinned to node20 runtimes) to current major\n- [ ] Gate semantics unchanged: same checks, same failure behavior; gate-selftest still passes; `make check` still green from a clean clone\n- [ ] Warm/cold timings documented in docs (before/after table)\n\nQuality gates: `make check` green; gate-selftest green; no UI/money paths touched.",
@@ -109,6 +109,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\nAll green on PR #3 (final SHA): check 3m25 warm / 5m14 cold (was 10m32), gate-selftest 45-54s (was 2m32), hermetic-smoke 5m51-6m20 green (weekly + build-file PRs only). Local warm 1m29. CI detour during re-green: pnpm/action-setup@v6 broken in both default and standalone modes (its issue #276) -> replaced with corepack (version still from packageManager, same mechanism as the scanner Dockerfile); node20 warning structurally gone. Review-guide on the PR. needs:human — Gate 3: review + squash-merge."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\nPR #3 merged (0a63eea, +225/-16, 12 files); owner confirmed all green on main. COS validation: CI `make check` 3m25 warm / 5m14 cold (was 10m32); gate-selftest 45s (was 2m32); local warm 1m29 (was ~10m); node20 warning structurally gone (action removed); hermetic path green on the PR itself; gate semantics unchanged (codex-verified); timings documented in docs/testing.md. Owner accepted in chat (Gate 4)."
     }
   ]
 }
