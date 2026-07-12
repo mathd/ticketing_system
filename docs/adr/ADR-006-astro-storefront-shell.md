@@ -1,0 +1,47 @@
+# ADR-006: Astro 7 as the storefront shell (React islands + SPA checkout)
+
+Date: 2026-07-12
+
+## Status
+
+Proposed — pending spike TKT-39. If accepted, this **amends ADR-001** (which stands: React remains the UI library; this decision only changes the storefront's shell framework). Back office and scanner are unaffected — they stay React SPAs.
+
+## Context
+
+The storefront has two halves with opposite shapes. The **browse half** (event lists, event/festival pages) is content-heavy, SEO-relevant, read-mostly, and takes the brunt of on-sale read spikes — exactly what ADR-004's cache-first read path serves. The **buy half** (queue → hold countdown → seat picking → checkout) is a stateful app spanning pages. The owner has also made SEO, GEO and agent-readability a must (PRD «Discovery & agents», TKT-40) — server-rendered, structured-data-rich HTML serves all three, which weighs in Astro's favor for the browse half. Astro 7 (released 2026-06-22) matches that half unusually well: server-rendered cacheable pages with islands of interactivity, **stable route caching** (platform-agnostic `Astro.cache`), a `src/fetch.ts` request-pipeline entrypoint for per-route-class `Cache-Control` policy, first-class locale routing (TKT-36), and React components as islands (TKT-35 seat picker stays React). It is also three weeks old: stricter Rust compiler, Vite 8/Rolldown bundler swap, Sätteri Markdown pipeline — a simultaneous early-adopter tax on several layers — and it adds a second frontend paradigm for a solo/AI team, against the same integration-tax logic that produced ADR-002's coarse service cut.
+
+The open question the spike must answer: do the browse-half gains survive contact with the buy-half seams?
+
+## Possible Solutions
+
+- **Option 1 — Astro 7 storefront shell, React islands, SPA checkout island/subtree:**
+    - Pros: ADR-004 made into a framework (page-layer TTLs per route class); minimal JS on the pages that take on-sale read spikes; built-in FR/EN locale routing; agent-friendly dev tooling.
+    - Cons: three-week-old major release (compiler strictness, Rolldown ecosystem lag, Sätteri plugin porting); MPA state seams across the hold-countdown/checkout hand-off; a second frontend paradigm to maintain; CDN cache adapters still experimental; overlaps TKT-31 — needs an explicit page-layer vs API-layer caching ownership rule.
+- **Option 2 — React SPA storefront (ADR-001 as written):**
+    - Pros: one paradigm across all three frontends; the buy half is in its natural habitat; no early-adopter tax.
+    - Cons: browse pages ship an SPA runtime to serve mostly-static content; ADR-004 caching lives entirely in the API/CDN layer; SEO/SSR needs its own machinery anyway if added later.
+- **Option 3 — Astro for marketing/SEO pages only, SPA for everything transactional:**
+    - Pros: smallest Astro surface.
+    - Cons: event detail pages — the highest-traffic cacheable pages — end up on the SPA side, forfeiting the main benefit.
+
+## Decision
+
+**Deferred to spike TKT-39** (timeboxed). Acceptance criteria for choosing Option 1, to be evidenced by the spike:
+
+1. Event list + event detail render in Astro 7 with correct ADR-004 tiers — page HTML cached at the minutes tier, availability as a React island polling the seconds tier — with `Cache-Control` set per route class via `src/fetch.ts`.
+2. The hold-countdown state survives MPA navigation into a React checkout surface without fragile seams (documented honestly, including what breaks).
+3. FR/EN locale routing works for localized event content (TKT-36 shape).
+4. A written **caching ownership rule** resolving the TKT-31 overlap: which layer (page vs API) owns each ADR-004 tier, such that stale-page/fresh-API mismatches are impossible by construction.
+5. The v7 early-adopter tax observed during the spike (compiler strictness, plugin gaps, bugs) is judged tolerable for this testbed.
+
+If any of 1–4 fails, Option 2 stands and this ADR is marked Rejected with the evidence.
+
+## Consequences
+
+- **Positive (if accepted):** the on-sale read path serves mostly cached HTML + one small island; ADR-004 discipline gets framework enforcement; storefront i18n comes largely free.
+- **Negative (if accepted):** two frontend paradigms (Astro storefront, React SPAs elsewhere); v7.0.x churn absorbed early; every storefront story must state which caching layer owns its reads.
+
+## References
+
+- [ADR-001](./ADR-001-go-typescript-stack.md) · [ADR-004](./ADR-004-cache-first-read-path.md) · TKT-39 (spike) · TKT-31, TKT-35, TKT-36
+- [Astro 7.0 announcement](https://astro.build/blog/astro-7/) · [Upgrade to Astro v7](https://docs.astro.build/en/guides/upgrade-to/v7/)

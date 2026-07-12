@@ -169,7 +169,7 @@ How model/system quality is measured, monitored, and maintained over time.
 
 | Aspect | Description |
 |---|---|
-| **Sources** | _e.g. Confluence, SharePoint, internal docs_ |
+| **Sources** | _internal docs (this repo)_ |
 | **Ingestion** | _e.g. Nightly batch, webhook on update_ |
 | **Versioning** | _e.g. Document hash, re-index on change_ |
 | **Cleanup** | _e.g. Remove stale docs after 90 days_ |

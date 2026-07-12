@@ -6,7 +6,7 @@ Move to a central home (Confluence / internal docs / template parent) and have p
 
 This document is complementary to the **Cadre de livraison de projet**, which defines the full lifecycle of a project. The delivery framework answers the question *"how we deliver"*. This vision answers the question **"how we code"**: the engineering practices, conventions, and tools that guide the daily work of technical teams.
 
-- **Organizational standards** (conventions, guidelines, processes) live in Confluence.
+- **Organizational standards** (conventions, guidelines, processes) live in this repo's `docs/` — this project keeps all documentation in-repo.
 - **Project-specific decisions and artifacts** (ADRs, technical documentation, AGENTS.md) live in the project's Git repository.
 - The principles below describe what each repository should contain and how teams should work within it.
 
