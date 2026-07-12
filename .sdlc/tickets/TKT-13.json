@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "Two calendar-inventory models: camping as nightly stays (check-in/check-out, occupancy rules, per-night pricing) and cabanas as day-slot resources tied to a park visit; parking inventory.\n\n**Conditions of Success:**\n- Camping books date ranges with no double-occupancy; pricing per night\n- Cabana books per visit day and requires/links a same-day park admission\n- Both models reserve through the contention-safe inventory core\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "description": "Two calendar-inventory models: camping as nightly stays (check-in/check-out, occupancy rules, per-night pricing) and cabanas as day-slot resources tied to a park visit; parking inventory.\n\n**Conditions of Success:**\n- Camping books date ranges with no double-occupancy; pricing per night\n- Cabana books per visit day and requires/links a same-day park admission\n- Both models reserve through the contention-safe inventory core\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).\n\n**Amended (grilling):** per ADR-005, cabanas/parking attach to day slots and camping to date ranges, all reserving through the same claim core.",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Backlog grilling 2026-07-12 (owner decisions): lodging grounded in ADR-005 dated-slot model."
     }
   ]
 }
