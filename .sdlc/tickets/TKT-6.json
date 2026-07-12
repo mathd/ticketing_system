@@ -1,0 +1,17 @@
+{
+  "key": "TKT-6",
+  "type": "Epic",
+  "summary": "Epic: Service fees & revenue splits",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Fee schedules (per channel, absorbed vs passed-on, rounding rules) and split accounting across payees: system, venue, artist, extensible list.\n\n**Conditions of Success:**\n- Every order line carries a fee breakdown; buyer-visible vs absorbed is correct per channel\n- Settlement ledger attributes every fee cent to a payee; splits sum exactly to totals\n- Fee rules participate in the TKT-5 hierarchy\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
