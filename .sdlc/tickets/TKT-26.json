@@ -59,6 +59,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Final review fix: ADR-005 (unified dated-slot) baked into context — the 'performance' created here is the first dated slot — its shape must not preclude park days/festival days."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**DoR verdict: Ready-eligible.** 6/7 items `met`, `uncertainties` `deferred` (all plan-resolvable, no pending product decision - the 2026-07-12 grilling already settled i18n-from-birth, ADR-004 tiers, and the ADR-005 slot shape; ADR-006 settled the shell framework).\n\nGrounded in code (not assumed): catalog `main.go` is a skeleton with chi/pgx/NATS wired but zero domain routes; gateway route table already reserves `/api/catalog/` for this story's contract; `web/storefront` is the nginx placeholder and is NOT in the pnpm workspace (only `web/scanner` is) - the Astro app must join workspace + `make check` + compose; no migration tooling exists anywhere - this story births the first schema.\n\n**Blockers: none open.** TKT-39 Done (ADR-006 Accepted, PR #4 merged @ 603ae00).\n\n**risk:low NOT suggested** - production code across three surfaces (catalog service, gateway contract, storefront rebuild), first DB schema, workspace/CI surface, well over 5 files. The plan gate applies."
     }
   ],
   "links": [
@@ -66,5 +71,35 @@
       "type": "blocks",
       "key": "TKT-27"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "First real vertical slice after the scaffold: catalog write path -> domain event -> cacheable public reads -> Astro storefront listing. M1 walking skeleton, P0."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: catalog API create venue(GA capacity)/event/dated performance/ticket type (single EUR price, integer minor units); publish emits domain event on PLATFORM stream (ADR-007); OpenAPI contract published + registered at gateway /api/catalog/; storefront rebuilt as Astro 7 shell (replaces nginx placeholder) listing published performances, FR/EN locale switch, ADR-004 tiers, one aggregated call per page; organizer_id on every entity. OUT: auth/authn, back-office UI (creation via API only), event editing/versioning, inventory/holds (US-003), fees/promos/rules, seat maps, event consumers (emission only - no consumer exists yet in M1)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "All resolvable in Planning, none needs a product call: (1) migration tooling - none exists yet, first schema is born here; plan proposes (new-tool choice may warrant a mini-ADR); (2) OpenAPI spec-first vs code-generated - plan proposes; (3) Astro storefront joins the pnpm workspace + make check + compose (SSR container via @astrojs/node behind the gateway) - first real integration, carries ADR-006's declared risk register (gateway wiring, contract generation, CDN s-maxage honoring); (4) localizable-content shape must allow new locales without schema change (TKT-36)."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "TKT-25 (scaffold) Done; TKT-39 (Astro spike) Done, ADR-006 Accepted, PR #4 merged. Zero open blockers."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Catalog: chi + pgx + NATS already wired in the skeleton; add domain routes + Postgres schema (catalog DB exists per ADR-007). Gateway: route table ready, contract registration is the US-002 work it announces. Storefront: Astro 7 SSR (@astrojs/node), Cache-Control per route class via src/middleware.ts, availability-free cached HTML per the ADR-006 ownership rule, i18n.routing for FR/EN. Performance is the first dated slot - shape must not preclude festival/park days (ADR-005)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The story is itself the M1 slice: create via API -> published -> visible on storefront in a browser. Demoable alone."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS = the 5 ACs on the ticket + quality gates: make check green, contract tests on touched boundaries, browser-verified UI with screenshot in PR."
+    }
+  }
 }
