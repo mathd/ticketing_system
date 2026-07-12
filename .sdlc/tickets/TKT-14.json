@@ -1,0 +1,17 @@
+{
+  "key": "TKT-14",
+  "type": "Epic",
+  "summary": "Epic: Festivals",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Multi-day passes and per-day tickets on shared capacity (zones/stages), festival camping add-ons bound to the order, RFID wristband media with activation/binding (hardware simulated in the testbed).\n\n**Conditions of Success:**\n- Full-festival pass and day tickets draw down shared capacity consistently\n- Wristband activation binds media to a ticket/person; lost wristband reissue deactivates the old one\n- Festival camping sold only with a qualifying festival order\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    }
+  ]
+}
