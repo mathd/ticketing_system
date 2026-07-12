@@ -53,7 +53,16 @@ func TestSeededFailure(t *testing.T) { t.Fatal("seeded failure") }
 EOF
 expect_fail "go test" test-go
 
-# 3. TS lint violation (oxlint no-debugger)
+# 3. Go compile error (build stage — proves build-go fails before smoke
+#    can ever package a broken binary; TKT-42)
+cat > shared/go/httpx/seeded.go <<'EOF'
+package httpx
+
+var seededBroken int = "not-a-number"
+EOF
+expect_fail "go build" build-go
+
+# 4. TS lint violation (oxlint no-debugger)
 cat > web/scanner/src/seeded.ts <<'EOF'
 export function seeded(): void {
   debugger
@@ -61,14 +70,14 @@ export function seeded(): void {
 EOF
 expect_fail "ts lint" lint-ts
 
-# 4. Failing vitest test
+# 5. Failing vitest test
 cat > web/scanner/src/seeded.test.ts <<'EOF'
 import { expect, it } from 'vitest'
 it('seeded failure', () => { expect(1).toBe(2) })
 EOF
 expect_fail "ts test" test-ts
 
-# 5. TS type error (tsc, build stage)
+# 6. TS type error (tsc, build stage)
 cat > web/scanner/src/seeded.ts <<'EOF'
 export const seeded: number = 'not a number'
 EOF

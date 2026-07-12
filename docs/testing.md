@@ -15,6 +15,23 @@ browser evidence on UI stories).
 | build | `go build` + `go vet` per module | `tsc -b && vite build` |
 | smoke | `smoke/` suite via `scripts/smoke.sh` | — |
 
+## Smoke build paths (TKT-42)
+
+Per-PR/local smoke packages **host-built artifacts** into the images: static Go binaries
+(`make build-gate-linux`, `CGO_ENABLED=0 GOOS=linux`) and the scanner `dist` (from
+`build-ts`), selected via `compose.smoke.yaml` + the packaging-only Dockerfiles
+(`build/go-bin.Dockerfile`, `web/scanner/Dockerfile.smoke`). This removes the in-Docker
+compiles that dominated gate time (CI daemons are cold; `RUN` cache mounts don't persist).
+
+The **hermetic** in-Docker build path (`build/go.Dockerfile`, `web/scanner/Dockerfile`) is
+still what `make up` uses, and is exercised end-to-end by `make smoke-hermetic` in
+`.github/workflows/hermetic.yaml` — weekly on main **and** on any PR touching the build
+files (Dockerfiles, `compose*.yaml`, `.dockerignore`, `go.work*`), so hermetic regressions
+cannot merge silently through the fast path.
+
+Gate timings (CI, `make check` job): 10m32 before TKT-42 (smoke 5m35, linter compiled from
+source ~1m+, cold lint cache) → measured after on the TKT-42 PR (target ≲5m; local warm ≲2m).
+
 ## The smoke seam
 
 `smoke/smoke_test.go` (build tag `smoke`) is black-box against the composed stack through
@@ -31,8 +48,8 @@ the gateway, plus named infra assertions:
 
 `scripts/gate-selftest.sh` proves the gate actually fails: it seeds, one at a time in a
 disposable git worktree (never your tree, trap-cleaned), a Go lint violation, a failing Go
-test, a TS lint violation, a failing vitest test and a TS type error — and requires the
-corresponding `make` stage to exit non-zero.
+test, a Go compile error, a TS lint violation, a failing vitest test and a TS type error —
+and requires the corresponding `make` stage to exit non-zero.
 
 ## Concurrency proofs (coming)
 

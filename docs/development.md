@@ -4,8 +4,9 @@
 
 Latest stable everything (see `conventions/dependencies-and-versions.md`): Go 1.26+,
 Node 24+ with pnpm 11 (pinned via `packageManager`, auto-selected by corepack/pnpm),
-Docker + Compose v2. No other host dependencies; `make lint-go` installs golangci-lint
-into `./bin`.
+Docker + Compose v2. No other host dependencies; `make lint-go` installs the pinned
+golangci-lint release binary into `./bin` (sha256-verified against the release checksums;
+`scripts/install-golangci-lint.sh`).
 
 ## Everyday loop
 
@@ -27,6 +28,9 @@ TS code is a pnpm workspace (`web/scanner`; the storefront is static HTML pendin
   (isolated project `ticketing-smoke`, shifted ports, trap-based teardown).
 - **The gate polices itself**: `scripts/gate-selftest.sh` seeds one failure per stage in a
   disposable git worktree and requires each to fail. CI runs both jobs.
+- **Two smoke build paths** (TKT-42): `make smoke` packages host-built artifacts (fast,
+  per-PR); `make smoke-hermetic` runs the original in-Docker builds — weekly in CI and on
+  PRs touching the build files. See docs/testing.md §Smoke build paths.
 
 ## Observability
 

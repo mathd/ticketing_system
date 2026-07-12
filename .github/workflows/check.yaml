@@ -1,4 +1,7 @@
-# CI = exactly the local gate (`make check`), plus the gate self-test.
+# CI = the local gate (`make check`), plus the gate self-test.
+# Per-PR smoke runs against host-built artifacts (compose.smoke.yaml);
+# the hermetic in-Docker build path is covered by hermetic.yaml
+# (scheduled + triggered on PRs touching the build files).
 # Triggers are scoped to main + PRs; sdlc-state commits never reach CI.
 name: check
 
@@ -16,11 +19,18 @@ jobs:
         with:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
-      - uses: pnpm/action-setup@v4   # version comes from packageManager
+      - uses: pnpm/action-setup@v6   # version comes from packageManager
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: pnpm
+      # golangci-lint analysis cache; version key must match GOLANGCI_VERSION
+      # in the Makefile
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-v2.12.2-${{ runner.os }}-${{ hashFiles('**/go.sum', 'go.work.sum') }}
+          restore-keys: golangci-v2.12.2-${{ runner.os }}-
       - run: make check
 
   gate-selftest:
@@ -31,7 +41,7 @@ jobs:
         with:
           go-version: "1.26"
           cache-dependency-path: "**/go.sum"
-      - uses: pnpm/action-setup@v4   # version comes from packageManager
+      - uses: pnpm/action-setup@v6   # version comes from packageManager
       - uses: actions/setup-node@v6
         with:
           node-version: "24"

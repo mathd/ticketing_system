@@ -1,0 +1,20 @@
+# Smoke override: swap the hermetic in-Docker builds for packaging-only
+# images that COPY host-built artifacts (make build-gate-linux / build-ts).
+# Applied by scripts/smoke.sh unless SMOKE_HERMETIC=1. A Go service present
+# in compose.yaml but missing here falls back to the hermetic build — slower
+# but never wrong.
+services:
+  catalog:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: catalog } }
+  inventory:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: inventory } }
+  commerce:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: commerce } }
+  payments:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: payments } }
+  access:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: access } }
+  gateway:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: gateway } }
+  scanner:
+    build: { context: ., dockerfile: web/scanner/Dockerfile.smoke }

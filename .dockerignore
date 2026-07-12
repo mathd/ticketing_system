@@ -1,7 +1,9 @@
 .git
 **/node_modules
 **/dist
-bin
+!web/scanner/dist
+bin/*
+!bin/gate
 docs
 .sdlc
 .claude
