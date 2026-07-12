@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFrom TKT-25 (codex review patterns to bake into future service slices): self-contained local gate (`make deps` before `make check`), publish Compose ports on 127.0.0.1 only, pin tool versions, never track build artifacts/node_modules. Source: PR #1 review fixes (e85bd44)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFrom TKT-42 (CI patterns): 1) pnpm/action-setup@v6 broken in default AND standalone modes (issue #276) — use corepack on runners (version from packageManager, same as the Dockerfiles). Before bumping any pinned GH Action major, scan its open issues. 2) GHA type=gha layer cache does not persist RUN --mount=type=cache — in-Docker compiles are always cold in CI; package host-built artifacts instead (docs/testing.md §Smoke build paths)."
     }
   ]
 }
