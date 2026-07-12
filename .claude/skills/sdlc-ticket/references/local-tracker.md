@@ -54,6 +54,12 @@ curl -s -X POST http://localhost:8787/ticket -H 'Content-Type: application/json'
 EOF
 ```
 
+**Markdown bodies are shell-hostile.** Comment bodies full of backticks/`$( )` get command-substituted
+the moment they pass through a double-quoted shell string (e.g. inline `python3 -c "…"`) — the write
+"succeeds" with a corrupted body. Build the payload in a **script file** (python via `urllib`, or a
+`.json` file POSTed with `curl -d @file`); the single-quoted `<<'EOF'` heredoc above is safe, but only
+as long as the JSON itself is written literally, not assembled from interpolated shell variables.
+
 Fallback (server down): edit `../<repo>.sdlc-state/.sdlc/tickets/<KEY>.json` directly, then
 `git -C ../<repo>.sdlc-state add -A && git -C ../<repo>.sdlc-state commit -m "chore(<KEY>): <what>"`.
 Never edit ticket files in the main checkout — they don't exist there.
