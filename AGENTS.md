@@ -24,8 +24,15 @@ experiment stays valid.
 
 ## Working agreement
 
-- **No app exists yet.** There is no stack, framework, or architecture decided. Do not assume one —
-  ask or propose, and record the choice.
+- **The stack is decided and scaffolded** (TKT-25 / PR #1, 2026-07-12): five Go services
+  (catalog, inventory, commerce, payments, access) behind a thin Go gateway, TypeScript + React
+  frontends (storefront, scanner shell), PostgreSQL 17 with one database per service, NATS
+  JetStream as the event bus, all under a single `docker compose up`. Money is integer minor
+  units + ISO currency code — floats are banned on money paths. See ADR-001/002/007 and
+  `docs/architecture.md` for layout and service ownership. Don't propose a new stack; extend
+  this one, and record deviations as ADRs.
+- **Local gate:** `make check` (lint + test + build, Go & TS, plus the gateway smoke suite;
+  run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored.
 - **Specs before code.** Prefer writing/refining a spec or PRD before implementing. Ground work in
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`
@@ -35,8 +42,8 @@ experiment stays valid.
   and ticket-level context on the `.sdlc/` board. Anything the sdlc-ticket skill would send to a
   wiki goes to `docs/` instead.
 - **Documentation lives in `docs/`** — a standard docs scaffold (architecture,
-  ADRs, learnings, roadmap, solution design, conventions). Note: `configuration.md`,
-  `development.md`, `docker.md`, and `testing.md` describe a Python scaffold, which is
-  not implemented here yet — treat them as aspirational until a stack decision (ADR) lands.
+  ADRs, learnings, roadmap, solution design, conventions). The former Python-scaffold docs
+  (`configuration.md`, `development.md`, `docker.md`, `testing.md`) were superseded by the
+  Go/TS equivalents in TKT-25.
 - The `sdlc-ticket` skill and the git-derived board (`.sdlc/`) are the default workflow scaffolding
   for planning and tracking work here.
