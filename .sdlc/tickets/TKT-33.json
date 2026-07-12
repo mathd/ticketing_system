@@ -1,0 +1,17 @@
+{
+  "key": "TKT-33",
+  "type": "Epic",
+  "summary": "Epic: Privacy & GDPR",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "The machinery over ADR-003 §3 (pseudonymous trails, born in US-004/US-005): erasable PII vault, erasure request flow, data-export (access request) flow, retention policies, automated no-PII-in-trails verification.\n\n**Conditions of Success:**\n- Erasure request completes while journal & lifecycle trails stay intact and verifiable\n- Data-export produces the complete personal data set for a customer\n- Automated check proves no raw PII in any append-only store; runs in the local gate\n\nLineage: docs/product/brief.md · docs/product/prd-v1.md (capability map). Origin: backlog grilling 2026-07-12.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "COS defined at epic level; decompose when prioritized (Gate 1). Resolves the GDPR-vs-inalterability tension: design (pseudonymous IDs) lands in M1; machinery lands here."
+    }
+  ]
+}
