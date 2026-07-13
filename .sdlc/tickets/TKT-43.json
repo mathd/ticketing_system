@@ -1,0 +1,12 @@
+{
+  "key": "TKT-43",
+  "type": "Story",
+  "summary": "Production-grade checkout recovery and journal fault-injection hardening",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Follow-up from the TKT-28 adversarial review. Before replacing the fake PSP, add scheduled/restart recovery for payment_unknown and confirmation_pending workflows, PSP status plus void/refund compensation, transactional outbox publication, and PostgreSQL integration/fault-injection coverage for concurrent journal appends, conflicting replay, tampering, head consistency, key rotation, PII erasure, service restarts, and crash boundaries. TKT-28 retains retry-driven recovery appropriate to its walking-skeleton COS.",
+  "comments": [],
+  "links": []
+}
