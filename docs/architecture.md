@@ -75,6 +75,10 @@ flowchart TB
 - Commerce commits a completed order before publishing the identifier-only event consumed by
   Access. Access issues signed QR tickets and keeps the `issued`/`delivered` lifecycle trace;
   it resolves the buyer email from Commerce only while dispatching delivery (ADR-012).
+- Access verifies QR scans with its dedicated public-key keyring and appends `redeemed` to the
+  immutable ticket lifecycle trace. M1 deliberately exposes this endpoint without staff
+  authentication and has no expiry, revocation, or admission-window policy; staff RBAC and
+  lifecycle policy are later TKT-22/TKT-19 work.
 - Public reads declare volatility-tiered TTLs (ADR-004); one claim primitive for all
   admission inventory (ADR-005).
 - All cross-service calls propagate W3C trace context (`obs.Client`); all servers emit

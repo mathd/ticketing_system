@@ -1,10 +1,120 @@
+import { useEffect, useRef, useState } from 'react'
+import './index.css'
+
+type ScanOutcome =
+  | { kind: 'accepted'; scannedAt: string }
+  | { kind: 'rejected'; reason: string; originalScanAt?: string }
+
+type BarcodeDetectorInstance = {
+  detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>
+}
+
+type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorInstance
+
+declare global {
+  interface Window {
+    BarcodeDetector?: BarcodeDetectorConstructor
+  }
+}
+
+const scanURL = '/api/access/scans'
+
+function readableTime(value?: string) {
+  return value ? new Date(value).toLocaleString() : undefined
+}
+
 function App() {
+  const [payload, setPayload] = useState('')
+  const [outcome, setOutcome] = useState<ScanOutcome | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [cameraMessage, setCameraMessage] = useState('')
+  const [cameraActive, setCameraActive] = useState(false)
+  const video = useRef<HTMLVideoElement>(null)
+  const stream = useRef<MediaStream | null>(null)
+  const frame = useRef<number | null>(null)
+
+  const stopCamera = () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    frame.current = null
+    stream.current?.getTracks().forEach((track) => track.stop())
+    stream.current = null
+    setCameraActive(false)
+  }
+
+  useEffect(() => stopCamera, [])
+
+  const submit = async (value = payload) => {
+    if (!value.trim() || submitting) return
+    setSubmitting(true)
+    setOutcome(null)
+    try {
+      const response = await fetch(scanURL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qr_payload: value.trim() }),
+      })
+      const result: { decision?: string; reason?: string; scanned_at?: string; original_scan_at?: string } = await response.json()
+      if (response.ok && result.decision === 'accepted') {
+        setOutcome({ kind: 'accepted', scannedAt: result.scanned_at ?? '' })
+      } else {
+        setOutcome({ kind: 'rejected', reason: result.reason ?? 'scan_failed', originalScanAt: result.original_scan_at })
+      }
+    } catch {
+      setOutcome({ kind: 'rejected', reason: 'scanner_unavailable' })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const startCamera = async () => {
+    if (!window.BarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
+      setCameraMessage('Camera QR detection is unavailable in this browser. Paste the credential instead.')
+      return
+    }
+    try {
+      const media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      stream.current = media
+      if (!video.current) return
+      video.current.srcObject = media
+      await video.current.play()
+      setCameraActive(true)
+      setCameraMessage('Point the camera at a ticket QR code.')
+      const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
+      const detect = async () => {
+        if (!video.current || !stream.current) return
+        const codes = await detector.detect(video.current)
+        const value = codes[0]?.rawValue
+        if (value) {
+          setPayload(value)
+          stopCamera()
+          await submit(value)
+          return
+        }
+        frame.current = requestAnimationFrame(() => { void detect() })
+      }
+      void detect()
+    } catch {
+      setCameraMessage('Camera access was unavailable. Paste the credential instead.')
+    }
+  }
+
   return (
-    <main>
+    <main className="scanner">
       <h1>Gate scanner</h1>
-      <p data-testid="placeholder">
-        Scanner shell (US-001). Scanning UI arrives with US-006.
-      </p>
+      <p>Scan a ticket QR code or paste its credential to validate entry.</p>
+      <section aria-label="Ticket scan input">
+        <label htmlFor="qr-payload">Ticket credential</label>
+        <textarea id="qr-payload" value={payload} onChange={(event) => setPayload(event.target.value)} placeholder="Paste QR credential" rows={4} />
+        <div className="scanner-actions">
+          <button type="button" onClick={() => void submit()} disabled={submitting || !payload.trim()}>{submitting ? 'Checking…' : 'Check ticket'}</button>
+          <button type="button" onClick={() => void startCamera()} disabled={cameraActive || submitting}>Use camera</button>
+          {cameraActive && <button type="button" onClick={stopCamera}>Stop camera</button>}
+        </div>
+        {cameraActive && <video ref={video} aria-label="Camera preview" muted playsInline />}
+        {cameraMessage && <p className="camera-note" role="status">{cameraMessage}</p>}
+      </section>
+      {outcome?.kind === 'accepted' && <section className="result accepted" role="status"><h2>Accepted</h2><p>Entry recorded at {readableTime(outcome.scannedAt)}.</p></section>}
+      {outcome?.kind === 'rejected' && <section className="result rejected" role="alert"><h2>Rejected</h2><p>{outcome.reason === 'already_redeemed' ? `Already redeemed at ${readableTime(outcome.originalScanAt)}.` : 'Credential is invalid or cannot be redeemed.'}</p></section>}
     </main>
   )
 }

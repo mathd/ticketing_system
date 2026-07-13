@@ -3,6 +3,7 @@ package ticket
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -34,5 +35,41 @@ func TestSignedPayloadRejectsTamperingAndUnknownKey(t *testing.T) {
 	parts[1] = "A" + parts[1][1:]
 	if _, err := Verify(strings.Join(parts, "."), map[string]ed25519.PublicKey{"test-v1": private.Public().(ed25519.PublicKey)}); err == nil {
 		t.Fatal("tampered token accepted")
+	}
+}
+
+func TestVerifierRequiresDedicatedActiveKey(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	private := ed25519.NewKeyFromSeed(seed)
+	public := base64.RawStdEncoding.EncodeToString(private.Public().(ed25519.PublicKey))
+	keyID := "access-qr/test-v1"
+	verifier, err := NewVerifier(keyID+"="+public, keyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = verifier.Verify("not-a-ticket"); err == nil {
+		t.Fatal("invalid token accepted")
+	}
+	if _, err = NewVerifier("", keyID); err == nil {
+		t.Fatal("missing keyring accepted")
+	}
+	if _, err = NewVerifier(keyID+"="+public, "other"); err == nil {
+		t.Fatal("unqualified active key accepted")
+	}
+}
+
+func TestVerifyRejectsWrongCredentialType(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	private := ed25519.NewKeyFromSeed(seed)
+	claims := Claims{Version: 1, TicketID: uuid.New(), OrderID: uuid.New(), OrganizerID: uuid.New(), SlotID: uuid.New(), IssuedAt: time.Now().Unix()}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","kid":"access-qr/test-v1","typ":"OTHER"}`))
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := header + "." + base64.RawURLEncoding.EncodeToString(payload)
+	token := encoded + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, []byte(encoded)))
+	if _, err = Verify(token, map[string]ed25519.PublicKey{"access-qr/test-v1": private.Public().(ed25519.PublicKey)}); err == nil {
+		t.Fatal("wrong credential type accepted")
 	}
 }

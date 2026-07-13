@@ -1,1 +1,13 @@
-body { font-family: system-ui, sans-serif; margin: 2rem; }
+body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f8; color: #172033; }
+.scanner { max-width: 42rem; margin: 0 auto; padding: 2rem 1rem; }
+.scanner section { background: #fff; border: 1px solid #dbe0e8; border-radius: .75rem; padding: 1rem; margin-top: 1rem; }
+label, textarea { display: block; width: 100%; box-sizing: border-box; }
+label { font-weight: 700; margin-bottom: .5rem; }
+textarea { font: inherit; padding: .75rem; }
+.scanner-actions { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: .75rem; }
+button { font: inherit; padding: .65rem 1rem; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .6; }
+video { display: block; width: 100%; margin-top: 1rem; border-radius: .5rem; background: #111; }
+.camera-note { margin-bottom: 0; }
+.result.accepted { border-color: #15803d; background: #f0fdf4; }
+.result.rejected { border-color: #b91c1c; background: #fef2f2; }
