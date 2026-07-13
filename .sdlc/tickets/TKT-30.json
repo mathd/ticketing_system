@@ -4,7 +4,7 @@
   "summary": "US-006: Gate scan with duplicate rejection",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "codex",
   "pr": "https://github.com/mathd/ticketing_system/pull/9",
