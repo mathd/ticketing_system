@@ -7,6 +7,12 @@
   "assignee": null,
   "pr": null,
   "description": "Follow-up from the TKT-28 adversarial review. Before replacing the fake PSP, add scheduled/restart recovery for payment_unknown and confirmation_pending workflows, PSP status plus void/refund compensation, transactional outbox publication, and PostgreSQL integration/fault-injection coverage for concurrent journal appends, conflicting replay, tampering, head consistency, key rotation, PII erasure, service restarts, and crash boundaries. TKT-28 retains retry-driven recovery appropriate to its walking-skeleton COS.",
-  "comments": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFollow-up from PR #7 second review (validated 2026-07-13): before any real-PSP launch, implement a durable reconciler with a bounded finalizing lease/expiry policy; re-drive confirmation_pending and payment_unknown/release_pending orders after restart; repair a payment operation whose canonical capture fact exists but terminal projection write failed; obtain PSP status and issue idempotent void/refund compensation when confirmation is impossible. These are deliberate walking-skeleton limits in ADR-011, not safe branch fixes without the recovery design."
+    }
+  ],
   "links": []
 }
