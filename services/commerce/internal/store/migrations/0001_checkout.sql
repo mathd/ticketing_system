@@ -16,7 +16,8 @@ CREATE TABLE order_facts (
   occurred_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE orders (
-  id uuid PRIMARY KEY, reservation_id uuid NOT NULL REFERENCES reservations(id), status text NOT NULL,
+  id uuid PRIMARY KEY, reservation_id uuid NOT NULL UNIQUE REFERENCES reservations(id), status text NOT NULL,
+  idempotency_key text NOT NULL, request_fingerprint text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
 

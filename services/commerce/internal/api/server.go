@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -181,11 +182,40 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 	if e != nil {
 		return e
 	}
-	code, _, e := s.call(ctx, http.MethodPost, s.paymentsURL+"/internal/facts", "", map[string]any{"fact_id": fid, "organizer_id": x.OrganizerID, "fact_type": typ, "buyer_id": x.BuyerID, "amount": x.Amount, "currency": x.Currency, "occurred_at": time.Now().UTC(), "payload": map[string]string{"order_id": order.String()}}, true)
+	var occurred time.Time
+	if e := s.db.QueryRowContext(ctx, `SELECT occurred_at FROM order_facts WHERE fact_id=$1`, fid).Scan(&occurred); e != nil {
+		return e
+	}
+	code, _, e := s.call(ctx, http.MethodPost, s.paymentsURL+"/internal/facts", "", map[string]any{"fact_id": fid, "organizer_id": x.OrganizerID, "fact_type": typ, "buyer_id": x.BuyerID, "amount": x.Amount, "currency": x.Currency, "occurred_at": occurred, "payload": map[string]string{"order_id": order.String()}}, true)
 	if e != nil || code != 200 {
 		return errors.New("journal unavailable")
 	}
 	return nil
+}
+
+func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string) (uuid.UUID, string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, x.ID.String()); err != nil {
+		return uuid.Nil, "", err
+	}
+	var id uuid.UUID
+	var storedKey, storedFingerprint, status string
+	err = tx.QueryRowContext(ctx, `SELECT id,idempotency_key,request_fingerprint,status FROM orders WHERE reservation_id=$1`, x.ID).Scan(&id, &storedKey, &storedFingerprint, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		id = uuid.NewSHA1(uuid.NameSpaceOID, []byte("order:"+x.OrganizerID.String()+":"+key))
+		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint) VALUES($1,$2,'created',$3,$4)`, id, x.ID, key, fingerprint)
+		status = "created"
+	} else if err == nil && (storedKey != key || storedFingerprint != fingerprint) {
+		return uuid.Nil, "", errors.New("reservation already has a different checkout")
+	}
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	return id, status, tx.Commit()
 }
 func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -206,13 +236,20 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 404, map[string]string{"error": "reservation not found"})
 		return
 	}
-	order := uuid.NewSHA1(uuid.NameSpaceOID, []byte("order:"+x.OrganizerID.String()+":"+key))
-	if x.Status == "completed" {
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
+	order, orderStatus, err := s.claimOrder(r.Context(), x, key, fingerprint)
+	if err != nil {
+		write(w, 409, map[string]string{"error": err.Error()})
+		return
+	}
+	if orderStatus == "completed" {
 		write(w, 200, map[string]any{"order_id": order, "status": "completed"})
 		return
 	}
-	_, _ = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email)
-	_, _ = s.db.ExecContext(r.Context(), `INSERT INTO orders(id,reservation_id,status) VALUES($1,$2,'created') ON CONFLICT DO NOTHING`, order, x.ID)
+	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
+		write(w, 500, map[string]string{"error": "persist buyer"})
+		return
+	}
 	if err := s.fact(r.Context(), x, order, "order.created"); err != nil {
 		write(w, 503, map[string]string{"error": "journal unavailable"})
 		return
@@ -222,18 +259,36 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 409, map[string]string{"error": "hold expired"})
 		return
 	}
-	_, _ = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='finalizing' WHERE id=$1`, x.ID)
+	if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='finalizing' WHERE id=$1`, x.ID); err != nil {
+		write(w, 500, map[string]string{"error": "persist checkout"})
+		return
+	}
 	charge := map[string]any{"order_id": order, "organizer_id": x.OrganizerID, "buyer_id": x.BuyerID, "amount": x.Amount, "currency": x.Currency, "payment_token": in.PaymentToken}
 	code, body, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/charges", key, charge, true)
 	if err != nil {
 		_, _ = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='unknown' WHERE id=$1`, x.ID)
+		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1`, order)
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
 	if code == 402 || code == 408 {
-		_, _, _ = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/release?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, false)
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='failed' WHERE id=$1`, x.ID)
-		_ = s.fact(r.Context(), x, order, "order.failed")
+		releaseCode, _, releaseErr := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/release?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, false)
+		if releaseErr != nil || releaseCode != 200 {
+			write(w, 202, map[string]any{"order_id": order, "status": "release_pending"})
+			return
+		}
+		if err := s.fact(r.Context(), x, order, "order.failed"); err != nil {
+			write(w, 503, map[string]string{"error": "journal unavailable"})
+			return
+		}
+		if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='failed' WHERE id=$1`, x.ID); err != nil {
+			write(w, 500, map[string]string{"error": "persist failure"})
+			return
+		}
+		if _, err = s.db.ExecContext(r.Context(), `UPDATE orders SET status='failed',updated_at=now() WHERE id=$1`, order); err != nil {
+			write(w, 500, map[string]string{"error": "persist failure"})
+			return
+		}
 		var out map[string]any
 		_ = json.Unmarshal(body, &out)
 		out["order_id"] = order
@@ -241,17 +296,34 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code != 200 {
+		_, _ = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='unknown' WHERE id=$1`, x.ID)
+		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1`, order)
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
 	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, false)
 	if err != nil || code != 200 {
+		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1`, order)
 		write(w, 202, map[string]any{"order_id": order, "status": "confirmation_pending"})
 		return
 	}
-	_, _ = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='completed' WHERE id=$1`, x.ID)
-	_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='completed',updated_at=now() WHERE id=$1`, order)
-	_ = s.fact(r.Context(), x, order, "order.completed")
+	if err := s.fact(r.Context(), x, order, "order.completed"); err != nil {
+		write(w, 503, map[string]string{"error": "journal unavailable"})
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		write(w, 500, map[string]string{"error": "persist completion"})
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `UPDATE reservations SET status='completed' WHERE id=$1`, x.ID); err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE orders SET status='completed',updated_at=now() WHERE id=$1`, order)
+	}
+	if err != nil || tx.Commit() != nil {
+		_ = tx.Rollback()
+		write(w, 500, map[string]string{"error": "persist completion"})
+		return
+	}
 	write(w, 200, map[string]any{"order_id": order, "status": "completed"})
 }
 func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {

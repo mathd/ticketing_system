@@ -85,11 +85,21 @@ func validate(f Fact) error {
 	if f.ID == uuid.Nil || f.OrganizerID == uuid.Nil || f.BuyerID == uuid.Nil || f.Amount < 0 || len(f.Currency) != 3 {
 		return errors.New("invalid journal fact")
 	}
+	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true}
+	if !allowedTypes[f.Type] {
+		return errors.New("unsupported journal fact type")
+	}
 	for k := range f.Payload {
 		l := strings.ToLower(k)
 		if strings.Contains(l, "email") || strings.Contains(l, "name") || strings.Contains(l, "pan") || strings.Contains(l, "cvv") {
 			return fmt.Errorf("PII/payment field %q forbidden in journal", k)
 		}
+		if k != "order_id" {
+			return fmt.Errorf("payload field %q is not allowed", k)
+		}
+	}
+	if _, err := uuid.Parse(f.Payload["order_id"]); err != nil {
+		return errors.New("valid order_id payload required")
 	}
 	return nil
 }
@@ -110,9 +120,18 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	var existing Entry
-	err = tx.QueryRowContext(ctx, `SELECT sequence,previous_hash,entry_hash,key_id,signature FROM journal_entries WHERE fact_id=$1`, f.ID).Scan(&existing.Sequence, &existing.PreviousHash, &existing.EntryHash, &existing.KeyID, &existing.Signature)
+	var raw []byte
+	err = tx.QueryRowContext(ctx, `SELECT organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature FROM journal_entries WHERE fact_id=$1`, f.ID).Scan(&existing.OrganizerID, &existing.Sequence, &existing.Type, &existing.OccurredAt, &existing.BuyerID, &existing.Amount, &existing.Currency, &raw, &existing.PreviousHash, &existing.EntryHash, &existing.KeyID, &existing.Signature)
 	if err == nil {
-		existing.Fact = f
+		existing.ID = f.ID
+		if err := json.Unmarshal(raw, &existing.Payload); err != nil {
+			return Entry{}, false, err
+		}
+		want, _ := canonical(f, existing.Sequence)
+		got, _ := canonical(existing.Fact, existing.Sequence)
+		if !hmac.Equal(want, got) {
+			return Entry{}, false, errors.New("fact id reused with different content")
+		}
 		return existing, true, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -181,7 +200,60 @@ func (j *Journal) Verify(ctx context.Context) error {
 		prevByOrg[e.OrganizerID] = sum
 		seqByOrg[e.OrganizerID] = e.Sequence
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	headRows, err := j.db.QueryContext(ctx, `SELECT organizer_id,last_sequence,last_hash FROM journal_heads`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = headRows.Close() }()
+	for headRows.Next() {
+		var org uuid.UUID
+		var seq int64
+		var sum []byte
+		if err := headRows.Scan(&org, &seq, &sum); err != nil {
+			return err
+		}
+		if seqByOrg[org] != seq || !hmac.Equal(prevByOrg[org], sum) {
+			return fmt.Errorf("journal head mismatch organizer=%s", org)
+		}
+		delete(seqByOrg, org)
+	}
+	if err := headRows.Err(); err != nil {
+		return err
+	}
+	if len(seqByOrg) != 0 {
+		return errors.New("journal entries missing head")
+	}
+	return nil
+}
+
+func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerprint string) (string, uuid.UUID, bool, error) {
+	result, err := j.db.ExecContext(ctx, `INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, org, key, fingerprint)
+	if err != nil {
+		return "", uuid.Nil, false, err
+	}
+	var stored string
+	var status sql.NullString
+	var factID uuid.NullUUID
+	err = j.db.QueryRowContext(ctx, `SELECT request_fingerprint,status,fact_id FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).Scan(&stored, &status, &factID)
+	if err != nil {
+		return "", uuid.Nil, false, err
+	}
+	if stored != fingerprint {
+		return "", uuid.Nil, false, errors.New("idempotency key reused with different request")
+	}
+	inserted, _ := result.RowsAffected()
+	if inserted == 0 && !status.Valid {
+		return "", uuid.Nil, false, errors.New("payment operation in progress")
+	}
+	return status.String, factID.UUID, status.Valid, nil
+}
+
+func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID) error {
+	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4 WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID)
+	return err
 }
 
 func Hex(b []byte) string { return hex.EncodeToString(b) }

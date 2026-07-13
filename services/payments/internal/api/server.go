@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -95,6 +97,23 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "invalid charge"})
 		return
 	}
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s", in.OrderID, in.BuyerID, in.Amount, in.Currency, in.PaymentToken))))
+	boundStatus, boundID, replay, err := s.journal.BindOperation(r.Context(), in.OrganizerID, key, fingerprint)
+	if err != nil {
+		write(w, 409, map[string]string{"error": err.Error()})
+		return
+	}
+	if replay {
+		code := 200
+		if boundStatus == "declined" {
+			code = 402
+		}
+		if boundStatus == "timeout" {
+			code = 408
+		}
+		write(w, code, map[string]any{"status": boundStatus, "payment_id": boundID, "replay": true})
+		return
+	}
 	status := "captured"
 	factType := "payment.captured"
 	code := 200
@@ -108,7 +127,7 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		factType = "payment.timeout"
 		code = 408
 	case TokenSuccess:
-		authorizedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+key+":payment.authorized"))
+		authorizedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":payment.authorized"))
 		if _, _, err := s.journal.Append(r.Context(), store.Fact{ID: authorizedID, OrganizerID: in.OrganizerID, Type: "payment.authorized", OccurredAt: time.Now().UTC(), BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}); err != nil {
 			write(w, 500, map[string]string{"error": "journal append failed"})
 			return
@@ -117,10 +136,14 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "unknown fake payment token"})
 		return
 	}
-	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+key+":"+factType))
+	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":"+factType))
 	e, replay, err := s.journal.Append(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: time.Now().UTC(), BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}})
 	if err != nil {
 		write(w, 500, map[string]string{"error": "journal append failed"})
+		return
+	}
+	if err := s.journal.CompleteOperation(r.Context(), in.OrganizerID, key, status, factID); err != nil {
+		write(w, 500, map[string]string{"error": "persist payment result"})
 		return
 	}
 	write(w, code, map[string]any{"status": status, "payment_id": factID, "sequence": e.Sequence, "replay": replay})

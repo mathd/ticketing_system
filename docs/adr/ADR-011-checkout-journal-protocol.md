@@ -19,7 +19,10 @@ an immutable EUR price snapshot before asking inventory to hold it; browser-supp
 never trusted. Checkout uses organizer-scoped idempotency keys.
 
 Inventory adds `finalizing`: an idempotent transition available only from a live hold. A finalizing
-claim does not expire while commerce resolves payment. The protocol is authorize, finalize claim,
+claim does not expire while commerce resolves payment. Each reservation has exactly one checkout;
+commerce binds its key to a request fingerprint under a database advisory lock, and payments binds
+the organizer/key pair to the full charge fingerprint and one stable result. Conflicting reuse is
+rejected. The protocol is authorize, finalize claim,
 capture, confirm. A terminal decline or fake-PSP timeout whose status proves no side effect releases
 the claim. Unknown results remain finalizing for recovery. Captured claims are retried to confirm;
 if confirmation is provably impossible, the PSP is voided/refunded idempotently and the order is
@@ -41,7 +44,10 @@ accept pseudonymous IDs only. Buyer name/email live in a separately deletable co
 
 Commerce records intent and completion facts durably. `platform.commerce.order.completed` uses the
 ADR-009 envelope and contains identifiers only. Recovery is coordinator-owned; unresolved captured
-payments are never silently released.
+payments are never silently released. Recovery in this walking skeleton is retry-driven: durable
+`payment_unknown` and `confirmation_pending` projections are visible through the order read API,
+and an exact checkout replay resumes the idempotent protocol. Automated scheduling and real-PSP
+status/compensation are required before replacing the fake PSP.
 
 ## Consequences
 

@@ -129,7 +129,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		return Claim{}, false, err
 	}
 	var held int32
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND status='held' AND expires_at>now()`, slot).Scan(&held); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND ((status='held' AND expires_at>now()) OR status='finalizing')`, slot).Scan(&held); err != nil {
 		return Claim{}, false, err
 	}
 	if confirmed+held+qty > capacity {
@@ -202,7 +202,7 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID) (Availability, error) {
 	var a Availability
 	a.SlotID = slot
-	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND status='held' AND expires_at>now()) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).Scan(&a.Capacity, &a.Confirmed, &a.Held)
+	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND ((status='held' AND expires_at>now()) OR status='finalizing')) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).Scan(&a.Capacity, &a.Confirmed, &a.Held)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}

@@ -21,4 +21,8 @@ func TestCanonicalHashAndPIIGuard(t *testing.T) {
 	if validate(f) == nil {
 		t.Fatal("raw PII accepted")
 	}
+	f.Payload = map[string]string{"contact": "raw@example.test"}
+	if validate(f) == nil {
+		t.Fatal("arbitrary payload field accepted")
+	}
 }
