@@ -105,6 +105,7 @@ services:
       <<: *go-env
       DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
       HOLD_TTL: ${HOLD_TTL:-10m}
+      CATALOG_URL: http://catalog:8080
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
   commerce:

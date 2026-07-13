@@ -61,6 +61,7 @@ func NewRouter(s *Server) (http.Handler, error) {
 	})
 	r := chi.NewRouter()
 	r.Get("/internal/ticket-types/{id}", s.getTicketType)
+	r.Get("/internal/performances/{id}", s.getPublishedPerformance)
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -95,6 +96,26 @@ func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": tt.ID, "organizer_id": tt.OrganizerID, "performance_id": tt.PerformanceID,
 		"price": map[string]any{"amount": tt.PriceAmount, "currency": tt.Currency},
+	})
+}
+
+func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request) {
+	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid performance id"})
+		return
+	}
+	perf, err := s.store.GetPublishedPerformance(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": perf.ID, "organizer_id": perf.OrganizerID, "capacity": perf.Capacity,
 	})
 }
 

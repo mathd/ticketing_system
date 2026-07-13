@@ -72,7 +72,7 @@ func (f *fakeStore) CreatePerformance(_ context.Context, in store.PerformanceInp
 	}
 	p := store.Performance{ID: uuid.New(), OrganizerID: in.OrganizerID, EventID: in.EventID,
 		VenueID: in.VenueID, StartsAt: in.StartsAt, Timezone: in.Timezone,
-		Status: "draft", CreatedAt: time.Now().UTC()}
+		Status: "draft", Capacity: v.GACapacity, CreatedAt: time.Now().UTC()}
 	f.performances[p.ID] = p
 	return p, nil
 }
@@ -98,6 +98,14 @@ func (f *fakeStore) GetTicketType(_ context.Context, id uuid.UUID) (store.Ticket
 		return store.TicketType{}, store.ErrNotFound
 	}
 	return tt, nil
+}
+
+func (f *fakeStore) GetPublishedPerformance(_ context.Context, id uuid.UUID) (store.Performance, error) {
+	p, ok := f.performances[id]
+	if !ok || p.Status != "published" {
+		return store.Performance{}, store.ErrNotFound
+	}
+	return p, nil
 }
 
 func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.Performance, bool, error) {
@@ -234,6 +242,31 @@ func TestInternalTicketTypeRequiresCredential(t *testing.T) {
 			h.ServeHTTP(res, req)
 			if res.Code != tt.want {
 				t.Fatalf("status=%d want=%d", res.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestInternalPublishedPerformanceLookup(t *testing.T) {
+	e := newEnv(t)
+	_, performanceID := e.createFixture(true)
+	for _, tt := range []struct {
+		name, token string
+		want        int
+	}{
+		{name: "missing credential", want: http.StatusUnauthorized},
+		{name: "valid credential", token: "test-internal-token", want: http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/internal/performances/"+performanceID.String(), nil)
+			req.Header.Set("X-Internal-Token", tt.token)
+			res := httptest.NewRecorder()
+			e.handler.ServeHTTP(res, req)
+			if res.Code != tt.want {
+				t.Fatalf("status=%d want=%d", res.Code, tt.want)
+			}
+			if tt.want == http.StatusOK && !bytes.Contains(res.Body.Bytes(), []byte(`"capacity":500`)) {
+				t.Fatalf("lookup response %s", res.Body.String())
 			}
 		})
 	}

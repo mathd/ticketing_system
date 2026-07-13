@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,6 +81,14 @@ func run() error {
 	if err := store.Migrate(mctx, db); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	credential := os.Getenv("INTERNAL_SERVICE_TOKEN")
+	if credential == "" {
+		return errors.New("INTERNAL_SERVICE_TOKEN required")
+	}
+	catalogURL := strings.TrimRight(os.Getenv("CATALOG_URL"), "/")
+	if catalogURL == "" {
+		return errors.New("CATALOG_URL required")
+	}
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
@@ -100,7 +109,7 @@ func run() error {
 		ttl = parsed
 	}
 	st := store.New(db, ttl)
-	cons := consumer.New(js, st, log)
+	cons := consumer.New(js, st, consumer.NewCatalogResolver(catalogURL, credential, &http.Client{Timeout: 5 * time.Second}), log)
 	consumerErr := make(chan error, 1)
 	go func() { consumerErr <- cons.Run(ctx) }()
 
@@ -130,10 +139,6 @@ func run() error {
 			return nil
 		})).ServeHTTP(w, req)
 	}))
-	credential := os.Getenv("INTERNAL_SERVICE_TOKEN")
-	if credential == "" {
-		return errors.New("INTERNAL_SERVICE_TOKEN required")
-	}
 	r.Mount("/", api.New(st, credential).Router())
 
 	srv := &http.Server{

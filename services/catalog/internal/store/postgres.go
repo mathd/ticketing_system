@@ -225,6 +225,17 @@ func (p *Postgres) getPerformance(ctx context.Context, id uuid.UUID) (Performanc
 	return perf, nil, nil
 }
 
+func (p *Postgres) GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error) {
+	perf, _, err := p.getPerformance(ctx, id)
+	if err != nil {
+		return Performance{}, err
+	}
+	if perf.Status != "published" {
+		return Performance{}, ErrNotFound
+	}
+	return perf, nil
+}
+
 func (p *Postgres) MarkPerformanceEventEmitted(ctx context.Context, id uuid.UUID) error {
 	if _, err := p.db.ExecContext(ctx,
 		`UPDATE performances SET event_emitted_at = now() WHERE id = $1`, id); err != nil {
