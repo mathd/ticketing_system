@@ -14,8 +14,9 @@ import (
 func TestPaymentFailureResponse(t *testing.T) {
 	tests := []struct {
 		name, body, fallback, wantStatus string
+		wantReplay                       bool
 	}{
-		{name: "valid object", body: `{"status":"declined","reason":"card_declined"}`, fallback: "fallback", wantStatus: "declined"},
+		{name: "valid object", body: `{"status":"declined","replay":true,"reason":"card_declined","payment_id":"provider-secret"}`, fallback: "fallback", wantStatus: "declined", wantReplay: true},
 		{name: "empty", body: ``, fallback: "timeout", wantStatus: "timeout"},
 		{name: "malformed", body: `{`, fallback: "declined", wantStatus: "declined"},
 		{name: "non object", body: `[]`, fallback: "timeout", wantStatus: "timeout"},
@@ -25,6 +26,15 @@ func TestPaymentFailureResponse(t *testing.T) {
 			got := paymentFailureResponse([]byte(tt.body), tt.fallback)
 			if got["status"] != tt.wantStatus {
 				t.Fatalf("status = %v, want %s", got["status"], tt.wantStatus)
+			}
+			if replay, ok := got["replay"]; ok != tt.wantReplay || (ok && replay != true) {
+				t.Fatalf("replay = %v, present = %t, want replay = %t", replay, ok, tt.wantReplay)
+			}
+			if _, ok := got["reason"]; ok {
+				t.Fatal("reason must not be exposed")
+			}
+			if _, ok := got["payment_id"]; ok {
+				t.Fatal("payment_id must not be exposed")
 			}
 		})
 	}

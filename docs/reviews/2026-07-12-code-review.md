@@ -83,7 +83,7 @@ never-expiring `finalizing` state.
   There are only two production call sites plus tests; a plain fourth parameter is clearer and
   prevents silently constructing a server whose internal route always 401s.
 
-- [ ] **R6** — Allowlist fields in `paymentFailureResponse`: it copies *every* key from the
+- [x] **R6** — Allowlist fields in `paymentFailureResponse`: it copies *every* key from the
   payments response body into the public checkout response
   (`services/commerce/internal/api/server.go:159-168`). Harmless with the fake PSP, but once a
   real PSP adapter sits behind `/internal/charges`, this passes provider internals straight to

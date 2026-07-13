@@ -162,8 +162,11 @@ func paymentFailureResponse(body []byte, fallbackStatus string) map[string]any {
 	out := map[string]any{"status": fallbackStatus}
 	var decoded map[string]any
 	if json.Unmarshal(body, &decoded) == nil && decoded != nil {
-		for key, value := range decoded {
-			out[key] = value
+		if status, ok := decoded["status"].(string); ok {
+			out["status"] = status
+		}
+		if replay, ok := decoded["replay"].(bool); ok {
+			out["replay"] = replay
 		}
 	}
 	return out
