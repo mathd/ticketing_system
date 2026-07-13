@@ -96,6 +96,7 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
   inventory:
     <<: *go-service

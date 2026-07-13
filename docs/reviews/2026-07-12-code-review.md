@@ -63,7 +63,7 @@ ships with no unit tests.
 
 ### Important (Should Fix)
 
-- [ ] **R4 — Unauthenticated "internal" catalog endpoint is publicly reachable**:
+- [x] **R4 — Unauthenticated "internal" catalog endpoint is publicly reachable**:
   `GET /internal/ticket-types/{id}` is registered with no auth, and the gateway proxies
   `/api/catalog/*` with the prefix stripped, so `GET /api/catalog/internal/ticket-types/{id}` works
   from the public internet. Payments guards its internal routes with `X-Internal-Token`; catalog

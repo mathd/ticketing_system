@@ -65,6 +65,9 @@ func reserveCheckout(t *testing.T, ticketType, key string) map[string]any {
 
 func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
 	_, ticketType := setupCheckoutOffer(t, "flow")
+	if code, _, _ := getWithHeaders(t, gatewayURL+"/api/catalog/internal/ticket-types/"+ticketType); code != http.StatusNotFound {
+		t.Fatalf("public internal catalog route status = %d, want 404", code)
+	}
 	reservation := reserveCheckout(t, ticketType, "reserve-success")
 	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-success", map[string]any{"reservation_id": reservation["reservation_id"], "name": "Buyer One", "email": "buyer1@example.test", "payment_token": "fake-ok"})
 	if code != 200 {

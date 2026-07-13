@@ -211,6 +211,34 @@ func newEnv(t *testing.T) *env {
 	return &env{store: st, pub: pub, handler: h, router: router, t: t}
 }
 
+func TestInternalTicketTypeRequiresCredential(t *testing.T) {
+	st := newFakeStore()
+	pub := &fakePublisher{}
+	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.New()
+	for _, tt := range []struct {
+		name, token string
+		want        int
+	}{
+		{name: "missing", want: http.StatusUnauthorized},
+		{name: "wrong", token: "wrong", want: http.StatusUnauthorized},
+		{name: "valid", token: "secret", want: http.StatusNotFound},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/internal/ticket-types/"+id.String(), nil)
+			req.Header.Set("X-Internal-Token", tt.token)
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, req)
+			if res.Code != tt.want {
+				t.Fatalf("status=%d want=%d", res.Code, tt.want)
+			}
+		})
+	}
+}
+
 // do performs a request and validates the response against the spec
 // (ADR-009 §3: conformance is tested in both directions).
 func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {

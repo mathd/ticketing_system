@@ -94,6 +94,9 @@ func run() error {
 		// Only /api/* prefixes are stripped; web shells (storefront at /,
 		// scanner at /scanner/) are built to serve under their public path.
 		stripAPIPrefix := strings.HasPrefix(prefix, "/api/")
+		if stripAPIPrefix {
+			mux.Handle(prefix+"internal/", http.NotFoundHandler())
+		}
 		proxy := &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(u)

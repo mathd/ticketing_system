@@ -123,7 +123,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "invalid reservation"})
 		return
 	}
-	code, body, err := s.call(r.Context(), http.MethodGet, s.catalogURL+"/internal/ticket-types/"+in.TicketTypeID.String(), "", nil, false)
+	code, body, err := s.call(r.Context(), http.MethodGet, s.catalogURL+"/internal/ticket-types/"+in.TicketTypeID.String(), "", nil, true)
 	if err != nil || code != 200 {
 		write(w, 502, map[string]string{"error": "catalog unavailable"})
 		return

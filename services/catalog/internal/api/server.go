@@ -33,13 +33,18 @@ var SupportedLocales = []string{"en", "fr"}
 const CacheControlPublicReads = "public, max-age=300, s-maxage=300"
 
 type Server struct {
-	store store.Store
-	pub   events.Publisher
-	log   *slog.Logger
+	store              store.Store
+	pub                events.Publisher
+	log                *slog.Logger
+	internalCredential string
 }
 
-func NewServer(st store.Store, pub events.Publisher, log *slog.Logger) *Server {
-	return &Server{store: st, pub: pub, log: log}
+func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential ...string) *Server {
+	credential := ""
+	if len(internalCredential) != 0 {
+		credential = internalCredential[0]
+	}
+	return &Server{store: st, pub: pub, log: log, internalCredential: credential}
 }
 
 // NewRouter mounts the generated routes wrapped in spec request validation
@@ -77,6 +82,10 @@ func NewRouter(s *Server) (http.Handler, error) {
 }
 
 func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
+	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid ticket type id"})
