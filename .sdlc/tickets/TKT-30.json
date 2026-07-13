@@ -2,9 +2,11 @@
   "key": "TKT-30",
   "type": "Story",
   "summary": "US-006: Gate scan with duplicate rejection",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "codex",
   "pr": null,
   "parent": "TKT-1",
   "classification": "simple",
@@ -44,6 +46,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Backlog grilling 2026-07-12 (owner decisions): context rebaked with amended ADR-003 (pseudonymous trails)."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed after TKT-29 was merged and accepted. TKT-30 is the only unblocked remaining M1 story and closes the clean-machine create → hold → pay → issue/deliver → scan demonstration. Planning will preserve ADR-003’s append-only, pseudonymous ticket lifecycle trace and validate redemption from Access-owned signed credentials."
     }
   ],
   "links": []
