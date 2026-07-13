@@ -2,8 +2,10 @@
   "key": "TKT-29",
   "type": "Story",
   "summary": "US-005: QR e-ticket issued and delivered",
-  "status": "Backlog",
-  "labels": [],
+  "status": "Ready",
+  "labels": [
+    "agent:codex"
+  ],
   "assignee": null,
   "pr": null,
   "parent": "TKT-1",
@@ -44,6 +46,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "Backlog grilling 2026-07-12 (owner decisions): lifecycle events pseudonymous per amended ADR-003."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed after owner acceptance of TKT-28 (2026-07-13). TKT-29 is the next unblocked walking-skeleton story and P1 dependency for TKT-30. It will establish the access-service issuance/delivery boundary, with pseudonymous lifecycle events per ADR-003; plan review applies."
     }
   ],
   "links": [
@@ -51,5 +58,35 @@
       "type": "blocks",
       "key": "TKT-30"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "US-005 acceptance criteria specify signed QR issuance, log delivery, pseudonymous lifecycle trace, and guest re-retrieval."
+    },
+    "scope": {
+      "state": "met",
+      "note": "In: access issuance, delivery port/log transport, ticket/history and guest retrieval surfaces, Commerce event/PII seam, storefront ticket page, contracts/tests/evidence. Out: accounts wallet, rotating barcodes/PDF/real email (TKT-18), scanner behavior (TKT-30)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Delivery-event reliability, QR signing/key lifecycle, and safe PII lookup are design decisions to resolve and record during planning; no external dependency blocks them."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "TKT-28 is Done; PR #7 established the order-completed event, pseudonymous buyer correlation, separate Commerce PII store, and verified journal."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Contract-first and event-driven: consume completed orders idempotently, issue opaque signed ticket QR payloads, append immutable lifecycle events, resolve PII only at mail-send boundary."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One coherent vertical slice: completed checkout produces a retrievable QR ticket and log-mail delivery, verified through gateway/browser and lifecycle history."
+    },
+    "success": {
+      "state": "met",
+      "note": "All US-005 ACs, contracts, browser screenshot, populated journal verification, and make check green."
+    }
+  }
 }
