@@ -26,6 +26,7 @@ func (s *Server) Router() http.Handler {
 	})
 	r.Post("/holds", s.create)
 	r.Post("/holds/{id}/confirm", s.transition("confirmed"))
+	r.Post("/holds/{id}/finalize", s.transition("finalizing"))
 	r.Post("/holds/{id}/release", s.transition("released"))
 	r.Get("/slots/{id}/availability", s.availability)
 	return r
@@ -52,11 +53,16 @@ func parseUUID(v string) (uuid.UUID, error) { return uuid.Parse(strings.TrimSpac
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var in struct {
-		OrganizerID uuid.UUID `json:"organizer_id"`
-		SlotID      uuid.UUID `json:"slot_id"`
-		Quantity    int32     `json:"quantity"`
+		OrganizerID  uuid.UUID `json:"organizer_id"`
+		SlotID       uuid.UUID `json:"slot_id"`
+		Quantity     int32     `json:"quantity"`
+		TicketTypeID uuid.UUID `json:"ticket_type_id"`
+		UnitAmount   int64     `json:"unit_amount"`
+		Currency     string    `json:"currency"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 {
+	err := json.NewDecoder(r.Body).Decode(&in)
+	legacy := in.TicketTypeID == uuid.Nil && in.Currency == ""
+	if err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 || in.UnitAmount < 0 || (!legacy && (in.TicketTypeID == uuid.Nil || in.Currency != "EUR")) {
 		write(w, 400, map[string]string{"error": "invalid hold request"})
 		return
 	}
@@ -65,7 +71,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
 		return
 	}
-	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.Quantity, key)
+	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, key)
 	if err != nil {
 		problem(w, err)
 		return

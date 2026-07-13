@@ -92,6 +92,14 @@ func (f *fakeStore) CreateTicketType(_ context.Context, in store.TicketTypeInput
 	return tt, nil
 }
 
+func (f *fakeStore) GetTicketType(_ context.Context, id uuid.UUID) (store.TicketType, error) {
+	tt, ok := f.ticketTypes[id]
+	if !ok {
+		return store.TicketType{}, store.ErrNotFound
+	}
+	return tt, nil
+}
+
 func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.Performance, bool, error) {
 	p, ok := f.performances[id]
 	if !ok {

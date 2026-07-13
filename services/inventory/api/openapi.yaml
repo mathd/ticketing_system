@@ -18,6 +18,11 @@ paths:
       summary: Confirm a live hold idempotently
       parameters: [{$ref: '#/components/parameters/HoldId'}]
       responses: {'200': {description: Confirmed}, '404': {description: Not found}, '409': {description: Expired or conflicting terminal state}}
+  /holds/{holdId}/finalize:
+    post:
+      summary: Suspend expiry while an authorized checkout finalizes
+      parameters: [{$ref: '#/components/parameters/HoldId'}]
+      responses: {'200': {description: Finalizing}, '404': {description: Not found}, '409': {description: Expired or conflicting terminal state}}
   /holds/{holdId}/release:
     post:
       summary: Release a live hold idempotently
@@ -42,3 +47,6 @@ components:
         organizer_id: {type: string, format: uuid}
         slot_id: {type: string, format: uuid}
         quantity: {type: integer, minimum: 1, maximum: 50}
+        ticket_type_id: {type: string, format: uuid}
+        unit_amount: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}

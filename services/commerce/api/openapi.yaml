@@ -1,0 +1,18 @@
+openapi: 3.0.3
+info: {title: Commerce API, version: 1.0.0}
+paths:
+  /reservations:
+    post:
+      summary: Resolve an authoritative offer and reserve inventory
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      responses: {'201': {description: Reserved}, '409': {description: Unavailable}}
+  /orders:
+    post:
+      summary: Checkout a reservation through the fake PSP
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      responses: {'200': {description: Completed}, '202': {description: Recovery pending}, '402': {description: Declined}, '408': {description: No-side-effect timeout}}
+  /orders/{orderId}:
+    get:
+      summary: Read uncached order state
+      parameters: [{name: orderId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Order state}, '404': {description: Not found}}

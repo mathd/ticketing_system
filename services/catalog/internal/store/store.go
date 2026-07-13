@@ -118,6 +118,7 @@ type Store interface {
 	CreateEvent(ctx context.Context, in EventInput) (Event, error)
 	CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error)
 	CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error)
+	GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error)
 	// PublishPerformance flips draft->published (idempotent). needsEmit is
 	// true while the domain event for this publication has not been ack'd
 	// (event_emitted_at is null) — the caller emits, then marks.

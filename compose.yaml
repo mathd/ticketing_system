@@ -111,6 +111,10 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://commerce:commerce@postgres:5432/commerce
+      CATALOG_URL: http://catalog:8080
+      INVENTORY_URL: http://inventory:8080
+      PAYMENTS_URL: http://payments:8080
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
   payments:
     <<: *go-service
@@ -118,6 +122,9 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
+      JOURNAL_KEY_ID: local-v1
+      JOURNAL_SIGNING_KEY: ${JOURNAL_SIGNING_KEY:-local-development-journal-key}
 
   access:
     <<: *go-service

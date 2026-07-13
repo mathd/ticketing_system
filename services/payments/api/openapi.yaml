@@ -1,0 +1,7 @@
+openapi: 3.0.3
+info: {title: Payments internal API, version: 1.0.0}
+paths:
+  /internal/facts:
+    post: {summary: Append an idempotent canonical money fact, responses: {'200': {description: Appended}}}
+  /internal/charges:
+    post: {summary: Run the fake PSP and append its result, responses: {'200': {description: Captured}, '402': {description: Declined}, '408': {description: No-side-effect timeout}}}

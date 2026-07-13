@@ -14,6 +14,7 @@ golangci-lint release binary into `./bin` (sha256-verified against the release c
 docker compose up -d --build --wait   # or: make up
 make check                            # full local gate: lint + test + build + smoke
 make lint / test / build / smoke      # individual stages
+docker compose exec payments /app verify-journal  # verify the live money journal
 ```
 
 Go code is a `go.work` workspace: one module per service + `gateway`, `shared/go`, `smoke`.

@@ -17,6 +17,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
 
+	commerceapi "ticketing/services/commerce/internal/api"
+	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 )
@@ -71,6 +73,11 @@ func run() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer mcancel()
+	if err := commercestore.Migrate(mctx, db); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
@@ -80,7 +87,7 @@ func run() error {
 	defer nc.Close()
 
 	r := chi.NewRouter()
-	r.Method(http.MethodGet, "/healthz", httpx.Healthz(serviceName,
+	health := httpx.Healthz(serviceName,
 		httpx.Check("db", func() error {
 			pctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -92,7 +99,14 @@ func run() error {
 			}
 			return nil
 		}),
-	))
+	)
+	r.Method(http.MethodGet, "/healthz", health)
+	r.Method(http.MethodGet, "/readyz", health)
+	catalogURL, inventoryURL, paymentsURL, token := os.Getenv("CATALOG_URL"), os.Getenv("INVENTORY_URL"), os.Getenv("PAYMENTS_URL"), os.Getenv("INTERNAL_SERVICE_TOKEN")
+	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" || token == "" {
+		return errors.New("CATALOG_URL, INVENTORY_URL, PAYMENTS_URL and INTERNAL_SERVICE_TOKEN required")
+	}
+	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token).Router())
 
 	srv := &http.Server{
 		Addr:              ":" + port(),

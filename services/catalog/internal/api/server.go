@@ -16,6 +16,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
 
 	apispec "ticketing/services/catalog/api"
@@ -58,6 +59,7 @@ func NewRouter(s *Server) (http.Handler, error) {
 		},
 	})
 	r := chi.NewRouter()
+	r.Get("/internal/ticket-types/{id}", s.getTicketType)
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -72,6 +74,23 @@ func NewRouter(s *Server) (http.Handler, error) {
 			writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
 		},
 	}), nil
+}
+
+func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid ticket type id"})
+		return
+	}
+	tt, err := s.store.GetTicketType(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": tt.ID, "organizer_id": tt.OrganizerID, "performance_id": tt.PerformanceID,
+		"price": map[string]any{"amount": tt.PriceAmount, "currency": tt.Currency},
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

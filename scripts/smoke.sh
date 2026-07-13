@@ -39,3 +39,6 @@ SMOKE_PG=localhost:15432 \
 SMOKE_PROM_URL=http://localhost:19090 \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v ./...
+
+# ADR-003: verify the populated canonical journal before Compose teardown.
+compose exec -T payments /app verify-journal

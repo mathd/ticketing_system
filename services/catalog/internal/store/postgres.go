@@ -158,6 +158,23 @@ func (p *Postgres) CreateTicketType(ctx context.Context, in TicketTypeInput) (Ti
 	return tt, nil
 }
 
+func (p *Postgres) GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error) {
+	var tt TicketType
+	var raw []byte
+	err := p.db.QueryRowContext(ctx, `SELECT id,organizer_id,performance_id,name,price_amount,currency,created_at
+		FROM ticket_types WHERE id=$1`, id).Scan(&tt.ID, &tt.OrganizerID, &tt.PerformanceID, &raw, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tt, ErrNotFound
+	}
+	if err != nil {
+		return tt, err
+	}
+	if err := json.Unmarshal(raw, &tt.Name); err != nil {
+		return tt, fmt.Errorf("ticket type name: %w", err)
+	}
+	return tt, nil
+}
+
 func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Performance, bool, error) {
 	// The transition is gated on a sellable offer existing (ErrNotSellable
 	// otherwise): the publication event and public visibility must never

@@ -38,13 +38,16 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 }
 
 type Claim struct {
-	ID          uuid.UUID `json:"hold_id"`
-	OrganizerID uuid.UUID `json:"organizer_id"`
-	PoolID      uuid.UUID `json:"slot_id"`
-	Quantity    int32     `json:"quantity"`
-	Status      string    `json:"status"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	ServerTime  time.Time `json:"server_time"`
+	ID           uuid.UUID `json:"hold_id"`
+	OrganizerID  uuid.UUID `json:"organizer_id"`
+	PoolID       uuid.UUID `json:"slot_id"`
+	Quantity     int32     `json:"quantity"`
+	TicketTypeID uuid.UUID `json:"ticket_type_id,omitempty"`
+	UnitAmount   int64     `json:"unit_amount,omitempty"`
+	Currency     string    `json:"currency,omitempty"`
+	Status       string    `json:"status"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	ServerTime   time.Time `json:"server_time"`
 }
 
 type Availability struct {
@@ -88,11 +91,11 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 	return tx.Commit()
 }
 
-func fingerprint(org, slot uuid.UUID, qty int32) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%d", org, slot, qty))))
+func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency))))
 }
 
-func (p *Postgres) CreateHold(ctx context.Context, org, slot uuid.UUID, qty int32, key string) (Claim, bool, error) {
+func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, key string) (Claim, bool, error) {
 	if qty <= 0 {
 		return Claim{}, false, fmt.Errorf("quantity must be positive")
 	}
@@ -111,10 +114,10 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot uuid.UUID, qty int3
 	}
 	var existing Claim
 	var fp string
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),request_fingerprint FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &fp)
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != fingerprint(org, slot, qty) {
+		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency) {
 			return Claim{}, false, ErrIdempotency
 		}
 		return existing, true, tx.Commit()
@@ -132,9 +135,9 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot uuid.UUID, qty int3
 	if confirmed+held+qty > capacity {
 		return Claim{}, false, ErrUnavailable
 	}
-	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Status: "held"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint)
-		VALUES($1,$2,$3,$4,'held',now()+$5::interval,$6,$7) RETURNING expires_at,now()`, c.ID, org, slot, qty, p.ttl.String(), key, fingerprint(org, slot, qty)).Scan(&c.ExpiresAt, &c.ServerTime)
+	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held"}
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency)).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}
@@ -159,8 +162,8 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 		return Claim{}, err
 	}
 	var c Claim
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now() FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
-		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &c.ExpiresAt, &c.ServerTime)
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),ticket_type_id,unit_amount,currency FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
+		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &c.ExpiresAt, &c.ServerTime, &c.TicketTypeID, &c.UnitAmount, &c.Currency)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -173,7 +176,15 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	if c.Status == target {
 		return c, tx.Commit()
 	}
-	if c.Status != "held" {
+	if target == "finalizing" && c.Status == "held" {
+		c.Status = target
+		_, err = tx.ExecContext(ctx, `UPDATE claims SET status='finalizing',updated_at=now() WHERE id=$1`, id)
+		if err != nil {
+			return c, err
+		}
+		return c, tx.Commit()
+	}
+	if c.Status != "held" && c.Status != "finalizing" {
 		return c, ErrConflict
 	}
 	if target == "confirmed" {
