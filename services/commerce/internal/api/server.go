@@ -165,6 +165,18 @@ type checkoutRequest struct {
 	Email         string    `json:"email"`
 	PaymentToken  string    `json:"payment_token"`
 }
+
+func paymentFailureResponse(body []byte, fallbackStatus string) map[string]any {
+	out := map[string]any{"status": fallbackStatus}
+	var decoded map[string]any
+	if json.Unmarshal(body, &decoded) == nil && decoded != nil {
+		for key, value := range decoded {
+			out[key] = value
+		}
+	}
+	return out
+}
+
 type reservation struct {
 	ID, OrganizerID, HoldID, BuyerID uuid.UUID
 	Amount                           int64
@@ -301,8 +313,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 			write(w, 500, map[string]string{"error": "persist failure"})
 			return
 		}
-		var out map[string]any
-		_ = json.Unmarshal(body, &out)
+		out := paymentFailureResponse(body, terminalStatus)
 		out["order_id"] = order
 		write(w, code, out)
 		return

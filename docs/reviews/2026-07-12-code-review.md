@@ -54,7 +54,7 @@ ships with no unit tests.
   File(s): `services/payments/internal/store/store.go` (BindOperation, CompleteOperation),
   `services/payments/internal/api/server.go` (charge).
 
-- [ ] **R3 — nil-map panic on the decline/timeout response path**: In `checkout`, after a 402/408
+- [x] **R3 — nil-map panic on the decline/timeout response path**: In `checkout`, after a 402/408
   from payments: `var out map[string]any; _ = json.Unmarshal(body, &out); out["order_id"] = order`.
   If the payments body is empty or not a JSON object (proxy error, truncated response), the ignored
   unmarshal error leaves `out` nil and the assignment panics — and there is no Recoverer middleware
