@@ -71,6 +71,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\nAI review triage complete for PR #9. **Fixed now:** the `redeemed` migration down path now fails before any destructive operation rather than recreating an incompatible constraint over immutable data; scan requests now reject trailing JSON, with focused API tests for that boundary and unavailable verifier. **Rejected as already approved M1 scope:** the public unauthenticated scan endpoint is the explicit Gate-2 limitation documented in the plan, architecture, and PR review guide; staff identity/RBAC is TKT-22/TKT-19 work. **Incidental follow-up:** TKT-44 adds forward-migration upgrade coverage for the supported Access lifecycle schema path. No second cross-model pass was run after these targeted fixes.\n\nValidation after fixes: `make lint test build` green; controlled Compose smoke previously passed the Access served contract and checkout → issue → accepted/duplicate/concurrent scan path; payment `verify-concurrent-append` and `verify-journal` passed. Browser evidence remains environment-blocked because Python `playwright` is not installed, although the script now produces scan evidence where available. PR #9 contains the review guide; CI checks are in progress."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\nPost-review observations triage: accepting the `typ:TKT` compatibility note as a greenfield-M1 limitation—no older persisted or issued QR format exists, but any future long-lived-token migration must make the signer emit `typ:TKT` before verifier enforcement. TKT-45 owns camera detector runtime-error recovery and deterministic QR-payload corruption in the smoke test. The nil-verifier response is retained as a defensive API-construction guard and focused test seam; production startup remains fail-closed in `main`."
     }
   ],
   "links": []
