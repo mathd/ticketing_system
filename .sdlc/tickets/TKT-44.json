@@ -1,0 +1,36 @@
+{
+  "key": "TKT-44",
+  "type": "Task",
+  "summary": "Test Access lifecycle migration upgrades",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": null,
+  "classification": "simple",
+  "description": "Follow-up from TKT-30 adversarial review. Add an upgrade-path integration test that starts from the pre-redeemed Access schema, applies the `redeemed` lifecycle migration, and proves issued/delivered history remains readable and redemption still works. The TKT-30 down migration intentionally fails rather than delete immutable redeemed history; this task tests the supported forward-only path.",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-003",
+        "rule": "Ticket lifecycle events are append-only and immutable; destructive rollback is not an allowed way to remove redeemed history.",
+        "date": "2026-07-13"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-30 review follow-up",
+        "link": "services/access/internal/store/migrations/0002_redeemed_lifecycle.sql"
+      }
+    ],
+    "capturedAt": "2026-07-13"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated during TKT-30 AI review as an incidental coverage follow-up. It is deliberately outside the gate-scan feature PR; no production defect is deferred."
+    }
+  ],
+  "links": []
+}
