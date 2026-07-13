@@ -48,3 +48,13 @@ func TestCheckoutClaimProblemDoesNotLeakDetails(t *testing.T) {
 		t.Fatalf("unexpected mapping = %d %q", code, message)
 	}
 }
+
+func TestPaymentOutcomeProblem(t *testing.T) {
+	code, _, active := paymentOutcomeProblem(http.StatusConflict)
+	if !active || code != http.StatusConflict {
+		t.Fatalf("conflict must be retryable: code=%d active=%t", code, active)
+	}
+	if _, _, active = paymentOutcomeProblem(http.StatusBadRequest); active {
+		t.Fatal("bad request must not be treated as an active operation")
+	}
+}

@@ -231,6 +231,18 @@ func checkoutClaimProblem(err error) (int, string) {
 	return http.StatusInternalServerError, "persist checkout"
 }
 
+func paymentOutcomeProblem(code int) (int, string, bool) {
+	if code == http.StatusConflict {
+		return http.StatusConflict, "payment operation in progress; retry with the same idempotency key", true
+	}
+	return 0, "", false
+}
+
+func (s *Server) markUnknown(ctx context.Context, reservationID, orderID uuid.UUID) {
+	_, _ = s.db.ExecContext(ctx, `UPDATE reservations SET status='unknown' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, reservationID)
+	_, _ = s.db.ExecContext(ctx, `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, orderID)
+}
+
 func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if key == "" || len(key) > 200 {
@@ -285,16 +297,19 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 409, map[string]string{"error": "hold expired"})
 		return
 	}
-	if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='finalizing' WHERE id=$1`, x.ID); err != nil {
+	if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='finalizing' WHERE id=$1 AND status IN ('held','finalizing')`, x.ID); err != nil {
 		write(w, 500, map[string]string{"error": "persist checkout"})
 		return
 	}
 	charge := map[string]any{"order_id": order, "organizer_id": x.OrganizerID, "buyer_id": x.BuyerID, "amount": x.Amount, "currency": x.Currency, "payment_token": in.PaymentToken}
 	code, body, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/charges", key, charge, true)
 	if err != nil {
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='unknown' WHERE id=$1`, x.ID)
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1`, order)
+		s.markUnknown(r.Context(), x.ID, order)
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
+		return
+	}
+	if problemCode, message, active := paymentOutcomeProblem(code); active {
+		write(w, problemCode, map[string]any{"order_id": order, "status": "payment_in_progress", "error": message})
 		return
 	}
 	if code == 402 || code == 408 {
@@ -307,7 +322,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 			write(w, 503, map[string]string{"error": "journal unavailable"})
 			return
 		}
-		if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='failed' WHERE id=$1`, x.ID); err != nil {
+		if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='failed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, x.ID); err != nil {
 			write(w, 500, map[string]string{"error": "persist failure"})
 			return
 		}
@@ -315,7 +330,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		if code == http.StatusRequestTimeout {
 			terminalStatus = "timeout"
 		}
-		if _, err = s.db.ExecContext(r.Context(), `UPDATE orders SET status=$2,updated_at=now() WHERE id=$1`, order, terminalStatus); err != nil {
+		if _, err = s.db.ExecContext(r.Context(), `UPDATE orders SET status=$2,updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order, terminalStatus); err != nil {
 			write(w, 500, map[string]string{"error": "persist failure"})
 			return
 		}
@@ -325,14 +340,13 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code != 200 {
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='unknown' WHERE id=$1`, x.ID)
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1`, order)
+		s.markUnknown(r.Context(), x.ID, order)
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
 	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, false)
 	if err != nil || code != 200 {
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1`, order)
+		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
 		write(w, 202, map[string]any{"order_id": order, "status": "confirmation_pending"})
 		return
 	}
@@ -345,8 +359,8 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "persist completion"})
 		return
 	}
-	if _, err = tx.ExecContext(r.Context(), `UPDATE reservations SET status='completed' WHERE id=$1`, x.ID); err == nil {
-		_, err = tx.ExecContext(r.Context(), `UPDATE orders SET status='completed',updated_at=now() WHERE id=$1`, order)
+	if _, err = tx.ExecContext(r.Context(), `UPDATE reservations SET status='completed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, x.ID); err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE orders SET status='completed',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
 	}
 	if err != nil || tx.Commit() != nil {
 		_ = tx.Rollback()

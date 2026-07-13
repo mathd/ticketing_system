@@ -82,6 +82,35 @@ func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
 		t.Fatalf("completed replay %d %s", replayCode, replayBody)
 	}
 
+	_, concurrentTicketType := setupCheckoutOffer(t, "same-key-race")
+	concurrentReservation := reserveCheckout(t, concurrentTicketType, "reserve-same-key-race")
+	concurrentBody := map[string]any{"reservation_id": concurrentReservation["reservation_id"], "name": "Buyer Concurrent", "email": "concurrent@example.test", "payment_token": "fake-ok"}
+	type checkoutResult struct {
+		code int
+		body []byte
+	}
+	results := make(chan checkoutResult, 2)
+	for range 2 {
+		go func() {
+			code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-same-key-race", concurrentBody)
+			results <- checkoutResult{code, body}
+		}()
+	}
+	var concurrentOrder map[string]any
+	for range 2 {
+		result := <-results
+		if result.code != http.StatusOK && result.code != http.StatusConflict {
+			t.Fatalf("concurrent checkout status = %d %s", result.code, result.body)
+		}
+		if result.code == http.StatusOK {
+			_ = json.Unmarshal(result.body, &concurrentOrder)
+		}
+	}
+	orderID := fmt.Sprint(concurrentOrder["order_id"])
+	if orderCode, orderBody, _ := getWithHeaders(t, gatewayURL+"/api/commerce/orders/"+orderID); orderCode != http.StatusOK || !bytes.Contains(orderBody, []byte(`"completed"`)) {
+		t.Fatalf("concurrent checkout order = %d %s", orderCode, orderBody)
+	}
+
 	declined := reserveCheckout(t, ticketType, "reserve-decline")
 	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "order-decline", map[string]any{"reservation_id": declined["reservation_id"], "name": "Buyer Two", "email": "buyer2@example.test", "payment_token": "fake-decline"})
 	if code != 402 {
