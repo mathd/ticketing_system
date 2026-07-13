@@ -233,6 +233,13 @@ func checkoutClaimProblem(err error) (int, string) {
 	return http.StatusInternalServerError, "persist checkout"
 }
 
+func persistenceReadProblem(err error) (int, string) {
+	if errors.Is(err, sql.ErrNoRows) {
+		return http.StatusNotFound, "not found"
+	}
+	return http.StatusServiceUnavailable, "temporarily unavailable"
+}
+
 func paymentOutcomeProblem(code int) (int, string, bool) {
 	if code == http.StatusConflict {
 		return http.StatusConflict, "payment operation in progress; retry with the same idempotency key", true
@@ -261,7 +268,13 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 	x, err := s.load(r.Context(), in.ReservationID)
 	if err != nil {
-		write(w, 404, map[string]string{"error": "reservation not found"})
+		code, message := persistenceReadProblem(err)
+		if code != http.StatusNotFound {
+			slog.Default().ErrorContext(r.Context(), "load checkout reservation", "err", err)
+			write(w, code, map[string]string{"error": message})
+			return
+		}
+		write(w, code, map[string]string{"error": "reservation " + message})
 		return
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
@@ -380,7 +393,11 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 	var status string
 	e = s.db.QueryRowContext(r.Context(), `SELECT status FROM orders WHERE id=$1`, id).Scan(&status)
 	if e != nil {
-		write(w, 404, map[string]string{"error": "not found"})
+		code, message := persistenceReadProblem(e)
+		if code != http.StatusNotFound {
+			slog.Default().ErrorContext(r.Context(), "load order", "err", e)
+		}
+		write(w, code, map[string]string{"error": message})
 		return
 	}
 	write(w, 200, map[string]any{"order_id": id, "status": status})

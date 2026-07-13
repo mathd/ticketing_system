@@ -71,7 +71,7 @@ never-expiring `finalizing` state.
 
 ### Suggestions
 
-- [ ] **R4** — Don't map every reservation-load DB error to 404: `load` failure returns
+- [x] **R4** — Don't map every reservation-load DB error to 404: `load` failure returns
   "reservation not found" (`services/commerce/internal/api/server.go:248-251`), so a transient
   DB blip mid-checkout tells the buyer their reservation doesn't exist. Branch on
   `sql.ErrNoRows` → 404, everything else → 500/503. Same pattern in `getOrder`

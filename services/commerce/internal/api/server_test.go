@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,15 @@ func TestPaymentOutcomeProblem(t *testing.T) {
 	}
 	if _, _, active = paymentOutcomeProblem(http.StatusBadRequest); active {
 		t.Fatal("bad request must not be treated as an active operation")
+	}
+}
+
+func TestPersistenceReadProblem(t *testing.T) {
+	if code, message := persistenceReadProblem(sql.ErrNoRows); code != http.StatusNotFound || message != "not found" {
+		t.Fatalf("not found mapping = %d %q", code, message)
+	}
+	if code, message := persistenceReadProblem(errors.New("database unavailable")); code != http.StatusServiceUnavailable || message != "temporarily unavailable" {
+		t.Fatalf("database mapping = %d %q", code, message)
 	}
 }
 
