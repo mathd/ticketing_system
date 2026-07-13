@@ -147,6 +147,9 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	expiredSlot, expiredTicketType := setupCheckoutOffer(t, "expired-finalize")
 	expiredReservation := reserveCheckout(t, expiredTicketType, "reserve-expired-finalize")
 	expireInventoryHold(t, fmt.Sprint(expiredReservation["hold_id"]))
+	if replayCode, replayBody := postWithKey(t, gatewayURL+"/api/commerce/reservations", "reserve-expired-finalize", map[string]any{"organizer_id": organizerID, "ticket_type_id": expiredTicketType, "quantity": 2}); replayCode != http.StatusConflict {
+		t.Fatalf("expired reservation replay %d %s", replayCode, replayBody)
+	}
 	if expiredCode, expiredBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-expired-finalize", map[string]any{"reservation_id": expiredReservation["reservation_id"], "name": "Buyer Expired", "email": "expired@example.test", "payment_token": "fake-ok"}); expiredCode != http.StatusConflict {
 		t.Fatalf("expired checkout %d %s", expiredCode, expiredBody)
 	}

@@ -120,6 +120,12 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency) {
 			return Claim{}, false, ErrIdempotency
 		}
+		if existing.Status == "held" && !existing.ExpiresAt.After(existing.ServerTime) {
+			if _, err = tx.ExecContext(ctx, `UPDATE claims SET status='expired',updated_at=now() WHERE id=$1 AND status='held'`, existing.ID); err != nil {
+				return Claim{}, false, err
+			}
+			return Claim{}, false, ErrConflict
+		}
 		return existing, true, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
