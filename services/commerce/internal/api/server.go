@@ -94,25 +94,11 @@ type offer struct {
 	Price         price     `json:"price"`
 }
 type reserveRequest struct {
-	OrganizerID, TicketTypeID uuid.UUID `json:"-"`
-	Quantity                  int32     `json:"quantity"`
-	IdempotencyKey            string    `json:"-"`
+	OrganizerID  uuid.UUID `json:"organizer_id"`
+	TicketTypeID uuid.UUID `json:"ticket_type_id"`
+	Quantity     int32     `json:"quantity"`
 }
 
-func (r *reserveRequest) UnmarshalJSON(b []byte) error {
-	var x struct {
-		OrganizerID  uuid.UUID `json:"organizer_id"`
-		TicketTypeID uuid.UUID `json:"ticket_type_id"`
-		Quantity     int32     `json:"quantity"`
-	}
-	if e := json.Unmarshal(b, &x); e != nil {
-		return e
-	}
-	r.OrganizerID = x.OrganizerID
-	r.TicketTypeID = x.TicketTypeID
-	r.Quantity = x.Quantity
-	return nil
-}
 func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if key == "" || len(key) > 200 {

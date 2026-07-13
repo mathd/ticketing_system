@@ -90,7 +90,7 @@ ships with no unit tests.
 
 ### Suggestions
 
-- [ ] **R7 — Drop the custom `reserveRequest.UnmarshalJSON`**: It only copies fields a plain
+- [x] **R7 — Drop the custom `reserveRequest.UnmarshalJSON`**: It only copies fields a plain
   struct with json tags would handle, and it silently defeats the outer decoder's
   `DisallowUnknownFields`. Use a plain struct for the body and keep the key out-of-band. File(s):
   `services/commerce/internal/api/server.go`.

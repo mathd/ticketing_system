@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -22,6 +24,17 @@ func TestPaymentFailureResponse(t *testing.T) {
 				t.Fatalf("status = %v, want %s", got["status"], tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestReserveRejectsUnknownFields(t *testing.T) {
+	s := New(nil, http.DefaultClient, "", "", "", "")
+	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(`{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"amount":1}`))
+	req.Header.Set("Idempotency-Key", "strict-json")
+	res := httptest.NewRecorder()
+	s.Router().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=%d", res.Code, http.StatusBadRequest)
 	}
 }
 
