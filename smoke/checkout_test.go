@@ -167,6 +167,8 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	if code != 402 {
 		t.Fatalf("checkout decline %d %s", code, body)
 	}
+	// A terminal replay re-delivers the idempotent order.failed journal fact
+	// before returning the buyer-visible decline.
 	if replayCode, replayBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-decline", map[string]any{"reservation_id": declined["reservation_id"], "name": "Buyer Two", "email": "buyer2@example.test", "payment_token": "fake-decline"}); replayCode != 402 {
 		t.Fatalf("declined replay %d %s", replayCode, replayBody)
 	}

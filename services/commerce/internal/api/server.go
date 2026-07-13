@@ -255,6 +255,28 @@ func (s *Server) markUnknown(ctx context.Context, reservationID, orderID uuid.UU
 	_, _ = s.db.ExecContext(ctx, `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, orderID)
 }
 
+func (s *Server) markTerminalFailure(ctx context.Context, reservationID, orderID uuid.UUID, status string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `UPDATE reservations SET status='failed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, reservationID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE orders SET status=$2,updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, orderID, status); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func terminalCheckoutCode(status string) int {
+	if status == "timeout" {
+		return http.StatusRequestTimeout
+	}
+	return http.StatusPaymentRequired
+}
+
 func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if key == "" || len(key) > 200 {
@@ -295,11 +317,14 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if orderStatus == "declined" || orderStatus == "timeout" {
-		code := http.StatusPaymentRequired
-		if orderStatus == "timeout" {
-			code = http.StatusRequestTimeout
+		// A previous attempt may have persisted the terminal local outcome while
+		// payments was unavailable. Replay the idempotent journal fact before
+		// returning the buyer-visible terminal result.
+		if err := s.fact(r.Context(), x, order, "order.failed"); err != nil {
+			write(w, 503, map[string]string{"error": "journal unavailable"})
+			return
 		}
-		write(w, code, map[string]any{"order_id": order, "status": orderStatus, "replay": true})
+		write(w, terminalCheckoutCode(orderStatus), map[string]any{"order_id": order, "status": orderStatus, "replay": true})
 		return
 	}
 	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
@@ -336,20 +361,16 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 			write(w, 202, map[string]any{"order_id": order, "status": "release_pending"})
 			return
 		}
-		if err := s.fact(r.Context(), x, order, "order.failed"); err != nil {
-			write(w, 503, map[string]string{"error": "journal unavailable"})
-			return
-		}
-		if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='failed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, x.ID); err != nil {
-			write(w, 500, map[string]string{"error": "persist failure"})
-			return
-		}
 		terminalStatus := "declined"
 		if code == http.StatusRequestTimeout {
 			terminalStatus = "timeout"
 		}
-		if _, err = s.db.ExecContext(r.Context(), `UPDATE orders SET status=$2,updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order, terminalStatus); err != nil {
+		if err := s.markTerminalFailure(r.Context(), x.ID, order, terminalStatus); err != nil {
 			write(w, 500, map[string]string{"error": "persist failure"})
+			return
+		}
+		if err := s.fact(r.Context(), x, order, "order.failed"); err != nil {
+			write(w, 503, map[string]string{"error": "journal unavailable"})
 			return
 		}
 		out := paymentFailureResponse(body, terminalStatus)

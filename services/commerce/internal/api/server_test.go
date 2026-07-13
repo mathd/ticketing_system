@@ -72,6 +72,15 @@ func TestPaymentOutcomeProblem(t *testing.T) {
 	}
 }
 
+func TestTerminalCheckoutCode(t *testing.T) {
+	if got := terminalCheckoutCode("declined"); got != http.StatusPaymentRequired {
+		t.Fatalf("declined code = %d, want %d", got, http.StatusPaymentRequired)
+	}
+	if got := terminalCheckoutCode("timeout"); got != http.StatusRequestTimeout {
+		t.Fatalf("timeout code = %d, want %d", got, http.StatusRequestTimeout)
+	}
+}
+
 func TestPersistenceReadProblem(t *testing.T) {
 	if code, message := persistenceReadProblem(sql.ErrNoRows); code != http.StatusNotFound || message != "not found" {
 		t.Fatalf("not found mapping = %d %q", code, message)
