@@ -2,12 +2,12 @@
   "key": "TKT-29",
   "type": "Story",
   "summary": "US-005: QR e-ticket issued and delivered",
-  "status": "PO Review",
+  "status": "Done",
   "labels": [
     "needs:human"
   ],
   "assignee": null,
-  "pr": null,
+  "pr": "https://github.com/mathd/ticketing_system/pull/8",
   "parent": "TKT-1",
   "classification": "simple",
   "description": "**As** a buyer, **I want** my ticket with a QR code by email and on a web page after purchase. Mailer is a port with log transport (brief non-goal: no notifications service).\n\n**Priority:** P1\n**Depends on:** US-004 (TKT-28)\n\n**Acceptance Criteria:**\n- [ ] Access service issues a signed QR payload per paid ticket, triggered by the order-completed event\n- [ ] Mailer port (log transport) records a delivery with ticket link; buyer ticket page renders the QR (browser-verified)\n- [ ] Issuance and delivery are recorded as append-only ticket lifecycle events linked to the order (ADR-003); the ticket's history is queryable; lifecycle events carry pseudonymous IDs only — delivery address resolved from the PII store at send time\n- [ ] Tickets are re-retrievable by order reference (guest flow, no account)\n\nQuality gates: `make check` green (defined in US-001, mirrors CI); contract tests for touched service boundaries; UI: browser-verified with screenshot in PR; money paths: NF525 journal chain verifies (from US-004).",
@@ -66,6 +66,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nImplemented TKT-29 on branch `TKT-29-ticket-delivery`. Commerce now mints a CSPRNG `guest_order_ref` and publishes the new `platform.commerce.order.completed` schema-1 event only after the completion transaction commits; replay republishes deterministically. Access now consumes that event durably, de-duplicates its envelope, issues one Ed25519-signed QR ticket per authoritative quantity, appends immutable pseudonymous `issued`/`delivered` lifecycle events, resolves email only through Commerce’s token-protected PII endpoint at send time, and exposes no-store guest retrieval/QR endpoints. Storefront checkout links to the localized guest ticket page; its issuance retry avoids an asynchronous-delivery race. ADR-012, contract documents, smoke coverage, browser automation, and evidence were added. `make check` is green; Compose smoke covers quantity-two issuance, lifecycle, QR PNG, and journal verification. Browser verification produced `docs/verification/ticket-delivery/guest-ticket-qr.png`."
+    },
+    {
+      "stage": "done",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=done kind=summary -->\nPR #8 was approved and merged to `main` at `3fc0bca73430d57679e4e7ec8a6d856e7175ab3f` on 2026-07-13. CI/CD is green; owner authorized ticket closure."
     }
   ],
   "links": [
