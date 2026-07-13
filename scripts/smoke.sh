@@ -42,3 +42,27 @@ go test -tags smoke -count=1 -v ./...
 
 # ADR-003: verify the populated canonical journal before Compose teardown.
 compose exec -T payments /app verify-journal
+
+# Exercise the verifier against real PostgreSQL corruption. Production
+# triggers are temporarily disabled only in this isolated smoke database.
+psql_payments() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d payments -c "$1" >/dev/null; }
+expect_verify_failure() {
+  if compose exec -T payments /app verify-journal >/dev/null 2>&1; then
+    echo "smoke: verify-journal accepted $1 corruption" >&2
+    exit 1
+  fi
+}
+psql_payments "CREATE TABLE journal_entries_smoke_backup AS TABLE journal_entries; CREATE TABLE journal_heads_smoke_backup AS TABLE journal_heads; ALTER TABLE journal_entries DISABLE TRIGGER USER;"
+
+psql_payments "UPDATE journal_entries SET entry_hash=decode(repeat('00',32),'hex') WHERE fact_id=(SELECT fact_id FROM journal_entries ORDER BY organizer_id,sequence LIMIT 1);"
+expect_verify_failure "hash"
+psql_payments "TRUNCATE journal_entries; INSERT INTO journal_entries SELECT * FROM journal_entries_smoke_backup;"
+
+psql_payments "DELETE FROM journal_entries WHERE fact_id=(SELECT fact_id FROM journal_entries ORDER BY organizer_id,sequence OFFSET 1 LIMIT 1);"
+expect_verify_failure "sequence gap"
+psql_payments "TRUNCATE journal_entries; INSERT INTO journal_entries SELECT * FROM journal_entries_smoke_backup;"
+
+psql_payments "UPDATE journal_heads SET last_hash=decode(repeat('00',32),'hex');"
+expect_verify_failure "chain head"
+psql_payments "TRUNCATE journal_heads; INSERT INTO journal_heads SELECT * FROM journal_heads_smoke_backup; ALTER TABLE journal_entries ENABLE TRIGGER USER; DROP TABLE journal_entries_smoke_backup; DROP TABLE journal_heads_smoke_backup;"
+compose exec -T payments /app verify-journal

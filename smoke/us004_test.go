@@ -90,6 +90,18 @@ func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
 	if replayCode, replayBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-decline", map[string]any{"reservation_id": declined["reservation_id"], "name": "Buyer Two", "email": "buyer2@example.test", "payment_token": "fake-decline"}); replayCode != 402 {
 		t.Fatalf("declined replay %d %s", replayCode, replayBody)
 	}
+	if conflictCode, conflictBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-decline", map[string]any{"reservation_id": declined["reservation_id"], "name": "Buyer Two", "email": "different@example.test", "payment_token": "fake-decline"}); conflictCode != http.StatusConflict {
+		t.Fatalf("checkout fingerprint conflict %d %s", conflictCode, conflictBody)
+	}
+
+	_, timeoutTicketType := setupCheckoutOffer(t, "timeout")
+	timedOut := reserveCheckout(t, timeoutTicketType, "reserve-timeout")
+	if timeoutCode, timeoutBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-timeout", map[string]any{"reservation_id": timedOut["reservation_id"], "name": "Buyer Timeout", "email": "timeout@example.test", "payment_token": "fake-timeout"}); timeoutCode != http.StatusRequestTimeout {
+		t.Fatalf("checkout timeout %d %s", timeoutCode, timeoutBody)
+	}
+	// The deterministic fake timeout proves no PSP side effect, so its hold is
+	// released and the full capacity can be reacquired.
+	_ = reserveCheckout(t, timeoutTicketType, "reserve-after-timeout")
 
 	_, recoveryTicketType := setupCheckoutOffer(t, "confirmed-recovery")
 	confirmedFirst := reserveCheckout(t, recoveryTicketType, "reserve-confirmed-first")

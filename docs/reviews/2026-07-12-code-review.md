@@ -72,7 +72,7 @@ ships with no unit tests.
   `services/catalog/internal/api/server.go`, `services/commerce/internal/api/server.go`,
   `gateway/cmd/gateway/main.go`.
 
-- [ ] **R5 — No tests for the checkout coordinator or journal tamper detection**: The commerce
+- [x] **R5 — No tests for the checkout coordinator or journal tamper detection**: The commerce
   coordinator (multi-step state machine, the highest-risk code in the PR) has zero unit tests; smoke
   covers only success + decline. Untested: `fake-timeout`, transport-error → `payment_unknown`,
   `confirmation_pending`, idempotent replay of each terminal state, conflicting key/fingerprint
