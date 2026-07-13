@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatMoney, remainingMilliseconds } from '../src/components/HoldPicker';
+import { remainingMilliseconds } from '../src/components/HoldPicker';
+import { formatMoney } from '../src/lib/format';
 
 describe('hold countdown', () => {
   it('uses server time rather than the device wall clock', () => {

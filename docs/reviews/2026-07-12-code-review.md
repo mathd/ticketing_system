@@ -89,7 +89,7 @@ never-expiring `finalizing` state.
   real PSP adapter sits behind `/internal/charges`, this passes provider internals straight to
   the browser. Copy only `status`/`replay` (plus whatever the storefront actually needs).
 
-- [ ] **R7** — `formatMoney` hardcodes `/ 100` minor-unit scaling
+- [x] **R7** — `formatMoney` hardcodes `/ 100` minor-unit scaling
   (`web/storefront/src/components/HoldPicker.tsx:14`). Correct for EUR, wrong for JPY (0
   decimals) or BHD (3). EUR-only is enforced server-side today, so this is future-proofing:
   derive the exponent from the currency or add a comment/assert pinning EUR.

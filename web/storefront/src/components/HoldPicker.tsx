@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { formatMoney } from '../lib/format';
 
 type Props = { organizerId: string; ticketTypeId: string; locale: 'en' | 'fr' };
 type Hold = { hold_id: string; expires_at: string; server_time: string; status: string };
@@ -6,13 +7,6 @@ type Reservation = Hold & { reservation_id: string; buyer_id: string; amount: nu
 
 export function remainingMilliseconds(hold: Pick<Hold, 'expires_at' | 'server_time'>): number {
   return Math.max(0, Date.parse(hold.expires_at) - Date.parse(hold.server_time));
-}
-
-export function formatMoney(amount: number, currency: string, locale: 'en' | 'fr'): string {
-  return new Intl.NumberFormat(locale === 'fr' ? 'fr-FR' : 'en-GB', {
-    style: 'currency',
-    currency,
-  }).format(amount / 100);
 }
 
 export default function HoldPicker({ organizerId, ticketTypeId, locale }: Props) {
