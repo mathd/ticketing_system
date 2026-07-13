@@ -41,6 +41,7 @@ SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v ./...
 
 # ADR-003: verify the populated canonical journal before Compose teardown.
+compose exec -T payments /app verify-concurrent-append
 compose exec -T payments /app verify-journal
 
 # Exercise the verifier against real PostgreSQL corruption. Production

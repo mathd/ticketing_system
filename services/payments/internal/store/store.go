@@ -58,6 +58,28 @@ type Journal struct {
 	keyID string
 }
 
+func loadExistingFact(ctx context.Context, tx *sql.Tx, f Fact) (Entry, bool, error) {
+	var existing Entry
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature FROM journal_entries WHERE fact_id=$1`, f.ID).Scan(&existing.OrganizerID, &existing.Sequence, &existing.Type, &existing.OccurredAt, &existing.BuyerID, &existing.Amount, &existing.Currency, &raw, &existing.PreviousHash, &existing.EntryHash, &existing.KeyID, &existing.Signature)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Entry{}, false, nil
+	}
+	if err != nil {
+		return Entry{}, false, err
+	}
+	existing.ID = f.ID
+	if err := json.Unmarshal(raw, &existing.Payload); err != nil {
+		return Entry{}, false, err
+	}
+	want, _ := canonical(f, existing.Sequence)
+	got, _ := canonical(existing.Fact, existing.Sequence)
+	if !hmac.Equal(want, got) {
+		return Entry{}, false, errors.New("fact id reused with different content")
+	}
+	return existing, true, nil
+}
+
 func New(db *sql.DB, keyID string, key []byte) *Journal {
 	return &Journal{db: db, key: key, keyID: keyID}
 }
@@ -119,23 +141,12 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 		return Entry{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var existing Entry
-	var raw []byte
-	err = tx.QueryRowContext(ctx, `SELECT organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature FROM journal_entries WHERE fact_id=$1`, f.ID).Scan(&existing.OrganizerID, &existing.Sequence, &existing.Type, &existing.OccurredAt, &existing.BuyerID, &existing.Amount, &existing.Currency, &raw, &existing.PreviousHash, &existing.EntryHash, &existing.KeyID, &existing.Signature)
-	if err == nil {
-		existing.ID = f.ID
-		if err := json.Unmarshal(raw, &existing.Payload); err != nil {
-			return Entry{}, false, err
-		}
-		want, _ := canonical(f, existing.Sequence)
-		got, _ := canonical(existing.Fact, existing.Sequence)
-		if !hmac.Equal(want, got) {
-			return Entry{}, false, errors.New("fact id reused with different content")
-		}
-		return existing, true, tx.Commit()
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	existing, found, err := loadExistingFact(ctx, tx, f)
+	if err != nil {
 		return Entry{}, false, err
+	}
+	if found {
+		return existing, true, tx.Commit()
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO journal_heads(organizer_id) VALUES($1) ON CONFLICT DO NOTHING`, f.OrganizerID)
 	if err != nil {
@@ -146,6 +157,16 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 	err = tx.QueryRowContext(ctx, `SELECT last_sequence,last_hash FROM journal_heads WHERE organizer_id=$1 FOR UPDATE`, f.OrganizerID).Scan(&seq, &prev)
 	if err != nil {
 		return Entry{}, false, err
+	}
+	// A concurrent identical append can pass the optimistic check above while
+	// waiting for this organizer lock. Re-read under the lock so the loser is a
+	// clean replay rather than a primary-key violation.
+	existing, found, err = loadExistingFact(ctx, tx, f)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	if found {
+		return existing, true, tx.Commit()
 	}
 	seq++
 	canon, err := canonical(f, seq)
