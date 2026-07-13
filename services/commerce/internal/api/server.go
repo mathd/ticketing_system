@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -16,7 +17,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
 
 type Server struct {
 	db                                           *sql.DB
@@ -222,13 +226,25 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint) VALUES($1,$2,'created',$3,$4)`, id, x.ID, key, fingerprint)
 		status = "created"
 	} else if err == nil && (storedKey != key || storedFingerprint != fingerprint) {
-		return uuid.Nil, "", errors.New("reservation already has a different checkout")
+		return uuid.Nil, "", errCheckoutConflict
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return uuid.Nil, "", errCheckoutConflict
 	}
 	if err != nil {
 		return uuid.Nil, "", err
 	}
 	return id, status, tx.Commit()
 }
+
+func checkoutClaimProblem(err error) (int, string) {
+	if errors.Is(err, errCheckoutConflict) {
+		return http.StatusConflict, "checkout conflicts with an existing request"
+	}
+	return http.StatusInternalServerError, "persist checkout"
+}
+
 func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if key == "" || len(key) > 200 {
@@ -251,7 +267,11 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
 	order, orderStatus, err := s.claimOrder(r.Context(), x, key, fingerprint)
 	if err != nil {
-		write(w, 409, map[string]string{"error": err.Error()})
+		code, message := checkoutClaimProblem(err)
+		if code == http.StatusInternalServerError {
+			slog.Default().ErrorContext(r.Context(), "claim checkout order", "err", err)
+		}
+		write(w, code, map[string]string{"error": message})
 		return
 	}
 	if orderStatus == "completed" {

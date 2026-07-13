@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"errors"
+	"net/http"
+	"testing"
+)
 
 func TestPaymentFailureResponse(t *testing.T) {
 	tests := []struct {
@@ -18,5 +22,16 @@ func TestPaymentFailureResponse(t *testing.T) {
 				t.Fatalf("status = %v, want %s", got["status"], tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestCheckoutClaimProblemDoesNotLeakDetails(t *testing.T) {
+	code, message := checkoutClaimProblem(errCheckoutConflict)
+	if code != http.StatusConflict || message != "checkout conflicts with an existing request" {
+		t.Fatalf("conflict mapping = %d %q", code, message)
+	}
+	code, message = checkoutClaimProblem(errors.New("duplicate key value violates unique constraint orders_pkey"))
+	if code != http.StatusInternalServerError || message != "persist checkout" {
+		t.Fatalf("unexpected mapping = %d %q", code, message)
 	}
 }

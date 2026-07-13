@@ -82,7 +82,7 @@ ships with no unit tests.
   File(s): `services/commerce/internal/api/`, `services/payments/internal/store/store_test.go`,
   `smoke/us004_test.go`.
 
-- [ ] **R6 — Commerce 409s leak internal error strings**: `claimOrder` errors are written verbatim
+- [x] **R6 — Commerce 409s leak internal error strings**: `claimOrder` errors are written verbatim
   (`err.Error()`) to clients. When the same organizer reuses an idempotency key across different
   reservations, the derived order UUID collides and the raw Postgres duplicate-key error is
   returned to the browser. Map to a stable, safe message and log the detail. File(s):
