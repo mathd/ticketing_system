@@ -77,7 +77,7 @@ never-expiring `finalizing` state.
   `sql.ErrNoRows` → 404, everything else → 500/503. Same pattern in `getOrder`
   (`server.go:365-368`).
 
-- [ ] **R5** — Make the catalog internal credential a required constructor parameter:
+- [x] **R5** — Make the catalog internal credential a required constructor parameter:
   `NewServer(st, pub, log, internalCredential ...string)`
   (`services/catalog/internal/api/server.go:42`) uses a variadic to dodge updating call sites.
   There are only two production call sites plus tests; a plain fourth parameter is clearer and

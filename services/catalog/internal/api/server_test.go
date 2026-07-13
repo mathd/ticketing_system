@@ -195,7 +195,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	st := newFakeStore()
 	pub := &fakePublisher{}
-	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token"))
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}

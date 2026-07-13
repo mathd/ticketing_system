@@ -39,12 +39,8 @@ type Server struct {
 	internalCredential string
 }
 
-func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential ...string) *Server {
-	credential := ""
-	if len(internalCredential) != 0 {
-		credential = internalCredential[0]
-	}
-	return &Server{store: st, pub: pub, log: log, internalCredential: credential}
+func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential string) *Server {
+	return &Server{store: st, pub: pub, log: log, internalCredential: internalCredential}
 }
 
 // NewRouter mounts the generated routes wrapped in spec request validation
