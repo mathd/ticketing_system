@@ -2,7 +2,7 @@
   "key": "TKT-30",
   "type": "Story",
   "summary": "US-006: Gate scan with duplicate rejection",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
