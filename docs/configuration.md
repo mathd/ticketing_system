@@ -31,3 +31,11 @@ Local stack uses throwaway credentials (per-service DB passwords equal to the ro
 `postgres/postgres` superuser). Nothing here is production-grade; a real secrets story
 arrives with the first deployed environment. Never commit real credentials —
 see `conventions/security.md`.
+
+## Access QR keys
+
+`ACCESS_QR_PRIVATE_KEY` is the raw-base64 Ed25519 signing seed used only for issuance;
+`ACCESS_QR_KID` must be an `access-qr/`-namespaced key identifier. `ACCESS_QR_PUBLIC_KEYS`
+is the comma-separated `access-qr/<kid>=<raw-base64-public-key>` verifier keyring used by
+the scan API. Access fails closed at startup if the keyring is invalid or does not include
+the active key. Compose supplies a development-only matching key pair.

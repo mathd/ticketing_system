@@ -5,15 +5,32 @@ package smoke_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+func TestAccessContractIsServedByteIdentically(t *testing.T) {
+	want, err := os.ReadFile("../services/access/api/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, got, _ := getWithHeaders(t, gatewayURL+"/api/access/openapi.yaml")
+	if code != http.StatusOK || !bytes.Equal(got, want) {
+		t.Fatalf("served Access contract differs (status %d, %d vs %d bytes)", code, len(got), len(want))
+	}
+}
 
 func postWithKey(t *testing.T, url, key string, body any) (int, []byte) {
 	t.Helper()
@@ -66,6 +83,25 @@ func reserveCheckout(t *testing.T, ticketType, key string) map[string]any {
 	return out
 }
 
+func postScan(url, payload string) (int, []byte, error) {
+	b, err := json.Marshal(map[string]string{"qr_payload": payload})
+	if err != nil {
+		return 0, nil, err
+	}
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		return 0, nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, _ := io.ReadAll(response.Body)
+	return response.StatusCode, body, nil
+}
+
 func expireInventoryHold(t *testing.T, holdID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -103,6 +139,16 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	if guestRef == "" || guestRef == fmt.Sprint(success["order_id"]) {
 		t.Fatalf("guest order reference must be independent from the order ID: %v", success)
 	}
+	var issuedBundle struct {
+		Tickets []struct {
+			QRPayload string `json:"qr_payload"`
+			QRURL     string `json:"qr_url"`
+			History   []struct {
+				Type       string    `json:"type"`
+				OccurredAt time.Time `json:"occurred_at"`
+			} `json:"history"`
+		} `json:"tickets"`
+	}
 	retry(t, 10*time.Second, func() error {
 		bundleCode, bundleBody, bundleHeaders := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestRef+"/tickets")
 		if bundleCode != http.StatusOK {
@@ -111,21 +157,13 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		if bundleHeaders.Get("Cache-Control") != "no-store" {
 			return fmt.Errorf("ticket bundle Cache-Control = %q", bundleHeaders.Get("Cache-Control"))
 		}
-		var bundle struct {
-			Tickets []struct {
-				QRURL   string `json:"qr_url"`
-				History []struct {
-					Type string `json:"type"`
-				} `json:"history"`
-			} `json:"tickets"`
-		}
-		if err := json.Unmarshal(bundleBody, &bundle); err != nil {
+		if err := json.Unmarshal(bundleBody, &issuedBundle); err != nil {
 			return err
 		}
-		if len(bundle.Tickets) != 2 {
-			return fmt.Errorf("issued tickets = %d, want 2", len(bundle.Tickets))
+		if len(issuedBundle.Tickets) != 2 {
+			return fmt.Errorf("issued tickets = %d, want 2", len(issuedBundle.Tickets))
 		}
-		for _, ticket := range bundle.Tickets {
+		for _, ticket := range issuedBundle.Tickets {
 			if len(ticket.History) != 2 || ticket.History[0].Type != "issued" || ticket.History[1].Type != "delivered" {
 				return fmt.Errorf("ticket lifecycle = %#v", ticket.History)
 			}
@@ -133,6 +171,134 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 			if qrCode != http.StatusOK || qrHeaders.Get("Content-Type") != "image/png" {
 				return fmt.Errorf("ticket QR = %d %q", qrCode, qrHeaders.Get("Content-Type"))
 			}
+		}
+		return nil
+	})
+	first, second := issuedBundle.Tickets[0], issuedBundle.Tickets[1]
+	acceptedCode, acceptedBody, err := postScan(gatewayURL+"/api/access/scans", first.QRPayload)
+	if err != nil || acceptedCode != http.StatusOK {
+		t.Fatalf("first scan = %d %s: %v", acceptedCode, acceptedBody, err)
+	}
+	var accepted struct {
+		Decision  string    `json:"decision"`
+		ScannedAt time.Time `json:"scanned_at"`
+	}
+	if err = json.Unmarshal(acceptedBody, &accepted); err != nil || accepted.Decision != "accepted" || accepted.ScannedAt.IsZero() {
+		t.Fatalf("accepted scan = %s: %v", acceptedBody, err)
+	}
+	duplicateCode, duplicateBody, err := postScan(gatewayURL+"/api/access/scans", first.QRPayload)
+	if err != nil || duplicateCode != http.StatusConflict {
+		t.Fatalf("duplicate scan = %d %s: %v", duplicateCode, duplicateBody, err)
+	}
+	var duplicate struct {
+		Decision       string    `json:"decision"`
+		Reason         string    `json:"reason"`
+		OriginalScanAt time.Time `json:"original_scan_at"`
+	}
+	if err = json.Unmarshal(duplicateBody, &duplicate); err != nil || duplicate.Decision != "rejected" || duplicate.Reason != "already_redeemed" || !duplicate.OriginalScanAt.Equal(accepted.ScannedAt) {
+		t.Fatalf("duplicate result = %s: %v", duplicateBody, err)
+	}
+	forged := first.QRPayload[:len(first.QRPayload)-1] + "x"
+	if code, body, scanErr := postScan(gatewayURL+"/api/access/scans", forged); scanErr != nil || code != http.StatusUnprocessableEntity {
+		t.Fatalf("forged scan = %d %s: %v", code, body, scanErr)
+	}
+	parts := strings.Split(second.QRPayload, ".")
+	if len(parts) != 3 {
+		t.Fatal("issued credential has invalid shape")
+	}
+	claimBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	if err = json.Unmarshal(claimBytes, &claims); err != nil {
+		t.Fatal(err)
+	}
+	claims["org"] = uuid.NewString()
+	claimBytes, err = json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := parts[0] + "." + base64.RawURLEncoding.EncodeToString(claimBytes)
+	seed, err := base64.RawStdEncoding.DecodeString("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched := encoded + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(ed25519.NewKeyFromSeed(seed), []byte(encoded)))
+	if code, body, scanErr := postScan(gatewayURL+"/api/access/scans", mismatched); scanErr != nil || code != http.StatusUnprocessableEntity {
+		t.Fatalf("claim-mismatch scan = %d %s: %v", code, body, scanErr)
+	}
+
+	// A real-Postgres race proves the lock -> trace read -> insert ordering:
+	// one gate accepts and the other obtains that exact stored timestamp.
+	type scanResult struct {
+		code int
+		body []byte
+		err  error
+	}
+	start := make(chan struct{})
+	scanResults := make(chan scanResult, 2)
+	var scans sync.WaitGroup
+	for range 2 {
+		scans.Add(1)
+		go func() {
+			defer scans.Done()
+			<-start
+			code, body, scanErr := postScan(gatewayURL+"/api/access/scans", second.QRPayload)
+			scanResults <- scanResult{code: code, body: body, err: scanErr}
+		}()
+	}
+	close(start)
+	scans.Wait()
+	close(scanResults)
+	var concurrentAccepted time.Time
+	var concurrentDuplicate time.Time
+	for result := range scanResults {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.code == http.StatusOK {
+			var value struct {
+				ScannedAt time.Time `json:"scanned_at"`
+			}
+			if err := json.Unmarshal(result.body, &value); err != nil || value.ScannedAt.IsZero() {
+				t.Fatalf("concurrent accepted result = %s: %v", result.body, err)
+			}
+			concurrentAccepted = value.ScannedAt
+			continue
+		}
+		if result.code == http.StatusConflict {
+			var value struct {
+				OriginalScanAt time.Time `json:"original_scan_at"`
+			}
+			if err := json.Unmarshal(result.body, &value); err != nil || value.OriginalScanAt.IsZero() {
+				t.Fatalf("concurrent duplicate result = %s: %v", result.body, err)
+			}
+			concurrentDuplicate = value.OriginalScanAt
+			continue
+		}
+		t.Fatalf("concurrent scan = %d %s", result.code, result.body)
+	}
+	if concurrentAccepted.IsZero() || concurrentDuplicate.IsZero() || !concurrentAccepted.Equal(concurrentDuplicate) {
+		t.Fatalf("concurrent outcomes have timestamps accepted=%s duplicate=%s", concurrentAccepted, concurrentDuplicate)
+	}
+	retry(t, 10*time.Second, func() error {
+		code, body, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestRef+"/tickets")
+		if code != http.StatusOK {
+			return fmt.Errorf("ticket history after scan = %d %s", code, body)
+		}
+		var bundle struct {
+			Tickets []struct {
+				History []struct {
+					Type string `json:"type"`
+				} `json:"history"`
+			} `json:"tickets"`
+		}
+		if err := json.Unmarshal(body, &bundle); err != nil {
+			return err
+		}
+		if len(bundle.Tickets) != 2 || len(bundle.Tickets[0].History) != 3 || len(bundle.Tickets[1].History) != 3 {
+			return fmt.Errorf("redemption lifecycle = %#v", bundle.Tickets)
 		}
 		return nil
 	})

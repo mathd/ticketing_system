@@ -1,6 +1,22 @@
 openapi: 3.0.3
 info: {title: Access API, version: 1.0.0}
 paths:
+  /scans:
+    post:
+      summary: Validate and atomically redeem one signed ticket credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qr_payload]
+              properties:
+                qr_payload: {type: string, minLength: 1}
+      responses:
+        '200': {description: Ticket accepted and redemption appended to its lifecycle trace}
+        '409': {description: Ticket was already redeemed; response includes original_scan_at}
+        '422': {description: Malformed, forged, unknown, or mismatched ticket credential}
   /orders/{orderRef}/tickets:
     get:
       summary: Retrieve the guest ticket bundle and pseudonymous lifecycle history

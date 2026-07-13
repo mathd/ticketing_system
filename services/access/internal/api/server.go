@@ -11,15 +11,22 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"ticketing/services/access/internal/store"
+	"ticketing/services/access/internal/ticket"
 )
 
-type Server struct{ st *store.Postgres }
+type Server struct {
+	st       *store.Postgres
+	verifier *ticket.Verifier
+}
 
-func New(st *store.Postgres) *Server { return &Server{st: st} }
+func New(st *store.Postgres, verifier *ticket.Verifier) *Server {
+	return &Server{st: st, verifier: verifier}
+}
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/orders/{ref}/tickets", s.tickets)
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
+	r.Post("/scans", s.scan)
 	return r
 }
 func write(w http.ResponseWriter, code int, v any) {
@@ -88,4 +95,43 @@ func (s *Server) qr(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(image)
+}
+
+func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
+	if s.verifier == nil {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner unavailable"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	defer func() { _ = r.Body.Close() }()
+	var input struct {
+		QRPayload string `json:"qr_payload"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || input.QRPayload == "" {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+		return
+	}
+	claims, err := s.verifier.Verify(input.QRPayload)
+	if err != nil {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+		return
+	}
+	result, err := s.st.Redeem(r.Context(), store.RedeemInput{
+		TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
+	})
+	if errors.Is(err, store.ErrTicketCredential) {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+		return
+	}
+	if err != nil {
+		write(w, http.StatusInternalServerError, map[string]string{"error": "redeem ticket"})
+		return
+	}
+	if !result.Accepted {
+		write(w, http.StatusConflict, map[string]any{"decision": "rejected", "reason": "already_redeemed", "original_scan_at": result.OccurredAt})
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"decision": "accepted", "scanned_at": result.OccurredAt})
 }

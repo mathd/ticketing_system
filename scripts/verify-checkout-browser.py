@@ -13,6 +13,8 @@ evidence = Path("docs/verification/checkout")
 evidence.mkdir(parents=True, exist_ok=True)
 ticket_evidence = Path("docs/verification/ticket-delivery")
 ticket_evidence.mkdir(parents=True, exist_ok=True)
+scan_evidence = Path("docs/verification/gate-scan")
+scan_evidence.mkdir(parents=True, exist_ok=True)
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -29,6 +31,17 @@ with sync_playwright() as playwright:
     page.get_by_role("heading", name="My tickets").wait_for()
     page.get_by_role("img", name="Ticket QR code").wait_for()
     page.screenshot(path=str(ticket_evidence / "guest-ticket-qr.png"), full_page=True)
+    order_ref = page.url.rsplit("/", maxsplit=1)[-1]
+    bundle = page.request.get(f"{base}/api/access/orders/{order_ref}/tickets").json()
+    payload = bundle["tickets"][0]["qr_payload"]
+    page.goto(f"{base}/scanner/")
+    page.get_by_label("Ticket credential").fill(payload)
+    page.get_by_role("button", name="Check ticket").click()
+    page.get_by_role("heading", name="Accepted").wait_for()
+    page.screenshot(path=str(scan_evidence / "scan-accepted.png"), full_page=True)
+    page.get_by_role("button", name="Check ticket").click()
+    page.get_by_role("heading", name="Rejected").wait_for()
+    page.screenshot(path=str(scan_evidence / "scan-duplicate-rejected.png"), full_page=True)
 
     page.goto(f"{base}/en/events/{event_id}")
     page.wait_for_load_state("networkidle")

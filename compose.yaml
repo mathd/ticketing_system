@@ -141,7 +141,10 @@ services:
       # Development-only deterministic seed. Deployments must inject a distinct
       # 32-byte Ed25519 seed through secret configuration.
       ACCESS_QR_PRIVATE_KEY: ${ACCESS_QR_PRIVATE_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}
-      ACCESS_QR_KID: ${ACCESS_QR_KID:-local-v1}
+      ACCESS_QR_KID: ${ACCESS_QR_KID:-access-qr/local-v1}
+      # Comma-separated access-qr/<kid>=raw-base64-public-key entries. This
+      # development public key corresponds only to the all-zero local seed.
+      ACCESS_QR_PUBLIC_KEYS: ${ACCESS_QR_PUBLIC_KEYS:-access-qr/local-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik}
 
   storefront:
     # Astro 7 SSR shell (ADR-006). Root build context: the pnpm workspace

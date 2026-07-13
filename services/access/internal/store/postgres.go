@@ -12,6 +12,8 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+var ErrTicketCredential = fmt.Errorf("ticket credential does not match a redeemable ticket")
+
 //go:embed all:migrations
 var migrationsFS embed.FS
 
@@ -43,6 +45,17 @@ type LifecycleEvent struct {
 type IssueInput struct {
 	EventID uuid.UUID
 	Tickets []Ticket
+}
+
+// RedeemInput contains only signed immutable ticket facts. It deliberately
+// excludes mutable admission policy, which belongs to later lifecycle work.
+type RedeemInput struct {
+	TicketID, OrderID, OrganizerID, SlotID uuid.UUID
+}
+
+type RedeemResult struct {
+	Accepted   bool
+	OccurredAt time.Time
 }
 
 type Postgres struct{ db *sql.DB }
@@ -161,4 +174,49 @@ func (p *Postgres) TicketForQR(ctx context.Context, ref, ticket uuid.UUID) (stri
 		return "", fmt.Errorf("ticket QR: %w", err)
 	}
 	return payload, nil
+}
+
+// Redeem appends exactly one redemption event. Locking the canonical ticket
+// before reading the trace makes a concurrent loser observe the winner's
+// timestamp instead of leaking a unique-constraint error to the scanner.
+func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var orderID, organizerID, slotID uuid.UUID
+	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, in.TicketID).Scan(&orderID, &organizerID, &slotID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return RedeemResult{}, ErrTicketCredential
+		}
+		return RedeemResult{}, err
+	}
+	if orderID != in.OrderID || organizerID != in.OrganizerID || slotID != in.SlotID {
+		return RedeemResult{}, ErrTicketCredential
+	}
+
+	var redeemedAt time.Time
+	err = tx.QueryRowContext(ctx, `SELECT occurred_at FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, in.TicketID).Scan(&redeemedAt)
+	if err == nil {
+		if err = tx.Commit(); err != nil {
+			return RedeemResult{}, err
+		}
+		return RedeemResult{OccurredAt: redeemedAt}, nil
+	}
+	if err != sql.ErrNoRows {
+		return RedeemResult{}, err
+	}
+
+	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.TicketID.String()+":redeemed"))
+	err = tx.QueryRowContext(ctx, `INSERT INTO lifecycle_events(id,ticket_id,event_type) VALUES($1,$2,'redeemed') RETURNING occurred_at`, eventID, in.TicketID).Scan(&redeemedAt)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return RedeemResult{}, err
+	}
+	return RedeemResult{Accepted: true, OccurredAt: redeemedAt}, nil
 }

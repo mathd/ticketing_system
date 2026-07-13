@@ -101,6 +101,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	verifier, err := ticket.NewVerifier(os.Getenv("ACCESS_QR_PUBLIC_KEYS"), os.Getenv("ACCESS_QR_KID"))
+	if err != nil {
+		return err
+	}
 	st := accessstore.New(db)
 	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log)
 	consumerErr := make(chan error, 1)
@@ -132,7 +136,7 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
-	r.Mount("/", accessapi.New(st).Router())
+	r.Mount("/", accessapi.New(st, verifier).Router())
 
 	srv := &http.Server{
 		Addr:              ":" + port(),
