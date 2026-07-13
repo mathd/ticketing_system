@@ -176,6 +176,11 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	if c.Status == target {
 		return c, tx.Commit()
 	}
+	// A checkout may crash after confirm succeeds but before commerce persists
+	// completion. Treat replaying its earlier finalize step as already satisfied.
+	if target == "finalizing" && c.Status == "confirmed" {
+		return c, tx.Commit()
+	}
 	if target == "finalizing" && c.Status == "held" {
 		c.Status = target
 		_, err = tx.ExecContext(ctx, `UPDATE claims SET status='finalizing',updated_at=now() WHERE id=$1`, id)

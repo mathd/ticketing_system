@@ -246,6 +246,14 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, map[string]any{"order_id": order, "status": "completed"})
 		return
 	}
+	if orderStatus == "declined" || orderStatus == "timeout" {
+		code := http.StatusPaymentRequired
+		if orderStatus == "timeout" {
+			code = http.StatusRequestTimeout
+		}
+		write(w, code, map[string]any{"order_id": order, "status": orderStatus, "replay": true})
+		return
+	}
 	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
 		write(w, 500, map[string]string{"error": "persist buyer"})
 		return
@@ -285,7 +293,11 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 			write(w, 500, map[string]string{"error": "persist failure"})
 			return
 		}
-		if _, err = s.db.ExecContext(r.Context(), `UPDATE orders SET status='failed',updated_at=now() WHERE id=$1`, order); err != nil {
+		terminalStatus := "declined"
+		if code == http.StatusRequestTimeout {
+			terminalStatus = "timeout"
+		}
+		if _, err = s.db.ExecContext(r.Context(), `UPDATE orders SET status=$2,updated_at=now() WHERE id=$1`, order, terminalStatus); err != nil {
 			write(w, 500, map[string]string{"error": "persist failure"})
 			return
 		}

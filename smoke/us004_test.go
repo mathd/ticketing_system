@@ -75,11 +75,27 @@ func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
 	if success["status"] != "completed" {
 		t.Fatalf("success: %v", success)
 	}
+	if replayCode, replayBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-success", map[string]any{"reservation_id": reservation["reservation_id"], "name": "Buyer One", "email": "buyer1@example.test", "payment_token": "fake-ok"}); replayCode != 200 {
+		t.Fatalf("completed replay %d %s", replayCode, replayBody)
+	}
 
 	declined := reserveCheckout(t, ticketType, "reserve-decline")
 	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "order-decline", map[string]any{"reservation_id": declined["reservation_id"], "name": "Buyer Two", "email": "buyer2@example.test", "payment_token": "fake-decline"})
 	if code != 402 {
 		t.Fatalf("checkout decline %d %s", code, body)
+	}
+	if replayCode, replayBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-decline", map[string]any{"reservation_id": declined["reservation_id"], "name": "Buyer Two", "email": "buyer2@example.test", "payment_token": "fake-decline"}); replayCode != 402 {
+		t.Fatalf("declined replay %d %s", replayCode, replayBody)
+	}
+
+	_, recoveryTicketType := setupCheckoutOffer(t, "confirmed-recovery")
+	confirmedFirst := reserveCheckout(t, recoveryTicketType, "reserve-confirmed-first")
+	confirmURL := fmt.Sprintf("%s/api/inventory/holds/%v/confirm?organizer_id=%s", gatewayURL, confirmedFirst["hold_id"], organizerID)
+	if confirmCode, confirmBody := postJSON(t, confirmURL, nil); confirmCode != 200 {
+		t.Fatalf("pre-confirm hold %d %s", confirmCode, confirmBody)
+	}
+	if resumeCode, resumeBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-confirmed-first", map[string]any{"reservation_id": confirmedFirst["reservation_id"], "name": "Buyer Three", "email": "buyer3@example.test", "payment_token": "fake-ok"}); resumeCode != 200 {
+		t.Fatalf("confirmed hold resume %d %s", resumeCode, resumeBody)
 	}
 	// Released claims are terminal, so retry means reacquiring a fresh hold.
 	_ = reserveCheckout(t, ticketType, "reserve-retry")
