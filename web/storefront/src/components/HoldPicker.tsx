@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 
-type Props = { organizerId: string; slotId: string; ticketTypeId: string; locale: 'en' | 'fr' };
+type Props = { organizerId: string; ticketTypeId: string; locale: 'en' | 'fr' };
 type Hold = { hold_id: string; expires_at: string; server_time: string; status: string };
 type Reservation = Hold & { reservation_id: string; buyer_id: string; amount: number; currency: string };
 
 export function remainingMilliseconds(hold: Pick<Hold, 'expires_at' | 'server_time'>): number {
   return Math.max(0, Date.parse(hold.expires_at) - Date.parse(hold.server_time));
+}
+
+export function formatMoney(amount: number, currency: string, locale: 'en' | 'fr'): string {
+  return new Intl.NumberFormat(locale === 'fr' ? 'fr-FR' : 'en-GB', {
+    style: 'currency',
+    currency,
+  }).format(amount / 100);
 }
 
 export default function HoldPicker({ organizerId, ticketTypeId, locale }: Props) {
@@ -79,7 +86,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale }: Props)
       <label>Name <input aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} /></label>
       <label>Email <input aria-label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
       <label>Fake payment <select aria-label="Fake payment" value={paymentToken} onChange={(e) => setPaymentToken(e.target.value)}><option value="fake-ok">Success</option><option value="fake-decline">Decline</option><option value="fake-timeout">Timeout</option></select></label>
-      <button type="button" disabled={busy} onClick={checkout}>{t.pay} {reservation.amount / 100} {reservation.currency}</button>
+      <button type="button" disabled={busy} onClick={checkout}>{t.pay} {formatMoney(reservation.amount, reservation.currency, locale)}</button>
     </div>}
   </div>;
 }

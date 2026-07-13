@@ -95,7 +95,7 @@ ships with no unit tests.
   `DisallowUnknownFields`. Use a plain struct for the body and keep the key out-of-band. File(s):
   `services/commerce/internal/api/server.go`.
 
-- [ ] **R8 — Money display in the storefront**: `{reservation.amount / 100}` renders raw float
+- [x] **R8 — Money display in the storefront**: `{reservation.amount / 100}` renders raw float
   division (e.g. `12.1000000...` risk classes, no currency formatting). Use
   `Intl.NumberFormat(locale, {style:'currency', currency})` on the minor units. Also remove the
   now-unused `slotId` prop from `Props`/the Astro call site. File(s):
