@@ -130,7 +130,11 @@ func run() error {
 			return nil
 		})).ServeHTTP(w, req)
 	}))
-	r.Mount("/", api.New(st).Router())
+	credential := os.Getenv("INTERNAL_SERVICE_TOKEN")
+	if credential == "" {
+		return errors.New("INTERNAL_SERVICE_TOKEN required")
+	}
+	r.Mount("/", api.New(st, credential).Router())
 
 	srv := &http.Server{
 		Addr:              ":" + port(),

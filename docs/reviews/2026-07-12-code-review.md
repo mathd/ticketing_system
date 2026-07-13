@@ -60,7 +60,7 @@ never-expiring `finalizing` state.
   (cheap now), or treat payments 400 as provably-no-side-effect and release like a decline.
   Files: `services/commerce/internal/api/server.go`, `services/payments/internal/api/server.go`.
 
-- [ ] **R3** — Public unauthenticated `finalize` removes the hold TTL backstop: the gateway
+- [x] **R3** — Public unauthenticated `finalize` removes the hold TTL backstop: the gateway
   exposes `POST /api/inventory/holds/{id}/finalize` with no credential. Anyone who creates a
   hold can finalize it and hold capacity forever without paying — before this PR, abuse was at
   least bounded by hold expiry. `confirm`/`release` being public is pre-existing (and the

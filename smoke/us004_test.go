@@ -144,14 +144,8 @@ func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
 	// released and the full capacity can be reacquired.
 	_ = reserveCheckout(t, timeoutTicketType, "reserve-after-timeout")
 
-	_, recoveryTicketType := setupCheckoutOffer(t, "confirmed-recovery")
-	confirmedFirst := reserveCheckout(t, recoveryTicketType, "reserve-confirmed-first")
-	confirmURL := fmt.Sprintf("%s/api/inventory/holds/%v/confirm?organizer_id=%s", gatewayURL, confirmedFirst["hold_id"], organizerID)
-	if confirmCode, confirmBody := postJSON(t, confirmURL, nil); confirmCode != 200 {
-		t.Fatalf("pre-confirm hold %d %s", confirmCode, confirmBody)
-	}
-	if resumeCode, resumeBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-confirmed-first", map[string]any{"reservation_id": confirmedFirst["reservation_id"], "name": "Buyer Three", "email": "buyer3@example.test", "payment_token": "fake-ok"}); resumeCode != 200 {
-		t.Fatalf("confirmed hold resume %d %s", resumeCode, resumeBody)
+	if finalizeCode, _ := postWithKey(t, gatewayURL+"/api/inventory/holds/"+fmt.Sprint(reservation["hold_id"])+"/finalize?organizer_id="+organizerID, "", nil); finalizeCode != http.StatusNotFound {
+		t.Fatalf("public inventory finalize status = %d, want 404", finalizeCode)
 	}
 	// Released claims are terminal, so retry means reacquiring a fresh hold.
 	_ = reserveCheckout(t, ticketType, "reserve-retry")

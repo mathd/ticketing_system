@@ -13,9 +13,14 @@ import (
 	"ticketing/services/inventory/internal/store"
 )
 
-type Server struct{ st *store.Postgres }
+type Server struct {
+	st         *store.Postgres
+	credential string
+}
 
-func New(st *store.Postgres) *Server { return &Server{st: st} }
+func New(st *store.Postgres, credential string) *Server {
+	return &Server{st: st, credential: credential}
+}
 
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
@@ -84,6 +89,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) transition(target string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.credential == "" || r.Header.Get("X-Internal-Token") != s.credential {
+			write(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
 		id, err := parseUUID(chi.URLParam(r, "id"))
 		if err != nil {
 			write(w, 400, map[string]string{"error": "invalid hold id"})
