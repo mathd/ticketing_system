@@ -2,10 +2,8 @@
   "key": "TKT-28",
   "type": "Story",
   "summary": "US-004: Checkout with fake PSP and append-only order journal",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "Codex",
   "pr": {
     "number": 7,
@@ -104,6 +102,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\nPR #7 merged to main as a5533805309cfb61a25435139afb0c7a062dd05f. CI check, hermetic smoke, and gate self-test are green; local make check passed after each review-fix batch. Two review passes were resolved; production-grade automated checkout reconciliation remains explicitly tracked in TKT-43. Ready for PO acceptance."
+    },
+    {
+      "stage": "done",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=done kind=summary -->\nPO acceptance recorded by owner (2026-07-13): TKT-28 meets US-004 Conditions of Success. PR #7 is accepted; advance to Done. Production-grade reconciliation and fault-injection work remains explicitly tracked in TKT-43."
     }
   ],
   "links": [
