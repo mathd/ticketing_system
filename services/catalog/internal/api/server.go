@@ -16,6 +16,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
 
 	apispec "ticketing/services/catalog/api"
@@ -32,13 +33,14 @@ var SupportedLocales = []string{"en", "fr"}
 const CacheControlPublicReads = "public, max-age=300, s-maxage=300"
 
 type Server struct {
-	store store.Store
-	pub   events.Publisher
-	log   *slog.Logger
+	store              store.Store
+	pub                events.Publisher
+	log                *slog.Logger
+	internalCredential string
 }
 
-func NewServer(st store.Store, pub events.Publisher, log *slog.Logger) *Server {
-	return &Server{store: st, pub: pub, log: log}
+func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential string) *Server {
+	return &Server{store: st, pub: pub, log: log, internalCredential: internalCredential}
 }
 
 // NewRouter mounts the generated routes wrapped in spec request validation
@@ -58,6 +60,8 @@ func NewRouter(s *Server) (http.Handler, error) {
 		},
 	})
 	r := chi.NewRouter()
+	r.Get("/internal/ticket-types/{id}", s.getTicketType)
+	r.Get("/internal/performances/{id}", s.getPublishedPerformance)
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -72,6 +76,47 @@ func NewRouter(s *Server) (http.Handler, error) {
 			writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
 		},
 	}), nil
+}
+
+func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
+	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid ticket type id"})
+		return
+	}
+	tt, err := s.store.GetTicketType(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": tt.ID, "organizer_id": tt.OrganizerID, "performance_id": tt.PerformanceID,
+		"price": map[string]any{"amount": tt.PriceAmount, "currency": tt.Currency},
+	})
+}
+
+func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request) {
+	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid performance id"})
+		return
+	}
+	perf, err := s.store.GetPublishedPerformance(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": perf.ID, "organizer_id": perf.OrganizerID, "capacity": perf.Capacity,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

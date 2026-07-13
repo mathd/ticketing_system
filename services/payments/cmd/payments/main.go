@@ -10,13 +10,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
 
+	"ticketing/services/payments/internal/api"
+	paymentstore "ticketing/services/payments/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 )
@@ -24,6 +28,20 @@ import (
 const serviceName = "payments"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "verify-concurrent-append" {
+		if err := verifyConcurrentAppend(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "verify-journal" {
+		if err := verifyJournal(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
 	}
@@ -31,6 +49,76 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
 		os.Exit(1)
 	}
+}
+
+func verifyConcurrentAppend() error {
+	id, key, err := signingConfig()
+	if err != nil {
+		return err
+	}
+	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	j := paymentstore.New(db, id, key)
+	f := paymentstore.Fact{
+		ID:          uuid.MustParse("00000000-0000-0000-0000-000000000901"),
+		OrganizerID: uuid.MustParse("00000000-0000-0000-0000-000000000902"),
+		Type:        "order.created", OccurredAt: time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC),
+		BuyerID: uuid.MustParse("00000000-0000-0000-0000-000000000903"),
+		Amount:  100, Currency: "EUR", Payload: map[string]string{"order_id": "00000000-0000-0000-0000-000000000904"},
+	}
+	const workers = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	newCount, replayCount := 0, 0
+	var firstErr error
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, replay, appendErr := j.Append(context.Background(), f)
+			mu.Lock()
+			defer mu.Unlock()
+			if appendErr != nil && firstErr == nil {
+				firstErr = appendErr
+			}
+			if replay {
+				replayCount++
+			} else if appendErr == nil {
+				newCount++
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	if newCount != 1 || replayCount != workers-1 {
+		return fmt.Errorf("concurrent append: new=%d replay=%d", newCount, replayCount)
+	}
+	return nil
+}
+
+func signingConfig() (string, []byte, error) {
+	id, secret := os.Getenv("JOURNAL_KEY_ID"), os.Getenv("JOURNAL_SIGNING_KEY")
+	if id == "" || len(secret) < 16 {
+		return "", nil, errors.New("JOURNAL_KEY_ID and JOURNAL_SIGNING_KEY (>=16 bytes) required")
+	}
+	return id, []byte(secret), nil
+}
+func verifyJournal() error {
+	id, key, err := signingConfig()
+	if err != nil {
+		return err
+	}
+	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	return paymentstore.New(db, id, key).Verify(context.Background())
 }
 
 // healthcheck is the container health probe: distroless images have no
@@ -71,6 +159,19 @@ func run() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer mcancel()
+	if err := paymentstore.Migrate(mctx, db); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	keyID, key, err := signingConfig()
+	if err != nil {
+		return err
+	}
+	internalToken := os.Getenv("INTERNAL_SERVICE_TOKEN")
+	if internalToken == "" {
+		return errors.New("INTERNAL_SERVICE_TOKEN required")
+	}
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
@@ -80,7 +181,7 @@ func run() error {
 	defer nc.Close()
 
 	r := chi.NewRouter()
-	r.Method(http.MethodGet, "/healthz", httpx.Healthz(serviceName,
+	health := httpx.Healthz(serviceName,
 		httpx.Check("db", func() error {
 			pctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -92,7 +193,10 @@ func run() error {
 			}
 			return nil
 		}),
-	))
+	)
+	r.Method(http.MethodGet, "/healthz", health)
+	r.Method(http.MethodGet, "/readyz", health)
+	r.Mount("/", api.New(paymentstore.New(db, keyID, key), internalToken).Router())
 
 	srv := &http.Server{
 		Addr:              ":" + port(),

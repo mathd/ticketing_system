@@ -1,6 +1,6 @@
 //go:build smoke
 
-// The US-001 integration seam: black-box assertions against the composed
+// The Compose integration seam: black-box assertions against the composed
 // stack through the gateway, plus named infrastructure checks (JetStream,
 // DB credential isolation, telemetry ingestion). Run via `make smoke`,
 // which owns the compose lifecycle.
@@ -99,8 +99,8 @@ func TestHealthzAllUp(t *testing.T) {
 
 // The storefront root redirects into the default locale (Astro i18n). The
 // redirect is asserted without following it so this test never warms the
-// storefront's page-data cache before the US-002 flow publishes its fixture
-// (us002_test.go owns the rendered-page assertions).
+// storefront's page-data cache before the catalog-publication flow publishes
+// its fixture (catalog_publication_test.go owns the rendered-page assertions).
 func TestStorefrontServedThroughGateway(t *testing.T) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,

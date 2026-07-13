@@ -98,7 +98,7 @@ func run() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
-	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log))
+	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, os.Getenv("INTERNAL_SERVICE_TOKEN")))
 	if err != nil {
 		return fmt.Errorf("api router: %w", err)
 	}

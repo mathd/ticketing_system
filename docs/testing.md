@@ -49,6 +49,12 @@ the gateway, plus named infra assertions:
 - JetStream — the `PLATFORM` stream exists from stack init (nats-init) + publish/durable consume
 - DB credential isolation — service A's role cannot connect to service B's database
 - metrics ingestion — `http_server_*` series queryable in Prometheus after traffic
+- US-004 checkout — authoritative EUR price, capture+confirm, decline+release/reacquire
+- ADR-003 journal — `payments verify-journal` runs against the populated smoke database
+  before Compose teardown and fails the gate on a gap, hash or signature mismatch
+
+The reproducible browser check is `scripts/verify-checkout-browser.py` against a running seeded
+stack. Its success and retriable-decline evidence lives in `docs/verification/checkout/`.
 
 ## The gate self-test
 

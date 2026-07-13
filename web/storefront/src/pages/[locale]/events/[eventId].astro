@@ -45,7 +45,7 @@ try {
             </li>
           ))}
         </ul>
-        <HoldPicker client:load organizerId={event.organizer_id} slotId={perf.id} locale={locale} />
+        {perf.ticket_types[0] && <HoldPicker client:load organizerId={event.organizer_id} ticketTypeId={perf.ticket_types[0].id} locale={locale} />}
       </section>
     ))
   }
@@ -140,6 +140,9 @@ try {
   }
   .hold-picker button:disabled { opacity: 0.55; cursor: not-allowed; }
   .hold-picker [aria-live] { color: var(--muted); font-size: 0.9rem; }
+  .checkout-form { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: end; }
+  .checkout-form label { display: grid; gap: 0.25rem; }
+  .checkout-form input, .checkout-form select { padding: 0.45rem; border: 1px solid var(--line); border-radius: 6px; }
   @media (max-width: 36rem) {
     .hold-picker { grid-template-columns: auto 1fr; }
     .hold-picker [aria-live] { grid-column: 1 / -1; }
