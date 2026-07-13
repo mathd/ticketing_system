@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate self-test (US-001 AC): prove `make check` FAILS on seeded errors.
+# Gate self-test: prove `make check` fails on seeded errors.
 # Each seed runs in a disposable git worktree of HEAD (the developer's tree
 # is never touched); cleanup is trap-based so interruption can't leave state.
 # Each seed targets its own gate stage; `make check` aggregates all stages,
@@ -54,7 +54,7 @@ EOF
 expect_fail "go test" test-go
 
 # 3. Go compile error (build stage — proves build-go fails before smoke
-#    can ever package a broken binary; TKT-42)
+#    can ever package a broken binary.)
 cat > shared/go/httpx/seeded.go <<'EOF'
 package httpx
 
