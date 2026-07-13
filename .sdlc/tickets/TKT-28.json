@@ -4,7 +4,7 @@
   "summary": "US-004: Checkout with fake PSP and append-only order journal",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "Codex",
   "pr": null,
