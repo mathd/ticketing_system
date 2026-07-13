@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	commerceapi "ticketing/services/commerce/internal/api"
+	commerceevents "ticketing/services/commerce/internal/events"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
@@ -85,6 +86,10 @@ func run() error {
 		return fmt.Errorf("nats connect: %w", err)
 	}
 	defer nc.Close()
+	publisher, err := commerceevents.NewJetStream(nc)
+	if err != nil {
+		return err
+	}
 
 	r := chi.NewRouter()
 	health := httpx.Healthz(serviceName,
@@ -106,7 +111,7 @@ func run() error {
 	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" || token == "" {
 		return errors.New("CATALOG_URL, INVENTORY_URL, PAYMENTS_URL and INTERNAL_SERVICE_TOKEN required")
 	}
-	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token).Router())
+	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).Router())
 
 	srv := &http.Server{
 		Addr:              ":" + port(),

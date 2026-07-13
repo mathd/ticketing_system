@@ -1,0 +1,15 @@
+openapi: 3.0.3
+info: {title: Access API, version: 1.0.0}
+paths:
+  /orders/{orderRef}/tickets:
+    get:
+      summary: Retrieve the guest ticket bundle and pseudonymous lifecycle history
+      parameters: [{name: orderRef, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Ticket bundle}, '404': {description: Unknown guest reference}}
+  /orders/{orderRef}/tickets/{ticketId}/qr.png:
+    get:
+      summary: Render a signed ticket QR code for a guest ticket bundle
+      parameters:
+        - {name: orderRef, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: ticketId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: PNG QR artwork, content: {image/png: {}}}, '404': {description: Unknown ticket}}

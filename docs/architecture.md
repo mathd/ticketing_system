@@ -72,6 +72,9 @@ flowchart TB
 - Every entity carries a tenant/organizer id (ADR-002).
 - Money: integer minor units + ISO currency; floats banned on money paths (ADR-001).
 - Money/ticket mutations become append-only trails from US-004 (ADR-003).
+- Commerce commits a completed order before publishing the identifier-only event consumed by
+  Access. Access issues signed QR tickets and keeps the `issued`/`delivered` lifecycle trace;
+  it resolves the buyer email from Commerce only while dispatching delivery (ADR-012).
 - Public reads declare volatility-tiered TTLs (ADR-004); one claim primitive for all
   admission inventory (ADR-005).
 - All cross-service calls propagate W3C trace context (`obs.Client`); all servers emit

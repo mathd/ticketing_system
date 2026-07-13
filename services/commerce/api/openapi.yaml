@@ -10,7 +10,7 @@ paths:
     post:
       summary: Checkout a reservation through the fake PSP
       parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
-      responses: {'200': {description: Completed}, '202': {description: Recovery pending}, '402': {description: Declined}, '408': {description: No-side-effect timeout}}
+      responses: {'200': {description: Completed, content: {application/json: {schema: {type: object, required: [order_id, guest_order_ref, status], properties: {order_id: {type: string, format: uuid}, guest_order_ref: {type: string, format: uuid}, status: {type: string}}}}}}, '202': {description: Recovery pending}, '402': {description: Declined}, '408': {description: No-side-effect timeout}}
   /orders/{orderId}:
     get:
       summary: Read uncached order state

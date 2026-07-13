@@ -54,7 +54,8 @@ the gateway, plus named infra assertions:
   before Compose teardown and fails the gate on a gap, hash or signature mismatch
 
 The reproducible browser check is `scripts/verify-checkout-browser.py` against a running seeded
-stack. Its success and retriable-decline evidence lives in `docs/verification/checkout/`.
+stack. It verifies checkout success, guest-ticket QR retrieval, and retriable decline; evidence
+lives in `docs/verification/checkout/` and `docs/verification/ticket-delivery/`.
 
 ## The gate self-test
 
