@@ -43,7 +43,7 @@ ships with no unit tests.
   File(s): `services/commerce/internal/api/server.go` (checkout, claimOrder),
   `services/inventory/internal/store/store.go` (Transition).
 
-- [ ] **R2 — Stuck `payment_operations` are unrecoverable ("in progress" forever)**: `BindOperation`
+- [x] **R2 — Stuck `payment_operations` are unrecoverable ("in progress" forever)**: `BindOperation`
   inserts the row, then journal appends and `CompleteOperation` each run in their own transactions.
   A crash or error between bind and complete leaves `status IS NULL` permanently; every replay then
   returns "payment operation in progress" (409), commerce maps it to `payment_unknown`, and no path

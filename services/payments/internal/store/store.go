@@ -229,26 +229,34 @@ func (j *Journal) Verify(ctx context.Context) error {
 	return nil
 }
 
-func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerprint string) (string, uuid.UUID, bool, error) {
+func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerprint string) (string, uuid.UUID, time.Time, bool, error) {
 	result, err := j.db.ExecContext(ctx, `INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, org, key, fingerprint)
 	if err != nil {
-		return "", uuid.Nil, false, err
+		return "", uuid.Nil, time.Time{}, false, err
 	}
 	var stored string
 	var status sql.NullString
 	var factID uuid.NullUUID
-	err = j.db.QueryRowContext(ctx, `SELECT request_fingerprint,status,fact_id FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).Scan(&stored, &status, &factID)
+	var occurredAt, leaseUntil time.Time
+	err = j.db.QueryRowContext(ctx, `SELECT request_fingerprint,status,fact_id,occurred_at,lease_until FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).Scan(&stored, &status, &factID, &occurredAt, &leaseUntil)
 	if err != nil {
-		return "", uuid.Nil, false, err
+		return "", uuid.Nil, time.Time{}, false, err
 	}
 	if stored != fingerprint {
-		return "", uuid.Nil, false, errors.New("idempotency key reused with different request")
+		return "", uuid.Nil, time.Time{}, false, errors.New("idempotency key reused with different request")
 	}
 	inserted, _ := result.RowsAffected()
 	if inserted == 0 && !status.Valid {
-		return "", uuid.Nil, false, errors.New("payment operation in progress")
+		taken, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET lease_until=now()+interval '30 seconds' WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL AND lease_until<=now()`, org, key)
+		if err != nil {
+			return "", uuid.Nil, time.Time{}, false, err
+		}
+		rows, _ := taken.RowsAffected()
+		if rows == 0 {
+			return "", uuid.Nil, time.Time{}, false, errors.New("payment operation in progress")
+		}
 	}
-	return status.String, factID.UUID, status.Valid, nil
+	return status.String, factID.UUID, occurredAt.UTC().Truncate(time.Microsecond), status.Valid, nil
 }
 
 func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID) error {

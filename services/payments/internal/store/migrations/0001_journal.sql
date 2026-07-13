@@ -30,6 +30,8 @@ FOR EACH STATEMENT EXECUTE FUNCTION reject_journal_mutation();
 CREATE TABLE payment_operations (
   organizer_id uuid NOT NULL, idempotency_key text NOT NULL,
   request_fingerprint text NOT NULL, status text, fact_id uuid,
+  occurred_at timestamptz NOT NULL DEFAULT now(),
+  lease_until timestamptz NOT NULL DEFAULT now() + interval '30 seconds',
   PRIMARY KEY (organizer_id, idempotency_key)
 );
 
