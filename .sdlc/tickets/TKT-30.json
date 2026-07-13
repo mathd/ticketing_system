@@ -4,7 +4,7 @@
   "summary": "US-006: Gate scan with duplicate rejection",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "codex",
   "pr": null,
