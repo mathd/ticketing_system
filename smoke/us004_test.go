@@ -4,12 +4,15 @@ package smoke_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func postWithKey(t *testing.T, url, key string, body any) (int, []byte) {
@@ -61,6 +64,24 @@ func reserveCheckout(t *testing.T, ticketType, key string) map[string]any {
 		t.Fatalf("authoritative total: %v", out)
 	}
 	return out
+}
+
+func expireInventoryHold(t *testing.T, holdID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	if err != nil {
+		t.Fatalf("connect inventory db: %v", err)
+	}
+	defer func() { _ = db.Close(ctx) }()
+	tag, err := db.Exec(ctx, `UPDATE claims SET expires_at=now()-interval '1 second' WHERE id=$1`, holdID)
+	if err != nil {
+		t.Fatalf("expire hold: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("expired claims = %d, want 1", tag.RowsAffected())
+	}
 }
 
 func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
@@ -121,6 +142,24 @@ func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
 	orderID := fmt.Sprint(concurrentOrder["order_id"])
 	if orderCode, orderBody, _ := getWithHeaders(t, gatewayURL+"/api/commerce/orders/"+orderID); orderCode != http.StatusOK || !bytes.Contains(orderBody, []byte(`"completed"`)) {
 		t.Fatalf("concurrent checkout order = %d %s", orderCode, orderBody)
+	}
+
+	expiredSlot, expiredTicketType := setupCheckoutOffer(t, "expired-finalize")
+	expiredReservation := reserveCheckout(t, expiredTicketType, "reserve-expired-finalize")
+	expireInventoryHold(t, fmt.Sprint(expiredReservation["hold_id"]))
+	if expiredCode, expiredBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-expired-finalize", map[string]any{"reservation_id": expiredReservation["reservation_id"], "name": "Buyer Expired", "email": "expired@example.test", "payment_token": "fake-ok"}); expiredCode != http.StatusConflict {
+		t.Fatalf("expired checkout %d %s", expiredCode, expiredBody)
+	}
+	availabilityCode, availabilityBody, _ := getWithHeaders(t, fmt.Sprintf("%s/api/inventory/slots/%s/availability?organizer_id=%s", gatewayURL, expiredSlot, organizerID))
+	if availabilityCode != http.StatusOK {
+		t.Fatalf("expired availability %d %s", availabilityCode, availabilityBody)
+	}
+	var availability struct{ Available, Held, Confirmed int32 }
+	if err := json.Unmarshal(availabilityBody, &availability); err != nil {
+		t.Fatal(err)
+	}
+	if availability.Available != 5 || availability.Held != 0 || availability.Confirmed != 0 {
+		t.Fatalf("expired hold accounting %+v", availability)
 	}
 
 	declined := reserveCheckout(t, ticketType, "reserve-decline")
