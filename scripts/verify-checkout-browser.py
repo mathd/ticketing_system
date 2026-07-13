@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Browser verification for TKT-28 against an already-running local stack."""
+"""Browser verification for checkout against an already-running local stack."""
 
 import os
 from pathlib import Path
@@ -7,9 +7,9 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 
-base = os.environ.get("TKT28_BASE_URL", "http://localhost:28080")
-event_id = os.environ["TKT28_EVENT_ID"]
-evidence = Path("docs/verification/TKT-28")
+base = os.environ.get("CHECKOUT_BASE_URL", "http://localhost:28080")
+event_id = os.environ["CHECKOUT_EVENT_ID"]
+evidence = Path("docs/verification/checkout")
 evidence.mkdir(parents=True, exist_ok=True)
 
 with sync_playwright() as playwright:

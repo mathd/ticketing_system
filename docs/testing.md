@@ -53,8 +53,8 @@ the gateway, plus named infra assertions:
 - ADR-003 journal — `payments verify-journal` runs against the populated smoke database
   before Compose teardown and fails the gate on a gap, hash or signature mismatch
 
-The reproducible browser check is `scripts/verify-tkt28-browser.py` against a running seeded
-stack. Its success and retriable-decline evidence lives in `docs/verification/TKT-28/`.
+The reproducible browser check is `scripts/verify-checkout-browser.py` against a running seeded
+stack. Its success and retriable-decline evidence lives in `docs/verification/checkout/`.
 
 ## The gate self-test
 

@@ -84,7 +84,7 @@ func expireInventoryHold(t *testing.T, holdID string) {
 	}
 }
 
-func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
+func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	_, ticketType := setupCheckoutOffer(t, "flow")
 	if code, _, _ := getWithHeaders(t, gatewayURL+"/api/catalog/internal/ticket-types/"+ticketType); code != http.StatusNotFound {
 		t.Fatalf("public internal catalog route status = %d, want 404", code)

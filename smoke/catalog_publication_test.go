@@ -1,6 +1,6 @@
 //go:build smoke
 
-// US-002 (TKT-26) end-to-end: create venue/event/performance/ticket type
+// Catalog publication end-to-end: create venue/event/performance/ticket type
 // through the gateway, publish, assert the domain event on the PLATFORM
 // stream (consumer created BEFORE publishing, correlated by performance id),
 // then assert the storefront renders it in FR and EN with ADR-004 cache
@@ -65,7 +65,7 @@ func created(t *testing.T, url string, in any) map[string]any {
 	return out
 }
 
-func TestUS002CreatePublishAndStorefront(t *testing.T) {
+func TestCatalogPublicationAndStorefront(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	suffix := func() string {
 		b := make([]byte, 4)
@@ -119,7 +119,7 @@ func TestUS002CreatePublishAndStorefront(t *testing.T) {
 		t.Fatalf("PLATFORM stream: %v", err)
 	}
 	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		Durable:       "smoke-us002",
+		Durable:       "smoke-catalog-publication",
 		FilterSubject: "platform.catalog.performance.published",
 		DeliverPolicy: jetstream.DeliverNewPolicy,
 	})

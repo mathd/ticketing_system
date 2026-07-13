@@ -28,7 +28,7 @@ func holdRequest(url, key string, body any) (int, []byte) {
 	return resp.StatusCode, out
 }
 
-func TestUS003ContentionSafeHolds(t *testing.T) {
+func TestInventoryContentionSafeHolds(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	inventory := gatewayURL + "/api/inventory"
 	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Contention Hall", "ga_capacity": 10})
