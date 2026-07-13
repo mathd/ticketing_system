@@ -11,6 +11,8 @@ base = os.environ.get("CHECKOUT_BASE_URL", "http://localhost:28080")
 event_id = os.environ["CHECKOUT_EVENT_ID"]
 evidence = Path("docs/verification/checkout")
 evidence.mkdir(parents=True, exist_ok=True)
+ticket_evidence = Path("docs/verification/ticket-delivery")
+ticket_evidence.mkdir(parents=True, exist_ok=True)
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -23,6 +25,10 @@ with sync_playwright() as playwright:
     page.locator(".checkout-form button").click()
     page.get_by_text("Order confirmed").wait_for()
     page.screenshot(path=str(evidence / "checkout-success.png"), full_page=True)
+    page.get_by_role("link", name="View my tickets").click()
+    page.get_by_role("heading", name="My tickets").wait_for()
+    page.get_by_role("img", name="Ticket QR code").wait_for()
+    page.screenshot(path=str(ticket_evidence / "guest-ticket-qr.png"), full_page=True)
 
     page.goto(f"{base}/en/events/{event_id}")
     page.wait_for_load_state("networkidle")

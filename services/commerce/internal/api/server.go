@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	commerceevents "ticketing/services/commerce/internal/events"
 	"ticketing/shared/fakepsp"
 )
 
@@ -28,16 +29,22 @@ type Server struct {
 	db                                           *sql.DB
 	client                                       *http.Client
 	catalogURL, inventoryURL, paymentsURL, token string
+	publisher                                    commerceevents.Publisher
 }
 
-func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token string) *Server {
-	return &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token}
+func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token string, publishers ...commerceevents.Publisher) *Server {
+	var publisher commerceevents.Publisher
+	if len(publishers) > 0 {
+		publisher = publishers[0]
+	}
+	return &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
 }
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Post("/reservations", s.reserve)
 	r.Post("/orders", s.checkout)
 	r.Get("/orders/{id}", s.getOrder)
+	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
 	return r
 }
 func write(w http.ResponseWriter, c int, v any) {
@@ -173,15 +180,32 @@ func paymentFailureResponse(body []byte, fallbackStatus string) map[string]any {
 }
 
 type reservation struct {
-	ID, OrganizerID, HoldID, BuyerID uuid.UUID
-	Amount                           int64
-	Currency, Status                 string
+	ID, OrganizerID, HoldID, BuyerID, SlotID, TicketTypeID uuid.UUID
+	Quantity                                               int32
+	Amount                                                 int64
+	Currency, Status                                       string
 }
 
 func (s *Server) load(ctx context.Context, id uuid.UUID) (reservation, error) {
 	var x reservation
-	err := s.db.QueryRowContext(ctx, `SELECT id,organizer_id,hold_id,buyer_id,total_amount,currency,status FROM reservations WHERE id=$1`, id).Scan(&x.ID, &x.OrganizerID, &x.HoldID, &x.BuyerID, &x.Amount, &x.Currency, &x.Status)
+	err := s.db.QueryRowContext(ctx, `SELECT id,organizer_id,hold_id,buyer_id,slot_id,ticket_type_id,quantity,total_amount,currency,status FROM reservations WHERE id=$1`, id).Scan(&x.ID, &x.OrganizerID, &x.HoldID, &x.BuyerID, &x.SlotID, &x.TicketTypeID, &x.Quantity, &x.Amount, &x.Currency, &x.Status)
 	return x, err
+}
+
+func (s *Server) publishCompleted(ctx context.Context, order, ref uuid.UUID, x reservation) error {
+	if s.publisher == nil {
+		return errors.New("order event publisher unavailable")
+	}
+	return s.publisher.OrderCompleted(ctx, commerceevents.OrderCompletedData{
+		OrderID: order, GuestOrderRef: ref, OrganizerID: x.OrganizerID, BuyerID: x.BuyerID,
+		SlotID: x.SlotID, TicketTypeID: x.TicketTypeID, Quantity: x.Quantity,
+	})
+}
+
+func (s *Server) guestReference(ctx context.Context, order uuid.UUID) (uuid.UUID, error) {
+	var ref uuid.UUID
+	err := s.db.QueryRowContext(ctx, `SELECT guest_order_ref FROM orders WHERE id=$1 AND status='completed'`, order).Scan(&ref)
+	return ref, err
 }
 func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ string) error {
 	fid := uuid.NewSHA1(uuid.NameSpaceOID, []byte(order.String()+":"+typ))
@@ -313,7 +337,12 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if orderStatus == "completed" {
-		write(w, 200, map[string]any{"order_id": order, "status": "completed"})
+		ref, e := s.guestReference(r.Context(), order)
+		if e != nil || s.publishCompleted(r.Context(), order, ref, x) != nil {
+			write(w, 503, map[string]string{"error": "ticket issuance pending; retry checkout"})
+			return
+		}
+		write(w, 200, map[string]any{"order_id": order, "guest_order_ref": ref, "status": "completed"})
 		return
 	}
 	if orderStatus == "declined" || orderStatus == "timeout" {
@@ -393,20 +422,48 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 503, map[string]string{"error": "journal unavailable"})
 		return
 	}
+	guestRef, err := uuid.NewRandom()
+	if err != nil {
+		write(w, 500, map[string]string{"error": "mint guest order reference"})
+		return
+	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist completion"})
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `UPDATE reservations SET status='completed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, x.ID); err == nil {
-		_, err = tx.ExecContext(r.Context(), `UPDATE orders SET status='completed',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
+		_, err = tx.ExecContext(r.Context(), `UPDATE orders SET status='completed',guest_order_ref=$2,updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order, guestRef)
 	}
 	if err != nil || tx.Commit() != nil {
 		_ = tx.Rollback()
 		write(w, 500, map[string]string{"error": "persist completion"})
 		return
 	}
-	write(w, 200, map[string]any{"order_id": order, "status": "completed"})
+	if err := s.publishCompleted(r.Context(), order, guestRef, x); err != nil {
+		write(w, 503, map[string]string{"error": "ticket issuance pending; retry checkout"})
+		return
+	}
+	write(w, 200, map[string]any{"order_id": order, "guest_order_ref": guestRef, "status": "completed"})
+}
+
+func (s *Server) deliveryEmail(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Internal-Token") != s.token {
+		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid buyer"})
+		return
+	}
+	var email string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT email FROM buyer_pii WHERE buyer_id=$1`, id).Scan(&email); err != nil {
+		code, message := persistenceReadProblem(err)
+		write(w, code, map[string]string{"error": message})
+		return
+	}
+	write(w, 200, map[string]string{"email": email})
 }
 func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 	id, e := uuid.Parse(chi.URLParam(r, "id"))

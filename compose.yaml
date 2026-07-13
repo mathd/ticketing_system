@@ -135,6 +135,13 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://access:access@postgres:5432/access
+      COMMERCE_URL: http://commerce:8080
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      # Development-only deterministic seed. Deployments must inject a distinct
+      # 32-byte Ed25519 seed through secret configuration.
+      ACCESS_QR_PRIVATE_KEY: ${ACCESS_QR_PRIVATE_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}
+      ACCESS_QR_KID: ${ACCESS_QR_KID:-local-v1}
 
   storefront:
     # Astro 7 SSR shell (ADR-006). Root build context: the pnpm workspace

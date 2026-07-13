@@ -19,10 +19,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale }: Props)
   const [name, setName] = useState('Test Buyer');
   const [email, setEmail] = useState('buyer@example.test');
   const [paymentToken, setPaymentToken] = useState('fake-ok');
+  const [ticketLink, setTicketLink] = useState<string | null>(null);
   const deadline = useRef(0);
   const t = locale === 'fr'
-    ? { reserve: 'Réserver', pay: 'Payer', quantity: 'Quantité', held: 'Réservé pendant', expired: 'Réservation expirée', unavailable: 'Quantité indisponible', completed: 'Commande confirmée', declined: 'Paiement refusé — réessayez' }
-    : { reserve: 'Reserve', pay: 'Pay', quantity: 'Quantity', held: 'Held for', expired: 'Hold expired', unavailable: 'Quantity unavailable', completed: 'Order confirmed', declined: 'Payment declined — try again' };
+    ? { reserve: 'Réserver', pay: 'Payer', quantity: 'Quantité', held: 'Réservé pendant', expired: 'Réservation expirée', unavailable: 'Quantité indisponible', completed: 'Commande confirmée', tickets: 'Voir mes billets', declined: 'Paiement refusé — réessayez' }
+    : { reserve: 'Reserve', pay: 'Pay', quantity: 'Quantity', held: 'Held for', expired: 'Hold expired', unavailable: 'Quantity unavailable', completed: 'Order confirmed', tickets: 'View my tickets', declined: 'Payment declined — try again' };
 
   useEffect(() => {
     if (holdId === null) return;
@@ -63,8 +64,8 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale }: Props)
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ reservation_id: reservation.reservation_id, name, email, payment_token: paymentToken }),
       });
-      const result = await response.json() as { order_id?: string; status?: string };
-      if (response.ok && result.status === 'completed') { setRemaining(0); setStatus(`${t.completed}: ${result.order_id}`); return; }
+      const result = await response.json() as { order_id?: string; guest_order_ref?: string; status?: string };
+      if (response.ok && result.status === 'completed' && result.guest_order_ref) { setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.completed); return; }
       if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.declined); return; }
       setStatus('Payment status is being checked');
     } catch { setStatus('Payment status is being checked'); }
@@ -76,6 +77,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale }: Props)
     <label>{t.quantity} <input aria-label={t.quantity} type="number" min="1" max="50" value={quantity} onChange={(e) => setQuantity(Math.max(1, Math.min(50, Number(e.target.value))))} /></label>
     <button type="button" disabled={busy || (remaining !== null && remaining > 0)} onClick={reserve}>{t.reserve}</button>
     <span aria-live="polite">{status}{remaining !== null && remaining > 0 ? ` ${seconds}s` : ''}</span>
+    {ticketLink && <a href={ticketLink}>{t.tickets}</a>}
     {reservation && remaining !== null && remaining > 0 && <div className="checkout-form">
       <label>Name <input aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} /></label>
       <label>Email <input aria-label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>

@@ -99,6 +99,43 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	if success["status"] != "completed" {
 		t.Fatalf("success: %v", success)
 	}
+	guestRef := fmt.Sprint(success["guest_order_ref"])
+	if guestRef == "" || guestRef == fmt.Sprint(success["order_id"]) {
+		t.Fatalf("guest order reference must be independent from the order ID: %v", success)
+	}
+	retry(t, 10*time.Second, func() error {
+		bundleCode, bundleBody, bundleHeaders := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestRef+"/tickets")
+		if bundleCode != http.StatusOK {
+			return fmt.Errorf("ticket bundle %d %s", bundleCode, bundleBody)
+		}
+		if bundleHeaders.Get("Cache-Control") != "no-store" {
+			return fmt.Errorf("ticket bundle Cache-Control = %q", bundleHeaders.Get("Cache-Control"))
+		}
+		var bundle struct {
+			Tickets []struct {
+				QRURL   string `json:"qr_url"`
+				History []struct {
+					Type string `json:"type"`
+				} `json:"history"`
+			} `json:"tickets"`
+		}
+		if err := json.Unmarshal(bundleBody, &bundle); err != nil {
+			return err
+		}
+		if len(bundle.Tickets) != 2 {
+			return fmt.Errorf("issued tickets = %d, want 2", len(bundle.Tickets))
+		}
+		for _, ticket := range bundle.Tickets {
+			if len(ticket.History) != 2 || ticket.History[0].Type != "issued" || ticket.History[1].Type != "delivered" {
+				return fmt.Errorf("ticket lifecycle = %#v", ticket.History)
+			}
+			qrCode, _, qrHeaders := getWithHeaders(t, gatewayURL+ticket.QRURL)
+			if qrCode != http.StatusOK || qrHeaders.Get("Content-Type") != "image/png" {
+				return fmt.Errorf("ticket QR = %d %q", qrCode, qrHeaders.Get("Content-Type"))
+			}
+		}
+		return nil
+	})
 	if replayCode, replayBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-success", map[string]any{"reservation_id": reservation["reservation_id"], "name": "Buyer One", "email": "buyer1@example.test", "payment_token": "fake-ok"}); replayCode != 200 {
 		t.Fatalf("completed replay %d %s", replayCode, replayBody)
 	}
