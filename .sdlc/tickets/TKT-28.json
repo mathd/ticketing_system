@@ -2,7 +2,7 @@
   "key": "TKT-28",
   "type": "Story",
   "summary": "US-004: Checkout with fake PSP and append-only order journal",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
