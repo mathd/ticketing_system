@@ -18,6 +18,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"ticketing/shared/fakepsp"
 )
 
 var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
@@ -253,7 +255,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.ReservationID == uuid.Nil || strings.TrimSpace(in.Name) == "" || !strings.Contains(in.Email, "@") || in.PaymentToken == "" {
+	if in.ReservationID == uuid.Nil || strings.TrimSpace(in.Name) == "" || !strings.Contains(in.Email, "@") || !fakepsp.ValidToken(in.PaymentToken) {
 		write(w, 400, map[string]string{"error": "invalid checkout"})
 		return
 	}

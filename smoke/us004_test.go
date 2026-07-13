@@ -82,6 +82,18 @@ func TestUS004CheckoutSuccessAndDecline(t *testing.T) {
 		t.Fatalf("completed replay %d %s", replayCode, replayBody)
 	}
 
+	_, invalidTokenTicketType := setupCheckoutOffer(t, "invalid-token")
+	invalidTokenReservation := reserveCheckout(t, invalidTokenTicketType, "reserve-invalid-token")
+	invalidTokenRequest := map[string]any{"reservation_id": invalidTokenReservation["reservation_id"], "name": "Buyer Invalid", "email": "invalid@example.test", "payment_token": "not-a-token"}
+	if invalidCode, invalidBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-invalid-token", invalidTokenRequest); invalidCode != http.StatusBadRequest {
+		t.Fatalf("invalid payment token %d %s", invalidCode, invalidBody)
+	}
+	// Validation happens before finalization, so the original live hold can
+	// still be completed with a valid token.
+	if validCode, validBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-invalid-token", map[string]any{"reservation_id": invalidTokenReservation["reservation_id"], "name": "Buyer Invalid", "email": "invalid@example.test", "payment_token": "fake-ok"}); validCode != http.StatusOK {
+		t.Fatalf("valid retry after invalid token %d %s", validCode, validBody)
+	}
+
 	_, concurrentTicketType := setupCheckoutOffer(t, "same-key-race")
 	concurrentReservation := reserveCheckout(t, concurrentTicketType, "reserve-same-key-race")
 	concurrentBody := map[string]any{"reservation_id": concurrentReservation["reservation_id"], "name": "Buyer Concurrent", "email": "concurrent@example.test", "payment_token": "fake-ok"}

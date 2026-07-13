@@ -49,7 +49,7 @@ never-expiring `finalizing` state.
 
 ### Important (Should Fix)
 
-- [ ] **R2** — Unknown payment token permanently consumes inventory: commerce only checks
+- [x] **R2** — Unknown payment token permanently consumes inventory: commerce only checks
   `PaymentToken != ""` (`services/commerce/internal/api/server.go:244`), then finalizes the
   hold *before* charging. Payments rejects an unrecognized token with 400
   (`services/payments/internal/api/server.go:135`), which commerce treats as unknown outcome:

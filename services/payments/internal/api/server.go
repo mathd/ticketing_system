@@ -11,12 +11,13 @@ import (
 	"github.com/google/uuid"
 
 	"ticketing/services/payments/internal/store"
+	"ticketing/shared/fakepsp"
 )
 
 const (
-	TokenSuccess = "fake-ok"
-	TokenDecline = "fake-decline"
-	TokenTimeout = "fake-timeout"
+	TokenSuccess = fakepsp.TokenSuccess
+	TokenDecline = fakepsp.TokenDecline
+	TokenTimeout = fakepsp.TokenTimeout
 )
 
 type Server struct {

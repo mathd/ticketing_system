@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"ticketing/shared/fakepsp"
 )
 
 func TestPaymentFailureResponse(t *testing.T) {
@@ -56,5 +58,11 @@ func TestPaymentOutcomeProblem(t *testing.T) {
 	}
 	if _, _, active = paymentOutcomeProblem(http.StatusBadRequest); active {
 		t.Fatal("bad request must not be treated as an active operation")
+	}
+}
+
+func TestCheckoutRejectsUnknownPaymentToken(t *testing.T) {
+	if fakepsp.ValidToken("not-a-token") {
+		t.Fatal("unknown token accepted")
 	}
 }
