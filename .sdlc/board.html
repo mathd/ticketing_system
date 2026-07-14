@@ -40,12 +40,12 @@
   header .meta { color:var(--muted); font-size:12px; }
   .legend { margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
 
-  .board { display:flex; gap:10px; padding:16px 20px; overflow-x:auto; overflow-y:auto;
-           align-items:stretch; flex:1; }  /* fill viewport: whole screen is the scroll surface */
+  .board { display:flex; gap:10px; padding:16px 20px; overflow-x:auto; overflow-y:hidden;
+           align-items:stretch; flex:1; }  /* board scrolls sideways only; each lane scrolls its own cards */
   .column { flex:0 0 260px; background:var(--col); border-radius:10px; border:1px solid var(--line);
             transition:outline .1s, opacity .15s, filter .15s; align-self:stretch;
-            display:flex; flex-direction:column; }
-  .column .cards { flex:1; }  /* full-height lane = full-height drop target */
+            display:flex; flex-direction:column; overflow:hidden; min-height:0; }
+  .column .cards { flex:1; overflow-y:auto; min-height:0; }  /* full-height lane = full-height drop target, scrolls past the fold */
   .column.dragover { outline:2px dashed var(--accent); outline-offset:-3px; }
   .column.dim { opacity:.35; filter:saturate(.4); }
   .column > h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);

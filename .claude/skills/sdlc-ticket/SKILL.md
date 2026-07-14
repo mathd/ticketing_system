@@ -172,7 +172,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 
 - **Never merge for the human.** Gate 3 is the human's, in the code repo. Agents stop at `needs:human`.
 - **Codex failing ≠ stage done.** If `codex` errors at `plan-review` or `ai-review`, retry once, then **stop with the current `agent:*` label and report**. Never substitute a self-review, never advance to `needs:human` without the cross-model pass — a skipped review that looks done is worse than a stalled ticket.
-- **One codex pass per stage.** After triaging and fixing findings, re-green the local gate and post — don't re-run codex on your own fixes. A second pass happens only if the human asks or a rebase materially changed the diff.
+- **One codex pass per stage.** After triaging and fixing findings, re-green the local gate and post — don't re-run codex on your own fixes. A second pass happens only if the human asks or a rebase materially changed the diff. **A Gate-3 human review round is not a trigger:** the human review *is* the authoritative adversarial pass, so address its changes under `agent:coding`, re-green, and return to `needs:human` for re-review of the new SHA — without a new codex run.
 - **V0 is manual** — no Jira automation / webhooks. Movement is agent-driven on the user's command.
 - **Never push after setting `needs:human`** without first swapping back to an `agent:*` label.
 - **When a human pushes back** — diagnose the failing layer first (**intent / plan / implementation**) and regenerate from that layer, never patch locally at a lower one (`quality-practices.md` §4).
