@@ -3,9 +3,7 @@
   "type": "Story",
   "summary": "US-005: QR e-ticket issued and delivered",
   "status": "Done",
-  "labels": [
-    "needs:human"
-  ],
+  "labels": [],
   "assignee": null,
   "pr": "https://github.com/mathd/ticketing_system/pull/8",
   "parent": "TKT-1",
@@ -71,6 +69,11 @@
       "stage": "done",
       "kind": "summary",
       "body": "<!-- sdlc:stage=done kind=summary -->\nPR #8 was approved and merged to `main` at `3fc0bca73430d57679e4e7ec8a6d856e7175ab3f` on 2026-07-13. CI/CD is green; owner authorized ticket closure."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout metrics — TKT-29\n\n| stage | duration |\n|---|---|\n| Backlog | 13h14m |\n| Ready | 2m |\n| Planning | 9m35s |\n| — agent:planning | n/a (legacy label history incomplete) |\n| — agent:plan-review | n/a (legacy label history incomplete) |\n| — needs:human (Gate 2) | ~16s |\n| Building | 17h08m |\n| — agent:coding | n/a (legacy label history incomplete) |\n| — agent:ai-review | n/a (legacy label history incomplete) |\n| — needs:human (Gate 3) | n/a |\n| PO Review | 59m25s |\n\n**human-wait total:** n/a (legacy label transitions were not recorded consistently)\n**diff:** +963/−31 (28 files) — PR #8, merge 3fc0bca\n\n**learnings:**\n- (technical → ADR-012 and TKT-43) Retry-driven event publication is sufficient for the walking skeleton, but scheduled/restart outbox recovery is required before a real PSP launch; already recorded.\n- (process) The story crossed 28 files because it established a complete Commerce→JetStream→Access→storefront slice. Future stories using these seams should stay narrower.\n\n**retro:**\n1. What would have made this ticket faster or better: the completed-order event and guest-capability contract could have been specified before Planning. Concrete change: preserve ADR-012 as the binding contract for future issuance work; already applied.\n2. What should the humans change: closeout must remove `needs:human` and add metrics in the same Done operation. Concrete change: use the local tracker Done checklist for every subsequent ticket; applied during this cleanup."
     }
   ],
   "links": [
