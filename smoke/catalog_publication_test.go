@@ -38,6 +38,7 @@ func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
+	validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, out)
 	return resp.StatusCode, out
 }
 
@@ -49,6 +50,7 @@ func getWithHeaders(t *testing.T, url string) (int, []byte, http.Header) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
+	validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, body)
 	return resp.StatusCode, body, resp.Header
 }
 

@@ -4,6 +4,7 @@ import App from './App'
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -39,5 +40,27 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
     await waitFor(() => expect(screen.getByText(/Paste the credential instead/)).toBeDefined())
     expect(screen.getByLabelText('Ticket credential')).toBeDefined()
+  })
+
+  it('stops a failed camera loop and restores the paste path', async () => {
+    const stop = vi.fn()
+    const detect = vi.fn().mockRejectedValue(new Error('detector failed'))
+    const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop }] })
+    vi.stubGlobal('BarcodeDetector', class {
+      detect = detect
+    })
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-07-13T12:00:00Z' }), { status: 200 })))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+
+    expect(await screen.findByText(/Camera QR detection stopped unexpectedly/)).toBeDefined()
+    await waitFor(() => expect(stop).toHaveBeenCalledOnce())
+    expect(screen.getByRole('button', { name: 'Use camera' }).hasAttribute('disabled')).toBe(false)
+
+    pasteCredential('fallback-ticket')
+    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
   })
 })

@@ -20,6 +20,7 @@ import (
 
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
+	"ticketing/shared/runtimecfg"
 )
 
 const serviceName = "gateway"
@@ -58,6 +59,10 @@ func port() string {
 }
 
 func run() error {
+	httpConfig, err := runtimecfg.HTTPFromEnv()
+	if err != nil {
+		return fmt.Errorf("http configuration: %w", err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -127,10 +132,10 @@ func run() error {
 	}
 
 	srv := &http.Server{
-		Addr:              ":" + port(),
-		Handler:           obs.Middleware(serviceName, obs.RequestLogger(log, mux)),
-		ReadHeaderTimeout: 5 * time.Second,
+		Addr:    ":" + port(),
+		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, mux)),
 	}
+	httpConfig.Apply(srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

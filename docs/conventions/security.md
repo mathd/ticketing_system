@@ -1,121 +1,60 @@
-<!-- TODO: Refactor this file when we position ourselves for our recommendation for diagram-as-code. Note: Not have diagram within a specific MD file. It's harder to maintain. -->
-<!-- TODO: Split in two files to have infra architecture vs solution design architecture. -->
 # Security Guidelines
 
-## Secrets Management
+This page separates controls enforced in the M1 repository from future production requirements.
+The system is a local Docker Compose testbed, not a production deployment.
 
-**Never commit secrets.** Secrets are managed differently per context:
+## Enforced today
 
-| Context | How | Tool |
-|---|---|---|
-| Local dev | **Prefer cloud secret manager via dev auth**; fall back to `.env` (always in `.gitignore`) | `gcloud auth application-default login`, python-dotenv |
-| CI/CD | Pipeline secrets | GitHub Actions secrets, OIDC for cloud auth |
-| Production | Cloud-native secret managers | GCP Secret Manager, AWS Secrets Manager, Azure Key Vault |
+- Secrets and local environment files are ignored; credentials in Compose are development-only.
+- Each Go service has a separate PostgreSQL database and role. CONNECT is revoked across service
+  databases and the smoke suite verifies credential isolation (ADR-007).
+- Only the gateway publishes the application port. Infrastructure ports bind to `127.0.0.1`.
+- The gateway exposes an explicit route table; `/internal/` service routes are denied publicly.
+- Go service images use a distroless non-root runtime. Dependency lockfiles and module checksums are
+  committed. Container images are pinned by exact tag and multi-platform digest; workflow actions
+  are pinned by full commit SHA.
+- Public contracts are request-validated; service tests validate response conformance.
+- Money and ticket histories are append-only. QR tickets use a dedicated Ed25519 key namespace and
+  redemption verifies signed immutable facts.
+- Logs must not contain payment tokens, QR credentials, raw email addresses, or hostile failed-event
+  bodies. Access logs only recipient/link hashes and publishes sanitized failure records.
+- `make check` runs lint, tests, builds, and real-stack smoke checks in CI and locally.
+- The `security` workflow runs on every pull request, weekly, and on demand. It fails on reachable Go
+  vulnerabilities, high-or-critical pnpm advisories, or high-or-critical Trivy filesystem findings
+  across dependencies, IaC configuration, and detected secrets.
 
-**Prefer cloud-native secrets managers for local dev too.** Authenticate with personal cloud credentials and let the application fetch secrets from the same source it uses in production — no `.env` distribution, local behavior matches prod. Reserve `.env` for initial setup, quick local testing, or offline work.
+## Input and data handling
 
-The `detect-secrets` pre-commit hook is configured to catch accidental leaks before they reach the repo.
+- Use parameterized SQL through `database/sql`/pgx; never interpolate untrusted values into SQL.
+- Decode JSON through the repository's bounded, strict request policy once available; retain
+  endpoint-specific status semantics.
+- Money is integer minor units plus currency. Do not log or serialize money through floating point.
+- Keep PII in mutable service-owned stores and identifiers in immutable trails (ADR-003).
+- Treat guest ticket references and QR payloads as bearer capabilities. Never include them in logs,
+  metrics labels, failed-event records, or analytics events.
 
-## Workload Identity
+## Dependencies and executable inputs
 
-The best secret is no secret. Wherever possible, use the cloud's identity system to authenticate workloads — there's nothing to leak, rotate, or expire.
+Review maintenance, license, scope, and advisories before adding a dependency. Pin application
+dependencies through Go modules and `pnpm-lock.yaml`; pin executable container/workflow inputs as
+described in [`dependencies-and-versions.md`](dependencies-and-versions.md). Dependabot proposes
+weekly updates but does not bypass review or the quality gates. Security findings are blocking at
+the thresholds above; suppressions require a narrow, documented rationale with an expiry or removal
+condition.
 
-| Cloud | Mechanism | Use case |
-|---|---|---|
-| **GCP** | Service accounts (attached to Cloud Run, GKE, GCE); Workload Identity Federation | Cloud → Cloud, GitHub Actions → GCP |
-| **AWS** | IAM roles (attached to EC2, ECS, Lambda); IAM Roles Anywhere | Cloud → Cloud, on-prem → AWS |
-| **Azure** | Managed Identity (attached to VMs, App Service, Functions) | Cloud → Cloud, GitHub Actions → Azure |
-| **CI/CD** | OIDC federation (GitHub Actions → cloud provider) | CI → Cloud, no long-lived keys |
+## Not yet production-ready
 
-**Rules:**
+M1 deliberately lacks staff authentication/RBAC, ticket expiry/revocation/admission-window policy,
+a real PSP, managed secrets, WAF/rate limiting, cloud network isolation, backups, disaster recovery,
+and a production deployment pipeline. Relevant backlog items and ADRs must settle those controls
+before external operation. Local Compose passwords and signing seeds must never be reused outside
+development.
 
-- **No service account keys in code or CI.** If a workflow needs cloud access, configure OIDC federation — not a JSON key file.
-- **Scope identities tightly.** Each workload gets its own identity with only the IAM bindings it needs — never reuse a generic "deploy" account.
-- **Fall back to secrets only when unavoidable.** Vendor APIs without OIDC and legacy systems still need static credentials; store them in a secret manager (see [Secrets Management](#secrets-management)).
+## AI-assisted development
 
-## Static Analysis (SAST)
-
-| Tool | What it does | Where it runs |
-|---|---|---|
-| **Ruff `S` rules** | Bandit-equivalent security checks (SQL injection, hardcoded passwords, insecure functions) | Pre-commit + CI |
-| **Semgrep** | Semantic code analysis with lower false positives than pattern matching | CI (recommended) |
-
-> Ruff's `S` rules are already enabled in `pyproject.toml`. No need for standalone Bandit.
-
-## Dynamic Analysis (DAST)
-
-For projects exposing web APIs. Run against a staging environment, not on every PR (too slow).
-
-| Tool | When to use |
-|---|---|
-| **OWASP ZAP** | Automated API scanning in CI (feed it your OpenAPI spec) |
-| **Burp Suite** | Manual penetration testing engagements |
-
-## Dependencies
-
-**Before adding a dependency**, check that it's:
-
-- **Actively maintained** — recent releases, responsive maintainers
-- **Trusted** — significant adoption, well-known maintainer or org
-- **Appropriately licensed** — compatible with the project's distribution model
-- **Focused** — prefer narrow libraries over kitchen-sink ones (smaller surface = smaller attack surface)
-
-Packages with no commits in 2+ years and open security advisories are a hard no. The cheapest vulnerability is the one you never added.
-
-**Once installed**, scan continuously:
-
-| Tool | What it does |
-|---|---|
-| **Dependabot** | Auto-opens PRs for vulnerable dependencies (enable on GitHub) |
-| **pip-audit** | Scans against OSV vulnerability database, can generate SBOMs |
-| **Snyk** | Deeper analysis + license compliance (for enterprise clients) |
-
-> Lock files (`uv.lock`) with `--frozen` in Dockerfiles ensure reproducible builds.
-
-## Container Security
-
-The project Dockerfile already follows best practices (non-root user, multi-stage build, slim base image). Additionally:
-
-- **Scan images in CI** with [Trivy](https://github.com/aquasecurity/trivy): `trivy image --severity HIGH,CRITICAL --exit-code 1 app:latest`
-- **Pin base image digests** for reproducibility: `python:3.13-slim@sha256:...`
-- **Verify no secrets leak** into the image (no `.env`, no credentials)
-
-## Network Security
-
-- **VPC / Private networking** — All production databases, model endpoints, and internal services behind private subnets
-- **Private endpoints** — Use cloud-native private connectivity (GCP Private Service Connect, AWS PrivateLink, Azure Private Endpoint)
-- **Ingress** — WAF (Cloud Armor, AWS WAF) in front of public APIs. Allowlist known IPs for admin endpoints
-- **Egress** — Restrict outbound traffic. Services should only reach required destinations (Cloud NAT for controlled outbound)
-
-## Access Control (RBAC)
-
-For APIs, use FastAPI dependency injection for authorization:
-
-- Encode roles in JWT tokens, validate with a `Depends()` function
-- Use an external IdP (Keycloak, Auth0, GCP Identity Platform) for token issuance
-- Apply least-privilege: define permissions per role, enforce at the route level
-
-## Input Validation
-
-- **Pydantic models** for all API inputs — request bodies, query params, path params
-- **Parameterized queries** via SQLAlchemy — never use f-strings for SQL
-- **Prompt injection** (GenAI) — validate and sanitize user inputs before passing to LLMs. Use template-based prompts, not raw string concatenation
-
-## PII & Data Protection
-
-- **Classify data** — tag fields as PII/sensitive using Pydantic field metadata
-- **Encrypt at rest** — use cloud-native encryption (CMEK for storage and databases)
-- **Mask in logs** — never log PII. Use structured logging processors to redact sensitive fields
-- **Data retention** — define TTLs and implement automated deletion for data containing PII
-- **Compliance** — consider applicable regulations (GDPR, Quebec Law 25, PIPEDA) for client data
-
-## AI Coding Agents
-
-Coding agents (Claude Code, Copilot, Cursor) accelerate development but expand the attack surface. Treat them as untrusted code paths that happen to run on your machine.
-
-- **Never paste confidential data into prompts.** Client data, real secrets, PII, internal architecture details — none of it lands in agent context. Use redacted examples instead.
-- **Restrict agent file access.** Configure the agent (via `AGENTS.md`, settings) to not read `.env`, `conf/prod/`, or other sensitive paths. Use the agent's permission system to gate destructive operations.
-- **Validate every action before accepting it.** Edits, shell commands, file deletes — review the diff or command. Don't auto-approve.
-- **You are responsible for what the agent does under your name.** A leaked secret committed via agent is still your leak. A force-push via agent is still your incident.
-
-Pairs with [LLM-Assisted Reviews](pull-requests.md#llm-assisted-reviews) — accountability stays with the human.
+- Do not place real secrets, customer data, or production credentials in prompts or fixtures.
+- Review generated edits and commands before accepting them; the human owner retains accountability.
+- Preserve repository and tool permission boundaries. Destructive or external actions require the
+  authority defined by the active workflow.
+- Validate security suggestions against current ADRs and code; generic framework advice is not a
+  project control.

@@ -10,12 +10,30 @@ no config files in the services.
 | `PORT` | listen port | `8080` |
 | `DATABASE_URL` | own Postgres database (ADR-007: one DB + role per service) | — (required) |
 | `NATS_URL` | JetStream bus | — (required) |
+| `DB_MAX_OPEN_CONNS` | maximum open database connections per service | `25` |
+| `DB_MAX_IDLE_CONNS` | maximum idle database connections; must not exceed open | `10` |
+| `DB_CONN_MAX_LIFETIME` | maximum lifetime of a pooled connection | `30m` |
+| `DB_CONN_MAX_IDLE_TIME` | maximum time a pooled connection remains idle | `5m` |
+| `ACCESS_EVENT_RETRY_BACKOFF` | Access-only comma-separated event retry intervals | `1s,5s,30s,2m,5m,10m` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | collector (lgtm container) | SDK default |
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY` | export cadence (tightened locally) | SDK defaults |
 
+## HTTP servers (services and gateway)
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `HTTP_READ_HEADER_TIMEOUT` | deadline for reading request headers | `5s` |
+| `HTTP_READ_TIMEOUT` | deadline for reading the complete request | `15s` |
+| `HTTP_WRITE_TIMEOUT` | deadline for writing the response | `30s` |
+| `HTTP_IDLE_TIMEOUT` | keep-alive idle timeout | `60s` |
+
+Durations use Go duration syntax and must be positive. Database counts must be positive. A process
+fails at startup when a value is invalid; silently falling back would hide a broken capacity
+contract. Compose forwards these variables to every applicable process.
+
 ## Gateway
 
-`PORT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, plus one URL per registered route:
+The HTTP variables above, `PORT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, plus one URL per registered route:
 `CATALOG_URL`, `INVENTORY_URL`, `COMMERCE_URL`, `PAYMENTS_URL`, `ACCESS_URL`,
 `STOREFRONT_URL`, `SCANNER_URL`. The gateway refuses to start if a registered route's
 env var is missing — the route table is explicit by design.

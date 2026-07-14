@@ -25,6 +25,7 @@ import (
 	"ticketing/services/catalog/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
+	"ticketing/shared/runtimecfg"
 )
 
 const serviceName = "catalog"
@@ -59,6 +60,14 @@ func port() string {
 }
 
 func run() error {
+	httpConfig, err := runtimecfg.HTTPFromEnv()
+	if err != nil {
+		return fmt.Errorf("http configuration: %w", err)
+	}
+	dbConfig, err := runtimecfg.DatabaseFromEnv()
+	if err != nil {
+		return fmt.Errorf("database configuration: %w", err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -77,6 +86,7 @@ func run() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	dbConfig.Apply(db)
 
 	// Migrate before listening; fail fast on a bad migration (ADR-008).
 	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
@@ -120,10 +130,10 @@ func run() error {
 	r.Mount("/", apiHandler)
 
 	srv := &http.Server{
-		Addr:              ":" + port(),
-		Handler:           obs.Middleware(serviceName, obs.RequestLogger(log, r)),
-		ReadHeaderTimeout: 5 * time.Second,
+		Addr:    ":" + port(),
+		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, r)),
 	}
+	httpConfig.Apply(srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

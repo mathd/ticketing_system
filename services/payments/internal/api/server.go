@@ -10,8 +10,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	apispec "ticketing/services/payments/api"
 	"ticketing/services/payments/internal/store"
+	"ticketing/shared/contract"
 	"ticketing/shared/fakepsp"
+	"ticketing/shared/httpx"
 )
 
 const (
@@ -30,9 +33,18 @@ func New(j *store.Journal, credential string) *Server {
 }
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
+		_, _ = w.Write(apispec.Spec)
+	})
 	r.Post("/internal/facts", s.fact)
 	r.Post("/internal/charges", s.charge)
-	return r
+	validated, err := contract.RequestValidator(apispec.Spec, r)
+	if err != nil {
+		panic(err)
+	}
+	return validated
 }
 func write(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -44,10 +56,7 @@ func (s *Server) authorized(r *http.Request) bool {
 	return s.credential != "" && r.Header.Get("X-Internal-Token") == s.credential
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
-	if d.Decode(v) != nil {
+	if httpx.DecodeJSON(w, r, v, 1<<20) != nil {
 		write(w, 400, map[string]string{"error": "invalid body"})
 		return false
 	}

@@ -8,13 +8,16 @@ It is the most common means of contribution and collaboration among developers. 
 
 ---
 
-## PRs as the Unit of Continuous Delivery
+## PRs as the Unit of Integration
 
-A pull request is the atomic unit of change in this workflow: it is what gets reviewed, merged into `main`, and (in a [continuously delivered](continuous-delivery.md) project) automatically deployed to `dev`. Because `main` is always considered releasable, every PR must leave the codebase in a deployable state.
+A pull request is the atomic unit of reviewed change in this workflow. It is validated by CI and
+merged into `main`; this repository does not automatically deploy it to an environment. Every PR
+must leave the local Compose system and gate in a working state.
 
 Two practical consequences:
 
-- **PR quality directly affects production stability.** A sloppy PR doesn't just irritate the reviewer — it lands on `main` and may auto-deploy.
+- **PR quality directly affects the next milestone.** A weak change becomes the baseline for later
+  AI-assisted work even though it is not automatically deployed.
 - **Small, focused PRs are easier to roll back.** If a problem surfaces post-merge, the smaller the change, the cheaper the recovery.
 
 ---
@@ -23,7 +26,9 @@ Two practical consequences:
 
 ### Complete Description
 
-Use the [PR template](../../.github/pull_request_template.md) to standardize the required information. At minimum, every PR should have a clear description and be linked to a ticket for traceability.
+At minimum, every PR should identify its TKT ticket, explain motivation and risk, summarize the
+change, list validation evidence, and call out documentation or ADR impact. No repository PR
+template is currently configured.
 
 ### Small, Focused, and Precise
 
@@ -40,7 +45,8 @@ Use the [PR template](../../.github/pull_request_template.md) to standardize the
 ### Clear Commits
 
 - Use meaningful and consistent commit messages.
-- Follow the [Conventional Commits](https://conventionalcommits.org) convention (enforced by commitizen in this project).
+- Follow the repository's [commit convention](commits-and-branching.md#commit-messages); it is
+  review-enforced, not hook-enforced.
 
 ### Tests & Validation
 
@@ -51,7 +57,7 @@ Use the [PR template](../../.github/pull_request_template.md) to standardize the
 
 - Sync your branch with `main` and resolve any conflicts — [rebase before opening the PR](commits-and-branching.md#commit-hygiene) so they're caught locally, not at review time.
 - Validate that your implementation follows the team's coding best practices.
-- When you `git push`, [pre-push hooks](continuous-delivery.md#pre-commit--ci-alignment) will validate the branch name and run final checks — fix any failures locally rather than disabling the hook.
+- Run `make check` before handoff; there is no project pre-push hook.
 
 ---
 
@@ -122,7 +128,8 @@ LLMs (Claude Code, Copilot, Cursor) can catch obvious issues — typos, dead cod
 ### Design
 
 - Do the interactions between different parts of the code make sense?
-- Could this code impact other external elements (e.g., breaking changes)? Breaking changes — commits with `!` or a `BREAKING CHANGE:` footer — drive a MAJOR semver bump on the next [release](continuous-delivery.md#releases). Ensure the breaking-change description is clear; it lands in `CHANGELOG.md`.
+- Could this code break a public contract, durable event, migration, or existing client? Record and
+  review compatibility explicitly; there is no automated SemVer release process.
 - Is this change in the right repository or the right part of the repository?
 - Does it integrate well with the rest of the system?
 
@@ -160,7 +167,7 @@ LLMs (Claude Code, Copilot, Cursor) can catch obvious issues — typos, dead cod
 
 ### Style
 
-- Does the code follow the team's style guide (e.g., Ruff rules in this project)?
+- Does the code pass the repository's Go/TypeScript lint rules and follow nearby conventions?
 
 ---
 

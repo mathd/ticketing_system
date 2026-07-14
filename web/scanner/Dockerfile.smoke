@@ -1,6 +1,10 @@
 # Smoke-only packaging image: serves the host-built dist (make build-ts)
 # instead of running pnpm install + vite inside Docker. The hermetic build
 # stays in web/scanner/Dockerfile. Build context = repo root.
-FROM nginx:alpine
+FROM nginx:1.30.3-alpine3.23@sha256:0d3b80406a13a767339fbe2f41406d6c7da727ab89cf8fae399e81f780f814d1
+RUN sed -i -e 's!^pid.*!pid /tmp/nginx.pid;!' -e 's!/var/cache/nginx!/tmp/nginx!g' /etc/nginx/nginx.conf \
+    && mkdir -p /tmp/nginx \
+    && chown nginx:nginx /tmp/nginx
 COPY web/scanner/nginx.conf /etc/nginx/conf.d/default.conf
 COPY web/scanner/dist /usr/share/nginx/html/scanner
+USER nginx

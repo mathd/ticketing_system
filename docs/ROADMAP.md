@@ -1,14 +1,16 @@
 # Roadmap
 
-Upcoming milestones. Update this when scope changes, not after the fact.
+Milestone state and upcoming capability work. Update this when scope changes.
 
-## In progress
+## Completed
 
 - **M1 — Walking skeleton** (TKT-1, US-001…US-006): five services + gateway + storefront + scanner up on Compose; one GA ticket travels create-event → contended reservation → fake-PSP checkout (append-only journal) → QR delivery → gate scan. See [PRD v1](./product/prd-v1.md).
 
 ## Next
 
-- Prioritize capability epics from the board Backlog (TKT-2…TKT-24) — owner decides order at Gate 1. Early candidates per dependency weight: inventory & reservation core (TKT-4), pricing & rules (TKT-5), read-path caching & hot-event serving (TKT-31).
+- **M2 — Capability expansion:** prioritize one capability epic from the board Backlog at Gate 1;
+  the owner decides the order. Early candidates by dependency weight are inventory and reservation
+  core (TKT-4), pricing and rules (TKT-5), and read-path caching/hot-event serving (TKT-31).
 
 ## Later
 

@@ -10,7 +10,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-smoke}"
 export GATEWAY_PORT=18080 POSTGRES_PORT=15432 NATS_PORT=14222 \
-       GRAFANA_PORT=13000 PROM_PORT=19090 OTLP_PORT=14318
+       GRAFANA_PORT=13000 PROM_PORT=19090 OTLP_PORT=14318 \
+       ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s
 
 COMPOSE_FILES=(-f "$ROOT/compose.yaml")
 if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
@@ -31,6 +32,14 @@ if ! compose up -d --build --wait; then
   compose logs --tail 50
   exit 1
 fi
+
+cd "$ROOT/services/commerce"
+COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce" \
+go test -tags smoke -count=1 -run TestCompleteOrderReturnsOneCanonicalReferenceConcurrently ./internal/store
+
+cd "$ROOT/services/access"
+ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
+go test -tags smoke -count=1 -run TestRedeemedLifecycleMigrationPreservesHistory ./internal/store
 
 cd "$ROOT/smoke"
 SMOKE_GATEWAY_URL=http://localhost:18080 \

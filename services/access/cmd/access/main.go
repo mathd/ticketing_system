@@ -1,5 +1,6 @@
-// Service skeleton (US-001). Owns: ticket issuance // Service skeleton (US-001). Owns: organizers/tenants, venues, seat maps, delivery, scanning/redemption, pass // Service skeleton (US-001). Owns: organizers/tenants, venues, seat maps, wristband validation
-// (ADR-002). No domain routes yet — those arrive with their stories.
+// Access service. Owns ticket issuance, delivery projection, signed credentials,
+// scanning/redemption, and admission history (ADR-002). M1 implements order-event
+// consumption, guest ticket links, QR issuance, and atomic single-use redemption.
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"ticketing/services/access/internal/ticket"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
+	"ticketing/shared/runtimecfg"
 )
 
 const serviceName = "access"
@@ -59,6 +61,14 @@ func port() string {
 }
 
 func run() error {
+	httpConfig, err := runtimecfg.HTTPFromEnv()
+	if err != nil {
+		return fmt.Errorf("http configuration: %w", err)
+	}
+	dbConfig, err := runtimecfg.DatabaseFromEnv()
+	if err != nil {
+		return fmt.Errorf("database configuration: %w", err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -77,6 +87,7 @@ func run() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	dbConfig.Apply(db)
 	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer mcancel()
 	if err := accessstore.Migrate(mctx, db); err != nil {
@@ -106,7 +117,11 @@ func run() error {
 		return err
 	}
 	st := accessstore.New(db)
-	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log)
+	consumerOptions, err := consumer.ParseOptions(os.Getenv("ACCESS_EVENT_RETRY_BACKOFF"))
+	if err != nil {
+		return err
+	}
+	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log, consumerOptions)
 	consumerErr := make(chan error, 1)
 	go func() { consumerErr <- cons.Run(ctx) }()
 
@@ -139,10 +154,10 @@ func run() error {
 	r.Mount("/", accessapi.New(st, verifier).Router())
 
 	srv := &http.Server{
-		Addr:              ":" + port(),
-		Handler:           obs.Middleware(serviceName, obs.RequestLogger(log, r)),
-		ReadHeaderTimeout: 5 * time.Second,
+		Addr:    ":" + port(),
+		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, r)),
 	}
+	httpConfig.Apply(srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

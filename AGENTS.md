@@ -26,7 +26,7 @@ experiment stays valid.
 
 - **The stack is decided and scaffolded** (TKT-25 / PR #1, 2026-07-12): five Go services
   (catalog, inventory, commerce, payments, access) behind a thin Go gateway, TypeScript + React
-  frontends (storefront, scanner shell), PostgreSQL 17 with one database per service, NATS
+  frontends (storefront, scanner shell), PostgreSQL 18.4 with one database per service, NATS
   JetStream as the event bus, all under a single `docker compose up`. Money is integer minor
   units + ISO currency code — floats are banned on money paths. See ADR-001/002/007 and
   `docs/architecture.md` for layout and service ownership. Don't propose a new stack; extend

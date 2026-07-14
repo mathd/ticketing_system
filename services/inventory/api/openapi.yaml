@@ -1,44 +1,56 @@
-openapi: 3.1.0
-info: {title: Inventory API, version: 0.1.0}
+openapi: 3.0.3
+info: {title: Inventory API, version: 1.0.0}
 paths:
   /holds:
     post:
+      operationId: createHold
       summary: Atomically hold dated-slot capacity
-      parameters:
-        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/HoldCreate'}}}}
       responses:
-        '201': {description: Created}
-        '200': {description: Idempotent replay}
-        '400': {description: Invalid input}
-        '404': {description: Slot not provisioned}
-        '409': {description: Insufficient capacity or idempotency conflict}
-  /holds/{holdId}/confirm:
+        '200': {$ref: '#/components/responses/Hold'}
+        '201': {$ref: '#/components/responses/Hold'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /holds/{id}/confirm:
     post:
-      summary: Confirm a live hold idempotently
-      parameters: [{$ref: '#/components/parameters/HoldId'}]
-      responses: {'200': {description: Confirmed}, '404': {description: Not found}, '409': {description: Expired or conflicting terminal state}}
-  /holds/{holdId}/finalize:
+      operationId: confirmHold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
+  /holds/{id}/finalize:
     post:
-      summary: Suspend expiry while an authorized checkout finalizes
-      parameters: [{$ref: '#/components/parameters/HoldId'}]
-      responses: {'200': {description: Finalizing}, '404': {description: Not found}, '409': {description: Expired or conflicting terminal state}}
-  /holds/{holdId}/release:
+      operationId: finalizeHold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
+  /holds/{id}/release:
     post:
-      summary: Release a live hold idempotently
-      parameters: [{$ref: '#/components/parameters/HoldId'}]
-      responses: {'200': {description: Released}, '404': {description: Not found}, '409': {description: Conflicting terminal state}}
-  /slots/{slotId}/availability:
+      operationId: releaseHold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
+  /slots/{id}/availability:
     get:
-      summary: Public seconds-tier availability
+      operationId: getAvailability
       parameters:
-        - {name: slotId, in: path, required: true, schema: {type: string, format: uuid}}
-        - {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
-      responses: {'200': {description: Availability}, '404': {description: Not provisioned}}
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/OrganizerId'}
+      responses:
+        '200': {description: Availability, content: {application/json: {schema: {$ref: '#/components/schemas/Availability'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
 components:
   parameters:
-    HoldId: {name: holdId, in: path, required: true, schema: {type: string, format: uuid}}
+    Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    OrganizerId: {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+  responses:
+    Hold: {description: Hold state, content: {application/json: {schema: {$ref: '#/components/schemas/Hold'}}}}
+    Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
+    Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
     HoldCreate:
       type: object
       additionalProperties: false
@@ -50,3 +62,28 @@ components:
         ticket_type_id: {type: string, format: uuid}
         unit_amount: {type: integer, format: int64, minimum: 0}
         currency: {type: string, pattern: '^[A-Z]{3}$'}
+    Hold:
+      type: object
+      additionalProperties: false
+      required: [hold_id, organizer_id, slot_id, quantity, status, expires_at, server_time]
+      properties:
+        hold_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        ticket_type_id: {type: string, format: uuid}
+        unit_amount: {type: integer, format: int64}
+        currency: {type: string}
+        status: {type: string}
+        expires_at: {type: string, format: date-time}
+        server_time: {type: string, format: date-time}
+    Availability:
+      type: object
+      additionalProperties: false
+      required: [slot_id, capacity, held, confirmed, available]
+      properties:
+        slot_id: {type: string, format: uuid}
+        capacity: {type: integer}
+        held: {type: integer}
+        confirmed: {type: integer}
+        available: {type: integer}

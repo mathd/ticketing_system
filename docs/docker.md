@@ -4,13 +4,13 @@ One stack file at the repo root (`compose.yaml`, project `ticketing`):
 
 | Service | Image / build | Notes |
 |---|---|---|
-| postgres | `postgres:18.4` | init script creates 5 DBs + roles, CONNECT revoked cross-service (ADR-007) |
-| nats | `nats:2.14-alpine` `-js -sd /data` | file-backed JetStream on a named volume; monitoring on 8222 |
-| nats-init | `natsio/nats-box` (one-shot) | provisions the `PLATFORM` stream at stack init (ADR-007) |
-| lgtm | `grafana/otel-lgtm` | collector + Tempo + Loki + Prometheus + Grafana (:3000) |
+| postgres | `postgres:18.4-bookworm` (digest-pinned) | init script creates 5 DBs + roles, CONNECT revoked cross-service (ADR-007) |
+| nats | `nats:2.14.3-alpine3.22` (digest-pinned), `-js -sd /data` | file-backed JetStream on a named volume; monitoring on 8222 |
+| nats-init | `natsio/nats-box:0.19.7` (digest-pinned, one-shot) | provisions the `PLATFORM` stream at stack init (ADR-007) |
+| lgtm | `grafana/otel-lgtm:0.29.0` (digest-pinned) | collector + Tempo + Loki + Prometheus + Grafana (:3000) |
 | catalog…access | `build/go.Dockerfile` (arg `PKG`) | distroless static; healthcheck = `/app healthcheck` subcommand (no shell in image) |
 | gateway | `build/go.Dockerfile` | only published app port (:8080) |
-| storefront | `web/storefront/Dockerfile` | nginx + static HTML, `/healthz` |
+| storefront | `web/storefront/Dockerfile` | Astro 7 SSR standalone build on Node, `/healthz` |
 | scanner | `web/scanner/Dockerfile` | pnpm build stage → nginx under `/scanner/`, `/healthz` |
 
 Published host ports are env-overridable (`GATEWAY_PORT`, `POSTGRES_PORT`, `NATS_PORT`,

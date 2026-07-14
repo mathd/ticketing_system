@@ -31,11 +31,24 @@ func TestSignedPayloadRejectsTamperingAndUnknownKey(t *testing.T) {
 	if _, err := Verify(token, map[string]ed25519.PublicKey{}); err == nil {
 		t.Fatal("unknown key accepted")
 	}
-	parts := strings.Split(token, ".")
-	parts[1] = "A" + parts[1][1:]
-	if _, err := Verify(strings.Join(parts, "."), map[string]ed25519.PublicKey{"test-v1": private.Public().(ed25519.PublicKey)}); err == nil {
+	if _, err := Verify(corruptSignature(t, token), map[string]ed25519.PublicKey{"test-v1": private.Public().(ed25519.PublicKey)}); err == nil {
 		t.Fatal("tampered token accepted")
 	}
+}
+
+func corruptSignature(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(signature) == 0 {
+		t.Fatalf("decode signature: %v", err)
+	}
+	signature[0] ^= 1
+	parts[2] = base64.RawURLEncoding.EncodeToString(signature)
+	return strings.Join(parts, ".")
 }
 
 func TestVerifierRequiresDedicatedActiveKey(t *testing.T) {

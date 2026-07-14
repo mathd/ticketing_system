@@ -91,8 +91,8 @@ func (p *Postgres) Issue(ctx context.Context, in IssueInput) error {
 	return tx.Commit()
 }
 
-func (p *Postgres) PendingDeliveries(ctx context.Context) ([]Ticket, error) {
-	rows, err := p.db.QueryContext(ctx, `SELECT t.id,t.order_id,t.guest_order_ref,t.organizer_id,t.buyer_id,t.slot_id,t.ticket_type_id,t.qr_payload,t.issued_at FROM tickets t WHERE NOT EXISTS (SELECT 1 FROM lifecycle_events l WHERE l.ticket_id=t.id AND l.event_type='delivered') ORDER BY t.issued_at`)
+func (p *Postgres) PendingDeliveries(ctx context.Context, orderID uuid.UUID) ([]Ticket, error) {
+	rows, err := p.db.QueryContext(ctx, `SELECT t.id,t.order_id,t.guest_order_ref,t.organizer_id,t.buyer_id,t.slot_id,t.ticket_type_id,t.qr_payload,t.issued_at FROM tickets t WHERE t.order_id=$1 AND NOT EXISTS (SELECT 1 FROM lifecycle_events l WHERE l.ticket_id=t.id AND l.event_type='delivered') ORDER BY t.issued_at`, orderID)
 	if err != nil {
 		return nil, err
 	}

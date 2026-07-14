@@ -4,15 +4,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	qrcode "github.com/skip2/go-qrcode"
 
+	apispec "ticketing/services/access/api"
 	"ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
+	"ticketing/shared/contract"
+	"ticketing/shared/httpx"
 )
 
 type Server struct {
@@ -25,10 +27,21 @@ func New(st *store.Postgres, verifier *ticket.Verifier) *Server {
 }
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
+		_, _ = w.Write(apispec.Spec)
+	})
 	r.Get("/orders/{ref}/tickets", s.tickets)
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
-	return r
+	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, func(w http.ResponseWriter, _ string, _ int) {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+	})
+	if err != nil {
+		panic(err)
+	}
+	return validated
 }
 func write(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -103,19 +116,10 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner unavailable"})
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
-	defer func() { _ = r.Body.Close() }()
 	var input struct {
 		QRPayload string `json:"qr_payload"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || input.QRPayload == "" {
-		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
-		return
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if err := httpx.DecodeJSON(w, r, &input, 8<<10); err != nil || input.QRPayload == "" {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 		return
 	}

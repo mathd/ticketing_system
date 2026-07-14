@@ -19,8 +19,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	apispec "ticketing/services/commerce/api"
 	commerceevents "ticketing/services/commerce/internal/events"
+	commercestore "ticketing/services/commerce/internal/store"
+	"ticketing/shared/contract"
 	"ticketing/shared/fakepsp"
+	"ticketing/shared/httpx"
 )
 
 var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
@@ -41,11 +45,20 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 }
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
+		_, _ = w.Write(apispec.Spec)
+	})
 	r.Post("/reservations", s.reserve)
 	r.Post("/orders", s.checkout)
 	r.Get("/orders/{id}", s.getOrder)
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
-	return r
+	validated, err := contract.RequestValidator(apispec.Spec, r)
+	if err != nil {
+		panic(err)
+	}
+	return validated
 }
 func write(w http.ResponseWriter, c int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -54,10 +67,7 @@ func write(w http.ResponseWriter, c int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
-	if d.Decode(v) != nil {
+	if httpx.DecodeJSON(w, r, v, 1<<20) != nil {
 		write(w, 400, map[string]string{"error": "invalid body"})
 		return false
 	}
@@ -427,16 +437,9 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "mint guest order reference"})
 		return
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	guestRef, err = commercestore.CompleteOrder(r.Context(), s.db, x.ID, order, guestRef)
 	if err != nil {
-		write(w, 500, map[string]string{"error": "persist completion"})
-		return
-	}
-	if _, err = tx.ExecContext(r.Context(), `UPDATE reservations SET status='completed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, x.ID); err == nil {
-		_, err = tx.ExecContext(r.Context(), `UPDATE orders SET status='completed',guest_order_ref=$2,updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order, guestRef)
-	}
-	if err != nil || tx.Commit() != nil {
-		_ = tx.Rollback()
+		slog.Default().ErrorContext(r.Context(), "persist order completion", "err", err)
 		write(w, 500, map[string]string{"error": "persist completion"})
 		return
 	}

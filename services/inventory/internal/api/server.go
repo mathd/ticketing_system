@@ -11,6 +11,8 @@ import (
 
 	apispec "ticketing/services/inventory/api"
 	"ticketing/services/inventory/internal/store"
+	"ticketing/shared/contract"
+	"ticketing/shared/httpx"
 )
 
 type Server struct {
@@ -34,7 +36,11 @@ func (s *Server) Router() http.Handler {
 	r.Post("/holds/{id}/finalize", s.transition("finalizing"))
 	r.Post("/holds/{id}/release", s.transition("released"))
 	r.Get("/slots/{id}/availability", s.availability)
-	return r
+	validated, err := contract.RequestValidator(apispec.Spec, r)
+	if err != nil {
+		panic(err)
+	}
+	return validated
 }
 func write(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -56,7 +62,6 @@ func problem(w http.ResponseWriter, err error) {
 }
 func parseUUID(v string) (uuid.UUID, error) { return uuid.Parse(strings.TrimSpace(v)) }
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var in struct {
 		OrganizerID  uuid.UUID `json:"organizer_id"`
 		SlotID       uuid.UUID `json:"slot_id"`
@@ -65,7 +70,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		UnitAmount   int64     `json:"unit_amount"`
 		Currency     string    `json:"currency"`
 	}
-	err := json.NewDecoder(r.Body).Decode(&in)
+	err := httpx.DecodeJSON(w, r, &in, 1<<20)
 	legacy := in.TicketTypeID == uuid.Nil && in.Currency == ""
 	if err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 || in.UnitAmount < 0 || (!legacy && (in.TicketTypeID == uuid.Nil || in.Currency != "EUR")) {
 		write(w, 400, map[string]string{"error": "invalid hold request"})

@@ -14,6 +14,14 @@ x-go-service: &go-service
     OTEL_METRIC_EXPORT_INTERVAL: "5000"
     OTEL_BSP_SCHEDULE_DELAY: "1000"
     OTEL_BLRP_SCHEDULE_DELAY: "1000"
+    HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+    HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
+    HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
+    HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+    DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
+    DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-10}
+    DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
+    DB_CONN_MAX_IDLE_TIME: ${DB_CONN_MAX_IDLE_TIME:-5m}
   depends_on:
     postgres:
       condition: service_healthy
@@ -30,7 +38,7 @@ x-go-service: &go-service
 
 services:
   postgres:
-    image: postgres:18.4
+    image: postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: postgres
@@ -46,7 +54,7 @@ services:
       retries: 10
 
   nats:
-    image: nats:2.14-alpine
+    image: nats:2.14.3-alpine3.22@sha256:c11af972c99ae542de8925e6a7d9c533aa1eb039660420d2074beed6089b3bf0
     restart: unless-stopped
     # file-backed JetStream store on a named volume: streams survive
     # container recreation (ADR-007 durability)
@@ -64,7 +72,7 @@ services:
   # One-shot: provisions the PLATFORM stream (ADR-007) at stack init.
   # Idempotent; the smoke suite asserts the stream EXISTS, it no longer creates it.
   nats-init:
-    image: natsio/nats-box:latest
+    image: natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c
     depends_on:
       nats:
         condition: service_healthy
@@ -77,7 +85,7 @@ services:
         --subjects "platform.>" --storage file --retention limits --defaults
 
   lgtm:
-    image: grafana/otel-lgtm
+    image: grafana/otel-lgtm:0.29.0@sha256:6e14b923e0130b8b294ca5bcc7c94d54e899d150817e6c3ed82d9b665afe5499
     restart: unless-stopped
     ports:
       - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"   # Grafana UI
@@ -145,6 +153,7 @@ services:
       # Comma-separated access-qr/<kid>=raw-base64-public-key entries. This
       # development public key corresponds only to the all-zero local seed.
       ACCESS_QR_PUBLIC_KEYS: ${ACCESS_QR_PUBLIC_KEYS:-access-qr/local-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik}
+      ACCESS_EVENT_RETRY_BACKOFF: ${ACCESS_EVENT_RETRY_BACKOFF:-}
 
   storefront:
     # Astro 7 SSR shell (ADR-006). Root build context: the pnpm workspace
@@ -184,6 +193,10 @@ services:
       ACCESS_URL: http://access:8080
       STOREFRONT_URL: http://storefront:8080
       SCANNER_URL: http://scanner:8080
+      HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+      HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
+      HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
+      HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
     depends_on:
       catalog: { condition: service_healthy }
       inventory: { condition: service_healthy }
