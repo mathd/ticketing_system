@@ -1,0 +1,41 @@
+{
+  "key": "TKT-54",
+  "type": "Task",
+  "status": "Backlog",
+  "summary": "Record the slot-lifecycle transition idiom (FOR UPDATE) in AGENTS.md",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "classification": "simple",
+  "description": "**As** the team, **I want** the catalog slot-lifecycle **transition idiom** recorded in `AGENTS.md`, so US-009/US-011 (and every later slot transition) don't re-introduce the check-then-act race that AI-review caught in TKT-49.\n\n**Priority:** P3\n**Depends on:** — (documentation; TKT-49 is Done and is the reference implementation)\n**Type:** Task · `risk:low` — a docs-only edit to `AGENTS.md`, no code.\n\n**Background:** In TKT-49, the first archive implementation did a conditional `UPDATE ... WHERE status='published'` and then re-read status in a *separate* statement to decide whether to emit the domain event. A concurrent `draft→publish` could commit in between, producing a phantom `performance.archived` event on a still-published row (with a nil `archived_at` → mismatched deterministic id). Codex adversarial review flagged it [BLOCKING]. The fix: decide **and** transition inside one transaction with the row locked `SELECT ... FOR UPDATE` (the same idiom as `services/access/internal/store/postgres.go` redeem). This is a promotable **technical learning** (metrics comment on TKT-49, learning #1) routed through a gated ticket per the '3 houses' rule rather than committed directly to the shared `AGENTS.md`.\n\n**Acceptance Criteria:**\n- [ ] `AGENTS.md` gains a short note (a line or two, in the working-agreement/conventions area) stating: any catalog slot-lifecycle transition that both mutates state AND derives a to-emit decision must decide under `SELECT ... FOR UPDATE` in one transaction; a conditional `UPDATE ... WHERE status=x` followed by a separate re-read is racy and can emit a phantom domain event.\n- [ ] The note cites the reference implementations: `catalog ArchivePerformance` and `access` redeem.\n- [ ] No code change; `make check` still green (docs-only).\n\nQuality gates: `make check` green (docs-only, so trivially); no contract/UI surface.",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-005",
+        "date": "2026-07-12",
+        "rule": "Every admission-granting offer (performance, festival day, park operating day) is a dated slot in one inventory machinery; passes are entitlements to claim slot entries; lodging/day resources reserve through the same contention-safe core; slot attributes carry domain specifics — the claim primitive does not fork."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-49 metrics comment — learning #1 (the promotable transition idiom); reference impl catalog ArchivePerformance + access redeem",
+        "link": "https://github.com/mathd/ticketing_system/pull/24"
+      },
+      {
+        "summary": "PRD v1 — TKT-2 catalog stories (US-009/US-011 will add more slot transitions)",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "capturedAt": "2026-07-14"
+  },
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated 2026-07-14 from the TKT-49 retro (learning #1). Promotes the FOR-UPDATE slot-transition idiom to the shared `AGENTS.md` via a gated ticket rather than a direct commit (3-houses rule: technical standard → shared registry through a PR). risk:low — docs-only. Reference impls: catalog `ArchivePerformance`, access redeem."
+    }
+  ]
+}
