@@ -14,6 +14,14 @@ x-go-service: &go-service
     OTEL_METRIC_EXPORT_INTERVAL: "5000"
     OTEL_BSP_SCHEDULE_DELAY: "1000"
     OTEL_BLRP_SCHEDULE_DELAY: "1000"
+    HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+    HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
+    HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
+    HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+    DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
+    DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-10}
+    DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
+    DB_CONN_MAX_IDLE_TIME: ${DB_CONN_MAX_IDLE_TIME:-5m}
   depends_on:
     postgres:
       condition: service_healthy
@@ -185,6 +193,10 @@ services:
       ACCESS_URL: http://access:8080
       STOREFRONT_URL: http://storefront:8080
       SCANNER_URL: http://scanner:8080
+      HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+      HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
+      HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
+      HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
     depends_on:
       catalog: { condition: service_healthy }
       inventory: { condition: service_healthy }

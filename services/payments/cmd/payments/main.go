@@ -23,6 +23,7 @@ import (
 	paymentstore "ticketing/services/payments/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
+	"ticketing/shared/runtimecfg"
 )
 
 const serviceName = "payments"
@@ -141,6 +142,14 @@ func port() string {
 }
 
 func run() error {
+	httpConfig, err := runtimecfg.HTTPFromEnv()
+	if err != nil {
+		return fmt.Errorf("http configuration: %w", err)
+	}
+	dbConfig, err := runtimecfg.DatabaseFromEnv()
+	if err != nil {
+		return fmt.Errorf("database configuration: %w", err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -159,6 +168,7 @@ func run() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	dbConfig.Apply(db)
 	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer mcancel()
 	if err := paymentstore.Migrate(mctx, db); err != nil {
@@ -199,10 +209,10 @@ func run() error {
 	r.Mount("/", api.New(paymentstore.New(db, keyID, key), internalToken).Router())
 
 	srv := &http.Server{
-		Addr:              ":" + port(),
-		Handler:           obs.Middleware(serviceName, obs.RequestLogger(log, r)),
-		ReadHeaderTimeout: 5 * time.Second,
+		Addr:    ":" + port(),
+		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, r)),
 	}
+	httpConfig.Apply(srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
