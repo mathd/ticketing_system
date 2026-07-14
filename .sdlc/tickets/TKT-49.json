@@ -4,7 +4,9 @@
   "parent": "TKT-2",
   "summary": "US-007: Archived lifecycle state with domain events",
   "classification": "simple",
-  "labels": [],
+  "labels": [
+    "agent:planning"
+  ],
   "description": "**As** an organizer, **I want** to archive a published performance so it stops appearing on the storefront while its history is preserved.\n\n**Priority:** P1\n**Depends on:** — (extends the TKT-26 publish machinery)\n\n**Acceptance Criteria:**\n- [ ] Catalog exposes an idempotent archive transition (`published → archived`); archiving a draft is a 409 (only published offers archive); archiving an already-archived performance returns 200 without re-emitting — mirrors the publish idempotency precedent\n- [ ] Archiving emits a versioned `platform.catalog.performance.archived` domain event with a deterministic envelope id (retried/raced emissions de-duplicate) so inventory can stop offering the slot; uses the existing poor-man's-outbox marker\n- [ ] Archived performances disappear from the aggregated public list/detail reads; an event whose every performance is archived drops off the public list; TTL tiers unchanged (ADR-004)\n- [ ] The lifecycle is a single explicit state machine (`draft | published | archived`) with rejected transitions returning 409 + a reason; unit + contract tests cover every edge\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
   "context": {
     "binding": [
@@ -41,9 +43,15 @@
     "capturedAt": "2026-07-14"
   },
   "links": [],
-  "comments": [],
-  "status": "Ready",
-  "assignee": null,
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed TKT-49 (US-007, archived lifecycle) — the owner prioritized it into Ready. Selection: of the two currently claimable TKT-2 children (TKT-49, TKT-50), TKT-49 was the one moved to Ready. It has **zero open blockers** and is a prefactor that **unblocks TKT-51 and TKT-52** (both are blocked-by it), so landing it first opens the most of the epic.\n\nBranch `TKT-49-archived-lifecycle` cut off `origin/main` (aabf080, up-to-date base — local main was 1 behind). The TKT-2 PRD decomposition (US-007…US-011) is committed on the branch as a docs prep commit so it lands with the epic's first child.\n\nPlanning will preserve the existing idempotent-publish precedent: the archive transition mirrors publish (idempotent, deterministic-envelope-id emission via the poor-man's-outbox marker), extends the `draft|published` status into an explicit `draft|published|archived` state machine with 409+reason on illegal transitions, and filters archived slots out of the aggregated public reads without changing ADR-004 TTL tiers."
+    }
+  ],
+  "status": "Planning",
+  "assignee": "agent",
   "pr": null,
   "readiness": {
     "objective": {
