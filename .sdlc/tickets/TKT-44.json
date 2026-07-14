@@ -2,10 +2,14 @@
   "key": "TKT-44",
   "type": "Task",
   "summary": "Test Access lifecycle migration upgrades",
-  "status": "Backlog",
+  "status": "Done",
   "labels": [],
-  "assignee": null,
-  "pr": null,
+  "assignee": "Codex",
+  "pr": {
+    "number": 10,
+    "url": "https://github.com/mathd/ticketing_system/pull/10",
+    "state": "merged"
+  },
   "parent": null,
   "classification": "simple",
   "description": "Follow-up from TKT-30 adversarial review. Add an upgrade-path integration test that starts from the pre-redeemed Access schema, applies the `redeemed` lifecycle migration, and proves issued/delivered history remains readable and redemption still works. The TKT-30 down migration intentionally fails rather than delete immutable redeemed history; this task tests the supported forward-only path.",
@@ -30,7 +34,17 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated during TKT-30 AI review as an incidental coverage follow-up. It is deliberately outside the gate-scan feature PR; no production defect is deferred."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout metrics\n\n| stage | duration |\n|---|---:|\n| Backlog | n/a — incorporated into TKT-46 |\n\nhuman-wait total: n/a\ndiff: included in TKT-46 / PR #10 (+3,255/−1,078, 91 files)\n\nlearnings:\n- Forward-only lifecycle migrations need an isolated pre-migration fixture and post-upgrade behavior proof.\n\nretro:\n- Implemented and verified as R4 of TKT-46 to avoid duplicate work; PR #10 merged as `06b00453`."
     }
   ],
-  "links": []
+  "links": [
+    {
+      "type": "incorporated-by",
+      "key": "TKT-46"
+    }
+  ]
 }
