@@ -1,7 +1,7 @@
 {
   "key": "TKT-54",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "summary": "Record the slot-lifecycle transition idiom (FOR UPDATE) in AGENTS.md",
   "labels": [
     "risk:low"
