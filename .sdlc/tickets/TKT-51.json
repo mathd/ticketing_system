@@ -53,5 +53,35 @@
   "comments": [],
   "status": "Backlog",
   "assignee": null,
-  "pr": null
+  "pr": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Generalize the catalog's single 'performance' slot into one typed dated-slot primitive (performance | festival_day | operating_day) carrying the US-008 attributes, so passes/inventory compose against one shape (ADR-005)."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: migration generalizing performances into the US-008 slot model (kind + operating hours / re-entry / closure attributes) with existing performances migrated to kind 'performance' at no behavioural change; API to create/set each kind; uniform publish/archive (US-007) across kinds; publication event carries kind+capacity; closure/mid-day-capacity transitions representable + emitting events. OUT: series/festival grouping (US-010/011), the inventory claim-path changes for the new attributes (TKT-4), full festival/park verticals (TKT-14/13)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Depends on the US-008 spike output for the exact attribute set + state machine; remaining choices (migration strategy for live performances, backward-compatible API shape, event schema bump) are engineering, settled in Planning once the spike lands."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked-by TKT-50 (schema decision) and TKT-49 (lifecycle to carry onto every kind); both identified and linked. Not claimable until both are Done — the board's open-blocker guard enforces this at Ready→Planning."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend services/catalog store + schema per the spike's decided shape (kind column + attribute columns/jsonb); keep the M1 flow green (US-003/004/005/006 tests unchanged); regenerate the OpenAPI contract; extend the publication envelope (schema bump) with kind+capacity. Contract-first, ADR-009 drift check."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Vertical slice: create a slot of a non-performance kind via API → publish → it flows through the same lifecycle + emits the kind-carrying event, provable alongside the unchanged M1 performance path."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS = the 4 ACs + quality gates; the M1 regression (existing performance flow) staying green is the load-bearing acceptance signal."
+    }
+  }
 }
