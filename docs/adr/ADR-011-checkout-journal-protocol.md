@@ -54,5 +54,5 @@ status/compensation are required before replacing the fake PSP.
 - Finalizing claims can consume capacity while a PSP is unavailable; recovery and operational
   visibility are required before a real PSP launch.
 - One hot organizer journal serializes appends. Sharding is a later compatible optimization.
-- PostgreSQL 18.4 is the actual scaffold used by Compose; the working-agreement reference to 17 is
-  documentation drift, not authority to change the stack in this story.
+- PostgreSQL 18.4 is the scaffold used by Compose and the version accepted by ADR-007. TKT-46
+  aligned the working agreement with that existing authority.
