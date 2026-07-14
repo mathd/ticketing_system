@@ -136,6 +136,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusBadRequest, Error{Error: "entities must belong to the same organizer"})
 	case errors.Is(err, store.ErrNotSellable):
 		writeJSON(w, http.StatusConflict, Error{Error: "performance has no ticket type; create one before publishing"})
+	case errors.Is(err, store.ErrIllegalTransition):
+		writeJSON(w, http.StatusConflict, Error{Error: "illegal performance lifecycle transition"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})
@@ -240,7 +242,8 @@ func performanceToAPI(p store.Performance) Performance {
 	return Performance{
 		Id: p.ID, OrganizerId: p.OrganizerID, EventId: p.EventID, VenueId: p.VenueID,
 		StartsAt: p.StartsAt, Timezone: p.Timezone,
-		Status: PerformanceStatus(p.Status), PublishedAt: p.PublishedAt, CreatedAt: p.CreatedAt,
+		Status: PerformanceStatus(p.Status), PublishedAt: p.PublishedAt,
+		ArchivedAt: p.ArchivedAt, CreatedAt: p.CreatedAt,
 	}
 }
 
@@ -267,6 +270,45 @@ func (s *Server) PublishPerformance(w http.ResponseWriter, r *http.Request, perf
 			// Ack'd but unmarked: the next publish retry may re-emit — that
 			// is the at-least-once contract, consumers de-duplicate on id.
 			s.log.ErrorContext(r.Context(), "event emitted but not marked", "performance_id", p.ID, "err", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, performanceToAPI(p))
+}
+
+// ArchivePerformance is resource-idempotent and event-at-least-once. If the
+// publication marker is still null, publication is emitted and marked before
+// the archive event so the lifecycle cannot silently drop a domain event.
+func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
+	p, publishNeedsEmit, archiveNeedsEmit, err := s.store.ArchivePerformance(r.Context(), performanceId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	if publishNeedsEmit {
+		if err := s.pub.PerformancePublished(r.Context(), p); err != nil {
+			s.log.ErrorContext(r.Context(), "owed publication event emission failed", "performance_id", p.ID, "err", err)
+			writeJSON(w, http.StatusInternalServerError, Error{Error: "performance is archived but its publication event was not emitted; retry archive"})
+			return
+		}
+	}
+	if archiveNeedsEmit {
+		if err := s.pub.PerformanceArchived(r.Context(), p); err != nil {
+			s.log.ErrorContext(r.Context(), "archive event emission failed", "performance_id", p.ID, "err", err)
+			writeJSON(w, http.StatusInternalServerError, Error{Error: "performance is archived but the archive event was not emitted; retry archive"})
+			return
+		}
+	}
+	// Mark only after every owed event has been emitted. A failure between
+	// emissions therefore retries the already-emitted publication too; its
+	// deterministic id makes that safe at the stream.
+	if publishNeedsEmit {
+		if err := s.store.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
+			s.log.ErrorContext(r.Context(), "publication event emitted but not marked", "performance_id", p.ID, "err", err)
+		}
+	}
+	if archiveNeedsEmit {
+		if err := s.store.MarkPerformanceArchiveEmitted(r.Context(), p.ID); err != nil {
+			s.log.ErrorContext(r.Context(), "archive event emitted but not marked", "performance_id", p.ID, "err", err)
 		}
 	}
 	writeJSON(w, http.StatusOK, performanceToAPI(p))

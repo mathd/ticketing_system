@@ -16,6 +16,7 @@ import (
 
 // Defines values for PerformanceStatus.
 const (
+	Archived  PerformanceStatus = "archived"
 	Draft     PerformanceStatus = "draft"
 	Published PerformanceStatus = "published"
 )
@@ -23,6 +24,8 @@ const (
 // Valid indicates whether the value is a known member of the PerformanceStatus enum.
 func (e PerformanceStatus) Valid() bool {
 	switch e {
+	case Archived:
+		return true
 	case Draft:
 		return true
 	case Published:
@@ -71,6 +74,7 @@ type Money struct {
 
 // Performance defines model for Performance.
 type Performance struct {
+	ArchivedAt  *time.Time         `json:"archived_at,omitempty"`
 	CreatedAt   time.Time          `json:"created_at"`
 	EventId     openapi_types.UUID `json:"event_id"`
 	Id          openapi_types.UUID `json:"id"`
@@ -243,6 +247,9 @@ type ServerInterface interface {
 	// Create a dated performance (draft)
 	// (POST /performances)
 	CreatePerformance(w http.ResponseWriter, r *http.Request)
+	// Archive a published performance (idempotent)
+	// (POST /performances/{performanceId}/archive)
+	ArchivePerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
 	// Publish a performance (idempotent)
 	// (POST /performances/{performanceId}/publish)
 	PublishPerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
@@ -279,6 +286,12 @@ func (_ Unimplemented) GetOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 // Create a dated performance (draft)
 // (POST /performances)
 func (_ Unimplemented) CreatePerformance(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Archive a published performance (idempotent)
+// (POST /performances/{performanceId}/archive)
+func (_ Unimplemented) ArchivePerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -354,6 +367,32 @@ func (siw *ServerInterfaceWrapper) CreatePerformance(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreatePerformance(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ArchivePerformance operation middleware
+func (siw *ServerInterfaceWrapper) ArchivePerformance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "performanceId" -------------
+	var performanceId PerformanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "performanceId", chi.URLParam(r, "performanceId"), &performanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "performanceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ArchivePerformance(w, r, performanceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -613,6 +652,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/performances", wrapper.CreatePerformance)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/performances/{performanceId}/archive", wrapper.ArchivePerformance)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/performances/{performanceId}/publish", wrapper.PublishPerformance)

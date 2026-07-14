@@ -27,20 +27,22 @@ import (
 // fakeStore is an in-memory Store. It mirrors the referential/tenancy checks
 // the SQL enforces; the real queries are exercised by the smoke suite.
 type fakeStore struct {
-	venues       map[uuid.UUID]store.Venue
-	events       map[uuid.UUID]store.Event
-	performances map[uuid.UUID]store.Performance
-	ticketTypes  map[uuid.UUID]store.TicketType
-	emitted      map[uuid.UUID]bool // performance id -> event_emitted_at set
+	venues         map[uuid.UUID]store.Venue
+	events         map[uuid.UUID]store.Event
+	performances   map[uuid.UUID]store.Performance
+	ticketTypes    map[uuid.UUID]store.TicketType
+	emitted        map[uuid.UUID]bool // performance id -> event_emitted_at set
+	archiveEmitted map[uuid.UUID]bool
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		venues:       map[uuid.UUID]store.Venue{},
-		events:       map[uuid.UUID]store.Event{},
-		performances: map[uuid.UUID]store.Performance{},
-		ticketTypes:  map[uuid.UUID]store.TicketType{},
-		emitted:      map[uuid.UUID]bool{},
+		venues:         map[uuid.UUID]store.Venue{},
+		events:         map[uuid.UUID]store.Event{},
+		performances:   map[uuid.UUID]store.Performance{},
+		ticketTypes:    map[uuid.UUID]store.TicketType{},
+		emitted:        map[uuid.UUID]bool{},
+		archiveEmitted: map[uuid.UUID]bool{},
 	}
 }
 
@@ -116,13 +118,33 @@ func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.P
 	if p.Status == "draft" && !f.hasTicketType(id) {
 		return store.Performance{}, false, store.ErrNotSellable
 	}
-	if p.Status != "published" {
+	if p.Status == "archived" {
+		return store.Performance{}, false, store.ErrIllegalTransition
+	}
+	if p.Status == "draft" {
 		now := time.Now().UTC()
 		p.Status = "published"
 		p.PublishedAt = &now
 		f.performances[id] = p
 	}
 	return p, !f.emitted[id], nil
+}
+
+func (f *fakeStore) ArchivePerformance(_ context.Context, id uuid.UUID) (store.Performance, bool, bool, error) {
+	p, ok := f.performances[id]
+	if !ok {
+		return store.Performance{}, false, false, store.ErrNotFound
+	}
+	if p.Status == "draft" {
+		return store.Performance{}, false, false, store.ErrIllegalTransition
+	}
+	if p.Status == "published" {
+		now := time.Now().UTC()
+		p.Status = "archived"
+		p.ArchivedAt = &now
+		f.performances[id] = p
+	}
+	return p, !f.emitted[id], !f.archiveEmitted[id], nil
 }
 
 func (f *fakeStore) hasTicketType(performanceID uuid.UUID) bool {
@@ -136,6 +158,11 @@ func (f *fakeStore) hasTicketType(performanceID uuid.UUID) bool {
 
 func (f *fakeStore) MarkPerformanceEventEmitted(_ context.Context, id uuid.UUID) error {
 	f.emitted[id] = true
+	return nil
+}
+
+func (f *fakeStore) MarkPerformanceArchiveEmitted(_ context.Context, id uuid.UUID) error {
+	f.archiveEmitted[id] = true
 	return nil
 }
 
@@ -178,8 +205,19 @@ func (f *fakeStore) GetPublishedEvent(_ context.Context, id uuid.UUID) (store.Ev
 }
 
 type fakePublisher struct {
-	published []store.Performance
-	failNext  bool
+	published       []store.Performance
+	archived        []store.Performance
+	failNext        bool
+	failArchiveNext bool
+}
+
+func (f *fakePublisher) PerformanceArchived(_ context.Context, p store.Performance) error {
+	if f.failArchiveNext {
+		f.failArchiveNext = false
+		return errors.New("nats down")
+	}
+	f.archived = append(f.archived, p)
+	return nil
 }
 
 func (f *fakePublisher) PerformancePublished(_ context.Context, p store.Performance) error {
@@ -464,6 +502,91 @@ func TestPublishUnknownPerformance(t *testing.T) {
 	rec := e.do("POST", "/performances/"+uuid.NewString()+"/publish", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status %d", rec.Code)
+	}
+}
+
+func TestArchiveEmitsOnceAndIsIdempotent(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", rec.Code, rec.Body.String())
+	}
+	p := decode[Performance](t, rec)
+	if p.Status != Archived || p.ArchivedAt == nil {
+		t.Fatalf("archived response = %+v", p)
+	}
+	if len(e.pub.archived) != 1 {
+		t.Fatalf("expected 1 archive emission, got %d", len(e.pub.archived))
+	}
+	if rec = e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("re-archive: %d", rec.Code)
+	}
+	if len(e.pub.archived) != 1 {
+		t.Fatalf("re-archive must not re-emit, got %d", len(e.pub.archived))
+	}
+}
+
+func TestArchiveRejectsDraftUnknownAndRepublish(t *testing.T) {
+	e := newEnv(t)
+	_, draftID := e.createFixture(false)
+	if rec := e.do("POST", "/performances/"+draftID.String()+"/archive", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("archive draft: want 409, got %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+uuid.NewString()+"/archive", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("archive unknown: want 404, got %d", rec.Code)
+	}
+	_, publishedID := e.createFixture(true)
+	if rec := e.do("POST", "/performances/"+publishedID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive published: %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+publishedID.String()+"/publish", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("republish archived: want 409, got %d", rec.Code)
+	}
+}
+
+func TestArchiveRetriesEmissionAfterFailure(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	e.pub.failArchiveNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed archive emission: want 500, got %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive retry: %d", rec.Code)
+	}
+	if len(e.pub.archived) != 1 {
+		t.Fatalf("retry should emit archive once, got %d", len(e.pub.archived))
+	}
+}
+
+func TestArchiveEmitsOwedPublishBeforeArchive(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(false)
+	e.pub.failNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/publish", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed publish emission: want 500, got %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.published) != 1 || len(e.pub.archived) != 1 {
+		t.Fatalf("owed events: published=%d archived=%d", len(e.pub.published), len(e.pub.archived))
+	}
+}
+
+func TestArchivedPerformanceExcludedFromPublicReads(t *testing.T) {
+	e := newEnv(t)
+	eventID, perfID := e.createFixture(true)
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d", rec.Code)
+	}
+	list := decode[PublicEventList](t, e.do("GET", "/public/events?locale=en", nil))
+	if len(list.Events) != 0 {
+		t.Fatalf("archived performance remains listed: %+v", list.Events)
+	}
+	if rec := e.do("GET", "/public/events/"+eventID.String()+"?locale=en", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("all-archived detail: want 404, got %d", rec.Code)
 	}
 }
 

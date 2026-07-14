@@ -69,9 +69,29 @@ export interface paths {
         put?: never;
         /**
          * Publish a performance (idempotent)
-         * @description Flips draft to published and emits the platform.catalog.performance.published domain event exactly on the draft-to-published transition (envelope id is deterministic per publication, so retried or raced emissions de-duplicate). Publishing an already-published performance returns 200 without re-emitting. Publishing a performance with no ticket type is a 409 — the publication event and public visibility must never disagree.
+         * @description Flips draft to published and emits the platform.catalog.performance.published domain event at least once while it is owed (envelope id is deterministic per publication, so retried or raced emissions de-duplicate). Publishing an already-published performance returns 200 without re-emitting. Publishing a performance with no ticket type is a 409 — the publication event and public visibility must never disagree.
          */
         post: operations["publishPerformance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/performances/{performanceId}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive a published performance (idempotent)
+         * @description Flips published to archived and emits the platform.catalog.performance.archived domain event at least once while it is owed. Retried or raced emissions de-duplicate at the stream using a deterministic envelope id. Any publication event still owed is emitted before the archive event. Re-archiving returns 200; archiving a draft returns 409.
+         */
+        post: operations["archivePerformance"];
         delete?: never;
         options?: never;
         head?: never;
@@ -228,9 +248,11 @@ export interface components {
             starts_at: string;
             timezone: string;
             /** @enum {string} */
-            status: "draft" | "published";
+            status: "draft" | "published" | "archived";
             /** Format: date-time */
             published_at?: string;
+            /** Format: date-time */
+            archived_at?: string | null;
             /** Format: date-time */
             created_at: string;
         };
@@ -435,7 +457,39 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description No sellable offer — create a ticket type before publishing */
+            /** @description No sellable offer, or archived performances cannot be re-published */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    archivePerformance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                performanceId: components["parameters"]["PerformanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Performance is archived */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Performance"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Draft performances cannot be archived */
             409: {
                 headers: {
                     [name: string]: unknown;

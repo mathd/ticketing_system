@@ -17,9 +17,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -262,5 +264,137 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	code, body, _ = getWithHeaders(t, catalog+"/public/events?locale=en")
 	if code != http.StatusOK || strings.Contains(string(body), "Draft "+suffix) {
 		t.Fatalf("draft performances must not be publicly listed (status %d)", code)
+	}
+
+	// Add a second published slot to the original event. Archiving the first
+	// must retain this mixed event with only its remaining published slot.
+	secondPerf := created(t, catalog+"/performances", map[string]any{
+		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"starts_at": "2026-09-19T17:30:00Z", "timezone": "Europe/Paris",
+	})
+	created(t, catalog+"/ticket-types", map[string]any{
+		"organizer_id": organizerID, "performance_id": secondPerf["id"],
+		"name":  map[string]string{"fr": "Deuxième soir", "en": "Second night"},
+		"price": map[string]any{"amount": 5000, "currency": "EUR"},
+	})
+	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, secondPerf["id"]), nil); code != http.StatusOK {
+		t.Fatalf("publish second slot: status %d: %s", code, body)
+	}
+
+	// Consumer exists before archive (DeliverNew): receiving the event cannot
+	// be a false pass from an older stream message.
+	archiveConsumer, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "smoke-catalog-archive-" + suffix,
+		FilterSubject: "platform.catalog.performance.archived",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatalf("archive consumer: %v", err)
+	}
+
+	archiveURL := fmt.Sprintf("%s/performances/%v/archive", catalog, perf["id"])
+	type archiveResult struct {
+		code int
+		body []byte
+		err  error
+	}
+	results := make(chan archiveResult, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPost, archiveURL, nil)
+			if err != nil {
+				results <- archiveResult{err: err}
+				return
+			}
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			if err != nil {
+				results <- archiveResult{err: err}
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			results <- archiveResult{code: resp.StatusCode, body: body, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var derivedIDs []string
+	for result := range results {
+		if result.err != nil || result.code != http.StatusOK {
+			t.Fatalf("concurrent archive: status=%d err=%v body=%s", result.code, result.err, result.body)
+		}
+		var archived struct {
+			ID         string    `json:"id"`
+			Status     string    `json:"status"`
+			ArchivedAt time.Time `json:"archived_at"`
+		}
+		if err := json.Unmarshal(result.body, &archived); err != nil {
+			t.Fatalf("decode concurrent archive: %v (%s)", err, result.body)
+		}
+		if archived.Status != "archived" || archived.ArchivedAt.IsZero() {
+			t.Fatalf("archive response = %+v", archived)
+		}
+		key := "platform.catalog.performance.archived:" + archived.ID + ":" + archived.ArchivedAt.UTC().Format(time.RFC3339Nano)
+		derivedIDs = append(derivedIDs, uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String())
+	}
+	if len(derivedIDs) != 2 || derivedIDs[0] != derivedIDs[1] {
+		t.Fatalf("raced archive event ids differ: %v", derivedIDs)
+	}
+
+	archiveMsg, err := archiveConsumer.Next(jetstream.FetchMaxWait(15 * time.Second))
+	if err != nil {
+		t.Fatalf("performance.archived not received: %v", err)
+	}
+	_ = archiveMsg.Ack()
+	var archivedEnvelope struct {
+		ID, Type string
+		Schema   int
+		Data     struct {
+			PerformanceID string `json:"performance_id"`
+			EventID       string `json:"event_id"`
+			OrganizerID   string `json:"organizer_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(archiveMsg.Data(), &archivedEnvelope); err != nil {
+		t.Fatalf("archive envelope: %v (%s)", err, archiveMsg.Data())
+	}
+	if archivedEnvelope.ID != derivedIDs[0] || archivedEnvelope.Type != "platform.catalog.performance.archived" ||
+		archivedEnvelope.Schema != 2 || archivedEnvelope.Data.PerformanceID != perf["id"] ||
+		archivedEnvelope.Data.EventID != event["id"] || archivedEnvelope.Data.OrganizerID != organizerID {
+		t.Fatalf("archive envelope mismatch: %+v", archivedEnvelope)
+	}
+	if _, err := archiveConsumer.Next(jetstream.FetchMaxWait(500 * time.Millisecond)); err == nil {
+		t.Fatal("concurrent archive produced more than one stream message")
+	}
+	if code, _ := postJSON(t, archiveURL, nil); code != http.StatusOK {
+		t.Fatalf("idempotent re-archive: want 200, got %d", code)
+	}
+
+	// Fresh catalog reads bypass the already-warmed storefront page-data
+	// cache. The cache may remain stale for its declared 300-second TTL.
+	code, body, _ = getWithHeaders(t, catalog+"/public/events?locale=en&fresh="+suffix)
+	if code != http.StatusOK || strings.Contains(string(body), fmt.Sprint(perf["id"])) ||
+		!strings.Contains(string(body), fmt.Sprint(secondPerf["id"])) {
+		t.Fatalf("mixed event filtering failed (status %d): %.600s", code, body)
+	}
+	code, body, _ = getWithHeaders(t, fmt.Sprintf("%s/public/events/%v?locale=en&fresh=%s", catalog, event["id"], suffix))
+	if code != http.StatusOK || strings.Contains(string(body), fmt.Sprint(perf["id"])) ||
+		!strings.Contains(string(body), fmt.Sprint(secondPerf["id"])) {
+		t.Fatalf("mixed event detail filtering failed (status %d): %.600s", code, body)
+	}
+
+	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/archive", catalog, secondPerf["id"]), nil); code != http.StatusOK {
+		t.Fatalf("archive final slot: status %d: %s", code, body)
+	}
+	code, body, _ = getWithHeaders(t, catalog+"/public/events?locale=en&fresh=all-"+suffix)
+	if code != http.StatusOK || strings.Contains(string(body), nameEN) {
+		t.Fatalf("all-archived event remains listed (status %d): %.600s", code, body)
+	}
+	code, body, _ = getWithHeaders(t, fmt.Sprintf("%s/public/events/%v?locale=en&fresh=all-%s", catalog, event["id"], suffix))
+	if code != http.StatusNotFound {
+		t.Fatalf("all-archived event detail: want 404, got %d: %s", code, body)
 	}
 }
