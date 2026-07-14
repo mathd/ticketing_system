@@ -62,8 +62,9 @@ Full analysis + evidence: [`docs/spikes/TKT-50-dated-slot-pressure-test.md`](../
   (US-011/TKT-14 owns the claim mechanics); unused until then.
 - **No mutable count lives on the slot.** Capacity authority stays in the inventory pool (ADR-010):
   Catalog emits the initial resolved capacity; Inventory owns adjustments (raise freely; a cut below
-  confirmed clamps to `max(new, confirmed)` and blocks new claims, never force-releasing a confirmed
-  admission — forward-only).
+  demand clamps to the invariant floor `max(new, confirmed + held)` and blocks new claims, never
+  force-releasing a confirmed admission — forward-only). The *behaviour* is decided; only its storage
+  representation is left to the inventory-side capacity-adjustment ticket.
 
 ## References
 

@@ -16,9 +16,11 @@ One case does not fit. A park (or any venue with a fire-code / safety limit) may
 **live concurrent-occupancy cap** — "no more than N people physically inside right now" — which is a
 different quantity than "N admissions sold":
 
-- **Reservation (the claim core, ADR-010):** counts *admissions sold*. Monotonic within a slot's life
-  — `confirmed_quantity` only rises until a claim is released or expires; the invariant is
-  `confirmed + held ≤ capacity`. A confirmed claim holds its unit for the slot's duration.
+- **Reservation (the claim core, ADR-010):** counts *admissions sold*. Effectively monotonic within a
+  slot's life — a `held` claim is transient (it confirms or expires), and a `confirmed` claim leaves
+  the count only by an explicit release/refund/cancellation, never by time. It does not tick down as
+  people move; the invariant is `confirmed + held ≤ capacity`, and a confirmed claim holds its unit for
+  the slot's duration.
 - **Occupancy:** counts *bodies currently present*. Rises on `entry` and **falls on `exit`** — a
   non-monotonic gauge with no fixed relationship to admissions sold (a re-entry pass holder can be
   counted in, out, and in again on one entitlement; occupancy at any instant is far below total
@@ -57,4 +59,4 @@ This is the single scoped exception to ADR-005; the unified model otherwise hold
 ## References
 
 - [ADR-005 — Unified dated-slot admission](./ADR-005-unified-dated-slot-admission.md) (this is its scoped exception) · [ADR-010 — PostgreSQL claim transaction](./ADR-010-postgres-claim-transaction.md)
-- [TKT-50 spike report — §Verdict](../spikes/TKT-50-dated-slot-pressure-test.md)
+- [TKT-50 spike report](../spikes/TKT-50-dated-slot-pressure-test.md#verdict) (§Verdict)
