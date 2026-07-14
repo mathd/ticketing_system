@@ -47,3 +47,13 @@ experiment stays valid.
   Go/TS equivalents in TKT-25.
 - The `sdlc-ticket` skill and the git-derived board (`.sdlc/`) are the default workflow scaffolding
   for planning and tracking work here.
+- **Catalog slot state transitions decide under a row lock.** Any catalog slot transition that both
+  mutates state *and* derives an owed domain event must decide from the locked current row in one
+  transaction — lock it (`SELECT … FOR UPDATE`), apply the transition atomically, then commit and
+  emit the event *at-least-once after the commit* (the existing owed-marker pattern; never publish
+  while holding the transaction). A conditional `UPDATE … WHERE status = x` followed by a *separate*
+  re-read to derive event state is racy: a concurrent transition can commit in between and emit a
+  phantom event (e.g. `performance.archived` on a still-published row, nil `archived_at` →
+  mismatched deterministic id). Reference impls: catalog `ArchivePerformance` and
+  `CloseSlot`/`ReopenSlot` in `services/catalog/internal/store/postgres.go`; the same row-lock
+  decision pattern underlies access `Redeem` (`services/access/internal/store/postgres.go`).
