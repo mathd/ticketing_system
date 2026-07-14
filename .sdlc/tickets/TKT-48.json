@@ -1,0 +1,63 @@
+{
+  "key": "TKT-48",
+  "type": "Bug",
+  "summary": "Stop scanner camera streams across unmount and re-entry races",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "standard",
+  "description": "Follow-up from PR #10 review. If getUserMedia resolves after scanner unmount, the stream can be assigned after cleanup and remain live. Re-entering camera startup before the first await completes can also orphan a stream.\n\nConditions of Success:\n- A stream resolving after unmount is stopped immediately and never attached\n- Repeated camera-start actions cannot create or orphan multiple streams\n- Normal camera startup, detector failure fallback, and paste mode continue to work\n- Tests deterministically cover delayed getUserMedia resolution, unmount, and re-entry\n- make check passes",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-46"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Guarantee camera hardware is released across asynchronous lifecycle races."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Scanner startCamera lifecycle only: delayed permission resolution, unmount, and repeated start."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Use a mounted/generation guard and an in-flight start guard; no UX decision required."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Extends the scanner fallback tests completed in TKT-46."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Add deterministic deferred getUserMedia tests first, then guard stream assignment and startup re-entry."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Unmount while getUserMedia is pending and assert the eventually resolved track is stopped."
+    },
+    "success": {
+      "state": "met",
+      "note": "No stream can survive unmount or be orphaned by repeated startup."
+    }
+  },
+  "context": {
+    "reference": [
+      {
+        "summary": "PR #10 human review finding 3",
+        "link": "https://github.com/mathd/ticketing_system/pull/10"
+      }
+    ],
+    "capturedAt": "2026-07-13"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness — READY\nThe race, test seam, and success conditions are concrete with no open blocker. Awaiting owner prioritization at Gate 1."
+    }
+  ]
+}
