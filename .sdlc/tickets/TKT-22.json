@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Scope anchor (owner decision 2026-07-14):** this epic owns the organizer-facing **catalog builder UI** — the screens to author events, series, seasons, festivals and the typed dated-slot kinds (performance / festival_day / operating_day) plus their publish/archive lifecycle — over the catalog API built in **TKT-2** (children TKT-49…TKT-53). TKT-2 deliberately ships API + storefront only (\"creation via API only\", per the TKT-26 precedent); the builder UI and the staff identity/RBAC it sits behind are consolidated here so the organizer never touches curl. Decomposing TKT-22 must therefore depend on the relevant TKT-2 catalog endpoints being stable, and cover series/season/festival/slot authoring — not just the M1 single-GA-event shape."
     }
   ]
 }
