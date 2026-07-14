@@ -1,0 +1,48 @@
+{
+  "key": "TKT-49",
+  "type": "Story",
+  "parent": "TKT-2",
+  "summary": "US-007: Archived lifecycle state with domain events",
+  "classification": "simple",
+  "labels": [],
+  "description": "**As** an organizer, **I want** to archive a published performance so it stops appearing on the storefront while its history is preserved.\n\n**Priority:** P1\n**Depends on:** — (extends the TKT-26 publish machinery)\n\n**Acceptance Criteria:**\n- [ ] Catalog exposes an idempotent archive transition (`published → archived`); archiving a draft is a 409 (only published offers archive); archiving an already-archived performance returns 200 without re-emitting — mirrors the publish idempotency precedent\n- [ ] Archiving emits a versioned `platform.catalog.performance.archived` domain event with a deterministic envelope id (retried/raced emissions de-duplicate) so inventory can stop offering the slot; uses the existing poor-man's-outbox marker\n- [ ] Archived performances disappear from the aggregated public list/detail reads; an event whose every performance is archived drops off the public list; TTL tiers unchanged (ADR-004)\n- [ ] The lifecycle is a single explicit state machine (`draft | published | archived`) with rejected transitions returning 409 + a reason; unit + contract tests cover every edge\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-005",
+        "date": "2026-07-12",
+        "rule": "Every admission-granting offer (performance, festival day, park operating day) is a dated slot in one inventory machinery; passes are entitlements to claim slot entries; lodging/day resources reserve through the same contention-safe core; slot attributes carry domain specifics — the claim primitive does not fork."
+      },
+      {
+        "id": "ADR-009",
+        "date": "2026-07-12",
+        "rule": "APIs are contract-first: the OpenAPI spec is the source of truth, served by the service at /openapi.yaml and checked for drift in the gate; domain events use a versioned platform envelope (id, type==subject, occurred_at, schema, data) published to JetStream with acks (never fire-and-forget), with a deterministic envelope id so retried/raced emissions de-duplicate."
+      },
+      {
+        "id": "ADR-002",
+        "date": "2026-07-12",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-2 catalog & event structure user stories (US-007…US-011)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-005 unified dated-slot admission — the load-bearing abstraction this epic hardens; §Consequences names re-entry/mid-day-capacity/weather-closure as the pressure tests",
+        "link": "docs/adr/ADR-005-unified-dated-slot-admission.md"
+      },
+      {
+        "summary": "M1 catalog baseline: 0001_catalog_schema.sql (organizers/venues/events/performances/ticket_types), publish + performance.published event, aggregated TTL reads",
+        "link": "services/catalog/internal/store/"
+      }
+    ],
+    "capturedAt": "2026-07-14"
+  },
+  "links": [],
+  "comments": [],
+  "status": "Backlog",
+  "assignee": null,
+  "pr": null
+}
