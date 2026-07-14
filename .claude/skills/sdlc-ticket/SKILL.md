@@ -130,7 +130,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=planning kind=plan -->
 #   MCP editJiraIssue: -agent:planning +agent:plan-review
 #   codex: build a self-contained prompt file (plan + relevant code inline), then feed it via STDIN:
-#     codex exec -m gpt-5.5 -s read-only < critique.txt   # NOT as a positional arg — see Hard rules
+#     codex exec -m gpt-5.6 -s read-only < critique.txt   # NOT as a positional arg — see Hard rules
 #     (prompt: "Adversarially critique this plan for feasibility, missing scope, risk. Read-only.")
 #   revise; post kind=plan-final.  If risk:low → skip to step 4.
 #   MCP editJiraIssue: -agent:plan-review +needs:human
@@ -143,7 +143,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=coding kind=summary --> (+ stage YAML)
 #   MCP editJiraIssue: -agent:coding +agent:ai-review
 #   codex: build a prompt file with the diff inline (git diff origin/main...HEAD), feed via STDIN:
-#     codex exec -m gpt-5.5 -s read-only < review.txt   # NOT as a positional arg — see Hard rules
+#     codex exec -m gpt-5.6 -s read-only < review.txt   # NOT as a positional arg — see Hard rules
 #     (prompt: "Adversarially review this diff vs origin/main: correctness, security, coverage. Read-only.")
 #   triage findings (quality-practices.md §2): blocking→fix in PR; incidental→new backlog ticket; rejected→stated reason.
 #   rebase on origin/main if behind; re-green. MCP comment kind=summary (ai-review).
@@ -175,7 +175,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 ## Hard rules
 
 - **Never merge for the human.** Gate 3 is the human's, in the code repo. Agents stop at `needs:human`.
-- **Codex invocation mechanics** (learned TKT-50/TKT-54, codex-cli 0.14x on macOS): (a) pass **`-m gpt-5.5`** explicitly — the CLI default has resolved to a model that errors `requires a newer Codex`; (b) feed the prompt via **STDIN redirect** (`codex exec -m gpt-5.5 -s read-only < prompt.txt`), **not** as a positional arg — a large arg hangs at `Reading additional input from stdin…` with zero output for minutes; (c) inline the plan/diff in the prompt file rather than telling codex to `git diff` itself (the shell-out is another hang point); (d) run it **backgrounded + poll** so a stuck pass is caught in ~1 min — `timeout(1)` is absent on macOS.
+- **Codex invocation mechanics** (learned TKT-50/TKT-54, codex-cli 0.14x on macOS): (a) pass **`-m gpt-5.6`** explicitly — the CLI default has resolved to a model that errors `requires a newer Codex`; (b) feed the prompt via **STDIN redirect** (`codex exec -m gpt-5.6 -s read-only < prompt.txt`), **not** as a positional arg — a large arg hangs at `Reading additional input from stdin…` with zero output for minutes; (c) inline the plan/diff in the prompt file rather than telling codex to `git diff` itself (the shell-out is another hang point); (d) run it **backgrounded + poll** so a stuck pass is caught in ~1 min — `timeout(1)` is absent on macOS.
 - **Codex failing ≠ stage done.** If `codex` errors at `plan-review` or `ai-review`, retry once, then **stop with the current `agent:*` label and report**. Never substitute a self-review, never advance to `needs:human` without the cross-model pass — a skipped review that looks done is worse than a stalled ticket. A hang counts as a failure: **kill it fast and retry once** (per the mechanics above), don't wait it out.
 - **One codex pass per stage.** After triaging and fixing findings, re-green the local gate and post — don't re-run codex on your own fixes. A second pass happens only if the human asks or a rebase materially changed the diff. **A Gate-3 human review round is not a trigger:** the human review *is* the authoritative adversarial pass, so address its changes under `agent:coding`, re-green, and return to `needs:human` for re-review of the new SHA — without a new codex run.
 - **V0 is manual** — no Jira automation / webhooks. Movement is agent-driven on the user's command.
