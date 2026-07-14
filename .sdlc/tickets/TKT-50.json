@@ -5,7 +5,8 @@
   "summary": "US-008 (SPIKE): Pressure-test the generalized dated-slot model",
   "classification": "complex",
   "labels": [
-    "risk:low"
+    "risk:low",
+    "agent:planning"
   ],
   "description": "**As** the team, **I want** to prove the ADR-005 slot abstraction survives the hard cases **before** US-009 (TKT-51) hardens the schema, so a bad generic design doesn't hurt every downstream vertical.\n\n**Priority:** P0\n**Type:** Spike (timeboxed, no production code — analysis + ADR amendment only)\n**Depends on:** —\n\n`risk:low` — investigation only, produces docs/an ADR, touches no service code or migration; the schema decision it produces is what US-009 implements under the full plan gate. (Challengeable: if the spike ends up needing throwaway prototype code in a service, drop the label.)\n\n**Acceptance Criteria:**\n- [ ] A written analysis (in `docs/` + an ADR-005 amendment) models three stress cases against a candidate slot shape: **re-entry** (a park pass holder exits and re-enters the same operating day — multi-entry vs the single-redemption performance case), **mid-day capacity change** (an operating day's capacity is raised/cut while entries are live — where the number-of-authority lives, catalog vs inventory, and behaviour when cut below current occupancy), and **weather closure** (an operating day closes partway through — slot state, effect on already-admitted vs not-yet-arrived holders, refund signalling)\n- [ ] For each case the analysis names **which attributes live on the catalog slot** vs **what the inventory claim core owns** (the ADR-005 boundary), and produces the concrete attribute set + state machine US-009 will implement (slot kind, operating hours, re-entry policy, closure)\n- [ ] Verdict: the unified model holds (with the documented attribute shape) **or** a scoped exception is recorded as a new ADR — either outcome unblocks US-009 with a decided schema\n\nQuality gate (spike): the output is a reviewed decision doc/ADR, not code; no `make check` surface. Exit is the recorded verdict.",
   "context": {
@@ -43,9 +44,15 @@
     "capturedAt": "2026-07-14"
   },
   "links": [],
-  "comments": [],
-  "status": "Ready",
-  "assignee": null,
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed TKT-50. Selection: only ticket in Ready, P0, all 7 DoR items met, no open blockers; it is the load-bearing blocker for US-009 (TKT-51) which cannot start its schema until this verdict lands.\n\nBranch `TKT-50-slot-model-spike` created off origin/main (bfb9e27). Spike is docs-only (analysis in docs/ + ADR-005 amendment); no service code, no `make check` surface. `risk:low` upheld — investigation only, produces a reviewed decision doc, touches no migration or auth. → Planning."
+    }
+  ],
+  "status": "Planning",
+  "assignee": "claude",
   "pr": null,
   "readiness": {
     "objective": {
