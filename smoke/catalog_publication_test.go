@@ -150,6 +150,7 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 			PerformanceID string `json:"performance_id"`
 			EventID       string `json:"event_id"`
 			OrganizerID   string `json:"organizer_id"`
+			Kind          string `json:"kind"`
 			Capacity      int32  `json:"capacity"`
 		} `json:"data"`
 	}
@@ -161,8 +162,11 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
 		t.Fatalf("envelope: %v (%s)", err, msg.Data())
 	}
+	// Schema stays 2: kind is an additive, backward-compatible field (US-009 /
+	// ADR-009) so inventory's Schema-2 consumer keeps provisioning unchanged.
 	if envelope.Type != "platform.catalog.performance.published" ||
 		envelope.Schema != 2 || envelope.ID == "" || envelope.Data.Capacity != 500 ||
+		envelope.Data.Kind != "performance" ||
 		envelope.Data.PerformanceID != perf["id"] ||
 		envelope.Data.EventID != event["id"] ||
 		envelope.Data.OrganizerID != organizerID {

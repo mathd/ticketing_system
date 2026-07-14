@@ -133,6 +133,64 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /performances/{performanceId}/close:
+    post:
+      operationId: closeSlot
+      summary: Close a published slot (weather closure; idempotent)
+      description: >
+        Sets the orthogonal closure attribute to closed and emits
+        platform.catalog.performance.closed at least once while owed (spike
+        §Case 3). Closure is reversible (see reopen) and does not change the
+        draft/published/archived lifecycle. Closing an already-closed slot
+        returns 200 without a new transition. Only published slots can close.
+      parameters:
+        - $ref: '#/components/parameters/PerformanceId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotCloseRequest'
+      responses:
+        '200':
+          description: Slot is closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Performance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Only published slots can be closed, or a prior closure event is still owed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /performances/{performanceId}/reopen:
+    post:
+      operationId: reopenSlot
+      summary: Reopen a closed slot (idempotent)
+      description: >
+        Sets the closure attribute back to open and emits
+        platform.catalog.performance.reopened at least once while owed.
+        Reopening an already-open slot returns 200 without a new transition.
+      parameters:
+        - $ref: '#/components/parameters/PerformanceId'
+      responses:
+        '200':
+          description: Slot is open
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Performance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Only published slots can be reopened, or a prior closure event is still owed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /ticket-types:
     post:
       operationId: createTicketType
@@ -345,9 +403,61 @@ components:
         created_at:
           type: string
           format: date-time
-    PerformanceCreate:
+    SlotKind:
+      description: >
+        The dated-slot kind (ADR-005 amendment / US-009). 'performance' carries
+        starts_at; 'festival_day'/'operating_day' carry the operating window.
+      type: string
+      enum: [performance, festival_day, operating_day]
+    ReEntryPolicy:
+      description: >
+        How many admissions one entitlement grants on the slot (spike §Case 1).
+        'single' is the performance case; 'count_limited' requires max_entries.
       type: object
-      required: [organizer_id, event_id, venue_id, starts_at, timezone]
+      required: [mode, requires_exit]
+      properties:
+        mode:
+          type: string
+          enum: [single, multi, count_limited]
+        max_entries:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+        requires_exit:
+          type: boolean
+    Closure:
+      description: >
+        Weather-closure state (spike §Case 3), orthogonal to the
+        draft/published/archived lifecycle. A closed slot is still published.
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [open, closed]
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+    SlotCloseRequest:
+      description: Optional operator-supplied reason for the closure
+      type: object
+      properties:
+        reason:
+          type: string
+          minLength: 1
+    PerformanceCreate:
+      description: >
+        Creates a dated slot in draft. kind defaults to 'performance' (which
+        requires starts_at); 'festival_day'/'operating_day' require the
+        operating window (operating_date + opens_at + closes_at). re_entry
+        defaults to single-entry.
+      type: object
+      required: [organizer_id, event_id, venue_id, timezone]
       properties:
         organizer_id:
           type: string
@@ -358,16 +468,33 @@ components:
         venue_id:
           type: string
           format: uuid
+        kind:
+          $ref: '#/components/schemas/SlotKind'
         starts_at:
+          description: Instant for kind 'performance'; omit for day kinds
           type: string
           format: date-time
+        operating_date:
+          description: Local operating date for day kinds
+          type: string
+          format: date
+        opens_at:
+          description: Local opening time-of-day (HH:MM) for day kinds
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        closes_at:
+          description: Local closing time-of-day (HH:MM); < opens_at spans midnight
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
         timezone:
           type: string
           description: IANA zone name, e.g. Europe/Paris
           minLength: 1
+        re_entry:
+          $ref: '#/components/schemas/ReEntryPolicy'
     Performance:
       type: object
-      required: [id, organizer_id, event_id, venue_id, starts_at, timezone, status, created_at]
+      required: [id, organizer_id, event_id, venue_id, kind, timezone, re_entry, closure, status, created_at]
       properties:
         id:
           type: string
@@ -381,11 +508,27 @@ components:
         venue_id:
           type: string
           format: uuid
+        kind:
+          $ref: '#/components/schemas/SlotKind'
         starts_at:
+          description: Present for kind 'performance'; absent for day kinds
           type: string
           format: date-time
+        operating_date:
+          type: string
+          format: date
+        opens_at:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        closes_at:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
         timezone:
           type: string
+        re_entry:
+          $ref: '#/components/schemas/ReEntryPolicy'
+        closure:
+          $ref: '#/components/schemas/Closure'
         status:
           type: string
           enum: [draft, published, archived]

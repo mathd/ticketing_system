@@ -14,6 +14,24 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for ClosureStatus.
+const (
+	Closed ClosureStatus = "closed"
+	Open   ClosureStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the ClosureStatus enum.
+func (e ClosureStatus) Valid() bool {
+	switch e {
+	case Closed:
+		return true
+	case Open:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PerformanceStatus.
 const (
 	Archived  PerformanceStatus = "archived"
@@ -34,6 +52,58 @@ func (e PerformanceStatus) Valid() bool {
 		return false
 	}
 }
+
+// Defines values for ReEntryPolicyMode.
+const (
+	CountLimited ReEntryPolicyMode = "count_limited"
+	Multi        ReEntryPolicyMode = "multi"
+	Single       ReEntryPolicyMode = "single"
+)
+
+// Valid indicates whether the value is a known member of the ReEntryPolicyMode enum.
+func (e ReEntryPolicyMode) Valid() bool {
+	switch e {
+	case CountLimited:
+		return true
+	case Multi:
+		return true
+	case Single:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SlotKind.
+const (
+	SlotKindFestivalDay  SlotKind = "festival_day"
+	SlotKindOperatingDay SlotKind = "operating_day"
+	SlotKindPerformance  SlotKind = "performance"
+)
+
+// Valid indicates whether the value is a known member of the SlotKind enum.
+func (e SlotKind) Valid() bool {
+	switch e {
+	case SlotKindFestivalDay:
+		return true
+	case SlotKindOperatingDay:
+		return true
+	case SlotKindPerformance:
+		return true
+	default:
+		return false
+	}
+}
+
+// Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.
+type Closure struct {
+	ClosedAt *time.Time    `json:"closed_at,omitempty"`
+	Reason   *string       `json:"reason,omitempty"`
+	Status   ClosureStatus `json:"status"`
+}
+
+// ClosureStatus defines model for Closure.Status.
+type ClosureStatus string
 
 // Error defines model for Error.
 type Error struct {
@@ -74,26 +144,56 @@ type Money struct {
 
 // Performance defines model for Performance.
 type Performance struct {
-	ArchivedAt  *time.Time         `json:"archived_at,omitempty"`
-	CreatedAt   time.Time          `json:"created_at"`
-	EventId     openapi_types.UUID `json:"event_id"`
-	Id          openapi_types.UUID `json:"id"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	PublishedAt *time.Time         `json:"published_at,omitempty"`
-	StartsAt    time.Time          `json:"starts_at"`
-	Status      PerformanceStatus  `json:"status"`
-	Timezone    string             `json:"timezone"`
-	VenueId     openapi_types.UUID `json:"venue_id"`
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	ClosesAt   *string    `json:"closes_at,omitempty"`
+
+	// Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.
+	Closure   Closure            `json:"closure"`
+	CreatedAt time.Time          `json:"created_at"`
+	EventId   openapi_types.UUID `json:"event_id"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// Kind The dated-slot kind (ADR-005 amendment / US-009). 'performance' carries starts_at; 'festival_day'/'operating_day' carry the operating window.
+	Kind          SlotKind            `json:"kind"`
+	OpensAt       *string             `json:"opens_at,omitempty"`
+	OperatingDate *openapi_types.Date `json:"operating_date,omitempty"`
+	OrganizerId   openapi_types.UUID  `json:"organizer_id"`
+	PublishedAt   *time.Time          `json:"published_at,omitempty"`
+
+	// ReEntry How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
+	ReEntry ReEntryPolicy `json:"re_entry"`
+
+	// StartsAt Present for kind 'performance'; absent for day kinds
+	StartsAt *time.Time         `json:"starts_at,omitempty"`
+	Status   PerformanceStatus  `json:"status"`
+	Timezone string             `json:"timezone"`
+	VenueId  openapi_types.UUID `json:"venue_id"`
 }
 
 // PerformanceStatus defines model for Performance.Status.
 type PerformanceStatus string
 
-// PerformanceCreate defines model for PerformanceCreate.
+// PerformanceCreate Creates a dated slot in draft. kind defaults to 'performance' (which requires starts_at); 'festival_day'/'operating_day' require the operating window (operating_date + opens_at + closes_at). re_entry defaults to single-entry.
 type PerformanceCreate struct {
-	EventId     openapi_types.UUID `json:"event_id"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	StartsAt    time.Time          `json:"starts_at"`
+	// ClosesAt Local closing time-of-day (HH:MM); < opens_at spans midnight
+	ClosesAt *string            `json:"closes_at,omitempty"`
+	EventId  openapi_types.UUID `json:"event_id"`
+
+	// Kind The dated-slot kind (ADR-005 amendment / US-009). 'performance' carries starts_at; 'festival_day'/'operating_day' carry the operating window.
+	Kind *SlotKind `json:"kind,omitempty"`
+
+	// OpensAt Local opening time-of-day (HH:MM) for day kinds
+	OpensAt *string `json:"opens_at,omitempty"`
+
+	// OperatingDate Local operating date for day kinds
+	OperatingDate *openapi_types.Date `json:"operating_date,omitempty"`
+	OrganizerId   openapi_types.UUID  `json:"organizer_id"`
+
+	// ReEntry How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
+	ReEntry *ReEntryPolicy `json:"re_entry,omitempty"`
+
+	// StartsAt Instant for kind 'performance'; omit for day kinds
+	StartsAt *time.Time `json:"starts_at,omitempty"`
 
 	// Timezone IANA zone name, e.g. Europe/Paris
 	Timezone string             `json:"timezone"`
@@ -155,6 +255,24 @@ type PublicVenue struct {
 	Id   openapi_types.UUID `json:"id"`
 	Name string             `json:"name"`
 }
+
+// ReEntryPolicy How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
+type ReEntryPolicy struct {
+	MaxEntries   *int32            `json:"max_entries,omitempty"`
+	Mode         ReEntryPolicyMode `json:"mode"`
+	RequiresExit bool              `json:"requires_exit"`
+}
+
+// ReEntryPolicyMode defines model for ReEntryPolicy.Mode.
+type ReEntryPolicyMode string
+
+// SlotCloseRequest Optional operator-supplied reason for the closure
+type SlotCloseRequest struct {
+	Reason *string `json:"reason,omitempty"`
+}
+
+// SlotKind The dated-slot kind (ADR-005 amendment / US-009). 'performance' carries starts_at; 'festival_day'/'operating_day' carry the operating window.
+type SlotKind string
 
 // TicketType defines model for TicketType.
 type TicketType struct {
@@ -230,6 +348,9 @@ type CreateEventJSONRequestBody = EventCreate
 // CreatePerformanceJSONRequestBody defines body for CreatePerformance for application/json ContentType.
 type CreatePerformanceJSONRequestBody = PerformanceCreate
 
+// CloseSlotJSONRequestBody defines body for CloseSlot for application/json ContentType.
+type CloseSlotJSONRequestBody = SlotCloseRequest
+
 // CreateTicketTypeJSONRequestBody defines body for CreateTicketType for application/json ContentType.
 type CreateTicketTypeJSONRequestBody = TicketTypeCreate
 
@@ -250,9 +371,15 @@ type ServerInterface interface {
 	// Archive a published performance (idempotent)
 	// (POST /performances/{performanceId}/archive)
 	ArchivePerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
+	// Close a published slot (weather closure; idempotent)
+	// (POST /performances/{performanceId}/close)
+	CloseSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
 	// Publish a performance (idempotent)
 	// (POST /performances/{performanceId}/publish)
 	PublishPerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
+	// Reopen a closed slot (idempotent)
+	// (POST /performances/{performanceId}/reopen)
+	ReopenSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
 	// Aggregated storefront list read (minutes tier)
 	// (GET /public/events)
 	ListPublicEvents(w http.ResponseWriter, r *http.Request, params ListPublicEventsParams)
@@ -295,9 +422,21 @@ func (_ Unimplemented) ArchivePerformance(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Close a published slot (weather closure; idempotent)
+// (POST /performances/{performanceId}/close)
+func (_ Unimplemented) CloseSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Publish a performance (idempotent)
 // (POST /performances/{performanceId}/publish)
 func (_ Unimplemented) PublishPerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Reopen a closed slot (idempotent)
+// (POST /performances/{performanceId}/reopen)
+func (_ Unimplemented) ReopenSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -402,6 +541,32 @@ func (siw *ServerInterfaceWrapper) ArchivePerformance(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// CloseSlot operation middleware
+func (siw *ServerInterfaceWrapper) CloseSlot(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "performanceId" -------------
+	var performanceId PerformanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "performanceId", chi.URLParam(r, "performanceId"), &performanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "performanceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CloseSlot(w, r, performanceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PublishPerformance operation middleware
 func (siw *ServerInterfaceWrapper) PublishPerformance(w http.ResponseWriter, r *http.Request) {
 
@@ -419,6 +584,32 @@ func (siw *ServerInterfaceWrapper) PublishPerformance(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PublishPerformance(w, r, performanceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReopenSlot operation middleware
+func (siw *ServerInterfaceWrapper) ReopenSlot(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "performanceId" -------------
+	var performanceId PerformanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "performanceId", chi.URLParam(r, "performanceId"), &performanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "performanceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReopenSlot(w, r, performanceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -657,7 +848,13 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/performances/{performanceId}/archive", wrapper.ArchivePerformance)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/performances/{performanceId}/close", wrapper.CloseSlot)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/performances/{performanceId}/publish", wrapper.PublishPerformance)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/performances/{performanceId}/reopen", wrapper.ReopenSlot)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/public/events", wrapper.ListPublicEvents)

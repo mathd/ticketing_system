@@ -98,6 +98,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/performances/{performanceId}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close a published slot (weather closure; idempotent)
+         * @description Sets the orthogonal closure attribute to closed and emits platform.catalog.performance.closed at least once while owed (spike §Case 3). Closure is reversible (see reopen) and does not change the draft/published/archived lifecycle. Closing an already-closed slot returns 200 without a new transition. Only published slots can close.
+         */
+        post: operations["closeSlot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/performances/{performanceId}/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reopen a closed slot (idempotent)
+         * @description Sets the closure attribute back to open and emits platform.catalog.performance.reopened at least once while owed. Reopening an already-open slot returns 200 without a new transition.
+         */
+        post: operations["reopenSlot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ticket-types": {
         parameters: {
             query?: never;
@@ -223,6 +263,32 @@ export interface components {
             /** Format: date-time */
             created_at: string;
         };
+        /**
+         * @description The dated-slot kind (ADR-005 amendment / US-009). 'performance' carries starts_at; 'festival_day'/'operating_day' carry the operating window.
+         * @enum {string}
+         */
+        SlotKind: "performance" | "festival_day" | "operating_day";
+        /** @description How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries. */
+        ReEntryPolicy: {
+            /** @enum {string} */
+            mode: "single" | "multi" | "count_limited";
+            /** Format: int32 */
+            max_entries?: number | null;
+            requires_exit: boolean;
+        };
+        /** @description Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published. */
+        Closure: {
+            /** @enum {string} */
+            status: "open" | "closed";
+            /** Format: date-time */
+            closed_at?: string | null;
+            reason?: string | null;
+        };
+        /** @description Optional operator-supplied reason for the closure */
+        SlotCloseRequest: {
+            reason?: string;
+        };
+        /** @description Creates a dated slot in draft. kind defaults to 'performance' (which requires starts_at); 'festival_day'/'operating_day' require the operating window (operating_date + opens_at + closes_at). re_entry defaults to single-entry. */
         PerformanceCreate: {
             /** Format: uuid */
             organizer_id: string;
@@ -230,10 +296,24 @@ export interface components {
             event_id: string;
             /** Format: uuid */
             venue_id: string;
-            /** Format: date-time */
-            starts_at: string;
+            kind?: components["schemas"]["SlotKind"];
+            /**
+             * Format: date-time
+             * @description Instant for kind 'performance'; omit for day kinds
+             */
+            starts_at?: string;
+            /**
+             * Format: date
+             * @description Local operating date for day kinds
+             */
+            operating_date?: string;
+            /** @description Local opening time-of-day (HH:MM) for day kinds */
+            opens_at?: string;
+            /** @description Local closing time-of-day (HH:MM); < opens_at spans midnight */
+            closes_at?: string;
             /** @description IANA zone name, e.g. Europe/Paris */
             timezone: string;
+            re_entry?: components["schemas"]["ReEntryPolicy"];
         };
         Performance: {
             /** Format: uuid */
@@ -244,9 +324,19 @@ export interface components {
             event_id: string;
             /** Format: uuid */
             venue_id: string;
-            /** Format: date-time */
-            starts_at: string;
+            kind: components["schemas"]["SlotKind"];
+            /**
+             * Format: date-time
+             * @description Present for kind 'performance'; absent for day kinds
+             */
+            starts_at?: string;
+            /** Format: date */
+            operating_date?: string;
+            opens_at?: string;
+            closes_at?: string;
             timezone: string;
+            re_entry: components["schemas"]["ReEntryPolicy"];
+            closure: components["schemas"]["Closure"];
             /** @enum {string} */
             status: "draft" | "published" | "archived";
             /** Format: date-time */
@@ -490,6 +580,74 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             /** @description Draft performances cannot be archived */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    closeSlot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                performanceId: components["parameters"]["PerformanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SlotCloseRequest"];
+            };
+        };
+        responses: {
+            /** @description Slot is closed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Performance"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Only published slots can be closed, or a prior closure event is still owed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reopenSlot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                performanceId: components["parameters"]["PerformanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Slot is open */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Performance"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Only published slots can be reopened, or a prior closure event is still owed */
             409: {
                 headers: {
                     [name: string]: unknown;
