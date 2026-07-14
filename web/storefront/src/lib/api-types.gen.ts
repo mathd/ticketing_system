@@ -930,6 +930,7 @@ export interface operations {
                     "application/json": components["schemas"]["Series"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Slot already belongs to a series, position is occupied, or membership is frozen */
             409: {
@@ -1056,8 +1057,9 @@ export interface operations {
                     "application/json": components["schemas"]["Season"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            /** @description Duplicate membership or organizer mismatch */
+            /** @description Duplicate membership */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1092,8 +1094,9 @@ export interface operations {
                     "application/json": components["schemas"]["Season"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            /** @description Duplicate membership or organizer mismatch */
+            /** @description Duplicate membership */
             409: {
                 headers: {
                     [name: string]: unknown;

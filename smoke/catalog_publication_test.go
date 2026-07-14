@@ -518,6 +518,52 @@ func TestSeriesSeasonPublicationAndStorefrontGrouping(t *testing.T) {
 	if strings.Index(string(page), "Night 1") > strings.Index(string(page), "Night 2") {
 		t.Fatalf("storefront ignored series position: %.800s", page)
 	}
+
+	archiveConsumer, err := stream.CreateOrUpdateConsumer(t.Context(), jetstream.ConsumerConfig{
+		Durable: "smoke-series-archive-" + suffix, FilterSubject: "platform.catalog.performance.archived",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveURL := fmt.Sprintf("%s/series/%v/archive", catalog, series["id"])
+	if code, body := postJSON(t, archiveURL, nil); code != http.StatusOK {
+		t.Fatalf("series archive: %d %s", code, body)
+	}
+	archived := map[string]bool{}
+	for range 2 {
+		msg, err := archiveConsumer.Next(jetstream.FetchMaxWait(15 * time.Second))
+		if err != nil {
+			t.Fatalf("series archive member event: %v", err)
+		}
+		var envelope struct {
+			Data struct {
+				PerformanceID string `json:"performance_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		archived[envelope.Data.PerformanceID] = true
+		_ = msg.Ack()
+	}
+	for _, id := range performanceIDs {
+		if !archived[id] {
+			t.Fatalf("missing archive event for %s: %v", id, archived)
+		}
+	}
+	if code, body := postJSON(t, archiveURL, nil); code != http.StatusOK {
+		t.Fatalf("idempotent series archive: %d %s", code, body)
+	}
+	if _, err := archiveConsumer.Next(jetstream.FetchMaxWait(500 * time.Millisecond)); err == nil {
+		t.Fatal("idempotent series archive emitted another event")
+	}
+	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/events/%v?locale=en", catalog, event["id"])); code != http.StatusNotFound {
+		t.Fatalf("all-archived series event remains public: %d %s", code, body)
+	}
+	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/seasons/%v?locale=en", catalog, season["id"])); code != http.StatusNotFound {
+		t.Fatalf("season with no published events: %d %s", code, body)
+	}
 }
 
 // TestTypedDaySlotPublication drives a non-performance slot (operating_day)

@@ -1112,6 +1112,104 @@ func TestSeriesPublishConflictNamesBlockingSlotAndIsAtomic(t *testing.T) {
 	}
 }
 
+func TestSeriesArchiveBlocksOwedClosureThenEmitsInOrder(t *testing.T) {
+	e := newEnv(t)
+	eventID, firstID := e.createFixture(false)
+	first := e.store.performances[firstID]
+	startsAt := first.StartsAt.Add(24 * time.Hour)
+	second := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: eventID, VenueId: first.VenueID,
+		StartsAt: &startsAt, Timezone: first.Timezone,
+	}))
+	e.do("POST", "/ticket-types", TicketTypeCreate{
+		OrganizerId: orgID, PerformanceId: second.Id,
+		Name:  LocalizedString{"en": "Second", "fr": "Deuxième"},
+		Price: Money{Amount: 5000, Currency: "EUR"},
+	})
+	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
+		OrganizerId: orgID, EventId: eventID,
+		Name: LocalizedString{"en": "Run", "fr": "Série"},
+	}))
+	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: firstID, Position: 1})
+	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: second.Id, Position: 2})
+	e.do("POST", "/series/"+series.Id.String()+"/publish", nil)
+
+	owed := e.store.performances[firstID]
+	owed.Closure.Version = 1
+	e.store.performances[firstID] = owed
+	rec := e.do("POST", "/series/"+series.Id.String()+"/archive", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("owed closure archive: %d %s", rec.Code, rec.Body.String())
+	}
+	conflict := decode[SeriesTransitionConflict](t, rec)
+	if conflict.BlockingPerformanceId == nil || *conflict.BlockingPerformanceId != firstID {
+		t.Fatalf("blocking performance = %v, want %s", conflict.BlockingPerformanceId, firstID)
+	}
+	if e.store.performances[firstID].Status != "published" || e.store.performances[second.Id].Status != "published" {
+		t.Fatal("failed archive preflight partially mutated the series")
+	}
+
+	e.store.closureEmitted[firstID] = 1
+	e.store.emitted[firstID] = false // exercise owed publication before archive
+	e.pub.calls = nil
+	rec = e.do("POST", "/series/"+series.Id.String()+"/archive", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", rec.Code, rec.Body.String())
+	}
+	if !slices.Equal(e.pub.calls, []string{"published", "archived", "archived"}) {
+		t.Fatalf("event order = %v", e.pub.calls)
+	}
+	if e.store.performances[firstID].Status != "archived" || e.store.performances[second.Id].Status != "archived" {
+		t.Fatal("series members were not archived")
+	}
+	e.do("POST", "/series/"+series.Id.String()+"/archive", nil)
+	if !slices.Equal(e.pub.calls, []string{"published", "archived", "archived"}) {
+		t.Fatalf("idempotent archive re-emitted: %v", e.pub.calls)
+	}
+}
+
+func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
+	e := newEnv(t)
+	eventID, performanceID := e.createFixture(true)
+	empty := decode[Series](t, e.do("POST", "/series", SeriesCreate{
+		OrganizerId: orgID, EventId: eventID,
+		Name: LocalizedString{"en": "Empty", "fr": "Vide"},
+	}))
+	for _, action := range []string{"publish", "archive"} {
+		if rec := e.do("POST", "/series/"+empty.Id.String()+"/"+action, nil); rec.Code != http.StatusConflict {
+			t.Fatalf("empty series %s: %d %s", action, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := e.do("POST", "/series/"+empty.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: performanceID, Position: 1}); rec.Code != http.StatusConflict {
+		t.Fatalf("attach published target: %d %s", rec.Code, rec.Body.String())
+	}
+
+	otherOrg, otherEventID, otherPerformanceID, otherSeriesID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	otherEvent := e.store.events[eventID]
+	otherEvent.ID, otherEvent.OrganizerID = otherEventID, otherOrg
+	e.store.events[otherEventID] = otherEvent
+	otherPerformance := e.store.performances[performanceID]
+	otherPerformance.ID, otherPerformance.OrganizerID, otherPerformance.EventID, otherPerformance.Status = otherPerformanceID, otherOrg, otherEventID, "draft"
+	e.store.performances[otherPerformanceID] = otherPerformance
+	otherSeries := store.Series{ID: otherSeriesID, OrganizerID: otherOrg, EventID: otherEventID, Name: store.LocalizedText{"en": "Other", "fr": "Autre"}, Members: []store.SeriesMember{}, CreatedAt: time.Now().UTC()}
+	e.store.series[otherSeriesID] = otherSeries
+	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Season", "fr": "Saison"}}))
+
+	cases := []struct {
+		path string
+		body any
+	}{
+		{"/series/" + empty.Id.String() + "/performances", SeriesPerformanceAttach{PerformanceId: otherPerformanceID, Position: 1}},
+		{"/seasons/" + season.Id.String() + "/series", SeasonSeriesAttach{SeriesId: otherSeriesID}},
+		{"/seasons/" + season.Id.String() + "/events", SeasonEventAttach{EventId: otherEventID}},
+	}
+	for _, tc := range cases {
+		if rec := e.do("POST", tc.path, tc.body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("organizer mismatch %s: %d %s", tc.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 // --- US-009: typed dated slot (kinds, attributes, closure) ---
 
 // dayEnv creates a venue + event and returns their ids for slot-kind tests.
