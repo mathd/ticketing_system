@@ -5,10 +5,14 @@
   "summary": "Record the slot-lifecycle transition idiom (FOR UPDATE) in AGENTS.md",
   "labels": [
     "risk:low",
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "claude",
-  "pr": null,
+  "pr": {
+    "number": 28,
+    "url": "https://github.com/mathd/ticketing_system/pull/28",
+    "state": "open"
+  },
   "classification": "simple",
   "description": "**As** the team, **I want** the catalog slot-lifecycle **transition idiom** recorded in `AGENTS.md`, so US-009/US-011 (and every later slot transition) don't re-introduce the check-then-act race that AI-review caught in TKT-49.\n\n**Priority:** P3\n**Depends on:** — (documentation; TKT-49 is Done and is the reference implementation)\n**Type:** Task · `risk:low` — a docs-only edit to `AGENTS.md`, no code.\n\n**Background:** In TKT-49, the first archive implementation did a conditional `UPDATE ... WHERE status='published'` and then re-read status in a *separate* statement to decide whether to emit the domain event. A concurrent `draft→publish` could commit in between, producing a phantom `performance.archived` event on a still-published row (with a nil `archived_at` → mismatched deterministic id). Codex adversarial review flagged it [BLOCKING]. The fix: decide **and** transition inside one transaction with the row locked `SELECT ... FOR UPDATE` (the same idiom as `services/access/internal/store/postgres.go` redeem). This is a promotable **technical learning** (metrics comment on TKT-49, learning #1) routed through a gated ticket per the '3 houses' rule rather than committed directly to the shared `AGENTS.md`.\n\n**Acceptance Criteria:**\n- [ ] `AGENTS.md` gains a short note (a line or two, in the working-agreement/conventions area) stating: any catalog slot-lifecycle transition that both mutates state AND derives a to-emit decision must decide under `SELECT ... FOR UPDATE` in one transaction; a conditional `UPDATE ... WHERE status=x` followed by a separate re-read is racy and can emit a phantom domain event.\n- [ ] The note cites the reference implementations: `catalog ArchivePerformance` and `access` redeem.\n- [ ] No code change; `make check` still green (docs-only).\n\nQuality gates: `make check` green (docs-only, so trivially); no contract/UI surface.",
   "context": {
@@ -52,6 +56,11 @@
       "stage": "plan-review",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=plan-review kind=plan-final -->\n**Plan-final — codex (gpt-5.5) cross-model critique folded in.** No BLOCKING; 2 SHOULD-FIX + 2 NIT, all accepted (they improve accuracy against the *current* code — US-009/TKT-51 added `CloseSlot`/`ReopenSlot`, both using the same FOR-UPDATE discipline, and `ArchivePerformance` now locks more columns).\n\n**Triage:**\n- [SHOULD] `access redeem` isn't a faithful equal — it's Access ticket-lifecycle, appends a lifecycle event (not a Catalog domain event), and its lock mainly makes duplicate scans idempotent. → Reframed as *the analogous row-lock decision pattern*, not an equal reference. (AC #2 still satisfied — both impls cited.)\n- [SHOULD] Added the caveat: the tx decides + persists the transition and the owed-event markers, then **commits and emits at-least-once *after* the commit** — never publishes while holding the tx (matches the existing catalog emit/mark pattern).\n- [NIT] Softened \"must read the row `SELECT … FOR UPDATE`\" — the real invariant is *decide from the locked current row in one atomic transaction*; `UPDATE … WHERE … RETURNING` is also safe. The racy form is specifically conditional-UPDATE + separate re-read to derive event state.\n- [NIT] \"slot-lifecycle\" was too broad → \"catalog slot state transitions that decide an owed domain event\"; cite `ArchivePerformance` **and** `CloseSlot`/`ReopenSlot` (`toggleClosure`).\n\n**Final AGENTS.md text (one bullet, `## Working agreement`):**\n> **Catalog slot state transitions decide under a row lock.** Any catalog slot transition that both mutates state *and* derives an owed domain event must decide from the locked current row in one transaction — lock it (`SELECT … FOR UPDATE`), apply the transition atomically, then commit and emit the event *at-least-once after the commit* (the existing owed-marker pattern; never publish while holding the tx). A conditional `UPDATE … WHERE status = x` followed by a *separate* re-read to derive event state is racy: a concurrent transition can commit in between and emit a phantom event (e.g. `performance.archived` on a still-published row, nil `archived_at` → mismatched deterministic id). Reference impls: catalog `ArchivePerformance` and `CloseSlot`/`ReopenSlot` in `services/catalog/internal/store/postgres.go`; the same row-lock decision pattern underlies access `Redeem` (`services/access/internal/store/postgres.go`).\n\n**risk:low → Gate 2 (plan approval) skipped.** Proceeding to Building (write the bullet, run `make check`, open PR).\n"
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**Building — docs-only bullet added to `AGENTS.md`.** PR #28.\n\nOne bullet under `## Working agreement` recording the FOR-UPDATE slot-transition idiom (TKT-49 learning #1), with the plan-review corrections folded in: reframed `access Redeem` as the analogous row-lock pattern (not an equal Catalog reference), added the emit-after-commit caveat, softened the SQL over-prescription, and cited the US-009 `CloseSlot`/`ReopenSlot` impls alongside `ArchivePerformance`.\n\n**Gate:** `make check` green. **Diff:** docs-only (`AGENTS.md`), no code/migration/contract surface. Next: codex adversarial pass on the diff → needs:human.\n"
     }
   ]
 }
