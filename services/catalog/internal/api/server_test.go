@@ -183,30 +183,31 @@ func (f *fakeStore) MarkPerformanceArchiveEmitted(_ context.Context, id uuid.UUI
 	return nil
 }
 
-func (f *fakeStore) CloseSlot(_ context.Context, id uuid.UUID, reason *string) (store.Performance, bool, error) {
+func (f *fakeStore) CloseSlot(_ context.Context, id uuid.UUID, reason *string) (store.Performance, bool, bool, error) {
 	return f.toggleClosure(id, "closed", reason)
 }
 
-func (f *fakeStore) ReopenSlot(_ context.Context, id uuid.UUID) (store.Performance, bool, error) {
+func (f *fakeStore) ReopenSlot(_ context.Context, id uuid.UUID) (store.Performance, bool, bool, error) {
 	return f.toggleClosure(id, "open", nil)
 }
 
-func (f *fakeStore) toggleClosure(id uuid.UUID, target string, reason *string) (store.Performance, bool, error) {
+func (f *fakeStore) toggleClosure(id uuid.UUID, target string, reason *string) (store.Performance, bool, bool, error) {
 	p, ok := f.performances[id]
 	if !ok {
-		return store.Performance{}, false, store.ErrNotFound
+		return store.Performance{}, false, false, store.ErrNotFound
 	}
 	if p.Status != "published" {
-		return store.Performance{}, false, store.ErrIllegalTransition
+		return store.Performance{}, false, false, store.ErrIllegalTransition
 	}
 	if p.Closure.Status == target {
-		return p, f.closureEmitted[id] < p.Closure.Version, nil
+		return p, !f.emitted[id], f.closureEmitted[id] < p.Closure.Version, nil
 	}
 	if f.closureEmitted[id] < p.Closure.Version {
-		return store.Performance{}, false, store.ErrClosurePending
+		return store.Performance{}, false, false, store.ErrClosurePending
 	}
 	now := time.Now().UTC()
 	p.Closure.Version++
+	p.Closure.ChangedAt = &now
 	if target == "closed" {
 		p.Closure.Status = "closed"
 		p.Closure.ClosedAt = &now
@@ -217,7 +218,7 @@ func (f *fakeStore) toggleClosure(id uuid.UUID, target string, reason *string) (
 		p.Closure.Reason = nil
 	}
 	f.performances[id] = p
-	return p, true, nil
+	return p, !f.emitted[id], true, nil
 }
 
 func (f *fakeStore) MarkClosureEmitted(_ context.Context, id uuid.UUID, version int32) error {
@@ -1023,6 +1024,36 @@ func TestClosureRejectsUnpublished(t *testing.T) {
 	_, perfID := e.createFixture(false) // draft
 	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusConflict {
 		t.Fatalf("closing a draft must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A closure must never overtake the slot's publication event. If publish
+// commits but its emission fails, a subsequent close emits the owed publication
+// first, then the closure — consumers see publish before closed.
+func TestCloseEmitsOwedPublishBeforeClosure(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(false) // draft + priced (publishable)
+	// publish, but the emission fails: status becomes published, its event owed.
+	e.pub.failNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/publish", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("publish emission failure must be 500, got %d", rec.Code)
+	}
+	if len(e.pub.calls) != 0 {
+		t.Fatalf("failed publish must record nothing, got %v", e.pub.calls)
+	}
+	// close: owed publication emitted before the closure event.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("close: %d %s", rec.Code, rec.Body.String())
+	}
+	if want := []string{"published", "closed"}; !slices.Equal(e.pub.calls, want) {
+		t.Fatalf("emission order = %v, want %v", e.pub.calls, want)
+	}
+	// idempotent re-close emits nothing new.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("re-close: %d", rec.Code)
+	}
+	if len(e.pub.calls) != 2 {
+		t.Fatalf("idempotent re-close must not re-emit, got %v", e.pub.calls)
 	}
 }
 

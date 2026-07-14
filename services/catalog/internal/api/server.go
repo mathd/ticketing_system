@@ -6,6 +6,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -380,51 +381,62 @@ func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, perf
 
 // CloseSlot sets the orthogonal closure attribute to closed and emits the
 // closed event at least once while owed (deterministic id per closure_version,
-// so retried or raced emissions de-duplicate). Resource-idempotent: closing an
-// already-closed slot returns 200 and only re-emits if the event is still owed.
+// so retried or raced emissions de-duplicate). Any publication event still owed
+// for this slot is emitted first, so a closure never overtakes the slot's
+// publication. Resource-idempotent: closing an already-closed slot returns 200
+// and only re-emits while an event is still owed.
 func (s *Server) CloseSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
 	var in SlotCloseRequest
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	p, needsEmit, err := s.store.CloseSlot(r.Context(), performanceId, in.Reason)
+	p, publishNeedsEmit, closureNeedsEmit, err := s.store.CloseSlot(r.Context(), performanceId, in.Reason)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if needsEmit {
-		if err := s.pub.SlotClosed(r.Context(), p); err != nil {
-			s.log.ErrorContext(r.Context(), "closure event emission failed; re-POST close to retry",
-				"performance_id", p.ID, "err", err)
-			writeJSON(w, http.StatusInternalServerError,
-				Error{Error: "slot is closed but the domain event was not emitted; retry close"})
-			return
-		}
-		if err := s.store.MarkClosureEmitted(r.Context(), p.ID, p.Closure.Version); err != nil {
-			s.log.ErrorContext(r.Context(), "closure event emitted but not marked", "performance_id", p.ID, "err", err)
-		}
-	}
-	writeJSON(w, http.StatusOK, performanceToAPI(p))
+	s.emitClosure(w, r, p, publishNeedsEmit, closureNeedsEmit, s.pub.SlotClosed, "close")
 }
 
 // ReopenSlot mirrors CloseSlot for the reverse transition.
 func (s *Server) ReopenSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
-	p, needsEmit, err := s.store.ReopenSlot(r.Context(), performanceId)
+	p, publishNeedsEmit, closureNeedsEmit, err := s.store.ReopenSlot(r.Context(), performanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	if needsEmit {
-		if err := s.pub.SlotReopened(r.Context(), p); err != nil {
-			s.log.ErrorContext(r.Context(), "reopen event emission failed; re-POST reopen to retry",
-				"performance_id", p.ID, "err", err)
+	s.emitClosure(w, r, p, publishNeedsEmit, closureNeedsEmit, s.pub.SlotReopened, "reopen")
+}
+
+// emitClosure emits any owed publication first, then the closure event, marking
+// each only after it is emitted — the publication-before-closure ordering and
+// at-least-once discipline that ArchivePerformance already uses. A failure
+// between emissions retries the already-emitted publication too; its
+// deterministic id makes that safe at the stream.
+func (s *Server) emitClosure(w http.ResponseWriter, r *http.Request, p store.Performance,
+	publishNeedsEmit, closureNeedsEmit bool, emitClosureEvent func(context.Context, store.Performance) error, verb string) {
+	if publishNeedsEmit {
+		if err := s.pub.PerformancePublished(r.Context(), p); err != nil {
+			s.log.ErrorContext(r.Context(), "owed publication event emission failed", "performance_id", p.ID, "err", err)
 			writeJSON(w, http.StatusInternalServerError,
-				Error{Error: "slot is open but the domain event was not emitted; retry reopen"})
+				Error{Error: "slot state changed but its publication event was not emitted; retry " + verb})
+			return
+		}
+		if err := s.store.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
+			s.log.ErrorContext(r.Context(), "publication event emitted but not marked", "performance_id", p.ID, "err", err)
+		}
+	}
+	if closureNeedsEmit {
+		if err := emitClosureEvent(r.Context(), p); err != nil {
+			s.log.ErrorContext(r.Context(), "closure event emission failed; retry to re-emit",
+				"performance_id", p.ID, "verb", verb, "err", err)
+			writeJSON(w, http.StatusInternalServerError,
+				Error{Error: "slot state changed but the closure event was not emitted; retry " + verb})
 			return
 		}
 		if err := s.store.MarkClosureEmitted(r.Context(), p.ID, p.Closure.Version); err != nil {
-			s.log.ErrorContext(r.Context(), "reopen event emitted but not marked", "performance_id", p.ID, "err", err)
+			s.log.ErrorContext(r.Context(), "closure event emitted but not marked", "performance_id", p.ID, "err", err)
 		}
 	}
 	writeJSON(w, http.StatusOK, performanceToAPI(p))

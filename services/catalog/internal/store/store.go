@@ -57,6 +57,9 @@ type Closure struct {
 	ClosedAt *time.Time
 	Reason   *string
 	Version  int32
+	// ChangedAt is the instant of the latest closure transition, persisted so
+	// the closed/reopened event's occurred_at is stable across emission retries.
+	ChangedAt *time.Time
 }
 
 // LocalizedText is locale-keyed text; adding a locale is data, not schema (TKT-36).
@@ -188,12 +191,15 @@ type Store interface {
 	MarkPerformanceArchiveEmitted(ctx context.Context, id uuid.UUID) error
 	// CloseSlot / ReopenSlot toggle the orthogonal closure attribute while the
 	// slot is published (spike §Case 3). Each toggle bumps closure_version;
-	// needsEmit is true while that version's closed/reopened event is owed. A
-	// toggle is refused with ErrClosurePending while a prior closure event is
-	// still owed, so the single marker never loses one. Idempotent: closing an
-	// already-closed slot (or reopening an open one) does not bump the version.
-	CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (perf Performance, needsEmit bool, err error)
-	ReopenSlot(ctx context.Context, id uuid.UUID) (perf Performance, needsEmit bool, err error)
+	// closureNeedsEmit is true while that version's closed/reopened event is
+	// owed. publishNeedsEmit reports whether the publication event is still owed
+	// — the caller emits it BEFORE the closure event so a closure can never
+	// overtake the publication of the same slot. A toggle is refused with
+	// ErrClosurePending while a prior closure event is still owed, so the single
+	// marker never loses one. Idempotent: closing an already-closed slot (or
+	// reopening an open one) does not bump the version.
+	CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
+	ReopenSlot(ctx context.Context, id uuid.UUID) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
 	MarkClosureEmitted(ctx context.Context, id uuid.UUID, version int32) error
 	// ListPublishedEvents returns events having at least one published
 	// performance, each appearing once with all its published slots.

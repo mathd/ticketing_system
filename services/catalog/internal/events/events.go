@@ -144,11 +144,13 @@ func ClosureEventID(subject string, perf store.Performance) string {
 }
 
 func (p *JetStream) SlotClosed(ctx context.Context, perf store.Performance) error {
-	return p.publishClosure(ctx, SubjectSlotClosed, perf, perf.Closure.ClosedAt)
+	return p.publishClosure(ctx, SubjectSlotClosed, perf, perf.Closure.ChangedAt)
 }
 
 func (p *JetStream) SlotReopened(ctx context.Context, perf store.Performance) error {
-	return p.publishClosure(ctx, SubjectSlotReopened, perf, nil)
+	// occurred_at is the persisted transition instant, not time.Now(), so a
+	// retried emission (same deterministic id) carries a byte-stable payload.
+	return p.publishClosure(ctx, SubjectSlotReopened, perf, perf.Closure.ChangedAt)
 }
 
 func (p *JetStream) publishClosure(ctx context.Context, subject string, perf store.Performance, at *time.Time) error {

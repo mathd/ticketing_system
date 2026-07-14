@@ -30,6 +30,10 @@ ALTER TABLE performances
     ADD COLUMN closure_reason text,
     ADD COLUMN closure_version integer NOT NULL DEFAULT 0,
     ADD COLUMN closure_emitted_version integer NOT NULL DEFAULT 0,
+    -- The instant of the latest closure transition, persisted so the
+    -- closed/reopened event's occurred_at is stable across emission retries
+    -- (deterministic id ⇒ byte-stable payload). Set on every toggle.
+    ADD COLUMN closure_changed_at timestamptz,
     -- Forward-compat seam for shared festival capacity (TKT-14/US-011); the
     -- claim mechanics stay out of scope, this must only not dead-end them.
     ADD COLUMN capacity_group_id uuid;
@@ -65,15 +69,25 @@ ALTER TABLE performances ADD CONSTRAINT performances_closure_consistent CHECK (
 UPDATE performances SET kind = 'performance' WHERE kind IS NULL;
 
 -- +goose Down
--- Refuse rollback if any non-performance slot exists: dropping kind would
--- silently reinterpret operating/festival days as performances (and the
--- SET NOT NULL below would fail on their null starts_at). Mirrors 0003's
--- guard so the down is all-or-nothing, never partial DDL.
+-- Fail closed: refuse rollback if ANY row carries TKT-51 state that migration
+-- 0003's schema cannot represent — not just non-performance kinds, but also a
+-- non-default re-entry policy, any closure (current or historical), or a
+-- capacity-group link. Dropping the columns would silently lose all of it, so
+-- the down is all-or-nothing and only pristine baseline performance rows roll
+-- back. Mirrors 0003's guard.
 -- +goose StatementBegin
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM performances WHERE kind <> 'performance') THEN
-        RAISE EXCEPTION 'cannot roll back 0004: non-performance slots exist';
+    IF EXISTS (SELECT 1 FROM performances WHERE NOT (
+        kind = 'performance'
+        AND starts_at IS NOT NULL
+        AND operating_date IS NULL AND opens_at IS NULL AND closes_at IS NULL
+        AND re_entry_mode = 'single' AND max_entries IS NULL AND requires_exit = false
+        AND closure_status = 'open' AND closed_at IS NULL AND closure_reason IS NULL
+        AND closure_version = 0 AND closure_emitted_version = 0 AND closure_changed_at IS NULL
+        AND capacity_group_id IS NULL
+    )) THEN
+        RAISE EXCEPTION 'cannot roll back 0004: rows carry typed-slot state (kind, re-entry, closure or capacity group) not representable in 0003';
     END IF;
 END $$;
 -- +goose StatementEnd
@@ -83,6 +97,7 @@ ALTER TABLE performances DROP CONSTRAINT performances_kind_temporal;
 ALTER TABLE performances ALTER COLUMN starts_at SET NOT NULL;
 ALTER TABLE performances
     DROP COLUMN capacity_group_id,
+    DROP COLUMN closure_changed_at,
     DROP COLUMN closure_emitted_version,
     DROP COLUMN closure_version,
     DROP COLUMN closure_reason,

@@ -254,14 +254,14 @@ func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid
 		        p.operating_date, p.opens_at, p.closes_at, p.timezone,
 		        p.re_entry_mode, p.max_entries, p.requires_exit,
 		        p.closure_status, p.closed_at, p.closure_reason, p.closure_version,
-		        p.capacity_group_id, p.status, p.published_at, p.archived_at,
+		        p.closure_changed_at, p.capacity_group_id, p.status, p.published_at, p.archived_at,
 		        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity
 		 FROM performances p JOIN venues v ON v.id = p.venue_id WHERE p.id = $1`, id).
 		Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.Kind, &perf.StartsAt,
 			&perf.OperatingDate, &opensAt, &closesAt, &perf.Timezone,
 			&perf.ReEntry.Mode, &maxEntries, &perf.ReEntry.RequiresExit,
 			&perf.Closure.Status, &perf.Closure.ClosedAt, &closeReason, &perf.Closure.Version,
-			&capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
+			&perf.Closure.ChangedAt, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
 			&archiveEmitted, &perf.CreatedAt, &perf.Capacity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, nil, nil, fmt.Errorf("performance: %w", ErrNotFound)
@@ -377,26 +377,29 @@ func (p *Postgres) MarkPerformanceArchiveEmitted(ctx context.Context, id uuid.UU
 	return nil
 }
 
-func (p *Postgres) CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (Performance, bool, error) {
+func (p *Postgres) CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (Performance, bool, bool, error) {
 	return p.toggleClosure(ctx, id, "closed", reason)
 }
 
-func (p *Postgres) ReopenSlot(ctx context.Context, id uuid.UUID) (Performance, bool, error) {
+func (p *Postgres) ReopenSlot(ctx context.Context, id uuid.UUID) (Performance, bool, bool, error) {
 	return p.toggleClosure(ctx, id, "open", nil)
 }
 
 // toggleClosure flips the orthogonal closure attribute under a FOR UPDATE lock
 // (same race discipline as archive). Closure is only meaningful while
-// published. Each real transition bumps closure_version; the returned needsEmit
-// says whether that version's domain event is still owed. Re-requesting the
-// current state re-emits only if owed (safe: deterministic id de-duplicates).
-// The opposite toggle is refused while the current version's event is still
-// owed (ErrClosurePending), so the single closure_emitted_version marker can
-// never silently drop a transition.
-func (p *Postgres) toggleClosure(ctx context.Context, id uuid.UUID, target string, reason *string) (Performance, bool, error) {
+// published. Each real transition bumps closure_version and stamps
+// closure_changed_at (so the event occurred_at is stable across retries); the
+// returned closureNeedsEmit says whether that version's domain event is still
+// owed. publishNeedsEmit reports whether the publication event is still owed:
+// the caller emits publication first, so a closure never overtakes the
+// publication of the same slot. Re-requesting the current state re-emits only
+// if owed (safe: deterministic id de-duplicates). The opposite toggle is
+// refused while the current version's event is still owed (ErrClosurePending),
+// so the single closure_emitted_version marker can never silently drop one.
+func (p *Postgres) toggleClosure(ctx context.Context, id uuid.UUID, target string, reason *string) (Performance, bool, bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Performance{}, false, err
+		return Performance{}, false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -407,60 +410,60 @@ func (p *Postgres) toggleClosure(ctx context.Context, id uuid.UUID, target strin
 		 FROM performances WHERE id = $1 FOR UPDATE`, id).
 		Scan(&status, &closureStatus, &version, &emittedVersion)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Performance{}, false, fmt.Errorf("performance: %w", ErrNotFound)
+		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
 	}
 	if err != nil {
-		return Performance{}, false, fmt.Errorf("lock performance: %w", err)
+		return Performance{}, false, false, fmt.Errorf("lock performance: %w", err)
 	}
 	if status != "published" {
 		// A closure attribute is only meaningful on a live (published) slot;
 		// draft/archived slots have nothing to close (spike §Case 3).
-		return Performance{}, false, ErrIllegalTransition
+		return Performance{}, false, false, ErrIllegalTransition
 	}
 
 	if closureStatus == target {
 		// Already in the requested state: no transition. Re-emit only if this
 		// version's event is still owed (a prior emission failed to ack).
-		perf, _, _, err := p.getPerformanceTx(ctx, tx, id)
+		perf, publishedEmitted, _, err := p.getPerformanceTx(ctx, tx, id)
 		if err != nil {
-			return Performance{}, false, err
+			return Performance{}, false, false, err
 		}
 		if err := tx.Commit(); err != nil {
-			return Performance{}, false, fmt.Errorf("commit closure: %w", err)
+			return Performance{}, false, false, fmt.Errorf("commit closure: %w", err)
 		}
-		return perf, emittedVersion < version, nil
+		return perf, publishedEmitted == nil, emittedVersion < version, nil
 	}
 
 	// A real transition is requested. Refuse it while the current version's
 	// event is still owed — toggling now would lose that event under the
 	// single marker. The caller retries the pending transition first.
 	if emittedVersion < version {
-		return Performance{}, false, ErrClosurePending
+		return Performance{}, false, false, ErrClosurePending
 	}
 
 	newVersion := version + 1
 	if target == "closed" {
 		_, err = tx.ExecContext(ctx,
 			`UPDATE performances SET closure_status = 'closed', closed_at = now(),
-			        closure_reason = $2, closure_version = $3 WHERE id = $1`,
+			        closure_reason = $2, closure_version = $3, closure_changed_at = now() WHERE id = $1`,
 			id, reason, newVersion)
 	} else {
 		_, err = tx.ExecContext(ctx,
 			`UPDATE performances SET closure_status = 'open', closed_at = NULL,
-			        closure_reason = NULL, closure_version = $2 WHERE id = $1`,
+			        closure_reason = NULL, closure_version = $2, closure_changed_at = now() WHERE id = $1`,
 			id, newVersion)
 	}
 	if err != nil {
-		return Performance{}, false, fmt.Errorf("toggle closure: %w", err)
+		return Performance{}, false, false, fmt.Errorf("toggle closure: %w", err)
 	}
-	perf, _, _, err := p.getPerformanceTx(ctx, tx, id)
+	perf, publishedEmitted, _, err := p.getPerformanceTx(ctx, tx, id)
 	if err != nil {
-		return Performance{}, false, err
+		return Performance{}, false, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return Performance{}, false, fmt.Errorf("commit closure: %w", err)
+		return Performance{}, false, false, fmt.Errorf("commit closure: %w", err)
 	}
-	return perf, true, nil
+	return perf, publishedEmitted == nil, true, nil
 }
 
 // MarkClosureEmitted advances the closure outbox marker to version (monotonic,
