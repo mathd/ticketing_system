@@ -5,7 +5,7 @@
   "summary": "Record the slot-lifecycle transition idiom (FOR UPDATE) in AGENTS.md",
   "labels": [
     "risk:low",
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "claude",
   "pr": {
@@ -61,6 +61,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Building — docs-only bullet added to `AGENTS.md`.** PR #28.\n\nOne bullet under `## Working agreement` recording the FOR-UPDATE slot-transition idiom (TKT-49 learning #1), with the plan-review corrections folded in: reframed `access Redeem` as the analogous row-lock pattern (not an equal Catalog reference), added the emit-after-commit caveat, softened the SQL over-prescription, and cited the US-009 `CloseSlot`/`ReopenSlot` impls alongside `ArchivePerformance`.\n\n**Gate:** `make check` green. **Diff:** docs-only (`AGENTS.md`), no code/migration/contract surface. Next: codex adversarial pass on the diff → needs:human.\n"
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Building complete — codex (gpt-5.5) adversarial review done, finding folded in.** PR #28.\n\n**Review triage (1 SHOULD-FIX, 0 BLOCKING, all accepted, fixed in-PR):**\n- [SHOULD] The first wording over-claimed: it read as *any* catalog transition that mutates state + derives an owed event needs `FOR UPDATE`. But `PublishPerformance` (draft→published) also derives an owed event and deliberately uses a plain conditional `UPDATE ... WHERE status='draft'` — and that is correct, because a monotonic one-way transition's event id can't be invalidated by a racing opposite/terminal transition. Narrowed the rule to **state-deriving transitions where a concurrent opposite/terminal transition can interleave** (archive, close, reopen), and added an explicit carve-out naming `PublishPerformance` as the safe monotonic case.\n- Everything else verified accurate: `ArchivePerformance`, `CloseSlot`/`ReopenSlot` (via `toggleClosure`), and access `Redeem` are named correctly and do use row locks as described; the phantom-event / nil-`archived_at` failure mode matches the code comments + the `archive_race_smoke_test.go` regression test.\n\nNo blocking findings survive; no incidental backlog tickets spun off (the one finding was a precision fix to the note itself). **Tooling note:** the ai-review codex run hung at \"Reading additional input from stdin…\" for ~5m with the prompt passed as an argument; killed and re-ran once feeding the prompt via stdin redirect (`codex … < prompt`), which completed cleanly — see retro.\n\n`make check` re-run green after the fix. Spike-adjacent but not a spike: docs-only, no CI surface beyond the gate.\n\n**→ needs:human (Gate 3).** Review-guide posted on PR #28. Stopping; no further pushes.\n"
     }
   ]
 }
