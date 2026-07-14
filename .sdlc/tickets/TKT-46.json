@@ -2,7 +2,7 @@
   "key": "TKT-46",
   "type": "Task",
   "summary": "Clean the M1 baseline before M2",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
     "needs:human"
   ],
