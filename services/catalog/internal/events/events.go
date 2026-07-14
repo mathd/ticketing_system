@@ -15,7 +15,10 @@ import (
 	"ticketing/services/catalog/internal/store"
 )
 
-const SubjectPerformancePublished = "platform.catalog.performance.published"
+const (
+	SubjectPerformancePublished = "platform.catalog.performance.published"
+	SubjectPerformanceArchived  = "platform.catalog.performance.archived"
+)
 
 // Envelope is the platform domain-event envelope (ADR-009 §5): minimal
 // identifying payload, versioned shape, type == subject.
@@ -34,10 +37,25 @@ type PerformancePublishedData struct {
 	Capacity      int32     `json:"capacity"`
 }
 
+type PerformanceArchivedData struct {
+	PerformanceID uuid.UUID `json:"performance_id"`
+	EventID       uuid.UUID `json:"event_id"`
+	OrganizerID   uuid.UUID `json:"organizer_id"`
+}
+
 // Publisher is the emission port; the API layer emits through it so tests
 // use a fake and the smoke stack the real stream.
 type Publisher interface {
 	PerformancePublished(ctx context.Context, p store.Performance) error
+	PerformanceArchived(ctx context.Context, p store.Performance) error
+}
+
+func ArchivedEventID(perf store.Performance) string {
+	key := SubjectPerformanceArchived + ":" + perf.ID.String()
+	if perf.ArchivedAt != nil {
+		key += ":" + perf.ArchivedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
 }
 
 // JetStream publishes with acks (js.Publish), never fire-and-forget core
@@ -92,6 +110,27 @@ func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Perform
 	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
 	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
 		return fmt.Errorf("publish %s: %w", SubjectPerformancePublished, err)
+	}
+	return nil
+}
+
+func (p *JetStream) PerformanceArchived(ctx context.Context, perf store.Performance) error {
+	occurred := time.Now().UTC()
+	if perf.ArchivedAt != nil {
+		occurred = *perf.ArchivedAt
+	}
+	id := ArchivedEventID(perf)
+	body, err := json.Marshal(Envelope{
+		ID: id, Type: SubjectPerformanceArchived, OccurredAt: occurred, Schema: 2,
+		Data: PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal envelope: %w", err)
+	}
+	msg := &nats.Msg{Subject: SubjectPerformanceArchived, Data: body}
+	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
+	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
+		return fmt.Errorf("publish %s: %w", SubjectPerformanceArchived, err)
 	}
 	return nil
 }

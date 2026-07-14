@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,20 +28,22 @@ import (
 // fakeStore is an in-memory Store. It mirrors the referential/tenancy checks
 // the SQL enforces; the real queries are exercised by the smoke suite.
 type fakeStore struct {
-	venues       map[uuid.UUID]store.Venue
-	events       map[uuid.UUID]store.Event
-	performances map[uuid.UUID]store.Performance
-	ticketTypes  map[uuid.UUID]store.TicketType
-	emitted      map[uuid.UUID]bool // performance id -> event_emitted_at set
+	venues         map[uuid.UUID]store.Venue
+	events         map[uuid.UUID]store.Event
+	performances   map[uuid.UUID]store.Performance
+	ticketTypes    map[uuid.UUID]store.TicketType
+	emitted        map[uuid.UUID]bool // performance id -> event_emitted_at set
+	archiveEmitted map[uuid.UUID]bool
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		venues:       map[uuid.UUID]store.Venue{},
-		events:       map[uuid.UUID]store.Event{},
-		performances: map[uuid.UUID]store.Performance{},
-		ticketTypes:  map[uuid.UUID]store.TicketType{},
-		emitted:      map[uuid.UUID]bool{},
+		venues:         map[uuid.UUID]store.Venue{},
+		events:         map[uuid.UUID]store.Event{},
+		performances:   map[uuid.UUID]store.Performance{},
+		ticketTypes:    map[uuid.UUID]store.TicketType{},
+		emitted:        map[uuid.UUID]bool{},
+		archiveEmitted: map[uuid.UUID]bool{},
 	}
 }
 
@@ -116,13 +119,33 @@ func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.P
 	if p.Status == "draft" && !f.hasTicketType(id) {
 		return store.Performance{}, false, store.ErrNotSellable
 	}
-	if p.Status != "published" {
+	if p.Status == "archived" {
+		return store.Performance{}, false, store.ErrIllegalTransition
+	}
+	if p.Status == "draft" {
 		now := time.Now().UTC()
 		p.Status = "published"
 		p.PublishedAt = &now
 		f.performances[id] = p
 	}
 	return p, !f.emitted[id], nil
+}
+
+func (f *fakeStore) ArchivePerformance(_ context.Context, id uuid.UUID) (store.Performance, bool, bool, error) {
+	p, ok := f.performances[id]
+	if !ok {
+		return store.Performance{}, false, false, store.ErrNotFound
+	}
+	if p.Status == "draft" {
+		return store.Performance{}, false, false, store.ErrIllegalTransition
+	}
+	if p.Status == "published" {
+		now := time.Now().UTC()
+		p.Status = "archived"
+		p.ArchivedAt = &now
+		f.performances[id] = p
+	}
+	return p, !f.emitted[id], !f.archiveEmitted[id], nil
 }
 
 func (f *fakeStore) hasTicketType(performanceID uuid.UUID) bool {
@@ -136,6 +159,11 @@ func (f *fakeStore) hasTicketType(performanceID uuid.UUID) bool {
 
 func (f *fakeStore) MarkPerformanceEventEmitted(_ context.Context, id uuid.UUID) error {
 	f.emitted[id] = true
+	return nil
+}
+
+func (f *fakeStore) MarkPerformanceArchiveEmitted(_ context.Context, id uuid.UUID) error {
+	f.archiveEmitted[id] = true
 	return nil
 }
 
@@ -178,8 +206,21 @@ func (f *fakeStore) GetPublishedEvent(_ context.Context, id uuid.UUID) (store.Ev
 }
 
 type fakePublisher struct {
-	published []store.Performance
-	failNext  bool
+	published       []store.Performance
+	archived        []store.Performance
+	calls           []string // ordered emission log: "published" | "archived"
+	failNext        bool
+	failArchiveNext bool
+}
+
+func (f *fakePublisher) PerformanceArchived(_ context.Context, p store.Performance) error {
+	if f.failArchiveNext {
+		f.failArchiveNext = false
+		return errors.New("nats down")
+	}
+	f.archived = append(f.archived, p)
+	f.calls = append(f.calls, "archived")
+	return nil
 }
 
 func (f *fakePublisher) PerformancePublished(_ context.Context, p store.Performance) error {
@@ -188,6 +229,7 @@ func (f *fakePublisher) PerformancePublished(_ context.Context, p store.Performa
 		return errors.New("nats down")
 	}
 	f.published = append(f.published, p)
+	f.calls = append(f.calls, "published")
 	return nil
 }
 
@@ -464,6 +506,143 @@ func TestPublishUnknownPerformance(t *testing.T) {
 	rec := e.do("POST", "/performances/"+uuid.NewString()+"/publish", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status %d", rec.Code)
+	}
+}
+
+func TestArchiveEmitsOnceAndIsIdempotent(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", rec.Code, rec.Body.String())
+	}
+	p := decode[Performance](t, rec)
+	if p.Status != Archived || p.ArchivedAt == nil {
+		t.Fatalf("archived response = %+v", p)
+	}
+	if len(e.pub.archived) != 1 {
+		t.Fatalf("expected 1 archive emission, got %d", len(e.pub.archived))
+	}
+	if rec = e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("re-archive: %d", rec.Code)
+	}
+	if len(e.pub.archived) != 1 {
+		t.Fatalf("re-archive must not re-emit, got %d", len(e.pub.archived))
+	}
+}
+
+func TestArchiveRejectsDraftUnknownAndRepublish(t *testing.T) {
+	e := newEnv(t)
+	_, draftID := e.createFixture(false)
+	if rec := e.do("POST", "/performances/"+draftID.String()+"/archive", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("archive draft: want 409, got %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+uuid.NewString()+"/archive", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("archive unknown: want 404, got %d", rec.Code)
+	}
+	_, publishedID := e.createFixture(true)
+	if rec := e.do("POST", "/performances/"+publishedID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive published: %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+publishedID.String()+"/publish", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("republish archived: want 409, got %d", rec.Code)
+	}
+}
+
+func TestArchiveRetriesEmissionAfterFailure(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	e.pub.failArchiveNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed archive emission: want 500, got %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive retry: %d", rec.Code)
+	}
+	if len(e.pub.archived) != 1 {
+		t.Fatalf("retry should emit archive once, got %d", len(e.pub.archived))
+	}
+}
+
+func TestArchiveEmitsOwedPublishBeforeArchive(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(false)
+	e.pub.failNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/publish", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed publish emission: want 500, got %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.published) != 1 || len(e.pub.archived) != 1 {
+		t.Fatalf("owed events: published=%d archived=%d", len(e.pub.published), len(e.pub.archived))
+	}
+	// The owed publication must be emitted BEFORE the archive event — asserting
+	// on the ordered call log, not just slice lengths, so a reversal is caught.
+	if want := []string{"published", "archived"}; !slices.Equal(e.pub.calls, want) {
+		t.Fatalf("emission order = %v, want %v", e.pub.calls, want)
+	}
+}
+
+// TestArchiveRetryReplaysOwedPublishBeforeArchive covers the interleaving where
+// the owed publication emits but the archive emission then fails: the retry
+// must replay the still-owed publication (same deterministic id) again before
+// the archive, never emitting the archive first.
+func TestArchiveRetryReplaysOwedPublishBeforeArchive(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(false)
+	// Publish with a failed emission so the publication stays owed.
+	e.pub.failNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/publish", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed publish emission: want 500, got %d", rec.Code)
+	}
+	// First archive: the owed publication emits, then the archive emission fails.
+	e.pub.failArchiveNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed archive emission: want 500, got %d", rec.Code)
+	}
+	// Retry archive: the archive emission failed before the publish marker was
+	// written, so the still-owed publication is replayed (safe: its deterministic
+	// id de-duplicates at the stream) and only then is the archive emitted. The
+	// contract is at-least-once emission, NOT invocation-exactly-once — so the
+	// invariant is ordering, not call count: no archive event is ever emitted
+	// before its owed publication.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive retry: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.archived) < 1 {
+		t.Fatalf("archive event never emitted: calls=%v", e.pub.calls)
+	}
+	// The final emission is the archive; every archive in the log is preceded by
+	// at least one publication (publication is always emitted first).
+	if got := e.pub.calls[len(e.pub.calls)-1]; got != "archived" {
+		t.Fatalf("last emission = %q, want archived; calls=%v", got, e.pub.calls)
+	}
+	seenPublished := false
+	for _, c := range e.pub.calls {
+		switch c {
+		case "published":
+			seenPublished = true
+		case "archived":
+			if !seenPublished {
+				t.Fatalf("archive emitted before any publication: calls=%v", e.pub.calls)
+			}
+		}
+	}
+}
+
+func TestArchivedPerformanceExcludedFromPublicReads(t *testing.T) {
+	e := newEnv(t)
+	eventID, perfID := e.createFixture(true)
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d", rec.Code)
+	}
+	list := decode[PublicEventList](t, e.do("GET", "/public/events?locale=en", nil))
+	if len(list.Events) != 0 {
+		t.Fatalf("archived performance remains listed: %+v", list.Events)
+	}
+	if rec := e.do("GET", "/public/events/"+eventID.String()+"?locale=en", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("all-archived detail: want 404, got %d", rec.Code)
 	}
 }
 

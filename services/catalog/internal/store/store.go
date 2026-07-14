@@ -21,6 +21,9 @@ var (
 	// forever ("no sellable offer, no listing" would hide a published slot
 	// whose event consumers already saw).
 	ErrNotSellable = errors.New("performance has no ticket type")
+	// ErrIllegalTransition reports a lifecycle transition that the explicit
+	// draft -> published -> archived state machine does not allow.
+	ErrIllegalTransition = errors.New("illegal performance lifecycle transition")
 )
 
 // LocalizedText is locale-keyed text; adding a locale is data, not schema (TKT-36).
@@ -51,8 +54,9 @@ type Performance struct {
 	VenueID     uuid.UUID
 	StartsAt    time.Time
 	Timezone    string
-	Status      string // draft | published
+	Status      string // draft | published | archived
 	PublishedAt *time.Time
+	ArchivedAt  *time.Time
 	CreatedAt   time.Time
 	// Capacity is the publication-time snapshot used to provision the
 	// inventory-owned dated-slot pool. It is not persisted on performances.
@@ -125,6 +129,11 @@ type Store interface {
 	// (event_emitted_at is null) — the caller emits, then marks.
 	PublishPerformance(ctx context.Context, id uuid.UUID) (perf Performance, needsEmit bool, err error)
 	MarkPerformanceEventEmitted(ctx context.Context, id uuid.UUID) error
+	// ArchivePerformance flips published->archived (idempotent). The two
+	// marker booleans report whether the publication and archive events are
+	// still owed, respectively.
+	ArchivePerformance(ctx context.Context, id uuid.UUID) (perf Performance, publishNeedsEmit, archiveNeedsEmit bool, err error)
+	MarkPerformanceArchiveEmitted(ctx context.Context, id uuid.UUID) error
 	// ListPublishedEvents returns events having at least one published
 	// performance, each appearing once with all its published slots.
 	ListPublishedEvents(ctx context.Context) ([]EventAggregate, error)

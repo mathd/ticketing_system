@@ -82,8 +82,8 @@ paths:
       summary: Publish a performance (idempotent)
       description: >
         Flips draft to published and emits the
-        platform.catalog.performance.published domain event exactly on the
-        draft-to-published transition (envelope id is deterministic per
+        platform.catalog.performance.published domain event at least once
+        while it is owed (envelope id is deterministic per
         publication, so retried or raced emissions de-duplicate). Publishing
         an already-published performance returns 200 without re-emitting.
         Publishing a performance with no ticket type is a 409 — the
@@ -100,7 +100,35 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: No sellable offer — create a ticket type before publishing
+          description: No sellable offer, or archived performances cannot be re-published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /performances/{performanceId}/archive:
+    post:
+      operationId: archivePerformance
+      summary: Archive a published performance (idempotent)
+      description: >
+        Flips published to archived and emits the
+        platform.catalog.performance.archived domain event at least once
+        while it is owed. Retried or raced emissions de-duplicate at the
+        stream using a deterministic envelope id. Any publication event still
+        owed is emitted before the archive event. Re-archiving returns 200;
+        archiving a draft returns 409.
+      parameters:
+        - $ref: '#/components/parameters/PerformanceId'
+      responses:
+        '200':
+          description: Performance is archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Performance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Draft performances cannot be archived
           content:
             application/json:
               schema:
@@ -360,10 +388,14 @@ components:
           type: string
         status:
           type: string
-          enum: [draft, published]
+          enum: [draft, published, archived]
         published_at:
           type: string
           format: date-time
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
         created_at:
           type: string
           format: date-time
