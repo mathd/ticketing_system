@@ -89,6 +89,41 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("typed-slot CHECK constraints reject invalid rows", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID, eventID := uuid.New(), uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'m') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'v',10 FROM o RETURNING id
+		)
+		INSERT INTO events(id,organizer_id,name) SELECT $3,id,'{"en":"e","fr":"e"}' FROM o`,
+			organizerID, venueID, eventID); err != nil {
+			t.Fatal(err)
+		}
+		ins := func(cols, vals string) error {
+			_, err := db.ExecContext(ctx, `INSERT INTO performances
+				(organizer_id,event_id,venue_id,timezone`+cols+`)
+				VALUES ($1,$2,$3,'UTC'`+vals+`)`, organizerID, eventID, venueID)
+			return err
+		}
+		bad := map[string][2]string{
+			"performance carrying an operating window": {",kind,operating_date,opens_at,closes_at,starts_at", ",'performance',DATE '2026-07-04','10:00','18:00',now()"},
+			"day kind carrying starts_at":              {",kind,operating_date,opens_at,closes_at,starts_at", ",'operating_day',DATE '2026-07-04','10:00','18:00',now()"},
+			"count_limited without max_entries":         {",starts_at,re_entry_mode", ",now(),'count_limited'"},
+			"max_entries on single mode":                {",starts_at,re_entry_mode,max_entries", ",now(),'single',5"},
+			"open closure carrying closed_at":           {",starts_at,closure_status,closed_at", ",now(),'open',now()"},
+		}
+		for name, cv := range bad {
+			if err := ins(cv[0], cv[1]); err == nil {
+				t.Fatalf("CHECK should have rejected: %s", name)
+			}
+		}
+	})
+
 	t.Run("rollback refuses non-performance slots without partial DDL", func(t *testing.T) {
 		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {

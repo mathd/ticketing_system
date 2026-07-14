@@ -153,6 +153,9 @@ func (f *fakeStore) ArchivePerformance(_ context.Context, id uuid.UUID) (store.P
 		return store.Performance{}, false, false, store.ErrIllegalTransition
 	}
 	if p.Status == "published" {
+		if f.closureEmitted[id] < p.Closure.Version {
+			return store.Performance{}, false, false, store.ErrClosurePending
+		}
 		now := time.Now().UTC()
 		p.Status = "archived"
 		p.ArchivedAt = &now
@@ -1020,6 +1023,29 @@ func TestClosureRejectsUnpublished(t *testing.T) {
 	_, perfID := e.createFixture(false) // draft
 	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusConflict {
 		t.Fatalf("closing a draft must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Archiving must not strand an owed closure event: while the closed event is
+// unemitted, archive is refused (409) so the toggle can still re-emit it. Once
+// emitted, archive-from-closed proceeds (spike §Case 3).
+func TestArchiveRefusedWhileClosureOwed(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	e.pub.failClosureNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("close emission failure: %d", rec.Code)
+	}
+	// closure event owed (emitted=0 < version=1): archive must refuse.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("archive while closure owed must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	// re-emit the owed closure, then archive succeeds.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("retry close: %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive after closure emitted: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

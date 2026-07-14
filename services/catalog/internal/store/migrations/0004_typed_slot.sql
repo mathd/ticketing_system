@@ -37,9 +37,16 @@ ALTER TABLE performances
 -- Only kind 'performance' carries an instant; day kinds carry the operating
 -- window. Enforced so a slot can never be temporally ambiguous.
 ALTER TABLE performances ALTER COLUMN starts_at DROP NOT NULL;
+-- Exclusive by kind: a performance carries ONLY an instant; a day kind carries
+-- ONLY the operating window. Forbidding the wrong-kind fields keeps the public
+-- read's COALESCE unambiguous (a day row can never also carry a starts_at that
+-- would silently win over its operating window).
 ALTER TABLE performances ADD CONSTRAINT performances_kind_temporal CHECK (
-    (kind = 'performance' AND starts_at IS NOT NULL)
+    (kind = 'performance'
+        AND starts_at IS NOT NULL
+        AND operating_date IS NULL AND opens_at IS NULL AND closes_at IS NULL)
     OR (kind IN ('festival_day', 'operating_day')
+        AND starts_at IS NULL
         AND operating_date IS NOT NULL AND opens_at IS NOT NULL AND closes_at IS NOT NULL)
 );
 -- count_limited needs its ceiling; the other modes must not carry one.

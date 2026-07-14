@@ -319,8 +319,10 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 	defer func() { _ = tx.Rollback() }()
 
 	var status string
+	var closureVersion, closureEmitted int32
 	err = tx.QueryRowContext(ctx,
-		`SELECT status FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+		`SELECT status, closure_version, closure_emitted_version
+		 FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status, &closureVersion, &closureEmitted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
 	}
@@ -332,6 +334,13 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 		// Only published offers archive (draft->archived is illegal).
 		return Performance{}, false, false, ErrIllegalTransition
 	case "published":
+		// A closed slot can be archived (spike §Case 3) — but not while its
+		// closed/reopened event is still owed: archiving strands the slot in a
+		// terminal state where the closure toggle can no longer re-emit it, so
+		// the event would be lost. Refuse until it is emitted (retry close/reopen).
+		if closureEmitted < closureVersion {
+			return Performance{}, false, false, ErrClosurePending
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE performances SET status = 'archived', archived_at = now() WHERE id = $1`, id); err != nil {
 			return Performance{}, false, false, fmt.Errorf("archive: %w", err)
