@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,6 +208,7 @@ func (f *fakeStore) GetPublishedEvent(_ context.Context, id uuid.UUID) (store.Ev
 type fakePublisher struct {
 	published       []store.Performance
 	archived        []store.Performance
+	calls           []string // ordered emission log: "published" | "archived"
 	failNext        bool
 	failArchiveNext bool
 }
@@ -217,6 +219,7 @@ func (f *fakePublisher) PerformanceArchived(_ context.Context, p store.Performan
 		return errors.New("nats down")
 	}
 	f.archived = append(f.archived, p)
+	f.calls = append(f.calls, "archived")
 	return nil
 }
 
@@ -226,6 +229,7 @@ func (f *fakePublisher) PerformancePublished(_ context.Context, p store.Performa
 		return errors.New("nats down")
 	}
 	f.published = append(f.published, p)
+	f.calls = append(f.calls, "published")
 	return nil
 }
 
@@ -572,6 +576,58 @@ func TestArchiveEmitsOwedPublishBeforeArchive(t *testing.T) {
 	}
 	if len(e.pub.published) != 1 || len(e.pub.archived) != 1 {
 		t.Fatalf("owed events: published=%d archived=%d", len(e.pub.published), len(e.pub.archived))
+	}
+	// The owed publication must be emitted BEFORE the archive event — asserting
+	// on the ordered call log, not just slice lengths, so a reversal is caught.
+	if want := []string{"published", "archived"}; !slices.Equal(e.pub.calls, want) {
+		t.Fatalf("emission order = %v, want %v", e.pub.calls, want)
+	}
+}
+
+// TestArchiveRetryReplaysOwedPublishBeforeArchive covers the interleaving where
+// the owed publication emits but the archive emission then fails: the retry
+// must replay the still-owed publication (same deterministic id) again before
+// the archive, never emitting the archive first.
+func TestArchiveRetryReplaysOwedPublishBeforeArchive(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(false)
+	// Publish with a failed emission so the publication stays owed.
+	e.pub.failNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/publish", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed publish emission: want 500, got %d", rec.Code)
+	}
+	// First archive: the owed publication emits, then the archive emission fails.
+	e.pub.failArchiveNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed archive emission: want 500, got %d", rec.Code)
+	}
+	// Retry archive: the archive emission failed before the publish marker was
+	// written, so the still-owed publication is replayed (safe: its deterministic
+	// id de-duplicates at the stream) and only then is the archive emitted. The
+	// contract is at-least-once emission, NOT invocation-exactly-once — so the
+	// invariant is ordering, not call count: no archive event is ever emitted
+	// before its owed publication.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive retry: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.archived) < 1 {
+		t.Fatalf("archive event never emitted: calls=%v", e.pub.calls)
+	}
+	// The final emission is the archive; every archive in the log is preceded by
+	// at least one publication (publication is always emitted first).
+	if got := e.pub.calls[len(e.pub.calls)-1]; got != "archived" {
+		t.Fatalf("last emission = %q, want archived; calls=%v", got, e.pub.calls)
+	}
+	seenPublished := false
+	for _, c := range e.pub.calls {
+		switch c {
+		case "published":
+			seenPublished = true
+		case "archived":
+			if !seenPublished {
+				t.Fatalf("archive emitted before any publication: calls=%v", e.pub.calls)
+			}
+		}
 	}
 }
 

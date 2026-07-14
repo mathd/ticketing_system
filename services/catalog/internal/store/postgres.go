@@ -207,10 +207,26 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 	return perf, emittedAt == nil, nil
 }
 
+// rowQueryer is satisfied by both *sql.DB and *sql.Tx, so getPerformance can
+// read either outside a transaction or inside the archive lock.
+type rowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func (p *Postgres) getPerformance(ctx context.Context, id uuid.UUID) (Performance, *sql.NullTime, *sql.NullTime, error) {
+	return p.getPerformanceFrom(ctx, p.db, id)
+}
+
+// getPerformanceTx reads the row through the open transaction, so it observes
+// the just-applied archive UPDATE and keeps the FOR UPDATE lock held.
+func (p *Postgres) getPerformanceTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (Performance, *sql.NullTime, *sql.NullTime, error) {
+	return p.getPerformanceFrom(ctx, tx, id)
+}
+
+func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Performance, *sql.NullTime, *sql.NullTime, error) {
 	var perf Performance
 	var emitted, archiveEmitted sql.NullTime
-	err := p.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT p.id, p.organizer_id, p.event_id, p.venue_id, p.starts_at, p.timezone,
 		        p.status, p.published_at, p.archived_at, p.event_emitted_at,
 		        p.archive_emitted_at, p.created_at, v.ga_capacity
@@ -245,19 +261,49 @@ func (p *Postgres) GetPublishedPerformance(ctx context.Context, id uuid.UUID) (P
 	return perf, nil
 }
 
+// ArchivePerformance flips published->archived, deciding and transitioning
+// inside one transaction with the row locked FOR UPDATE. The lock closes the
+// check-then-act race: a concurrent publish cannot commit between reading the
+// status and applying the transition, so archive can never emit an archive
+// event for a row that is still published (nor derive a second, nil-timestamp
+// archive id). draft is rejected; already-archived is idempotent.
 func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Performance, bool, bool, error) {
-	res, err := p.db.ExecContext(ctx,
-		`UPDATE performances SET status = 'archived', archived_at = now()
-		 WHERE id = $1 AND status = 'published'`, id)
-	if err != nil {
-		return Performance{}, false, false, fmt.Errorf("archive: %w", err)
-	}
-	perf, publishedEmitted, archiveEmitted, err := p.getPerformance(ctx, id)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Performance{}, false, false, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 && perf.Status == "draft" {
+	defer func() { _ = tx.Rollback() }()
+
+	var status string
+	err = tx.QueryRowContext(ctx,
+		`SELECT status FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
+	}
+	if err != nil {
+		return Performance{}, false, false, fmt.Errorf("lock performance: %w", err)
+	}
+	switch status {
+	case "draft":
+		// Only published offers archive (draft->archived is illegal).
 		return Performance{}, false, false, ErrIllegalTransition
+	case "published":
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE performances SET status = 'archived', archived_at = now() WHERE id = $1`, id); err != nil {
+			return Performance{}, false, false, fmt.Errorf("archive: %w", err)
+		}
+	case "archived":
+		// Idempotent: leave the row (and its archived_at) untouched.
+	default:
+		return Performance{}, false, false, ErrIllegalTransition
+	}
+
+	perf, publishedEmitted, archiveEmitted, err := p.getPerformanceTx(ctx, tx, id)
+	if err != nil {
+		return Performance{}, false, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Performance{}, false, false, fmt.Errorf("commit archive: %w", err)
 	}
 	return perf, publishedEmitted == nil, archiveEmitted == nil, nil
 }
