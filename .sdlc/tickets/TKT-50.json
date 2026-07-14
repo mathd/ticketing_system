@@ -1,0 +1,50 @@
+{
+  "key": "TKT-50",
+  "type": "Spike",
+  "parent": "TKT-2",
+  "summary": "US-008 (SPIKE): Pressure-test the generalized dated-slot model",
+  "classification": "complex",
+  "labels": [
+    "risk:low"
+  ],
+  "description": "**As** the team, **I want** to prove the ADR-005 slot abstraction survives the hard cases **before** US-009 (TKT-51) hardens the schema, so a bad generic design doesn't hurt every downstream vertical.\n\n**Priority:** P0\n**Type:** Spike (timeboxed, no production code — analysis + ADR amendment only)\n**Depends on:** —\n\n`risk:low` — investigation only, produces docs/an ADR, touches no service code or migration; the schema decision it produces is what US-009 implements under the full plan gate. (Challengeable: if the spike ends up needing throwaway prototype code in a service, drop the label.)\n\n**Acceptance Criteria:**\n- [ ] A written analysis (in `docs/` + an ADR-005 amendment) models three stress cases against a candidate slot shape: **re-entry** (a park pass holder exits and re-enters the same operating day — multi-entry vs the single-redemption performance case), **mid-day capacity change** (an operating day's capacity is raised/cut while entries are live — where the number-of-authority lives, catalog vs inventory, and behaviour when cut below current occupancy), and **weather closure** (an operating day closes partway through — slot state, effect on already-admitted vs not-yet-arrived holders, refund signalling)\n- [ ] For each case the analysis names **which attributes live on the catalog slot** vs **what the inventory claim core owns** (the ADR-005 boundary), and produces the concrete attribute set + state machine US-009 will implement (slot kind, operating hours, re-entry policy, closure)\n- [ ] Verdict: the unified model holds (with the documented attribute shape) **or** a scoped exception is recorded as a new ADR — either outcome unblocks US-009 with a decided schema\n\nQuality gate (spike): the output is a reviewed decision doc/ADR, not code; no `make check` surface. Exit is the recorded verdict.",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-005",
+        "date": "2026-07-12",
+        "rule": "Every admission-granting offer (performance, festival day, park operating day) is a dated slot in one inventory machinery; passes are entitlements to claim slot entries; lodging/day resources reserve through the same contention-safe core; slot attributes carry domain specifics — the claim primitive does not fork."
+      },
+      {
+        "id": "ADR-002",
+        "date": "2026-07-12",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only."
+      },
+      {
+        "id": "ADR-003",
+        "date": "2026-07-12",
+        "rule": "Append-only trails, one discipline: money journal is immutable/hash-chained/signed and ticket/entitlement state changes are append-only lifecycle events; trails are pseudonymous (no raw PII in any append-only record); NF525 is a later-phase profile that must layer on without schema or flow changes."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-2 catalog & event structure user stories (US-007…US-011)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-005 unified dated-slot admission — the load-bearing abstraction this epic hardens; §Consequences names re-entry/mid-day-capacity/weather-closure as the pressure tests",
+        "link": "docs/adr/ADR-005-unified-dated-slot-admission.md"
+      },
+      {
+        "summary": "M1 catalog baseline: 0001_catalog_schema.sql (organizers/venues/events/performances/ticket_types), publish + performance.published event, aggregated TTL reads",
+        "link": "services/catalog/internal/store/"
+      }
+    ],
+    "capturedAt": "2026-07-14"
+  },
+  "links": [],
+  "comments": [],
+  "status": "Backlog",
+  "assignee": null,
+  "pr": null
+}
