@@ -14,16 +14,20 @@ GitHub Actions workflows live in `.github/workflows/`:
 |---|---|---|
 | `check.yaml` | every PR and push to `main` | `make check` plus the gate self-test |
 | `hermetic.yaml` | weekly and build-surface PR changes | in-Docker `make smoke-hermetic` |
+| `security.yaml` | every PR, weekly, and manual | Go/pnpm advisories plus repository misconfiguration and secret scanning |
 
-Workflow inputs are executable dependencies and must be pinned and reviewed. Reusable automation
-should only be extracted after real repetition appears.
+Workflow actions are pinned to full commit SHAs with release comments; action-installed tools are
+version-pinned too. Dependabot proposes weekly action updates, which still require review. Reusable
+automation should only be extracted after real repetition appears.
 
 ## Triggers & required checks
 
 `make check` is the merge gate and runs generation drift checks, Go/TypeScript lint and tests,
 builds, and the isolated Compose smoke suite. `gate-selftest` independently confirms the gate fails
 when lint, test, or build defects are seeded. Repository branch-protection settings are outside this
-repo; do not claim a required-review/check policy that is not visible or verified.
+repo; do not claim a required-review/check policy that is not visible or verified. The security
+workflow is a separate blocking signal: Go findings are reachability-aware, while pnpm and Trivy
+fail on high or critical findings.
 
 Run this locally before handoff:
 

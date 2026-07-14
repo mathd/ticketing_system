@@ -11,13 +11,17 @@ The system is a local Docker Compose testbed, not a production deployment.
 - Only the gateway publishes the application port. Infrastructure ports bind to `127.0.0.1`.
 - The gateway exposes an explicit route table; `/internal/` service routes are denied publicly.
 - Go service images use a distroless non-root runtime. Dependency lockfiles and module checksums are
-  committed.
+  committed. Container images are pinned by exact tag and multi-platform digest; workflow actions
+  are pinned by full commit SHA.
 - Public contracts are request-validated; service tests validate response conformance.
 - Money and ticket histories are append-only. QR tickets use a dedicated Ed25519 key namespace and
   redemption verifies signed immutable facts.
 - Logs must not contain payment tokens, QR credentials, raw email addresses, or hostile failed-event
   bodies. Access logs only recipient/link hashes and publishes sanitized failure records.
 - `make check` runs lint, tests, builds, and real-stack smoke checks in CI and locally.
+- The `security` workflow runs on every pull request, weekly, and on demand. It fails on reachable Go
+  vulnerabilities, high-or-critical pnpm advisories, or high-or-critical Trivy filesystem findings
+  across dependencies, IaC configuration, and detected secrets.
 
 ## Input and data handling
 
@@ -33,9 +37,10 @@ The system is a local Docker Compose testbed, not a production deployment.
 
 Review maintenance, license, scope, and advisories before adding a dependency. Pin application
 dependencies through Go modules and `pnpm-lock.yaml`; pin executable container/workflow inputs as
-described in [`dependencies-and-versions.md`](dependencies-and-versions.md). Automated advisory,
-secret, and image scanning must only be claimed once its workflow exists and its failure policy is
-documented.
+described in [`dependencies-and-versions.md`](dependencies-and-versions.md). Dependabot proposes
+weekly updates but does not bypass review or the quality gates. Security findings are blocking at
+the thresholds above; suppressions require a narrow, documented rationale with an expiry or removal
+condition.
 
 ## Not yet production-ready
 
