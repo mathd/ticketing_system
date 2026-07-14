@@ -2,10 +2,14 @@
   "key": "TKT-45",
   "type": "Task",
   "summary": "Harden scanner capture recovery and QR corruption tests",
-  "status": "Backlog",
+  "status": "Done",
   "labels": [],
-  "assignee": null,
-  "pr": null,
+  "assignee": "Codex",
+  "pr": {
+    "number": 10,
+    "url": "https://github.com/mathd/ticketing_system/pull/10",
+    "state": "merged"
+  },
   "parent": null,
   "classification": "simple",
   "description": "Follow-up from TKT-30 review. Surface `BarcodeDetector.detect()` runtime failures to the gate operator and return them to the paste path; add a deterministic QR signature-corruption helper/assertion rather than mutating the final base64url character, whose unused bits can occasionally decode to unchanged bytes. Keep this out of TKT-30’s reviewed PR.",
@@ -30,7 +34,17 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated from non-blocking TKT-30 review observations; no feature correctness defect is deferred."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout metrics\n\n| stage | duration |\n|---|---:|\n| Backlog | n/a — incorporated into TKT-46 |\n\nhuman-wait total: n/a\ndiff: included in TKT-46 / PR #10 (+3,255/−1,078, 91 files)\n\nlearnings:\n- Camera detection rejection must stop hardware and preserve a usable operator fallback.\n- Signature corruption tests should mutate decoded signed bytes, not ambiguous base64url tail bits.\n\nretro:\n- Implemented and verified as R5 of TKT-46 to avoid duplicate work; PR #10 merged as `06b00453`.\n- The distinct unmount/re-entry race found later remains tracked in TKT-48."
     }
   ],
-  "links": []
+  "links": [
+    {
+      "type": "incorporated-by",
+      "key": "TKT-46"
+    }
+  ]
 }
