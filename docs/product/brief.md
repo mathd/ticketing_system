@@ -26,7 +26,12 @@ Status: draft for Gate 1 · Date: 2026-07-12 · Source: owner discovery intervie
 
 **Success metric** — A scripted end-to-end demo passes on a clean machine: `docker compose up` → create venue/event → simulated contended on-sale (N buyers > capacity, zero oversell) → purchase (fake PSP) → QR e-ticket → gate scan (duplicate rejected) → the sale's hash-chained journal entries verify and the ticket's full lifecycle trace (issued → delivered → redeemed) is reconstructible. Secondary (testbed): every shipped ticket passed the full SDLC pipeline gates.
 
-**Feasibility** — *Read in the repo*: no application code exists; only docs scaffold, the `sdlc-ticket` skill and the local board (`.sdlc/`). `docs/{configuration,development,docker,testing}.md` describe a Python scaffold that does **not** apply — superseded by ADR-001 (Go + TypeScript). Local gate is currently `pre-commit run --all-files`; the real gate is defined in US-001. *Inferred, not verified here*: NF525 (LNE/AFNOR NF525, art. 286-I-3° bis CGI) imposes inalterability/security/conservation/archiving on cash-register software — one driver (with the owner's traceability directive) of ADR-003's append-only trails; contention-safe reservation wants a single-writer inventory service (ADR-002).
+**Feasibility** — *Verified through completed M1*: the Go/TypeScript service estate runs under
+Docker Compose, and `make check` proves the full GA path against real PostgreSQL and JetStream.
+The five-service boundary remains a deliberate complexity cost for this testbed (ADR-002).
+*Inferred, not independently verified here*: NF525 (LNE/AFNOR NF525, art. 286-I-3° bis CGI)
+imposes inalterability/security/conservation/archiving on cash-register software—one driver, with
+the owner's traceability directive, for ADR-003's append-only trails.
 
 ## Pre-mortem (lens note)
 

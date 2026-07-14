@@ -1,193 +1,64 @@
 # Continuous Delivery
 
-These conventions cover how code moves from commit to running in production: the pipeline, hooks, release flow, and deployment strategy.
+## Current scope
 
-The goal is to keep `main` in a state where it can be deployed at any time. This is the **Continuous Delivery** approach described in *Continuous Delivery: Reliable Software Releases through Build, Test, and Deployment Automation* (Humble & Farley, 2010). We prefer it when feasible for three reasons:
+The repository currently has continuous integration, not an application release or deployment
+pipeline. Pull requests and pushes to `main` run the same deterministic quality gate used locally.
+Docker Compose is the only runtime topology; no commit is automatically deployed to an environment.
 
-- **Lower deployment risk** — small, frequent changes are easier to test, review, and roll back than batched releases.
-- **Faster feedback** — defects surface within minutes of being introduced, not weeks.
-- **Reduced release overhead** — releases become routine operations rather than crisis events.
+## Workflow structure
 
-> **These are guidelines, not mandates.** The tools and patterns documented here (GitHub Actions, Docker, Commitizen, uv) are the defaults of this template. Individual projects can deviate when there's a real reason — different deployment target, regulatory constraints, client tooling, etc. When you deviate, capture the decision in an [ADR](../adr/) so the next dev understands why.
+GitHub Actions workflows live in `.github/workflows/`:
 
-For the high-level engineering principles this builds on, see [technical-delivery-standards.md](../technical-delivery-standards.md).
-
----
-
-## Workflow Structure
-
-GitHub Actions workflows live in `.github/workflows/`. Composite actions (shared setup steps) live in `.github/actions/`.
-
-**File naming:**
-
-| File | Purpose |
-|---|---|
-| `ci.yaml` | Quality gates on every PR and push to `main` (lint, types, tests, build) |
-| `release.yaml` | Triggered by a `v*` tag push — builds release artifacts, creates GitHub Release |
-| `deploy-<env>.yaml` | One per deployment environment (e.g. `deploy-dev.yaml`, `deploy-prod.yaml`) |
-| `nightly.yaml` | Scheduled heavy jobs (E2E, image scans, perf) |
-
-**Rules:**
-
-- One workflow per concern — don't pile deploy steps into `ci.yaml`.
-- Setup logic that repeats across jobs goes into a composite action under `.github/actions/` (see the existing `setup-project`).
-- Workflow names are kebab-case; the `name:` field is human-readable Title Case.
-
----
-
-## Triggers & Required Checks
-
-The shipped `ci.yaml` runs on PRs and on direct pushes to `main` / `develop`, plus manual `workflow_dispatch`. These automated checks complement the human gate of [code review](pull-requests.md#code-review) — a PR can only merge when both pass.
-
-| Job | What it does | Blocking for merge to `main`? |
+| Workflow | Trigger | Responsibility |
 |---|---|---|
-| `code-quality` | `pyright` types, `ruff` lint, `ruff format`, pre-commit | **Yes** |
-| `test` | `pytest` with coverage | **Yes** |
-| `build` | Docker image build (`docker/build-push-action`) | **Yes** |
+| `check.yaml` | every PR and push to `main` | `make check` plus the gate self-test |
+| `hermetic.yaml` | weekly and build-surface PR changes | in-Docker `make smoke-hermetic` |
 
-**Branch protection (configure in GitHub repo settings):**
+Workflow inputs are executable dependencies and must be pinned and reviewed. Reusable automation
+should only be extracted after real repetition appears.
 
-- `main` requires all three checks above to pass
-- At least one review approval (see [pull-requests.md](pull-requests.md))
-- No direct pushes — PRs only
-- No force-pushes
+## Triggers & required checks
 
----
+`make check` is the merge gate and runs generation drift checks, Go/TypeScript lint and tests,
+builds, and the isolated Compose smoke suite. `gate-selftest` independently confirms the gate fails
+when lint, test, or build defects are seeded. Repository branch-protection settings are outside this
+repo; do not claim a required-review/check policy that is not visible or verified.
 
-## Speed Conventions
-
-> **Target: PR pipeline under 5 minutes.** Slow pipelines erode trust and push devs to "skip CI."
-
-- **Parallelize** quality checks. The shipped `code-quality` job runs `types`, `lint`, `format`, and pre-commit with `if: always()` so one failure doesn't mask the others.
-- **Sequence only what's necessary.** The `build` job depends on `code-quality` + `test` — don't burn build minutes on broken code.
-- **Cache aggressively** via the `setup-project` composite action (uv cache, Python install).
-- **Move heavy work off the PR path.** E2E, image scans, dependency audits, perf benchmarks → nightly cron or `workflow_dispatch`.
-
----
-
-## Pre-commit ↔ CI Alignment
-
-Pre-commit hooks (see [`.pre-commit-config.yaml`](../../.pre-commit-config.yaml)) run locally on every commit and at `pre-push`. CI re-runs them via `pre-commit-ci/lite-action` to catch hooks devs skipped (`--no-verify`) or hooks that were updated after the last `pre-commit install`.
-
-**Rules:**
-
-- **Pin the same versions everywhere.** A hook's `rev:` in `.pre-commit-config.yaml` and the equivalent dev dependency in `pyproject.toml` (e.g. `ruff`, `pyright`, `commitizen`) must match — local and CI must produce the same result.
-- **Don't add a CI step for what pre-commit already does.** If a check runs in pre-commit, the `pre-commit-ci/lite-action` step is enough — don't re-implement it as a separate job.
-- **Fast hooks only in pre-commit.** Anything over ~5 seconds total belongs in CI, not in the commit loop.
-
----
-
-## Secrets in CI
-
-| Use | How |
-|---|---|
-| Tokens, API keys | GitHub Actions repository or environment secrets |
-| Cloud auth (GCP, AWS, Azure) | **OIDC federation** — no long-lived service account keys (see [Workload Identity](security.md#workload-identity)) |
-| Sensitive runtime values | `::add-mask::` so they don't leak in logs |
-
-Detailed guidance lives in [security.md](security.md#secrets-management).
-
----
-
-## Artifact Versioning
-
-Every deployable artifact (Docker image, release tarball, etc.) needs two pieces of information:
-
-| Identifier | Purpose | Example |
-|---|---|---|
-| **Git SHA** | Immutable traceability — exactly which commit is running | `sha-abc1234` |
-| **Semver tag** | Human-readable release identity, drives changelog and rollback | `v1.4.2` |
-
-For Docker images, tag every build with both where applicable:
-
-```
-app:sha-abc1234    # immutable, one per commit — what continuous deployment uses
-app:v1.4.2         # only on tagged releases — what staging/prod reference
-app:latest         # mutable, points to the most recent main build (use sparingly)
-```
-
-The combined PEP 440 form `1.4.2+sha.abc1234` is useful for the `__version__` string in code — the part after `+` is build metadata, doesn't affect version ordering, but preserves the link back to the source commit.
-
----
-
-## Releases
-
-Tagged releases are driven by [Conventional Commits](commits-and-branching.md#conventional-commits) and [Commitizen](https://commitizen-tools.github.io/commitizen/). The config in `pyproject.toml` (`[tool.commitizen]`) uses:
-
-- `version_provider = "pep621"` — version read from `[project].version` (single source of truth)
-- `tag_format = "v$version"` — tags look like `v1.4.2`
-- `update_changelog_on_bump = true` — `CHANGELOG.md` is regenerated on every bump
-
-**Flow:**
+Run this locally before handoff:
 
 ```bash
-# From an up-to-date main
-uv run cz bump        # bumps [project].version, regenerates CHANGELOG.md, creates v$version tag
-git push --follow-tags
+make deps
+make check
 ```
 
-Pushing the `v*` tag triggers `release.yaml`, which builds release artifacts and publishes a GitHub Release with notes from `CHANGELOG.md`.
+Use focused package tests while iterating. Do not weaken or skip a failing check to make a branch
+green; diagnose flakes and record non-obvious fixes in `docs/LEARNINGS.md`.
 
-**Rules:**
+## Pre-commit ↔ CI alignment
 
-- **Only bump from `main`** — never from a feature branch.
-- **Never edit `[project].version` by hand.** Always go through `cz bump`.
-- **Breaking changes** (commits with `!` or `BREAKING CHANGE:` footer) bump MAJOR — see the [SemVer table](commits-and-branching.md#conventional-commits).
+There is no pre-commit or pre-push hook framework configured. Local/CI alignment comes from both
+calling the Makefile targets with pinned tool versions. Contributors may use personal hooks, but
+they are not project policy and cannot replace `make check`.
 
----
+## Artifacts and releases
 
-## Continuous Deployment
+The gate builds local service/frontend artifacts and smoke images only. The project does not publish
+versioned images, tarballs, GitHub Releases, or a changelog, and it has no SemVer release process.
+If M2 introduces published artifacts, define immutable identifiers, provenance, promotion, rollback,
+and signing in an ADR and workflow before calling the process continuous delivery.
 
-Every commit on `main` ships to `dev` automatically, traceable by its git SHA. Higher environments (`staging`, `prod`) promote by semver tag.
+## Deployment
 
-| Environment | Trigger | Artifact identifier | Approval |
-|---|---|---|---|
-| `dev` | Merge to `main` | `app:sha-<short>` | None |
-| `staging` | `v*` tag push | `app:v<version>` | None |
-| `prod` | Manual promotion from `staging` | `app:v<version>` | Required reviewer |
+There are no dev, staging, or production environments. `docker compose up` starts a local stack;
+`make smoke` owns and removes a separate `ticketing-smoke` project. Cloud credentials, deployment
+approvals, environment secrets, and production rollback procedures are therefore not current
+repository concepts.
 
-> **Note:** The "Required reviewer" for `prod` is a **deployment approver** — a separate gate from the [PR code reviewer](pull-requests.md#code-review). The two roles may overlap (same person) or be distinct (e.g., SRE/ops approves deploys, engineering approves code), depending on the team.
+## Failures and reruns
 
-**Why both SHA and tag identifiers?**
-
-- The **SHA-based deployment to `dev`** gives every commit a real environment to be observed in — feedback within minutes, not at the next release.
-- The **tag-based promotion to `staging` / `prod`** gives operators a stable, human-readable identifier to deploy and roll back against.
-
-**Build once, deploy many.** The Docker image built at CI time is the same image promoted through every environment — no re-builds between `dev`, `staging`, and `prod`. This is a core CD principle from Humble & Farley: the artifact tested in `dev` must be byte-for-byte identical to what runs in `prod`.
-
-**Implementation:**
-
-- One workflow per environment under `.github/workflows/deploy-<env>.yaml`.
-- Use [GitHub Deployment Environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments-for-deployment) to scope secrets and require approvals per environment.
-- Production secrets live in the `prod` environment only — they must not be readable from `ci.yaml` or non-prod jobs.
-
----
-
-## Dependency Updates
-
-Use **Dependabot** or **Renovate** to keep dependencies current.
-
-| Update type | Policy |
-|---|---|
-| Patch (`x.y.Z`) | Auto-merge after CI passes |
-| Minor (`x.Y.0`) | Manual review |
-| Major (`X.0.0`) | Manual review + smoke test |
-| Security advisories | Triage within 24h, regardless of type |
-
-GitHub Actions versions (`uses: actions/checkout@v4`) are updated the same way — pin to a major version, let the tool handle minor/patch bumps.
-
----
-
-## Failures & Re-runs
-
-**On a failure on `main`:**
-
-- Alert the team channel (Slack/Teams) — failed `main` pipelines block everyone's releases.
-- Investigate before re-running. **Don't blanket-retry.**
-
-**On a flaky job:**
-
-- First flake: open an issue, link to the failed run.
-- Recurring flake: triage as a bug, not "re-run until green." Document the root cause in [LEARNINGS.md](../LEARNINGS.md) once resolved.
-
-**Re-runs are tracked.** GitHub records the re-run count on each workflow run — high re-run counts on a single workflow are a signal to fix the underlying flake, not a measure of resilience.
+- Investigate a failed `main` or PR job before rerunning it.
+- Treat recurring flakes as defects; do not rerun until green.
+- Keep the fast and hermetic smoke paths behaviorally equivalent.
+- When a future deployment pipeline exists, document its incident and rollback policy here rather
+  than inheriting a template process.

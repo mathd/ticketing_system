@@ -82,12 +82,12 @@ Date: YYYY-MM-DD
 ## References *(optional)*
 <!--
   Link to supporting materials:
-  - Jira tickets
-  - Slack discussions
+  - Local TKT tickets / board context
+  - In-repo design or product documents
   - External documentation
   - Related ADRs
 -->
 
-- [PROJ-XXX](https://your-org.atlassian.net/browse/PROJ-XXX)
+- TKT-XXX
 - [Related ADR](link)
 - [External docs](link)
