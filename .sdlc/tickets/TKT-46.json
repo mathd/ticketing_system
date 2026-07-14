@@ -1,0 +1,84 @@
+{
+  "key": "TKT-46",
+  "type": "Task",
+  "summary": "Clean the M1 baseline before M2",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "complex",
+  "description": "Apply the accepted 2026-07-13 full-codebase review in one M2-readiness PR, as directed by the owner. The work repairs the concurrent checkout completion race, makes every OpenAPI contract enforceable, hardens JetStream poison-message behavior and Access migrations/scanner recovery, reconciles all repository documentation with the running Go/TS system, pins executable supply-chain inputs, and completes the lower-priority resource/input/hygiene recommendations.\n\nConditions of Success:\n- Concurrent identical checkouts can only publish and return the one persisted guest order reference; a real-PostgreSQL race test proves it\n- Inventory, Commerce, Payments, and Access committed OpenAPI specs are served and checked against implementation behavior in the gate\n- Permanently invalid Access events do not retry forever; transient failure behavior is bounded and observable\n- TKT-44 migration-upgrade and TKT-45 scanner-recovery/corruption coverage are implemented\n- PostgreSQL version authority, M1/M2 roadmap state, README, AGENTS.md, architecture, development, Docker, security, delivery, and solution-design docs agree with the actual repository\n- Executable container/action inputs are pinned and dependency/security automation reflects what is actually configured\n- Database/HTTP resource policies, strict JSON decoding, stale headers/generated files, and review-report tracking are cleaned up\n- `make check` and the relevant race/integration tests pass; the review report marks R1-R13 complete\n\nSource: docs/reviews/2026-07-13-code-review.md (R1-R13).",
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Remove correctness, contract, documentation, supply-chain, and hygiene debt that would make M2 build on an unreliable baseline."
+    },
+    "scope": {
+      "state": "met",
+      "note": "In: exactly review R1-R13, including TKT-44/TKT-45. Out: TKT-43 production PSP recovery and all new M2 capability work."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Exact generator/validator choice per non-Catalog OpenAPI service and immutable image/action versions are resolved from current project tooling during planning; neither changes the accepted architecture."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "M1/TKT-1 is Done; no open blockers. TKT-44 and TKT-45 are incorporated follow-ups, not prerequisites."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Apply recommendations sequentially on one branch, with a mandatory mini-plan and focused verification for each; retain the full make check gate."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "First executable slice is critical R1: transactional compare-and-return checkout completion plus a real-PostgreSQL race proof. Remaining accepted review items follow on the same owner-requested PR."
+    },
+    "success": {
+      "state": "met",
+      "note": "All 13 review checkboxes complete, duplicate follow-ups reconciled, full gate green, adversarial review clean, and documentation describes the M2-ready truth."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-003",
+        "rule": "Money and ticket lifecycle trails remain append-only and pseudonymous.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-009",
+        "rule": "Public and internal service boundaries are contract-first; committed specs must not drift from handlers.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-011",
+        "rule": "Checkout is idempotent and recovery-aware; a completed order must expose one canonical durable outcome.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-012",
+        "rule": "Access ticket issuance, guest capabilities, lifecycle events, and QR credentials remain Access-owned.",
+        "date": "2026-07-13"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Accepted M2-readiness code review, R1-R13",
+        "link": "docs/reviews/2026-07-13-code-review.md"
+      },
+      {
+        "summary": "M1 architecture and service ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "capturedAt": "2026-07-13"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness — READY WITH SCOPE WARNING\nAll seven DoR items pass and there are no blockers. The owner explicitly requested all accepted review issues in one new PR. This will exceed the normal small-review preference and touches concurrency, contracts, CI, containers, and documentation, so it is not `risk:low`; the normal plan gate applies. Implementation is sequenced recommendation-by-recommendation, starting with the approved R1 transaction/race-test plan.\n\nGate 1: owner prioritizes TKT-46 by moving it to Ready."
+    }
+  ]
+}
