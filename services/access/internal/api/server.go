@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +14,7 @@ import (
 	"ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
 	"ticketing/shared/contract"
+	"ticketing/shared/httpx"
 )
 
 type Server struct {
@@ -114,19 +114,10 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner unavailable"})
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
-	defer func() { _ = r.Body.Close() }()
 	var input struct {
 		QRPayload string `json:"qr_payload"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || input.QRPayload == "" {
-		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
-		return
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if err := httpx.DecodeJSON(w, r, &input, 8<<10); err != nil || input.QRPayload == "" {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 		return
 	}

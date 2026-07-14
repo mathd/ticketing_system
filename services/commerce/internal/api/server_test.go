@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ticketing/shared/fakepsp"
@@ -40,14 +41,23 @@ func TestPaymentFailureResponse(t *testing.T) {
 	}
 }
 
-func TestReserveRejectsUnknownFields(t *testing.T) {
+func TestReserveRejectsNonStrictJSON(t *testing.T) {
 	s := New(nil, http.DefaultClient, "", "", "", "")
-	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(`{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"amount":1}`))
-	req.Header.Set("Idempotency-Key", "strict-json")
-	res := httptest.NewRecorder()
-	s.Router().ServeHTTP(res, req)
-	if res.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d want=%d", res.Code, http.StatusBadRequest)
+	valid := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1}`
+	for name, body := range map[string]string{
+		"unknown field":  strings.TrimSuffix(valid, "}") + `,"amount":1}`,
+		"trailing value": valid + `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "strict-json")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d", res.Code, http.StatusBadRequest)
+			}
+		})
 	}
 }
 

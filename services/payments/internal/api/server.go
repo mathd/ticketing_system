@@ -14,6 +14,7 @@ import (
 	"ticketing/services/payments/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/fakepsp"
+	"ticketing/shared/httpx"
 )
 
 const (
@@ -55,10 +56,7 @@ func (s *Server) authorized(r *http.Request) bool {
 	return s.credential != "" && r.Header.Get("X-Internal-Token") == s.credential
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
-	if d.Decode(v) != nil {
+	if httpx.DecodeJSON(w, r, v, 1<<20) != nil {
 		write(w, 400, map[string]string{"error": "invalid body"})
 		return false
 	}

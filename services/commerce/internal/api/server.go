@@ -24,6 +24,7 @@ import (
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/fakepsp"
+	"ticketing/shared/httpx"
 )
 
 var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
@@ -66,10 +67,7 @@ func write(w http.ResponseWriter, c int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
-	if d.Decode(v) != nil {
+	if httpx.DecodeJSON(w, r, v, 1<<20) != nil {
 		write(w, 400, map[string]string{"error": "invalid body"})
 		return false
 	}

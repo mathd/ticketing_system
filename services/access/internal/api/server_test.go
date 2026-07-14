@@ -9,16 +9,24 @@ import (
 	"ticketing/services/access/internal/ticket"
 )
 
-func TestScanRejectsTrailingJSONBeforeRedeeming(t *testing.T) {
+func TestScanRejectsNonStrictJSONBeforeRedeeming(t *testing.T) {
 	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(`{"qr_payload":"not-a-ticket"}{}`))
-	New(nil, verifier).Router().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnprocessableEntity)
+	for name, body := range map[string]string{
+		"unknown field":  `{"qr_payload":"not-a-ticket","unexpected":true}`,
+		"trailing value": `{"qr_payload":"not-a-ticket"}{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(body))
+			request.Header.Set("Content-Type", "application/json")
+			New(nil, verifier).Router().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnprocessableEntity)
+			}
+		})
 	}
 }
 
