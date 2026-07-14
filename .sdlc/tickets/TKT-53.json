@@ -53,5 +53,35 @@
   "comments": [],
   "status": "Backlog",
   "assignee": null,
-  "pr": null
+  "pr": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Ship the festival catalog skeleton: a festival containing festival-day slots that draw on a shared festival capacity, so TKT-14 can layer multi-day passes/zones onto a real structure (epic COS #1, festival skeleton)."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: festival grouping festival_day slots (US-009 kind) referencing a shared festival capacity (not per-day independent pools); publication events expressing the shared-capacity relationship for inventory to provision; API to create festival + days + shared-capacity linkage; lifecycle (US-007) on the festival cascading to days; organizer_id-scoped; public reads listing a festival + its days as one grouped offer (ADR-004 tier). OUT (TKT-14): multi-day pass products, zones/stages, RFID media, camping add-on, and the actual shared-capacity claim mechanics (TKT-4)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "The catalog/inventory boundary for shared festival capacity is decided by the US-008 spike + inherited by US-009's event shape; remaining choices (festival↔day↔shared-capacity modelling, cascade semantics) are engineering for Planning. No product decision pending here."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked-by TKT-51 (festival_day is a US-009 slot kind) and TKT-52 (a festival groups like a season). Both identified/linked; not claimable until both are Done (board open-blocker guard). It is the deepest node in the epic's dependency DAG."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Add a festival grouping + shared-capacity reference in services/catalog over the US-009 typed slots and the US-010 grouping machinery; express the shared-capacity link in the publication envelope so inventory provisions it; cascade the US-007 lifecycle festival→days; new grouped public read with an ADR-004 tier. Contract-first."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Vertical slice: create a festival with two festival_day slots on a shared capacity, publish → storefront lists them as one grouped offer (browser-verified), the shared-capacity relationship visible in the emitted event."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS = the 4 ACs incl. the explicit TKT-14 non-goals + quality gates (make check, contract tests, ADR-004 tier, browser-verified)."
+    }
+  }
 }
