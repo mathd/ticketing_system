@@ -2,10 +2,8 @@
   "key": "TKT-30",
   "type": "Story",
   "summary": "US-006: Gate scan with duplicate rejection",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "codex",
   "pr": "https://github.com/mathd/ticketing_system/pull/9",
   "parent": "TKT-1",
