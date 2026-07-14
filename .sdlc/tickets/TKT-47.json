@@ -1,0 +1,64 @@
+{
+  "key": "TKT-47",
+  "type": "Task",
+  "summary": "Add happy-path contract coverage and choose response-drift policy",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "standard",
+  "description": "Follow-up from PR #10 review. Runtime OpenAPI response validation is the only coupling between strict response schemas and hand-built handler payloads. Add representative 2xx contract tests for every endpoint and explicitly decide whether production response drift should fail closed with 500 or log and pass through.\n\nConditions of Success:\n- Every documented endpoint has a happy-path test that drives the real handler response through contract middleware\n- Tests fail when a handler response drifts from its committed schema\n- The production response-drift policy is explicitly chosen and documented\n- If the current fail-closed policy remains, operational logging/metrics make contract-generated 500s diagnosable\n- make check passes",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-46"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Prevent spec/handler response drift from reaching production unnoticed."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Happy-path contract tests for current endpoints plus response-drift runtime policy and observability."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "Owner decision: retain fail-closed 500 behavior or log and pass through in production.",
+      "owner": "human"
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Builds on the shared contract middleware introduced by TKT-46."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Exercise real handlers through middleware using service fixtures; record the runtime policy in docs/ADR if behavior changes."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Prove one Commerce 2xx response passes and deliberate drift fails before expanding the table."
+    },
+    "success": {
+      "state": "met",
+      "note": "All endpoint happy paths are covered and runtime drift behavior is intentional and observable."
+    }
+  },
+  "context": {
+    "reference": [
+      {
+        "summary": "PR #10 human review finding 2",
+        "link": "https://github.com/mathd/ticketing_system/pull/10"
+      }
+    ],
+    "capturedAt": "2026-07-13"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness — BLOCKED ON POLICY DECISION\nImplementation and coverage scope are clear. Before prioritization, the owner must choose whether runtime response-schema drift remains fail-closed with HTTP 500 or becomes log-and-passthrough. The tests are required under either policy."
+    }
+  ]
+}
