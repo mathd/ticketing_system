@@ -95,7 +95,7 @@
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Gate-3 human review changes folded in; exact `make check` green; pushed SHA `89f9a33`.**\n\n- Fixed the contract mismatch by documenting organizer mismatch as 400 on all three attach operations; 409 now describes membership/freeze conflicts only. Generated TypeScript contract updated.\n- Added handler coverage for all-or-nothing series archive, owed closure exact blocking slot, publication-before-archive emission, archive idempotency, empty series publish/archive, non-draft target freeze, and cross-organizer attach responses.\n- Extended the real gateway/PostgreSQL/NATS/storefront smoke flow through series archive, two archive events, idempotent retry, and public disappearance.\n- Added a 20-iteration real PostgreSQL race between two-row `ArchiveSeries` and direct single-row `ArchivePerformance`; both calls complete and both members end archived, exercising ADR-015's no-lock-cycle claim.\n\nNo finding was deferred. Per the one-pass rule, human Gate-3 feedback does not trigger another Codex run. The earlier cross-model stage remains unsuccessful due the tracked unsupported-model defect, so the ticket returns to `agent:ai-review` rather than advancing silently."
     }
   ],
-  "status": "Building",
+  "status": "PO Review",
   "assignee": "Codex",
   "pr": {
     "number": 33,
