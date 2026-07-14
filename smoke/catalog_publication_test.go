@@ -403,6 +403,169 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	}
 }
 
+func TestSeriesSeasonPublicationAndStorefrontGrouping(t *testing.T) {
+	catalog := gatewayURL + "/api/catalog"
+	suffixBytes := make([]byte, 4)
+	_, _ = rand.Read(suffixBytes)
+	suffix := hex.EncodeToString(suffixBytes)
+	venue := created(t, catalog+"/venues", map[string]any{
+		"organizer_id": organizerID, "name": "Series Hall", "ga_capacity": 300,
+	})
+	event := created(t, catalog+"/events", map[string]any{
+		"organizer_id": organizerID,
+		"name":         map[string]string{"fr": "Événement " + suffix, "en": "Event " + suffix},
+	})
+	performanceIDs := make([]string, 0, 2)
+	for i, startsAt := range []string{"2026-11-01T19:00:00Z", "2026-11-02T19:00:00Z"} {
+		perf := created(t, catalog+"/performances", map[string]any{
+			"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+			"starts_at": startsAt, "timezone": "America/Toronto",
+		})
+		performanceIDs = append(performanceIDs, fmt.Sprint(perf["id"]))
+		created(t, catalog+"/ticket-types", map[string]any{
+			"organizer_id": organizerID, "performance_id": perf["id"],
+			"name":  map[string]string{"fr": fmt.Sprintf("Soir %d", i+1), "en": fmt.Sprintf("Night %d", i+1)},
+			"price": map[string]any{"amount": 3000 + i*500, "currency": "CAD"},
+		})
+	}
+	seriesName := "Autumn run " + suffix
+	series := created(t, catalog+"/series", map[string]any{
+		"organizer_id": organizerID, "event_id": event["id"],
+		"name": map[string]string{"fr": "Série automne " + suffix, "en": seriesName},
+	})
+	for i, id := range performanceIDs {
+		if code, body := postJSON(t, fmt.Sprintf("%s/series/%v/performances", catalog, series["id"]), map[string]any{
+			"performance_id": id, "position": i + 1,
+		}); code != http.StatusOK {
+			t.Fatalf("attach member %d: %d %s", i, code, body)
+		}
+	}
+	season := created(t, catalog+"/seasons", map[string]any{
+		"organizer_id": organizerID,
+		"name":         map[string]string{"fr": "Saison " + suffix, "en": "Season " + suffix},
+	})
+	if code, body := postJSON(t, fmt.Sprintf("%s/seasons/%v/series", catalog, season["id"]), map[string]any{"series_id": series["id"]}); code != http.StatusOK {
+		t.Fatalf("attach season series: %d %s", code, body)
+	}
+	if code, body := postJSON(t, fmt.Sprintf("%s/seasons/%v/events", catalog, season["id"]), map[string]any{"event_id": event["id"]}); code != http.StatusOK {
+		t.Fatalf("attach duplicate season event path: %d %s", code, body)
+	}
+
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := js.Stream(t.Context(), "PLATFORM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, err := stream.CreateOrUpdateConsumer(t.Context(), jetstream.ConsumerConfig{
+		Durable: "smoke-series-publish-" + suffix, FilterSubject: "platform.catalog.performance.published",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishURL := fmt.Sprintf("%s/series/%v/publish", catalog, series["id"])
+	if code, body := postJSON(t, publishURL, nil); code != http.StatusOK {
+		t.Fatalf("series publish: %d %s", code, body)
+	}
+	seen := map[string]bool{}
+	for range 2 {
+		msg, err := consumer.Next(jetstream.FetchMaxWait(15 * time.Second))
+		if err != nil {
+			t.Fatalf("series member event: %v", err)
+		}
+		var envelope struct {
+			Data struct {
+				PerformanceID string `json:"performance_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		seen[envelope.Data.PerformanceID] = true
+		_ = msg.Ack()
+	}
+	for _, id := range performanceIDs {
+		if !seen[id] {
+			t.Fatalf("missing publication for %s: %v", id, seen)
+		}
+	}
+	if code, body := postJSON(t, publishURL, nil); code != http.StatusOK {
+		t.Fatalf("idempotent series publish: %d %s", code, body)
+	}
+	if _, err := consumer.Next(jetstream.FetchMaxWait(500 * time.Millisecond)); err == nil {
+		t.Fatal("idempotent series publish emitted another event")
+	}
+
+	code, body, headers := getWithHeaders(t, fmt.Sprintf("%s/public/seasons/%v?locale=en", catalog, season["id"]))
+	if code != http.StatusOK || strings.Count(string(body), fmt.Sprintf(`"id":"%v"`, event["id"])) != 1 {
+		t.Fatalf("season event dedupe: %d %s", code, body)
+	}
+	if headers.Get("Cache-Control") != "public, max-age=300, s-maxage=300" {
+		t.Fatalf("season cache tier = %q", headers.Get("Cache-Control"))
+	}
+	code, page, _ := getWithHeaders(t, fmt.Sprintf("%s/en/events/%v", gatewayURL, event["id"]))
+	if code != http.StatusOK || strings.Count(string(page), seriesName) != 1 {
+		t.Fatalf("storefront series heading: %d %.800s", code, page)
+	}
+	if strings.Index(string(page), "Night 1") > strings.Index(string(page), "Night 2") {
+		t.Fatalf("storefront ignored series position: %.800s", page)
+	}
+
+	archiveConsumer, err := stream.CreateOrUpdateConsumer(t.Context(), jetstream.ConsumerConfig{
+		Durable: "smoke-series-archive-" + suffix, FilterSubject: "platform.catalog.performance.archived",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveURL := fmt.Sprintf("%s/series/%v/archive", catalog, series["id"])
+	if code, body := postJSON(t, archiveURL, nil); code != http.StatusOK {
+		t.Fatalf("series archive: %d %s", code, body)
+	}
+	archived := map[string]bool{}
+	for range 2 {
+		msg, err := archiveConsumer.Next(jetstream.FetchMaxWait(15 * time.Second))
+		if err != nil {
+			t.Fatalf("series archive member event: %v", err)
+		}
+		var envelope struct {
+			Data struct {
+				PerformanceID string `json:"performance_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		archived[envelope.Data.PerformanceID] = true
+		_ = msg.Ack()
+	}
+	for _, id := range performanceIDs {
+		if !archived[id] {
+			t.Fatalf("missing archive event for %s: %v", id, archived)
+		}
+	}
+	if code, body := postJSON(t, archiveURL, nil); code != http.StatusOK {
+		t.Fatalf("idempotent series archive: %d %s", code, body)
+	}
+	if _, err := archiveConsumer.Next(jetstream.FetchMaxWait(500 * time.Millisecond)); err == nil {
+		t.Fatal("idempotent series archive emitted another event")
+	}
+	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/events/%v?locale=en", catalog, event["id"])); code != http.StatusNotFound {
+		t.Fatalf("all-archived series event remains public: %d %s", code, body)
+	}
+	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/seasons/%v?locale=en", catalog, season["id"])); code != http.StatusNotFound {
+		t.Fatalf("season with no published events: %d %s", code, body)
+	}
+}
+
 // TestTypedDaySlotPublication drives a non-performance slot (operating_day)
 // through the real stack (US-009): create + price + publish, assert the Schema-2
 // envelope carries its kind + capacity, inventory provisions the same pool

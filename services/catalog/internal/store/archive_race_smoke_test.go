@@ -124,3 +124,86 @@ func TestArchiveDoesNotRacePublish(t *testing.T) {
 		}
 	}
 }
+
+// TestSeriesArchiveDoesNotDeadlockDirectArchive exercises ADR-015's shared-lock
+// argument against real PostgreSQL: the series path owns the series row and
+// locks two slot rows in UUID order, while the direct path locks only one of
+// those slots. Either path may win that slot, but no lock cycle can form and
+// both idempotent archive calls must complete with the whole run archived.
+func TestSeriesArchiveDoesNotDeadlockDirectArchive(t *testing.T) {
+	dsn := os.Getenv("CATALOG_MIGRATION_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("CATALOG_MIGRATION_TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = admin.Close() }()
+	migrations, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := "catalog_series_race_" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec("DROP SCHEMA " + schema + " CASCADE") }()
+	db, err := sql.Open("pgx", dsn+"?search_path="+schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := NewPostgres(db)
+
+	for i := 0; i < 20; i++ {
+		orgID, venueID, eventID := uuid.New(), uuid.New(), uuid.New()
+		firstID, secondID, seriesID := uuid.New(), uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `
+			WITH o AS (INSERT INTO organizers(id,name) VALUES($1,'series race') RETURNING id),
+			     v AS (INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'v',10 FROM o RETURNING id),
+			     e AS (INSERT INTO events(id,organizer_id,name) SELECT $3,id,'{"en":"e","fr":"e"}' FROM o RETURNING id),
+			     p1 AS (INSERT INTO performances(id,organizer_id,event_id,venue_id,starts_at,timezone,status,published_at,event_emitted_at)
+			            SELECT $4,o.id,e.id,v.id,now(),'UTC','published',now(),now() FROM o,e,v RETURNING id),
+			     p2 AS (INSERT INTO performances(id,organizer_id,event_id,venue_id,starts_at,timezone,status,published_at,event_emitted_at)
+			            SELECT $5,o.id,e.id,v.id,now() + interval '1 day','UTC','published',now(),now() FROM o,e,v RETURNING id),
+			     s AS (INSERT INTO series(id,organizer_id,event_id,name) SELECT $6,o.id,e.id,'{"en":"run","fr":"série"}' FROM o,e RETURNING id)
+			INSERT INTO series_performances(series_id,performance_id,position)
+			SELECT s.id,p1.id,1 FROM s,p1 UNION ALL SELECT s.id,p2.id,2 FROM s,p2`,
+			orgID, venueID, eventID, firstID, secondID, seriesID); err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		var seriesErr, directErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, seriesErr = st.ArchiveSeries(ctx, seriesID)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, _, directErr = st.ArchivePerformance(ctx, secondID)
+		}()
+		wg.Wait()
+		if seriesErr != nil || directErr != nil {
+			t.Fatalf("iter %d: series archive=%v direct archive=%v", i, seriesErr, directErr)
+		}
+		var archived int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM performances WHERE id IN ($1,$2) AND status='archived' AND archived_at IS NOT NULL`, firstID, secondID).Scan(&archived); err != nil {
+			t.Fatal(err)
+		}
+		if archived != 2 {
+			t.Fatalf("iter %d: archived members=%d, want 2", i, archived)
+		}
+	}
+}

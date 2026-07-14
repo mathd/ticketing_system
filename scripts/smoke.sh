@@ -44,7 +44,7 @@ go test -tags smoke -count=1 -run TestRedeemedLifecycleMigrationPreservesHistory
 cd "$ROOT/services/catalog"
 CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 \
-	-run 'TestArchivedLifecycleMigrationRollbackGuard|TestArchiveDoesNotRacePublish' ./internal/store
+	-run 'TestArchivedLifecycleMigrationRollbackGuard|TestArchiveDoesNotRacePublish|TestSeriesArchiveDoesNotDeadlockDirectArchive' ./internal/store
 
 cd "$ROOT/smoke"
 SMOKE_GATEWAY_URL=http://localhost:18080 \

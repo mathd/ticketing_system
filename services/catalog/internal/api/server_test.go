@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,8 @@ type fakeStore struct {
 	events         map[uuid.UUID]store.Event
 	performances   map[uuid.UUID]store.Performance
 	ticketTypes    map[uuid.UUID]store.TicketType
+	series         map[uuid.UUID]store.Series
+	seasons        map[uuid.UUID]store.Season
 	emitted        map[uuid.UUID]bool // performance id -> event_emitted_at set
 	archiveEmitted map[uuid.UUID]bool
 	closureEmitted map[uuid.UUID]int32 // performance id -> closure_emitted_version
@@ -44,10 +47,104 @@ func newFakeStore() *fakeStore {
 		events:         map[uuid.UUID]store.Event{},
 		performances:   map[uuid.UUID]store.Performance{},
 		ticketTypes:    map[uuid.UUID]store.TicketType{},
+		series:         map[uuid.UUID]store.Series{},
+		seasons:        map[uuid.UUID]store.Season{},
 		emitted:        map[uuid.UUID]bool{},
 		archiveEmitted: map[uuid.UUID]bool{},
 		closureEmitted: map[uuid.UUID]int32{},
 	}
+}
+
+func (f *fakeStore) CreateSeries(_ context.Context, in store.SeriesInput) (store.Series, error) {
+	ev, ok := f.events[in.EventID]
+	if !ok {
+		return store.Series{}, store.ErrNotFound
+	}
+	if ev.OrganizerID != in.OrganizerID {
+		return store.Series{}, store.ErrOrganizerMismatch
+	}
+	s := store.Series{ID: uuid.New(), OrganizerID: in.OrganizerID, EventID: in.EventID, Name: in.Name, Members: []store.SeriesMember{}, CreatedAt: time.Now().UTC()}
+	f.series[s.ID] = s
+	return s, nil
+}
+func (f *fakeStore) AttachPerformanceToSeries(_ context.Context, seriesID, performanceID uuid.UUID, position int32) (store.Series, error) {
+	s, ok := f.series[seriesID]
+	if !ok {
+		return store.Series{}, store.ErrNotFound
+	}
+	p, ok := f.performances[performanceID]
+	if !ok {
+		return store.Series{}, store.ErrNotFound
+	}
+	if p.OrganizerID != s.OrganizerID || p.EventID != s.EventID {
+		return store.Series{}, store.ErrOrganizerMismatch
+	}
+	if p.Status != "draft" {
+		return store.Series{}, store.ErrMembershipFrozen
+	}
+	for _, member := range s.Members {
+		if f.performances[member.PerformanceID].Status != "draft" {
+			return store.Series{}, store.ErrMembershipFrozen
+		}
+	}
+	for _, other := range f.series {
+		for _, m := range other.Members {
+			if m.PerformanceID == performanceID || other.ID == seriesID && m.Position == position {
+				return store.Series{}, store.ErrMembershipConflict
+			}
+		}
+	}
+	s.Members = append(s.Members, store.SeriesMember{PerformanceID: performanceID, Position: position})
+	sort.Slice(s.Members, func(i, j int) bool { return s.Members[i].Position < s.Members[j].Position })
+	f.series[s.ID] = s
+	return s, nil
+}
+func (f *fakeStore) CreateSeason(_ context.Context, in store.SeasonInput) (store.Season, error) {
+	s := store.Season{ID: uuid.New(), OrganizerID: in.OrganizerID, Name: in.Name, SeriesIDs: []uuid.UUID{}, EventIDs: []uuid.UUID{}, CreatedAt: time.Now().UTC()}
+	f.seasons[s.ID] = s
+	return s, nil
+}
+func (f *fakeStore) AttachSeriesToSeason(_ context.Context, seasonID, seriesID uuid.UUID) (store.Season, error) {
+	s, ok := f.seasons[seasonID]
+	if !ok {
+		return store.Season{}, store.ErrNotFound
+	}
+	series, ok := f.series[seriesID]
+	if !ok {
+		return store.Season{}, store.ErrNotFound
+	}
+	if s.OrganizerID != series.OrganizerID {
+		return store.Season{}, store.ErrOrganizerMismatch
+	}
+	for _, id := range s.SeriesIDs {
+		if id == seriesID {
+			return store.Season{}, store.ErrMembershipConflict
+		}
+	}
+	s.SeriesIDs = append(s.SeriesIDs, seriesID)
+	f.seasons[s.ID] = s
+	return s, nil
+}
+func (f *fakeStore) AttachEventToSeason(_ context.Context, seasonID, eventID uuid.UUID) (store.Season, error) {
+	s, ok := f.seasons[seasonID]
+	if !ok {
+		return store.Season{}, store.ErrNotFound
+	}
+	ev, ok := f.events[eventID]
+	if !ok {
+		return store.Season{}, store.ErrNotFound
+	}
+	if s.OrganizerID != ev.OrganizerID {
+		return store.Season{}, store.ErrOrganizerMismatch
+	}
+	for _, id := range s.EventIDs {
+		if id == eventID {
+			return store.Season{}, store.ErrMembershipConflict
+		}
+	}
+	s.EventIDs = append(s.EventIDs, eventID)
+	f.seasons[s.ID] = s
+	return s, nil
 }
 
 func (f *fakeStore) CreateVenue(_ context.Context, in store.VenueInput) (store.Venue, error) {
@@ -228,6 +325,54 @@ func (f *fakeStore) MarkClosureEmitted(_ context.Context, id uuid.UUID, version 
 	return nil
 }
 
+func (f *fakeStore) PublishSeries(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+	return f.transitionSeries(ctx, id, "published")
+}
+func (f *fakeStore) ArchiveSeries(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+	return f.transitionSeries(ctx, id, "archived")
+}
+func (f *fakeStore) transitionSeries(_ context.Context, id uuid.UUID, target string) ([]store.SeriesTransition, error) {
+	s, ok := f.series[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	if len(s.Members) == 0 {
+		return nil, store.ErrEmptySeries
+	}
+	for _, m := range s.Members {
+		p := f.performances[m.PerformanceID]
+		if target == "published" && p.Status == "archived" {
+			return nil, &store.SeriesTransitionConflict{PerformanceID: p.ID, Reason: "archived member cannot be published", Cause: store.ErrIllegalTransition}
+		}
+		if target == "published" && !f.hasTicketType(p.ID) {
+			return nil, &store.SeriesTransitionConflict{PerformanceID: p.ID, Reason: "member has no ticket type", Cause: store.ErrNotSellable}
+		}
+		if target == "archived" && p.Status == "draft" {
+			return nil, &store.SeriesTransitionConflict{PerformanceID: p.ID, Reason: "draft member cannot be archived", Cause: store.ErrIllegalTransition}
+		}
+		if target == "archived" && f.closureEmitted[p.ID] < p.Closure.Version {
+			return nil, &store.SeriesTransitionConflict{PerformanceID: p.ID, Reason: "member has an owed closure event", Cause: store.ErrClosurePending}
+		}
+	}
+	out := []store.SeriesTransition{}
+	for _, m := range s.Members {
+		p := f.performances[m.PerformanceID]
+		if target == "published" && p.Status == "draft" {
+			now := time.Now().UTC()
+			p.Status = "published"
+			p.PublishedAt = &now
+		}
+		if target == "archived" && p.Status == "published" {
+			now := time.Now().UTC()
+			p.Status = "archived"
+			p.ArchivedAt = &now
+		}
+		f.performances[p.ID] = p
+		out = append(out, store.SeriesTransition{Performance: p, PublishNeedsEmit: !f.emitted[p.ID], ArchiveNeedsEmit: target == "archived" && !f.archiveEmitted[p.ID]})
+	}
+	return out, nil
+}
+
 func (f *fakeStore) aggregates() []store.EventAggregate {
 	var aggs []store.EventAggregate
 	for _, ev := range f.events {
@@ -247,6 +392,20 @@ func (f *fakeStore) aggregates() []store.EventAggregate {
 			}
 		}
 		if len(agg.Performances) > 0 {
+			for _, s := range f.series {
+				if s.EventID != ev.ID {
+					continue
+				}
+				sa := store.SeriesAggregate{Series: s}
+				for _, m := range s.Members {
+					if p := f.performances[m.PerformanceID]; p.Status == "published" {
+						sa.PerformanceIDs = append(sa.PerformanceIDs, m.PerformanceID)
+					}
+				}
+				if len(sa.PerformanceIDs) > 0 {
+					agg.Series = append(agg.Series, sa)
+				}
+			}
 			aggs = append(aggs, agg)
 		}
 	}
@@ -264,6 +423,30 @@ func (f *fakeStore) GetPublishedEvent(_ context.Context, id uuid.UUID) (store.Ev
 		}
 	}
 	return store.EventAggregate{}, store.ErrNotFound
+}
+
+func (f *fakeStore) GetPublishedSeason(_ context.Context, id uuid.UUID) (store.SeasonAggregate, error) {
+	season, ok := f.seasons[id]
+	if !ok {
+		return store.SeasonAggregate{}, store.ErrNotFound
+	}
+	ids := map[uuid.UUID]bool{}
+	for _, eventID := range season.EventIDs {
+		ids[eventID] = true
+	}
+	for _, seriesID := range season.SeriesIDs {
+		ids[f.series[seriesID].EventID] = true
+	}
+	out := store.SeasonAggregate{Season: season, Events: []store.EventAggregate{}}
+	for _, agg := range f.aggregates() {
+		if ids[agg.Event.ID] {
+			out.Events = append(out.Events, agg)
+		}
+	}
+	if len(out.Events) == 0 {
+		return store.SeasonAggregate{}, store.ErrNotFound
+	}
+	return out, nil
 }
 
 type fakePublisher struct {
@@ -838,6 +1021,192 @@ func TestOpenAPISpecServedVerbatim(t *testing.T) {
 	}
 	if !bytes.Equal(rec.Body.Bytes(), apispec.Spec) {
 		t.Fatal("served spec must be byte-identical to the committed contract (ADR-009)")
+	}
+}
+
+func TestSeriesSeasonLifecycleAndPublicGrouping(t *testing.T) {
+	e := newEnv(t)
+	eventID, firstID := e.createFixture(false)
+	first := e.store.performances[firstID]
+	startsAt := first.StartsAt.Add(24 * time.Hour)
+	second := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{OrganizerId: orgID, EventId: eventID, VenueId: first.VenueID, StartsAt: &startsAt, Timezone: first.Timezone}))
+	e.do("POST", "/ticket-types", TicketTypeCreate{OrganizerId: orgID, PerformanceId: second.Id, Name: LocalizedString{"en": "Second", "fr": "Deuxième"}, Price: Money{Amount: 5000, Currency: "EUR"}})
+
+	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{OrganizerId: orgID, EventId: eventID, Name: LocalizedString{"en": "Autumn run", "fr": "Série automne"}}))
+	series = decode[Series](t, e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: second.Id, Position: 2}))
+	series = decode[Series](t, e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: firstID, Position: 1}))
+	if len(series.Members) != 2 || series.Members[0].PerformanceId != firstID {
+		t.Fatalf("series members = %+v", series.Members)
+	}
+	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{OrganizerId: orgID, Name: LocalizedString{"en": "2026 season", "fr": "Saison 2026"}}))
+	e.do("POST", "/seasons/"+season.Id.String()+"/series", SeasonSeriesAttach{SeriesId: series.Id})
+	e.do("POST", "/seasons/"+season.Id.String()+"/events", SeasonEventAttach{EventId: eventID})
+
+	result := decode[SeriesLifecycleResult](t, e.do("POST", "/series/"+series.Id.String()+"/publish", nil))
+	if len(result.Performances) != 2 || len(e.pub.published) != 2 {
+		t.Fatalf("publish result=%d events=%d", len(result.Performances), len(e.pub.published))
+	}
+	e.do("POST", "/series/"+series.Id.String()+"/publish", nil)
+	if len(e.pub.published) != 2 {
+		t.Fatal("idempotent series publish re-emitted")
+	}
+
+	detail := decode[PublicEventDetail](t, e.do("GET", "/public/events/"+eventID.String()+"?locale=fr", nil))
+	if len(detail.Series) != 1 || detail.Series[0].Name != "Série automne" || len(detail.Series[0].PerformanceIds) != 2 || detail.Series[0].PerformanceIds[0] != firstID {
+		t.Fatalf("series context = %+v", detail.Series)
+	}
+	publicSeason := decode[PublicSeasonDetail](t, e.do("GET", "/public/seasons/"+season.Id.String()+"?locale=en", nil))
+	if len(publicSeason.Events) != 1 {
+		t.Fatalf("season duplicate event count = %d", len(publicSeason.Events))
+	}
+
+	conflictRec := e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: uuid.New(), Position: 3})
+	if conflictRec.Code != http.StatusNotFound {
+		t.Fatalf("attach unknown = %d", conflictRec.Code)
+	}
+}
+
+func TestSeriesPublishConflictNamesBlockingSlotAndIsAtomic(t *testing.T) {
+	e := newEnv(t)
+	eventID, sellableID := e.createFixture(false)
+	sellable := e.store.performances[sellableID]
+	startsAt := sellable.StartsAt.Add(48 * time.Hour)
+	blocking := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: eventID, VenueId: sellable.VenueID,
+		StartsAt: &startsAt, Timezone: sellable.Timezone,
+	}))
+	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
+		OrganizerId: orgID, EventId: eventID,
+		Name: LocalizedString{"en": "Run", "fr": "Série"},
+	}))
+	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: sellableID, Position: 1})
+	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: blocking.Id, Position: 2})
+
+	rec := e.do("POST", "/series/"+series.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("publish conflict: %d %s", rec.Code, rec.Body.String())
+	}
+	conflict := decode[SeriesTransitionConflict](t, rec)
+	if conflict.BlockingPerformanceId == nil || *conflict.BlockingPerformanceId != blocking.Id {
+		t.Fatalf("blocking performance = %v, want %s", conflict.BlockingPerformanceId, blocking.Id)
+	}
+	if e.store.performances[sellableID].Status != "draft" || e.store.performances[blocking.Id].Status != "draft" || len(e.pub.published) != 0 {
+		t.Fatal("failed all-or-nothing preflight mutated or emitted a member")
+	}
+
+	e.do("POST", "/ticket-types", TicketTypeCreate{
+		OrganizerId: orgID, PerformanceId: blocking.Id,
+		Name:  LocalizedString{"en": "Admission", "fr": "Admission"},
+		Price: Money{Amount: 2500, Currency: "CAD"},
+	})
+	if rec = e.do("POST", "/series/"+series.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
+		t.Fatalf("publish after repair: %d %s", rec.Code, rec.Body.String())
+	}
+	newStart := startsAt.Add(24 * time.Hour)
+	late := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: eventID, VenueId: sellable.VenueID,
+		StartsAt: &newStart, Timezone: sellable.Timezone,
+	}))
+	if rec = e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: late.Id, Position: 3}); rec.Code != http.StatusConflict {
+		t.Fatalf("membership after launch: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSeriesArchiveBlocksOwedClosureThenEmitsInOrder(t *testing.T) {
+	e := newEnv(t)
+	eventID, firstID := e.createFixture(false)
+	first := e.store.performances[firstID]
+	startsAt := first.StartsAt.Add(24 * time.Hour)
+	second := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: eventID, VenueId: first.VenueID,
+		StartsAt: &startsAt, Timezone: first.Timezone,
+	}))
+	e.do("POST", "/ticket-types", TicketTypeCreate{
+		OrganizerId: orgID, PerformanceId: second.Id,
+		Name:  LocalizedString{"en": "Second", "fr": "Deuxième"},
+		Price: Money{Amount: 5000, Currency: "EUR"},
+	})
+	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
+		OrganizerId: orgID, EventId: eventID,
+		Name: LocalizedString{"en": "Run", "fr": "Série"},
+	}))
+	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: firstID, Position: 1})
+	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: second.Id, Position: 2})
+	e.do("POST", "/series/"+series.Id.String()+"/publish", nil)
+
+	owed := e.store.performances[firstID]
+	owed.Closure.Version = 1
+	e.store.performances[firstID] = owed
+	rec := e.do("POST", "/series/"+series.Id.String()+"/archive", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("owed closure archive: %d %s", rec.Code, rec.Body.String())
+	}
+	conflict := decode[SeriesTransitionConflict](t, rec)
+	if conflict.BlockingPerformanceId == nil || *conflict.BlockingPerformanceId != firstID {
+		t.Fatalf("blocking performance = %v, want %s", conflict.BlockingPerformanceId, firstID)
+	}
+	if e.store.performances[firstID].Status != "published" || e.store.performances[second.Id].Status != "published" {
+		t.Fatal("failed archive preflight partially mutated the series")
+	}
+
+	e.store.closureEmitted[firstID] = 1
+	e.store.emitted[firstID] = false // exercise owed publication before archive
+	e.pub.calls = nil
+	rec = e.do("POST", "/series/"+series.Id.String()+"/archive", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", rec.Code, rec.Body.String())
+	}
+	if !slices.Equal(e.pub.calls, []string{"published", "archived", "archived"}) {
+		t.Fatalf("event order = %v", e.pub.calls)
+	}
+	if e.store.performances[firstID].Status != "archived" || e.store.performances[second.Id].Status != "archived" {
+		t.Fatal("series members were not archived")
+	}
+	e.do("POST", "/series/"+series.Id.String()+"/archive", nil)
+	if !slices.Equal(e.pub.calls, []string{"published", "archived", "archived"}) {
+		t.Fatalf("idempotent archive re-emitted: %v", e.pub.calls)
+	}
+}
+
+func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
+	e := newEnv(t)
+	eventID, performanceID := e.createFixture(true)
+	empty := decode[Series](t, e.do("POST", "/series", SeriesCreate{
+		OrganizerId: orgID, EventId: eventID,
+		Name: LocalizedString{"en": "Empty", "fr": "Vide"},
+	}))
+	for _, action := range []string{"publish", "archive"} {
+		if rec := e.do("POST", "/series/"+empty.Id.String()+"/"+action, nil); rec.Code != http.StatusConflict {
+			t.Fatalf("empty series %s: %d %s", action, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := e.do("POST", "/series/"+empty.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: performanceID, Position: 1}); rec.Code != http.StatusConflict {
+		t.Fatalf("attach published target: %d %s", rec.Code, rec.Body.String())
+	}
+
+	otherOrg, otherEventID, otherPerformanceID, otherSeriesID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	otherEvent := e.store.events[eventID]
+	otherEvent.ID, otherEvent.OrganizerID = otherEventID, otherOrg
+	e.store.events[otherEventID] = otherEvent
+	otherPerformance := e.store.performances[performanceID]
+	otherPerformance.ID, otherPerformance.OrganizerID, otherPerformance.EventID, otherPerformance.Status = otherPerformanceID, otherOrg, otherEventID, "draft"
+	e.store.performances[otherPerformanceID] = otherPerformance
+	otherSeries := store.Series{ID: otherSeriesID, OrganizerID: otherOrg, EventID: otherEventID, Name: store.LocalizedText{"en": "Other", "fr": "Autre"}, Members: []store.SeriesMember{}, CreatedAt: time.Now().UTC()}
+	e.store.series[otherSeriesID] = otherSeries
+	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Season", "fr": "Saison"}}))
+
+	cases := []struct {
+		path string
+		body any
+	}{
+		{"/series/" + empty.Id.String() + "/performances", SeriesPerformanceAttach{PerformanceId: otherPerformanceID, Position: 1}},
+		{"/seasons/" + season.Id.String() + "/series", SeasonSeriesAttach{SeriesId: otherSeriesID}},
+		{"/seasons/" + season.Id.String() + "/events", SeasonEventAttach{EventId: otherEventID}},
+	}
+	for _, tc := range cases {
+		if rec := e.do("POST", tc.path, tc.body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("organizer mismatch %s: %d %s", tc.path, rec.Code, rec.Body.String())
+		}
 	}
 }
 

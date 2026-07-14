@@ -29,8 +29,20 @@ var (
 	// closure_version). The caller must retry the pending transition — which
 	// re-emits with the same deterministic id — before toggling again, so the
 	// single outbox marker never drops an event.
-	ErrClosurePending = errors.New("previous closure event still owed; retry that transition first")
+	ErrClosurePending     = errors.New("previous closure event still owed; retry that transition first")
+	ErrMembershipConflict = errors.New("group membership conflict")
+	ErrMembershipFrozen   = errors.New("series membership is frozen")
+	ErrEmptySeries        = errors.New("series has no members")
 )
+
+type SeriesTransitionConflict struct {
+	PerformanceID uuid.UUID
+	Reason        string
+	Cause         error
+}
+
+func (e *SeriesTransitionConflict) Error() string { return e.Reason }
+func (e *SeriesTransitionConflict) Unwrap() error { return e.Cause }
 
 // Slot kinds (ADR-005 amendment / US-009). A performance is one kind of dated
 // slot; festival days and park operating days share the same machinery.
@@ -78,6 +90,29 @@ type Event struct {
 	OrganizerID uuid.UUID
 	Name        LocalizedText
 	Description LocalizedText
+	CreatedAt   time.Time
+}
+
+type SeriesMember struct {
+	PerformanceID uuid.UUID
+	Position      int32
+}
+
+type Series struct {
+	ID          uuid.UUID
+	OrganizerID uuid.UUID
+	EventID     uuid.UUID
+	Name        LocalizedText
+	Members     []SeriesMember
+	CreatedAt   time.Time
+}
+
+type Season struct {
+	ID          uuid.UUID
+	OrganizerID uuid.UUID
+	Name        LocalizedText
+	SeriesIDs   []uuid.UUID
+	EventIDs    []uuid.UUID
 	CreatedAt   time.Time
 }
 
@@ -156,6 +191,28 @@ type TicketTypeInput struct {
 	Currency      string
 }
 
+type SeriesInput struct {
+	OrganizerID uuid.UUID
+	EventID     uuid.UUID
+	Name        LocalizedText
+}
+
+type SeasonInput struct {
+	OrganizerID uuid.UUID
+	Name        LocalizedText
+}
+
+type SeriesTransition struct {
+	Performance      Performance
+	PublishNeedsEmit bool
+	ArchiveNeedsEmit bool
+}
+
+type SeriesAggregate struct {
+	Series         Series
+	PerformanceIDs []uuid.UUID
+}
+
 // PerformanceAggregate carries everything the storefront needs about one slot.
 type PerformanceAggregate struct {
 	Performance Performance
@@ -167,7 +224,13 @@ type PerformanceAggregate struct {
 // performances (one aggregated call per page view, ADR-004 rule 3).
 type EventAggregate struct {
 	Event        Event
+	Series       []SeriesAggregate
 	Performances []PerformanceAggregate
+}
+
+type SeasonAggregate struct {
+	Season Season
+	Events []EventAggregate
 }
 
 // Store is the persistence port. Referential and tenancy checks live behind
@@ -177,6 +240,11 @@ type Store interface {
 	CreateEvent(ctx context.Context, in EventInput) (Event, error)
 	CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error)
 	CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error)
+	CreateSeries(ctx context.Context, in SeriesInput) (Series, error)
+	AttachPerformanceToSeries(ctx context.Context, seriesID, performanceID uuid.UUID, position int32) (Series, error)
+	CreateSeason(ctx context.Context, in SeasonInput) (Season, error)
+	AttachSeriesToSeason(ctx context.Context, seasonID, seriesID uuid.UUID) (Season, error)
+	AttachEventToSeason(ctx context.Context, seasonID, eventID uuid.UUID) (Season, error)
 	GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error)
 	GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error)
 	// PublishPerformance flips draft->published (idempotent). needsEmit is
@@ -201,8 +269,11 @@ type Store interface {
 	CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
 	ReopenSlot(ctx context.Context, id uuid.UUID) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
 	MarkClosureEmitted(ctx context.Context, id uuid.UUID, version int32) error
+	PublishSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
+	ArchiveSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
 	// ListPublishedEvents returns events having at least one published
 	// performance, each appearing once with all its published slots.
 	ListPublishedEvents(ctx context.Context) ([]EventAggregate, error)
 	GetPublishedEvent(ctx context.Context, id uuid.UUID) (EventAggregate, error)
+	GetPublishedSeason(ctx context.Context, id uuid.UUID) (SeasonAggregate, error)
 }
