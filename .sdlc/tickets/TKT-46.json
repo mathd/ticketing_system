@@ -2,10 +2,8 @@
   "key": "TKT-46",
   "type": "Task",
   "summary": "Clean the M1 baseline before M2",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "Codex",
   "pr": {
     "number": 10,
@@ -125,6 +123,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\n### PO validation\nPR #10 merged to `main` as `06b00453`. The owner explicitly approved the implementation and authorized merge/closure. R1-R12 meet the revised Conditions of Success; R13 remains owner-deferred. All final local, integration, security, and hermetic smoke checks passed."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout metrics\n\n| stage | duration |\n|---|---:|\n| Backlog | 27s |\n| Ready | 56s |\n| Planning | 10m 36s |\n| Building | ~2h 54m |\n| PO Review | <1m |\n| agent:planning | 8m 11s |\n| agent:plan-review | 2m 25s |\n| agent:coding | ~2h 35m |\n| agent:ai-review | 15m 41s |\n| needs:human | ~7m before merge |\n\nhuman-wait total: ~7m before merge\ndiff: +3,255/−1,078 (91 files)\n\nlearnings:\n- Middleware-generated errors require the same contract coverage as handler responses.\n- A finite processing budget must not also cap publication of the terminal failure record.\n- Dependency-free Go modules need repository-level cache inputs rather than a module-local go.sum assumption.\n\nretro:\n- The one-PR cleanup successfully produced a verified M2 baseline, but its breadth increased review and CI cost.\n- Future medium findings remain separate: TKT-47 for response-contract happy paths/policy and TKT-48 for scanner lifecycle races.\n- R13 was explicitly deferred rather than reported as complete."
     }
   ]
 }
