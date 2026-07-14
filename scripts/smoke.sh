@@ -32,6 +32,10 @@ if ! compose up -d --build --wait; then
   exit 1
 fi
 
+cd "$ROOT/services/commerce"
+COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce" \
+go test -tags smoke -count=1 -run TestCompleteOrderReturnsOneCanonicalReferenceConcurrently ./internal/store
+
 cd "$ROOT/smoke"
 SMOKE_GATEWAY_URL=http://localhost:18080 \
 SMOKE_NATS_URL=nats://localhost:14222 \

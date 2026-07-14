@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	commerceevents "ticketing/services/commerce/internal/events"
+	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/fakepsp"
 )
 
@@ -427,16 +428,9 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "mint guest order reference"})
 		return
 	}
-	tx, err := s.db.BeginTx(r.Context(), nil)
+	guestRef, err = commercestore.CompleteOrder(r.Context(), s.db, x.ID, order, guestRef)
 	if err != nil {
-		write(w, 500, map[string]string{"error": "persist completion"})
-		return
-	}
-	if _, err = tx.ExecContext(r.Context(), `UPDATE reservations SET status='completed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, x.ID); err == nil {
-		_, err = tx.ExecContext(r.Context(), `UPDATE orders SET status='completed',guest_order_ref=$2,updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order, guestRef)
-	}
-	if err != nil || tx.Commit() != nil {
-		_ = tx.Rollback()
+		slog.Default().ErrorContext(r.Context(), "persist order completion", "err", err)
 		write(w, 500, map[string]string{"error": "persist completion"})
 		return
 	}

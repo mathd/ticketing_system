@@ -332,20 +332,62 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 			results <- checkoutResult{code, body}
 		}()
 	}
-	var concurrentOrder map[string]any
+	concurrentOrders := make([]map[string]any, 0, 2)
 	for range 2 {
 		result := <-results
 		if result.code != http.StatusOK && result.code != http.StatusConflict {
 			t.Fatalf("concurrent checkout status = %d %s", result.code, result.body)
 		}
 		if result.code == http.StatusOK {
-			_ = json.Unmarshal(result.body, &concurrentOrder)
+			var completed map[string]any
+			if err := json.Unmarshal(result.body, &completed); err != nil {
+				t.Fatal(err)
+			}
+			concurrentOrders = append(concurrentOrders, completed)
 		}
 	}
-	orderID := fmt.Sprint(concurrentOrder["order_id"])
+	// A request that observed an in-progress payment may return 409. Its
+	// idempotent replay must converge on the same completed order/reference.
+	for len(concurrentOrders) < 2 {
+		code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-same-key-race", concurrentBody)
+		if code != http.StatusOK {
+			t.Fatalf("concurrent checkout replay = %d %s", code, body)
+		}
+		var completed map[string]any
+		if err := json.Unmarshal(body, &completed); err != nil {
+			t.Fatal(err)
+		}
+		concurrentOrders = append(concurrentOrders, completed)
+	}
+	orderID := fmt.Sprint(concurrentOrders[0]["order_id"])
+	guestOrderRef := fmt.Sprint(concurrentOrders[0]["guest_order_ref"])
+	if guestOrderRef == "" {
+		t.Fatalf("concurrent checkout omitted guest_order_ref: %v", concurrentOrders[0])
+	}
+	for _, completed := range concurrentOrders[1:] {
+		if fmt.Sprint(completed["order_id"]) != orderID || fmt.Sprint(completed["guest_order_ref"]) != guestOrderRef {
+			t.Fatalf("concurrent checkout did not converge: %v", concurrentOrders)
+		}
+	}
 	if orderCode, orderBody, _ := getWithHeaders(t, gatewayURL+"/api/commerce/orders/"+orderID); orderCode != http.StatusOK || !bytes.Contains(orderBody, []byte(`"completed"`)) {
 		t.Fatalf("concurrent checkout order = %d %s", orderCode, orderBody)
 	}
+	retry(t, 10*time.Second, func() error {
+		bundleCode, bundleBody, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestOrderRef+"/tickets")
+		if bundleCode != http.StatusOK {
+			return fmt.Errorf("concurrent ticket bundle %d %s", bundleCode, bundleBody)
+		}
+		var bundle struct {
+			Tickets []json.RawMessage `json:"tickets"`
+		}
+		if err := json.Unmarshal(bundleBody, &bundle); err != nil {
+			return err
+		}
+		if len(bundle.Tickets) != 2 {
+			return fmt.Errorf("concurrent issued tickets = %d, want 2", len(bundle.Tickets))
+		}
+		return nil
+	})
 
 	expiredSlot, expiredTicketType := setupCheckoutOffer(t, "expired-finalize")
 	expiredReservation := reserveCheckout(t, expiredTicketType, "reserve-expired-finalize")
