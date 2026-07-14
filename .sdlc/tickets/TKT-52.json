@@ -5,7 +5,7 @@
   "summary": "US-010: Series and seasons — grouping events into runs",
   "classification": "complex",
   "labels": [
-    "agent:ai-review"
+    "agent:coding"
   ],
   "description": "**As** an organizer, **I want** to group performances into a series (a run of one show) and a season (a programmed set), so buyers and reporting see the run, not scattered dates.\n\n**Priority:** P1\n**Depends on:** US-007 (TKT-49 — grouped offers publish/archive as a unit)\n\n**Acceptance Criteria:**\n- [ ] Catalog models a `series` (ordered run of slots for one event) and a `season` (a named set of series/events), both `organizer_id`-scoped, localizable names; API to create them and attach slots/events; a slot belongs to at most one series\n- [ ] Public reads expose the grouping: an event detail shows its series/run; a season read aggregates its events; new read endpoints declare their ADR-004 TTL tier; storefront renders a run as one grouped listing (browser-verified)\n- [ ] Publishing/archiving is expressible at the series level (publish the run) and fans out to its slots idempotently; partial states (some slots archived) render correctly\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
   "context": {
@@ -83,6 +83,11 @@
       "stage": "ai-review",
       "kind": "blocker",
       "body": "<!-- sdlc:stage=ai-review kind=blocker -->\nRequired Codex adversarial diff review did not run. Both the initial invocation and the single permitted retry used the skill-required self-contained diff on STDIN, read-only sandbox, and explicit `gpt-5.6`; both returned HTTP 400 because that model is unsupported with the configured ChatGPT account. Per the workflow hard rule, TKT-52 remains at `agent:ai-review`; it has not advanced to `needs:human`, and no review-guide has been posted. TKT-55 tracks the model-selection/runner defect."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\nHuman review of PR #33 found one implementation-layer contract bug and coverage gaps. Swapped `agent:ai-review` → `agent:coding` before changing the reviewed SHA. Triage: **blocking/fix now** — attach organizer mismatch is implemented as 400 but omitted/misdescribed by the three OpenAPI operations. **Should-fix/fix now** — add series archive behavior, exact conflict, frozen-target/empty-series, and real PostgreSQL concurrency coverage because lifecycle locking is the ticket's load-bearing claim. No findings rejected or deferred."
     }
   ],
   "status": "Building",
