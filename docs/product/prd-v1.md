@@ -119,6 +119,103 @@ Goal: the five services, gateway, storefront and scanner exist and one GA ticket
 - [ ] Scanner web page: camera-or-paste input, green/red result (browser-verified).
 - [ ] End-to-end demo script (brief's success metric: journal chain verifies, ticket lifecycle trace complete) passes on a clean machine and runs in CI.
 
+## TKT-2 — Catalog & event structure (user stories)
+
+Decomposed 2026-07-14 when the owner prioritized TKT-2 (Gate 1) as the head of M2. Scope per the
+epic COS + the ADR-005 amendment (owner, backlog grilling): deliver the catalog **structure**
+(single show, run, series/season, festival skeleton) and the **draft/published/archived** lifecycle
+with domain events, **and generalize the dated-slot model** so one slot primitive carries
+performances, festival days and park operating days — pressure-tested against re-entry, mid-day
+capacity changes and weather closures. Full festival and park *verticals* (multi-day passes on
+shared zones, RFID media, lodging, cabanas) stay in TKT-14 / TKT-13 / TKT-12; this epic ships the
+catalog skeleton and the load-bearing slot abstraction they compose against.
+
+Baseline (from M1 / TKT-26): the catalog already has `organizers`, `venues`, `events`,
+`performances` (the first dated slot, deliberately concert-neutral) and `ticket_types`, plus
+draft→published publish with the `platform.catalog.performance.published` domain event and
+aggregated, TTL-tiered public reads. These stories extend that seam; they do not rebuild it.
+
+Every story carries the epic's cross-cutting COS: entities are `organizer_id`-scoped (ADR-002),
+public reads declare their ADR-004 TTL tier, localizable content stays locale-keyed (TKT-36), and
+lifecycle transitions emit versioned domain events on the platform stream (ADR-009 envelope).
+
+### US-007: Archived lifecycle state with domain events
+**As** an organizer, **I want** to archive a published performance so it stops appearing on the
+storefront while its history is preserved. **Priority:** P1 **Depends on:** — (extends TKT-26 publish)
+**Acceptance Criteria:**
+- [ ] Catalog exposes an idempotent archive transition on a performance (`published → archived`);
+      archiving a draft is a 409 (only published offers archive); archiving an already-archived
+      performance returns 200 without re-emitting — mirrors the publish idempotency precedent.
+- [ ] Archiving emits a versioned `platform.catalog.performance.archived` domain event with a
+      deterministic envelope id (retried/raced emissions de-duplicate), so inventory can stop
+      offering the slot; the transition and its emission use the existing poor-man's-outbox marker.
+- [ ] Archived performances disappear from the aggregated public list/detail reads; an event whose
+      every performance is archived drops off the public list. TTL tiers unchanged (ADR-004).
+- [ ] The lifecycle is a single explicit state machine (`draft | published | archived`) with
+      rejected transitions returning 409 and a reason; unit + contract tests cover every edge.
+
+### US-008 (SPIKE): Pressure-test the generalized dated-slot model
+**As** the team, **I want** to prove the ADR-005 slot abstraction survives the hard cases **before**
+US-009 hardens the schema, so a bad generic design doesn't hurt every downstream vertical.
+**Priority:** P0 **Depends on:** — · **Type:** Spike (timeboxed, no production code) · `risk:low`
+**Acceptance Criteria:**
+- [ ] A written analysis (in `docs/` + an ADR-005 amendment) models three stress cases against a
+      candidate slot shape: **re-entry** (a park pass holder exits and re-enters the same operating
+      day — how the slot/claim expresses multi-entry vs the single-redemption performance case),
+      **mid-day capacity change** (an operating day's capacity is raised or cut while entries are
+      live — where the number of authority lives, catalog vs inventory, and how a cut below current
+      occupancy behaves), and **weather closure** (an operating day closes partway through — the
+      slot state, the effect on already-admitted and not-yet-arrived holders, refund signalling).
+- [ ] The analysis names, for each case, **which attributes live on the catalog slot** vs **what the
+      inventory claim core owns** (the ADR-005 boundary), and produces the concrete attribute set +
+      state-machine US-009 will implement (slot kind, operating hours, re-entry policy, closure).
+- [ ] Verdict: the unified model holds (with the documented attribute shape) **or** a scoped
+      exception is recorded as a new ADR — either outcome unblocks US-009 with a decided schema.
+
+### US-009: Generalize the dated slot (performance → typed slot with attributes)
+**As** an organizer, **I want** the catalog to model performances, festival days and park operating
+days as one dated-slot kind, so passes and inventory compose against a single primitive. **Priority:**
+P0 **Depends on:** US-008 (attribute shape decided), US-007 (lifecycle to carry onto every slot kind)
+**Acceptance Criteria:**
+- [ ] Migration generalizes `performances` into the slot model decided in US-008: a `kind`
+      (`performance | festival_day | operating_day`) and the kind-specific attributes (operating
+      hours, re-entry policy, closure state) as decided — **existing performances migrate to kind
+      `performance` with no behavioural change** (M1 flow, US-003/004/005/006 tests stay green).
+- [ ] Catalog API creates a slot of each kind and sets its attributes; the publish/archive lifecycle
+      (US-007) applies uniformly across kinds; OpenAPI contract regenerated and published (ADR-009).
+- [ ] The publication domain event carries the slot kind + capacity so inventory provisions the pool
+      identically regardless of kind (no fork in the claim path — ADR-005).
+- [ ] Weather-closure and mid-day-capacity transitions from the US-008 spike are representable and
+      emit their domain events; unit + contract tests cover each kind and each attribute transition.
+
+### US-010: Series and seasons — grouping events into runs
+**As** an organizer, **I want** to group performances into a series (a run of one show) and a season
+(a programmed set), so buyers and reporting see the run, not scattered dates. **Priority:** P1
+**Depends on:** US-007 (grouped offers publish/archive as a unit)
+**Acceptance Criteria:**
+- [ ] Catalog models a `series` (ordered run of slots for one event) and a `season` (a named set of
+      series/events), both `organizer_id`-scoped, localizable names; API to create them and attach
+      slots/events; a slot belongs to at most one series.
+- [ ] Public reads expose the grouping: an event detail shows its series/run; a season read
+      aggregates its events. New read endpoints declare their ADR-004 TTL tier; storefront renders
+      a run as one grouped listing (browser-verified).
+- [ ] Publishing/archiving is expressible at the series level (publish the run) and fans out to its
+      slots idempotently; partial states (some slots archived) render correctly.
+
+### US-011: Festival skeleton — festival over shared-capacity day slots
+**As** an organizer, **I want** to model a festival as a container of festival-day slots that draw on
+shared festival capacity, so TKT-14 can layer multi-day passes and zones onto a real structure.
+**Priority:** P2 **Depends on:** US-009 (festival-day is a slot kind), US-010 (a festival groups like a season)
+**Acceptance Criteria:**
+- [ ] Catalog models a `festival` grouping festival-day slots (US-009 kind `festival_day`) that
+      reference a **shared festival capacity** rather than per-day independent pools; the publication
+      events express the shared-capacity relationship so inventory can provision it (TKT-14 consumes).
+- [ ] API to create a festival, its days and the shared-capacity linkage; lifecycle (US-007) applies
+      to the festival and cascades to its days; `organizer_id`-scoped throughout.
+- [ ] Public reads list a festival with its days as one grouped offer (ADR-004 TTL tier declared;
+      browser-verified). **Non-goals (TKT-14):** multi-day pass products, zones/stages, RFID media,
+      camping add-on — this story ships only the catalog skeleton + shared-capacity structure.
+
 ## Open items deliberately deferred to epic decomposition
 
-Storefront shell framework — Astro 7 vs React SPA (spike TKT-39 → ADR-006, decided before US-002 builds storefront UI) · DSL vs declarative rules (spike in TKT-5) · seat-map versioning against sold seats (TKT-3) · resale marketplace rules (TKT-9) · queue fairness algorithm (TKT-20) · per-currency settlement mechanics (TKT-10) · RFID hardware simulation fidelity (TKT-14).
+Storefront shell framework — Astro 7 vs React SPA (spike TKT-39 → ADR-006, decided before US-002 builds storefront UI) · DSL vs declarative rules (spike in TKT-5) · seat-map versioning against sold seats (TKT-3) · resale marketplace rules (TKT-9) · queue fairness algorithm (TKT-20) · per-currency settlement mechanics (TKT-10) · RFID hardware simulation fidelity (TKT-14) · shared-festival-capacity claim mechanics (spike US-008 decides the catalog/inventory boundary; TKT-4/TKT-14 implement the claim path).
