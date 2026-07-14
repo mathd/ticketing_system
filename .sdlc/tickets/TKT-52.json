@@ -5,7 +5,7 @@
   "summary": "US-010: Series and seasons — grouping events into runs",
   "classification": "complex",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "description": "**As** an organizer, **I want** to group performances into a series (a run of one show) and a season (a programmed set), so buyers and reporting see the run, not scattered dates.\n\n**Priority:** P1\n**Depends on:** US-007 (TKT-49 — grouped offers publish/archive as a unit)\n\n**Acceptance Criteria:**\n- [ ] Catalog models a `series` (ordered run of slots for one event) and a `season` (a named set of series/events), both `organizer_id`-scoped, localizable names; API to create them and attach slots/events; a slot belongs to at most one series\n- [ ] Public reads expose the grouping: an event detail shows its series/run; a season read aggregates its events; new read endpoints declare their ADR-004 TTL tier; storefront renders a run as one grouped listing (browser-verified)\n- [ ] Publishing/archiving is expressible at the series level (publish the run) and fans out to its slots idempotently; partial states (some slots archived) render correctly\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
   "context": {
@@ -73,11 +73,20 @@
       "stage": "planning",
       "kind": "summary",
       "body": "Gate 2 — owner review approved the plan with required corrections. The owner explicitly authorized the substantive human review to stand as a one-ticket exception for the failed Codex plan-review gate. Corrections incorporated: direct-slot lock-cycle proof, exact blocking slot on bulk conflicts, immediate per-slot markers, season grouping precedence, five-minute TTL rationale, existing locale resolution, and reuse of migration smoke patterns."
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implementation complete; `make check` green locally. PR opened; coding → ai-review.**\n\n**PR:** #33 — https://github.com/mathd/ticketing_system/pull/33\n**Commit:** `c661fd1`\n**Diff:** +2434 / −80 across 14 files\n\nShipped contract-first series/season APIs, migration 0005 + guarded rollback, organizer/event membership validation, frozen ordered series membership, atomic series publish/archive with exact blocking-slot conflicts, immediate post-commit per-slot event marking, canonical season event dedupe, five-minute public TTL, localized storefront grouping, ADR-015, and screenshot evidence.\n\nVerification: exact `make check` passed (generation drift, lint, unit, build, migration/store smoke, PostgreSQL/NATS/gateway/storefront e2e). Browser verification passed with no console errors and saved `docs/verification/series-seasons/storefront-series.png`. The first full smoke exposed a `uuid[]` database/sql scan defect in season reads; replaced with ordinary membership row reads. One subsequent Compose attempt hit the known PostgreSQL initialization restart race before tests began; a clean rerun and the final exact `make check` both passed."
     }
   ],
   "status": "Building",
   "assignee": "Codex",
-  "pr": null,
+  "pr": {
+    "number": 33,
+    "url": "https://github.com/mathd/ticketing_system/pull/33",
+    "state": "open"
+  },
   "readiness": {
     "objective": {
       "state": "met",
