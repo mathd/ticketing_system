@@ -138,6 +138,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a localized series for one event */
+        post: operations["createSeries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/series/{seriesId}/performances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Attach an ordered draft slot to a series */
+        post: operations["attachPerformanceToSeries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/series/{seriesId}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically publish every slot in the series */
+        post: operations["publishSeries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/series/{seriesId}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically archive every published slot in the series */
+        post: operations["archiveSeries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/seasons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a localized season */
+        post: operations["createSeason"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/seasons/{seasonId}/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Attach a series to a season */
+        post: operations["attachSeriesToSeason"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/seasons/{seasonId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Attach a standalone event to a season */
+        post: operations["attachEventToSeason"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ticket-types": {
         parameters: {
             query?: never;
@@ -187,6 +306,26 @@ export interface paths {
          * @description Everything the storefront detail page needs in one call, including ticket types and prices. 404 unless the event has at least one publicly listable performance (published + priced). Cache-Control: public, max-age=300, s-maxage=300 (minutes tier).
          */
         get: operations["getPublicEvent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/seasons/{seasonId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Aggregated public season detail (minutes tier)
+         * @description One call returns the localized season and its deduplicated public event details, retaining series framing. Program membership changes on the same editorial cadence as event detail, so it uses that five-minute tier: Cache-Control: public, max-age=300, s-maxage=300.
+         */
+        get: operations["getPublicSeason"];
         put?: never;
         post?: never;
         delete?: never;
@@ -366,6 +505,72 @@ export interface components {
             /** Format: date-time */
             created_at: string;
         };
+        SeriesCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            event_id: string;
+            name: components["schemas"]["LocalizedString"];
+        };
+        SeriesPerformanceAttach: {
+            /** Format: uuid */
+            performance_id: string;
+            /** Format: int32 */
+            position: number;
+        };
+        SeriesMember: {
+            /** Format: uuid */
+            performance_id: string;
+            /** Format: int32 */
+            position: number;
+        };
+        Series: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            event_id: string;
+            name: components["schemas"]["LocalizedString"];
+            members: components["schemas"]["SeriesMember"][];
+            /** Format: date-time */
+            created_at: string;
+        };
+        SeriesLifecycleResult: {
+            /** Format: uuid */
+            series_id: string;
+            performances: components["schemas"]["Performance"][];
+        };
+        SeriesTransitionConflict: {
+            error: string;
+            reason: string;
+            /** Format: uuid */
+            blocking_performance_id?: string;
+        };
+        SeasonCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            name: components["schemas"]["LocalizedString"];
+        };
+        SeasonSeriesAttach: {
+            /** Format: uuid */
+            series_id: string;
+        };
+        SeasonEventAttach: {
+            /** Format: uuid */
+            event_id: string;
+        };
+        Season: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            name: components["schemas"]["LocalizedString"];
+            series_ids: string[];
+            event_ids: string[];
+            /** Format: date-time */
+            created_at: string;
+        };
         PublicEventList: {
             events: components["schemas"]["PublicEventSummary"][];
         };
@@ -392,6 +597,7 @@ export interface components {
             organizer_id: string;
             name: string;
             description?: string;
+            series: components["schemas"]["PublicSeriesContext"][];
             performances: components["schemas"]["PublicPerformanceDetail"][];
         };
         PublicPerformanceDetail: {
@@ -402,6 +608,20 @@ export interface components {
             timezone: string;
             venue: components["schemas"]["PublicVenue"];
             ticket_types: components["schemas"]["PublicTicketType"][];
+        };
+        PublicSeriesContext: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            performance_ids: string[];
+        };
+        PublicSeasonDetail: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            name: string;
+            events: components["schemas"]["PublicEventDetail"][];
         };
         PublicVenue: {
             /** Format: uuid */
@@ -440,6 +660,8 @@ export interface components {
         Locale: string;
         PerformanceId: string;
         EventId: string;
+        SeriesId: string;
+        SeasonId: string;
     };
     requestBodies: never;
     headers: {
@@ -658,6 +880,230 @@ export interface operations {
             };
         };
     };
+    createSeries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeriesCreate"];
+            };
+        };
+        responses: {
+            /** @description Series created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Series"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    attachPerformanceToSeries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seriesId: components["parameters"]["SeriesId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeriesPerformanceAttach"];
+            };
+        };
+        responses: {
+            /** @description Updated series */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Series"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Slot already belongs to a series, position is occupied, or membership is frozen */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    publishSeries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seriesId: components["parameters"]["SeriesId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Series members are published */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesLifecycleResult"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Empty series or a member cannot publish */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesTransitionConflict"];
+                };
+            };
+        };
+    };
+    archiveSeries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seriesId: components["parameters"]["SeriesId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Series members are archived */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesLifecycleResult"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Empty series, draft member, or member with an owed closure event */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesTransitionConflict"];
+                };
+            };
+        };
+    };
+    createSeason: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeasonCreate"];
+            };
+        };
+        responses: {
+            /** @description Season created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Season"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    attachSeriesToSeason: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seasonId: components["parameters"]["SeasonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeasonSeriesAttach"];
+            };
+        };
+        responses: {
+            /** @description Updated season */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Season"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Duplicate membership or organizer mismatch */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    attachEventToSeason: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seasonId: components["parameters"]["SeasonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeasonEventAttach"];
+            };
+        };
+        responses: {
+            /** @description Updated season */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Season"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Duplicate membership or organizer mismatch */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     createTicketType: {
         parameters: {
             query?: never;
@@ -731,6 +1177,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicEventDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getPublicSeason: {
+        parameters: {
+            query: {
+                /** @description BCP-47 primary subtag; supported set is data, not schema (TKT-36) */
+                locale: components["parameters"]["Locale"];
+            };
+            header?: never;
+            path: {
+                seasonId: components["parameters"]["SeasonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Published season detail, localized */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSeasonDetail"];
                 };
             };
             400: components["responses"]["BadRequest"];

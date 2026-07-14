@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,6 +51,12 @@ func isFKViolation(err error) bool {
 	return errors.As(err, &c) && c.SQLState() == "23503"
 }
 
+func isUniqueViolation(err error) bool {
+	type coder interface{ SQLState() string }
+	var c coder
+	return errors.As(err, &c) && c.SQLState() == "23505"
+}
+
 func (p *Postgres) CreateVenue(ctx context.Context, in VenueInput) (Venue, error) {
 	v := Venue{OrganizerID: in.OrganizerID, Name: in.Name, GACapacity: in.GACapacity}
 	err := p.db.QueryRowContext(ctx,
@@ -90,6 +97,231 @@ func (p *Postgres) CreateEvent(ctx context.Context, in EventInput) (Event, error
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
 	return e, nil
+}
+
+func (p *Postgres) CreateSeries(ctx context.Context, in SeriesInput) (Series, error) {
+	raw, err := json.Marshal(in.Name)
+	if err != nil {
+		return Series{}, err
+	}
+	var s Series
+	err = p.db.QueryRowContext(ctx, `INSERT INTO series(organizer_id,event_id,name)
+		SELECT $1,e.id,$3 FROM events e WHERE e.id=$2 AND e.organizer_id=$1
+		RETURNING id,organizer_id,event_id,name,created_at`, in.OrganizerID, in.EventID, raw).
+		Scan(&s.ID, &s.OrganizerID, &s.EventID, &raw, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Series{}, ErrNotFound
+	}
+	if err != nil {
+		return Series{}, fmt.Errorf("create series: %w", err)
+	}
+	if err := json.Unmarshal(raw, &s.Name); err != nil {
+		return Series{}, err
+	}
+	s.Members = []SeriesMember{}
+	return s, nil
+}
+
+func getSeriesFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Series, error) {
+	var s Series
+	var raw []byte
+	err := q.QueryRowContext(ctx, `SELECT id,organizer_id,event_id,name,created_at FROM series WHERE id=$1`, id).
+		Scan(&s.ID, &s.OrganizerID, &s.EventID, &raw, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Series{}, ErrNotFound
+	}
+	if err != nil {
+		return Series{}, err
+	}
+	if err := json.Unmarshal(raw, &s.Name); err != nil {
+		return Series{}, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT performance_id,position FROM series_performances WHERE series_id=$1 ORDER BY position`, id)
+	if err != nil {
+		return Series{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	s.Members = []SeriesMember{}
+	for rows.Next() {
+		var m SeriesMember
+		if err := rows.Scan(&m.PerformanceID, &m.Position); err != nil {
+			return Series{}, err
+		}
+		s.Members = append(s.Members, m)
+	}
+	return s, rows.Err()
+}
+
+func (p *Postgres) AttachPerformanceToSeries(ctx context.Context, seriesID, performanceID uuid.UUID, position int32) (Series, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Series{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var orgID, eventID uuid.UUID
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,event_id FROM series WHERE id=$1 FOR UPDATE`, seriesID).Scan(&orgID, &eventID); errors.Is(err, sql.ErrNoRows) {
+		return Series{}, ErrNotFound
+	} else if err != nil {
+		return Series{}, err
+	}
+	var targetOrg, targetEvent uuid.UUID
+	var status string
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,event_id,status FROM performances WHERE id=$1 FOR UPDATE`, performanceID).Scan(&targetOrg, &targetEvent, &status); errors.Is(err, sql.ErrNoRows) {
+		return Series{}, ErrNotFound
+	} else if err != nil {
+		return Series{}, err
+	}
+	if targetOrg != orgID || targetEvent != eventID {
+		return Series{}, ErrOrganizerMismatch
+	}
+	if status != "draft" {
+		return Series{}, ErrMembershipFrozen
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT p.status FROM series_performances sp JOIN performances p ON p.id=sp.performance_id WHERE sp.series_id=$1 ORDER BY p.id FOR UPDATE OF p`, seriesID)
+	if err != nil {
+		return Series{}, err
+	}
+	launched := false
+	for rows.Next() {
+		var memberStatus string
+		if err = rows.Scan(&memberStatus); err != nil {
+			_ = rows.Close()
+			return Series{}, err
+		}
+		launched = launched || memberStatus != "draft"
+	}
+	if err = rows.Close(); err != nil {
+		return Series{}, err
+	}
+	if err = rows.Err(); err != nil {
+		return Series{}, err
+	}
+	if launched {
+		return Series{}, ErrMembershipFrozen
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO series_performances(series_id,performance_id,position) VALUES($1,$2,$3)`, seriesID, performanceID, position); err != nil {
+		if isUniqueViolation(err) {
+			return Series{}, ErrMembershipConflict
+		}
+		return Series{}, err
+	}
+	s, err := getSeriesFrom(ctx, tx, seriesID)
+	if err != nil {
+		return Series{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Series{}, err
+	}
+	return s, nil
+}
+
+func (p *Postgres) CreateSeason(ctx context.Context, in SeasonInput) (Season, error) {
+	raw, err := json.Marshal(in.Name)
+	if err != nil {
+		return Season{}, err
+	}
+	var s Season
+	err = p.db.QueryRowContext(ctx, `INSERT INTO seasons(organizer_id,name) SELECT o.id,$2 FROM organizers o WHERE o.id=$1 RETURNING id,organizer_id,name,created_at`, in.OrganizerID, raw).Scan(&s.ID, &s.OrganizerID, &raw, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Season{}, ErrNotFound
+	}
+	if err != nil {
+		return Season{}, err
+	}
+	if err = json.Unmarshal(raw, &s.Name); err != nil {
+		return Season{}, err
+	}
+	s.SeriesIDs = []uuid.UUID{}
+	s.EventIDs = []uuid.UUID{}
+	return s, nil
+}
+
+func getSeasonFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Season, error) {
+	var s Season
+	var raw []byte
+	err := q.QueryRowContext(ctx, `SELECT id,organizer_id,name,created_at FROM seasons WHERE id=$1`, id).
+		Scan(&s.ID, &s.OrganizerID, &raw, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Season{}, ErrNotFound
+	}
+	if err != nil {
+		return Season{}, err
+	}
+	if err = json.Unmarshal(raw, &s.Name); err != nil {
+		return Season{}, err
+	}
+	s.SeriesIDs = []uuid.UUID{}
+	s.EventIDs = []uuid.UUID{}
+	for query, dest := range map[string]*[]uuid.UUID{
+		`SELECT series_id FROM season_series WHERE season_id=$1 ORDER BY series_id`: &s.SeriesIDs,
+		`SELECT event_id FROM season_events WHERE season_id=$1 ORDER BY event_id`:   &s.EventIDs,
+	} {
+		rows, queryErr := q.QueryContext(ctx, query, id)
+		if queryErr != nil {
+			return Season{}, queryErr
+		}
+		for rows.Next() {
+			var memberID uuid.UUID
+			if scanErr := rows.Scan(&memberID); scanErr != nil {
+				_ = rows.Close()
+				return Season{}, scanErr
+			}
+			*dest = append(*dest, memberID)
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			return Season{}, closeErr
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return Season{}, rowsErr
+		}
+	}
+	return s, nil
+}
+
+func (p *Postgres) AttachSeriesToSeason(ctx context.Context, seasonID, seriesID uuid.UUID) (Season, error) {
+	return p.attachSeasonMember(ctx, seasonID, seriesID, true)
+}
+func (p *Postgres) AttachEventToSeason(ctx context.Context, seasonID, eventID uuid.UUID) (Season, error) {
+	return p.attachSeasonMember(ctx, seasonID, eventID, false)
+}
+func (p *Postgres) attachSeasonMember(ctx context.Context, seasonID, memberID uuid.UUID, isSeries bool) (Season, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Season{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var seasonOrg, memberOrg uuid.UUID
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id FROM seasons WHERE id=$1 FOR UPDATE`, seasonID).Scan(&seasonOrg); errors.Is(err, sql.ErrNoRows) {
+		return Season{}, ErrNotFound
+	} else if err != nil {
+		return Season{}, err
+	}
+	table, col := "events", "event_id"
+	if isSeries {
+		table, col = "series", "series_id"
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id FROM `+table+` WHERE id=$1`, memberID).Scan(&memberOrg); errors.Is(err, sql.ErrNoRows) {
+		return Season{}, ErrNotFound
+	} else if err != nil {
+		return Season{}, err
+	}
+	if memberOrg != seasonOrg {
+		return Season{}, ErrOrganizerMismatch
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO season_`+table+`(season_id,`+col+`) VALUES($1,$2)`, seasonID, memberID); err != nil {
+		if isUniqueViolation(err) {
+			return Season{}, ErrMembershipConflict
+		}
+		return Season{}, err
+	}
+	s, err := getSeasonFrom(ctx, tx, seasonID)
+	if err != nil {
+		return Season{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Season{}, err
+	}
+	return s, nil
 }
 
 func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error) {
@@ -229,6 +461,7 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 // read either outside a transaction or inside the archive lock.
 type rowQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 func (p *Postgres) getPerformance(ctx context.Context, id uuid.UUID) (Performance, *sql.NullTime, *sql.NullTime, error) {
@@ -477,6 +710,102 @@ func (p *Postgres) MarkClosureEmitted(ctx context.Context, id uuid.UUID, version
 	return nil
 }
 
+func (p *Postgres) PublishSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionSeries(ctx, id, "published")
+}
+
+func (p *Postgres) ArchiveSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionSeries(ctx, id, "archived")
+}
+
+func (p *Postgres) transitionSeries(ctx context.Context, id uuid.UUID, target string) ([]SeriesTransition, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var lockedID uuid.UUID
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM series WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	type member struct {
+		id               uuid.UUID
+		status           string
+		version, emitted int32
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT p.id,p.status,p.closure_version,p.closure_emitted_version
+		FROM series_performances sp JOIN performances p ON p.id=sp.performance_id
+		WHERE sp.series_id=$1 ORDER BY p.id FOR UPDATE OF p`, id)
+	if err != nil {
+		return nil, err
+	}
+	var members []member
+	for rows.Next() {
+		var m member
+		if err = rows.Scan(&m.id, &m.status, &m.version, &m.emitted); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(members) == 0 {
+		return nil, ErrEmptySeries
+	}
+	for _, m := range members {
+		switch target {
+		case "published":
+			if m.status == "archived" {
+				return nil, &SeriesTransitionConflict{PerformanceID: m.id, Reason: "archived member cannot be published", Cause: ErrIllegalTransition}
+			}
+			if m.status == "draft" {
+				var sellable bool
+				if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ticket_types WHERE performance_id=$1)`, m.id).Scan(&sellable); err != nil {
+					return nil, err
+				}
+				if !sellable {
+					return nil, &SeriesTransitionConflict{PerformanceID: m.id, Reason: "member has no ticket type", Cause: ErrNotSellable}
+				}
+			}
+		case "archived":
+			if m.status == "draft" {
+				return nil, &SeriesTransitionConflict{PerformanceID: m.id, Reason: "draft member cannot be archived", Cause: ErrIllegalTransition}
+			}
+			if m.status == "published" && m.emitted < m.version {
+				return nil, &SeriesTransitionConflict{PerformanceID: m.id, Reason: "member has an owed closure event", Cause: ErrClosurePending}
+			}
+		}
+	}
+	for _, m := range members {
+		if target == "published" && m.status == "draft" {
+			if _, err = tx.ExecContext(ctx, `UPDATE performances SET status='published',published_at=now() WHERE id=$1`, m.id); err != nil {
+				return nil, err
+			}
+		}
+		if target == "archived" && m.status == "published" {
+			if _, err = tx.ExecContext(ctx, `UPDATE performances SET status='archived',archived_at=now() WHERE id=$1`, m.id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	out := make([]SeriesTransition, 0, len(members))
+	for _, m := range members {
+		perf, pubMark, archiveMark, e := p.getPerformanceTx(ctx, tx, m.id)
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, SeriesTransition{Performance: perf, PublishNeedsEmit: pubMark == nil, ArchiveNeedsEmit: target == "archived" && archiveMark == nil})
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // publicPerformances returns the publicly listable slots (published AND
 // priced — no sellable offer, no listing) grouped into event aggregates,
 // events ordered by their earliest slot, slots by start time.
@@ -491,11 +820,14 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 		SELECT e.id, e.organizer_id, e.name, e.description, e.created_at,
 		       p.id, ` + startsAtExpr + `, p.timezone, p.status, p.published_at, p.created_at,
 		       v.id, v.name, v.ga_capacity, v.created_at,
-		       t.id, t.name, t.price_amount, t.currency, t.created_at
+		       t.id, t.name, t.price_amount, t.currency, t.created_at,
+		       s.id, s.name, sp.position, s.created_at
 		FROM performances p
 		JOIN events e ON e.id = p.event_id
 		JOIN venues v ON v.id = p.venue_id
 		JOIN ticket_types t ON t.performance_id = p.id
+		LEFT JOIN series_performances sp ON sp.performance_id = p.id
+		LEFT JOIN series s ON s.id = sp.series_id
 		WHERE p.status = 'published' AND ($1::uuid IS NULL OR e.id = $1)
 		ORDER BY ` + startsAtExpr + `, p.id, t.price_amount, t.id`
 	rows, err := p.db.QueryContext(ctx, query, eventID)
@@ -509,26 +841,33 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 		idx int
 	}
 	var (
-		order    []uuid.UUID
-		byEvent  = map[uuid.UUID]*EventAggregate{}
-		perfSeen = map[uuid.UUID]perfRef{}
+		order          []uuid.UUID
+		byEvent        = map[uuid.UUID]*EventAggregate{}
+		perfSeen       = map[uuid.UUID]perfRef{}
+		seriesByID     = map[uuid.UUID]*SeriesAggregate{}
+		seriesPosition = map[uuid.UUID]map[uuid.UUID]int32{}
 	)
 	for rows.Next() {
 		var (
-			ev       Event
-			perf     Performance
-			venue    Venue
-			tt       TicketType
-			evName   []byte
-			evDesc   []byte
-			ttName   []byte
-			startsAt time.Time // COALESCE'd, never null on the public path
+			ev            Event
+			perf          Performance
+			venue         Venue
+			tt            TicketType
+			evName        []byte
+			evDesc        []byte
+			ttName        []byte
+			startsAt      time.Time // COALESCE'd, never null on the public path
+			seriesID      uuid.NullUUID
+			seriesName    []byte
+			seriesPos     sql.NullInt32
+			seriesCreated sql.NullTime
 		)
 		if err := rows.Scan(
 			&ev.ID, &ev.OrganizerID, &evName, &evDesc, &ev.CreatedAt,
 			&perf.ID, &startsAt, &perf.Timezone, &perf.Status, &perf.PublishedAt, &perf.CreatedAt,
 			&venue.ID, &venue.Name, &venue.GACapacity, &venue.CreatedAt,
 			&tt.ID, &ttName, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt,
+			&seriesID, &seriesName, &seriesPos, &seriesCreated,
 		); err != nil {
 			return nil, fmt.Errorf("scan public read: %w", err)
 		}
@@ -566,12 +905,36 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 			perfSeen[perf.ID] = ref
 		}
 		ref.agg.Performances[ref.idx].TicketTypes = append(ref.agg.Performances[ref.idx].TicketTypes, tt)
+		if seriesID.Valid {
+			sa, exists := seriesByID[seriesID.UUID]
+			if !exists {
+				var name LocalizedText
+				if err := json.Unmarshal(seriesName, &name); err != nil {
+					return nil, fmt.Errorf("series name jsonb: %w", err)
+				}
+				sa = &SeriesAggregate{Series: Series{ID: seriesID.UUID, OrganizerID: ev.OrganizerID, EventID: ev.ID, Name: name, CreatedAt: seriesCreated.Time}}
+				seriesByID[seriesID.UUID] = sa
+				seriesPosition[seriesID.UUID] = map[uuid.UUID]int32{}
+				agg.Series = append(agg.Series, *sa)
+			}
+			if _, exists := seriesPosition[seriesID.UUID][perf.ID]; !exists {
+				seriesPosition[seriesID.UUID][perf.ID] = seriesPos.Int32
+				sa.PerformanceIDs = append(sa.PerformanceIDs, perf.ID)
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("public read rows: %w", err)
 	}
 	out := make([]EventAggregate, 0, len(order))
 	for _, id := range order {
+		for i := range byEvent[id].Series {
+			sa := seriesByID[byEvent[id].Series[i].Series.ID]
+			sort.Slice(sa.PerformanceIDs, func(a, b int) bool {
+				return seriesPosition[sa.Series.ID][sa.PerformanceIDs[a]] < seriesPosition[sa.Series.ID][sa.PerformanceIDs[b]]
+			})
+			byEvent[id].Series[i] = *sa
+		}
 		out = append(out, *byEvent[id])
 	}
 	return out, nil
@@ -590,4 +953,44 @@ func (p *Postgres) GetPublishedEvent(ctx context.Context, id uuid.UUID) (EventAg
 		return EventAggregate{}, ErrNotFound
 	}
 	return aggs[0], nil
+}
+
+func (p *Postgres) GetPublishedSeason(ctx context.Context, id uuid.UUID) (SeasonAggregate, error) {
+	season, err := getSeasonFrom(ctx, p.db, id)
+	if err != nil {
+		return SeasonAggregate{}, err
+	}
+	ids := map[uuid.UUID]bool{}
+	for _, eventID := range season.EventIDs {
+		ids[eventID] = true
+	}
+	rows, err := p.db.QueryContext(ctx, `SELECT s.event_id FROM season_series ss JOIN series s ON s.id=ss.series_id WHERE ss.season_id=$1`, id)
+	if err != nil {
+		return SeasonAggregate{}, err
+	}
+	for rows.Next() {
+		var eventID uuid.UUID
+		if err := rows.Scan(&eventID); err != nil {
+			_ = rows.Close()
+			return SeasonAggregate{}, err
+		}
+		ids[eventID] = true
+	}
+	if err := rows.Close(); err != nil {
+		return SeasonAggregate{}, err
+	}
+	all, err := p.ListPublishedEvents(ctx)
+	if err != nil {
+		return SeasonAggregate{}, err
+	}
+	out := SeasonAggregate{Season: season, Events: []EventAggregate{}}
+	for _, agg := range all {
+		if ids[agg.Event.ID] {
+			out.Events = append(out.Events, agg)
+		}
+	}
+	if len(out.Events) == 0 {
+		return SeasonAggregate{}, ErrNotFound
+	}
+	return out, nil
 }

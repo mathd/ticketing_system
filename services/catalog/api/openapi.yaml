@@ -191,6 +191,145 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /series:
+    post:
+      operationId: createSeries
+      summary: Create a localized series for one event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeriesCreate' }
+      responses:
+        '201':
+          description: Series created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Series' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /series/{seriesId}/performances:
+    post:
+      operationId: attachPerformanceToSeries
+      summary: Attach an ordered draft slot to a series
+      parameters:
+        - $ref: '#/components/parameters/SeriesId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeriesPerformanceAttach' }
+      responses:
+        '200':
+          description: Updated series
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Series' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Slot already belongs to a series, position is occupied, or membership is frozen
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /series/{seriesId}/publish:
+    post:
+      operationId: publishSeries
+      summary: Atomically publish every slot in the series
+      parameters:
+        - $ref: '#/components/parameters/SeriesId'
+      responses:
+        '200':
+          description: Series members are published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesLifecycleResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Empty series or a member cannot publish
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesTransitionConflict' }
+  /series/{seriesId}/archive:
+    post:
+      operationId: archiveSeries
+      summary: Atomically archive every published slot in the series
+      parameters:
+        - $ref: '#/components/parameters/SeriesId'
+      responses:
+        '200':
+          description: Series members are archived
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesLifecycleResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Empty series, draft member, or member with an owed closure event
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesTransitionConflict' }
+  /seasons:
+    post:
+      operationId: createSeason
+      summary: Create a localized season
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeasonCreate' }
+      responses:
+        '201':
+          description: Season created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Season' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /seasons/{seasonId}/series:
+    post:
+      operationId: attachSeriesToSeason
+      summary: Attach a series to a season
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeasonSeriesAttach' }
+      responses:
+        '200':
+          description: Updated season
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Season' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Duplicate membership or organizer mismatch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /seasons/{seasonId}/events:
+    post:
+      operationId: attachEventToSeason
+      summary: Attach a standalone event to a season
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeasonEventAttach' }
+      responses:
+        '200':
+          description: Updated season
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Season' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Duplicate membership or organizer mismatch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /ticket-types:
     post:
       operationId: createTicketType
@@ -263,6 +402,28 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /public/seasons/{seasonId}:
+    get:
+      operationId: getPublicSeason
+      summary: Aggregated public season detail (minutes tier)
+      description: >
+        One call returns the localized season and its deduplicated public event
+        details, retaining series framing. Program membership changes on the
+        same editorial cadence as event detail, so it uses that five-minute
+        tier: Cache-Control: public, max-age=300, s-maxage=300.
+      parameters:
+        - $ref: '#/components/parameters/SeasonId'
+        - $ref: '#/components/parameters/Locale'
+      responses:
+        '200':
+          description: Published season detail, localized
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicSeasonDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec
@@ -298,6 +459,16 @@ components:
       schema:
         type: string
         format: uuid
+    SeriesId:
+      name: seriesId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SeasonId:
+      name: seasonId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
   headers:
     CacheControl:
       description: ADR-004 volatility tier, explicit on every public read
@@ -576,6 +747,82 @@ components:
         created_at:
           type: string
           format: date-time
+    SeriesCreate:
+      type: object
+      required: [organizer_id, event_id, name]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        name: { $ref: '#/components/schemas/LocalizedString' }
+    SeriesPerformanceAttach:
+      type: object
+      required: [performance_id, position]
+      properties:
+        performance_id: { type: string, format: uuid }
+        position: { type: integer, format: int32, minimum: 1 }
+    SeriesMember:
+      type: object
+      required: [performance_id, position]
+      properties:
+        performance_id: { type: string, format: uuid }
+        position: { type: integer, format: int32, minimum: 1 }
+    Series:
+      type: object
+      required: [id, organizer_id, event_id, name, members, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        organizer_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        name: { $ref: '#/components/schemas/LocalizedString' }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/SeriesMember' }
+        created_at: { type: string, format: date-time }
+    SeriesLifecycleResult:
+      type: object
+      required: [series_id, performances]
+      properties:
+        series_id: { type: string, format: uuid }
+        performances:
+          type: array
+          items: { $ref: '#/components/schemas/Performance' }
+    SeriesTransitionConflict:
+      type: object
+      required: [error, reason]
+      properties:
+        error: { type: string }
+        reason: { type: string }
+        blocking_performance_id: { type: string, format: uuid }
+    SeasonCreate:
+      type: object
+      required: [organizer_id, name]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        name: { $ref: '#/components/schemas/LocalizedString' }
+    SeasonSeriesAttach:
+      type: object
+      required: [series_id]
+      properties:
+        series_id: { type: string, format: uuid }
+    SeasonEventAttach:
+      type: object
+      required: [event_id]
+      properties:
+        event_id: { type: string, format: uuid }
+    Season:
+      type: object
+      required: [id, organizer_id, name, series_ids, event_ids, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        organizer_id: { type: string, format: uuid }
+        name: { $ref: '#/components/schemas/LocalizedString' }
+        series_ids:
+          type: array
+          items: { type: string, format: uuid }
+        event_ids:
+          type: array
+          items: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
     PublicEventList:
       type: object
       required: [events]
@@ -617,7 +864,7 @@ components:
           $ref: '#/components/schemas/Money'
     PublicEventDetail:
       type: object
-      required: [id, organizer_id, name, performances]
+      required: [id, organizer_id, name, series, performances]
       properties:
         id:
           type: string
@@ -629,6 +876,9 @@ components:
           type: string
         description:
           type: string
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/PublicSeriesContext' }
         performances:
           type: array
           items:
@@ -651,6 +901,25 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PublicTicketType'
+    PublicSeriesContext:
+      type: object
+      required: [id, name, performance_ids]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        performance_ids:
+          type: array
+          items: { type: string, format: uuid }
+    PublicSeasonDetail:
+      type: object
+      required: [id, organizer_id, name, events]
+      properties:
+        id: { type: string, format: uuid }
+        organizer_id: { type: string, format: uuid }
+        name: { type: string }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/PublicEventDetail' }
     PublicVenue:
       type: object
       required: [id, name]

@@ -143,6 +143,12 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "illegal performance lifecycle transition"})
 	case errors.Is(err, store.ErrClosurePending):
 		writeJSON(w, http.StatusConflict, Error{Error: "previous closure event still owed; retry that transition first"})
+	case errors.Is(err, store.ErrMembershipConflict):
+		writeJSON(w, http.StatusConflict, Error{Error: "group membership conflicts with an existing member or position"})
+	case errors.Is(err, store.ErrMembershipFrozen):
+		writeJSON(w, http.StatusConflict, Error{Error: "series membership is frozen after launch"})
+	case errors.Is(err, store.ErrEmptySeries):
+		writeJSON(w, http.StatusConflict, Error{Error: "series has no members"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})
@@ -217,6 +223,96 @@ func eventToAPI(ev store.Event) Event {
 		out.Description = &d
 	}
 	return out
+}
+
+func seriesToAPI(s store.Series) Series {
+	members := make([]SeriesMember, 0, len(s.Members))
+	for _, m := range s.Members {
+		members = append(members, SeriesMember{PerformanceId: m.PerformanceID, Position: m.Position})
+	}
+	return Series{Id: s.ID, OrganizerId: s.OrganizerID, EventId: s.EventID, Name: LocalizedString(s.Name), Members: members, CreatedAt: s.CreatedAt}
+}
+
+func seasonToAPI(s store.Season) Season {
+	return Season{Id: s.ID, OrganizerId: s.OrganizerID, Name: LocalizedString(s.Name), SeriesIds: s.SeriesIDs, EventIds: s.EventIDs, CreatedAt: s.CreatedAt}
+}
+
+func (s *Server) CreateSeries(w http.ResponseWriter, r *http.Request) {
+	var in SeriesCreate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	if err := validateLocalized("name", in.Name); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
+		return
+	}
+	out, err := s.store.CreateSeries(r.Context(), store.SeriesInput{OrganizerID: in.OrganizerId, EventID: in.EventId, Name: store.LocalizedText(in.Name)})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, seriesToAPI(out))
+}
+
+func (s *Server) AttachPerformanceToSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
+	var in SeriesPerformanceAttach
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	out, err := s.store.AttachPerformanceToSeries(r.Context(), seriesId, in.PerformanceId, in.Position)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, seriesToAPI(out))
+}
+
+func (s *Server) CreateSeason(w http.ResponseWriter, r *http.Request) {
+	var in SeasonCreate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	if err := validateLocalized("name", in.Name); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
+		return
+	}
+	out, err := s.store.CreateSeason(r.Context(), store.SeasonInput{OrganizerID: in.OrganizerId, Name: store.LocalizedText(in.Name)})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, seasonToAPI(out))
+}
+
+func (s *Server) AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId) {
+	var in SeasonSeriesAttach
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	out, err := s.store.AttachSeriesToSeason(r.Context(), seasonId, in.SeriesId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, seasonToAPI(out))
+}
+
+func (s *Server) AttachEventToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId) {
+	var in SeasonEventAttach
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	out, err := s.store.AttachEventToSeason(r.Context(), seasonId, in.EventId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, seasonToAPI(out))
 }
 
 func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
@@ -377,6 +473,77 @@ func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, perf
 		}
 	}
 	writeJSON(w, http.StatusOK, performanceToAPI(p))
+}
+
+func (s *Server) PublishSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
+	items, err := s.store.PublishSeries(r.Context(), seriesId)
+	if err != nil {
+		s.writeSeriesTransitionError(w, r, err)
+		return
+	}
+	for _, item := range items {
+		if item.PublishNeedsEmit {
+			if err = s.pub.PerformancePublished(r.Context(), item.Performance); err != nil {
+				writeJSON(w, http.StatusInternalServerError, Error{Error: "series is published but a member event is still owed; retry publish"})
+				return
+			}
+			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+				s.log.ErrorContext(r.Context(), "series publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
+			}
+		}
+	}
+	s.writeSeriesResult(w, seriesId, items)
+}
+
+func (s *Server) ArchiveSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
+	items, err := s.store.ArchiveSeries(r.Context(), seriesId)
+	if err != nil {
+		s.writeSeriesTransitionError(w, r, err)
+		return
+	}
+	for _, item := range items {
+		if item.PublishNeedsEmit {
+			if err = s.pub.PerformancePublished(r.Context(), item.Performance); err != nil {
+				writeJSON(w, http.StatusInternalServerError, Error{Error: "series is archived but a member publication event is still owed; retry archive"})
+				return
+			}
+			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+				s.log.ErrorContext(r.Context(), "series publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
+			}
+		}
+		if item.ArchiveNeedsEmit {
+			if err = s.pub.PerformanceArchived(r.Context(), item.Performance); err != nil {
+				writeJSON(w, http.StatusInternalServerError, Error{Error: "series is archived but a member archive event is still owed; retry archive"})
+				return
+			}
+			if markErr := s.store.MarkPerformanceArchiveEmitted(r.Context(), item.Performance.ID); markErr != nil {
+				s.log.ErrorContext(r.Context(), "series archive emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
+			}
+		}
+	}
+	s.writeSeriesResult(w, seriesId, items)
+}
+
+func (s *Server) writeSeriesResult(w http.ResponseWriter, id uuid.UUID, items []store.SeriesTransition) {
+	performances := make([]Performance, 0, len(items))
+	for _, item := range items {
+		performances = append(performances, performanceToAPI(item.Performance))
+	}
+	writeJSON(w, http.StatusOK, SeriesLifecycleResult{SeriesId: id, Performances: performances})
+}
+
+func (s *Server) writeSeriesTransitionError(w http.ResponseWriter, r *http.Request, err error) {
+	var conflict *store.SeriesTransitionConflict
+	if errors.As(err, &conflict) {
+		id := conflict.PerformanceID
+		writeJSON(w, http.StatusConflict, SeriesTransitionConflict{Error: "series transition blocked", Reason: conflict.Reason, BlockingPerformanceId: &id})
+		return
+	}
+	if errors.Is(err, store.ErrEmptySeries) {
+		writeJSON(w, http.StatusConflict, SeriesTransitionConflict{Error: "series transition blocked", Reason: "series has no members"})
+		return
+	}
+	s.writeStoreError(w, r, err)
 }
 
 // CloseSlot sets the orthogonal closure attribute to closed and emits the
@@ -547,14 +714,24 @@ func (s *Server) GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId 
 		s.writeStoreError(w, r, err)
 		return
 	}
+	detail := publicEventDetail(agg, params.Locale)
+	w.Header().Set("Cache-Control", CacheControlPublicReads)
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func publicEventDetail(agg store.EventAggregate, locale string) PublicEventDetail {
 	detail := PublicEventDetail{
 		Id:           agg.Event.ID,
 		OrganizerId:  agg.Event.OrganizerID,
-		Name:         resolve(agg.Event.Name, params.Locale),
+		Name:         resolve(agg.Event.Name, locale),
+		Series:       make([]PublicSeriesContext, 0, len(agg.Series)),
 		Performances: make([]PublicPerformanceDetail, 0, len(agg.Performances)),
 	}
-	if d := resolve(agg.Event.Description, params.Locale); d != "" {
+	if d := resolve(agg.Event.Description, locale); d != "" {
 		detail.Description = &d
+	}
+	for _, sa := range agg.Series {
+		detail.Series = append(detail.Series, PublicSeriesContext{Id: sa.Series.ID, Name: resolve(sa.Series.Name, locale), PerformanceIds: sa.PerformanceIDs})
 	}
 	for _, pa := range agg.Performances {
 		pd := PublicPerformanceDetail{
@@ -565,14 +742,31 @@ func (s *Server) GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId 
 		}
 		for _, tt := range pa.TicketTypes {
 			pd.TicketTypes = append(pd.TicketTypes, PublicTicketType{
-				Id: tt.ID, Name: resolve(tt.Name, params.Locale),
+				Id: tt.ID, Name: resolve(tt.Name, locale),
 				Price: Money{Amount: tt.PriceAmount, Currency: tt.Currency},
 			})
 		}
 		detail.Performances = append(detail.Performances, pd)
 	}
+	return detail
+}
+
+func (s *Server) GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId, params GetPublicSeasonParams) {
+	if !localeSupported(params.Locale) {
+		writeJSON(w, http.StatusBadRequest, Error{Error: fmt.Sprintf("unsupported locale %q", params.Locale)})
+		return
+	}
+	agg, err := s.store.GetPublishedSeason(r.Context(), seasonId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	out := PublicSeasonDetail{Id: agg.Season.ID, OrganizerId: agg.Season.OrganizerID, Name: resolve(agg.Season.Name, params.Locale), Events: make([]PublicEventDetail, 0, len(agg.Events))}
+	for _, event := range agg.Events {
+		out.Events = append(out.Events, publicEventDetail(event, params.Locale))
+	}
 	w.Header().Set("Cache-Control", CacheControlPublicReads)
-	writeJSON(w, http.StatusOK, detail)
+	writeJSON(w, http.StatusOK, out)
 }
 
 // GetOpenAPISpec serves the committed contract byte-identical (ADR-009 §4).

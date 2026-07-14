@@ -4,9 +4,8 @@
 import Layout from '../../../layouts/Layout.astro';
 import { getPublicEvent, type PublicEventDetail } from '../../../lib/api';
 import { UpstreamError } from '../../../lib/cache';
-import { formatMoney, formatStartsAt } from '../../../lib/format';
 import { UI_STRINGS, isLocale } from '../../../lib/locales';
-import HoldPicker from '../../../components/HoldPicker';
+import PerformanceCard from '../../../components/PerformanceCard.astro';
 
 const { locale, eventId } = Astro.params;
 if (!locale || !isLocale(locale) || !eventId) {
@@ -23,6 +22,8 @@ try {
   }
   return new Response('Service unavailable', { status: 503 });
 }
+const byId = new Map(event.performances.map((performance) => [performance.id, performance]));
+const grouped = new Set(event.series.flatMap((series) => series.performance_ids));
 ---
 
 <Layout locale={locale} title={event.name}>
@@ -30,25 +31,14 @@ try {
   <h1>{event.name}</h1>
   {event.description && <p class="description">{event.description}</p>}
   {
-    event.performances.map((perf) => (
-      <section class="performance">
-        <h2>{formatStartsAt(perf.starts_at, perf.timezone, locale)}</h2>
-        <p class="venue">
-          {t.venue}: {perf.venue.name}
-        </p>
-        <h3>{t.tickets}</h3>
-        <ul class="tickets">
-          {perf.ticket_types.map((tt) => (
-            <li>
-              <span>{tt.name}</span>
-              <span class="price">{formatMoney(tt.price.amount, tt.price.currency, locale)}</span>
-            </li>
-          ))}
-        </ul>
-        {perf.ticket_types[0] && <HoldPicker client:load organizerId={event.organizer_id} ticketTypeId={perf.ticket_types[0].id} locale={locale} />}
+    event.series.map((series) => (
+      <section class="series">
+        <h2>{series.name}</h2>
+        {series.performance_ids.map((id) => byId.get(id)).filter((perf) => perf !== undefined).map((perf) => <PerformanceCard performance={perf} organizerId={event.organizer_id} locale={locale} venueLabel={t.venue} ticketsLabel={t.tickets} />)}
       </section>
     ))
   }
+  {event.performances.filter((perf) => !grouped.has(perf.id)).map((perf) => <PerformanceCard performance={perf} organizerId={event.organizer_id} locale={locale} venueLabel={t.venue} ticketsLabel={t.tickets} />)}
 </Layout>
 
 <style>
@@ -70,44 +60,8 @@ try {
     color: var(--muted);
     margin: 0 0 1.4rem;
   }
-  .performance {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 1.1rem 1.3rem;
-    margin-bottom: 1rem;
-  }
-  .performance h2 {
-    font-size: 1.05rem;
-    margin: 0 0 0.15rem;
-  }
-  .venue {
-    color: var(--muted);
-    margin: 0 0 0.8rem;
-    font-size: 0.92rem;
-  }
-  .performance h3 {
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    margin: 0 0 0.4rem;
-  }
-  .tickets {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .tickets li {
-    display: flex;
-    justify-content: space-between;
-    padding: 0.4rem 0;
-    border-top: 1px solid var(--line);
-  }
-  .price {
-    font-weight: 600;
-    color: var(--accent);
-  }
+  .series { border-left: 3px solid var(--accent); padding-left: 1rem; margin-bottom: 1.5rem; }
+  .series > h2 { font-size: 1.15rem; margin: 0 0 0.75rem; }
 </style>
 
 <style is:global>

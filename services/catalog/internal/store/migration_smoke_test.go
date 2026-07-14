@@ -62,6 +62,34 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("series and season rollback guard preserves schema", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, eventID := uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'m') RETURNING id
+		)
+		INSERT INTO events(id,organizer_id,name) SELECT $2,id,'{"en":"e","fr":"e"}' FROM o`, organizerID, eventID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO series(organizer_id,event_id,name) VALUES($1,$2,'{"en":"run","fr":"série"}')`, organizerID, eventID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.Down(ctx); err == nil {
+			t.Fatal("0005 down unexpectedly accepted series data")
+		}
+		var allTablesPresent bool
+		if err := db.QueryRowContext(ctx, `SELECT count(*)=5 FROM information_schema.tables
+			WHERE table_schema=current_schema() AND table_name IN ('series','series_performances','seasons','season_series','season_events')`).Scan(&allTablesPresent); err != nil {
+			t.Fatal(err)
+		}
+		if !allTablesPresent {
+			t.Fatal("failed 0005 down partially dropped grouping tables")
+		}
+	})
+
 	t.Run("existing performance backfills to kind performance", func(t *testing.T) {
 		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {
@@ -113,9 +141,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		bad := map[string][2]string{
 			"performance carrying an operating window": {",kind,operating_date,opens_at,closes_at,starts_at", ",'performance',DATE '2026-07-04','10:00','18:00',now()"},
 			"day kind carrying starts_at":              {",kind,operating_date,opens_at,closes_at,starts_at", ",'operating_day',DATE '2026-07-04','10:00','18:00',now()"},
-			"count_limited without max_entries":         {",starts_at,re_entry_mode", ",now(),'count_limited'"},
-			"max_entries on single mode":                {",starts_at,re_entry_mode,max_entries", ",now(),'single',5"},
-			"open closure carrying closed_at":           {",starts_at,closure_status,closed_at", ",now(),'open',now()"},
+			"count_limited without max_entries":        {",starts_at,re_entry_mode", ",now(),'count_limited'"},
+			"max_entries on single mode":               {",starts_at,re_entry_mode,max_entries", ",now(),'single',5"},
+			"open closure carrying closed_at":          {",starts_at,closure_status,closed_at", ",now(),'open',now()"},
 		}
 		for name, cv := range bad {
 			if err := ins(cv[0], cv[1]); err == nil {
@@ -139,6 +167,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 				db, provider := newDB(t)
 				if _, err := provider.Up(ctx); err != nil {
 					t.Fatal(err)
+				}
+				if _, err := provider.Down(ctx); err != nil { // 0005
+					t.Fatalf("0005 down: %v", err)
 				}
 				organizerID, venueID, eventID := uuid.New(), uuid.New(), uuid.New()
 				if _, err := db.ExecContext(ctx, `WITH o AS (
@@ -171,6 +202,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := provider.Down(ctx); err != nil { // 0005
+			t.Fatalf("0005 down: %v", err)
 		}
 		organizerID, venueID, eventID := uuid.New(), uuid.New(), uuid.New()
 		// an operating_day slot: no starts_at, carries the operating window.
@@ -220,9 +254,12 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The row is kind 'performance' (default) with starts_at set, so 0004's
-		// down rolls back cleanly; the archived-row guard being asserted lives in
-		// 0003, one migration further down.
+		// 0005 has no grouping data, so it rolls back cleanly. The row is kind
+		// 'performance' (default) with starts_at set, so 0004 also rolls back;
+		// the archived-row guard being asserted lives in 0003.
+		if _, err := provider.Down(ctx); err != nil {
+			t.Fatalf("0005 down should succeed without grouping data: %v", err)
+		}
 		if _, err := provider.Down(ctx); err != nil {
 			t.Fatalf("0004 down should succeed for a performance-kind row: %v", err)
 		}

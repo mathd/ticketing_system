@@ -207,6 +207,7 @@ type PublicEventDetail struct {
 	Name         string                    `json:"name"`
 	OrganizerId  openapi_types.UUID        `json:"organizer_id"`
 	Performances []PublicPerformanceDetail `json:"performances"`
+	Series       []PublicSeriesContext     `json:"series"`
 }
 
 // PublicEventList defines model for PublicEventList.
@@ -241,6 +242,21 @@ type PublicPerformanceSummary struct {
 	VenueName string             `json:"venue_name"`
 }
 
+// PublicSeasonDetail defines model for PublicSeasonDetail.
+type PublicSeasonDetail struct {
+	Events      []PublicEventDetail `json:"events"`
+	Id          openapi_types.UUID  `json:"id"`
+	Name        string              `json:"name"`
+	OrganizerId openapi_types.UUID  `json:"organizer_id"`
+}
+
+// PublicSeriesContext defines model for PublicSeriesContext.
+type PublicSeriesContext struct {
+	Id             openapi_types.UUID   `json:"id"`
+	Name           string               `json:"name"`
+	PerformanceIds []openapi_types.UUID `json:"performance_ids"`
+}
+
 // PublicTicketType defines model for PublicTicketType.
 type PublicTicketType struct {
 	Id   openapi_types.UUID `json:"id"`
@@ -265,6 +281,81 @@ type ReEntryPolicy struct {
 
 // ReEntryPolicyMode defines model for ReEntryPolicy.Mode.
 type ReEntryPolicyMode string
+
+// Season defines model for Season.
+type Season struct {
+	CreatedAt time.Time            `json:"created_at"`
+	EventIds  []openapi_types.UUID `json:"event_ids"`
+	Id        openapi_types.UUID   `json:"id"`
+
+	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
+	Name        LocalizedString      `json:"name"`
+	OrganizerId openapi_types.UUID   `json:"organizer_id"`
+	SeriesIds   []openapi_types.UUID `json:"series_ids"`
+}
+
+// SeasonCreate defines model for SeasonCreate.
+type SeasonCreate struct {
+	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
+	Name        LocalizedString    `json:"name"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+}
+
+// SeasonEventAttach defines model for SeasonEventAttach.
+type SeasonEventAttach struct {
+	EventId openapi_types.UUID `json:"event_id"`
+}
+
+// SeasonSeriesAttach defines model for SeasonSeriesAttach.
+type SeasonSeriesAttach struct {
+	SeriesId openapi_types.UUID `json:"series_id"`
+}
+
+// Series defines model for Series.
+type Series struct {
+	CreatedAt time.Time          `json:"created_at"`
+	EventId   openapi_types.UUID `json:"event_id"`
+	Id        openapi_types.UUID `json:"id"`
+	Members   []SeriesMember     `json:"members"`
+
+	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
+	Name        LocalizedString    `json:"name"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+}
+
+// SeriesCreate defines model for SeriesCreate.
+type SeriesCreate struct {
+	EventId openapi_types.UUID `json:"event_id"`
+
+	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
+	Name        LocalizedString    `json:"name"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+}
+
+// SeriesLifecycleResult defines model for SeriesLifecycleResult.
+type SeriesLifecycleResult struct {
+	Performances []Performance      `json:"performances"`
+	SeriesId     openapi_types.UUID `json:"series_id"`
+}
+
+// SeriesMember defines model for SeriesMember.
+type SeriesMember struct {
+	PerformanceId openapi_types.UUID `json:"performance_id"`
+	Position      int32              `json:"position"`
+}
+
+// SeriesPerformanceAttach defines model for SeriesPerformanceAttach.
+type SeriesPerformanceAttach struct {
+	PerformanceId openapi_types.UUID `json:"performance_id"`
+	Position      int32              `json:"position"`
+}
+
+// SeriesTransitionConflict defines model for SeriesTransitionConflict.
+type SeriesTransitionConflict struct {
+	BlockingPerformanceId *openapi_types.UUID `json:"blocking_performance_id,omitempty"`
+	Error                 string              `json:"error"`
+	Reason                string              `json:"reason"`
+}
 
 // SlotCloseRequest Optional operator-supplied reason for the closure
 type SlotCloseRequest struct {
@@ -324,6 +415,12 @@ type Locale = string
 // PerformanceId defines model for PerformanceId.
 type PerformanceId = openapi_types.UUID
 
+// SeasonId defines model for SeasonId.
+type SeasonId = openapi_types.UUID
+
+// SeriesId defines model for SeriesId.
+type SeriesId = openapi_types.UUID
+
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
 
@@ -342,6 +439,12 @@ type GetPublicEventParams struct {
 	Locale Locale `form:"locale" json:"locale"`
 }
 
+// GetPublicSeasonParams defines parameters for GetPublicSeason.
+type GetPublicSeasonParams struct {
+	// Locale BCP-47 primary subtag; supported set is data, not schema (TKT-36)
+	Locale Locale `form:"locale" json:"locale"`
+}
+
 // CreateEventJSONRequestBody defines body for CreateEvent for application/json ContentType.
 type CreateEventJSONRequestBody = EventCreate
 
@@ -350,6 +453,21 @@ type CreatePerformanceJSONRequestBody = PerformanceCreate
 
 // CloseSlotJSONRequestBody defines body for CloseSlot for application/json ContentType.
 type CloseSlotJSONRequestBody = SlotCloseRequest
+
+// CreateSeasonJSONRequestBody defines body for CreateSeason for application/json ContentType.
+type CreateSeasonJSONRequestBody = SeasonCreate
+
+// AttachEventToSeasonJSONRequestBody defines body for AttachEventToSeason for application/json ContentType.
+type AttachEventToSeasonJSONRequestBody = SeasonEventAttach
+
+// AttachSeriesToSeasonJSONRequestBody defines body for AttachSeriesToSeason for application/json ContentType.
+type AttachSeriesToSeasonJSONRequestBody = SeasonSeriesAttach
+
+// CreateSeriesJSONRequestBody defines body for CreateSeries for application/json ContentType.
+type CreateSeriesJSONRequestBody = SeriesCreate
+
+// AttachPerformanceToSeriesJSONRequestBody defines body for AttachPerformanceToSeries for application/json ContentType.
+type AttachPerformanceToSeriesJSONRequestBody = SeriesPerformanceAttach
 
 // CreateTicketTypeJSONRequestBody defines body for CreateTicketType for application/json ContentType.
 type CreateTicketTypeJSONRequestBody = TicketTypeCreate
@@ -386,6 +504,30 @@ type ServerInterface interface {
 	// Aggregated storefront detail read (minutes tier)
 	// (GET /public/events/{eventId})
 	GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId EventId, params GetPublicEventParams)
+	// Aggregated public season detail (minutes tier)
+	// (GET /public/seasons/{seasonId})
+	GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId, params GetPublicSeasonParams)
+	// Create a localized season
+	// (POST /seasons)
+	CreateSeason(w http.ResponseWriter, r *http.Request)
+	// Attach a standalone event to a season
+	// (POST /seasons/{seasonId}/events)
+	AttachEventToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId)
+	// Attach a series to a season
+	// (POST /seasons/{seasonId}/series)
+	AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId)
+	// Create a localized series for one event
+	// (POST /series)
+	CreateSeries(w http.ResponseWriter, r *http.Request)
+	// Atomically archive every published slot in the series
+	// (POST /series/{seriesId}/archive)
+	ArchiveSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId)
+	// Attach an ordered draft slot to a series
+	// (POST /series/{seriesId}/performances)
+	AttachPerformanceToSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId)
+	// Atomically publish every slot in the series
+	// (POST /series/{seriesId}/publish)
+	PublishSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId)
 	// Create a ticket type with a price
 	// (POST /ticket-types)
 	CreateTicketType(w http.ResponseWriter, r *http.Request)
@@ -449,6 +591,54 @@ func (_ Unimplemented) ListPublicEvents(w http.ResponseWriter, r *http.Request, 
 // Aggregated storefront detail read (minutes tier)
 // (GET /public/events/{eventId})
 func (_ Unimplemented) GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId EventId, params GetPublicEventParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Aggregated public season detail (minutes tier)
+// (GET /public/seasons/{seasonId})
+func (_ Unimplemented) GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId, params GetPublicSeasonParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create a localized season
+// (POST /seasons)
+func (_ Unimplemented) CreateSeason(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Attach a standalone event to a season
+// (POST /seasons/{seasonId}/events)
+func (_ Unimplemented) AttachEventToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Attach a series to a season
+// (POST /seasons/{seasonId}/series)
+func (_ Unimplemented) AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create a localized series for one event
+// (POST /series)
+func (_ Unimplemented) CreateSeries(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Atomically archive every published slot in the series
+// (POST /series/{seriesId}/archive)
+func (_ Unimplemented) ArchiveSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Attach an ordered draft slot to a series
+// (POST /series/{seriesId}/performances)
+func (_ Unimplemented) AttachPerformanceToSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Atomically publish every slot in the series
+// (POST /series/{seriesId}/publish)
+func (_ Unimplemented) PublishSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -694,6 +884,206 @@ func (siw *ServerInterfaceWrapper) GetPublicEvent(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// GetPublicSeason operation middleware
+func (siw *ServerInterfaceWrapper) GetPublicSeason(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seasonId" -------------
+	var seasonId SeasonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seasonId", chi.URLParam(r, "seasonId"), &seasonId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seasonId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPublicSeasonParams
+
+	// ------------- Required query parameter "locale" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "locale", r.URL.Query(), &params.Locale, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "locale"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "locale", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPublicSeason(w, r, seasonId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSeason operation middleware
+func (siw *ServerInterfaceWrapper) CreateSeason(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSeason(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AttachEventToSeason operation middleware
+func (siw *ServerInterfaceWrapper) AttachEventToSeason(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seasonId" -------------
+	var seasonId SeasonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seasonId", chi.URLParam(r, "seasonId"), &seasonId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seasonId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AttachEventToSeason(w, r, seasonId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AttachSeriesToSeason operation middleware
+func (siw *ServerInterfaceWrapper) AttachSeriesToSeason(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seasonId" -------------
+	var seasonId SeasonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seasonId", chi.URLParam(r, "seasonId"), &seasonId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seasonId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AttachSeriesToSeason(w, r, seasonId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSeries operation middleware
+func (siw *ServerInterfaceWrapper) CreateSeries(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSeries(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ArchiveSeries operation middleware
+func (siw *ServerInterfaceWrapper) ArchiveSeries(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seriesId" -------------
+	var seriesId SeriesId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seriesId", chi.URLParam(r, "seriesId"), &seriesId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seriesId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ArchiveSeries(w, r, seriesId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AttachPerformanceToSeries operation middleware
+func (siw *ServerInterfaceWrapper) AttachPerformanceToSeries(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seriesId" -------------
+	var seriesId SeriesId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seriesId", chi.URLParam(r, "seriesId"), &seriesId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seriesId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AttachPerformanceToSeries(w, r, seriesId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PublishSeries operation middleware
+func (siw *ServerInterfaceWrapper) PublishSeries(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seriesId" -------------
+	var seriesId SeriesId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seriesId", chi.URLParam(r, "seriesId"), &seriesId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seriesId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PublishSeries(w, r, seriesId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateTicketType operation middleware
 func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *http.Request) {
 
@@ -861,6 +1251,30 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/public/events/{eventId}", wrapper.GetPublicEvent)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/public/seasons/{seasonId}", wrapper.GetPublicSeason)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/seasons", wrapper.CreateSeason)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/seasons/{seasonId}/events", wrapper.AttachEventToSeason)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/seasons/{seasonId}/series", wrapper.AttachSeriesToSeason)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/series", wrapper.CreateSeries)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/series/{seriesId}/archive", wrapper.ArchiveSeries)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/series/{seriesId}/performances", wrapper.AttachPerformanceToSeries)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/series/{seriesId}/publish", wrapper.PublishSeries)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/ticket-types", wrapper.CreateTicketType)

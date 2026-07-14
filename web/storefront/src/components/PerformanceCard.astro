@@ -1,0 +1,36 @@
+---
+import type { PublicEventDetail } from '../lib/api';
+import { formatMoney, formatStartsAt } from '../lib/format';
+import type { Locale } from '../lib/locales';
+import HoldPicker from './HoldPicker';
+
+type Performance = PublicEventDetail['performances'][number];
+interface Props {
+  performance: Performance;
+  organizerId: string;
+  locale: Locale;
+  venueLabel: string;
+  ticketsLabel: string;
+}
+const { performance: perf, organizerId, locale, venueLabel, ticketsLabel } = Astro.props;
+---
+
+<section class="performance">
+  <h3>{formatStartsAt(perf.starts_at, perf.timezone, locale)}</h3>
+  <p class="venue">{venueLabel}: {perf.venue.name}</p>
+  <h4>{ticketsLabel}</h4>
+  <ul class="tickets">
+    {perf.ticket_types.map((tt) => <li><span>{tt.name}</span><span class="price">{formatMoney(tt.price.amount, tt.price.currency, locale)}</span></li>)}
+  </ul>
+  {perf.ticket_types[0] && <HoldPicker client:load organizerId={organizerId} ticketTypeId={perf.ticket_types[0].id} locale={locale} />}
+</section>
+
+<style>
+  .performance { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.3rem; margin-bottom: 1rem; }
+  h3 { font-size: 1.05rem; margin: 0 0 0.15rem; }
+  .venue { color: var(--muted); margin: 0 0 0.8rem; font-size: 0.92rem; }
+  h4 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.4rem; }
+  .tickets { list-style: none; margin: 0; padding: 0; }
+  .tickets li { display: flex; justify-content: space-between; padding: 0.4rem 0; border-top: 1px solid var(--line); }
+  .price { font-weight: 600; color: var(--accent); }
+</style>
