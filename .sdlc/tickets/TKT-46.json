@@ -4,7 +4,7 @@
   "summary": "Clean the M1 baseline before M2",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "Codex",
   "pr": {
@@ -42,7 +42,7 @@
     },
     "success": {
       "state": "met",
-      "note": "All 13 review checkboxes complete, duplicate follow-ups reconciled, full gate green, adversarial review clean, and documentation describes the M2-ready truth."
+      "note": "R1-R12 complete and verified; mandatory adversarial review findings resolved; R13 explicitly deferred by the owner; local and CI gates green."
     }
   },
   "context": {
@@ -105,6 +105,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nR1-R12 are implemented as twelve focused commits and `make check` passes. The owner explicitly said “skip” at the R13 mini-gate, so review-report tracking remains deferred: `docs/reviews/` stays ignored and the local report is not part of this PR. This narrows the Conditions of Success accordingly rather than falsely marking R13 complete. Next: push, open PR, mandatory adversarial diff review."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n### Adversarial review complete\nExternal Codex reviewed the complete `origin/main...HEAD` diff and reported 2 blocking, 2 incidental, and 2 false-positive findings.\n\n- **Fixed — Access contract:** request-validation failures now use the committed `ScanRejected` representation; Access and shared middleware regression tests cover the pre-handler path.\n- **Fixed — terminal failure durability:** processing remains bounded at four attempts, while JetStream delivery remains unlimited only until the sanitized terminal failure record is acknowledged. Unit and real-NATS smoke assertions cover the policy.\n- **Fixed — incidental:** shared contract middleware now has direct behavioral tests, and Docker documentation matches pinned runtime artifacts.\n- **Rejected as defects:** checkout serialization and irreversible redeemed-event migration behavior were verified correct.\n- **Deferred by owner:** R13 review-report tracking remains out of this PR.\n\nVerification: local `make check` passed; GitHub check, gate-selftest, hermetic-smoke, all govulncheck jobs, pnpm-audit, and repository-scan passed on `ffb8b39`."
     }
   ]
 }
