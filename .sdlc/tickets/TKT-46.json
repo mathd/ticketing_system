@@ -4,7 +4,7 @@
   "summary": "Clean the M1 baseline before M2",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "needs:human"
   ],
   "assignee": "Codex",
   "pr": {
@@ -115,6 +115,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nHuman review approved with follow-ups and requested one pre-merge CI hygiene adjustment. Evidence from run 29302222960 shows the gateway job actually completed successfully and govulncheck scanned it; setup-go merely skipped cache-key creation because gateway/go.sum is absent. Returning to coding to replace the per-module cache path with the repository-wide go.sum glob, eliminating the warning and making dependency-free modules robust."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\nHuman review follow-up completed on `7bcb6e5`: govulncheck cache inputs now use the repository-wide `**/go.sum` set, avoiding missing module-local lockfiles. The reviewed gateway leg was confirmed to have scanned successfully before the change; the fix removes the cache warning and hardens future runs. TKT-47 and TKT-48 capture the two medium follow-ups. Local `make check` and every PR check, security job, and hermetic smoke job pass. Returning to Gate 3."
     }
   ]
 }
