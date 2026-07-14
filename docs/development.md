@@ -18,13 +18,14 @@ docker compose exec payments /app verify-journal  # verify the live money journa
 ```
 
 Go code is a `go.work` workspace: one module per service + `gateway`, `shared/go`, `smoke`.
-TS code is a pnpm workspace (`web/scanner`; the storefront is static HTML pending ADR-006).
+TS code is a pnpm workspace: the Astro 7 SSR/React storefront in `web/storefront` and the
+React/Vite scanner in `web/scanner` (ADR-006).
 
 ## Testing model
 
 - **Unit tests** live next to code; kept minimal at the scaffold layer (shared middleware).
 - **The integration seam is the gateway**: `smoke/` asserts everything observable from
-  outside — health fan-out, web shells, trace propagation, JetStream persistence, DB
+  outside — health fan-out, web applications, trace propagation, JetStream persistence, DB
   credential isolation, metrics ingestion. `make smoke` owns the stack lifecycle
   (isolated project `ticketing-smoke`, shifted ports, trap-based teardown).
 - **The gate polices itself**: `scripts/gate-selftest.sh` seeds one failure per stage in a

@@ -1,7 +1,7 @@
 # Architecture Overview
 
-System architecture as of US-001 (TKT-25). Binding decisions live in [`adr/`](./adr/);
-this page reflects what is actually running.
+Completed M1 walking-skeleton architecture. Binding decisions live in [`adr/`](./adr/);
+this page reflects what is running before M2 capability work begins.
 
 ## System Architecture
 
@@ -13,11 +13,11 @@ flowchart TB
     end
 
     subgraph Edge
-        GW[gateway - Go, explicit route table<br/>/healthz + /healthz/all]
+        GW[gateway - Go, explicit public route table<br/>web apps + /api/* + health]
     end
 
     subgraph Frontends
-        SF[storefront - static HTML via nginx<br/>framework pending ADR-006 / TKT-39]
+        SF[storefront - Astro 7 SSR + React<br/>Node runtime, ADR-006]
         SC[scanner - React/Vite via nginx under /scanner/]
     end
 
@@ -48,8 +48,14 @@ flowchart TB
     GW -->|/api/payments| PAY
     GW -->|/api/access| ACC
 
+    SF -.->|SSR catalog reads via public API| GW
+
+    CAT -->|platform.catalog.performance.published| NATS
+    NATS -->|durable consumer provisions capacity| INV
+    COM -->|platform.commerce.order.completed| NATS
+    NATS -->|durable consumer issues/delivers tickets| ACC
+
     CAT & INV & COM & PAY & ACC --> PG
-    CAT & INV & COM & PAY & ACC --> NATS
     CAT & INV & COM & PAY & ACC -->|OTLP: traces, metrics, logs| LGTM
     GW -->|OTLP| LGTM
 ```
@@ -64,7 +70,7 @@ flowchart TB
 | `payments` | PSP port (fake first), wallets/cashless, append-only money journal (ADR-003), settlement | `services/payments` |
 | `access` | ticket issuance & delivery, scanning/redemption, pass & wristband validation | `services/access` |
 | `gateway` | the only public surface; explicit route registration; health fan-out | `gateway` |
-| `storefront` / `scanner` | web shells (storefront framework decided by TKT-39/ADR-006) | `web/*` |
+| `storefront` / `scanner` | Astro SSR buyer storefront and React/Vite gate scanner (ADR-006) | `web/*` |
 | `shared/go` | shared kernel: healthz contract (`httpx`), observability (`obs`) — additions require an ADR | `shared/go` |
 
 ## Cross-cutting invariants

@@ -7,7 +7,7 @@ built spec-first with AI-assisted development. See `docs/product/` for the brief
 ## Quickstart
 
 ```bash
-docker compose up          # postgres + NATS + otel-lgtm + 5 services + gateway + web shells
+docker compose up          # postgres + NATS + otel-lgtm + 5 services + gateway + web apps
 ```
 
 Then:
@@ -35,7 +35,8 @@ Prereqs: Go 1.26+, Node 24+ (pnpm via corepack), Docker with Compose v2.
 |---|---|
 | `services/{catalog,inventory,commerce,payments,access}` | the five Go services (ADR-002) |
 | `gateway/` | public entry point, explicit route table |
-| `web/{storefront,scanner}` | web shells (storefront is framework-free pending ADR-006) |
+| `web/storefront` | Astro 7 SSR storefront with React components (ADR-006) |
+| `web/scanner` | React/Vite gate scanner served under `/scanner/` |
 | `shared/go/` | shared kernel: healthz contract + observability (`httpx`, `obs`) |
 | `smoke/` | black-box integration suite through the gateway |
 | `docs/` | PRD, ADRs, architecture, conventions |

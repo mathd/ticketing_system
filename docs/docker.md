@@ -10,7 +10,7 @@ One stack file at the repo root (`compose.yaml`, project `ticketing`):
 | lgtm | `grafana/otel-lgtm` | collector + Tempo + Loki + Prometheus + Grafana (:3000) |
 | catalog…access | `build/go.Dockerfile` (arg `PKG`) | distroless static; healthcheck = `/app healthcheck` subcommand (no shell in image) |
 | gateway | `build/go.Dockerfile` | only published app port (:8080) |
-| storefront | `web/storefront/Dockerfile` | nginx + static HTML, `/healthz` |
+| storefront | `web/storefront/Dockerfile` | Astro 7 SSR standalone build on Node, `/healthz` |
 | scanner | `web/scanner/Dockerfile` | pnpm build stage → nginx under `/scanner/`, `/healthz` |
 
 Published host ports are env-overridable (`GATEWAY_PORT`, `POSTGRES_PORT`, `NATS_PORT`,
