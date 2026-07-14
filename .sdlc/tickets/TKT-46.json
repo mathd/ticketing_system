@@ -2,7 +2,7 @@
   "key": "TKT-46",
   "type": "Task",
   "summary": "Clean the M1 baseline before M2",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
