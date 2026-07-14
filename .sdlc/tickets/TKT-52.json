@@ -78,6 +78,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implementation complete; `make check` green locally. PR opened; coding → ai-review.**\n\n**PR:** #33 — https://github.com/mathd/ticketing_system/pull/33\n**Commit:** `c661fd1`\n**Diff:** +2434 / −80 across 14 files\n\nShipped contract-first series/season APIs, migration 0005 + guarded rollback, organizer/event membership validation, frozen ordered series membership, atomic series publish/archive with exact blocking-slot conflicts, immediate post-commit per-slot event marking, canonical season event dedupe, five-minute public TTL, localized storefront grouping, ADR-015, and screenshot evidence.\n\nVerification: exact `make check` passed (generation drift, lint, unit, build, migration/store smoke, PostgreSQL/NATS/gateway/storefront e2e). Browser verification passed with no console errors and saved `docs/verification/series-seasons/storefront-series.png`. The first full smoke exposed a `uuid[]` database/sql scan defect in season reads; replaced with ordinary membership row reads. One subsequent Compose attempt hit the known PostgreSQL initialization restart race before tests began; a clean rerun and the final exact `make check` both passed."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=ai-review kind=blocker -->\nRequired Codex adversarial diff review did not run. Both the initial invocation and the single permitted retry used the skill-required self-contained diff on STDIN, read-only sandbox, and explicit `gpt-5.6`; both returned HTTP 400 because that model is unsupported with the configured ChatGPT account. Per the workflow hard rule, TKT-52 remains at `agent:ai-review`; it has not advanced to `needs:human`, and no review-guide has been posted. TKT-55 tracks the model-selection/runner defect."
     }
   ],
   "status": "Building",
