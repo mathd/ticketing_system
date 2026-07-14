@@ -5,7 +5,7 @@
   "summary": "US-010: Series and seasons — grouping events into runs",
   "classification": "complex",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "description": "**As** an organizer, **I want** to group performances into a series (a run of one show) and a season (a programmed set), so buyers and reporting see the run, not scattered dates.\n\n**Priority:** P1\n**Depends on:** US-007 (TKT-49 — grouped offers publish/archive as a unit)\n\n**Acceptance Criteria:**\n- [ ] Catalog models a `series` (ordered run of slots for one event) and a `season` (a named set of series/events), both `organizer_id`-scoped, localizable names; API to create them and attach slots/events; a slot belongs to at most one series\n- [ ] Public reads expose the grouping: an event detail shows its series/run; a season read aggregates its events; new read endpoints declare their ADR-004 TTL tier; storefront renders a run as one grouped listing (browser-verified)\n- [ ] Publishing/archiving is expressible at the series level (publish the run) and fans out to its slots idempotently; partial states (some slots archived) render correctly\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
   "context": {
