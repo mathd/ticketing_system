@@ -44,5 +44,35 @@
   "comments": [],
   "status": "Backlog",
   "assignee": null,
-  "pr": null
+  "pr": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Complete the draft/published/archived lifecycle (epic COS #2) by adding the archived state + its domain event; extends the TKT-26 publish machinery."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: idempotent published→archived transition on a performance; versioned platform.catalog.performance.archived event with deterministic id (reuse the poor-man's-outbox marker); archived slots drop out of the aggregated public list/detail reads; explicit draft|published|archived state machine with 409+reason on illegal transitions. OUT: generalizing to other slot kinds (US-009/TKT-51), series/festival-level archive fan-out (US-010/011), inventory's reaction to the archive event (TKT-4 consumes)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Engineering choices settled in Planning, no product call: exact outbox/event-emitted marker reuse, whether archive is a new endpoint vs a state param, and how the public-read filter excludes archived without changing TTL tiers."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers — extends TKT-26 (Done). Blocks TKT-51 and TKT-52 (they carry the lifecycle onto every slot kind / series)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror the existing idempotent publish handler + deterministic envelope-id emission in services/catalog; add an archived status value + a lifecycle state-machine guard; filter archived from the aggregated public queries. Contract-first: OpenAPI updated, drift check in the gate (ADR-009)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The story is one reviewable vertical slice: archive a published performance via API → event emitted → it disappears from the storefront read, browser-verifiable alone."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS = the 4 ACs + quality gates (make check green, contract tests on the catalog boundary, ADR-004 tiers unchanged)."
+    }
+  }
 }
