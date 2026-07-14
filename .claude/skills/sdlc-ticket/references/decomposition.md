@@ -77,6 +77,10 @@ A ticket is **claimable** only when it sits in `Ready` (priority) **and** has ze
 
 At closure, recompute claimability for everything this ticket blocked; list the **newly unblocked** in the metrics comment. Don't auto-move them — `Backlog → Ready` stays human.
 
+## Spike-amended scope — re-sync the dependent ticket's ACs
+
+When a child is blocked by a **spike** (timeboxed investigation) and that spike lands a decision, the spike frequently **narrows or amends** the dependent ticket's original scope — a case moved to another service, a sub-feature carved out to a later ticket, an AC that the decision makes moot. Before the dependent ticket reaches **Ready**, **rewrite its Acceptance Criteria to match the spike's decided scope** (cite the spike). Do not leave pre-spike ACs that contradict the spike: Planning then has to re-litigate the contradiction (and a plan-review/AI-review will flag it), burning a cycle. The spike's "concrete output for the dependent ticket" section is the source of truth for the rewritten ACs.
+
 ## Readiness verdict — the last step before Gate 1
 
 Decomposition ends with a **PASS / CONCERNS / FAIL** verdict comment on the epic. By prioritizing the children, the human approves brief + PRD + decomposition in one decision — so the verdict must make any weakness visible.
