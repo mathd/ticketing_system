@@ -1,11 +1,11 @@
 {
   "key": "TKT-54",
   "type": "Task",
-  "status": "Planning",
+  "status": "Building",
   "summary": "Record the slot-lifecycle transition idiom (FOR UPDATE) in AGENTS.md",
   "labels": [
     "risk:low",
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "claude",
   "pr": null,
