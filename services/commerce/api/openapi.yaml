@@ -3,16 +3,122 @@ info: {title: Commerce API, version: 1.0.0}
 paths:
   /reservations:
     post:
-      summary: Resolve an authoritative offer and reserve inventory
-      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
-      responses: {'201': {description: Reserved}, '409': {description: Unavailable}}
+      operationId: createReservation
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ReservationCreate'}}}}
+      responses:
+        '201': {description: Reserved, content: {application/json: {schema: {$ref: '#/components/schemas/Reservation'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
   /orders:
     post:
-      summary: Checkout a reservation through the fake PSP
-      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
-      responses: {'200': {description: Completed, content: {application/json: {schema: {type: object, required: [order_id, guest_order_ref, status], properties: {order_id: {type: string, format: uuid}, guest_order_ref: {type: string, format: uuid}, status: {type: string}}}}}}, '202': {description: Recovery pending}, '402': {description: Declined}, '408': {description: No-side-effect timeout}}
-  /orders/{orderId}:
+      operationId: checkout
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Checkout'}}}}
+      responses:
+        '200': {description: Completed, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResult'}}}}
+        '202': {description: Recovery pending, content: {application/json: {schema: {$ref: '#/components/schemas/OrderPending'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '402': {description: Declined, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
+        '408': {description: No-side-effect timeout, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
+        '409': {description: Checkout conflict or payment in progress, content: {application/json: {schema: {$ref: '#/components/schemas/OrderConflict'}}}}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /orders/{id}:
     get:
-      summary: Read uncached order state
-      parameters: [{name: orderId, in: path, required: true, schema: {type: string, format: uuid}}]
-      responses: {'200': {description: Order state}, '404': {description: Not found}}
+      operationId: getOrder
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {description: Order state, content: {application/json: {schema: {$ref: '#/components/schemas/OrderState'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /internal/buyers/{id}/delivery-email:
+    get:
+      operationId: getDeliveryEmail
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {description: Delivery address, content: {application/json: {schema: {$ref: '#/components/schemas/DeliveryEmail'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+components:
+  parameters:
+    Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+  responses:
+    Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    ReservationCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, ticket_type_id, quantity]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        ticket_type_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+    Reservation:
+      type: object
+      additionalProperties: false
+      required: [reservation_id, hold_id, buyer_id, amount, currency, expires_at, server_time]
+      properties:
+        reservation_id: {type: string, format: uuid}
+        hold_id: {type: string, format: uuid}
+        buyer_id: {type: string, format: uuid}
+        amount: {type: integer, format: int64}
+        currency: {type: string}
+        expires_at: {type: string, format: date-time}
+        server_time: {type: string, format: date-time}
+    Checkout:
+      type: object
+      additionalProperties: false
+      required: [reservation_id, name, email, payment_token]
+      properties:
+        reservation_id: {type: string, format: uuid}
+        name: {type: string, minLength: 1}
+        email: {type: string, minLength: 3}
+        payment_token: {type: string, minLength: 1}
+    OrderResult:
+      type: object
+      additionalProperties: false
+      required: [order_id, guest_order_ref, status]
+      properties:
+        order_id: {type: string, format: uuid}
+        guest_order_ref: {type: string, format: uuid}
+        status: {type: string, enum: [completed]}
+    OrderPending:
+      type: object
+      additionalProperties: false
+      required: [order_id, status]
+      properties:
+        order_id: {type: string, format: uuid}
+        status: {type: string}
+    OrderFailure:
+      type: object
+      additionalProperties: true
+      required: [order_id, status]
+      properties:
+        order_id: {type: string, format: uuid}
+        status: {type: string}
+        replay: {type: boolean}
+    OrderConflict:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: {type: string}
+        order_id: {type: string, format: uuid}
+        status: {type: string}
+    OrderState:
+      type: object
+      additionalProperties: false
+      required: [order_id, status]
+      properties: {order_id: {type: string, format: uuid}, status: {type: string}}
+    DeliveryEmail:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties: {email: {type: string}}

@@ -11,8 +11,10 @@ import (
 	"github.com/google/uuid"
 	qrcode "github.com/skip2/go-qrcode"
 
+	apispec "ticketing/services/access/api"
 	"ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
+	"ticketing/shared/contract"
 )
 
 type Server struct {
@@ -25,10 +27,19 @@ func New(st *store.Postgres, verifier *ticket.Verifier) *Server {
 }
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
+		_, _ = w.Write(apispec.Spec)
+	})
 	r.Get("/orders/{ref}/tickets", s.tickets)
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
-	return r
+	validated, err := contract.RequestValidatorWithErrorStatus(apispec.Spec, r, http.StatusUnprocessableEntity)
+	if err != nil {
+		panic(err)
+	}
+	return validated
 }
 func write(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")

@@ -3,29 +3,74 @@ info: {title: Access API, version: 1.0.0}
 paths:
   /scans:
     post:
-      summary: Validate and atomically redeem one signed ticket credential
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [qr_payload]
-              properties:
-                qr_payload: {type: string, minLength: 1}
+      operationId: scanTicket
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRequest'}}}}
       responses:
-        '200': {description: Ticket accepted and redemption appended to its lifecycle trace}
-        '409': {description: Ticket was already redeemed; response includes original_scan_at}
-        '422': {description: Malformed, forged, unknown, or mismatched ticket credential}
-  /orders/{orderRef}/tickets:
+        '200': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/ScanAccepted'}}}}
+        '409': {description: Already redeemed, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
+        '422': {description: Invalid credential, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /orders/{ref}/tickets:
     get:
-      summary: Retrieve the guest ticket bundle and pseudonymous lifecycle history
-      parameters: [{name: orderRef, in: path, required: true, schema: {type: string, format: uuid}}]
-      responses: {'200': {description: Ticket bundle}, '404': {description: Unknown guest reference}}
-  /orders/{orderRef}/tickets/{ticketId}/qr.png:
+      operationId: getTickets
+      parameters: [{$ref: '#/components/parameters/Ref'}]
+      responses:
+        '200': {description: Ticket bundle, content: {application/json: {schema: {$ref: '#/components/schemas/TicketBundle'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /orders/{ref}/tickets/{ticket}/qr.png:
     get:
-      summary: Render a signed ticket QR code for a guest ticket bundle
+      operationId: getTicketQR
       parameters:
-        - {name: orderRef, in: path, required: true, schema: {type: string, format: uuid}}
-        - {name: ticketId, in: path, required: true, schema: {type: string, format: uuid}}
-      responses: {'200': {description: PNG QR artwork, content: {image/png: {}}}, '404': {description: Unknown ticket}}
+        - {$ref: '#/components/parameters/Ref'}
+        - {name: ticket, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: PNG QR artwork, content: {image/png: {schema: {type: string, format: binary}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+components:
+  parameters:
+    Ref: {name: ref, in: path, required: true, schema: {type: string, format: uuid}}
+  responses:
+    Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    ScanRequest: {type: object, additionalProperties: false, required: [qr_payload], properties: {qr_payload: {type: string, minLength: 1}}}
+    ScanAccepted:
+      type: object
+      additionalProperties: false
+      required: [decision, scanned_at]
+      properties: {decision: {type: string, enum: [accepted]}, scanned_at: {type: string, format: date-time}}
+    ScanRejected:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision: {type: string, enum: [rejected]}
+        reason: {type: string}
+        original_scan_at: {type: string, format: date-time}
+    LifecycleEvent:
+      type: object
+      additionalProperties: false
+      required: [id, type, occurred_at]
+      properties: {id: {type: string, format: uuid}, type: {type: string}, occurred_at: {type: string, format: date-time}}
+    Ticket:
+      type: object
+      additionalProperties: false
+      required: [ticket_id, qr_payload, issued_at, history, qr_url]
+      properties:
+        ticket_id: {type: string, format: uuid}
+        qr_payload: {type: string}
+        issued_at: {type: string, format: date-time}
+        history: {type: array, items: {$ref: '#/components/schemas/LifecycleEvent'}}
+        qr_url: {type: string}
+    TicketBundle:
+      type: object
+      additionalProperties: false
+      required: [order_ref, tickets]
+      properties:
+        order_ref: {type: string, format: uuid}
+        tickets: {type: array, items: {$ref: '#/components/schemas/Ticket'}}

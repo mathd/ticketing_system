@@ -23,11 +23,15 @@ deps:
 ## ---- generate (contract-first, ADR-009: spec is the source of truth) ----
 generate:
 	cd services/catalog/api && go tool oapi-codegen -config codegen.yaml openapi.yaml
+	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../inventory/internal/api/openapi_gen.go ../inventory/api/openapi.yaml
+	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../commerce/internal/api/openapi_gen.go ../commerce/api/openapi.yaml
+	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../payments/internal/api/openapi_gen.go ../payments/api/openapi.yaml
+	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../access/internal/api/openapi_gen.go ../access/api/openapi.yaml
 	pnpm --filter storefront generate:api
 
 # The gate fails when committed generated code drifts from the spec.
 check-generate: generate
-	@git diff --exit-code -- services/catalog/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts \
+	@git diff --exit-code -- services/*/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts \
 		|| { echo "generated code drifted from the OpenAPI spec — commit the output of 'make generate'" >&2; exit 1; }
 
 ## ---- lint ----

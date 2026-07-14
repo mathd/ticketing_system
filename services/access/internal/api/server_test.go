@@ -25,6 +25,7 @@ func TestScanRejectsTrailingJSONBeforeRedeeming(t *testing.T) {
 func TestScanRejectsWhenVerifierIsUnavailable(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(`{"qr_payload":"not-a-ticket"}`))
+	request.Header.Set("Content-Type", "application/json")
 	New(nil, nil).Router().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)

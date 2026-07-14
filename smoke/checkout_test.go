@@ -21,14 +21,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestAccessContractIsServedByteIdentically(t *testing.T) {
-	want, err := os.ReadFile("../services/access/api/openapi.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code, got, _ := getWithHeaders(t, gatewayURL+"/api/access/openapi.yaml")
-	if code != http.StatusOK || !bytes.Equal(got, want) {
-		t.Fatalf("served Access contract differs (status %d, %d vs %d bytes)", code, len(got), len(want))
+func TestServiceContractsAreServedByteIdentically(t *testing.T) {
+	for _, service := range []string{"inventory", "commerce", "payments", "access"} {
+		t.Run(service, func(t *testing.T) {
+			want, err := os.ReadFile("../services/" + service + "/api/openapi.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, got, _ := getWithHeaders(t, gatewayURL+"/api/"+service+"/openapi.yaml")
+			if code != http.StatusOK || !bytes.Equal(got, want) {
+				t.Fatalf("served %s contract differs (status %d, %d vs %d bytes)", service, code, len(got), len(want))
+			}
+		})
 	}
 }
 
@@ -44,6 +48,7 @@ func postWithKey(t *testing.T, url, key string, body any) (int, []byte) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
+	validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, out)
 	return resp.StatusCode, out
 }
 
@@ -433,8 +438,11 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	// released and the full capacity can be reacquired.
 	_ = reserveCheckout(t, timeoutTicketType, "reserve-after-timeout")
 
-	if finalizeCode, _ := postWithKey(t, gatewayURL+"/api/inventory/holds/"+fmt.Sprint(reservation["hold_id"])+"/finalize?organizer_id="+organizerID, "", nil); finalizeCode != http.StatusNotFound {
-		t.Fatalf("public inventory finalize status = %d, want 404", finalizeCode)
+	for _, transition := range []string{"confirm", "finalize", "release"} {
+		transitionCode, _ := postWithKey(t, gatewayURL+"/api/inventory/holds/"+fmt.Sprint(reservation["hold_id"])+"/"+transition+"?organizer_id="+organizerID, "", nil)
+		if transitionCode != http.StatusNotFound {
+			t.Fatalf("public inventory %s status = %d, want 404", transition, transitionCode)
+		}
 	}
 	// Released claims are terminal, so retry means reacquiring a fresh hold.
 	_ = reserveCheckout(t, ticketType, "reserve-retry")

@@ -2,6 +2,68 @@ openapi: 3.0.3
 info: {title: Payments internal API, version: 1.0.0}
 paths:
   /internal/facts:
-    post: {summary: Append an idempotent canonical money fact, responses: {'200': {description: Appended}}}
+    post:
+      operationId: appendFact
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Fact'}}}}
+      responses:
+        '200': {description: Appended, content: {application/json: {schema: {$ref: '#/components/schemas/FactResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
   /internal/charges:
-    post: {summary: Run the fake PSP and append its result, responses: {'200': {description: Captured}, '402': {description: Declined}, '408': {description: No-side-effect timeout}}}
+    post:
+      operationId: charge
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Charge'}}}}
+      responses:
+        '200': {description: Captured, content: {application/json: {schema: {$ref: '#/components/schemas/ChargeResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '402': {description: Declined, content: {application/json: {schema: {$ref: '#/components/schemas/ChargeResult'}}}}
+        '408': {description: Timeout, content: {application/json: {schema: {$ref: '#/components/schemas/ChargeResult'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+components:
+  parameters:
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+  responses:
+    Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    Fact:
+      type: object
+      additionalProperties: false
+      required: [fact_id, organizer_id, fact_type, occurred_at, buyer_id, amount, currency]
+      properties:
+        fact_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        fact_type: {type: string}
+        occurred_at: {type: string, format: date-time}
+        buyer_id: {type: string, format: uuid}
+        amount: {type: integer, format: int64}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        payload: {type: object, additionalProperties: {type: string}}
+    FactResult:
+      type: object
+      additionalProperties: false
+      required: [sequence, hash, replay]
+      properties: {sequence: {type: integer, format: int64}, hash: {type: string}, replay: {type: boolean}}
+    Charge:
+      type: object
+      additionalProperties: false
+      required: [order_id, organizer_id, buyer_id, amount, currency, payment_token]
+      properties:
+        order_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        buyer_id: {type: string, format: uuid}
+        amount: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, enum: [EUR]}
+        payment_token: {type: string}
+    ChargeResult:
+      type: object
+      additionalProperties: false
+      required: [status, payment_id, replay]
+      properties:
+        status: {type: string}
+        payment_id: {type: string, format: uuid}
+        sequence: {type: integer, format: int64}
+        replay: {type: boolean}

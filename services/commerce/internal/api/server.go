@@ -19,8 +19,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	apispec "ticketing/services/commerce/api"
 	commerceevents "ticketing/services/commerce/internal/events"
 	commercestore "ticketing/services/commerce/internal/store"
+	"ticketing/shared/contract"
 	"ticketing/shared/fakepsp"
 )
 
@@ -42,11 +44,20 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 }
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
+		_, _ = w.Write(apispec.Spec)
+	})
 	r.Post("/reservations", s.reserve)
 	r.Post("/orders", s.checkout)
 	r.Get("/orders/{id}", s.getOrder)
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
-	return r
+	validated, err := contract.RequestValidator(apispec.Spec, r)
+	if err != nil {
+		panic(err)
+	}
+	return validated
 }
 func write(w http.ResponseWriter, c int, v any) {
 	w.Header().Set("Content-Type", "application/json")

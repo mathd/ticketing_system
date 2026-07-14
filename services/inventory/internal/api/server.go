@@ -11,6 +11,7 @@ import (
 
 	apispec "ticketing/services/inventory/api"
 	"ticketing/services/inventory/internal/store"
+	"ticketing/shared/contract"
 )
 
 type Server struct {
@@ -34,7 +35,11 @@ func (s *Server) Router() http.Handler {
 	r.Post("/holds/{id}/finalize", s.transition("finalizing"))
 	r.Post("/holds/{id}/release", s.transition("released"))
 	r.Get("/slots/{id}/availability", s.availability)
-	return r
+	validated, err := contract.RequestValidator(apispec.Spec, r)
+	if err != nil {
+		panic(err)
+	}
+	return validated
 }
 func write(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
