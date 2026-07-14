@@ -10,6 +10,7 @@ no config files in the services.
 | `PORT` | listen port | `8080` |
 | `DATABASE_URL` | own Postgres database (ADR-007: one DB + role per service) | — (required) |
 | `NATS_URL` | JetStream bus | — (required) |
+| `ACCESS_EVENT_RETRY_BACKOFF` | Access-only comma-separated event retry intervals | `1s,5s,30s,2m,5m,10m` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | collector (lgtm container) | SDK default |
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY` | export cadence (tightened locally) | SDK defaults |
 

@@ -39,6 +39,23 @@ Every service calls `obs.Setup()`: OTLP export (traces, metrics, logs) to the `l
 container + structured JSON on stdout with `trace_id`/`span_id`. Grafana at :3000.
 Cross-service calls must use `obs.Client()` so W3C trace context propagates.
 
+## Access failed-event recovery
+
+Access classifies invalid `order.completed` envelopes as permanent and records only their
+source identifier/fingerprint plus a bounded reason on
+`platform.access.ticket-issuance.failed`. Transient issuance or delivery failures retry four
+times on the configured JetStream backoff, then produce the same sanitized terminal record.
+Failure-record publication happens before termination; a failed publication leaves the source
+message eligible for redelivery. Counters use the low-cardinality `reason` and `stage` labels.
+
+To recover, inspect the failed record, repair the producer or downstream dependency, locate the
+original event in the durable `PLATFORM` stream by `source_event_id`, and republish that original
+envelope with a new `Nats-Msg-Id` replay suffix. Keep the event's own `id`: Access issuance and
+delivery are idempotent on that identifier. Never manufacture a payload from the failed record;
+it deliberately does not retain attacker-controlled event data. If the failure subject itself is
+unavailable through all six deliveries, JetStream's max-deliver advisory is the operator signal
+to restore the stream and replay the original message.
+
 ## Conventions
 
 - Money: integer minor units + ISO currency code; floats banned on money paths (ADR-001).

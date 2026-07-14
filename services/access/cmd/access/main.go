@@ -106,7 +106,11 @@ func run() error {
 		return err
 	}
 	st := accessstore.New(db)
-	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log)
+	consumerOptions, err := consumer.ParseOptions(os.Getenv("ACCESS_EVENT_RETRY_BACKOFF"))
+	if err != nil {
+		return err
+	}
+	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log, consumerOptions)
 	consumerErr := make(chan error, 1)
 	go func() { consumerErr <- cons.Run(ctx) }()
 
