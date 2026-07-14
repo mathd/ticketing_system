@@ -35,6 +35,38 @@ The system sells admission to fundamentally different-looking things: dated perf
     - The slot abstraction is load-bearing: a bad generic design hurts every vertical; the TKT-2/TKT-12 plans must pressure-test it against the weirdest cases (re-entry, mid-day capacity changes, weather closures) before it hardens.
     - Park semantics expressed as attributes may read less naturally in code than a dedicated model.
 
+## Amendment (2026-07-14, TKT-50 / US-008 spike)
+
+The load-bearing abstraction was pressure-tested against re-entry, mid-day capacity change, and
+weather closure (the three cases §Consequences named). **Verdict: the unified model holds** — all
+three resolve to *slot attributes + reactions in Inventory/Access*, with the claim primitive
+unforked. **One scoped exception** was recorded: live concurrent-occupancy capping is a different
+accounting primitive and is carved out to [ADR-013](./ADR-013-occupancy-capping-scoped-exception.md).
+Full analysis + evidence: [`docs/spikes/TKT-50-dated-slot-pressure-test.md`](../spikes/TKT-50-dated-slot-pressure-test.md).
+
+**Decided slot shape US-009 (TKT-51) implements** — the concrete attributes carried on the generalized slot:
+
+- `kind` ∈ `performance | festival_day | operating_day`; existing performances migrate to
+  `performance` with no behavioural change.
+- **Operating window** — local operating date + `timezone` + `opens_at` / `closes_at` (nullable for
+  `performance`, which keeps `starts_at`). The pool/redemption identity is the `(slot, local-date)`
+  pair, not a UTC instant; midnight-spanning days and DST are local-date semantics.
+- `re_entry_policy { mode: single | multi | count_limited, max_entries?, requires_exit? }` —
+  `single` for performances. Multi/count entries are an append-only Access `entry`/`exit` stream; the
+  `UNIQUE(ticket_id,'redeemed')` single-redemption DB guarantee is **retained** for the `redeemed`
+  type and simply not applied to `entry`/`exit`.
+- `closure { status: open | closed, closed_at?, reason? }` — **orthogonal** to the
+  `draft|published|archived` lifecycle (a closed day stays `published`), reversible (`open ⇄ closed`),
+  emits a versioned idempotent domain event.
+- `capacity_group_id?` — nullable seam so a `festival_day` can later point at shared festival capacity
+  (US-011/TKT-14 owns the claim mechanics); unused until then.
+- **No mutable count lives on the slot.** Capacity authority stays in the inventory pool (ADR-010):
+  Catalog emits the initial resolved capacity; Inventory owns adjustments (raise freely; a cut below
+  demand clamps to the invariant floor `max(new, confirmed + held)` and blocks new claims, never
+  force-releasing a confirmed admission — forward-only). The *behaviour* is decided; only its storage
+  representation is left to the inventory-side capacity-adjustment ticket.
+
 ## References
 
-- [PRD](../product/prd-v1.md) (TKT-2, TKT-12, TKT-13, TKT-14) · [ADR-002](./ADR-002-services-from-day-one.md) · [ADR-004](./ADR-004-cache-first-read-path.md)
+- [PRD](../product/prd-v1.md) (TKT-2, TKT-12, TKT-13, TKT-14) · [ADR-002](./ADR-002-services-from-day-one.md) · [ADR-004](./ADR-004-cache-first-read-path.md) · [ADR-010](./ADR-010-postgres-claim-transaction.md) · [ADR-013](./ADR-013-occupancy-capping-scoped-exception.md)
+- [TKT-50 spike report](../spikes/TKT-50-dated-slot-pressure-test.md)
