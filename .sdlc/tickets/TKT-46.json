@@ -4,10 +4,14 @@
   "summary": "Clean the M1 baseline before M2",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "Codex",
-  "pr": null,
+  "pr": {
+    "number": 10,
+    "url": "https://github.com/mathd/ticketing_system/pull/10",
+    "state": "open"
+  },
   "classification": "complex",
   "description": "Apply the accepted 2026-07-13 full-codebase review in one M2-readiness PR, as directed by the owner. The work repairs the concurrent checkout completion race, makes every OpenAPI contract enforceable, hardens JetStream poison-message behavior and Access migrations/scanner recovery, reconciles all repository documentation with the running Go/TS system, pins executable supply-chain inputs, and completes the lower-priority resource/input/hygiene recommendations.\n\nConditions of Success:\n- Concurrent identical checkouts can only publish and return the one persisted guest order reference; a real-PostgreSQL race test proves it\n- Inventory, Commerce, Payments, and Access committed OpenAPI specs are served and checked against implementation behavior in the gate\n- Permanently invalid Access events do not retry forever; transient failure behavior is bounded and observable\n- TKT-44 migration-upgrade and TKT-45 scanner-recovery/corruption coverage are implemented\n- PostgreSQL version authority, M1/M2 roadmap state, README, AGENTS.md, architecture, development, Docker, security, delivery, and solution-design docs agree with the actual repository\n- Executable container/action inputs are pinned and dependency/security automation reflects what is actually configured\n- Database/HTTP resource policies, strict JSON decoding, and stale headers/generated files are cleaned up; review-report tracking (R13) is explicitly deferred by the owner\n- `make check` and the relevant race/integration tests pass; the implemented review scope R1-R12 is complete; R13 is owner-deferred\n\nSource: docs/reviews/2026-07-13-code-review.md (R1-R13).",
   "links": [],
