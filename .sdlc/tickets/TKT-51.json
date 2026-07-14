@@ -4,7 +4,9 @@
   "parent": "TKT-2",
   "summary": "US-009: Generalize the dated slot (performance → typed slot with attributes)",
   "classification": "complex",
-  "labels": [],
+  "labels": [
+    "agent:planning"
+  ],
   "description": "**As** an organizer, **I want** the catalog to model performances, festival days and park operating days as one dated-slot kind, so passes and inventory compose against a single primitive.\n\n**Priority:** P0\n**Depends on:** US-008 (TKT-50 — attribute shape decided), US-007 (TKT-49 — lifecycle to carry onto every slot kind)\n\n**Acceptance Criteria:**\n- [ ] Migration generalizes `performances` into the slot model decided in US-008: a `kind` (`performance | festival_day | operating_day`) and the kind-specific attributes (operating hours, re-entry policy, closure state) as decided — **existing performances migrate to kind `performance` with no behavioural change** (M1 flow; US-003/004/005/006 tests stay green)\n- [ ] Catalog API creates a slot of each kind and sets its attributes; the publish/archive lifecycle (US-007) applies uniformly across kinds; OpenAPI contract regenerated and published (ADR-009)\n- [ ] The publication domain event carries the slot kind + capacity so inventory provisions the pool identically regardless of kind (no fork in the claim path — ADR-005)\n- [ ] Weather-closure and mid-day-capacity transitions from the US-008 spike are representable and emit their domain events; unit + contract tests cover each kind and each attribute transition\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
   "context": {
     "binding": [
@@ -50,9 +52,15 @@
       "key": "TKT-49"
     }
   ],
-  "comments": [],
-  "status": "Ready",
-  "assignee": null,
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed** → Planning. Both blockers cleared: TKT-50 (US-008 slot-model spike, merged #26) and TKT-49 (lifecycle, merged #24) are Done, so the decided attribute shape + lifecycle are on `origin/main`.\n\n**Selection reason:** next in the P0 US-009 line for epic TKT-2 (M2 catalog); it's the ticket that turns the US-008 spike decision into the real generalized dated-slot migration + API. Readiness DoR is green (only `uncertainties` was `deferred`, resolved now that the spike has landed)."
+    }
+  ],
+  "status": "Planning",
+  "assignee": "claude",
   "pr": null,
   "readiness": {
     "objective": {
