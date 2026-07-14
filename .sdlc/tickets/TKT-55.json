@@ -1,0 +1,69 @@
+{
+  "key": "TKT-55",
+  "type": "Bug",
+  "parent": null,
+  "summary": "Fix sdlc-ticket Codex model selection and bounded review runner",
+  "classification": "standard",
+  "labels": [],
+  "description": "The required plan-review gate is not executable with the current skill instructions. The first TKT-52 pass hung while shelling through repository inspection; the skill-pinned `gpt-5.6` retry returned HTTP 400 because that model is unsupported by the configured ChatGPT account. Determine a supported model identifier/capability probe, make the review invocation self-contained and bounded, and add a runner self-test so tickets cannot stall or falsely pass.\n\nConditions of Success:\n- Supported model selection is discovered or validated before a ticket reaches plan-review.\n- Plan/diff prompts remain self-contained, read-only, and bounded with visible failure diagnostics.\n- A repeatable self-test covers unsupported-model and hang handling.\n- The sdlc-ticket documentation no longer hard-codes an unusable model ID.",
+  "context": {
+    "binding": [
+      {
+        "id": "sdlc-ticket",
+        "date": "2026-07-14",
+        "rule": "Cross-model review is mandatory; failure after one retry must stop without advancing."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-52 plan-review failure and one-ticket exception",
+        "link": ".sdlc/tickets/TKT-52.json"
+      },
+      {
+        "summary": "Current skill invocation mechanics",
+        "link": ".claude/skills/sdlc-ticket/SKILL.md"
+      }
+    ],
+    "capturedAt": "2026-07-14"
+  },
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-52"
+    }
+  ],
+  "comments": [],
+  "status": "Backlog",
+  "assignee": null,
+  "pr": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Restore an executable, honest cross-model review gate."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: model selection/capability check, bounded runner, diagnostics, self-test, skill docs. OUT: TKT-52 product implementation."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "Which supported model provides the intended independent review capability on the configured account?"
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None."
+    },
+    "approach": {
+      "state": "open",
+      "note": "Shape after testing supported Codex model IDs and CLI behavior."
+    },
+    "first_slice": {
+      "state": "open",
+      "note": "Capability probe plus a self-contained read-only plan review that completes under the bound."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS above plus the repository documentation/process gate."
+    }
+  }
+}
