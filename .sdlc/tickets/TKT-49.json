@@ -70,7 +70,7 @@
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\nCross-model adversarial review ran (Codex/gpt-5.5, read-only) — verdict **DO-NOT-SHIP** on the first pass, 1 BLOCKING + 1 SHOULD-FIX, both **fixed in the PR** and re-gated.\n\n**Fixed now (blocking):** `ArchivePerformance` had a check-then-act race — a 0-row conditional UPDATE followed by a *separate* status re-read let a concurrent draft→publish commit in between, emitting a **phantom** `performance.archived` for a still-published row (nil `archived_at` → mismatched deterministic id). Rewrote the transition to decide + apply inside one transaction with `SELECT … FOR UPDATE` (access-redeem idiom). New real-Postgres `TestArchiveDoesNotRacePublish` (30 concurrent iterations) proves no phantom archive.\n\n**Fixed now (should-fix):** the owed-publish-before-archive test asserted only slice lengths (a reversed order would pass). Added an ordered emission call-log + ordering assertions + a retry-replay test proving the at-least-once (not exactly-once) contract keeps publication before archive.\n\nOne codex pass per the one-pass rule; fixes re-verified with `make check` (green: lint + test + build + docker-compose smoke), not a second codex pass. Review guide posted on PR #24.\n\ndiff: +996/-36 (14 files). Handing to the human for review + merge (Gate 3). Not pushing further while `needs:human` is set."
     }
   ],
-  "status": "Building",
+  "status": "PO Review",
   "assignee": "agent",
   "pr": "https://github.com/mathd/ticketing_system/pull/24",
   "readiness": {
