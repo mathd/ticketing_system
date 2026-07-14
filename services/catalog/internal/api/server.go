@@ -6,9 +6,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -18,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	apispec "ticketing/services/catalog/api"
 	"ticketing/services/catalog/internal/events"
@@ -138,6 +141,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "performance has no ticket type; create one before publishing"})
 	case errors.Is(err, store.ErrIllegalTransition):
 		writeJSON(w, http.StatusConflict, Error{Error: "illegal performance lifecycle transition"})
+	case errors.Is(err, store.ErrClosurePending):
+		writeJSON(w, http.StatusConflict, Error{Error: "previous closure event still owed; retry that transition first"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})
@@ -224,13 +229,61 @@ func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: fmt.Sprintf("unknown timezone %q", in.Timezone)})
 		return
 	}
-	p, err := s.store.CreatePerformance(r.Context(), store.PerformanceInput{
+	kind := store.KindPerformance
+	if in.Kind != nil {
+		kind = string(*in.Kind)
+	}
+	// Per-kind temporal invariant: the spec can't express "required-if-kind",
+	// so it is enforced here (the DB CHECK is the backstop). A performance
+	// carries an instant; a day kind carries the operating window.
+	switch kind {
+	case store.KindPerformance:
+		if in.StartsAt == nil {
+			writeJSON(w, http.StatusBadRequest, Error{Error: "kind 'performance' requires starts_at"})
+			return
+		}
+		if in.OperatingDate != nil || in.OpensAt != nil || in.ClosesAt != nil {
+			writeJSON(w, http.StatusBadRequest, Error{Error: "kind 'performance' must not carry an operating window"})
+			return
+		}
+	case store.KindFestivalDay, store.KindOperatingDay:
+		if in.StartsAt != nil {
+			writeJSON(w, http.StatusBadRequest, Error{Error: "day kinds must not carry starts_at"})
+			return
+		}
+		if in.OperatingDate == nil || in.OpensAt == nil || in.ClosesAt == nil {
+			writeJSON(w, http.StatusBadRequest, Error{Error: "day kinds require operating_date, opens_at and closes_at"})
+			return
+		}
+	}
+	re := store.ReEntryPolicy{Mode: "single"}
+	if in.ReEntry != nil {
+		re = store.ReEntryPolicy{Mode: string(in.ReEntry.Mode), MaxEntries: in.ReEntry.MaxEntries, RequiresExit: in.ReEntry.RequiresExit}
+	}
+	if re.Mode == "count_limited" && re.MaxEntries == nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "re_entry mode 'count_limited' requires max_entries"})
+		return
+	}
+	if re.Mode != "count_limited" && re.MaxEntries != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "max_entries is only valid for re_entry mode 'count_limited'"})
+		return
+	}
+	input := store.PerformanceInput{
 		OrganizerID: in.OrganizerId,
 		EventID:     in.EventId,
 		VenueID:     in.VenueId,
+		Kind:        kind,
 		StartsAt:    in.StartsAt,
+		OpensAt:     in.OpensAt,
+		ClosesAt:    in.ClosesAt,
 		Timezone:    in.Timezone,
-	})
+		ReEntry:     re,
+	}
+	if in.OperatingDate != nil {
+		d := in.OperatingDate.Time
+		input.OperatingDate = &d
+	}
+	p, err := s.store.CreatePerformance(r.Context(), input)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -239,12 +292,24 @@ func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 }
 
 func performanceToAPI(p store.Performance) Performance {
-	return Performance{
+	out := Performance{
 		Id: p.ID, OrganizerId: p.OrganizerID, EventId: p.EventID, VenueId: p.VenueID,
-		StartsAt: p.StartsAt, Timezone: p.Timezone,
+		Kind: SlotKind(p.Kind), StartsAt: p.StartsAt, OpensAt: p.OpensAt, ClosesAt: p.ClosesAt,
+		Timezone: p.Timezone,
+		ReEntry: ReEntryPolicy{
+			Mode: ReEntryPolicyMode(p.ReEntry.Mode), MaxEntries: p.ReEntry.MaxEntries,
+			RequiresExit: p.ReEntry.RequiresExit,
+		},
+		Closure: Closure{
+			Status: ClosureStatus(p.Closure.Status), ClosedAt: p.Closure.ClosedAt, Reason: p.Closure.Reason,
+		},
 		Status: PerformanceStatus(p.Status), PublishedAt: p.PublishedAt,
 		ArchivedAt: p.ArchivedAt, CreatedAt: p.CreatedAt,
 	}
+	if p.OperatingDate != nil {
+		out.OperatingDate = &openapi_types.Date{Time: *p.OperatingDate}
+	}
+	return out
 }
 
 // PublishPerformance is idempotent on the resource and at-least-once on the
@@ -314,6 +379,69 @@ func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, perf
 	writeJSON(w, http.StatusOK, performanceToAPI(p))
 }
 
+// CloseSlot sets the orthogonal closure attribute to closed and emits the
+// closed event at least once while owed (deterministic id per closure_version,
+// so retried or raced emissions de-duplicate). Any publication event still owed
+// for this slot is emitted first, so a closure never overtakes the slot's
+// publication. Resource-idempotent: closing an already-closed slot returns 200
+// and only re-emits while an event is still owed.
+func (s *Server) CloseSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
+	var in SlotCloseRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	p, publishNeedsEmit, closureNeedsEmit, err := s.store.CloseSlot(r.Context(), performanceId, in.Reason)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	s.emitClosure(w, r, p, publishNeedsEmit, closureNeedsEmit, s.pub.SlotClosed, "close")
+}
+
+// ReopenSlot mirrors CloseSlot for the reverse transition.
+func (s *Server) ReopenSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
+	p, publishNeedsEmit, closureNeedsEmit, err := s.store.ReopenSlot(r.Context(), performanceId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	s.emitClosure(w, r, p, publishNeedsEmit, closureNeedsEmit, s.pub.SlotReopened, "reopen")
+}
+
+// emitClosure emits any owed publication first, then the closure event, marking
+// each only after it is emitted — the publication-before-closure ordering and
+// at-least-once discipline that ArchivePerformance already uses. A failure
+// between emissions retries the already-emitted publication too; its
+// deterministic id makes that safe at the stream.
+func (s *Server) emitClosure(w http.ResponseWriter, r *http.Request, p store.Performance,
+	publishNeedsEmit, closureNeedsEmit bool, emitClosureEvent func(context.Context, store.Performance) error, verb string) {
+	if publishNeedsEmit {
+		if err := s.pub.PerformancePublished(r.Context(), p); err != nil {
+			s.log.ErrorContext(r.Context(), "owed publication event emission failed", "performance_id", p.ID, "err", err)
+			writeJSON(w, http.StatusInternalServerError,
+				Error{Error: "slot state changed but its publication event was not emitted; retry " + verb})
+			return
+		}
+		if err := s.store.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
+			s.log.ErrorContext(r.Context(), "publication event emitted but not marked", "performance_id", p.ID, "err", err)
+		}
+	}
+	if closureNeedsEmit {
+		if err := emitClosureEvent(r.Context(), p); err != nil {
+			s.log.ErrorContext(r.Context(), "closure event emission failed; retry to re-emit",
+				"performance_id", p.ID, "verb", verb, "err", err)
+			writeJSON(w, http.StatusInternalServerError,
+				Error{Error: "slot state changed but the closure event was not emitted; retry " + verb})
+			return
+		}
+		if err := s.store.MarkClosureEmitted(r.Context(), p.ID, p.Closure.Version); err != nil {
+			s.log.ErrorContext(r.Context(), "closure event emitted but not marked", "performance_id", p.ID, "err", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, performanceToAPI(p))
+}
+
 func (s *Server) CreateTicketType(w http.ResponseWriter, r *http.Request) {
 	var in TicketTypeCreate
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -341,6 +469,16 @@ func (s *Server) CreateTicketType(w http.ResponseWriter, r *http.Request) {
 		Price:     Money{Amount: tt.PriceAmount, Currency: tt.Currency},
 		CreatedAt: tt.CreatedAt,
 	})
+}
+
+// publicStartsAt is the slot's representative instant on the public path: the
+// store COALESCEs a day kind's operating-window opening moment into StartsAt,
+// so it is always set here; the guard is defensive against a nil.
+func publicStartsAt(p store.Performance) time.Time {
+	if p.StartsAt != nil {
+		return *p.StartsAt
+	}
+	return time.Time{}
 }
 
 func localeSupported(locale string) bool {
@@ -391,7 +529,7 @@ func eventSummary(agg store.EventAggregate, locale string) PublicEventSummary {
 			}
 		}
 		sum.Performances = append(sum.Performances, PublicPerformanceSummary{
-			Id: pa.Performance.ID, StartsAt: pa.Performance.StartsAt,
+			Id: pa.Performance.ID, StartsAt: publicStartsAt(pa.Performance),
 			Timezone: pa.Performance.Timezone, VenueName: pa.Venue.Name,
 			FromPrice: Money{Amount: from.PriceAmount, Currency: from.Currency},
 		})
@@ -420,7 +558,7 @@ func (s *Server) GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId 
 	}
 	for _, pa := range agg.Performances {
 		pd := PublicPerformanceDetail{
-			Id: pa.Performance.ID, StartsAt: pa.Performance.StartsAt,
+			Id: pa.Performance.ID, StartsAt: publicStartsAt(pa.Performance),
 			Timezone:    pa.Performance.Timezone,
 			Venue:       PublicVenue{Id: pa.Venue.ID, Name: pa.Venue.Name},
 			TicketTypes: make([]PublicTicketType, 0, len(pa.TicketTypes)),

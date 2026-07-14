@@ -20,6 +20,7 @@ import (
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/getkin/kin-openapi/routers/gorillamux"
 	"github.com/google/uuid"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	apispec "ticketing/services/catalog/api"
 	"ticketing/services/catalog/internal/store"
@@ -34,6 +35,7 @@ type fakeStore struct {
 	ticketTypes    map[uuid.UUID]store.TicketType
 	emitted        map[uuid.UUID]bool // performance id -> event_emitted_at set
 	archiveEmitted map[uuid.UUID]bool
+	closureEmitted map[uuid.UUID]int32 // performance id -> closure_emitted_version
 }
 
 func newFakeStore() *fakeStore {
@@ -44,6 +46,7 @@ func newFakeStore() *fakeStore {
 		ticketTypes:    map[uuid.UUID]store.TicketType{},
 		emitted:        map[uuid.UUID]bool{},
 		archiveEmitted: map[uuid.UUID]bool{},
+		closureEmitted: map[uuid.UUID]int32{},
 	}
 }
 
@@ -73,9 +76,19 @@ func (f *fakeStore) CreatePerformance(_ context.Context, in store.PerformanceInp
 	if ev.OrganizerID != in.OrganizerID || v.OrganizerID != in.OrganizerID {
 		return store.Performance{}, store.ErrOrganizerMismatch
 	}
+	kind := in.Kind
+	if kind == "" {
+		kind = store.KindPerformance
+	}
+	re := in.ReEntry
+	if re.Mode == "" {
+		re.Mode = "single"
+	}
 	p := store.Performance{ID: uuid.New(), OrganizerID: in.OrganizerID, EventID: in.EventID,
-		VenueID: in.VenueID, StartsAt: in.StartsAt, Timezone: in.Timezone,
-		Status: "draft", Capacity: v.GACapacity, CreatedAt: time.Now().UTC()}
+		VenueID: in.VenueID, Kind: kind, StartsAt: in.StartsAt, OperatingDate: in.OperatingDate,
+		OpensAt: in.OpensAt, ClosesAt: in.ClosesAt, Timezone: in.Timezone, ReEntry: re,
+		Closure: store.Closure{Status: "open"},
+		Status:  "draft", Capacity: v.GACapacity, CreatedAt: time.Now().UTC()}
 	f.performances[p.ID] = p
 	return p, nil
 }
@@ -140,6 +153,9 @@ func (f *fakeStore) ArchivePerformance(_ context.Context, id uuid.UUID) (store.P
 		return store.Performance{}, false, false, store.ErrIllegalTransition
 	}
 	if p.Status == "published" {
+		if f.closureEmitted[id] < p.Closure.Version {
+			return store.Performance{}, false, false, store.ErrClosurePending
+		}
 		now := time.Now().UTC()
 		p.Status = "archived"
 		p.ArchivedAt = &now
@@ -164,6 +180,51 @@ func (f *fakeStore) MarkPerformanceEventEmitted(_ context.Context, id uuid.UUID)
 
 func (f *fakeStore) MarkPerformanceArchiveEmitted(_ context.Context, id uuid.UUID) error {
 	f.archiveEmitted[id] = true
+	return nil
+}
+
+func (f *fakeStore) CloseSlot(_ context.Context, id uuid.UUID, reason *string) (store.Performance, bool, bool, error) {
+	return f.toggleClosure(id, "closed", reason)
+}
+
+func (f *fakeStore) ReopenSlot(_ context.Context, id uuid.UUID) (store.Performance, bool, bool, error) {
+	return f.toggleClosure(id, "open", nil)
+}
+
+func (f *fakeStore) toggleClosure(id uuid.UUID, target string, reason *string) (store.Performance, bool, bool, error) {
+	p, ok := f.performances[id]
+	if !ok {
+		return store.Performance{}, false, false, store.ErrNotFound
+	}
+	if p.Status != "published" {
+		return store.Performance{}, false, false, store.ErrIllegalTransition
+	}
+	if p.Closure.Status == target {
+		return p, !f.emitted[id], f.closureEmitted[id] < p.Closure.Version, nil
+	}
+	if f.closureEmitted[id] < p.Closure.Version {
+		return store.Performance{}, false, false, store.ErrClosurePending
+	}
+	now := time.Now().UTC()
+	p.Closure.Version++
+	p.Closure.ChangedAt = &now
+	if target == "closed" {
+		p.Closure.Status = "closed"
+		p.Closure.ClosedAt = &now
+		p.Closure.Reason = reason
+	} else {
+		p.Closure.Status = "open"
+		p.Closure.ClosedAt = nil
+		p.Closure.Reason = nil
+	}
+	f.performances[id] = p
+	return p, !f.emitted[id], true, nil
+}
+
+func (f *fakeStore) MarkClosureEmitted(_ context.Context, id uuid.UUID, version int32) error {
+	if version > f.closureEmitted[id] {
+		f.closureEmitted[id] = version
+	}
 	return nil
 }
 
@@ -208,9 +269,32 @@ func (f *fakeStore) GetPublishedEvent(_ context.Context, id uuid.UUID) (store.Ev
 type fakePublisher struct {
 	published       []store.Performance
 	archived        []store.Performance
-	calls           []string // ordered emission log: "published" | "archived"
+	closed          []store.Performance
+	reopened        []store.Performance
+	calls           []string // ordered emission log: "published"|"archived"|"closed"|"reopened"
 	failNext        bool
 	failArchiveNext bool
+	failClosureNext bool
+}
+
+func (f *fakePublisher) SlotClosed(_ context.Context, p store.Performance) error {
+	if f.failClosureNext {
+		f.failClosureNext = false
+		return errors.New("nats down")
+	}
+	f.closed = append(f.closed, p)
+	f.calls = append(f.calls, "closed")
+	return nil
+}
+
+func (f *fakePublisher) SlotReopened(_ context.Context, p store.Performance) error {
+	if f.failClosureNext {
+		f.failClosureNext = false
+		return errors.New("nats down")
+	}
+	f.reopened = append(f.reopened, p)
+	f.calls = append(f.calls, "reopened")
+	return nil
 }
 
 func (f *fakePublisher) PerformanceArchived(_ context.Context, p store.Performance) error {
@@ -379,9 +463,10 @@ func (e *env) createFixture(publish bool) (eventID, performanceID uuid.UUID) {
 		Name:        LocalizedString{"fr": "Nuit Électrique", "en": "Electric Night"},
 		Description: &desc,
 	}))
+	startsAt := time.Date(2026, 9, 18, 19, 30, 0, 0, time.UTC)
 	perf := decode[Performance](e.t, e.do("POST", "/performances", PerformanceCreate{
 		OrganizerId: orgID, EventId: event.Id, VenueId: venue.Id,
-		StartsAt: time.Date(2026, 9, 18, 19, 30, 0, 0, time.UTC), Timezone: "Europe/Paris",
+		StartsAt: &startsAt, Timezone: "Europe/Paris",
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
 		OrganizerId: orgID, PerformanceId: perf.Id,
@@ -438,8 +523,9 @@ func TestCreatePerformanceValidations(t *testing.T) {
 		OrganizerId: orgID, Name: LocalizedString{"fr": "F", "en": "E"},
 	}))
 
+	startsAt := time.Now().UTC()
 	base := PerformanceCreate{OrganizerId: orgID, EventId: event.Id, VenueId: venue.Id,
-		StartsAt: time.Now().UTC(), Timezone: "Europe/Paris"}
+		StartsAt: &startsAt, Timezone: "Europe/Paris"}
 
 	unknownEvent := base
 	unknownEvent.EventId = uuid.New()
@@ -690,9 +776,10 @@ func TestPublicListExcludesDraftsAndPublishRequiresPrice(t *testing.T) {
 	event := decode[Event](e.t, e.do("POST", "/events", EventCreate{
 		OrganizerId: orgID, Name: LocalizedString{"fr": "Brouillon", "en": "Draft"},
 	}))
+	startsAt := time.Now().UTC()
 	perf := decode[Performance](e.t, e.do("POST", "/performances", PerformanceCreate{
 		OrganizerId: orgID, EventId: event.Id, VenueId: venue.Id,
-		StartsAt: time.Now().UTC(), Timezone: "Europe/Paris",
+		StartsAt: &startsAt, Timezone: "Europe/Paris",
 	}))
 	if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusConflict {
 		t.Fatalf("unpriced publish: want 409, got %d", rec.Code)
@@ -751,5 +838,263 @@ func TestOpenAPISpecServedVerbatim(t *testing.T) {
 	}
 	if !bytes.Equal(rec.Body.Bytes(), apispec.Spec) {
 		t.Fatal("served spec must be byte-identical to the committed contract (ADR-009)")
+	}
+}
+
+// --- US-009: typed dated slot (kinds, attributes, closure) ---
+
+// dayEnv creates a venue + event and returns their ids for slot-kind tests.
+func (e *env) dayEnv() (venueID, eventID uuid.UUID) {
+	e.t.Helper()
+	v := decode[Venue](e.t, e.do("POST", "/venues", VenueCreate{OrganizerId: orgID, Name: "La Ronde", GaCapacity: 800}))
+	ev := decode[Event](e.t, e.do("POST", "/events", EventCreate{
+		OrganizerId: orgID, Name: LocalizedString{"fr": "Journée parc", "en": "Park day"},
+	}))
+	return v.Id, ev.Id
+}
+
+func TestCreateOperatingDaySlot(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	kind := SlotKind("operating_day")
+	opens, closes := "10:00", "02:00" // spans midnight
+	opDate := openapi_types.Date{Time: time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)}
+	max := int32(3)
+	rec := e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: eventID, VenueId: venueID, Kind: &kind,
+		OperatingDate: &opDate, OpensAt: &opens, ClosesAt: &closes, Timezone: "America/Toronto",
+		ReEntry: &ReEntryPolicy{Mode: "count_limited", MaxEntries: &max, RequiresExit: true},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create operating_day: %d %s", rec.Code, rec.Body.String())
+	}
+	p := decode[Performance](t, rec)
+	if p.Kind != "operating_day" || p.StartsAt != nil || p.OperatingDate == nil ||
+		p.OpensAt == nil || *p.OpensAt != "10:00" || *p.ClosesAt != "02:00" {
+		t.Fatalf("operating_day attributes not persisted: %+v", p)
+	}
+	if p.ReEntry.Mode != "count_limited" || p.ReEntry.MaxEntries == nil || *p.ReEntry.MaxEntries != 3 || !p.ReEntry.RequiresExit {
+		t.Fatalf("re_entry not persisted: %+v", p.ReEntry)
+	}
+	if p.Closure.Status != "open" {
+		t.Fatalf("new slot must be open, got %q", p.Closure.Status)
+	}
+}
+
+func TestCreateSlotKindValidations(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	base := func() PerformanceCreate {
+		return PerformanceCreate{OrganizerId: orgID, EventId: eventID, VenueId: venueID, Timezone: "America/Toronto"}
+	}
+	opens, closes := "09:00", "17:00"
+	opDate := openapi_types.Date{Time: time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)}
+	instant := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	festival := SlotKind("festival_day")
+	perfKind := SlotKind("performance")
+	max := int32(2)
+
+	cases := []struct {
+		name string
+		body PerformanceCreate
+	}{
+		{"performance without starts_at", func() PerformanceCreate { b := base(); b.Kind = &perfKind; return b }()},
+		{"performance with operating window", func() PerformanceCreate {
+			b := base()
+			b.Kind = &perfKind
+			b.StartsAt = &instant
+			b.OpensAt = &opens
+			return b
+		}()},
+		{"day kind with starts_at", func() PerformanceCreate {
+			b := base()
+			b.Kind = &festival
+			b.StartsAt = &instant
+			b.OperatingDate = &opDate
+			b.OpensAt = &opens
+			b.ClosesAt = &closes
+			return b
+		}()},
+		{"day kind missing closes_at", func() PerformanceCreate {
+			b := base()
+			b.Kind = &festival
+			b.OperatingDate = &opDate
+			b.OpensAt = &opens
+			return b
+		}()},
+		{"count_limited without max", func() PerformanceCreate {
+			b := base()
+			b.StartsAt = &instant
+			b.ReEntry = &ReEntryPolicy{Mode: "count_limited"}
+			return b
+		}()},
+		{"max on non-count_limited", func() PerformanceCreate {
+			b := base()
+			b.StartsAt = &instant
+			b.ReEntry = &ReEntryPolicy{Mode: "single", MaxEntries: &max}
+			return b
+		}()},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if rec := e.do("POST", "/performances", c.body); rec.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestPublishEmitsSlotKind(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	kind := SlotKind("festival_day")
+	opens, closes := "12:00", "23:00"
+	opDate := openapi_types.Date{Time: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	perf := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: eventID, VenueId: venueID, Kind: &kind,
+		OperatingDate: &opDate, OpensAt: &opens, ClosesAt: &closes, Timezone: "Europe/Paris",
+	}))
+	e.do("POST", "/ticket-types", TicketTypeCreate{
+		OrganizerId: orgID, PerformanceId: perf.Id,
+		Name: LocalizedString{"fr": "Pass jour", "en": "Day pass"}, Price: Money{Amount: 9000, Currency: "EUR"},
+	})
+	if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
+		t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.published) != 1 || e.pub.published[0].Kind != "festival_day" {
+		t.Fatalf("publication event must carry the slot kind, got %+v", e.pub.published)
+	}
+}
+
+func TestClosureToggleLifecycle(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true) // published performance
+	reason := "storm"
+
+	// close
+	rec := e.do("POST", "/performances/"+perfID.String()+"/close", SlotCloseRequest{Reason: &reason})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("close: %d %s", rec.Code, rec.Body.String())
+	}
+	p := decode[Performance](t, rec)
+	if p.Closure.Status != "closed" || p.Closure.Reason == nil || *p.Closure.Reason != "storm" || p.Closure.ClosedAt == nil {
+		t.Fatalf("closure not applied: %+v", p.Closure)
+	}
+	if len(e.pub.closed) != 1 {
+		t.Fatalf("close must emit once, got %d", len(e.pub.closed))
+	}
+
+	// idempotent re-close: no new emission
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("re-close: %d", rec.Code)
+	}
+	if len(e.pub.closed) != 1 {
+		t.Fatalf("idempotent re-close must not re-emit, got %d", len(e.pub.closed))
+	}
+
+	// reopen
+	rec = e.do("POST", "/performances/"+perfID.String()+"/reopen", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reopen: %d %s", rec.Code, rec.Body.String())
+	}
+	p = decode[Performance](t, rec)
+	if p.Closure.Status != "open" || p.Closure.ClosedAt != nil {
+		t.Fatalf("reopen not applied: %+v", p.Closure)
+	}
+	if len(e.pub.reopened) != 1 {
+		t.Fatalf("reopen must emit once, got %d", len(e.pub.reopened))
+	}
+}
+
+// Archive stays legal from a closed slot (spike §Case 3): closure is orthogonal
+// to the lifecycle, so a closed day can be archived without first reopening.
+func TestArchiveLegalFromClosed(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("close: %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive from closed must be legal, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestClosureRejectsUnpublished(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(false) // draft
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("closing a draft must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A closure must never overtake the slot's publication event. If publish
+// commits but its emission fails, a subsequent close emits the owed publication
+// first, then the closure — consumers see publish before closed.
+func TestCloseEmitsOwedPublishBeforeClosure(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(false) // draft + priced (publishable)
+	// publish, but the emission fails: status becomes published, its event owed.
+	e.pub.failNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/publish", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("publish emission failure must be 500, got %d", rec.Code)
+	}
+	if len(e.pub.calls) != 0 {
+		t.Fatalf("failed publish must record nothing, got %v", e.pub.calls)
+	}
+	// close: owed publication emitted before the closure event.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("close: %d %s", rec.Code, rec.Body.String())
+	}
+	if want := []string{"published", "closed"}; !slices.Equal(e.pub.calls, want) {
+		t.Fatalf("emission order = %v, want %v", e.pub.calls, want)
+	}
+	// idempotent re-close emits nothing new.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("re-close: %d", rec.Code)
+	}
+	if len(e.pub.calls) != 2 {
+		t.Fatalf("idempotent re-close must not re-emit, got %v", e.pub.calls)
+	}
+}
+
+// Archiving must not strand an owed closure event: while the closed event is
+// unemitted, archive is refused (409) so the toggle can still re-emit it. Once
+// emitted, archive-from-closed proceeds (spike §Case 3).
+func TestArchiveRefusedWhileClosureOwed(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	e.pub.failClosureNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("close emission failure: %d", rec.Code)
+	}
+	// closure event owed (emitted=0 < version=1): archive must refuse.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("archive while closure owed must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	// re-emit the owed closure, then archive succeeds.
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("retry close: %d", rec.Code)
+	}
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("archive after closure emitted: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCloseRetriesEmissionAfterFailure(t *testing.T) {
+	e := newEnv(t)
+	_, perfID := e.createFixture(true)
+	e.pub.failClosureNext = true
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("emission failure must surface as 500, got %d", rec.Code)
+	}
+	if len(e.pub.closed) != 0 {
+		t.Fatalf("failed emission must not record, got %d", len(e.pub.closed))
+	}
+	// retry re-emits the still-owed transition (same deterministic id at the stream)
+	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusOK {
+		t.Fatalf("retry close: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.closed) != 1 {
+		t.Fatalf("retry must emit the owed closure, got %d", len(e.pub.closed))
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
@@ -115,15 +116,32 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 		return Performance{}, ErrOrganizerMismatch
 	}
 
-	perf := Performance{OrganizerID: in.OrganizerID, EventID: in.EventID, VenueID: in.VenueID,
-		StartsAt: in.StartsAt, Timezone: in.Timezone, Status: "draft"}
+	kind := in.Kind
+	if kind == "" {
+		kind = KindPerformance
+	}
+	mode := in.ReEntry.Mode
+	if mode == "" {
+		mode = "single"
+	}
+	var id uuid.UUID
 	err = p.db.QueryRowContext(ctx,
-		`INSERT INTO performances (organizer_id, event_id, venue_id, starts_at, timezone)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id, starts_at, created_at`,
-		in.OrganizerID, in.EventID, in.VenueID, in.StartsAt, in.Timezone).
-		Scan(&perf.ID, &perf.StartsAt, &perf.CreatedAt)
+		`INSERT INTO performances
+		   (organizer_id, event_id, venue_id, kind, starts_at, operating_date,
+		    opens_at, closes_at, timezone, re_entry_mode, max_entries, requires_exit)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 RETURNING id`,
+		in.OrganizerID, in.EventID, in.VenueID, kind, in.StartsAt, in.OperatingDate,
+		in.OpensAt, in.ClosesAt, in.Timezone, mode, in.ReEntry.MaxEntries, in.ReEntry.RequiresExit).
+		Scan(&id)
 	if err != nil {
 		return Performance{}, fmt.Errorf("insert performance: %w", err)
+	}
+	// Re-read through the canonical projection so every attribute (and the
+	// venue capacity snapshot) is populated exactly as reads see it.
+	perf, _, _, err := p.getPerformance(ctx, id)
+	if err != nil {
+		return Performance{}, err
 	}
 	return perf, nil
 }
@@ -225,20 +243,46 @@ func (p *Postgres) getPerformanceTx(ctx context.Context, tx *sql.Tx, id uuid.UUI
 
 func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Performance, *sql.NullTime, *sql.NullTime, error) {
 	var perf Performance
-	var emitted, archiveEmitted sql.NullTime
+	var (
+		emitted, archiveEmitted        sql.NullTime
+		opensAt, closesAt, closeReason sql.NullString
+		maxEntries                     sql.NullInt32
+		capacityGroup                  uuid.NullUUID
+	)
 	err := q.QueryRowContext(ctx,
-		`SELECT p.id, p.organizer_id, p.event_id, p.venue_id, p.starts_at, p.timezone,
-		        p.status, p.published_at, p.archived_at, p.event_emitted_at,
-		        p.archive_emitted_at, p.created_at, v.ga_capacity
+		`SELECT p.id, p.organizer_id, p.event_id, p.venue_id, p.kind, p.starts_at,
+		        p.operating_date, p.opens_at, p.closes_at, p.timezone,
+		        p.re_entry_mode, p.max_entries, p.requires_exit,
+		        p.closure_status, p.closed_at, p.closure_reason, p.closure_version,
+		        p.closure_changed_at, p.capacity_group_id, p.status, p.published_at, p.archived_at,
+		        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity
 		 FROM performances p JOIN venues v ON v.id = p.venue_id WHERE p.id = $1`, id).
-		Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.StartsAt,
-			&perf.Timezone, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
+		Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.Kind, &perf.StartsAt,
+			&perf.OperatingDate, &opensAt, &closesAt, &perf.Timezone,
+			&perf.ReEntry.Mode, &maxEntries, &perf.ReEntry.RequiresExit,
+			&perf.Closure.Status, &perf.Closure.ClosedAt, &closeReason, &perf.Closure.Version,
+			&perf.Closure.ChangedAt, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
 			&archiveEmitted, &perf.CreatedAt, &perf.Capacity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, nil, nil, fmt.Errorf("performance: %w", ErrNotFound)
 	}
 	if err != nil {
 		return Performance{}, nil, nil, fmt.Errorf("get performance: %w", err)
+	}
+	if opensAt.Valid {
+		perf.OpensAt = &opensAt.String
+	}
+	if closesAt.Valid {
+		perf.ClosesAt = &closesAt.String
+	}
+	if maxEntries.Valid {
+		perf.ReEntry.MaxEntries = &maxEntries.Int32
+	}
+	if closeReason.Valid {
+		perf.Closure.Reason = &closeReason.String
+	}
+	if capacityGroup.Valid {
+		perf.CapacityGroupID = &capacityGroup.UUID
 	}
 	var emittedPtr, archiveEmittedPtr *sql.NullTime
 	if emitted.Valid {
@@ -275,8 +319,10 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 	defer func() { _ = tx.Rollback() }()
 
 	var status string
+	var closureVersion, closureEmitted int32
 	err = tx.QueryRowContext(ctx,
-		`SELECT status FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+		`SELECT status, closure_version, closure_emitted_version
+		 FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status, &closureVersion, &closureEmitted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
 	}
@@ -288,6 +334,13 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 		// Only published offers archive (draft->archived is illegal).
 		return Performance{}, false, false, ErrIllegalTransition
 	case "published":
+		// A closed slot can be archived (spike §Case 3) — but not while its
+		// closed/reopened event is still owed: archiving strands the slot in a
+		// terminal state where the closure toggle can no longer re-emit it, so
+		// the event would be lost. Refuse until it is emitted (retry close/reopen).
+		if closureEmitted < closureVersion {
+			return Performance{}, false, false, ErrClosurePending
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE performances SET status = 'archived', archived_at = now() WHERE id = $1`, id); err != nil {
 			return Performance{}, false, false, fmt.Errorf("archive: %w", err)
@@ -324,13 +377,119 @@ func (p *Postgres) MarkPerformanceArchiveEmitted(ctx context.Context, id uuid.UU
 	return nil
 }
 
+func (p *Postgres) CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (Performance, bool, bool, error) {
+	return p.toggleClosure(ctx, id, "closed", reason)
+}
+
+func (p *Postgres) ReopenSlot(ctx context.Context, id uuid.UUID) (Performance, bool, bool, error) {
+	return p.toggleClosure(ctx, id, "open", nil)
+}
+
+// toggleClosure flips the orthogonal closure attribute under a FOR UPDATE lock
+// (same race discipline as archive). Closure is only meaningful while
+// published. Each real transition bumps closure_version and stamps
+// closure_changed_at (so the event occurred_at is stable across retries); the
+// returned closureNeedsEmit says whether that version's domain event is still
+// owed. publishNeedsEmit reports whether the publication event is still owed:
+// the caller emits publication first, so a closure never overtakes the
+// publication of the same slot. Re-requesting the current state re-emits only
+// if owed (safe: deterministic id de-duplicates). The opposite toggle is
+// refused while the current version's event is still owed (ErrClosurePending),
+// so the single closure_emitted_version marker can never silently drop one.
+func (p *Postgres) toggleClosure(ctx context.Context, id uuid.UUID, target string, reason *string) (Performance, bool, bool, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Performance{}, false, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status, closureStatus string
+	var version, emittedVersion int32
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, closure_status, closure_version, closure_emitted_version
+		 FROM performances WHERE id = $1 FOR UPDATE`, id).
+		Scan(&status, &closureStatus, &version, &emittedVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
+	}
+	if err != nil {
+		return Performance{}, false, false, fmt.Errorf("lock performance: %w", err)
+	}
+	if status != "published" {
+		// A closure attribute is only meaningful on a live (published) slot;
+		// draft/archived slots have nothing to close (spike §Case 3).
+		return Performance{}, false, false, ErrIllegalTransition
+	}
+
+	if closureStatus == target {
+		// Already in the requested state: no transition. Re-emit only if this
+		// version's event is still owed (a prior emission failed to ack).
+		perf, publishedEmitted, _, err := p.getPerformanceTx(ctx, tx, id)
+		if err != nil {
+			return Performance{}, false, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return Performance{}, false, false, fmt.Errorf("commit closure: %w", err)
+		}
+		return perf, publishedEmitted == nil, emittedVersion < version, nil
+	}
+
+	// A real transition is requested. Refuse it while the current version's
+	// event is still owed — toggling now would lose that event under the
+	// single marker. The caller retries the pending transition first.
+	if emittedVersion < version {
+		return Performance{}, false, false, ErrClosurePending
+	}
+
+	newVersion := version + 1
+	if target == "closed" {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE performances SET closure_status = 'closed', closed_at = now(),
+			        closure_reason = $2, closure_version = $3, closure_changed_at = now() WHERE id = $1`,
+			id, reason, newVersion)
+	} else {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE performances SET closure_status = 'open', closed_at = NULL,
+			        closure_reason = NULL, closure_version = $2, closure_changed_at = now() WHERE id = $1`,
+			id, newVersion)
+	}
+	if err != nil {
+		return Performance{}, false, false, fmt.Errorf("toggle closure: %w", err)
+	}
+	perf, publishedEmitted, _, err := p.getPerformanceTx(ctx, tx, id)
+	if err != nil {
+		return Performance{}, false, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Performance{}, false, false, fmt.Errorf("commit closure: %w", err)
+	}
+	return perf, publishedEmitted == nil, true, nil
+}
+
+// MarkClosureEmitted advances the closure outbox marker to version (monotonic,
+// idempotent): the closed/reopened event for that version has been ack'd.
+func (p *Postgres) MarkClosureEmitted(ctx context.Context, id uuid.UUID, version int32) error {
+	if _, err := p.db.ExecContext(ctx,
+		`UPDATE performances SET closure_emitted_version = $2
+		 WHERE id = $1 AND closure_emitted_version < $2`, id, version); err != nil {
+		return fmt.Errorf("mark closure emitted: %w", err)
+	}
+	return nil
+}
+
 // publicPerformances returns the publicly listable slots (published AND
 // priced — no sellable offer, no listing) grouped into event aggregates,
 // events ordered by their earliest slot, slots by start time.
 func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) ([]EventAggregate, error) {
+	// A day kind has no starts_at instant; derive a representative one from its
+	// operating window (opening moment, resolved in the slot's local zone) so
+	// the public read has a stable non-null sort/display key for every kind.
+	// For kind 'performance' the COALESCE returns starts_at unchanged.
+	const startsAtExpr = `COALESCE(p.starts_at,
+		(p.operating_date + p.opens_at::time) AT TIME ZONE p.timezone)`
 	query := `
 		SELECT e.id, e.organizer_id, e.name, e.description, e.created_at,
-		       p.id, p.starts_at, p.timezone, p.status, p.published_at, p.created_at,
+		       p.id, ` + startsAtExpr + `, p.timezone, p.status, p.published_at, p.created_at,
 		       v.id, v.name, v.ga_capacity, v.created_at,
 		       t.id, t.name, t.price_amount, t.currency, t.created_at
 		FROM performances p
@@ -338,7 +497,7 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 		JOIN venues v ON v.id = p.venue_id
 		JOIN ticket_types t ON t.performance_id = p.id
 		WHERE p.status = 'published' AND ($1::uuid IS NULL OR e.id = $1)
-		ORDER BY p.starts_at, p.id, t.price_amount, t.id`
+		ORDER BY ` + startsAtExpr + `, p.id, t.price_amount, t.id`
 	rows, err := p.db.QueryContext(ctx, query, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("public read: %w", err)
@@ -356,17 +515,18 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 	)
 	for rows.Next() {
 		var (
-			ev     Event
-			perf   Performance
-			venue  Venue
-			tt     TicketType
-			evName []byte
-			evDesc []byte
-			ttName []byte
+			ev       Event
+			perf     Performance
+			venue    Venue
+			tt       TicketType
+			evName   []byte
+			evDesc   []byte
+			ttName   []byte
+			startsAt time.Time // COALESCE'd, never null on the public path
 		)
 		if err := rows.Scan(
 			&ev.ID, &ev.OrganizerID, &evName, &evDesc, &ev.CreatedAt,
-			&perf.ID, &perf.StartsAt, &perf.Timezone, &perf.Status, &perf.PublishedAt, &perf.CreatedAt,
+			&perf.ID, &startsAt, &perf.Timezone, &perf.Status, &perf.PublishedAt, &perf.CreatedAt,
 			&venue.ID, &venue.Name, &venue.GACapacity, &venue.CreatedAt,
 			&tt.ID, &ttName, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt,
 		); err != nil {
@@ -383,6 +543,7 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 		if err := json.Unmarshal(ttName, &tt.Name); err != nil {
 			return nil, fmt.Errorf("ticket type name jsonb: %w", err)
 		}
+		perf.StartsAt = &startsAt
 		// Public reads are cross-organizer; each row still carries its
 		// owner so aggregates stay tenancy-complete (ADR-002).
 		perf.OrganizerID = ev.OrganizerID

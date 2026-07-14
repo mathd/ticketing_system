@@ -150,6 +150,7 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 			PerformanceID string `json:"performance_id"`
 			EventID       string `json:"event_id"`
 			OrganizerID   string `json:"organizer_id"`
+			Kind          string `json:"kind"`
 			Capacity      int32  `json:"capacity"`
 		} `json:"data"`
 	}
@@ -161,8 +162,11 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
 		t.Fatalf("envelope: %v (%s)", err, msg.Data())
 	}
+	// Schema stays 2: kind is an additive, backward-compatible field (US-009 /
+	// ADR-009) so inventory's Schema-2 consumer keeps provisioning unchanged.
 	if envelope.Type != "platform.catalog.performance.published" ||
 		envelope.Schema != 2 || envelope.ID == "" || envelope.Data.Capacity != 500 ||
+		envelope.Data.Kind != "performance" ||
 		envelope.Data.PerformanceID != perf["id"] ||
 		envelope.Data.EventID != event["id"] ||
 		envelope.Data.OrganizerID != organizerID {
@@ -397,4 +401,173 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	if code != http.StatusNotFound {
 		t.Fatalf("all-archived event detail: want 404, got %d: %s", code, body)
 	}
+}
+
+// TestTypedDaySlotPublication drives a non-performance slot (operating_day)
+// through the real stack (US-009): create + price + publish, assert the Schema-2
+// envelope carries its kind + capacity, inventory provisions the same pool
+// shape (no fork in the claim path — ADR-005), the public read exposes the
+// DST-correct derived opening instant (the nullable starts_at / COALESCE path),
+// and a weather closure emits its domain event with the kind + version.
+func TestTypedDaySlotPublication(t *testing.T) {
+	catalog := gatewayURL + "/api/catalog"
+	suffix := func() string {
+		b := make([]byte, 4)
+		_, _ = rand.Read(b)
+		return hex.EncodeToString(b)
+	}()
+	nameFR, nameEN := "Journée Parc "+suffix, "Park Day "+suffix
+
+	venue := created(t, catalog+"/venues", map[string]any{
+		"organizer_id": organizerID, "name": "La Ronde", "ga_capacity": 800,
+	})
+	event := created(t, catalog+"/events", map[string]any{
+		"organizer_id": organizerID,
+		"name":         map[string]string{"fr": nameFR, "en": nameEN},
+	})
+	// operating_day: no starts_at; carries the operating window + multi re-entry.
+	slot := created(t, catalog+"/performances", map[string]any{
+		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"kind": "operating_day", "operating_date": "2026-08-01",
+		"opens_at": "10:00", "closes_at": "22:00", "timezone": "America/Toronto",
+		"re_entry": map[string]any{"mode": "multi", "requires_exit": true},
+	})
+	if slot["kind"] != "operating_day" || slot["starts_at"] != nil {
+		t.Fatalf("operating_day create echo wrong: %+v", slot)
+	}
+	created(t, catalog+"/ticket-types", map[string]any{
+		"organizer_id": organizerID, "performance_id": slot["id"],
+		"name":  map[string]string{"fr": "Passeport jour", "en": "Day pass"},
+		"price": map[string]any{"amount": 9000, "currency": "CAD"},
+	})
+
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	ctx := t.Context()
+	stream, err := js.Stream(ctx, "PLATFORM")
+	if err != nil {
+		t.Fatalf("PLATFORM stream: %v", err)
+	}
+	pubCons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "smoke-typed-day-published-" + suffix,
+		FilterSubject: "platform.catalog.performance.published",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatalf("published consumer: %v", err)
+	}
+	closeCons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "smoke-typed-day-closed-" + suffix,
+		FilterSubject: "platform.catalog.performance.closed",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatalf("closed consumer: %v", err)
+	}
+
+	// publish
+	publishURL := fmt.Sprintf("%s/performances/%v/publish", catalog, slot["id"])
+	if code, body := postJSON(t, publishURL, nil); code != http.StatusOK {
+		t.Fatalf("publish: %d %s", code, body)
+	}
+
+	// -- the publication envelope carries kind + capacity at Schema 2 (AC3) --
+	pubEnv := awaitSlotEnvelope(t, pubCons, "platform.catalog.performance.published", slot["id"])
+	if pubEnv.Schema != 2 || pubEnv.Data.Kind != "operating_day" || pubEnv.Data.Capacity != 800 {
+		t.Fatalf("publication envelope: schema=%d kind=%q capacity=%d (want 2/operating_day/800)",
+			pubEnv.Schema, pubEnv.Data.Kind, pubEnv.Data.Capacity)
+	}
+
+	// -- inventory provisions the pool identically regardless of kind (no fork) --
+	availURL := fmt.Sprintf("%s/api/inventory/slots/%v/availability?organizer_id=%s", gatewayURL, slot["id"], organizerID)
+	var provisioned bool
+	for i := 0; i < 40; i++ {
+		if code, _, _ := getWithHeaders(t, availURL); code == http.StatusOK {
+			provisioned = true
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !provisioned {
+		t.Fatal("inventory never provisioned a pool for the operating_day slot")
+	}
+
+	// -- public read exposes the DST-correct derived opening instant --
+	// 10:00 America/Toronto on 2026-08-01 (EDT, UTC-4) == 14:00:00Z.
+	code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/events/%v?locale=fr", catalog, event["id"]))
+	if code != http.StatusOK {
+		t.Fatalf("public detail: %d %s", code, body)
+	}
+	var detail struct {
+		Performances []struct {
+			Id       string `json:"id"`
+			StartsAt string `json:"starts_at"`
+		} `json:"performances"`
+	}
+	if err := json.Unmarshal(body, &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	var found bool
+	for _, p := range detail.Performances {
+		if p.Id == slot["id"] {
+			found = true
+			if p.StartsAt != "2026-08-01T14:00:00Z" {
+				t.Fatalf("derived opening instant = %q, want 2026-08-01T14:00:00Z (10:00 EDT)", p.StartsAt)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("operating_day slot absent from public detail: %s", body)
+	}
+
+	// -- weather closure emits its domain event with kind + version (AC4) --
+	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/close", catalog, slot["id"]),
+		map[string]any{"reason": "storm"}); code != http.StatusOK {
+		t.Fatalf("close: %d %s", code, body)
+	}
+	closeEnv := awaitSlotEnvelope(t, closeCons, "platform.catalog.performance.closed", slot["id"])
+	if closeEnv.Data.Kind != "operating_day" || closeEnv.Data.Version != 1 {
+		t.Fatalf("closed envelope: kind=%q version=%d (want operating_day/1)", closeEnv.Data.Kind, closeEnv.Data.Version)
+	}
+}
+
+type slotEnvelope struct {
+	Type   string `json:"type"`
+	Schema int    `json:"schema"`
+	Data   struct {
+		PerformanceID string `json:"performance_id"`
+		Kind          string `json:"kind"`
+		Capacity      int32  `json:"capacity"`
+		Version       int32  `json:"closure_version"`
+	} `json:"data"`
+}
+
+// awaitSlotEnvelope pulls messages until one correlates to slotID, so a raced
+// event from another test does not mislead the assertion.
+func awaitSlotEnvelope(t *testing.T, cons jetstream.Consumer, subject string, slotID any) slotEnvelope {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		msg, err := cons.Next(jetstream.FetchMaxWait(5 * time.Second))
+		if err != nil {
+			continue
+		}
+		_ = msg.Ack()
+		var env slotEnvelope
+		if err := json.Unmarshal(msg.Data(), &env); err != nil {
+			t.Fatalf("envelope decode: %v (%s)", err, msg.Data())
+		}
+		if env.Data.PerformanceID == fmt.Sprint(slotID) {
+			return env
+		}
+	}
+	t.Fatalf("%s not received for slot %v", subject, slotID)
+	return slotEnvelope{}
 }
