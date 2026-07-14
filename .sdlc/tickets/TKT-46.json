@@ -4,7 +4,7 @@
   "summary": "Clean the M1 baseline before M2",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "Codex",
   "pr": null,
