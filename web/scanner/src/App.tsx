@@ -74,7 +74,11 @@ function App() {
     try {
       const media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       stream.current = media
-      if (!video.current) return
+      if (!video.current) {
+        stopCamera()
+        setCameraMessage('Camera preview was unavailable. Paste the credential instead.')
+        return
+      }
       video.current.srcObject = media
       await video.current.play()
       setCameraActive(true)
@@ -82,7 +86,14 @@ function App() {
       const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
       const detect = async () => {
         if (!video.current || !stream.current) return
-        const codes = await detector.detect(video.current)
+        let codes: Array<{ rawValue?: string }>
+        try {
+          codes = await detector.detect(video.current)
+        } catch {
+          stopCamera()
+          setCameraMessage('Camera QR detection stopped unexpectedly. Paste the credential instead.')
+          return
+        }
         const value = codes[0]?.rawValue
         if (value) {
           setPayload(value)
@@ -94,6 +105,7 @@ function App() {
       }
       void detect()
     } catch {
+      stopCamera()
       setCameraMessage('Camera access was unavailable. Paste the credential instead.')
     }
   }
@@ -110,7 +122,7 @@ function App() {
           <button type="button" onClick={() => void startCamera()} disabled={cameraActive || submitting}>Use camera</button>
           {cameraActive && <button type="button" onClick={stopCamera}>Stop camera</button>}
         </div>
-        {cameraActive && <video ref={video} aria-label="Camera preview" muted playsInline />}
+        <video ref={video} aria-label="Camera preview" muted playsInline hidden={!cameraActive} />
         {cameraMessage && <p className="camera-note" role="status">{cameraMessage}</p>}
       </section>
       {outcome?.kind === 'accepted' && <section className="result accepted" role="status"><h2>Accepted</h2><p>Entry recorded at {readableTime(outcome.scannedAt)}.</p></section>}

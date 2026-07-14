@@ -203,7 +203,7 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	if err = json.Unmarshal(duplicateBody, &duplicate); err != nil || duplicate.Decision != "rejected" || duplicate.Reason != "already_redeemed" || !duplicate.OriginalScanAt.Equal(accepted.ScannedAt) {
 		t.Fatalf("duplicate result = %s: %v", duplicateBody, err)
 	}
-	forged := first.QRPayload[:len(first.QRPayload)-1] + "x"
+	forged := corruptSignature(t, first.QRPayload)
 	if code, body, scanErr := postScan(gatewayURL+"/api/access/scans", forged); scanErr != nil || code != http.StatusUnprocessableEntity {
 		t.Fatalf("forged scan = %d %s: %v", code, body, scanErr)
 	}
@@ -446,4 +446,19 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	}
 	// Released claims are terminal, so retry means reacquiring a fresh hold.
 	_ = reserveCheckout(t, ticketType, "reserve-retry")
+}
+
+func corruptSignature(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(signature) == 0 {
+		t.Fatalf("decode signature: %v", err)
+	}
+	signature[0] ^= 1
+	parts[2] = base64.RawURLEncoding.EncodeToString(signature)
+	return strings.Join(parts, ".")
 }
