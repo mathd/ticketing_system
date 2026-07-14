@@ -1,7 +1,7 @@
 # Shared builder for all Go components (five services + gateway).
 # Build arg PKG selects the binary, e.g.:
 #   docker build -f build/go.Dockerfile --build-arg PKG=ticketing/services/catalog/cmd/catalog .
-FROM golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113 AS build
+FROM golang:1.26.5-bookworm@sha256:349ad04971da5f200a537641ae2c70774a592ca21fad4b513b65f813f546781a AS build
 WORKDIR /src
 COPY go.work go.work.sum* ./
 COPY shared/ shared/
