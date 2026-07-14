@@ -1,5 +1,6 @@
-// Service skeleton (US-001). Owns: cart, pricing/fee/promo evaluation, orders, post-purchase lifecycle
-// (ADR-002). No domain routes yet — those arrive with their stories.
+// Commerce service. Owns reservations, orders, buyers, pricing snapshots, and
+// post-purchase lifecycle (ADR-002). M1 implements reservation orchestration,
+// serialized checkout completion, payment outcomes, and ticket delivery events.
 package main
 
 import (

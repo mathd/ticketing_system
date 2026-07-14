@@ -1,5 +1,6 @@
-// Service skeleton (US-001). Owns: ticket issuance // Service skeleton (US-001). Owns: organizers/tenants, venues, seat maps, delivery, scanning/redemption, pass // Service skeleton (US-001). Owns: organizers/tenants, venues, seat maps, wristband validation
-// (ADR-002). No domain routes yet — those arrive with their stories.
+// Access service. Owns ticket issuance, delivery projection, signed credentials,
+// scanning/redemption, and admission history (ADR-002). M1 implements order-event
+// consumption, guest ticket links, QR issuance, and atomic single-use redemption.
 package main
 
 import (

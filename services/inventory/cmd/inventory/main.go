@@ -1,5 +1,6 @@
-// Service skeleton (US-001). Owns: every reservation model (GA, seats, entitlements/passes, lodging calendars, wristband media), holds, allocations — the single-writer contention hot path
-// (ADR-002). No domain routes yet — those arrive with their stories.
+// Inventory service. Owns holds, allocations, and reservation contention
+// (ADR-002). M1 implements bounded GA holds, lifecycle transitions, availability,
+// idempotency, and catalog-driven slot projection.
 package main
 
 import (

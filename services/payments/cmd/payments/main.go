@@ -1,5 +1,6 @@
-// Service skeleton (US-001). Owns: PSP port (fake provider first), wallets/cashless, NF525 journal, settlement ledger
-// (ADR-002). No domain routes yet — those arrive with their stories.
+// Payments service. Owns the PSP boundary and immutable payment facts (ADR-002).
+// M1 implements deterministic fake-provider charges, idempotent operations, and
+// a signed, hash-chained journal with verification tooling.
 package main
 
 import (
