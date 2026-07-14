@@ -21,16 +21,24 @@ import (
 // source document is deliberately bypassed because it is checked byte-for-byte
 // by the smoke gate and is not part of the service's JSON operation surface.
 func RequestValidator(spec []byte, next http.Handler) (http.Handler, error) {
-	return requestValidator(spec, next, 0)
+	return requestValidator(spec, next, nil)
 }
 
 // RequestValidatorWithErrorStatus preserves an endpoint family's established
 // validation status while still applying the shared OpenAPI validator.
 func RequestValidatorWithErrorStatus(spec []byte, next http.Handler, errorStatus int) (http.Handler, error) {
-	return requestValidator(spec, next, errorStatus)
+	return RequestValidatorWithErrorHandler(spec, next, func(w http.ResponseWriter, message string, _ int) {
+		writeValidationError(w, errorStatus, map[string]string{"error": message})
+	})
 }
 
-func requestValidator(spec []byte, next http.Handler, errorStatus int) (http.Handler, error) {
+// RequestValidatorWithErrorHandler lets a service preserve an established
+// error representation for requests rejected before its handler runs.
+func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
+	return requestValidator(spec, next, errorHandler)
+}
+
+func requestValidator(spec []byte, next http.Handler, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
 	loader := openapi3.NewLoader()
 	doc, err := loader.LoadFromData(spec)
 	if err != nil {
@@ -45,13 +53,11 @@ func requestValidator(spec []byte, next http.Handler, errorStatus int) (http.Han
 	}
 	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, &oapimiddleware.Options{
 		ErrorHandler: func(w http.ResponseWriter, message string, status int) {
-			if errorStatus != 0 {
-				status = errorStatus
+			if errorHandler != nil {
+				errorHandler(w, message, status)
+				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(status)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+			writeValidationError(w, status, map[string]string{"error": message})
 		},
 	})
 	responseValidated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,4 +95,11 @@ func requestValidator(spec []byte, next http.Handler, errorStatus int) (http.Han
 		}
 		validatedHandler.ServeHTTP(w, r)
 	}), nil
+}
+
+func writeValidationError(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }

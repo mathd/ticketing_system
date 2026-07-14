@@ -56,8 +56,8 @@ func TestAccessPoisonEventPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Config.MaxDeliver != 6 || len(info.Config.BackOff) != 6 || info.Config.BackOff[0] != 100*time.Millisecond {
-		t.Fatalf("access consumer is not finitely configured for smoke: %+v", info.Config)
+	if info.Config.MaxDeliver != -1 || len(info.Config.BackOff) != 6 || info.Config.BackOff[0] != 100*time.Millisecond {
+		t.Fatalf("access consumer does not preserve terminal-record publication retries: %+v", info.Config)
 	}
 
 	consumerName := "access-failures-smoke-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]

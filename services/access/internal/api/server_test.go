@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,6 +26,13 @@ func TestScanRejectsNonStrictJSONBeforeRedeeming(t *testing.T) {
 			New(nil, verifier).Router().ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnprocessableEntity)
+			}
+			var response map[string]string
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response["decision"] != "rejected" || response["reason"] != "invalid_credential" {
+				t.Fatalf("response = %v, want committed ScanRejected representation", response)
 			}
 		})
 	}

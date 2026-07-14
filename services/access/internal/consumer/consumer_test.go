@@ -92,6 +92,15 @@ func TestFailurePublishErrorRequestsRedelivery(t *testing.T) {
 	}
 }
 
+func TestFailurePublishErrorRemainsRetryablePastProcessingBudget(t *testing.T) {
+	c := testConsumer(func(context.Context, FailureEvent) error { return errors.New("publish unavailable") })
+	msg := &fakeMsg{data: []byte(`not-json`), delivery: 7}
+	c.handle(context.Background(), msg)
+	if len(msg.actions) != 1 || msg.actions[0] != "nak-delay" {
+		t.Fatalf("actions = %v, want delayed NAK after former delivery limit", msg.actions)
+	}
+}
+
 func TestTransientFailureUsesBackoffThenTerminatesWithFailureRecord(t *testing.T) {
 	var failure FailureEvent
 	c := testConsumer(func(_ context.Context, event FailureEvent) error { failure = event; return nil })
@@ -115,10 +124,10 @@ func TestTransientFailureUsesBackoffThenTerminatesWithFailureRecord(t *testing.T
 	}
 }
 
-func TestConsumerConfigIsFiniteAndUsesBackoff(t *testing.T) {
+func TestConsumerConfigBoundsProcessingAndKeepsFailurePublicationRetryable(t *testing.T) {
 	c := testConsumer(func(context.Context, FailureEvent) error { return nil })
 	config := c.consumerConfig("access-ticket-issuer")
-	if config.MaxDeliver != 6 || len(config.BackOff) != 6 || config.AckPolicy != jetstream.AckExplicitPolicy {
+	if config.MaxDeliver != -1 || len(config.BackOff) != 6 || config.AckPolicy != jetstream.AckExplicitPolicy {
 		t.Fatalf("consumer config = %+v", config)
 	}
 }

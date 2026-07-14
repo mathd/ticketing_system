@@ -46,8 +46,9 @@ Access classifies invalid `order.completed` envelopes as permanent and records o
 source identifier/fingerprint plus a bounded reason on
 `platform.access.ticket-issuance.failed`. Transient issuance or delivery failures retry four
 times on the configured JetStream backoff, then produce the same sanitized terminal record.
-Failure-record publication happens before termination; a failed publication leaves the source
-message eligible for redelivery. Counters use the low-cardinality `reason` and `stage` labels.
+Failure-record publication happens before termination. Processing is bounded at four attempts,
+while a failed terminal-record publication leaves the source message eligible for redelivery
+without a JetStream delivery ceiling. Counters use the low-cardinality `reason` and `stage` labels.
 
 To recover, inspect the failed record, repair the producer or downstream dependency, locate the
 original event in the durable `PLATFORM` stream by `source_event_id`, and republish that original

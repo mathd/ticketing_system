@@ -35,7 +35,9 @@ func (s *Server) Router() http.Handler {
 	r.Get("/orders/{ref}/tickets", s.tickets)
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
-	validated, err := contract.RequestValidatorWithErrorStatus(apispec.Spec, r, http.StatusUnprocessableEntity)
+	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, func(w http.ResponseWriter, _ string, _ int) {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+	})
 	if err != nil {
 		panic(err)
 	}

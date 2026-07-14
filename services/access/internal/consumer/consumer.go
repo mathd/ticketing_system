@@ -242,7 +242,9 @@ func (c *Consumer) processCompleted(ctx context.Context, event completed) (Failu
 func (c *Consumer) consumerConfig(durable string) jetstream.ConsumerConfig {
 	return jetstream.ConsumerConfig{
 		Durable: durable, FilterSubject: SubjectOrderCompleted, DeliverPolicy: jetstream.DeliverAllPolicy,
-		AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: c.maxDeliver, BackOff: append([]time.Duration(nil), c.backoff...),
+		// Processing is bounded explicitly by maxProcessAttempts. Publication of
+		// the terminal failure record must remain retryable until it succeeds.
+		AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: -1, BackOff: append([]time.Duration(nil), c.backoff...),
 	}
 }
 
