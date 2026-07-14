@@ -49,5 +49,35 @@
   "comments": [],
   "status": "Backlog",
   "assignee": null,
-  "pr": null
+  "pr": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Let an organizer group slots into a series (a run of one show) and a season (a programmed set), so buyers/reporting see the run, not scattered dates (epic COS #1)."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: series (ordered run of slots for one event) + season (named set of series/events), organizer_id-scoped, localizable names; API to create + attach; a slot belongs to at most one series; public reads exposing the grouping with declared ADR-004 TTL tiers; storefront renders a run as one grouped listing; series-level publish/archive fan-out (idempotent, partial-state-correct). OUT: festival shared-capacity grouping (US-011/TKT-53), pricing/rules at series level (TKT-5), reporting rollups (TKT-23)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Engineering choices for Planning: the series↔slot / season↔series join shape, whether season aggregates series or events directly, and how series-level publish fan-out reuses the US-007 per-slot transition. No product decision pending."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked-by TKT-49 (grouped offers publish/archive as a unit — needs the archived lifecycle). US-009 is not required: grouping is orthogonal to slot-kind generalization. Not claimable until TKT-49 is Done (board open-blocker guard)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Add series/season tables + FKs in services/catalog (organizer_id-scoped); extend the aggregated public reads to expose the grouping under new endpoints with ADR-004 tiers; storefront groups the run in one aggregated call; series-level lifecycle fans out over the US-007 per-slot transition. Contract-first."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Vertical slice: create a series, attach two slots, publish the run via API → storefront shows them as one grouped listing (browser-verified)."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS = the 3 ACs + quality gates (make check, contract tests, ADR-004 tier declared, browser-verified UI)."
+    }
+  }
 }
