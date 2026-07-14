@@ -46,5 +46,35 @@
   "comments": [],
   "status": "Backlog",
   "assignee": null,
-  "pr": null
+  "pr": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "De-risk the load-bearing ADR-005 slot abstraction before US-009 hardens the schema: prove one dated-slot model survives re-entry, mid-day capacity change, and weather closure, or record a scoped exception."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: written analysis + ADR-005 amendment modelling the three stress cases against a candidate slot shape; the catalog-slot-vs-inventory-claim attribute boundary per case; the concrete attribute set + state machine US-009 implements; a PASS/exception verdict. OUT: any production code, migration, or endpoint (spike); the actual claim-path mechanics for shared capacity (deferred to TKT-4/TKT-14)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "This spike IS the epic's central uncertainty; its output resolves it. No pending product decision beyond the owner ratifying the resulting ADR amendment at review."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. Blocks US-009 (TKT-51) — that story cannot start its schema until this verdict lands."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Analysis grounded in the M1 catalog baseline (performances = single-redemption slot) and the ADR-005 §Consequences pressure list; produce the attribute/state-machine shape as an ADR-005 amendment (or a new ADR if a scoped exception is needed). Timeboxed, read-only."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The deliverable is the decision doc itself — reviewable and demoable as the written verdict + attribute shape."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS = the 3 ACs; exit is the recorded verdict (unified model holds with a documented attribute shape, or a scoped-exception ADR), leaving US-009 with a decided schema. No make check surface (docs only)."
+    }
+  }
 }
