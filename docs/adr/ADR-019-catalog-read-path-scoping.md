@@ -95,18 +95,35 @@ proportional to a subset**.
    which the defect bites. Both tests live in
    `services/catalog/internal/store/season_smoke_test.go`.
 
+   **Be precise about what the shipped `EXPLAIN` test actually proves — it is weaker than the
+   rule it illustrates.** `TestGetPublishedSeasonIsIndexScoped` EXPLAINs a *hand-copied,
+   reduced* query (`SELECT p.id` over `performances` + `events` with the scoping predicate).
+   Production `publicPerformances` joins four more tables (`venues`, `ticket_types`,
+   `series_performances`, `series`), projects ~24 columns and sorts. The two SQL texts are
+   duplicated, not shared. So the test proves the *predicate is index-compatible* — that
+   `performances_by_event` can serve `status` + `event_id = ANY(…)` under the seeded
+   statistics. It does **not** prove the shipped read's plan uses that index, and production
+   could drift to a catalog scan with the test still green. Closing that gap means EXPLAINing
+   the production SQL itself, which requires the query text to be shared rather than retyped
+   (TKT-65). Until then, this is a predicate/index compatibility check, and rule 2's
+   two-claims discipline is the *standard*, not something the current tests fully discharge.
+
 ## Consequences
 
 - **Positive:** the next "scope read X to Y" ticket starts by naming an index instead of
-  copying a query, which is the step that turns the fix from a no-op into a fix. The
-  `EXPLAIN` assertion makes a scoping regression fail loudly rather than silently costing a
-  catalog scan on every miss. ADR-004's intent gains a miss-path rule it never had, without
-  being rewritten.
+  copying a query, which is the step that turns the fix from a no-op into a fix. ADR-004's
+  intent gains a miss-path rule it never had, without being rewritten.
 - **Negative:** an `EXPLAIN` assertion couples a test to the planner. It needs a seeded
   catalog large enough to make the scan unattractive (2000 events in the season test), which
   is slower than the smoke tests around it, and a future Postgres could pick a different but
   equally scoped plan and fail it for the wrong reason — the assertion is on the index name,
-  not on cost. It also does not prove the plan holds in production: it is measured under the
+  not on cost.
+- **Negative — the rule currently outruns its enforcement.** As shipped, the `EXPLAIN` test
+  duplicates a reduced query rather than EXPLAINing the production SQL (see rule 2), so a
+  scoping regression in `publicPerformances` would *not* redden it. Rule 2 is therefore a
+  review standard today, not a gate. TKT-65 tracks sharing the query text so the assertion
+  binds to the shipped read.
+- **Negative:** neither test proves the plan holds in production — both measure under the
   planner's `auto` mode with the test's statistics. TKT-63 measured the shipped query under
   `force_generic_plan` and found `events` degrades to a sequential scan there — a latent
   robustness gap under a mode nothing sets, filed rather than fixed.

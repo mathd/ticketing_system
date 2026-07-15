@@ -20,8 +20,16 @@ instances in two tickets, none of which the gate could see:
   drop instead. It kept passing throughout. Fixed in PR #43 with `DownTo(versionBeforeArchived)`
   plus an assertion that 0003's columns are actually gone.
 
-The first was found by reading `smoke.sh`; the second by reading the test; the third by an
-adversarial review of the diff. None of them by the gate — every one was green.
+**Nothing here was found by sabotage, and none of it by the gate — every one was green.** The first
+was found by reading `smoke.sh`; the second by reading the test; the third by an adversarial review
+of the diff. Sabotage is what *settled* them afterwards: PR #43 confirmed the migration fix by
+leaving `archived_at` behind and watching the new assertion go red while the old version stayed
+green through the same sabotage.
+
+Keep that distinction — it is the whole point. Sabotage is a cheap **verifier**, not a detector. It
+answers "is this test evidence?" once you already suspect a test; it will not tell you which of your
+green tests to suspect. Reading the gate script, reading the test against the claim it names, and
+adversarial review are what surface the candidates.
 
 ## The practice
 
@@ -29,9 +37,9 @@ adversarial review of the diff. None of them by the gate — every one was green
 thing it guards actually wrong — revert the fix, leave the column behind, remove the index — and
 watch it fail. If it stays green, it is not evidence, whatever its name says.
 
-This is the check that caught all three above, and it is cheap: one edit, one run, one revert. It is
-worth doing exactly when the stakes tempt you to skip it — a test written to prove a fix, a test
-whose name makes a strong claim, a test you are about to cite in a PR description.
+It is cheap: one edit, one run, one revert. Applied to any of the three above it would have exposed
+them, and it is worth doing exactly when the stakes tempt you to skip it — a test written to prove a
+fix, a test whose name makes a strong claim, a test you are about to cite in a PR description.
 
 Corollary for a fix that makes **two** claims: it owes two tests, and you must be able to say which
 sabotage reddens which. A scoping fix claims both that the result is scoped and that the scan is;
