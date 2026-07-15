@@ -66,12 +66,26 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 	}
 
 	t.Run("rollback succeeds without archived rows", func(t *testing.T) {
-		_, provider := newDB(t)
+		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.Down(ctx); err != nil {
-			t.Fatalf("down: %v", err)
+		// Name the target: a bare Down() pops whichever migration happens to be
+		// newest, so this case silently stopped exercising 0003 the moment 0007
+		// was added — it was passing on an index drop. Roll all the way past
+		// 0003 and assert its columns are gone, so "0003 rolls back cleanly"
+		// is actually what fails when it doesn't.
+		if _, err := provider.DownTo(ctx, versionBeforeArchived); err != nil {
+			t.Fatalf("down to before 0003: %v", err)
+		}
+		var archivedCols int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name='performances'
+			AND column_name IN ('archived_at','archive_emitted_at')`).Scan(&archivedCols); err != nil {
+			t.Fatal(err)
+		}
+		if archivedCols != 0 {
+			t.Fatalf("0003 down left %d archived-lifecycle column(s) behind", archivedCols)
 		}
 	})
 
