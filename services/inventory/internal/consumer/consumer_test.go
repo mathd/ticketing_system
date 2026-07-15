@@ -2,11 +2,11 @@ package consumer
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,19 +41,6 @@ func (m *fakeMsg) NakWithDelay(time.Duration) error {
 func (m *fakeMsg) InProgress() error           { return nil }
 func (m *fakeMsg) Term() error                 { m.actions = append(m.actions, "term"); return nil }
 func (m *fakeMsg) TermWithReason(string) error { return m.Term() }
-
-func publicationJSON(t *testing.T, schema int) []byte {
-	t.Helper()
-	e := publication{ID: uuid.New(), Schema: schema}
-	e.Data.PerformanceID = uuid.New()
-	e.Data.OrganizerID = uuid.New()
-	e.Data.Capacity = 250
-	body, err := json.Marshal(e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return body
-}
 
 func testConsumer() *Consumer {
 	c := &Consumer{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -198,152 +185,146 @@ func TestProvisionInputRejectsSchema1CatalogMismatch(t *testing.T) {
 	}
 }
 
-// This asserts classification only. It passed before TKT-61 and the event was still dropped:
-// the error was never the bug, the disposition was. TestUnknownSchemaVersionSkewIsParked is the
-// one that fails if Term() comes back — keep the two separate.
-func TestProvisionInputRejectsUnsupportedSchema(t *testing.T) {
-	e := publication{ID: uuid.New(), Schema: 4}
-	e.Data.PerformanceID = uuid.New()
-	e.Data.OrganizerID = uuid.New()
-	c := &Consumer{resolver: fakeResolver{err: errors.New("must not resolve")}}
-	_, err := c.provisionInput(context.Background(), e)
-	if !errors.Is(err, errUnsupportedPublicationSchema) {
-		t.Fatalf("err = %v, want it to wrap errUnsupportedPublicationSchema", err)
-	}
-}
-
-// The version-skew regression (TKT-61, ADR-017 §5b): an inventory binary meets a retained variant
+// The version-skew regression (TKT-61, ADR-017 §5b). An inventory binary meets a retained variant
 // it does not know — by rollback, by durable recreation, or merely by restarting across a window
-// where catalog emitted it. The event is well-formed and a newer binary can provision it, so it
-// must be parked for that binary. Term() would advance the durable consumer past it for good.
+// where catalog emitted it.
+//
+// These payloads are deliberately NOT built from the current Go struct. A schema bump exists
+// precisely because `data` changed (ADR-017 §3), so a real future variant reshapes it: renamed
+// keys, new required fields, changed types. An earlier version of this fix decoded the payload
+// before dispatching on schema and terminated every one of these — passing a test that built
+// schema 4 from today's struct and so guaranteed the compatibility it meant to prove.
 func TestUnknownSchemaVersionSkewIsParked(t *testing.T) {
-	for _, schema := range []int{4, 99} {
-		e := publication{ID: uuid.New(), Schema: schema}
-		e.Data.PerformanceID = uuid.New()
-		e.Data.OrganizerID = uuid.New()
-		e.Data.Capacity = 250
-		c := &Consumer{resolver: fakeResolver{err: errors.New("must not resolve")}}
+	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	for _, tt := range []struct{ name, body string }{
+		{"reshaped data", `{` + id + `,"schema":4,"data":{"slot_ref":"a","org_ref":"b"}}`},
+		{"changed field type", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`},
+		{"empty data", `{` + id + `,"schema":5,"data":{}}`},
+		{"data is not an object", `{` + id + `,"schema":9,"data":[1,2,3]}`},
+		{"shaped like today", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := testConsumer()
+			msg := &fakeMsg{data: []byte(tt.body)}
 
-		_, err := c.provisionInput(context.Background(), e)
-		if !errors.Is(err, errUnsupportedPublicationSchema) {
-			t.Fatalf("schema %d: err = %v, want it to wrap errUnsupportedPublicationSchema", schema, err)
-		}
-		if got := dispositionForProvisionError(schema, err); got != dispositionPark {
-			t.Fatalf("schema %d: disposition = %q, want %q — Term() drops the event with no retry", schema, got, dispositionPark)
-		}
+			c.handle(context.Background(), msg)
+
+			if slices.Contains(msg.actions, "term") {
+				t.Fatalf("actions = %v — a future variant must never be terminated; a newer binary can provision it", msg.actions)
+			}
+			if !slices.Contains(msg.actions, "nak-delay") {
+				t.Fatalf("actions = %v, want a delayed nak parking the event", msg.actions)
+			}
+			if c.Ready() {
+				t.Fatal("consumer must latch unready on version skew — reporting healthy is what made TKT-61 invisible")
+			}
+		})
 	}
 }
 
-// The poison/skew line has to hold at the bottom end too, or it isn't a line. Schema numbers start
-// at 1 and climb, so <= 0 is never a future variant — it is an envelope missing `schema`
-// (ADR-009 §5) and no binary will ever provision it. Parking it would wait forever for a version
-// that cannot exist, and hand any buggy producer a way to latch inventory unready.
-func TestEnvelopeWithoutUsableSchemaIsTerminated(t *testing.T) {
-	for _, schema := range []int{0, -1} {
-		e := publication{ID: uuid.New(), Schema: schema}
-		e.Data.PerformanceID = uuid.New()
-		e.Data.OrganizerID = uuid.New()
-		e.Data.Capacity = 250
+// The poison side. Schema <= 0 is a broken envelope (ADR-009 §5 requires `schema`), not a variant
+// from the future — no binary will ever provision it, so it terminates. Readiness must survive:
+// otherwise one malformed message is a free, permanent inventory outage.
+func TestEnvelopeWithoutUsableSchemaIsTerminatedAndStaysReady(t *testing.T) {
+	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	for _, tt := range []struct{ name, body string }{
+		{"schema omitted", `{` + id + `,"data":{}}`},
+		{"schema zero", `{` + id + `,"schema":0,"data":{}}`},
+		{"schema negative", `{` + id + `,"schema":-1,"data":{}}`},
+		{"malformed json", `{not json`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := testConsumer()
+			msg := &fakeMsg{data: []byte(tt.body)}
 
-		_, err := (&Consumer{}).provisionInput(context.Background(), e)
-		if err == nil {
-			t.Fatalf("schema %d: expected rejection", schema)
-		}
-		if errors.Is(err, errUnsupportedPublicationSchema) {
-			t.Fatalf("schema %d: must not be classified as version skew — it is a malformed envelope", schema)
-		}
-		if got := dispositionForProvisionError(schema, err); got != dispositionTerminate {
-			t.Fatalf("schema %d: disposition = %q, want %q", schema, got, dispositionTerminate)
-		}
+			c.handle(context.Background(), msg)
+
+			if !slices.Contains(msg.actions, "term") {
+				t.Fatalf("actions = %v, want term — this is poison, not a future variant", msg.actions)
+			}
+			if !c.Ready() {
+				t.Fatal("a broken envelope must not latch inventory unready — that hands any buggy producer an outage")
+			}
+		})
 	}
 }
 
-// The other side of the rule: a payload that is bad at a schema this binary *does* know is poison —
-// no binary can provision it — so it still terminates. This is what stops parking from wedging the
-// consumer, and it keeps ADR-017 §4's negative validation meaningful.
-func TestInvalidKnownSchemaIsTerminated(t *testing.T) {
-	groupID := uuid.New()
-	sharedCapacity := int32(1000)
-	e := publication{ID: uuid.New(), Schema: 2}
-	e.Data.PerformanceID = uuid.New()
-	e.Data.OrganizerID = uuid.New()
-	e.Data.Capacity = 250
-	e.Data.CapacityGroupID = &groupID
-	e.Data.SharedCapacity = &sharedCapacity
+// A payload bad at a schema we DO know is poison: no binary can provision it, so it terminates.
+// This is what stops parking from becoming an infinite retry loop for corrupt data, and it keeps
+// ADR-017 §4's negative validation meaningful.
+func TestInvalidKnownSchemaIsTerminatedAndStaysReady(t *testing.T) {
+	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	for _, tt := range []struct{ name, body string }{
+		{"schema 2 carrying festival fields", `{` + id + `,"schema":2,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `,"capacity":250,"capacity_group_id":` + uid + `,"shared_capacity":1000}}`},
+		{"schema 3 missing festival capacity", `{` + id + `,"schema":3,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `,"capacity":250}}`},
+		{"known schema, unreadable data", `{` + id + `,"schema":2,"data":{"capacity":"not-a-number"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := testConsumer()
+			msg := &fakeMsg{data: []byte(tt.body)}
 
-	_, err := (&Consumer{}).provisionInput(context.Background(), e)
-	if err == nil {
-		t.Fatal("expected schema-2 festival fields to be rejected")
-	}
-	if got := dispositionForProvisionError(e.Schema, err); got != dispositionTerminate {
-		t.Fatalf("disposition = %q, want %q — a corrupt known variant must not retry forever", got, dispositionTerminate)
-	}
-}
+			c.handle(context.Background(), msg)
 
-// Schema 1 resolves against catalog, so its failures are transient by nature. Unchanged by TKT-61;
-// asserted because the call site that decided it was reshaped.
-func TestSchema1ResolutionFailureIsRetried(t *testing.T) {
-	e := publication{ID: uuid.New(), Schema: 1}
-	e.Data.PerformanceID = uuid.New()
-	e.Data.OrganizerID = uuid.New()
-	c := &Consumer{resolver: fakeResolver{err: errors.New("catalog unreachable")}}
-
-	_, err := c.provisionInput(context.Background(), e)
-	if err == nil {
-		t.Fatal("expected resolver error")
-	}
-	if got := dispositionForProvisionError(e.Schema, err); got != dispositionRetry {
-		t.Fatalf("disposition = %q, want %q", got, dispositionRetry)
+			if !slices.Contains(msg.actions, "term") {
+				t.Fatalf("actions = %v, want term — a corrupt known variant must not retry forever", msg.actions)
+			}
+			if !c.Ready() {
+				t.Fatal("a corrupt known variant must not latch inventory unready")
+			}
+		})
 	}
 }
 
-// The finding this closes: the pure-function tests above cannot fail if handle stops obeying the
-// helper. This one drives the shipped path — unknown schema must be NAK'd, must never be Term'd,
-// and must latch readiness false so the skew is visible.
-func TestHandleParksUnknownSchemaAndLatchesUnready(t *testing.T) {
+// Schema 1 resolves against catalog, so its failures are transient: retry, never terminate, and
+// never touch readiness. Unchanged by TKT-61; asserted because the call site was restructured.
+func TestSchema1ResolutionFailureIsRetriedAndStaysReady(t *testing.T) {
+	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	c := testConsumer()
-	msg := &fakeMsg{data: publicationJSON(t, 4)}
+	c.resolver = fakeResolver{err: errors.New("catalog unreachable")}
+	msg := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":1,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `}}`)}
 
 	c.handle(context.Background(), msg)
 
 	if slices.Contains(msg.actions, "term") {
-		t.Fatalf("actions = %v — an unknown variant must never be terminated; a newer binary can provision it", msg.actions)
+		t.Fatalf("actions = %v — a transient catalog failure must not be terminal", msg.actions)
 	}
 	if !slices.Contains(msg.actions, "nak-delay") {
-		t.Fatalf("actions = %v, want a delayed nak parking the event", msg.actions)
+		t.Fatalf("actions = %v, want a delayed nak", msg.actions)
 	}
-	if c.Ready() {
-		t.Fatal("consumer must latch unready on version skew — reporting healthy is what made TKT-61 invisible")
+	if !c.Ready() {
+		t.Fatal("catalog being down is not version skew — readiness must not latch")
 	}
 }
 
-// The poison side, as shipped: a malformed envelope terminates and must NOT take readiness down
-// with it, or any buggy producer can wedge inventory with one message.
-func TestHandleTerminatesEnvelopeWithoutUsableSchemaAndStaysReady(t *testing.T) {
-	c := testConsumer()
-	msg := &fakeMsg{data: publicationJSON(t, 0)}
-
-	c.handle(context.Background(), msg)
-
-	if !slices.Contains(msg.actions, "term") {
-		t.Fatalf("actions = %v, want term — schema 0 is poison, not a future variant", msg.actions)
-	}
-	if !c.Ready() {
-		t.Fatal("a malformed envelope must not latch inventory unready")
+// Tripwire, half one: the const must not run AHEAD of the arms. maxKnownPublicationSchema and
+// provisionInput's case arms are two statements of the same fact, and drift between them is
+// silent. Bump the const without adding an arm and inventory claims to understand a variant it
+// cannot read — it stops parking the event and terminates it instead, which is TKT-61 all over
+// again. The pair of tests pins both directions.
+func TestEveryKnownSchemaHasAnArm(t *testing.T) {
+	for s := 1; s <= maxKnownPublicationSchema; s++ {
+		e := publication{ID: uuid.New(), Schema: s}
+		e.Data.PerformanceID = uuid.New()
+		e.Data.OrganizerID = uuid.New()
+		c := &Consumer{resolver: fakeResolver{organizerID: e.Data.OrganizerID, capacity: 1}}
+		_, err := c.provisionInput(context.Background(), e)
+		if err != nil && strings.Contains(err.Error(), "unsupported publication schema") {
+			t.Fatalf("schema %d is <= maxKnownPublicationSchema but provisionInput has no arm for it", s)
+		}
 	}
 }
 
-// Malformed JSON keeps terminating, and likewise must not touch readiness.
-func TestHandleTerminatesMalformedJSON(t *testing.T) {
-	c := testConsumer()
-	msg := &fakeMsg{data: []byte("{not json")}
-
-	c.handle(context.Background(), msg)
-
-	if !slices.Contains(msg.actions, "term") {
-		t.Fatalf("actions = %v, want term", msg.actions)
-	}
-	if !c.Ready() {
-		t.Fatal("malformed JSON must not latch inventory unready")
+// Tripwire, half two: the const must not lag BEHIND the arms. Add a case arm and forget the const
+// and the opposite happens — a variant this binary fully implements is parked as "from the future"
+// forever, and inventory sits unready waiting for a binary that is already running.
+func TestMaxKnownSchemaIsNotBehindTheArms(t *testing.T) {
+	next := maxKnownPublicationSchema + 1
+	e := publication{ID: uuid.New(), Schema: next}
+	e.Data.PerformanceID = uuid.New()
+	e.Data.OrganizerID = uuid.New()
+	_, err := (&Consumer{}).provisionInput(context.Background(), e)
+	if err == nil || !strings.Contains(err.Error(), "unsupported publication schema") {
+		t.Fatalf("schema %d = maxKnownPublicationSchema+1 must be unsupported, got err = %v — the const is behind the arms", next, err)
 	}
 }

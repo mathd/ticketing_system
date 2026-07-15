@@ -164,10 +164,36 @@ On *ordering* the two sides, given a bump is required:
       **The line has a bottom end, and it is part of the rule.** Schema numbers start at 1 and only
       climb, so a schema **`<= 0` is not a variant from the future** — it is an envelope that omitted
       `schema` (§ADR-009 §5 requires it) or a producer bug, and no binary will ever provision it.
-      That is poison by the definition above, and it **terminates**. Only schemas *above* the
-      consumer's known set park. Without this the rule contradicts itself, and one malformed message
-      would be enough to latch inventory unready indefinitely — a free denial of service handed to
-      any buggy producer.
+      That is poison by the definition above, and it **terminates**, and it must **not** touch
+      readiness. Only schemas *above* the consumer's known set park. Without this the rule
+      contradicts itself, and one malformed message would be enough to latch inventory unready
+      indefinitely — a free denial of service handed to any buggy producer.
+
+   b′. **Dispatch on `schema` before decoding `data` — the ordering is a rule, not a style
+      preference.** A consumer must ask three questions strictly from the outside in: **is the
+      envelope readable → is this variant mine to judge → is the payload valid?** Any other order
+      silently defeats (b), and TKT-61 shipped the bug twice before this was written down:
+
+      A bump exists *because* `data` changed (§3). So a future variant may rename fields, change
+      their types, or restructure `data` entirely. A consumer that decodes the payload into
+      **today's** struct before checking `schema` will therefore reject the very variants (b) exists
+      to preserve — a renamed identifier fails a required-field check and a changed type fails
+      `json.Unmarshal`, and **both land on `Term()`**. The parking arm then only ever protects
+      future variants that happen to be shaped like the present one, which is the subset that needed
+      protecting least. Worse, it **passes a test suite** whose fixtures are built from the current
+      struct, because those fixtures encode the compatibility the test means to prove.
+
+      **Therefore:** decode a minimal stable envelope (`{id, schema, data}` with `data` left raw —
+      §ADR-009 §5's envelope *is* the stable part), decide on `schema` alone, and only unmarshal
+      `data` once the variant is known to be one this binary implements
+      (`consumer.go`'s `envelope` / `knownPublicationSchema` / `handle`). A consumer's known set and
+      its dispatch arms are two statements of one fact and drift silently apart; keep them pinned in
+      both directions (`maxKnownPublicationSchema` + the two tripwire tests).
+
+      **And test the skew path with payloads that are NOT built from the current struct.** A
+      hand-written JSON fixture with renamed keys and changed types is the only kind that can fail.
+      This is the specific test ADR-017 previously noted was missing, and the reason it is worth
+      insisting on the form: the obvious version of it proves nothing.
 
       **Parking is bounded by the ack window, and that bound is not yet enforced — TKT-68.** The
       durable sets `MaxDeliver: -1` and does not set `MaxAckPending`, so the server default (1000)
@@ -192,6 +218,18 @@ On *ordering* the two sides, given a bump is required:
       `services/access/internal/consumer` already models the shape (`failureCounter`, reason codes) —
       and let readiness go back to meaning what it says. Parking never self-heals by design:
       recovering readiness on the next good message would hide the event still pending behind it.
+
+      **Known amplification: one message from any publisher latches it (TKT-69).** NATS carries no
+      authentication or subject-level publish ACLs today, so any process reaching the stream can
+      emit a schema this binary does not know and hold inventory unready indefinitely. This is
+      **not a reason to weaken the latch**: inventory cannot distinguish a legitimate skew event
+      from a forged one, and going unready is the *correct* response to the legitimate case — which
+      is the whole point of (b). Nor is it a new hole. It is an amplification of an existing gap
+      worth naming, especially against ADR-007's insistence that boundary enforcement be *physical*
+      (per-service credentials) rather than conventional: that holds for Postgres and has no
+      equivalent on NATS. Anyone able to publish here can already provision bogus inventory at a
+      *known* schema, which is worse and needs no unknown variant. **The fix is publisher
+      authority, not a quieter consumer — TKT-69.**
 
       **The operational rules are unchanged — parking is a smoke alarm, not a sprinkler.** Still:
       **do not roll a consumer back past a schema the stream still retains**, and treat "recreate the
