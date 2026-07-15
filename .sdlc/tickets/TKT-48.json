@@ -2,10 +2,10 @@
   "key": "TKT-48",
   "type": "Bug",
   "summary": "Stop scanner camera streams across unmount and re-entry races",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
     "risk:low",
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "claude",
   "pr": null,
@@ -71,6 +71,11 @@
       "stage": "planning",
       "kind": "plan",
       "body": "<!-- sdlc:stage=planning kind=plan -->\n### Plan — TKT-48 scanner stream lifecycle\n\n**Root cause.** `startCamera` awaits `getUserMedia` then `video.play()` with no guard that (a) the\ncomponent is still mounted and (b) this invocation is still the current one. Two races follow:\n- *resolve-after-unmount*: unmount cleanup (`stopCamera`) runs while `getUserMedia` is pending; the\n  promise still resolves and the stream is assigned to `stream.current` + `video.srcObject`, never stopped.\n- *re-entry*: `cameraActive` (the button-disable guard) is only set true after the await, so two rapid\n  clicks issue two `getUserMedia` calls; the first `stream.current` is overwritten and orphaned.\n\n**Fix — generation guard.** Add two refs:\n- `mountedRef` (true until unmount cleanup).\n- `startGeneration` counter. `stopCamera()` bumps it (invalidates any in-flight start). `startCamera()`\n  captures `const gen = ++startGeneration.current` at entry — bumping invalidates any *prior* pending\n  start (re-entry fix). After each await, if `!mountedRef.current || startGeneration.current !== gen`,\n  stop the just-resolved tracks and return without assigning (unmount + re-entry fix). The in-loop\n  `detect()` also checks the generation before continuing.\n\n**Files (2, consistent with risk:low):**\n- `web/scanner/src/App.tsx` — refs + guards.\n- `web/scanner/src/App.test.tsx` — deterministic race tests.\n\n**Test seam / TDD (tests first).** Deferred `getUserMedia` (manually-resolved promise) + `stop` spy on\nthe returned track:\n1. resolve-after-unmount: Use camera → `unmount()` while pending → resolve → `stop` called, no attach.\n2. re-entry: Use camera x2 before first resolves → resolve both → exactly one live stream; the orphaned\n   one's `stop` called.\n3. regressions: existing accept/reject/fallback/detector-failure tests stay green.\n\n**DoD.** `make check` green (lint + unit + build, mirrors CI). No new deps. Scanner UX unchanged.\n"
+    },
+    {
+      "stage": "plan-review",
+      "kind": "plan-final",
+      "body": "<!-- sdlc:stage=plan-review kind=plan-final -->\n### Plan (final, post Codex critique) — TKT-48\n\nCodex cross-model review ran (configured model `gpt-5.6-sol`, read-only, STDIN). Verdict: primitive\n(generation-based ownership) is right, but cleanup semantics were underspecified/unsafe. Revisions folded in:\n\n**Per-generation, ownership-scoped disposal (not global stopCamera from a stale start).**\n- Refs: `mountedRef` and `startGeneration` (counter). `stream.current` still tracks the *active* stream.\n- `startCamera()`: `const gen = ++startGeneration.current` at entry. A helper `isStale()` returns\n  `!mountedRef.current || startGeneration.current !== gen`.\n- After **getUserMedia** resolves: if `isStale()` -> stop the local `media` tracks, return, assign nothing.\n- Assign `stream.current = media` + `srcObject` only when not stale. After **`play()`** resolves: if\n  `isStale()` -> stop local `media` tracks, and detach `srcObject` **only if it still equals `media`**,\n  and null `stream.current` **only if it still equals `media`**; return. (Cannot \"not assign\" here — it\n  was assigned pre-await; correctness note from the critique.)\n- **getUserMedia / play rejection** paths: if stale, swallow silently (no message overwrite, no global\n  cleanup); only the current generation shows the fallback message.\n- **detect() loop**: check `isStale()` after `detector.detect()` resolves and in its catch, before\n  submit / RAF-schedule / stopCamera / message. `frame.current` writes guarded by non-stale.\n- **Effect**: `mountedRef.current = true` at top (Strict-Mode setup→cleanup→setup safe), cleanup sets it\n  false and bumps generation + stops the active stream.\n\n**Files (2):** `web/scanner/src/App.tsx`, `web/scanner/src/App.test.tsx`.\n\n**Tests (TDD, deferred getUserMedia/play + stop spies):**\n1. resolve-after-unmount: stops track, never attaches srcObject.\n2. re-entry before first getUserMedia resolves: exactly one live stream; orphan stopped once.\n3. re-entry after first attached, second while play() pending: first stream stopped, second survives;\n   resolving the stale first neither stops nor detaches the second.\n4. stale getUserMedia rejection does not overwrite the active generation's message.\n5. regressions: accept/reject/fallback/detector-failure all green.\n\n**DoD:** `make check` green. No new deps.\n\nrisk:low retained (2 files, scanner-only). Gate 2 skipped -> proceeding to coding.\n"
     }
   ]
 }
