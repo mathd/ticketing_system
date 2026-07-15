@@ -72,6 +72,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nImplemented + PR #37 opened. TDD: catalog festivals table + row-locked festival->days cascade (mirrors transitionSeries), additive Schema-2 event contract (capacity_group_id + shared_capacity, both-or-neither), inventory group-keyed pool identity (one pool for N days; claims deferred to TKT-14), public grouped read at ADR-004 minutes tier, storefront festival page (browser-verified, screenshot in PR). make check green. Bulk impl by gpt-5.6-sol via Codex against the approved plan; storefront UI + browser-verify by me. Next: Codex ai-review of the diff."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=ai-review kind=blocker -->\n**Cross-model ai-review is stuck — NOT advancing to the merge gate.**\n\nPR #37 is open, make check is green, and I have independently reviewed the diff (store row-lock cascade mirrors transitionSeries; events additive Schema-2 both-or-neither; inventory pool-identity only). But the mandatory Codex adversarial pass has not produced a usable verdict:\n\n- Run 1 (, ): codex DID investigate (real rg/sed reads of Provision, transitionFestival, provisionInput) but its final synthesized findings were never captured — the  file was empty and the log held only the streamed transcript (my  +  stdin combo mis-fed it).\n- Run 2 (retry, stdin-redirect only): exited 0 after echoing the prompt + the skill-budget warning, with NO answer written. Silent no-op — the documented codex-on-this-box failure mode.\n\nPer the sdlc hard rule (\"Codex failing != stage done; never advance to needs:human without the cross-model pass\"), I have used my one retry and am stopping here at  rather than rubber-stamping. Needs a human to either re-run the Codex review interactively or clear the gate manually."
     }
   ],
   "status": "Building",
