@@ -1,0 +1,18 @@
+{
+  "key": "TKT-72",
+  "type": "Bug",
+  "summary": "make check's smoke stage flakes on a cold volume — postgres healthcheck has no start_period",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "`make check` fails on the `smoke` stage on a cold Docker volume, and the surfaced error is a red herring. Found while running the local gate for TKT-57.\n\nROOT CAUSE: `compose.yaml`'s `postgres` service healthcheck is `interval: 5s` / `timeout: 3s` / `retries: 10` with **no `start_period`** — the only service in the file lacking one (others have it at lines 37, 99, 213). Without `start_period`, failing checks count toward `retries` from the first probe, so postgres gets ~50s total. On a fresh volume the entrypoint runs `initdb` (observed doing a 1502-file checkpoint), which on a loaded daemon exceeds that. The container is marked unhealthy, dependents fail `--wait` with `dependency postgres failed to start`, smoke.sh's `trap cleanup EXIT` tears the stack down, and the follow-up `compose logs` then prints `Error response from daemon: No such container: <id>` — which is what you actually see, and it points nowhere near the cause.\n\nEVIDENCE it is not any particular diff: pristine `main` @ `edafcec` reproduces it with zero changes (control run in a detached worktree); the same tree passed on a first run and failed on reruns; warming the postgres volume brings all 12 containers up healthy.\n\nPROPOSED FIX: add `start_period: 30s` to the postgres healthcheck in `compose.yaml`. Verify by running `make check` twice from a torn-down state (`docker compose -p ticketing-smoke down -v`) rather than once — the bug only appears cold.\n\nWHY IT MATTERS: TKT-57 was docs-only, so `check.yaml`'s `paths-ignore` skipped CI and the flake was cosmetic. A code ticket has no such skip: this is a red gate on work that is actually correct, and the error message actively misleads whoever debugs it.\n\nWHY IT IS A TICKET AND NOT A DIRECT COMMIT: `compose.yaml` defines the deployed stack, not just the test rig. Widening the startup health grace to 30s means dependents wait longer before failing on a genuinely broken postgres — a real (small) behaviour change on a shared file, so it gets a gate rather than a drive-by.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFrom the **TKT-57 retro (R3)**. I hit this running the local gate and could not get `smoke` green on this machine; TKT-57 shipped with the gate partially red, reported rather than hidden.\n\n**The tell is that it is intermittent, not broken.** Cold volume → fails; warm volume → all 12 containers healthy. That is a startup race, not a defect in the stack.\n\n**Do not debug the error message you see.** `No such container: <id>` is smoke.sh's cleanup trap racing its own `compose logs` after the real failure. The real failure is postgres being declared unhealthy during `initdb`.\n\nLocal daemon contention makes it worse (this machine hosts unrelated containers, one in a restart loop), but the missing `start_period` is the actual defect — the grace window is too small for a cold `initdb` on *any* loaded host, including CI runners."
+    }
+  ],
+  "links": []
+}
