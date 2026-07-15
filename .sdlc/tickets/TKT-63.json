@@ -3,11 +3,19 @@
   "type": "Task",
   "summary": "Split the scoped and unscoped public-performance reads into separate SQL",
   "classification": "simple",
-  "labels": [],
+  "labels": [
+    "agent:planning"
+  ],
   "parent": "TKT-2",
   "description": "**Found by the Codex adversarial review of PR #42 (TKT-60). Verified — but the review overstated it; read this before acting.**\n\n`publicPerformances` (`services/catalog/internal/store/postgres.go`) serves both the unscoped catalog listing (`$1` NULL) and scoped event/season reads (uuid[]) from one SQL text: `WHERE p.status='published' AND ($1::uuid[] IS NULL OR e.id = ANY($1))`.\n\nThe claim was that a cached prepared statement can go generic and revert season reads to a catalog-wide scan. **Measured against Postgres 18.4 with 50k published slots:**\n\n- **auto mode (production default): both tables use index scans, stable across 8+ executions.** Postgres keeps picking custom plans; the array parameter makes them cheaper. **The shipped code is correct and TKT-60's fix does not regress.**\n- **`force_generic_plan` (a mode nothing here sets):** `performances` **still** uses `performances_by_event`; only `events` degrades to a seq scan (`Filter: ($1 IS NULL) OR (id = ANY ($1))`).\n\nSo the real exposure is a **latent robustness gap on the `events` table under a plan mode we don't use** — not the catalog-wide regression described. TKT-60's actual defect (scanning every published performance) stays fixed either way.\n\nSplitting into two SQL texts (unconditional `e.id = ANY($1)` for the scoped path) does measurably help: verified to keep `events_pkey` even under a forced generic plan. Cheap, low-risk, removes the nullable-`OR` foot-gun. Filed as **robustness, not a live bug** — priority accordingly.\n\n**COS:** scoped and unscoped reads use separate SQL; the scoped path filters unconditionally; both keep index scans under `force_generic_plan` (assert it, since that is the only condition that distinguishes the two shapes). Existing season/event/festival tests stay green; response shape unchanged. `make check` green.",
-  "status": "Ready",
-  "assignee": null,
+  "status": "Planning",
+  "assignee": "agent",
   "pr": null,
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed by the agent.** Branch `TKT-63-split-scoped-unscoped-reads` off `origin/main`.\n\n**Selection reason.** Picked over the rest of the open backlog (TKT-47, 55, 56, 57, 61, 65, 66) as\nthe next logical unit of the catalog read-path cluster (TKT-53 → 60 → 62 → 64). Two candidates were\nlive; TKT-63 goes first because **it is the enabler for TKT-65**:\n\n- TKT-65 (the season `EXPLAIN` test does not EXPLAIN the season read) is the higher-value defect —\n  it is false confidence, and ADR-019 currently carries it as an admitted \"the rule outruns its\n  enforcement\" consequence. But its filing flags the open judgement call as *how* to share a 14-line\n  query string between production and a smoke test without coupling the test to formatting noise.\n- TKT-63 splits `publicPerformances` into separate scoped and unscoped SQL. Once the scoped path is\n  its own query text, sharing it with the test is close to mechanical and TKT-65's judgement call\n  largely dissolves. Reverse the order and the sharing work gets done twice.\n\n**Blockers:** none (`links: []`; parent TKT-2 is an epic, not a blocker).\n\n**Gates:** Gate 1 cleared by the human at 16:29 today (`699d268 chore(TKT-63): Backlog → Ready`).\nRun is **gates-only**. `risk:low` **deliberately not set** — the human's call this run: the diff is\nsmall, but it is a catalog read-path SQL change governed by ADR-019, and TKT-62's plan gate is on\nrecord for reversing that ticket's recommendation. Gate 2 stands.\n\n**Note for the planner (found while claiming, not in the ticket):** this ticket collides with the\nTKT-65 test. `TestGetPublishedSeasonIsIndexScoped` hand-copies the *current* `($1 IS NULL OR e.id =\nANY($1))` shape. Splitting the SQL means that copied predicate no longer exists in production in any\nform — the test would EXPLAIN a shape nothing runs. TKT-63 must at minimum carry that test forward;\nwhether it should go further and close TKT-65's sharing gap here is a plan decision, not a claim one.\n"
+    }
+  ]
 }
