@@ -32,8 +32,14 @@ function App() {
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
+  const mounted = useRef(true)
+  // Bumped by every stopCamera() and every startCamera() entry. A start captures its value and
+  // treats itself as stale once the counter moves on — so a stream resolving after unmount or a
+  // superseded start disposes of its own resource instead of touching the active one.
+  const generation = useRef(0)
 
   const stopCamera = () => {
+    generation.current += 1
     if (frame.current !== null) cancelAnimationFrame(frame.current)
     frame.current = null
     stream.current?.getTracks().forEach((track) => track.stop())
@@ -41,7 +47,13 @@ function App() {
     setCameraActive(false)
   }
 
-  useEffect(() => stopCamera, [])
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      stopCamera()
+    }
+  }, [])
 
   const submit = async (value = payload) => {
     if (!value.trim() || submitting) return
@@ -71,43 +83,90 @@ function App() {
       setCameraMessage('Camera QR detection is unavailable in this browser. Paste the credential instead.')
       return
     }
+    // Supersede any in-flight start and claim this generation. A start is "stale" once the counter
+    // moves past `gen` (another start began, stopCamera ran, or the component unmounted).
+    const gen = (generation.current += 1)
+    const isStale = () => !mounted.current || generation.current !== gen
+    // Release resources owned by *this* start only — never the active stream of a newer generation.
+    const disposeOwn = (media: MediaStream) => {
+      media.getTracks().forEach((track) => track.stop())
+      if (stream.current === media) stream.current = null
+      if (video.current && video.current.srcObject === media) video.current.srcObject = null
+    }
+
+    let media: MediaStream
     try {
-      const media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-      stream.current = media
-      if (!video.current) {
-        stopCamera()
-        setCameraMessage('Camera preview was unavailable. Paste the credential instead.')
-        return
-      }
-      video.current.srcObject = media
-      await video.current.play()
-      setCameraActive(true)
-      setCameraMessage('Point the camera at a ticket QR code.')
-      const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
-      const detect = async () => {
-        if (!video.current || !stream.current) return
-        let codes: Array<{ rawValue?: string }>
-        try {
-          codes = await detector.detect(video.current)
-        } catch {
-          stopCamera()
-          setCameraMessage('Camera QR detection stopped unexpectedly. Paste the credential instead.')
-          return
-        }
-        const value = codes[0]?.rawValue
-        if (value) {
-          setPayload(value)
-          stopCamera()
-          await submit(value)
-          return
-        }
-        frame.current = requestAnimationFrame(() => { void detect() })
-      }
-      void detect()
+      media = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
     } catch {
+      if (isStale()) return
       stopCamera()
       setCameraMessage('Camera access was unavailable. Paste the credential instead.')
+      return
     }
+    if (isStale()) {
+      // Unmounted or superseded while acquiring — stop this stream, touch nothing shared.
+      media.getTracks().forEach((track) => track.stop())
+      return
+    }
+    if (!video.current) {
+      // No preview element to attach to: dispose the stream we just acquired (it is not yet the
+      // active stream, so stopCamera would not reach it) and fall back to paste.
+      media.getTracks().forEach((track) => track.stop())
+      setCameraMessage('Camera preview was unavailable. Paste the credential instead.')
+      return
+    }
+
+    // This start has won: stop any previously active stream before taking ownership, so a restart
+    // over a fully-active camera cannot orphan the old stream. In-flight prior starts dispose
+    // themselves via their own generation guard.
+    stream.current?.getTracks().forEach((track) => track.stop())
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    frame.current = null
+
+    let detector: BarcodeDetectorInstance
+    try {
+      stream.current = media
+      video.current.srcObject = media
+      await video.current.play()
+      detector = new window.BarcodeDetector({ formats: ['qr_code'] })
+    } catch {
+      // srcObject assignment, play(), or detector construction failed — release the acquired stream.
+      disposeOwn(media)
+      if (!isStale()) {
+        setCameraActive(false)
+        setCameraMessage('Camera access was unavailable. Paste the credential instead.')
+      }
+      return
+    }
+    if (isStale()) {
+      disposeOwn(media)
+      return
+    }
+
+    setCameraActive(true)
+    setCameraMessage('Point the camera at a ticket QR code.')
+    const detect = async () => {
+      if (isStale() || !video.current) return
+      let codes: Array<{ rawValue?: string }>
+      try {
+        codes = await detector.detect(video.current)
+      } catch {
+        if (isStale()) return
+        stopCamera()
+        setCameraMessage('Camera QR detection stopped unexpectedly. Paste the credential instead.')
+        return
+      }
+      if (isStale()) return
+      const value = codes[0]?.rawValue
+      if (value) {
+        setPayload(value)
+        stopCamera()
+        await submit(value)
+        return
+      }
+      frame.current = requestAnimationFrame(() => { void detect() })
+    }
+    void detect()
   }
 
   return (
