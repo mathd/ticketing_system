@@ -5,9 +5,9 @@ package store
 import (
 	"context"
 	"database/sql"
-	"os"
 	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"

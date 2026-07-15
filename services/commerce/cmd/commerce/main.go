@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ import (
 	commerceapi "ticketing/services/commerce/internal/api"
 	commerceevents "ticketing/services/commerce/internal/events"
 	"ticketing/services/commerce/internal/outbox"
+	"ticketing/services/commerce/internal/recovery"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
@@ -145,35 +147,73 @@ func run() error {
 	// start, which is what recovers events owed by a process that died before
 	// publishing — the paid-but-no-ticket window.
 	drainer := outbox.New(db, publisher, drainInterval(), drainBatch(), log)
-	drainCtx, stopDrainer := context.WithCancel(context.Background())
-	drainDone := make(chan struct{})
-	go func() { defer close(drainDone); drainer.Run(drainCtx) }()
+	stopDrainer := start(log, "outbox drainer", drainer.Run)
+
+	// The second background worker (ADR-016 §Decision 1): recovery is driven, not
+	// awaited. Without it an order that lost its request stays parked forever and its
+	// seat leaks — a byte-identical checkout replay is the only other thing that would
+	// advance it, and nothing in the system generates one.
+	// One constant for both the client and the lease: the lease must outlast the calls
+	// it covers, so deriving them from different numbers is how the lease ends up
+	// shorter than its own batch.
+	const recoveryCallTimeout = 10 * time.Second
+	recoveryClients := recovery.HTTPClients{
+		Client:       &http.Client{Timeout: recoveryCallTimeout},
+		InventoryURL: inventoryURL,
+		PaymentsURL:  paymentsURL,
+		Token:        token,
+	}
+	journal := recovery.JournalFact{
+		Client:      recoveryClients.Client,
+		PaymentsURL: paymentsURL,
+		Token:       token,
+		DB:          recovery.StoreFactDB{DB: db},
+	}
+	recoverer := recovery.New(recovery.DBStore{DB: db}, recoveryClients, recoveryClients, journal,
+		recovery.StoreCompleter{DB: db}, recoveryInterval(), recoveryBatch(), recoveryCallTimeout, log)
+	stopRecovery := start(log, "recovery runner", recoverer.Run)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
 
-	shutdownDrainer := func() {
+	stopWorkers := func() {
+		// Recovery first: it completes orders through the outbox, so stopping the
+		// drainer first would strand a row this pass just owed until the next boot.
+		stopRecovery()
 		stopDrainer()
-		select {
-		case <-drainDone:
-		case <-time.After(5 * time.Second):
-			log.WarnContext(ctx, "outbox drainer did not stop within the grace period")
-		}
 	}
 
 	select {
 	case err := <-errCh:
-		shutdownDrainer()
+		stopWorkers()
 		return err
 	case <-ctx.Done():
-		// Stop serving first, then the drainer: draining an owed event is useful right
+		// Stop serving first, then the workers: draining an owed event is useful right
 		// up to exit, and any row still leased is re-claimed once the lease lapses.
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		err := srv.Shutdown(sctx)
-		shutdownDrainer()
+		stopWorkers()
 		return err
+	}
+}
+
+// start runs a worker on its own context and returns its stop func. The context is
+// deliberately NOT the signal context: workers are stopped after srv.Shutdown returns,
+// so cancelling them on the signal would cut a pass short while requests are still
+// draining. The returned func blocks until the worker exits or the grace period lapses.
+func start(log *slog.Logger, name string, run func(context.Context)) func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); run(ctx) }()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			log.Warn(name + " did not stop within the grace period")
+		}
 	}
 }
 
@@ -196,4 +236,26 @@ func drainBatch() int {
 		}
 	}
 	return 32
+}
+
+// recoveryInterval bounds how long a stuck order waits for a re-drive. Longer than the
+// outbox interval: an owed event is one publish away, while a re-drive makes network
+// calls per order and every claim already survived the grace period that keeps recovery
+// off live checkouts.
+func recoveryInterval() time.Duration {
+	if v := os.Getenv("RECOVERY_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 30 * time.Second
+}
+
+func recoveryBatch() int {
+	if v := os.Getenv("RECOVERY_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 16
 }

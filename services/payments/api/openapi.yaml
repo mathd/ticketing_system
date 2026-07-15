@@ -22,6 +22,23 @@ paths:
         '408': {description: Timeout, content: {application/json: {schema: {$ref: '#/components/schemas/ChargeResult'}}}}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/operations:
+    get:
+      # Read-only lookup of an already-bound payment operation. Commerce's recovery
+      # runner uses it to resolve an order whose local state is ambiguous, without
+      # re-driving a charge: the payment token is never persisted by commerce and
+      # payments folds it into a one-way fingerprint, so a replay is impossible.
+      # Distinct from POST /internal/charges, whose BindOperation inserts and leases —
+      # a recovery pass must never create an operation for an order that never charged.
+      operationId: getOperation
+      parameters:
+        - {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: idempotency_key, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+      responses:
+        '200': {description: Operation state, content: {application/json: {schema: {$ref: '#/components/schemas/OperationState'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
 components:
   parameters:
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
@@ -67,3 +84,17 @@ components:
         payment_id: {type: string, format: uuid}
         sequence: {type: integer, format: int64}
         replay: {type: boolean}
+    OperationState:
+      type: object
+      additionalProperties: false
+      required: [resolved]
+      properties:
+        # false when the operation exists but has no terminal result yet: it was bound
+        # and the charge is still in flight (or its process died). The caller must not
+        # infer "no side effect" from this — an unresolved operation is precisely the
+        # payment_unknown case, whose resolution needs real-PSP status (TKT-56).
+        resolved: {type: boolean}
+        # Present only when resolved: the terminal result payments recorded.
+        status: {type: string}
+        fact_id: {type: string, format: uuid}
+        occurred_at: {type: string, format: date-time}

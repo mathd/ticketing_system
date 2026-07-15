@@ -69,12 +69,26 @@ type FactResult struct {
 	Sequence int64  `json:"sequence"`
 }
 
+// OperationState defines model for OperationState.
+type OperationState struct {
+	FactId     *openapi_types.UUID `json:"fact_id,omitempty"`
+	OccurredAt *time.Time          `json:"occurred_at,omitempty"`
+	Resolved   bool                `json:"resolved"`
+	Status     *string             `json:"status,omitempty"`
+}
+
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
 // ChargeParams defines parameters for Charge.
 type ChargeParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetOperationParams defines parameters for GetOperation.
+type GetOperationParams struct {
+	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
+	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
 }
 
 // ChargeJSONRequestBody defines body for Charge for application/json ContentType.
