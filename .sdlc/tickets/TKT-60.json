@@ -6,7 +6,7 @@
   "labels": [],
   "parent": "TKT-2",
   "description": "**Pre-existing hot-read scale issue surfaced during TKT-53 review (R2 parallel).**\n\n`GetPublishedSeason` (`services/catalog/internal/store/postgres.go`) calls `ListPublishedEvents()` (every published event, all organizers) and filters in memory to the season's event set. On a cache miss, one season read scales with all published inventory — against ADR-004's hot-read intent. TKT-53 fixed the identical shape in `GetPublishedFestival` by querying scoped to the group; do the same for seasons: resolve the season's event ids, then read only those events' published slots (one scoped query, or filter at the SQL layer by the season's event id set).\n\n**COS:** `GetPublishedSeason` no longer loads the full published catalog; a season read's cost scales with the season's own events, not global inventory. Existing season public-read + smoke tests stay green; add a test asserting a foreign published event is not scanned/returned. make check green (contract tests if the boundary is touched — it should not be).\n\n**Note:** behavior-preserving refactor of a read path; the public response shape is unchanged.",
-  "status": "Backlog",
+  "status": "Ready",
   "assignee": null,
   "pr": null,
   "comments": []
