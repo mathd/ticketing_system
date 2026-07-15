@@ -4,13 +4,17 @@
   "summary": "Scope GetPublishedSeason to the season instead of scanning the whole catalog",
   "classification": "simple",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "parent": "TKT-2",
   "description": "**Pre-existing hot-read scale issue surfaced during TKT-53 review (R2 parallel).**\n\n`GetPublishedSeason` (`services/catalog/internal/store/postgres.go`) calls `ListPublishedEvents()` (every published event, all organizers) and filters in memory to the season's event set. On a cache miss, one season read scales with all published inventory — against ADR-004's hot-read intent. TKT-53 fixed the identical shape in `GetPublishedFestival` by querying scoped to the group; do the same for seasons: resolve the season's event ids, then read only those events' published slots (one scoped query, or filter at the SQL layer by the season's event id set).\n\n**COS:** `GetPublishedSeason` no longer loads the full published catalog; a season read's cost scales with the season's own events, not global inventory. Existing season public-read + smoke tests stay green; add a test asserting a foreign published event is not scanned/returned. make check green (contract tests if the boundary is touched — it should not be).\n\n**Note:** behavior-preserving refactor of a read path; the public response shape is unchanged.",
   "status": "Building",
   "assignee": "claude",
-  "pr": null,
+  "pr": {
+    "url": "https://github.com/mathd/ticketing_system/pull/42",
+    "number": 42,
+    "state": "open"
+  },
   "comments": [
     {
       "stage": "ready",
@@ -36,6 +40,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n### Implementation complete — verified against a real database\n\n**The fix (what the ticket asked for):** `GetPublishedSeason` no longer calls\n`ListPublishedEvents()`. `publicPerformances`' existing filter widened from a single id to a set\n(`e.id = ANY($1)`); the season passes its own event ids. ~15 lines of real change.\n\n**The fix the ticket did NOT ask for, and the one that actually matters:** `performances` had **no\nindex on `event_id`** — only `(status, starts_at)`. Scoping the query alone would have shrunk the\n*response* while Postgres still scanned every published slot: a no-op dressed as a fix. Migration\n**0007** adds `performances_by_event (event_id, status)`. Codex's plan critique caught this; the\nplan was revised before any code was written.\n\n**Proven, not asserted** (Docker Desktop up, real Postgres 18.4):\n\n| Claim | Evidence |\n|---|---|\n| `[]uuid.UUID` binds as `uuid[]` | probe executed: nil / empty / singleton / multi all correct |\n| `nil` ≠ empty set (R5 full-catalog leak) | nil → all rows, empty → 0 rows. Distinction holds. |\n| Result scoping | poison-row test **red before / green after** |\n| Physical scan cost | `EXPLAIN` at 50k published slots: `Bitmap Index Scan on performances_by_event`, ~41 buffers. Was `Seq Scan`. |\n| Not a regression trap | reverted the fix → both tests go red; restored → green |\n\nCodex's worry that the nullable `OR` would defeat the index was **empirically wrong** — same plan\nwith and without it.\n\n**Why two tests, not one:** an output-only assertion (the shape TKT-53's test used) is **green on\nthe broken code** — today's read returns the *correct* season, it just scans the catalog to get\nthere. Only the EXPLAIN assertion catches that. My first EXPLAIN test failed for a bad reason (a\n2-row table makes a seq scan genuinely optimal); seeded past that point.\n\n### Pre-existing problems surfaced — fixed here on human instruction\n\nBoth hid coverage, so the human chose to fix rather than defer (overriding `quality-practices.md`\n§2's default triage — noted for the retro):\n\n1. **`scripts/smoke.sh` ran the catalog store package under a `-run` allowlist.** A new test\n   silently never runs; the gate stays green. It had already stranded two tests —\n   `TestDirectArchiveRacingFestivalPublishCannotDesync` and\n   `TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically` (**TKT-53's own scoped-read\n   test, which never ran once since it merged**). The commerce block ten lines above already\n   documents this exact trap from a prior incident. Allowlist dropped.\n2. **TKT-53's test then failed on its seed** — a multi-command `Exec` can't carry `$N` params\n   (SQLSTATE 42601). Verified pre-existing on clean `origin/main` (901d3e6). Its *assertions* were\n   sound: split the seed, and the festival ordering behavior is now genuinely verified for the\n   first time.\n3. **`migration_smoke_test.go` was positionally coupled to the migration count** — 14 bare\n   `provider.Down()` calls assuming 0006 was newest, so 0007 shifted every rollback guard onto the\n   migration below its target. **Any** future migration would have broken it identically. Replaced\n   with `DownTo(version)` + named constants.\n\n**Full catalog store smoke suite passes**, including the two tests that had never run.\n\nNext: `make check`, then PR + `agent:ai-review`.\n"
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**PR open: [#42](https://github.com/mathd/ticketing_system/pull/42)** — `make check` **green**, verified\nagainst the full log (7 Go test modules, 0 FAIL lines, `ok ticketing/services/catalog/internal/store`\nat log line 516, `ok ticketing/smoke` at 575).\n\nNote on that verification: my first gate read tailed too few lines, showed no stage markers, and I\nnearly reported a genuine pass as a false green. Re-ran capturing full output — the honest evidence\nis above. Exit code 0 was never the reason I called it green.\n\nDiff: 1 commit, 6 files, **+293/−60**. The season fix itself is ~15 lines; the rest is migration\n0007, two tests, and the three pre-existing repairs.\n\nSwapping to `agent:ai-review` — Codex adversarial review of the branch diff running now.\n"
     }
   ]
 }
