@@ -3,12 +3,26 @@
 # the hermetic in-Docker build path is covered by hermetic.yaml
 # (scheduled + triggered on PRs touching the build files).
 # Triggers are scoped to main + PRs; sdlc-state commits never reach CI.
+#
+# Docs-only changes skip the whole workflow: `make check` builds and tests Go +
+# TS, none of which a prose diff can break, and this repo ships ADR-only tickets
+# often enough (TKT-62, TKT-64) for ~5min a PR to be worth skipping. paths-ignore
+# fires only when *every* changed file matches, so a docs + code PR still runs.
+#
+# ⚠ This is safe only while no required status check names `check`. A skipped
+# workflow reports nothing, and a *required* check that never reports blocks the
+# PR forever. GitHub branch protection is unavailable on this repo's plan today
+# (the API 403s), so nothing is enforced — but AGENTS.md claims required checks
+# are in place. If that ever becomes true, replace paths-ignore with a
+# step-level `if:` guard so the job still reports success. See TKT-62 retro.
 name: check
 
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
 
 # Cancel a still-running check when a newer commit lands on the same PR or
 # branch — superseded runs are pure wasted Actions minutes.

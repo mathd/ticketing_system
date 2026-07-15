@@ -61,13 +61,15 @@ For each child, **once at creation**, resolve relevance from the ticket's compon
 
 ```json
 {
-  "binding":   [{ "id": "DEC-0007", "rule": "<recommandation verbatim>", "date": "2026-06-18" }],
-  "reference": [{ "summary": "<1 line>", "link": "<confluence url>" }],
+  "binding":      [{ "id": "DEC-0007", "rule": "<recommandation verbatim>", "date": "2026-06-18" }],
+  "governingAdrs": [{ "id": "ADR-008", "why": "<1 line: what it constrains for THIS ticket>" }],
+  "reference":    [{ "summary": "<1 line>", "link": "<confluence url>" }],
   "capturedAt": "2026-06-18"
 }
 ```
 
 - **Binding → verbatim** (never summarized — a dropped constraint is the exact failure we avoid). **Reference → summary + link.**
+- **`governingAdrs` → the ADRs that constrain the area this ticket touches**, each with one line on *what it constrains here* — not a bare link. This is the field the planning drafter needs most and the one it cannot discover: it reads the code, not the decision history, so an ADR that makes the obvious solution wrong is invisible to it. TKT-62 is the worked example — the drafter had every fact right and still recommended `CREATE INDEX CONCURRENTLY`, because ADR-008 (migrations run at service startup) is what makes CIC pointless there, and nothing in the code says so. It was fed in by hand at brief time; had the mémo carried it, the draft would have started from the real constraint. Populate it from `registry.bindingPath` by area, not by keyword search.
 - **Staleness:** decomposition is pre-sprint; execution comes later. The `id`+`date`+`capturedAt` let the executing agent **revalidate cheaply at pickup** (has any `binding.id` been superseded since `capturedAt`?) instead of re-reading everything. A hidden payload fails silently otherwise — the dates make it detectable.
 - **Write** via Jira REST `PUT /rest/api/3/issue/{KEY}/properties/agent-context` (not exposed by the MCP); read back via `getJiraIssue` (properties). Don't put secrets — any authenticated user can read it.
 
