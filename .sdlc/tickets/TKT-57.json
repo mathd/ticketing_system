@@ -2,7 +2,7 @@
   "key": "TKT-57",
   "type": "Story",
   "summary": "Ticket lifecycle trail has no hash chain, signature or verifier (ADR-003 'one discipline' gap)",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
