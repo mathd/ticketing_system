@@ -99,14 +99,28 @@ proportional to a subset**.
    rule it illustrates.** `TestGetPublishedSeasonIsIndexScoped` EXPLAINs a *hand-copied,
    reduced* query (`SELECT p.id` over `performances` + `events` with the scoping predicate).
    Production `publicPerformances` joins four more tables (`venues`, `ticket_types`,
-   `series_performances`, `series`), projects ~24 columns and sorts. The two SQL texts are
-   duplicated, not shared. So the test proves the *predicate is index-compatible* — that
+   `series_performances`, `series`), projects ~24 columns and sorts.
+
+   Since TKT-63 the **scoping predicate itself is shared** — the test EXPLAINs
+   `publicPerformancesScopedPredicate`, the const the shipped read executes, so editing the
+   production predicate is what the test reads and a predicate-level scoping regression does
+   redden it. The **surrounding query text is still duplicated**: the test's reduced SELECT
+   omits the four extra joins, the projection and the sort, which are exactly the kind of thing
+   that flips a planner. So the test proves the *predicate is index-compatible* — that
    `performances_by_event` can serve `status` + `event_id = ANY(…)` under the seeded
-   statistics. It does **not** prove the shipped read's plan uses that index, and production
-   could drift to a catalog scan with the test still green. Closing that gap means EXPLAINing
-   the production SQL itself, which requires the query text to be shared rather than retyped
-   (TKT-65). Until then, this is a predicate/index compatibility check, and rule 2's
-   two-claims discipline is the *standard*, not something the current tests fully discharge.
+   statistics — and it now proves that of the *real* predicate. It still does **not** prove the
+   shipped read's whole plan uses that index. Closing the remainder means EXPLAINing the
+   production SQL itself rather than a reduced copy of it (TKT-65).
+
+   **A trap worth naming, because it produced a green test that proved nothing.** The
+   generic-plan question cannot be answered by sending `EXPLAIN <query with $1>` through the
+   driver: the driver's prepared statement is the `EXPLAIN`, so the inner query is planned with
+   the value already bound and you get a **custom** plan whatever `plan_cache_mode` says — both
+   predicate shapes then return an identical, indexed, literal-substituted plan and the
+   assertion is vacuous. Observing a cached generic plan needs a server-side
+   `PREPARE`/`EXPLAIN EXECUTE` (`explainGenericPlan`). A generic plan is recognisable by the
+   parameter surviving as `$1` in the output instead of appearing as a literal; the helper
+   asserts that, so the trap cannot silently return.
 
 ## Consequences
 
@@ -118,19 +132,30 @@ proportional to a subset**.
   is slower than the smoke tests around it, and a future Postgres could pick a different but
   equally scoped plan and fail it for the wrong reason — the assertion is on the index name,
   not on cost.
-- **Negative — the rule currently outruns its enforcement.** As shipped, the `EXPLAIN` test
-  duplicates a reduced query rather than EXPLAINing the production SQL (see rule 2), so a
-  scoping regression in `publicPerformances` would *not* redden it. Rule 2 is therefore a
-  review standard today, not a gate. TKT-65 tracks sharing the query text so the assertion
-  binds to the shipped read.
-- **Negative:** neither test proves the plan holds in production — both measure under the
-  planner's `auto` mode with the test's statistics. TKT-63 measured the shipped query under
-  `force_generic_plan` and found `events` degrades to a sequential scan there — a latent
-  robustness gap under a mode nothing sets, filed rather than fixed.
+- **Negative — the rule still partly outruns its enforcement.** TKT-63 narrowed this: the
+  `EXPLAIN` test now shares the production scoping *predicate*, so a regression in the predicate
+  reddens it. But the test still EXPLAINs a *reduced* query around that predicate, so a plan
+  regression caused by the production read's other joins, projection or sort would *not* redden
+  it (see rule 2). Rule 2 is a gate for the predicate and a review standard for the rest of the
+  query. TKT-65 tracks binding the assertion to the full shipped SQL.
+- **Negative — the plan assertion measures a mode production does not run.** `force_generic_plan`
+  is what makes the scoped predicate's shape testable at all: under the default `auto` mode
+  Postgres picks a custom plan per execution and *both* the old and new predicate shapes
+  index-scan, so `auto` cannot distinguish them. The forced mode can — which is also why the
+  assertion says nothing directly about production's `auto`-mode plans, only that the shipped
+  shape is robust to the planner not having the parameter's value.
+- **Resolved by TKT-63 — the generic-plan gap on `events`.** The `($1::uuid[] IS NULL OR e.id =
+  ANY($1))` predicate had to be planned for a NULL `$1` as well, so under `force_generic_plan`
+  the planner could not use `events_pkey` and fell back to scanning `events`
+  (`Filter: (($1 IS NULL) OR (id = ANY ($1)))`). TKT-63 split the scoped and unscoped reads into
+  separate SQL texts; the scoped one filters unconditionally and keeps `events_pkey` and
+  `performances_by_event` in every plan mode. This was robustness against a mode nothing here
+  sets, not a live defect — the season read was correctly scoped under `auto` either way.
 
 ## References
 
-- TKT-53 (festival scoped read), TKT-60 (season scoped read + `performances_by_event`), TKT-64 (promotion)
+- TKT-53 (festival scoped read), TKT-60 (season scoped read + `performances_by_event`), TKT-64 (promotion),
+  TKT-63 (scoped/unscoped SQL split; generic-plan robustness)
 - [ADR-004](./ADR-004-cache-first-read-path.md) — cache-first intent; this ADR covers the miss path
 - [ADR-018](./ADR-018-catalog-slot-transition-concurrency.md) — the write side of the same table
 - `services/catalog/internal/store/postgres.go` (`publicPerformances`), `season_smoke_test.go`

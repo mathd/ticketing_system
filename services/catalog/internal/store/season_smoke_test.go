@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io/fs"
 	"os"
 	"strings"
@@ -136,11 +137,90 @@ func TestGetPublishedSeasonDoesNotScanForeignEvents(t *testing.T) {
 	}
 }
 
+// explainGenericPlan returns the TEXT plan that Postgres caches for query — a
+// uuid[]-parameterized SELECT — under plan_cache_mode = force_generic_plan.
+//
+// It goes through a server-side PREPARE/EXECUTE, and that is the entire point.
+// `EXPLAIN <query with $1>` sent through the driver does NOT answer the
+// generic-plan question: the driver's statement is the EXPLAIN itself, so the
+// inner query is planned with the value already bound and you get a *custom*
+// plan no matter what plan_cache_mode says. It looks like a passing assertion
+// and proves nothing — both predicate shapes return an identical, indexed,
+// literal-substituted plan. A real generic plan is recognisable in the output:
+// the parameter survives as `$1` instead of appearing as a literal.
+//
+// PREPARE, the SET, and the EXECUTE must also share one connection — a `SET` on
+// *sql.DB can land on a different pooled connection than the statement it means
+// to govern — so all three run in one transaction, rolled back to drop both the
+// setting and the prepared statement.
+//
+// scope is interpolated into the EXECUTE as a literal because EXECUTE arguments
+// cannot be driver parameters (they would belong to the outer statement) nor
+// subqueries. The values are fixture-generated uuid.UUIDs, formatted by their
+// own String method — there is no injection surface here.
+func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query string, scope []uuid.UUID) string {
+	t.Helper()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err = tx.ExecContext(ctx, `PREPARE plan_probe(uuid[]) AS `+query); err != nil {
+		t.Fatal(err)
+	}
+	// Set before the first EXECUTE: the cached plan is built then.
+	if _, err = tx.ExecContext(ctx, `SET LOCAL plan_cache_mode = force_generic_plan`); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(scope))
+	for _, id := range scope {
+		ids = append(ids, id.String())
+	}
+	// EXPLAIN returns the plan one row per line — read them all, not just the first.
+	rows, err := tx.QueryContext(ctx,
+		`EXPLAIN EXECUTE plan_probe('{`+strings.Join(ids, ",")+`}'::uuid[])`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(line + "\n")
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	// Guard the trap above: if the parameter was folded to a literal this is a
+	// custom plan, and every index assertion below would be vacuous.
+	if got := plan.String(); !strings.Contains(got, "$1") {
+		t.Fatalf("not a generic plan — $1 was substituted, so plan_cache_mode did not apply "+
+			"and this assertion proves nothing.\nplan:\n%s", got)
+	}
+	return plan.String()
+}
+
 // TestGetPublishedSeasonIsIndexScoped asserts PHYSICAL scan cost — the claim a
 // poison row cannot make. A correct result can still be produced by reading the
 // entire catalog and discarding rows; that is exactly the TKT-60 defect. So
 // assert the query plan itself: the season read must reach its performances
 // through performances_by_event, never a sequential scan.
+//
+// It EXPLAINs publicPerformancesScopedPredicate — the predicate the shipped
+// scoped read actually executes, shared as a const rather than retyped (TKT-63),
+// so editing the production predicate is what this test reads. The surrounding
+// query is still a reduced hand-copy: the production read joins four more tables,
+// projects ~24 columns and sorts, and a regression *there* would leave this green.
+// Closing that remainder is TKT-65; ADR-019 books the gap.
+//
+// Both tables are asserted. Under force_generic_plan the old
+// `($1 IS NULL OR e.id = ANY($1))` shape kept performances_by_event but lost
+// events_pkey — the planner must build one plan valid for a NULL $1 too — so
+// performances alone would stay green through exactly the defect TKT-63 fixed.
 func TestGetPublishedSeasonIsIndexScoped(t *testing.T) {
 	ctx, db, st := seasonSmokeStore(t)
 	season, _ := seedSeasonWithForeignEvent(ctx, t, db, st)
@@ -169,29 +249,51 @@ func TestGetPublishedSeasonIsIndexScoped(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `ANALYZE events, performances`); err != nil {
 		t.Fatal(err)
 	}
-	// EXPLAIN returns the plan one row per line — read them all, not just the first.
-	rows, err := db.QueryContext(ctx, `
-		EXPLAIN (FORMAT TEXT)
+	plan := explainGenericPlan(ctx, t, db, `
 		SELECT p.id FROM performances p
 		JOIN events e ON e.id = p.event_id
-		WHERE p.status = 'published' AND ($1::uuid[] IS NULL OR e.id = ANY($1))`,
+		WHERE `+publicPerformancesScopedPredicate,
 		[]uuid.UUID{season.EventIDs[0]})
+
+	for _, index := range []string{"performances_by_event", "events_pkey"} {
+		if !strings.Contains(plan, index) {
+			t.Fatalf("scoped season read does not use %s under force_generic_plan — it scans.\nplan:\n%s", index, plan)
+		}
+	}
+}
+
+// TestGetPublishedSeasonEmptyScopeDoesNotWidenToCatalog guards the contract that
+// splitting the SQL moved out of the query and into Go (TKT-63).
+//
+// publicPerformances routes on eventIDs == nil: nil means the whole catalog, a
+// non-nil *empty* slice means no events. A season with no attached events yields
+// the empty slice, so a router that tested len(eventIDs) == 0 instead of nil
+// would hand it the entire published catalog — a zero-event season becoming the
+// most expensive read in the service. While the two shapes shared one SQL text
+// the `$1 IS NULL` branch encoded that distinction; now only the Go does.
+//
+// The seeded catalog contains a published poison event, so a widened read does
+// not merely over-return: it fails to decode and errors. Either way, not ErrNotFound.
+func TestGetPublishedSeasonEmptyScopeDoesNotWidenToCatalog(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	season, _ := seedSeasonWithForeignEvent(ctx, t, db, st)
+
+	empty, err := st.CreateSeason(ctx, SeasonInput{
+		OrganizerID: season.OrganizerID,
+		Name:        LocalizedText{"en": "empty season", "fr": "saison vide"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rows.Close() }()
-	var plan strings.Builder
-	for rows.Next() {
-		var line string
-		if err = rows.Scan(&line); err != nil {
-			t.Fatal(err)
-		}
-		plan.WriteString(line + "\n")
+	if len(empty.EventIDs) != 0 {
+		t.Fatalf("fixture is not an empty season: %d events attached", len(empty.EventIDs))
 	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(plan.String(), "performances_by_event") {
-		t.Fatalf("season read does not use performances_by_event — it scans the catalog.\nplan:\n%s", plan.String())
+
+	switch _, err := st.GetPublishedSeason(ctx, empty.ID); {
+	case errors.Is(err, ErrNotFound): // the scoped query matched nothing, as it must
+	case err == nil:
+		t.Fatal("a season with no events returned events — the empty scope widened to the catalog")
+	default:
+		t.Fatalf("a season with no events read the catalog and hit the poison row: %v", err)
 	}
 }
