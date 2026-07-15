@@ -1040,6 +1040,55 @@ func (p *Postgres) transitionFestival(ctx context.Context, id uuid.UUID, target 
 	return out, nil
 }
 
+// A day kind has no starts_at instant; derive a representative one from its
+// operating window (opening moment, resolved in the slot's local zone) so
+// the public read has a stable non-null sort/display key for every kind.
+// For kind 'performance' the COALESCE returns starts_at unchanged.
+const publicPerformancesStartsAt = `COALESCE(p.starts_at,
+	(p.operating_date + p.opens_at::time) AT TIME ZONE p.timezone)`
+
+// The scoped and unscoped public reads are separate SQL texts sharing every
+// fragment except their predicate — deliberately, rather than one text with a
+// nullable scope parameter (TKT-63).
+//
+// A `($1::uuid[] IS NULL OR e.id = ANY($1))` predicate has to be planned for a
+// NULL $1 as well, so under plan_cache_mode = force_generic_plan the planner
+// cannot use events_pkey and falls back to scanning events. Filtering
+// unconditionally keeps the index in every plan mode. Production runs the
+// default auto mode, where both shapes index-scan and the season read is
+// correctly scoped either way — this is robustness against a mode nothing here
+// sets, not a live fix (ADR-019).
+//
+// The predicates are consts because the EXPLAIN smoke test asserts the plan of
+// the predicate this file ships rather than a retyped copy of it; the rest of
+// the query text is still duplicated there (TKT-65).
+const (
+	publicPerformancesUnscopedPredicate = `p.status = 'published'`
+	publicPerformancesScopedPredicate   = `p.status = 'published' AND e.id = ANY($1::uuid[])`
+)
+
+const publicPerformancesSelect = `
+	SELECT e.id, e.organizer_id, e.name, e.description, e.created_at,
+	       p.id, ` + publicPerformancesStartsAt + `, p.timezone, p.kind, p.capacity_group_id, p.status, p.published_at, p.created_at,
+	       v.id, v.name, v.ga_capacity, v.created_at,
+	       t.id, t.name, t.price_amount, t.currency, t.created_at,
+	       s.id, s.name, sp.position, s.created_at
+	FROM performances p
+	JOIN events e ON e.id = p.event_id
+	JOIN venues v ON v.id = p.venue_id
+	JOIN ticket_types t ON t.performance_id = p.id
+	LEFT JOIN series_performances sp ON sp.performance_id = p.id
+	LEFT JOIN series s ON s.id = sp.series_id
+	WHERE `
+
+const publicPerformancesOrder = `
+	ORDER BY ` + publicPerformancesStartsAt + `, p.id, t.price_amount, t.id`
+
+const (
+	unscopedPublicPerformancesQuery = publicPerformancesSelect + publicPerformancesUnscopedPredicate + publicPerformancesOrder
+	scopedPublicPerformancesQuery   = publicPerformancesSelect + publicPerformancesScopedPredicate + publicPerformancesOrder
+)
+
 // publicPerformances returns the publicly listable slots (published AND
 // priced — no sellable offer, no listing) grouped into event aggregates,
 // events ordered by their earliest slot, slots by start time.
@@ -1050,28 +1099,20 @@ func (p *Postgres) transitionFestival(ctx context.Context, id uuid.UUID, target 
 // caller with zero events would get the whole catalog back. The scoped path
 // is index-backed by performances_by_event (TKT-60): a season read must cost
 // what its own events cost, not what the catalog costs (ADR-004).
+//
+// That nil/empty distinction used to live in the SQL's `$1 IS NULL` branch; since
+// TKT-63 split the query it lives only in the routing below, which is why it
+// tests eventIDs == nil and never len(eventIDs) == 0.
 func (p *Postgres) publicPerformances(ctx context.Context, eventIDs []uuid.UUID) ([]EventAggregate, error) {
-	// A day kind has no starts_at instant; derive a representative one from its
-	// operating window (opening moment, resolved in the slot's local zone) so
-	// the public read has a stable non-null sort/display key for every kind.
-	// For kind 'performance' the COALESCE returns starts_at unchanged.
-	const startsAtExpr = `COALESCE(p.starts_at,
-		(p.operating_date + p.opens_at::time) AT TIME ZONE p.timezone)`
-	query := `
-		SELECT e.id, e.organizer_id, e.name, e.description, e.created_at,
-		       p.id, ` + startsAtExpr + `, p.timezone, p.kind, p.capacity_group_id, p.status, p.published_at, p.created_at,
-		       v.id, v.name, v.ga_capacity, v.created_at,
-		       t.id, t.name, t.price_amount, t.currency, t.created_at,
-		       s.id, s.name, sp.position, s.created_at
-		FROM performances p
-		JOIN events e ON e.id = p.event_id
-		JOIN venues v ON v.id = p.venue_id
-		JOIN ticket_types t ON t.performance_id = p.id
-		LEFT JOIN series_performances sp ON sp.performance_id = p.id
-		LEFT JOIN series s ON s.id = sp.series_id
-		WHERE p.status = 'published' AND ($1::uuid[] IS NULL OR e.id = ANY($1))
-		ORDER BY ` + startsAtExpr + `, p.id, t.price_amount, t.id`
-	rows, err := p.db.QueryContext(ctx, query, eventIDs)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if eventIDs == nil {
+		rows, err = p.db.QueryContext(ctx, unscopedPublicPerformancesQuery)
+	} else {
+		rows, err = p.db.QueryContext(ctx, scopedPublicPerformancesQuery, eventIDs)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("public read: %w", err)
 	}
