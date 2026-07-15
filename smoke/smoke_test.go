@@ -302,6 +302,54 @@ func TestMigrationsAppliedOutOfBand(t *testing.T) {
 	}
 }
 
+func inspect(t *testing.T, container, format string) string {
+	t.Helper()
+	out, err := exec.Command("docker", "inspect", "-f", format, container).Output()
+	if err != nil {
+		t.Fatalf("docker inspect %s: %v", container, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestMigrationsRanBeforeServicesStarted: each service's migrations were applied
+// by its one-shot job, which exited 0 *before* the service process started
+// (ADR-021).
+//
+// TestMigrationsAppliedOutOfBand alone cannot prove this. It asserts the database
+// is at the latest version, which was equally true under ADR-008's startup
+// migration — so it would pass unchanged on the very code this ticket replaced.
+// It proves migratedness, not placement. This test is the one that fails if
+// migrations creep back onto the server path: it asserts the *provenance and
+// ordering* the decision actually turns on.
+func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
+	for _, service := range migratedServices {
+		t.Run(service, func(t *testing.T) {
+			job := fmt.Sprintf("%s-%s-migrate-1", project, service)
+			srv := fmt.Sprintf("%s-%s-1", project, service)
+
+			if code := inspect(t, job, "{{.State.ExitCode}}"); code != "0" {
+				t.Fatalf("%s exited %s, want 0", job, code)
+			}
+			if running := inspect(t, job, "{{.State.Running}}"); running != "false" {
+				t.Fatalf("%s still running — it must be one-shot", job)
+			}
+
+			finished, err := time.Parse(time.RFC3339Nano, inspect(t, job, "{{.State.FinishedAt}}"))
+			if err != nil {
+				t.Fatalf("%s FinishedAt: %v", job, err)
+			}
+			started, err := time.Parse(time.RFC3339Nano, inspect(t, srv, "{{.State.StartedAt}}"))
+			if err != nil {
+				t.Fatalf("%s StartedAt: %v", srv, err)
+			}
+			if !finished.Before(started) {
+				t.Fatalf("%s finished at %s, but %s started at %s — the service started before "+
+					"its migrations completed", job, finished, srv, started)
+			}
+		})
+	}
+}
+
 // TestMetricsIngested asserts application metrics flow to the otel-lgtm
 // Prometheus after real traffic.
 func TestMetricsIngested(t *testing.T) {

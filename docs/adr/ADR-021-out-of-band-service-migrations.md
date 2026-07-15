@@ -130,11 +130,24 @@ never before; this is not that change.
     - ADR-020 precondition (1) is satisfied. **CIC remains deferred**: (2) and (3) are still false.
     - Each schema stays owned by its service and role (ADR-002/007); the five jobs are independent
       and could run in parallel, since they touch five separate databases.
-    - The boundary is enforced by the gate, not by prose: `TestMigrationsAppliedOutOfBand` compares
-      each database's applied goose version against that service's checked-in migration files.
+    - The boundary is enforced by the gate, not by prose, and it takes **two** assertions:
+      `TestMigrationsAppliedOutOfBand` compares each database's applied goose version against that
+      service's checked-in migration files, and `TestMigrationsRanBeforeServicesStarted` asserts each
+      job exited 0 *before* its service started. The first alone would be vacuous for this decision —
+      it was equally true under ADR-008 and passes unchanged on the code this ADR replaces. It proves
+      migratedness; only the second proves *placement*.
 - **Negative:**
     - **Buys no availability today**, and local startup still waits for migrations. This ADR spends
       real diff on a future option, and `AGENTS.md`'s testbed framing is the whole justification.
+    - **The startup path is not actually clean — commerce is a named exception.**
+      `BackfillCompletionOutbox` (`services/commerce/internal/store/store.go:193`) stays on the
+      server path: it is data repair rather than schema, it is idempotent, and the migrate job has
+      already applied the schema it reads. But it *scans* `orders` on every boot under
+      `main.go`'s 30-second deadline and buffers matches in memory, and a failure fails the service —
+      which is precisely the fail-fast startup coupling this ADR removes from migrations. It is
+      bounded today (narrow predicate, small table) and moving it into the migrate job would not
+      help, since the service waits on that job anyway. Recorded rather than hidden: this decision
+      removed migrations from startup, **not** all startup-coupled data work.
     - Correct ordering is now an orchestration invariant. A missing `service_completed_successfully`
       edge starts a service against an old schema — invisible to `/healthz`, which only pings the
       connection. The version assertion in `smoke/smoke_test.go` exists for exactly this.
