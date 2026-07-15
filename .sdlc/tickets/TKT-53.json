@@ -4,9 +4,7 @@
   "parent": "TKT-2",
   "summary": "US-011: Festival skeleton — festival over shared-capacity day slots",
   "classification": "complex",
-  "labels": [
-    "needs:human"
-  ],
+  "labels": [],
   "description": "**As** an organizer, **I want** to model a festival as a container of festival-day slots that draw on shared festival capacity, so TKT-14 can layer multi-day passes and zones onto a real structure.\n\n**Priority:** P2\n**Depends on:** US-009 (TKT-51 — festival-day is a slot kind), US-010 (TKT-52 — a festival groups like a season)\n\n**Acceptance Criteria:**\n- [ ] Catalog models a `festival` grouping festival-day slots (US-009 kind `festival_day`) that reference a **shared festival capacity** rather than per-day independent pools; the publication events express the shared-capacity relationship so inventory can provision it (TKT-14 consumes)\n- [ ] API to create a festival, its days and the shared-capacity linkage; lifecycle (US-007) applies to the festival and cascades to its days; `organizer_id`-scoped throughout\n- [ ] Public reads list a festival with its days as one grouped offer (ADR-004 TTL tier declared; browser-verified)\n- [ ] **Non-goals (TKT-14):** multi-day pass products, zones/stages, RFID media, camping add-on — this story ships only the catalog skeleton + shared-capacity structure\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
   "context": {
     "binding": [
@@ -92,14 +90,24 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nAddressed the two human-review findings (commit 37c2ee2), back to the merge gate:\n\n- R1 (correctness/UX): the festival page rendered a Reserve/HoldPicker per day, but grouped festival days have no per-slot pool (claims are TKT-14) so every Reserve would 409. Days are now display-only with a 'Festival passes go on sale soon.' note; PerformanceCard gained a purchasable prop (event page unchanged). Browser-verified, screenshot updated.\n- R2 (scale): GetPublishedFestival scanned the whole published catalog and filtered in memory (against ADR-004). Now one query scoped to capacity_group_id, joining only the festival's days. (GetPublishedSeason shares the old shape — pre-existing, flagged for a separate ticket.)\n\nmake check green (full docker-compose smoke). PR #37 now has 3 commits. Merge is yours (squash, then Building -> PO Review). Not pushing again while needs:human."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n**COS validation — all met.** PR #37 squash-merged to main (3879c13); the festival skeleton is live on DEV.\n\n- AC1 shared capacity: a festival groups festival_day slots via capacity_group_id -> festivals(id); publish emits Schema-3 envelopes carrying capacity_group_id + shared_capacity; inventory provisions ONE shared pool for N days (verified by the E2E smoke TestFestivalPublicationSharedCapacityAndPublicGrouping).\n- AC2 API + cascade + tenancy: create festival / attach days / publish / archive; lifecycle cascades festival->days under a row lock; organizer_id-scoped in app + DB (composite FK, kind CHECK).\n- AC3 grouped public read: GET /public/festivals/{id} lists the festival + days as one offer at the ADR-004 minutes tier; browser-verified (docs/product/tkt-53-festival-storefront.png). Days are display-only (per-day purchase is TKT-14) — no broken Reserve.\n- AC4 non-goals honored: no pass products, zones, RFID, camping, or claim mechanics.\n\nmake check green (lint + Go/TS test + build + full docker-compose smoke)."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n**Metrics** (durations from the sdlc-state changelog):\n\n| stage | duration |\n|---|---|\n| Backlog (created -> Ready) | ~19h56m (mostly overnight; priority gate) |\n| Ready -> Planning (claim) | ~54m |\n| Planning (agent:planning + plan-review) | ~52m |\n| Gate 2 human wait (needs:human in Planning) | folded into Planning span above |\n| Building (agent:coding + ai-review, incl. 2 review rounds) | ~1h47m |\n| Gate 3 human wait (review + merge) | n/a (dev merged promptly) |\n| PO Review -> Done | minutes |\n\nhuman-wait total: dominated by the overnight Backlog->Ready gate (~20h); in-session gates were short.\ndiff: +2691 / -91 (23 files).\n\n**learnings:**\n- (technical -> AGENTS.md, via a gated ticket) The row-lock cascade rule already documented for catalog transitions now has a second reference impl (transitionFestival) and a NEW corollary worth capturing: a grouping's per-member lifecycle endpoints (PublishPerformance/ArchivePerformance) must REJECT a grouped member (ErrGroupedSlotLifecycle) so the group aggregate can't be desynced out-of-band. Codex found this; worth promoting so future groupings (passes, lodging) inherit it.\n- (technical -> AGENTS.md) Overloading an additive field onto an existing event Schema is unsafe when it changes a CONSUMER's behavior (here: pool key flips performance_id -> group_id). Rule: bump the schema and teach the consumer both, consumer-first — even under compose-as-a-unit, to keep the contract honest.\n- (process -> team wiki) Cross-model review sees the DIFF, not cross-service flows. Both Codex passes missed R1 (the storefront mounting a purchase control against a pool that doesn't exist) — a human caught it. Add 'trace any new UI control to the service call it triggers' to the review checklist.\n\n**retro:**\n1. What would have made this faster/better: the plan mémo should have flagged up-front that PerformanceCard auto-mounts HoldPicker, so the festival page's purchasability was a decision, not a default — I only learned it from the human review. Appliable change: sdlc-ticket planning step for a UI story should include 'enumerate the interactive components the page reuses and whether each is valid in the new context.' Also: I twice misjudged codex `-o` output as empty by checking before it flushed — already patched into the codex memory (wait for the file to settle post-exit).\n2. What the humans/process should change: the AGENTS.md row-lock rule is proven load-bearing across three impls now (performance, series, festival) — promote the 'grouped-member lifecycle must route via the group' corollary into it so it's enforced by convention, not re-derived per ticket. Offered to apply the AGENTS.md edit via a normal gated ticket."
     }
   ],
-  "status": "PO Review",
+  "status": "Done",
   "assignee": "claude",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/37",
     "number": 37,
-    "state": "open"
+    "state": "merged"
   },
   "readiness": {
     "objective": {
