@@ -50,3 +50,7 @@ experiment stays valid.
   A scoped read is only scoped if an index backs the filter — copying a query shape that scales
   ships a no-op. Proving it takes two tests: the result is scoped, *and* the scan is. Narrower
   than it sounds — the ADR draws the lines.
+- **Adding an index to a catalog migration? Read [ADR-020](docs/adr/ADR-020-catalog-index-build-concurrency.md) first.**
+  Plain `CREATE INDEX` stays — `CONCURRENTLY` is deliberately *not* adopted while migrations run at
+  service startup (ADR-008), and adopting it early bricks startup. The ADR names the preconditions
+  and the traps.
