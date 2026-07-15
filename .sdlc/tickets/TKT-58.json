@@ -14,7 +14,7 @@
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/40",
     "number": 40,
-    "state": "open"
+    "state": "merged"
   },
   "comments": [
     {
@@ -46,6 +46,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**PR #40 open — https://github.com/mathd/ticketing_system/pull/40**\n\nDocs-only: `AGENTS.md` +19/-3, one file, one commit (`df0fb5c`). Branch off `origin/main` @ `3879c13`.\n\n**Gate:** `make check` green — exit 0, no failures across lint + unit + integration (Go & TS) +\ngateway smoke.\n\n**`agent:ai-review` — the codex pass already happened, at plan-review.** The skill's *one codex pass\nper stage* rule says not to re-run it on my own fixes. For a docs-only ticket the \"diff\" and the\n\"plan\" are the same artifact: the critique reviewed this exact paragraph against the real code, found\n4 confirmed defects, and this diff **is** the result of fixing them. A second pass would review my\nown corrections — the thing the rule forbids. Flagging explicitly rather than silently skipping; if\nyou want an independent pass on the final wording, say so and I'll run one.\n\n**What the human review should focus on** (also in the PR body): not whether the two guards are\ndescribed correctly — they are, verified — but whether the **scope limits** are the right call.\nThe paragraph deliberately declines to state a general \"group owns its members\" invariant, because\nclosure (`toggleClosure`) and series (`transitionSeries`) don't obey it and ADR-015 accepts partial\nseries states by design. That's a judgment about how much AGENTS.md should promise. Yours to confirm.\n\nBall is with you: review + squash-merge, then transition Building → PO Review. I've stopped pushing.\n"
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Merged and verified on `origin/main` @ `ca25226`.**\n\nVerified by content, not by the PR badge (`git grep origin/main -- AGENTS.md` → present), per the\n[[stacked-pr-squash-merge-trap]] lesson: a MERGED badge is not proof the code reached main.\n\n**COS check — \"AGENTS.md states the corollary; no code change\":**\n\n| COS | Status |\n|---|---|\n| AGENTS.md states the corollary | ✅ `AGENTS.md` lines 65-83 on `origin/main` |\n| No code change | ✅ diff is +20/-0, 1 file — `AGENTS.md` only |\n| `make check` green | ✅ exit 0, no failures (lint + unit + integration + gateway smoke) |\n| `risk:low` held | ✅ one file, docs-only, no auth/migration/CI surface |\n\n**What to validate — the scope limits, not the mechanics.** The two guard descriptions are verified\nagainst the code. The judgment call worth your eye is what the paragraph *declines* to say: it\nrefuses a general \"group owns its members\" invariant because `toggleClosure` (close/reopen) and\n`transitionSeries` (series) don't obey it, and ADR-015 accepts partial series states by design. If\nyou'd rather AGENTS.md promise the broader rule, that's a code+ADR change, not a docs edit.\n\n**Delivered ≠ what was ordered.** The ticket asked to promote \"per-member lifecycle endpoints must\nreject a grouped member ... proven across performance/series/festival\". That premise was **false for\nseries** — the code never guards them. What shipped documents only the two endpoints that actually\nguard and explicitly warns readers not to extrapolate. Accepting this ticket means accepting the\nnarrower rule.\n"
     }
   ],
   "links": []
