@@ -1,4 +1,4 @@
-# ADR-021: Service migrations run out-of-band, as one-shot jobs
+# ADR-022: Service migrations run out-of-band, as one-shot jobs
 
 Date: 2026-07-15
 

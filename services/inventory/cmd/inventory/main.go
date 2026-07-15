@@ -47,7 +47,7 @@ func main() {
 	}
 }
 
-// migrate applies this service's embedded migrations and exits (ADR-021).
+// migrate applies this service's embedded migrations and exits (ADR-022).
 // It runs as a one-shot job that must complete before the service starts;
 // the server path never migrates. Fail-fast and the 30s deadline are kept
 // from ADR-008 — only the placement changed.
@@ -114,7 +114,7 @@ func run() error {
 	}
 	defer func() { _ = db.Close() }()
 	dbConfig.Apply(db)
-	// Migrations ran out-of-band before this process started (ADR-021).
+	// Migrations ran out-of-band before this process started (ADR-022).
 	credential := os.Getenv("INTERNAL_SERVICE_TOKEN")
 	if credential == "" {
 		return errors.New("INTERNAL_SERVICE_TOKEN required")

@@ -265,7 +265,7 @@ func latestMigrationVersion(t *testing.T, service string) int64 {
 }
 
 // TestMigrationsAppliedOutOfBand: every service's database is migrated to the
-// latest checked-in version by its one-shot migrate job (ADR-021), before the
+// latest checked-in version by its one-shot migrate job (ADR-022), before the
 // service is allowed to start.
 //
 // This is the assertion that catches a migrate job which is missing, wired to
@@ -312,7 +312,7 @@ func inspect(t *testing.T, container, format string) string {
 }
 
 // TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
-// exited 0 before the service process started (ADR-021).
+// exited 0 before the service process started (ADR-022).
 //
 // What this does and does not prove. It catches the job being absent, failing,
 // or not gating the service — i.e. the depends_on edge being wrong. It does NOT
@@ -349,7 +349,7 @@ func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 }
 
 // TestServerModeDoesNotMigrate: the server path never applies migrations
-// (ADR-021) — the negative proof the other two assertions cannot give.
+// (ADR-022) — the negative proof the other two assertions cannot give.
 //
 // Neither TestMigrationsAppliedOutOfBand nor TestMigrationsRanBeforeServicesStarted
 // fails if someone re-adds store.Migrate to run(): the job would migrate first and
@@ -419,7 +419,7 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 	}
 	if table != nil {
 		t.Fatalf("catalog in server mode created %q in an unmigrated database — the server path is "+
-			"migrating again (ADR-021: migrations belong to the one-shot job only)", *table)
+			"migrating again (ADR-022: migrations belong to the one-shot job only)", *table)
 	}
 }
 

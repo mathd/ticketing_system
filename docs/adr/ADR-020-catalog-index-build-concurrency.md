@@ -7,13 +7,13 @@ Date: 2026-07-15
 Accepted (approved at the TKT-62 plan gate, 2026-07-15).
 
 **Amended 2026-07-15 (TKT-66):** precondition (1) is now **satisfied** —
-[ADR-021](./ADR-021-out-of-band-service-migrations.md) moved migrations out of the startup path.
+[ADR-022](./ADR-022-out-of-band-service-migrations.md) moved migrations out of the startup path.
 **Preconditions (2) and (3) remain false, so this ADR's decision is unchanged: CIC is still not
 adopted.** The preconditions are conjunctive; satisfying (1) alone changes nothing. TKT-66's premise
 that decoupling would let TKT-62's CIC question be re-opened was **incorrect** and was corrected at
 its plan gate — re-opening CIC needs a second replica or external writer **and** a populated target
 table. Where this ADR describes migrations running at startup, read it as the state that held before
-ADR-021; the reasoning is unaffected, because it turned on there being no *other session* to protect,
+ADR-022; the reasoning is unaffected, because it turned on there being no *other session* to protect,
 which is still true.
 
 ## Context
@@ -91,7 +91,7 @@ startup coupling, not the DDL.**
 
 1. ~~Migrations are decoupled from service startup (run out-of-band, or advisory-locked and run once)
    — this is ADR-008's own "revisit when a second replica exists" hook~~ — **satisfied** by
-   [ADR-021](./ADR-021-out-of-band-service-migrations.md) (TKT-66); **and**
+   [ADR-022](./ADR-022-out-of-band-service-migrations.md) (TKT-66); **and**
 2. more than one replica or an external writer exists, so there is a session for CIC to protect; **and**
 3. a target table is populated enough that the build duration matters.
 
@@ -102,7 +102,7 @@ startup coupling, not the DDL.**
 - **The 30s deadline does reach a non-transactional statement.** goose's no-transaction branch runs
   `db.ExecContext(ctx, query)` (`migration_sql.go:71-77` in v3.27.2), so the deadline's context is
   propagated: a build still running at 30s is cancelled, not merely un-awaited. This is why the
-  deadline and CIC cannot coexist — verified in the dependency source, not assumed. Since ADR-021
+  deadline and CIC cannot coexist — verified in the dependency source, not assumed. Since ADR-022
   the deadline lives in each binary's `migrate` subcommand
   (`services/catalog/cmd/catalog/main.go:55`), not on the startup path; it is still propagated, so
   this trap is unchanged.

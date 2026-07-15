@@ -19,7 +19,7 @@ import (
 var migrationsFS embed.FS
 
 // Migrate applies the embedded goose migrations. Every service owns and
-// migrates its own database and fails fast (ADR-008). Since ADR-021 the caller
+// migrates its own database and fails fast (ADR-008). Since ADR-022 the caller
 // is the binary's `migrate` subcommand, run as a one-shot job before the
 // service starts — never the server path.
 func Migrate(ctx context.Context, db *sql.DB) error {
