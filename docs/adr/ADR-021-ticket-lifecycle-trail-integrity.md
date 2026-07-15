@@ -13,6 +13,14 @@ policy (a trigger) and nothing in this ADR may be cited as evidence that it is t
 No further lifecycle event types should be added ahead of TKT-67 — each one added first is one more
 to backfill.
 
+**And when TKT-67 does land, it closes *modification and insertion* — not targeted rollback.**
+Rollback needs an attestation outside the database (TKT-11); no in-database mechanism reaches it,
+and this ADR's own §Decision 2 works through why. §The trust boundary is the section to read
+first — three separate clauses of this ADR claimed protection it could not deliver, across two
+adversarial review passes, and the boundary is what each of them crossed. **The scheme's scope is
+therefore: tamper-evident against an adversary who cannot re-sign the chain; silent against one who
+can roll it back wholesale.** Cite it that way or not at all.
+
 ## Context
 
 [ADR-003](./ADR-003-append-only-audit-trail.md) promises "two append-only trails, one discipline",
@@ -57,23 +65,23 @@ at once, all for the same organizer, and `Postgres.Redeem`
 - **Option 2 — per-ticket chain only:**
     - Pros: shards naturally — a ticket's history is short and already serialized by the ticket row
       `Redeem` locks; no new contention; detects modification, insertion and reordering.
-    - Cons: **leaves the named fraud open.** Un-redeeming one ticket is two row operations
-      (delete the `redeemed` row, roll back that ticket's head) that nothing else in the database
-      notices. See §Why Option 2 alone fails. Rejected as insufficient.
+    - Cons: **leaves the named fraud open** — un-redeeming one ticket is two row operations that
+      nothing else in the database notices — **and leaves TKT-11 nothing affordable to anchor**,
+      forcing a retrofit onto a populated trail. Note the chosen option does not close that fraud
+      either; see §Why Option 2 alone fails. Rejected on build order, not on protection.
 - **Option 3 — documented exception to "one discipline":**
     - Pros: no migration, signing, storage or scan-latency cost.
     - Cons: leaves a trace-derived *authorization* decision protected only by removable DDL. The QR
       signature authenticates the credential presented; it says nothing about whether a redemption
       row was deleted. Too weak against the owner's directive. Rejected.
 - **Option 2+ — per-ticket chain + asynchronous organizer checkpoint (chosen):**
-    - Pros: Option 2's contention profile, while **raising the cost** of targeted rollback (the
-      attacker must also truncate the organizer's checkpoint chain and evade freshness monitoring)
-      and creating the seam TKT-11's external anchor plugs into — which is what actually closes the
-      class.
-    - Cons: one more moving part (an async job that can silently stop); detection lags by the
-      checkpoint interval. **It does not make targeted rollback cryptographically detectable** —
-      only more expensive and, conditional on monitoring, visible as staleness (§Decision 2). This
-      is a tripwire bolted onto Option 2, not Option 1's blast radius recovered.
+    - Pros: Option 2's contention profile and identical modification/insertion guarantees, **plus
+      the one structure that makes TKT-11's external anchor affordable** — a single root per
+      interval to attest, rather than one per ticket head.
+    - Cons: one more moving part (an async job that can silently stop). **It buys no rollback
+      detection today** (§Decision 2): truncating the checkpoint suffix is one more `DELETE`, and
+      the staleness tripwire is a property of an external continuity witness this repo does not yet
+      have. Chosen as **scaffolding**, honestly labelled — not as a control.
 
 ### Why Option 2 alone fails — the deferral does not transfer
 
@@ -91,15 +99,53 @@ was opened for.
 **A granularity change re-prices the deferral.** Inheriting ADR-016 §D7's exclusion verbatim across
 that change would ship a scheme that detects everything *except* its own reason for existing.
 
-**But be honest about how far Option 2+ gets.** The checkpoint does **not** buy back cryptographic
-detection of this attack — §Decision 2 works through why, and an earlier draft of this very ADR
-claimed otherwise and was wrong. Coordinated ticket-plus-checkpoint rollback remains undetected;
-only its *cost* rises and its *staleness* becomes visible to monitoring. So Option 2+ is chosen not
-because it closes the named fraud — **nothing short of TKT-11's external anchor does** — but
-because, at equal contention cost to Option 2, it raises the attacker's bar and builds the one
-structure the anchor can later attest. Option 2 is rejected for offering neither. **Until TKT-11
-lands, this trail is tamper-evident against modification and insertion, and merely
-tamper-*expensive* against targeted rollback.**
+**But Option 2+ does not fix it either — and two review passes were needed to stop this document
+pretending otherwise.** The checkpoint buys **no** cryptographic detection of this attack, and
+calling it "expensive" was the same overclaim shrunk: the extra attacker work is one `DELETE`
+(§Decision 2). Coordinated ticket-plus-checkpoint rollback is simply **undetected**, exactly as
+ADR-016 §D7 says, and it stays that way until TKT-11 puts an attestation outside the database.
+
+So why choose Option 2+ over Option 2 at all? **Not for protection — for affordability of the
+protection that eventually arrives.** The anchor must attest something; a delta checkpoint root is
+one small value per interval that transitively commits every head changed in it, where per-ticket
+heads would demand one attestation each. Option 2 leaves TKT-11 nothing anchorable at sane cost and
+forces this structure to be retrofitted onto a populated trail. That is the entire case, and it is
+enough — **but it is a build-order argument, not a security one, and must never again be dressed up
+as the latter.**
+
+**The honest scope, until TKT-11: tamper-evident against modification and insertion; silent against
+targeted rollback.** Option 2 is rejected because it makes rollback *equally* silent while making
+the eventual fix more expensive.
+
+## The trust boundary — read this before any clause below
+
+**Everything in this ADR rests on one line, and two adversarial review passes found this ADR
+crossing it three times. Do not cross it again.**
+
+The adversary is defined as **someone with write access to the Access database**. It follows, with
+no exceptions, that **any state living in that database is state the adversary owns.** A control
+whose evidence, counter, signature or memory is a row in Access cannot constrain an adversary who
+can write rows in Access. It can be deleted, reset, or forged wholesale.
+
+That rules out, as *adversarial* controls:
+
+- **The chain and heads themselves** against rollback — a consistently truncated chain verifies.
+- **Quarantine records and threshold counters** (§Decision 6) — deletable between scans.
+- **Retained epoch signatures** (§Decision 5) — deletable, and §Consequences surrenders the global
+  completeness that would prove one *should* exist.
+- **The checkpoint chain** (§Decision 2) — truncatable, and a signer whose memory of the last root
+  is also in the database will re-bless the result.
+
+What *does* constrain that adversary is a hash chain over data they cannot re-sign (which is why
+modification and insertion **are** genuinely closed here), and **state held outside their reach**.
+This database has no such outside today. **Creating it is TKT-11's job** — an attestation outside
+the instance. Every protection in this ADR above "modification and insertion" is therefore either
+**contingent on TKT-11**, or **scoped to the non-adversarial case** (our own bugs), and each clause
+below says which. None of them may be cited as adversarial containment before TKT-11 lands.
+
+The honest summary, and the one to quote: **this design closes modification and insertion now, and
+is the scaffolding that lets TKT-11 close the rest. It does not close targeted rollback, and no
+in-database mechanism can.**
 
 ## Decision
 
@@ -131,27 +177,37 @@ checkpoint chain off it**.
    (§Threat model), so **the checkpoint does not make targeted rollback cryptographically
    detectable.** Claiming otherwise would make this ADR self-contradicting.
 
-   **What it actually buys**, which is still worth the moving part:
-   - **Cost.** Targeted rollback goes from *two row operations with zero collateral and zero signal*
-     to *additionally truncating the organizer's checkpoint chain*, destroying the commitment for
-     every ticket touched since that root, and evading freshness monitoring.
-   - **A liveness signal, not a proof.** A truncated chain is a **stale** chain. Detection is
-     therefore a freshness alarm — real, but conditional on monitoring actually working, and
-     categorically weaker than the hash chain's cryptographic evidence. It is a tripwire, not a lock.
-   - **The seam.** Anchoring checkpoint roots externally (TKT-11) is what *actually* closes this
-     class. The checkpoint is the thing TKT-11 anchors; without it there is nothing anchorable
-     short of anchoring every ticket head.
+   **What it actually buys — and it is not "cost".** A second review pass killed that framing too:
+   truncating the checkpoint suffix is **one more `DELETE`**, and destroyed commitments produce no
+   evidence by themselves. Calling that "expensive" was the same overclaim in a smaller font. The
+   checkpoint's honest value is exactly one thing:
 
-   **The signer must refuse to launder a rollback.** The checkpoint signer must not extend a chain
-   whose head has regressed relative to the last root it observed, and must refuse to sign and
-   escalate instead. That memory has to live somewhere the database adversary does not control —
-   otherwise the check is circular and buys nothing. Pinning *where* is TKT-67's, and it is a
-   prerequisite, not a nicety.
+   - **It is the scaffolding TKT-11 anchors.** An external attestation has to attest *something*.
+     Anchoring per-ticket heads directly is unaffordable — one attestation per ticket. A delta
+     checkpoint root is a single small value per interval that transitively commits every head
+     changed in it, so anchoring becomes one attestation per interval regardless of volume. Without
+     this structure there is nothing anchorable at sane cost, and TKT-11 would have to invent it.
+     **We build it now because the alternative is building it later and backfilling it.**
 
-3. **The checkpoint interval is the fraud window — name it, don't default it.** A head rolled back
-   *before* any checkpoint ever included it is undetectable even as a freshness signal. The window
-   is therefore the interval itself, not a tunable nobody revisits. **Default: 60 seconds**, and it
-   must be justified per deployment rather than inherited.
+   A **freshness tripwire** exists *only if* the signer refuses to extend a chain whose head
+   regressed against a last-observed root **held outside the database** (see §The trust boundary).
+   If that external memory exists, the detection comes from **it** — an independent continuity
+   witness — and not from the checkpoint. If it does not, the signer launders the rollback and
+   freshness simply resumes. So freshness is a property of the witness, and this ADR does not
+   pretend the checkpoint supplies one. **TKT-67 must either specify a durable,
+   attacker-independent location for the signer's last-observed root, or state plainly that no
+   tripwire exists until TKT-11.** It may not leave this undecided — that ambiguity is what made
+   two drafts of this clause wrong.
+
+3. **The checkpoint interval bounds what an anchor can ever cover — name it, don't default it.**
+   A head rolled back *before* any checkpoint included it was never committed to anything, so no
+   anchor and no witness can ever speak to it. The interval is therefore a **permanent** hole in
+   what TKT-11 will eventually be able to attest, not a tunable nobody revisits: shortening it later
+   does not retroactively cover it. **Default: 60 seconds**, justified per deployment rather than
+   inherited. (Note the interval is *not* today's fraud window — §Decision 2 and §Threat model are
+   blunt that targeted rollback is undetected at **any** interval until the external witness exists.
+   The interval sets the floor on what that witness will be worth, which is why it is decided here
+   rather than left to TKT-67.)
 
 4. **Ed25519, under a key namespace separate from QR.** Reuse the keyring idiom already in
    `services/access/internal/ticket/token.go` (the `access-qr/<kid>=<key>` convention at
@@ -176,13 +232,22 @@ checkpoint chain off it**.
    materially larger compromise blast radius — which matters precisely because §Decision 4 mandates
    rotation and historical-key retention.
 
-   **Mitigation — epoch signatures, at rotation granularity, not per entry.** On every key
-   rotation, the outgoing key signs the ticket head as it stands, and that **epoch signature is
-   retained**. A later compromise of the new key then cannot rewrite pre-rotation history without
-   breaking an epoch signature made under a key it does not hold. This recovers most of per-entry
-   signing's compromise containment at one signature per rotation rather than one per entry. The
-   head signature must bind ticket identity, ticket-local sequence, canonical version and key id —
-   not the head hash alone.
+   **Partial mitigation — epoch signatures, at rotation granularity, and they do NOT close it.**
+   On every key rotation, the outgoing key signs the ticket head as it stands and that epoch
+   signature is retained. A later compromise of the new key cannot *forge* a signature under a
+   retired, destroyed key. **But it does not need to: it can delete the epoch signature.** Retained
+   where? In Access — which §The trust boundary says the adversary owns. And because this ADR
+   surrenders global ticket-set completeness (§Consequences), **no rule says an epoch signature
+   must exist**, so a verifier cannot distinguish a deleted one from a ticket that legitimately has
+   none. Closing that needs a signed completeness manifest, retained externally, binding every
+   applicable ticket to its epoch head at each rotation — which is TKT-11's trust domain again.
+
+   So the honest claim: epoch signatures **raise the work** of a current-key compromise from
+   "re-sign a head" to "re-sign a head and delete the epoch rows", and they become **real
+   containment only once the rotation manifest is externally retained**. Until then, a compromised
+   current key plus database write access can rewrite a ticket's entire history. That is listed as
+   undetected in §Threat model, and this clause does not walk it back. The head signature must bind
+   ticket identity, ticket-local sequence, canonical version and key id — not the head hash alone.
 
 6. **Verification fails OPEN at the gate, with a high-severity alarm — inside a bounded degraded
    mode.** A chain that does not verify still admits, alarms, and marks the redemption for review.
@@ -200,8 +265,7 @@ checkpoint chain off it**.
    are part of the decision, not implementation detail:
 
    - **Quarantine.** A ticket whose chain fails verification is admitted **once** and quarantined:
-     every subsequent scan of that ticket is denied and escalated. This bounds the adversary to one
-     extra entry *per corrupted ticket* instead of unlimited reuse of one.
+     every subsequent scan of that ticket is denied and escalated.
    - **Threshold escalation.** Integrity failures above a configured rate stop being "our bug" and
      start being an attack. Crossing the threshold flips the organizer into an
      **operator-controlled** mode — the choice to keep admitting is then a human's, made knowingly,
@@ -210,8 +274,21 @@ checkpoint chain off it**.
      Unrouted, this clause is a silent bypass with extra steps. TKT-67 owns routing; an unmonitored
      deployment must not run this scheme in fail-open.
 
-   The residual is deliberate and named: within the threshold, an adversary buys one entry per
-   ticket they corrupt, in exchange for never denying a legitimate customer over our own bug.
+   **These bound our bugs. They do not bound the adversary — do not confuse the two.** Quarantine
+   records and failure counters are rows in Access, so the database-write adversary who caused the
+   verification failure deletes the quarantine between scans and resets the counter below the
+   threshold (§The trust boundary). Against *that* adversary, **fail-open is unbounded, full stop**,
+   and these controls are not containment. Their real value is the far more likely case: a
+   canonicalization bug or a botched rotation corrupts many chains at once, and quarantine plus
+   threshold escalation stop that from silently becoming free re-entry while keeping the doors open.
+   Bounding the adversarial case needs the controls' state in an attacker-independent domain —
+   TKT-11's, again — and TKT-67 must not imply otherwise in code comments or dashboards.
+
+   The residual, named plainly: **an adversary with database write access can walk in, repeatedly,
+   and this design does not stop them — it only makes their edits to the trail evident where the
+   chain covers them.** We accept that in exchange for never denying a legitimate customer over our
+   own bug. Anyone who finds that trade wrong should reopen §Decision 6, not quietly flip the
+   default.
 
 7. **Offline verifier.** `access verify-lifecycle` verifies events, integrity rows, heads and the
    checkpoint chain using **public keys only**, and runs in the local gate against populated and
@@ -240,17 +317,25 @@ Scoped to the **database-write adversary who does not hold a lifecycle private k
 ticket chain; a lifecycle row with no integrity row, or the reverse; sequence gaps; broken chain
 links; unknown key ids; head mismatch.
 
-**Detected only as a liveness signal, not cryptographically** — targeted rollback of an individual
-ticket's head *coordinated with truncation of the organizer's checkpoint chain*. The truncated
-chain is internally consistent and verifies; what betrays it is **staleness**, and only if
-freshness monitoring works and the signer refuses to extend a regressed chain (§Decision 2). Do not
-record this as detection. It is a tripwire.
+**Not detected — targeted rollback**, i.e. rolling back a ticket's head coordinated with truncating
+the organizer's checkpoint suffix. The truncated chain is internally consistent and **verifies
+clean**; the surviving uncommitted heads are indistinguishable from ordinary activity inside the
+current interval. This is the coordinated-rollback class ADR-016 §D7 defers to TKT-11, and the
+checkpoint does not change its status (§Decision 2). *Conditionally*, a staleness tripwire exists —
+but only if the signer holds its last-observed root **outside** the database and refuses to extend
+a regressed chain, which no component does today; TKT-67 must specify that location or state
+plainly that no tripwire exists. Detection then belongs to that external witness, not to this
+scheme. **Until it is specified and built, record this attack as undetected.**
 
-**Not detected:** rollback of the checkpoint chain itself, which is the coordinated-rollback class
-deferred to TKT-11 per ADR-016 §D7 and needs an attestation *outside* the database; validly signed
-writes from a compromised lifecycle key or a controlled Access process — including, under head-only
-signing, rewriting a ticket's whole history within the current key epoch (§Decision 5); tampering
-predating the backfill baseline; and anything inside the current checkpoint interval (§Decision 3).
+**Also not detected:** rollback of the checkpoint chain itself; validly signed writes from a
+compromised lifecycle key or a controlled Access process — including, under head-only signing,
+rewriting a ticket's whole history within the current key epoch, since the retained epoch signature
+is itself deletable absent an external manifest (§Decision 5); deletion or reset of quarantine and
+threshold state (§Decision 6); tampering predating the backfill baseline; and anything inside the
+current checkpoint interval (§Decision 3).
+
+**The pattern is one thing, not six** (§The trust boundary): everything above needs state the
+database-write adversary cannot reach, and this database has no outside until TKT-11.
 
 **Not prevented, by construction:** admission itself. Fail-open (§Decision 6) means detected
 corruption still admits, bounded by quarantine and threshold escalation. This scheme produces
@@ -266,25 +351,29 @@ to the lifecycle trail.
     - The trail becomes tamper-evident **by construction** rather than by policy for modification,
       insertion and reordering, closing ADR-003's "one discipline" asymmetry — without importing the
       money journal's contention profile onto a turnstile.
-    - Targeted per-ticket rollback becomes **expensive and stale-visible** rather than free and
-      silent. It does **not** become cryptographically evident; TKT-11's anchor is what would do
-      that (§Decision 2).
-    - The checkpoint is the seam TKT-11 anchors externally; nothing else in this design changes when
-      it lands.
+    - The checkpoint makes TKT-11 **affordable**: one external attestation per interval, instead of
+      one per ticket head. That, and not rollback protection, is why it is in this ADR (§Decision 2).
+      Nothing else in the design changes when the anchor lands.
     - Ed25519 lets an auditor verify the trail without holding the ability to forge it.
 - **Negative:**
-    - **A new async job that can silently stop.** If checkpointing dies, the trail quietly degrades
-      to per-ticket-only — with no symptom at the gate. Checkpoint freshness must be monitored; a
-      stale checkpoint is an integrity alarm, not a shrug. Note the sharp edge: **freshness
-      monitoring is not a nice-to-have here, it is the entire detection mechanism** for targeted
-      rollback (§Decision 2). Unmonitored, the checkpoint buys cost and nothing else.
-    - **Fail-open is unbounded against an adversary** and is only made tolerable by quarantine and
-      threshold escalation (§Decision 6). Accepted deliberately, on the judgement that our own bugs
-      are likelier than attackers and denying real customers at a live turnstile is the worse
-      failure — but it is a fraud window, not a rounding error.
-    - **Two detection tiers now coexist and will be confused.** Modification/insertion are caught
-      cryptographically; targeted rollback is caught, if at all, by a liveness alarm. Anyone citing
-      "the trail is tamper-evident" without saying against *what* will overstate this design.
+    - **A new async job that can silently stop**, whose failure has no symptom at the gate.
+      Checkpoint freshness must be monitored — but note §Decision 2: freshness is a property of the
+      signer's *external* continuity witness, not of the checkpoint. Without that witness the job
+      is pure scaffolding for TKT-11 and buys no detection at all today. That is an acceptable
+      reason to build it; it is not an acceptable thing to be vague about.
+    - **Fail-open is unbounded against a database-write adversary.** Quarantine and thresholds bound
+      *our bugs*, not attackers (§Decision 6). Accepted deliberately, on the judgement that our own
+      bugs are likelier and that denying real customers at a live turnstile is the worse failure —
+      but this is a fraud window, not a rounding error.
+    - **This ADR is easy to over-cite, and has been wrong in that direction three times.**
+      Modification and insertion are closed cryptographically. Targeted rollback and current-key
+      compromise are **not closed at all** until TKT-11. Anyone saying "the lifecycle trail is
+      tamper-evident" without naming the adversary is overstating this design — including future
+      readers of the §Decision headings, which is why §The trust boundary leads the document.
+    - **A dependency this repo cannot satisfy alone.** Three separate controls here (signer memory,
+      quarantine/threshold state, epoch manifests) need storage outside the Access database. TKT-11
+      now owns strictly more than "fiscal archive": it owns the trust domain the ticket trail's
+      rollback protection depends on. That coupling is new, and real.
     - **Organizer-wide event ordering and global ticket-set completeness are surrendered** in
       exchange for turnstile concurrency. Per-ticket heads do not attest how many tickets or chains
       should exist. This is the trade, not an omission.

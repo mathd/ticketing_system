@@ -33,12 +33,15 @@ threat model. Read the following claims in this ADR with that scope:
   unchanged: "one discipline" means *tamper-evident by construction*, not *identical mechanism*.
   The journal's chain is per-organizer and serialized under a `journal_heads` row lock, which on the
   redemption path would put every turnstile for an organizer behind one lock. ADR-021 chains **per
-  ticket**, adds an **asynchronous per-organizer checkpoint** that makes targeted rollback expensive
-  and stale-visible (**not** cryptographically detectable — ADR-021 §Decision 2 is explicit, and
-  ADR-016 §D7's rollback deferral still stands until TKT-11's anchor lands), signs with Ed25519
-  rather than HMAC, and signs the **head** rather than every entry. Each divergence is argued there.
-  Note the resulting trail is tamper-evident against modification and insertion, and merely
-  tamper-*expensive* against targeted rollback — do not collapse the two when citing it.
+  ticket**, signs with Ed25519 rather than HMAC, signs the **head** rather than every entry, and
+  adds an **asynchronous per-organizer checkpoint** — the last of which is **scaffolding to make
+  TKT-11's external anchor affordable, not a rollback control**. Each divergence is argued there.
+
+  **Scope it precisely when citing it, in ADR-021's own words: tamper-evident against an adversary
+  who cannot re-sign the chain; silent against one who can roll it back wholesale.** Modification
+  and insertion are closed; targeted rollback and current-key compromise are not, and no
+  in-database mechanism reaches them — ADR-016 §D7's deferral stands until TKT-11. ADR-021 §The
+  trust boundary explains why, and exists because three of its own clauses got this wrong.
 - **"A GDPR erasure request … never touches the trails — inalterability and the right to erasure stop
   conflicting by construction"** (Decision 3) holds only while the pseudonym is unlinkable. The buyer
   UUID is an *unsalted* SHA-1 of the reservation ID (`services/commerce/internal/api/server.go:162`),
