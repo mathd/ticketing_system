@@ -35,9 +35,8 @@
       "note": "IN: per-ticket chain + companion integrity table, async organizer checkpoint, Ed25519 under access-lifecycle/, epoch signatures at rotation, fail-open + quarantine/threshold, verify-lifecycle + smoke wiring, resumable startup backfill. OUT: TKT-11's external anchor; the shared internal/signing extraction and token.go refactor are CONTESTED (see comments) and must be justified or dropped."
     },
     "uncertainties": {
-      "state": "open",
-      "owner": "human",
-      "note": "ADR-021 §Decision 2 REQUIRES this ticket to either specify a durable attacker-independent home for the signer's last-observed root, or state plainly that no tripwire exists until TKT-11. That is a human call on infrastructure this repo does not have."
+      "state": "met",
+      "note": "Identified, resolved at the plan gate: where the checkpoint signer's last-observed root lives so a DB-write adversary cannot reach it (ADR-021 §D2). Not blocking — the ADR provides the fallback of stating plainly that no tripwire exists until TKT-11. Also identified: whether the contested internal/signing extraction earns its keep."
     },
     "dependencies": {
       "state": "met",
