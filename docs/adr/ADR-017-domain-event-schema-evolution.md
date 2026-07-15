@@ -161,6 +161,26 @@ On *ordering* the two sides, given a bump is required:
       This also bounds the wedging risk: a genuinely bad event at a *known* schema still terminates,
       so parking cannot become an infinite retry loop for corrupt data.
 
+      **The line has a bottom end, and it is part of the rule.** Schema numbers start at 1 and only
+      climb, so a schema **`<= 0` is not a variant from the future** — it is an envelope that omitted
+      `schema` (§ADR-009 §5 requires it) or a producer bug, and no binary will ever provision it.
+      That is poison by the definition above, and it **terminates**. Only schemas *above* the
+      consumer's known set park. Without this the rule contradicts itself, and one malformed message
+      would be enough to latch inventory unready indefinitely — a free denial of service handed to
+      any buggy producer.
+
+      **Parking is bounded by the ack window, and that bound is not yet enforced — TKT-68.** The
+      durable sets `MaxDeliver: -1` and does not set `MaxAckPending`, so the server default (1000)
+      applies. A parked event stays outstanding until acked or terminated, so **~1000 distinct
+      unknown events stall delivery for the whole consumer** — including the Schema 2/3 publications
+      behind them, which this binary *could* have provisioned. A long unattended skew window with a
+      large catalog import can reach that. This is accepted for now and is **still strictly better
+      than the behavior it replaces**: the stall is loud (unready since event #1, an error log every
+      5s) where the drop was silent and left the service reporting healthy. It trades an invisible
+      partial loss for a visible full stop. The real fix is a bounded quarantine — persist the raw
+      payload, ack the original to free the window, and let a supporting binary re-process it — which
+      needs its own event contract and re-injection protocol. **TKT-68.**
+
       **Readiness is borrowed as the alert channel, deliberately and with a known cost.** It is the
       only signal wired for inventory today (`/readyz` gates on `cons.Ready()`,
       `cmd/inventory/main.go`). But readiness properly means *can serve traffic*, and a parked event

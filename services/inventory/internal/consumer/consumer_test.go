@@ -2,11 +2,64 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+// fakeMsg records what the handler did to the message, mirroring the shape
+// services/access/internal/consumer already uses. It is what lets the disposition be asserted as
+// shipped rather than in effigy: the pure helper agreeing with the closure is not the same fact as
+// the closure obeying it.
+type fakeMsg struct {
+	data    []byte
+	actions []string
+}
+
+func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return &jetstream.MsgMetadata{NumDelivered: 1}, nil
+}
+func (m *fakeMsg) Data() []byte                    { return m.data }
+func (m *fakeMsg) Headers() nats.Header            { return nil }
+func (m *fakeMsg) Subject() string                 { return subject }
+func (m *fakeMsg) Reply() string                   { return "" }
+func (m *fakeMsg) Ack() error                      { m.actions = append(m.actions, "ack"); return nil }
+func (m *fakeMsg) DoubleAck(context.Context) error { return m.Ack() }
+func (m *fakeMsg) Nak() error                      { m.actions = append(m.actions, "nak"); return nil }
+func (m *fakeMsg) NakWithDelay(time.Duration) error {
+	m.actions = append(m.actions, "nak-delay")
+	return nil
+}
+func (m *fakeMsg) InProgress() error           { return nil }
+func (m *fakeMsg) Term() error                 { m.actions = append(m.actions, "term"); return nil }
+func (m *fakeMsg) TermWithReason(string) error { return m.Term() }
+
+func publicationJSON(t *testing.T, schema int) []byte {
+	t.Helper()
+	e := publication{ID: uuid.New(), Schema: schema}
+	e.Data.PerformanceID = uuid.New()
+	e.Data.OrganizerID = uuid.New()
+	e.Data.Capacity = 250
+	body, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func testConsumer() *Consumer {
+	c := &Consumer{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c.ready.Store(true)
+	return c
+}
 
 type fakeResolver struct {
 	organizerID     uuid.UUID
@@ -164,10 +217,7 @@ func TestProvisionInputRejectsUnsupportedSchema(t *testing.T) {
 // where catalog emitted it. The event is well-formed and a newer binary can provision it, so it
 // must be parked for that binary. Term() would advance the durable consumer past it for good.
 func TestUnknownSchemaVersionSkewIsParked(t *testing.T) {
-	// 4: a variant a newer catalog emits. 0: an envelope with no `schema` at all (ADR-009 §5
-	// requires one, so this is a producer bug) — parked too, deliberately. Parking a bad event
-	// costs noise; terminating a real variant costs inventory nobody notices is missing.
-	for _, schema := range []int{4, 0} {
+	for _, schema := range []int{4, 99} {
 		e := publication{ID: uuid.New(), Schema: schema}
 		e.Data.PerformanceID = uuid.New()
 		e.Data.OrganizerID = uuid.New()
@@ -180,6 +230,30 @@ func TestUnknownSchemaVersionSkewIsParked(t *testing.T) {
 		}
 		if got := dispositionForProvisionError(schema, err); got != dispositionPark {
 			t.Fatalf("schema %d: disposition = %q, want %q — Term() drops the event with no retry", schema, got, dispositionPark)
+		}
+	}
+}
+
+// The poison/skew line has to hold at the bottom end too, or it isn't a line. Schema numbers start
+// at 1 and climb, so <= 0 is never a future variant — it is an envelope missing `schema`
+// (ADR-009 §5) and no binary will ever provision it. Parking it would wait forever for a version
+// that cannot exist, and hand any buggy producer a way to latch inventory unready.
+func TestEnvelopeWithoutUsableSchemaIsTerminated(t *testing.T) {
+	for _, schema := range []int{0, -1} {
+		e := publication{ID: uuid.New(), Schema: schema}
+		e.Data.PerformanceID = uuid.New()
+		e.Data.OrganizerID = uuid.New()
+		e.Data.Capacity = 250
+
+		_, err := (&Consumer{}).provisionInput(context.Background(), e)
+		if err == nil {
+			t.Fatalf("schema %d: expected rejection", schema)
+		}
+		if errors.Is(err, errUnsupportedPublicationSchema) {
+			t.Fatalf("schema %d: must not be classified as version skew — it is a malformed envelope", schema)
+		}
+		if got := dispositionForProvisionError(schema, err); got != dispositionTerminate {
+			t.Fatalf("schema %d: disposition = %q, want %q", schema, got, dispositionTerminate)
 		}
 	}
 }
@@ -220,5 +294,56 @@ func TestSchema1ResolutionFailureIsRetried(t *testing.T) {
 	}
 	if got := dispositionForProvisionError(e.Schema, err); got != dispositionRetry {
 		t.Fatalf("disposition = %q, want %q", got, dispositionRetry)
+	}
+}
+
+// The finding this closes: the pure-function tests above cannot fail if handle stops obeying the
+// helper. This one drives the shipped path — unknown schema must be NAK'd, must never be Term'd,
+// and must latch readiness false so the skew is visible.
+func TestHandleParksUnknownSchemaAndLatchesUnready(t *testing.T) {
+	c := testConsumer()
+	msg := &fakeMsg{data: publicationJSON(t, 4)}
+
+	c.handle(context.Background(), msg)
+
+	if slices.Contains(msg.actions, "term") {
+		t.Fatalf("actions = %v — an unknown variant must never be terminated; a newer binary can provision it", msg.actions)
+	}
+	if !slices.Contains(msg.actions, "nak-delay") {
+		t.Fatalf("actions = %v, want a delayed nak parking the event", msg.actions)
+	}
+	if c.Ready() {
+		t.Fatal("consumer must latch unready on version skew — reporting healthy is what made TKT-61 invisible")
+	}
+}
+
+// The poison side, as shipped: a malformed envelope terminates and must NOT take readiness down
+// with it, or any buggy producer can wedge inventory with one message.
+func TestHandleTerminatesEnvelopeWithoutUsableSchemaAndStaysReady(t *testing.T) {
+	c := testConsumer()
+	msg := &fakeMsg{data: publicationJSON(t, 0)}
+
+	c.handle(context.Background(), msg)
+
+	if !slices.Contains(msg.actions, "term") {
+		t.Fatalf("actions = %v, want term — schema 0 is poison, not a future variant", msg.actions)
+	}
+	if !c.Ready() {
+		t.Fatal("a malformed envelope must not latch inventory unready")
+	}
+}
+
+// Malformed JSON keeps terminating, and likewise must not touch readiness.
+func TestHandleTerminatesMalformedJSON(t *testing.T) {
+	c := testConsumer()
+	msg := &fakeMsg{data: []byte("{not json")}
+
+	c.handle(context.Background(), msg)
+
+	if !slices.Contains(msg.actions, "term") {
+		t.Fatalf("actions = %v, want term", msg.actions)
+	}
+	if !c.Ready() {
+		t.Fatal("malformed JSON must not latch inventory unready")
 	}
 }

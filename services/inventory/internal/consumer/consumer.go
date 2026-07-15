@@ -90,6 +90,13 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		}
 		return provisionInput{organizerID: resolved.OrganizerID, poolID: *resolved.CapacityGroupID, capacity: *resolved.SharedCapacity}, nil
 	default:
+		// Schema numbers start at 1 and only climb, so <= 0 is not a variant from the future —
+		// it is an envelope that omitted `schema` (ADR-009 §5 requires it) or a producer bug.
+		// No binary will ever provision it, which makes it poison, not skew: terminate it rather
+		// than park it forever waiting for a version that cannot exist.
+		if e.Schema <= 0 {
+			return provisionInput{}, fmt.Errorf("publication envelope has no usable schema (%d)", e.Schema)
+		}
 		return provisionInput{}, fmt.Errorf("%w %d", errUnsupportedPublicationSchema, e.Schema)
 	}
 }
@@ -127,6 +134,48 @@ func dispositionForProvisionError(schema int, err error) disposition {
 	}
 }
 
+// handle is the message handler, split out of Run's Consume closure so the disposition it actually
+// ships can be tested against a fake jetstream.Msg (the shape services/access already uses). The
+// pure dispositionForProvisionError decides; this is the wiring that obeys it, and the wiring is
+// what dropped inventory in TKT-61 — so it does not get to go untested.
+func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
+	var e publication
+	if err := json.Unmarshal(msg.Data(), &e); err != nil {
+		c.log.Error("invalid publication event", "err", err)
+		_ = msg.Term()
+		return
+	}
+	input, err := c.provisionInput(ctx, e)
+	if err != nil {
+		switch dispositionForProvisionError(e.Schema, err) {
+		case dispositionPark:
+			// Version skew: hold the event for a binary that understands it, and stop
+			// reporting ready. Readiness is the only signal wired here, and a drop nobody
+			// notices is the whole of TKT-61 — being loudly unready beats being quietly
+			// wrong. It never self-heals: recovering on the next good message would hide
+			// the event still pending behind this one.
+			c.log.Error("unsupported publication schema", "event_id", e.ID, "schema", e.Schema, "err", err)
+			c.ready.Store(false)
+			_ = msg.NakWithDelay(5 * time.Second)
+		case dispositionRetry:
+			c.log.Error("resolve legacy publication", "event_id", e.ID, "err", err)
+			_ = msg.NakWithDelay(5 * time.Second)
+		default:
+			c.log.Error("invalid publication event", "event_id", e.ID, "err", err)
+			_ = msg.Term()
+		}
+		return
+	}
+	// Grouped festival days deliberately converge on the festival id. Slot to
+	// group resolution for claims is owned by TKT-14 and remains out of scope.
+	if err := c.st.Provision(ctx, e.ID, input.poolID, input.organizerID, input.capacity); err != nil {
+		c.log.Error("provision inventory", "err", err)
+		_ = msg.Nak()
+		return
+	}
+	_ = msg.Ack()
+}
+
 func (c *Consumer) Run(ctx context.Context) error {
 	stream, err := c.js.Stream(ctx, "PLATFORM")
 	if err != nil {
@@ -138,43 +187,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 	c.ready.Store(true)
 	defer c.ready.Store(false)
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		var e publication
-		if err := json.Unmarshal(msg.Data(), &e); err != nil {
-			c.log.Error("invalid publication event", "err", err)
-			_ = msg.Term()
-			return
-		}
-		input, err := c.provisionInput(ctx, e)
-		if err != nil {
-			switch dispositionForProvisionError(e.Schema, err) {
-			case dispositionPark:
-				// Version skew: hold the event for a binary that understands it, and stop
-				// reporting ready. Readiness is the only signal wired here, and a drop nobody
-				// notices is the whole of TKT-61 — being loudly unready beats being quietly
-				// wrong. It never self-heals: recovering on the next good message would hide
-				// the event still pending behind this one.
-				c.log.Error("unsupported publication schema", "event_id", e.ID, "schema", e.Schema, "err", err)
-				c.ready.Store(false)
-				_ = msg.NakWithDelay(5 * time.Second)
-			case dispositionRetry:
-				c.log.Error("resolve legacy publication", "event_id", e.ID, "err", err)
-				_ = msg.NakWithDelay(5 * time.Second)
-			default:
-				c.log.Error("invalid publication event", "event_id", e.ID, "err", err)
-				_ = msg.Term()
-			}
-			return
-		}
-		// Grouped festival days deliberately converge on the festival id. Slot to
-		// group resolution for claims is owned by TKT-14 and remains out of scope.
-		if err := c.st.Provision(ctx, e.ID, input.poolID, input.organizerID, input.capacity); err != nil {
-			c.log.Error("provision inventory", "err", err)
-			_ = msg.Nak()
-			return
-		}
-		_ = msg.Ack()
-	})
+	cc, err := cons.Consume(func(msg jetstream.Msg) { c.handle(ctx, msg) })
 	if err != nil {
 		return err
 	}
