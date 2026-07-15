@@ -1282,6 +1282,32 @@ func (p *Postgres) GetPublishedSeason(ctx context.Context, id uuid.UUID) (Season
 	return SeasonAggregate{Season: season, Events: events}, nil
 }
 
+// publishedFestivalPerformancesQuery reads one festival's own published, priced
+// festival_day slots + venue + ticket types, ordered chronologically by the day's
+// opening instant.
+//
+// Scoped to the group, never the catalog (ADR-004: a single festival read must not
+// scale with all published inventory), and that scoping is only real because
+// performances_capacity_group_idx (0006) backs `capacity_group_id` — ADR-019 rule 1:
+// a filter with no index behind it is a sequential scan wearing a WHERE clause.
+//
+// It is a const rather than a literal inside GetPublishedFestival so the plan
+// assertion can EXPLAIN the statement production actually executes instead of a
+// retyped copy of it (ADR-019 rule 2, TKT-65). Only one shape exists here — there is
+// no scoped/unscoped split — so it needs none of publicPerformances' composed
+// fragments. Unlike that read, `capacity_group_id = $1` is an unconditional scalar
+// equality: it keeps its index under a generic plan as well as a custom one, which
+// TestGetPublishedFestivalIsIndexScoped asserts.
+const publishedFestivalPerformancesQuery = `
+	SELECT p.id, ` + publicPerformancesStartsAt + `, p.timezone, p.kind,
+	       v.id, v.name, v.ga_capacity, v.created_at,
+	       t.id, t.name, t.price_amount, t.currency, t.created_at
+	FROM performances p
+	JOIN venues v ON v.id = p.venue_id
+	JOIN ticket_types t ON t.performance_id = p.id
+	WHERE p.capacity_group_id = $1 AND p.status = 'published'
+	ORDER BY ` + publicPerformancesStartsAt + `, p.id, t.price_amount, t.id`
+
 func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (FestivalAggregate, error) {
 	festival, err := getFestivalFrom(ctx, p.db, id)
 	if err != nil {
@@ -1290,21 +1316,7 @@ func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (Fest
 	if festival.Status != "published" {
 		return FestivalAggregate{}, ErrNotFound
 	}
-	// Scope the read to this festival's own days (ADR-004: a single festival
-	// read must not scale with the whole published catalog). One query joins
-	// only the group's published, priced festival_day slots + venue + ticket
-	// types, ordered chronologically by the day's opening instant.
-	const startsAtExpr = `COALESCE(p.starts_at,
-		(p.operating_date + p.opens_at::time) AT TIME ZONE p.timezone)`
-	rows, err := p.db.QueryContext(ctx, `
-		SELECT p.id, `+startsAtExpr+`, p.timezone, p.kind,
-		       v.id, v.name, v.ga_capacity, v.created_at,
-		       t.id, t.name, t.price_amount, t.currency, t.created_at
-		FROM performances p
-		JOIN venues v ON v.id = p.venue_id
-		JOIN ticket_types t ON t.performance_id = p.id
-		WHERE p.capacity_group_id = $1 AND p.status = 'published'
-		ORDER BY `+startsAtExpr+`, p.id, t.price_amount, t.id`, id)
+	rows, err := p.db.QueryContext(ctx, publishedFestivalPerformancesQuery, id)
 	if err != nil {
 		return FestivalAggregate{}, fmt.Errorf("festival read: %w", err)
 	}

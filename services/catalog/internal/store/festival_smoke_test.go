@@ -263,3 +263,119 @@ func TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically(t *testing.T)
 		t.Fatalf("festival day order = %v", []uuid.UUID{agg.Performances[0].Performance.ID, agg.Performances[1].Performance.ID})
 	}
 }
+
+// seedPublishedFestival builds one festival owning a single sellable, published day
+// and returns it. The day is the only row a scoped festival read may ever touch.
+func seedPublishedFestival(ctx context.Context, t *testing.T, db *sql.DB, st *Postgres) (Festival, uuid.UUID) {
+	t.Helper()
+	orgID, _, _, dayID := seedFestivalDay(t, ctx, db, true)
+	festival, err := st.CreateFestival(ctx, FestivalInput{
+		OrganizerID: orgID, Name: LocalizedText{"en": "f", "fr": "f"}, SharedCapacity: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if festival, err = st.AttachDayToFestival(ctx, festival.ID, dayID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.PublishFestival(ctx, festival.ID); err != nil {
+		t.Fatal(err)
+	}
+	return festival, dayID
+}
+
+// TestGetPublishedFestivalDoesNotScanForeignDays asserts RESULT scope — the first of
+// the two claims ADR-019 rule 2 says a scoped read owes.
+//
+// The existing ordering test seeds an unattached day and excludes it, but that test is
+// *about* chronology; exclusion is incidental to it and it asserts nothing if the read
+// widens in some other direction. This one is about scope and nothing else.
+//
+// The poison is the foreign day's ticket_types.name: a schema-valid jsonb scalar
+// ("not-an-object") that the column accepts but LocalizedText cannot decode. So a read
+// that *scans* the foreign row errors, while a correctly scoped read never sees it —
+// the asymmetry is what makes the test able to fail. Note the poison must sit on the
+// ticket type, not the event: the festival query projects t.name and never joins
+// events, so a poisoned event name would go unread and the test would pass vacuously.
+func TestGetPublishedFestivalDoesNotScanForeignDays(t *testing.T) {
+	ctx, db, st := festivalSmokeStore(t)
+	festival, dayID := seedPublishedFestival(ctx, t, db, st)
+
+	// A foreign published day, in no capacity group, owned by someone else.
+	foreignOrg, _, _, foreignDayID := seedFestivalDay(t, ctx, db, true)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE ticket_types SET name='"not-an-object"' WHERE performance_id=$1`, foreignDayID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.PublishPerformance(ctx, foreignDayID); err != nil {
+		t.Fatal(err)
+	}
+	_ = foreignOrg
+
+	agg, err := st.GetPublishedFestival(ctx, festival.ID)
+	if err != nil {
+		t.Fatalf("festival read scanned a foreign day it should never have loaded: %v", err)
+	}
+	if len(agg.Performances) != 1 {
+		t.Fatalf("day count = %d, want 1 (the festival's own day only)", len(agg.Performances))
+	}
+	if agg.Performances[0].Performance.ID != dayID {
+		t.Fatalf("day = %s, want the festival's own %s", agg.Performances[0].Performance.ID, dayID)
+	}
+}
+
+// TestGetPublishedFestivalIsIndexScoped asserts PHYSICAL scan cost — the second rule 2
+// claim, and the one a poison row cannot make. A correct result can still be produced
+// by reading every published slot and discarding rows; that is the TKT-53/TKT-60 defect,
+// and it returns the right answer while doing it.
+//
+// It EXPLAINs publishedFestivalPerformancesQuery itself — the statement the shipped read
+// executes — so a scoping regression anywhere in that query text reddens this test, and
+// a copy cannot silently drift away from it.
+//
+// The plan is asserted under force_generic_plan even though production runs auto. That is
+// deliberate and is the whole point: a value-bound custom plan uses the index whether the
+// predicate is `capacity_group_id = $1` or a nullable `(… OR $1 IS NULL)` — TKT-63 measured
+// exactly that on the season read — so a custom-plan assertion cannot catch a predicate
+// widened that way. Planning blind is what distinguishes the shapes. auto also promotes to
+// a generic plan after ~5 executions on a pooled connection, which is what a hot festival
+// on-sale is, so this is production's plan too, not merely a stricter one.
+func TestGetPublishedFestivalIsIndexScoped(t *testing.T) {
+	ctx, db, st := festivalSmokeStore(t)
+	festival, dayID := seedPublishedFestival(ctx, t, db, st)
+
+	// A plan assertion is only meaningful once a sequential scan is the *wrong* choice:
+	// on a handful of rows Postgres rightly ignores any index and the assertion fails for
+	// a reason unrelated to scoping. Seed enough published, ungrouped slots that scanning
+	// them is the expensive option — which is also the only condition under which an
+	// unscoped festival read actually hurts. Each carries a ticket type: without one the
+	// planner may start from a tiny ticket_types relation and reach performances by
+	// primary key, never consulting the scoping index, and the assertion would pass for
+	// the wrong reason.
+	if _, err := db.ExecContext(ctx, `
+		WITH bulk AS (
+			INSERT INTO performances(organizer_id,event_id,venue_id,kind,status,starts_at,timezone)
+			SELECT p.organizer_id, p.event_id, p.venue_id, 'performance', 'published',
+			       TIMESTAMPTZ '2026-10-01 20:00:00-04', 'America/Toronto'
+			FROM performances p, generate_series(1,2000)
+			WHERE p.id = $1
+			RETURNING id, organizer_id
+		)
+		INSERT INTO ticket_types(organizer_id,performance_id,name,price_amount,currency)
+		SELECT b.organizer_id, b.id, '{"en":"ga","fr":"ga"}', 5000, 'CAD' FROM bulk b`,
+		dayID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ANALYZE performances, ticket_types`); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := explainGenericPlan(ctx, t, db, publishedFestivalPerformancesQuery, festival.ID)
+
+	// Only the index carrying the scoping claim. The venue/ticket-type/sort access paths
+	// may legitimately change without touching what this test is about.
+	if !strings.Contains(plan, "performances_capacity_group_idx") {
+		t.Fatalf("the shipped festival read does not use performances_capacity_group_idx under "+
+			"force_generic_plan — it scans.\nplan:\n%s", plan)
+	}
+}

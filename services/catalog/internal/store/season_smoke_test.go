@@ -6,9 +6,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +19,14 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
+
+// planProbeSeq names each PREPARE uniquely. A prepared statement outlives the
+// rolled-back transaction that created it, so a fixed name makes a second
+// explainGenericPlan call on the same pooled connection die with
+// `prepared statement "plan_probe" already exists` (SQLSTATE 42P05) — a confusing
+// failure a long way from its cause. DEALLOCATE ALL would fix it and also discard
+// the driver's own cached statements, so: a fresh name per call.
+var planProbeSeq atomic.Uint64
 
 func seasonSmokeStore(t *testing.T) (context.Context, *sql.DB, *Postgres) {
 	t.Helper()
@@ -154,32 +165,49 @@ func TestGetPublishedSeasonDoesNotScanForeignEvents(t *testing.T) {
 // to govern — so all three run in one transaction, rolled back to drop both the
 // setting and the prepared statement.
 //
-// scope is interpolated into the EXECUTE as a literal because EXECUTE arguments
-// cannot be driver parameters (they would belong to the outer statement) nor
-// subqueries. The values are fixture-generated uuid.UUIDs, formatted by their
-// own String method — there is no injection surface here.
-func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query string, scope []uuid.UUID) string {
+// scope is the query's single parameter — a uuid.UUID (a scalar scope, e.g. the
+// festival read) or a []uuid.UUID (an array scope, e.g. the season read). It is
+// interpolated into the EXECUTE as a literal because EXECUTE arguments cannot be
+// driver parameters (they would belong to the outer statement) nor subqueries. The
+// values are fixture-generated uuid.UUIDs formatted by their own String method —
+// there is no injection surface here.
+//
+// Both catalog subset reads share this helper deliberately: the plan mode and the
+// $1 guard below are the discipline ADR-019 rule 2 asks for, and forking them per
+// read is how one copy quietly stops asserting anything.
+func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query string, scope any) string {
 	t.Helper()
+	var paramType, literal string
+	switch v := scope.(type) {
+	case uuid.UUID:
+		paramType, literal = `uuid`, `'`+v.String()+`'::uuid`
+	case []uuid.UUID:
+		ids := make([]string, 0, len(v))
+		for _, id := range v {
+			ids = append(ids, id.String())
+		}
+		paramType, literal = `uuid[]`, `'{`+strings.Join(ids, ",")+`}'::uuid[]`
+	default:
+		t.Fatalf("explainGenericPlan: unsupported scope type %T", scope)
+	}
+
+	stmt := "plan_probe_" + strconv.FormatUint(planProbeSeq.Add(1), 10)
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err = tx.ExecContext(ctx, `PREPARE plan_probe(uuid[]) AS `+query); err != nil {
+	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`PREPARE %s(%s) AS %s`, stmt, paramType, query)); err != nil {
 		t.Fatal(err)
 	}
 	// Set before the first EXECUTE: the cached plan is built then.
 	if _, err = tx.ExecContext(ctx, `SET LOCAL plan_cache_mode = force_generic_plan`); err != nil {
 		t.Fatal(err)
 	}
-	ids := make([]string, 0, len(scope))
-	for _, id := range scope {
-		ids = append(ids, id.String())
-	}
 	// EXPLAIN returns the plan one row per line — read them all, not just the first.
-	rows, err := tx.QueryContext(ctx,
-		`EXPLAIN EXECUTE plan_probe('{`+strings.Join(ids, ",")+`}'::uuid[])`)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`EXPLAIN EXECUTE %s(%s)`, stmt, literal))
 	if err != nil {
 		t.Fatal(err)
 	}
