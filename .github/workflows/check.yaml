@@ -12,9 +12,9 @@
 # ⚠ This is safe only while no required status check names `check`. A skipped
 # workflow reports nothing, and a *required* check that never reports blocks the
 # PR forever. GitHub branch protection is unavailable on this repo's plan today
-# (the API 403s), so nothing is enforced — but AGENTS.md claims required checks
-# are in place. If that ever becomes true, replace paths-ignore with a
-# step-level `if:` guard so the job still reports success. See TKT-62 retro.
+# (the API 403s), so nothing is enforced. If that ever changes, replace
+# paths-ignore with a step-level `if:` guard so the job still reports success.
+# See TKT-62 retro.
 name: check
 
 on:

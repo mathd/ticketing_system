@@ -11,6 +11,22 @@ A unit of work flows through **6 statuses** on the **"SDLC agentique"** Jira pro
 
 **V0 is manual.** Everything is triggered by a dev/PO in Claude Code via the **Atlassian MCP** (« crée un epic », « prends le prochain ticket », « fais le découpage »). No Jira automation, no webhooks — those come later (see *Future automation*). Don't wire any rule that auto-moves tickets.
 
+## What this pipeline is for — and what it isn't
+
+**Tickets are for product work. Internal maintenance goes straight to the default branch — no ticket, no gates, no PR.**
+
+Commit directly to `config.code.defaultBranch` when the change is:
+
+- a **skill / process / tooling** improvement (this skill, its references, `.sdlc/`, CI config),
+- an **ADR addition or amendment**,
+- a **documentation** update (`docs/`, `AGENTS.md`, READMEs).
+
+There is no gate to run because there is no product risk to gate: the local gate (`config.code.localGate`) is the whole check, and if it's green the change is done. Routing this class through Backlog→Ready→Planning→Building→PO Review buys ceremony, not safety — the PO has nothing to functionally validate on a prose diff.
+
+**The line is intent, not file extension.** *"Write down the decision we just made"* → direct. *"Decide whether we should adopt X"* → a ticket, even when its only deliverable turns out to be an ADR (TKT-62 shipped exactly that, and the plan gate is where the recommendation got reversed — that gate earned its keep). If the change needs a **decision** or a **plan**, it's a ticket. If it only needs **writing down**, it's a commit.
+
+Still applies to direct commits: the local gate must be green, and the commit message carries the reasoning.
+
 ## Two systems, two jobs
 
 Don't conflate them — the old GitHub-only skill did, and it hid this:
@@ -266,7 +282,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 - **Never push after setting `needs:human`** without first swapping back to an `agent:*` label.
 - **When a human pushes back** — diagnose the failing layer first (**intent / plan / implementation**) and regenerate from that layer, never patch locally at a lower one (`quality-practices.md` §4).
 - **TDD in `Building`** — tests first; local gate = `config.code.localGate` (mirrors CI). Required CI checks are the project's configured required checks on `config.code.defaultBranch`.
-- Branch protection on `config.code.defaultBranch`: PR required, required checks must pass, no direct push.
+- Branch protection on `config.code.defaultBranch` — **for ticketed product work**: PR required, required checks must pass, no direct push. **Internal maintenance is exempt** (skill/process/tooling, ADRs, docs — see § What this pipeline is for): commit it straight to the default branch with the local gate green. Verify what the host actually enforces rather than trusting this line — on GitHub, `gh api repos/<owner>/<repo>/branches/<branch>/protection`; a 403 means the feature isn't on the repo's plan and *nothing* is enforced, whatever this skill claims.
 
 ## Future automation (design intent, not implemented)
 
