@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -89,7 +90,40 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		}
 		return provisionInput{organizerID: resolved.OrganizerID, poolID: *resolved.CapacityGroupID, capacity: *resolved.SharedCapacity}, nil
 	default:
-		return provisionInput{}, fmt.Errorf("unsupported publication schema %d", e.Schema)
+		return provisionInput{}, fmt.Errorf("%w %d", errUnsupportedPublicationSchema, e.Schema)
+	}
+}
+
+// errUnsupportedPublicationSchema marks a variant this binary cannot judge — as opposed to a
+// payload it can judge and has found bad. The disposition turns on that distinction, so the
+// default arm wraps this rather than returning a bare message.
+var errUnsupportedPublicationSchema = errors.New("unsupported publication schema")
+
+type disposition string
+
+const (
+	dispositionTerminate disposition = "terminate"
+	dispositionRetry     disposition = "retry"
+	dispositionPark      disposition = "park"
+)
+
+// dispositionForProvisionError decides a failed publication's fate. It is a function, not an inline
+// branch, because the disposition is the part worth testing: an unknown variant reaching Term() is
+// the TKT-61 bug, and Term() is unobservable without a live JetStream message.
+//
+// Poison — malformed, or invalid at a schema we know — terminates: no binary can provision it.
+// An unknown variant is not poison. It is well-formed and a newer binary can provision it, so it
+// parks and waits for one; terminating would discard recoverable inventory on the authority of the
+// one component that provably cannot read it (ADR-017 §5b).
+func dispositionForProvisionError(schema int, err error) disposition {
+	switch {
+	case errors.Is(err, errUnsupportedPublicationSchema):
+		return dispositionPark
+	case schema == 1:
+		// Schema 1 resolves against catalog; its failures are transient.
+		return dispositionRetry
+	default:
+		return dispositionTerminate
 	}
 }
 
@@ -113,13 +147,23 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 		input, err := c.provisionInput(ctx, e)
 		if err != nil {
-			if e.Schema == 1 {
+			switch dispositionForProvisionError(e.Schema, err) {
+			case dispositionPark:
+				// Version skew: hold the event for a binary that understands it, and stop
+				// reporting ready. Readiness is the only signal wired here, and a drop nobody
+				// notices is the whole of TKT-61 — being loudly unready beats being quietly
+				// wrong. It never self-heals: recovering on the next good message would hide
+				// the event still pending behind this one.
+				c.log.Error("unsupported publication schema", "event_id", e.ID, "schema", e.Schema, "err", err)
+				c.ready.Store(false)
+				_ = msg.NakWithDelay(5 * time.Second)
+			case dispositionRetry:
 				c.log.Error("resolve legacy publication", "event_id", e.ID, "err", err)
 				_ = msg.NakWithDelay(5 * time.Second)
-				return
+			default:
+				c.log.Error("invalid publication event", "event_id", e.ID, "err", err)
+				_ = msg.Term()
 			}
-			c.log.Error("invalid publication event", "event_id", e.ID, "err", err)
-			_ = msg.Term()
 			return
 		}
 		// Grouped festival days deliberately converge on the festival id. Slot to
