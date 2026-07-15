@@ -6,6 +6,10 @@ Date: 2026-07-12
 
 Accepted
 
+*Amended by [ADR-006](./ADR-006-astro-storefront-shell.md): this decision stands — React remains the
+UI library — but the **storefront's shell** is Astro, not a React SPA. Back office and scanner are
+unaffected.*
+
 ## Context
 
 No stack exists (greenfield; the Python scaffold docs in `docs/` are template leftovers, not a decision). The system's hardest runtime problem is a high-contention inventory hot path (on-sales with zero oversell). The team is the owner + AI agents; the codebase must be one AI tooling works well in. Deployment is local Docker Compose only in v1. The owner chose the direction during discovery (2026-07-12); this ADR records it.

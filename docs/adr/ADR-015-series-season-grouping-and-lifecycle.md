@@ -6,6 +6,10 @@ Date: 2026-07-14
 
 Accepted at the TKT-52 plan gate.
 
+*Extended by [ADR-018](./ADR-018-catalog-slot-transition-concurrency.md): this decision stands; §4/§6
+(lock the row, emit after commit) are generalized there to the **direct per-slot** endpoints, and to
+festival grouping.*
+
 ## Context
 
 US-010 groups the dated slots introduced by ADR-005 into an ordered show run
