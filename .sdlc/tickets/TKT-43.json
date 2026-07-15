@@ -4,14 +4,10 @@
   "summary": "Production-grade checkout recovery and journal fault-injection hardening",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent:claude-code",
-  "pr": {
-    "number": 38,
-    "url": "https://github.com/mathd/ticketing_system/pull/38",
-    "state": "open"
-  },
+  "pr": null,
   "description": "Follow-up from the TKT-28 adversarial review. Before replacing the fake PSP, add scheduled/restart recovery for payment_unknown and confirmation_pending workflows, PSP status plus void/refund compensation, transactional outbox publication, and PostgreSQL integration/fault-injection coverage for concurrent journal appends, conflicting replay, tampering, head consistency, key rotation, PII erasure, service restarts, and crash boundaries. TKT-28 retains retry-driven recovery appropriate to its walking-skeleton COS.",
   "comments": [
     {
@@ -98,6 +94,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Gate 3 partially cleared — and a problem the merge exposed. PR #38 opened to finish it.**\n\n**Both PRs merged (verified, not taken on report):**\n- #35 → `main` at `82cbce2` (squash).\n- #36 → **`TKT-43-checkout-recovery-journal-hardening`** at `9a81281` — its base, correct while stacked.\n\n**The problem: `main` has the ADR and none of the code.** Checked rather than assumed:\n```\ngit ls-tree -r --name-only origin/main | grep -E \"0003_completion_outbox|internal/outbox\"   -> nothing\ngit show origin/main:services/commerce/internal/api/server.go | grep -c FrozenEnvelope       -> 0\ngit show origin/main:services/commerce/internal/store/store.go | grep -c BackfillCompletion   -> 0\n```\nHad I trusted \"PR 35 and 36 are merged\" and closed the ticket, TKT-43 would have shipped an ADR\ndescribing an outbox that does not exist — with the paid-but-no-ticket window still open and a\ngreen board saying otherwise.\n\n**Nothing is lost.** The code is intact on both merged branches; only the path to `main` was missing.\n\n**My error, not the process's.** I chose to stack #36 on #35 so code sat atop its rationale. Real\nbenefit, real cost: a **squash-merge of the base leaves the stacked PR pointing at a branch that no\nlonger feeds `main`**. GitHub reports it MERGED and it is — into a dead end.\n\n**Fix — PR #38 (`TKT-43-outbox-to-main`):** branched fresh from `origin/main`, code only. All three\nADRs on `main` are **byte-identical** to the branch (diffed ADR-003/011/016), so a PR from the ADR\nbranch would have re-added +289 lines of docs already there and likely conflicted. #38 carries only\n`services/commerce/` + `scripts/smoke.sh` — the same content reviewed and merged in #36, all 8\nreview fixes included.\n\n**Re-verified on the new base** (the base changed, so the previous green does not transfer):\n`make check` **exit 0** — commerce store 0.588s (running, not skipping), smoke 12.157s.\n\nNo new codex pass: the content is unchanged from the already-reviewed #36; only the base moved.\n\n**Gate 3 again for #38.** After it merges, both TKT-43 branches can be deleted. Then slice 3\n(deterministic recovery) is the remaining work in this ticket — slices 4–5 are deferred to TKT-56.\n"
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**PR #38 merged (`5d3f865`). Slices 1-2 are on `main` and verified there. Starting slice 3.**\n\n**Verified on `origin/main`, not taken from the merge report** — the same check that caught #36's\ncode never arriving:\n```\nFrozenEnvelope (inline sends frozen bytes)  -> 1\nBackfillCompletionOutbox                    -> 2\nclaim_id (ownership token)                  -> 9\ndead_lettered_at (poison-row guard)         -> 2\ninternal/outbox/drainer.go, 0003_completion_outbox.sql, outbox_smoke_test.go -> present\n```\n`make check` on `origin/main` itself: **exit 0** (commerce store 0.557s — running; smoke 14.086s).\nThe default branch is green *with* the outbox in it.\n\n**Branch cleanup done.** Before deleting I compared **file content**, not the commit graph:\n`git diff origin/main...origin/<branch> --stat` reported \"12 files not on main\" for all three\nbranches — a squash-merge artifact (commits differ, content doesn't). Per-file `rev-parse` showed\nevery path byte-identical to `main`. Had I trusted the diff stat I'd have thought work was\nunmerged; had I skipped the check entirely I'd have risked deleting unmerged work. Three branches\n+ worktrees removed, remote clean.\n\n**Slice 3 begins: deterministic recovery** (ADR-016 §Decisions 1-3), branch\n`TKT-43-deterministic-recovery` off `5d3f865`. Scope, per the ADR's decision table:\n- `confirmation_pending` -> retry inventory `confirm`, then complete. Capture already returned 200,\n  so the money is **known captured** — no PSP dependency.\n- terminal `declined`/`timeout` with a durably recorded no-side-effect outcome -> persist outcome,\n  retry the idempotent release, mark terminal, journal `order.failed`.\n- ambiguous `created` -> resolve via the **payments-operation lookup** (new read endpoint over the\n  existing `payment_operations` row). The runner cannot replay a charge: the payment token is never\n  persisted and payments folds it into a one-way fingerprint.\n- Fix `markUnknown`'s swallowed errors (`server.go:287-290`) and the ignored `confirmation_pending`\n  write (`server.go:427`).\n- **Out of scope:** `payment_unknown` resolution and void/refund compensation — deferred to TKT-56\n  until a real PSP. Orders needing them park as `reconciliation_required`.\n\nLabel: `needs:human` -> `agent:coding`.\n"
     }
   ],
   "links": [
