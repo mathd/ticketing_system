@@ -33,9 +33,12 @@ threat model. Read the following claims in this ADR with that scope:
   unchanged: "one discipline" means *tamper-evident by construction*, not *identical mechanism*.
   The journal's chain is per-organizer and serialized under a `journal_heads` row lock, which on the
   redemption path would put every turnstile for an organizer behind one lock. ADR-021 chains **per
-  ticket** and restores the rollback blast radius with an **asynchronous per-organizer checkpoint**,
-  signs with Ed25519 rather than HMAC, and signs the **head** rather than every entry. Each
-  divergence is argued there.
+  ticket**, adds an **asynchronous per-organizer checkpoint** that makes targeted rollback expensive
+  and stale-visible (**not** cryptographically detectable — ADR-021 §Decision 2 is explicit, and
+  ADR-016 §D7's rollback deferral still stands until TKT-11's anchor lands), signs with Ed25519
+  rather than HMAC, and signs the **head** rather than every entry. Each divergence is argued there.
+  Note the resulting trail is tamper-evident against modification and insertion, and merely
+  tamper-*expensive* against targeted rollback — do not collapse the two when citing it.
 - **"A GDPR erasure request … never touches the trails — inalterability and the right to erasure stop
   conflicting by construction"** (Decision 3) holds only while the pseudonym is unlinkable. The buyer
   UUID is an *unsalted* SHA-1 of the reservation ID (`services/commerce/internal/api/server.go:162`),
