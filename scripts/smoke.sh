@@ -8,10 +8,27 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-smoke}"
-export GATEWAY_PORT=18080 POSTGRES_PORT=15432 NATS_PORT=14222 \
-       GRAFANA_PORT=13000 PROM_PORT=19090 OTLP_PORT=14318 \
+
+# Isolate the stack per checkout — project name AND ports, derived from the checkout path.
+#
+# This repo is routinely worked on in sibling worktrees, and both halves of the isolation are
+# load-bearing. A shared project name is worse than a port clash: `cleanup` below runs
+# `compose down -v` on EXIT, so a second run tears the first one's stack down *mid-run* — and the
+# wreckage reads like a broken change rather than a collision ("network ... not found",
+# "nats-1 exited (0)", "dead or marked for removal"). That cost real debugging time on TKT-61.
+# Fixing only the name would trade silent mutual destruction for a port clash, which is at least
+# honest; moving the ports too lets the runs actually coexist.
+#
+# The slot is a stable hash of the checkout path: same worktree → same ports every run (greppable,
+# debuggable), different worktrees → different ports. Distinct hosts/ranges keep the six services
+# from colliding with each other. A hash collision between two worktrees just fails loudly on
+# "port already allocated" — the honest failure this replaces the silent one with.
+SLOT=$(( $(printf '%s' "$ROOT" | cksum | cut -d' ' -f1) % 40 ))
+PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-smoke-${SLOT}}"
+export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=$((14222 + SLOT)) \
+       GRAFANA_PORT=$((13000 + SLOT)) PROM_PORT=$((19090 + SLOT)) OTLP_PORT=$((14318 + SLOT)) \
        ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s
+echo "smoke: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
 
 COMPOSE_FILES=(-f "$ROOT/compose.yaml")
 if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
@@ -69,10 +86,10 @@ INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${
 go test -tags smoke -count=1 -run TestGroupedDaysConvergeOnOneInventoryPool ./internal/store
 
 cd "$ROOT/smoke"
-SMOKE_GATEWAY_URL=http://localhost:18080 \
-SMOKE_NATS_URL=nats://localhost:14222 \
-SMOKE_PG=localhost:15432 \
-SMOKE_PROM_URL=http://localhost:19090 \
+SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
+SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \
+SMOKE_PG=localhost:${POSTGRES_PORT} \
+SMOKE_PROM_URL=http://localhost:${PROM_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v ./...
 

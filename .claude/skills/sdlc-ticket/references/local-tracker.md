@@ -86,7 +86,7 @@ graph and writes via the same `POST /ticket`.
   **only `status`**; labels and comments remain the agent's job.
 
 ## The one-ticket run (identical to Jira mode)
-1. **Backlog** — shape per `shaping.md`: COS + the 7-item `readiness` object on the ticket,
+1. **Backlog** — shape per `shaping.md`: COS + the 8-item `readiness` object on the ticket (incl. `context_memo`),
    spikes (`type:"Spike"`, parent `blocked-by` them) for investigations, `owner:"human"` items for
    pending decisions; `kind=readiness` verdict comment; suggest `risk:low` if trivial.
 2. ⛔ Gate 1 — human prioritizes → `Ready`. The board **hard-blocks** the drag while any

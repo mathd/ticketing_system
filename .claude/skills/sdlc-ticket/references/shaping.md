@@ -9,7 +9,7 @@ Named practices this implements: Shape Up-style shaping (small prep effort ahead
 XP spikes (timeboxed investigation tickets), Example Mapping (surface rules/examples/questions),
 SPIDR slicing (first sprint-sized slice).
 
-## The DoR — 7 items on the ticket (`readiness` field)
+## The DoR — 8 items on the ticket (`readiness` field)
 
 | Key | Ready when |
 |---|---|
@@ -20,6 +20,9 @@ SPIDR slicing (first sprint-sized slice).
 | `approach` | Enough technical direction to start safely |
 | `first_slice` | A meaningful increment that fits one sprint is identified |
 | `success` | COS defined — we know what "done" looks like |
+| `context_memo` | Context-mémo baked onto the ticket, **`governingAdrs` included** (`decomposition.md` § context-mémo) |
+
+**Why `context_memo` is a gate item and not a nicety.** `SKILL.md` already says *every* pipeline ticket gets the bake — but nothing enforced it, so tickets reached Planning without one and the planner re-derived the context by hand, or didn't. The planner is the stage that can least afford to improvise it: whoever drafts reads **code, not decision history**, so an ADR that makes the obvious solution wrong is invisible to it — it recommends the wrong thing with every fact correct (TKT-62: ADR-008 is what made `CREATE INDEX CONCURRENTLY` pointless; TKT-61: ADR-017 *was* the whole ticket and arrived only because the orchestrator went looking). Resolve `governingAdrs` from `registry.bindingPath` at shaping, when there is time to read, rather than at Planning under a drafting deadline. `deferred` is available if the area genuinely has no governing decisions — but say so in `note`, so "none" is a finding rather than an omission.
 
 ```json
 "readiness": {
