@@ -25,6 +25,10 @@ on:
       - web/storefront/Dockerfile
       - .github/workflows/hermetic.yaml
 
+concurrency:
+  group: hermetic-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   hermetic-smoke:
     runs-on: ubuntu-latest

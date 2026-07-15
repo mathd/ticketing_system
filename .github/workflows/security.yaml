@@ -1,14 +1,37 @@
 # Advisory and repository scanning complements, but does not replace, make check.
 name: security
 
+# The weekly scheduled run is the full safety net — it re-scans every dep
+# even when nothing changed, catching newly-disclosed CVEs. The per-PR run
+# is therefore scoped to PRs that actually change dependencies or build
+# inputs (go.mod/go.sum, lockfiles, Dockerfiles, workflow); code/doc-only
+# PRs skip all 10 jobs. Trigger security manually on any PR via the
+# workflow_dispatch button when a targeted scan is wanted.
 on:
   pull_request:
+    paths:
+      - "**/go.mod"
+      - "**/go.sum"
+      - go.work
+      - go.work.sum
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - "web/*/package.json"
+      - "**/Dockerfile"
+      - build/**
+      - .github/workflows/security.yaml
   schedule:
     - cron: "0 7 * * 1" # Mondays 07:00 UTC
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Cancel superseded in-flight security runs on the same PR/branch.
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   govulncheck:
