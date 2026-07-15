@@ -96,20 +96,18 @@ proportional to a subset**.
    `season_smoke_test.go`, the festival pair in `festival_smoke_test.go` (TKT-65).
 
    **Assert the plan under `force_generic_plan`, not a value-bound custom plan** — even for a
-   read with no nullable predicate. **This is a mutation-sensitive robustness check, not a
-   simulation of production.** Production runs `auto`, and the forced mode is emphatically *not*
-   what `auto` does (see the Consequences); the reason to force it is that it is the only
-   condition under which the assertion can *fail* when the predicate is wrong.
+   read with no nullable predicate. **This is a mutation-sensitive check on predicate shape, not
+   a simulation of production.** It is worth doing for one reason only: it is the condition under
+   which the assertion can *fail* when the predicate is wrong.
 
-   A custom plan is built knowing the parameter, so it uses the scoping index *whether or not the
-   predicate is sound*. Measured on the festival read: an `EXPLAIN` of a deliberately widened
-   `(capacity_group_id = $1 OR $1 IS NULL)` still chose `performances_capacity_group_idx` under a
-   custom plan, and only the generic plan refused it. A custom-plan assertion therefore cannot
-   catch the one regression this rule exists to catch — it is green either way, which is the
-   definition of a test that proves nothing. Planning blind is what distinguishes a scoped
-   predicate from a widened one, so planning blind is what the test must do.
+   A custom plan is built knowing the parameter, so it can use the scoping index *whether or not
+   the predicate is sound*. Measured on the festival read, under the test's seeded statistics: an
+   `EXPLAIN` of a deliberately widened `(capacity_group_id = $1 OR $1 IS NULL)` still chose
+   `performances_capacity_group_idx` when planned with the value bound, and only the generic plan
+   refused it. So a custom-plan assertion is green against both the sound and the widened
+   predicate — the definition of a test that proves nothing. Planning blind is what distinguishes
+   the shapes, so planning blind is what the test does.
 
-   What this buys is a canary on predicate *shape*, and that is all it should ever be sold as.
    Both reads use the same `explainGenericPlan` helper; forking it per read is how one copy
    quietly stops asserting anything.
 
@@ -172,23 +170,25 @@ proportional to a subset**.
   statement requires the query to *be* a referenceable value rather than a literal built inside
   its function. That is a real constraint on how these reads are written, and it is the price of
   the assertion being about production instead of about a copy.
-- **Negative — the plan assertion measures a mode production does not run, and the gap is wider
-  than "not the default".** `force_generic_plan` is what makes the scoped predicate's shape
-  testable at all: under `auto` Postgres plans with the parameter in hand and *both* the sound and
-  widened predicate shapes index-scan, so `auto` cannot distinguish them. The forced mode can.
+- **Negative — the plan assertion measures a mode production may never run, and cannot tell you
+  whether it does.** `force_generic_plan` is what makes the predicate's *shape* testable: a plan
+  built with the parameter in hand can use the scoping index whether the predicate is sound or
+  widened, so a value-bound plan cannot distinguish them. A blind plan can.
 
-  But do not read the forced mode as "where production ends up anyway." `auto` does **not**
-  promote to a generic plan after five executions — it builds a generic plan at that point and
-  compares its estimated cost to the average custom-plan cost, adopting it only if it is not more
-  expensive, and otherwise re-planning per execution **indefinitely**. For precisely the widened
-  predicate this test is built to catch, the generic plan is *much* more expensive, so `auto`
-  would keep choosing custom plans and production would never run the plan the test asserts on.
+  Production runs `auto`, and `auto` is conditional: it uses custom plans for roughly the first
+  five executions, then builds a generic plan and compares its estimated cost against the average
+  custom-plan cost (which includes repeated planning), adopting the generic plan only if it is not
+  more expensive and otherwise continuing to re-plan per execution. **Whether these reads ever run
+  a generic plan in production is therefore not something this ADR knows, and not something these
+  tests can establish** — the experiment above ran against seeded fixture statistics, not
+  production's data distribution, and plan choice is a function of that distribution.
 
-  So the assertion says nothing about production's plans. It says the shipped predicate is
-  index-compatible when planned blind, and it is sensitive to the predicate being widened. That
-  is a canary on query shape — genuinely worth having, since it is the only mechanism here that
-  reddens on the regression — and it must not be sold as more. Claiming otherwise would be this
-  ADR's own failure mode: a test asserting more than it proves.
+  So the assertion's scope is exactly: *the shipped predicate is index-compatible when planned
+  blind, under the fixture's statistics, and the assertion reddens if the predicate is widened.*
+  That is a canary on query shape. It is worth having because it is the only mechanism here that
+  reddens on the regression — and it must not be sold as more. Both directions of overclaim are
+  available and both are wrong: "this is what production runs" and "production would never run
+  this" are equally unsupported. Reaching for either would be this ADR's own failure mode.
 - **Resolved by TKT-63 — the generic-plan gap on `events`.** The `($1::uuid[] IS NULL OR e.id =
   ANY($1))` predicate had to be planned for a NULL `$1` as well, so under `force_generic_plan`
   the planner could not use `events_pkey` and fell back to scanning `events`

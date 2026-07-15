@@ -330,8 +330,11 @@ func TestGetPublishedFestivalDoesNotScanForeignDays(t *testing.T) {
 // and it returns the right answer while doing it.
 //
 // It EXPLAINs publishedFestivalPerformancesQuery itself — the statement the shipped read
-// executes — so a scoping regression anywhere in that query text reddens this test, and
-// a copy cannot silently drift away from it.
+// executes — so a copy cannot silently drift away from production. What it asserts is
+// narrower than "the read is scoped": that the plan reaches performances through the
+// scoping index and does not sequentially scan performances, under the fixture's
+// statistics and a blind plan. It is not a proof about every access path, and says
+// nothing about production's data or plan choice (ADR-019 Consequences).
 //
 // The plan is asserted under force_generic_plan even though production runs auto. That is a
 // robustness check on predicate shape, NOT a simulation of production — auto compares the
@@ -375,10 +378,7 @@ func TestGetPublishedFestivalIsIndexScoped(t *testing.T) {
 
 	plan := explainGenericPlan(ctx, t, db, publishedFestivalPerformancesQuery, festival.ID)
 
-	// Only the index carrying the scoping claim. The venue/ticket-type/sort access paths
-	// may legitimately change without touching what this test is about.
-	if !strings.Contains(plan, "performances_capacity_group_idx") {
-		t.Fatalf("the shipped festival read does not use performances_capacity_group_idx under "+
-			"force_generic_plan — it scans.\nplan:\n%s", plan)
-	}
+	// Only the relation carrying the scoping claim. The venue/ticket-type/sort access
+	// paths may legitimately change without touching what this test is about.
+	assertReachesVia(t, plan, "performances", "performances_capacity_group_idx")
 }

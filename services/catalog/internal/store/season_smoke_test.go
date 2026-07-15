@@ -20,6 +20,29 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+// assertReachesVia asserts a plan reaches relation through index and never
+// sequentially scans relation.
+//
+// Both halves are needed. Asserting the index name appears *somewhere* in the plan
+// text is weaker than it looks: a regressed query can use the index in one branch
+// and still scan the whole relation in another (an Append/UNION arm, say), which is
+// precisely the catalog-wide read the assertion claims to exclude — and the test
+// would stay green through it. Matching "Seq Scan on <relation>" also catches
+// "Parallel Seq Scan on <relation>".
+//
+// This still asserts on plan *text*, so it is not a proof that every access path to
+// the relation is scoped — an exhaustive check would walk EXPLAIN (FORMAT JSON)
+// nodes. It is the invariant these tests actually claim; do not describe it as more.
+func assertReachesVia(t *testing.T, plan, relation, index string) {
+	t.Helper()
+	if !strings.Contains(plan, index) {
+		t.Fatalf("plan does not reach %s through %s — it scans.\nplan:\n%s", relation, index, plan)
+	}
+	if strings.Contains(plan, "Seq Scan on "+relation) {
+		t.Fatalf("plan sequentially scans %s even though %s appears in it.\nplan:\n%s", relation, index, plan)
+	}
+}
+
 // planProbeSeq names each PREPARE uniquely. A prepared statement outlives the
 // rolled-back transaction that created it, so a fixed name makes a second
 // explainGenericPlan call on the same pooled connection die with
@@ -287,11 +310,8 @@ func TestGetPublishedSeasonIsIndexScoped(t *testing.T) {
 	}
 	plan := explainGenericPlan(ctx, t, db, scopedPublicPerformancesQuery, []uuid.UUID{season.EventIDs[0]})
 
-	for _, index := range []string{"performances_by_event", "events_pkey"} {
-		if !strings.Contains(plan, index) {
-			t.Fatalf("the shipped scoped season read does not use %s under force_generic_plan — it scans.\nplan:\n%s", index, plan)
-		}
-	}
+	assertReachesVia(t, plan, "performances", "performances_by_event")
+	assertReachesVia(t, plan, "events", "events_pkey")
 }
 
 // TestGetPublishedSeasonEmptyScopeDoesNotWidenToCatalog guards the contract that
