@@ -6,6 +6,12 @@
     "defaultBranch": "main",
     "localGate": "make check"
   },
+  "models": {
+    "plan": "gpt-5.6-sol",
+    "planReview": "main-agent",
+    "implement": "main-agent",
+    "aiReview": "gpt-5.6-sol"
+  },
   "registry": {
     "bindingPath": "docs/adr/",
     "referenceLocation": "local"

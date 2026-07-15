@@ -2,15 +2,15 @@
 
 Four practices applied at specific points of the pipeline. Each is cheap; skipping them is how plans bounce, PRs bloat, and reviews stall. (Comment-marker formats are in `SKILL.md` § Memory & metrics.)
 
-## 1. Pre-mortem pass on plans (in `agent:plan-review`, on Codex's draft)
+## 1. Pre-mortem pass on plans (in `agent:plan-review`, on the draft)
 
-Codex (GPT-5.6-sol) writes the draft in `agent:planning`; the main agent reviews it here. This pass is that review's backbone — the draft is a proposal from a model that couldn't run the gate, so treat it as input, not as a plan.
+Who drafts and who critiques is `config.models.plan` / `config.models.planReview` (`SKILL.md` § Config) — **always two different models**, so the critic is always reviewing someone else's draft. That is what this pass is for: a draft is a proposal, not a plan.
 
-**Verify the test seam it picked — or pick one.** The plan must say *where* this feature is exercised: prefer an **existing** seam over a new one, the **highest** seam that still isolates the change, and the **fewest** seams possible (ideal: one). Confirm the seam the draft names **actually exists** (`git grep -n` at HEAD) — a hallucinated seam is the drafter's most likely failure. Record the chosen seam in the final plan and, if it's a new one, why no existing seam fit — the executing agent tests through it, so a wrong seam is a rewrite. (Seam = a place you can alter behaviour without editing there — Feathers.)
+**Verify the test seam the draft picked — or pick one if it didn't.** The plan must say *where* this feature is exercised: prefer an **existing** seam over a new one, the **highest** seam that still isolates the change, and the **fewest** seams possible (ideal: one). **Confirm the named seam actually exists** (`git grep -n` at HEAD) — a hallucinated seam is a drafter's most likely failure, and a drafter that couldn't run the gate has no way to catch it itself. Record the chosen seam in the final plan and, if it's a new one, why no existing seam fit — the implementer tests through it, so a wrong seam is a rewrite. (Seam = a place you can alter behaviour without editing there — Feathers.)
 
-**Grill the human on the open decisions (complex tickets, when interactive).** For anything not `risk:low`, before the pre-mortem, put the plan's unresolved *decisions* to the user **one question at a time**, each with your recommended answer, and wait for each. Look **facts** up in the code yourself — only genuine decisions go to the human. This extracts human context that neither the pre-mortem nor the Codex draft (fresh-context, no ticket history) can reach. Skip it for `risk:low` or when the user chose *gates only* drive style.
+**Grill the human on the open decisions (complex tickets, when interactive) — this is the main agent's job, always.** A delegated critic cannot hold a conversation; it gets one brief and returns one answer. So whatever `config.models.planReview` says, *you* put the plan's unresolved *decisions* to the user **one question at a time**, each with your recommended answer, and wait for each. Look **facts** up in the code yourself — only genuine decisions go to the human. This extracts human context that neither the pre-mortem (author-internal) nor a fresh-context critic (no ticket history) can reach. Skip it for `risk:low` or when the user chose *gates only* drive style.
 
-Then re-examine the plan through one **named** reasoning lens — a generic "double-check it" re-confirms; a named lens forces an angle of attack.
+After drafting the plan, re-examine it through one **named** reasoning lens — a generic "double-check it" re-confirms; a named lens forces an angle of attack.
 
 Default lens — **pre-mortem**: *assume this ticket bounced — the plan was rejected at Gate 2, or the PR at Gate 3. Work backward: what went wrong?* List the 3–5 most plausible failure causes (wrong integration point, missing migration, untestable AC, hidden coupling, scope too big…), then patch the plan where a cause is credible.
 
@@ -18,7 +18,7 @@ If pre-mortem fits poorly: **inversion** (what would guarantee failure? avoid th
 
 Record one line in the `plan-final` comment: lens applied + what it changed (or "no changes").
 
-Why the two models sit this way round: Codex drafts from fresh context — fast, unattached to a favoured approach, and unable to verify itself. The main agent has the repo, the ticket thread, and the gate, so it's the one that can falsify a draft. Drafting is where a fresh angle pays; reviewing is where grounding pays.
+Why the two roles are always different models: **a drafter is unattached to a favoured approach right up until it has drafted one** — after that it wants its plan accepted. The critic has no such stake, which is the entire reason the split exists. The two sides bring different things, so assign them deliberately: the **grounded** side (repo, ticket thread, ability to run the gate) is the one that can *falsify* a draft; the **fresh** side is the one that brings an angle unattached to the ticket's history. Drafting is where a fresh angle pays; critiquing is where grounding pays. `config.models` decides which model sits where — this pass is the same either way, and the critic is never handed the author's justification.
 
 ## 2. Findings triage (in `agent:ai-review` and at Gate 3 feedback)
 
