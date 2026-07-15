@@ -42,6 +42,14 @@ experiment stays valid.
   sdlc-ticket skill would send to a wiki goes to `docs/` instead.
 - The `sdlc-ticket` skill and the git-derived board (`.sdlc/`) are the default workflow scaffolding
   for planning and tracking work here.
+- **Changing a domain event's payload, or consuming one? Read [ADR-017](docs/adr/ADR-017-domain-event-schema-evolution.md) first.**
+  Bump on **consumer semantics**, not parse compatibility — the dangerous payload deserializes fine
+  (§3). And a consumer must **dispatch on `schema` before decoding `data`** (§5b′): a bump exists
+  *because* `data` changed, so judging a future variant with today's struct rejects it as malformed
+  and drops it. Two traps the ADR names: the poison/skew line has a **bottom end** (`schema <= 0` is a
+  broken envelope, not the future — terminate it, and don't let it touch readiness), and a fixture
+  **built from the type under test cannot fail** — it encodes the compatibility it claims to prove.
+  TKT-61 shipped the ordering bug twice, past a mutation-checked test suite and a full review pass.
 - **Touching a catalog slot transition? Read [ADR-018](docs/adr/ADR-018-catalog-slot-transition-concurrency.md) first.**
   State-deriving transitions decide under a row lock and emit after commit; grouped members
   (festival days) refuse their own publish/archive. Both rules are narrower than they sound —
