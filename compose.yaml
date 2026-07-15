@@ -5,6 +5,26 @@
 # copy (-p ticketing-smoke) next to a running dev stack.
 name: ticketing
 
+# One-shot migration job (ADR-021): runs the service's own binary with the
+# `migrate` subcommand against its own database, then exits. Services depend on
+# their job with service_completed_successfully, so no process ever starts
+# against an unmigrated schema. Five independent jobs, never a cross-service
+# coordinator — each holds only its own role (ADR-002/007).
+x-migrate-job: &migrate-job
+  restart: "no"
+  command: ["migrate"]
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+x-go-deps: &go-deps
+  postgres:
+    condition: service_healthy
+  nats:
+    condition: service_healthy
+  nats-init:
+    condition: service_completed_successfully
+
 x-go-service: &go-service
   restart: unless-stopped
   environment: &go-env
@@ -22,13 +42,10 @@ x-go-service: &go-service
     DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-10}
     DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
     DB_CONN_MAX_IDLE_TIME: ${DB_CONN_MAX_IDLE_TIME:-5m}
-  depends_on:
-    postgres:
-      condition: service_healthy
-    nats:
-      condition: service_healthy
-    nats-init:
-      condition: service_completed_successfully
+  # Merged into each service's own depends_on (which adds its migrate job).
+  # A plain `depends_on:` override would replace this map wholesale, not extend
+  # it — hence the anchor.
+  depends_on: *go-deps
   healthcheck:
     test: ["CMD", "/app", "healthcheck"]
     interval: 5s
@@ -98,16 +115,36 @@ services:
       retries: 20
       start_period: 20s
 
+  catalog-migrate:
+    <<: *migrate-job
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/catalog/cmd/catalog } }
+    environment:
+      DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
+
   catalog:
     <<: *go-service
+    depends_on:
+      <<: *go-deps
+      catalog-migrate:
+        condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/catalog/cmd/catalog } }
     environment:
       <<: *go-env
       DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
+  inventory-migrate:
+    <<: *migrate-job
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/inventory/cmd/inventory } }
+    environment:
+      DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
+
   inventory:
     <<: *go-service
+    depends_on:
+      <<: *go-deps
+      inventory-migrate:
+        condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/inventory/cmd/inventory } }
     environment:
       <<: *go-env
@@ -116,8 +153,18 @@ services:
       CATALOG_URL: http://catalog:8080
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
+  commerce-migrate:
+    <<: *migrate-job
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/commerce/cmd/commerce } }
+    environment:
+      DATABASE_URL: postgres://commerce:commerce@postgres:5432/commerce
+
   commerce:
     <<: *go-service
+    depends_on:
+      <<: *go-deps
+      commerce-migrate:
+        condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/commerce/cmd/commerce } }
     environment:
       <<: *go-env
@@ -127,8 +174,18 @@ services:
       PAYMENTS_URL: http://payments:8080
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
+  payments-migrate:
+    <<: *migrate-job
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/payments/cmd/payments } }
+    environment:
+      DATABASE_URL: postgres://payments:payments@postgres:5432/payments
+
   payments:
     <<: *go-service
+    depends_on:
+      <<: *go-deps
+      payments-migrate:
+        condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/payments/cmd/payments } }
     environment:
       <<: *go-env
@@ -137,8 +194,18 @@ services:
       JOURNAL_KEY_ID: local-v1
       JOURNAL_SIGNING_KEY: ${JOURNAL_SIGNING_KEY:-local-development-journal-key}
 
+  access-migrate:
+    <<: *migrate-job
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
+    environment:
+      DATABASE_URL: postgres://access:access@postgres:5432/access
+
   access:
     <<: *go-service
+    depends_on:
+      <<: *go-deps
+      access-migrate:
+        condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
     environment:
       <<: *go-env

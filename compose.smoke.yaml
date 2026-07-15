@@ -14,6 +14,18 @@ services:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: payments } }
   access:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: access } }
+  # The migrate jobs (ADR-021) run the same binaries; override them too, or
+  # each falls back to a hermetic build — correct, but five needless rebuilds.
+  catalog-migrate:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: catalog } }
+  inventory-migrate:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: inventory } }
+  commerce-migrate:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: commerce } }
+  payments-migrate:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: payments } }
+  access-migrate:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: access } }
   gateway:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: gateway } }
   scanner:

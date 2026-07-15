@@ -4,7 +4,13 @@ Date: 2026-07-12
 
 ## Status
 
-Accepted (approved at the TKT-26 plan gate, 2026-07-12)
+Accepted (approved at the TKT-26 plan gate, 2026-07-12).
+
+**Superseded on placement** by [ADR-021](./ADR-021-out-of-band-service-migrations.md) (TKT-66,
+2026-07-15): migrations no longer run at service startup — each binary has a `migrate` subcommand
+run as a one-shot job the service depends on. **The rest of this ADR stands**: goose v3 as a
+library, migrations embedded via `embed.FS`, per-service schema ownership, seed data as ordinary
+migrations, and fail-fast under a 30-second deadline. Only the *where* changed.
 
 ## Context
 
@@ -41,9 +47,12 @@ migration like any other. The service fails fast if migration fails.
     - Schema changes travel in the same PR and binary as the code that needs them.
 - **Negative:**
     - Deploy = migrate; a bad migration blocks service start (accepted: fail-fast is the
-      desired behavior at this scale).
+      desired behavior at this scale). *Resolved by [ADR-021](./ADR-021-out-of-band-service-migrations.md).*
     - Startup ordering with future multi-replica services needs goose's advisory-lock
-      support — to be revisited when a second replica exists.
+      support — to be revisited when a second replica exists. *This is the hook TKT-66 pulled;
+      [ADR-021](./ADR-021-out-of-band-service-migrations.md) answers it by removing migration from
+      the startup path rather than by locking. The lock itself remains deferred until a second
+      concurrent invoker exists.*
 
 ## References
 

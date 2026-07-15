@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -221,6 +223,82 @@ func TestDBCredentialIsolation(t *testing.T) {
 	if err == nil {
 		_ = cross.Close(ctx)
 		t.Fatal("catalog creds connected to inventory db — boundary not enforced")
+	}
+}
+
+// services and their database/role names — every one is its own database and
+// role (ADR-007), so the migrate jobs are five independent steps, never a
+// cross-service coordinator (ADR-002).
+var migratedServices = []string{"catalog", "inventory", "commerce", "payments", "access"}
+
+// latestMigrationVersion reads the service's checked-in migration filenames and
+// returns the highest goose version id. Derived from the files rather than
+// hardcoded, so a new migration cannot silently make this assertion stale.
+func latestMigrationVersion(t *testing.T, service string) int64 {
+	t.Helper()
+	dir := filepath.Join("..", "services", service, "internal", "store", "migrations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s migrations: %v", service, err)
+	}
+	var latest int64
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		num, _, ok := strings.Cut(e.Name(), "_")
+		if !ok {
+			t.Fatalf("%s: migration %q has no version prefix", service, e.Name())
+		}
+		v, err := strconv.ParseInt(num, 10, 64)
+		if err != nil {
+			t.Fatalf("%s: migration %q version: %v", service, e.Name(), err)
+		}
+		if v > latest {
+			latest = v
+		}
+	}
+	if latest == 0 {
+		t.Fatalf("%s: no migrations found in %s", service, dir)
+	}
+	return latest
+}
+
+// TestMigrationsAppliedOutOfBand: every service's database is migrated to the
+// latest checked-in version by its one-shot migrate job (ADR-021), before the
+// service is allowed to start.
+//
+// This is the assertion that catches a migrate job which is missing, wired to
+// the wrong database, built from a stale image, or silently a no-op: /healthz
+// only pings the connection, so a service will report healthy against an
+// unmigrated schema right up until the first query fails. Comparing the applied
+// goose version against the migration files on disk is what makes the decoupling
+// real rather than assumed.
+func TestMigrationsAppliedOutOfBand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, service := range migratedServices {
+		t.Run(service, func(t *testing.T) {
+			want := latestMigrationVersion(t, service)
+
+			conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://%s:%s@%s/%s",
+				service, service, pgHostPort, service))
+			if err != nil {
+				t.Fatalf("connect %s db: %v", service, err)
+			}
+			defer func() { _ = conn.Close(ctx) }()
+
+			var got int64
+			if err := conn.QueryRow(ctx,
+				`SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&got); err != nil {
+				t.Fatalf("%s: read goose_db_version (migrate job did not run?): %v", service, err)
+			}
+			if got != want {
+				t.Fatalf("%s: applied migration version = %d, want %d — the migrate job did not "+
+					"apply every checked-in migration", service, got, want)
+			}
+		})
 	}
 }
 
