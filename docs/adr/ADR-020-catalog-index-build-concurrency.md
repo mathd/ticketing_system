@@ -33,6 +33,10 @@ fails (`services/catalog/internal/store/postgres.go:23`, `services/catalog/cmd/c
 Catalog runs single-instance, with no advisory lock and no replicas configured. A 30-second
 deadline bounds the migration (`services/catalog/cmd/catalog/main.go:92`).
 
+The only other path to the catalog database is `compose.yaml`'s `127.0.0.1:${POSTGRES_PORT:-5432}`
+publish — loopback-only, a developer's `psql`, not a production writer. Each service holds its own
+database and role (ADR-007), so no sibling service writes `catalog` either.
+
 This decision is needed now because TKT-62 asked whether to change how every index in the service
 is built — a repo-wide convention change — and because the answer is non-obvious enough that it
 was re-derived twice during planning.
@@ -83,8 +87,11 @@ startup coupling, not the DDL.**
 **Traps for whoever adopts it** (recorded so they are not re-derived):
 
 - CIC cannot run inside a transaction: the migration needs `-- +goose NO TRANSACTION`, which applies
-  to both its Up and its Down. *(goose annotation semantics were not verified against a running
-  Postgres in TKT-62 — no code depends on them yet; verify before relying on this.)*
+  to both its Up and its Down (goose parses it per file, not per direction).
+- **The 30s deadline does reach a non-transactional statement.** goose's no-transaction branch runs
+  `db.ExecContext(ctx, query)` (`migration_sql.go:71-77` in v3.27.2), so the context from
+  `main.go:92` is propagated: a build still running at 30s is cancelled, not merely un-awaited.
+  This is why the deadline and CIC cannot coexist — verified in the dependency source, not assumed.
 - A cancelled or failed CIC leaves an **INVALID** index behind. `CREATE INDEX CONCURRENTLY IF NOT
   EXISTS` then sees a same-named relation and does nothing: the index exists, is never used by the
   planner, and ADR-019's scan assertions are the only thing that would catch it. Reconcile the
