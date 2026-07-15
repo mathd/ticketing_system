@@ -348,9 +348,16 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 	if orderStatus == "completed" {
 		ref, e := s.guestReference(r.Context(), order)
-		if e != nil || s.publishCompleted(r.Context(), order, ref, x) != nil {
+		if e != nil {
 			write(w, 503, map[string]string{"error": "ticket issuance pending; retry checkout"})
 			return
+		}
+		// The original completion already owed this event, so the replay need not
+		// re-publish to be correct — the drainer guarantees delivery. Try inline for
+		// promptness; never fail the replay on it.
+		if err := s.publishCompleted(r.Context(), order, ref, x); err != nil {
+			slog.Default().WarnContext(r.Context(), "inline republish on completed-order replay failed; owed event stands",
+				"order_id", order, "err", err)
 		}
 		write(w, 200, map[string]any{"order_id": order, "guest_order_ref": ref, "status": "completed"})
 		return
@@ -437,15 +444,30 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "mint guest order reference"})
 		return
 	}
-	guestRef, err = commercestore.CompleteOrder(r.Context(), s.db, x.ID, order, guestRef)
+	guestRef, err = commercestore.CompleteOrder(r.Context(), s.db, commercestore.Completion{
+		ReservationID: x.ID, OrderID: order, OrganizerID: x.OrganizerID, BuyerID: x.BuyerID,
+		SlotID: x.SlotID, TicketTypeID: x.TicketTypeID, Quantity: x.Quantity,
+	}, guestRef)
 	if err != nil {
 		slog.Default().ErrorContext(r.Context(), "persist order completion", "err", err)
 		write(w, 500, map[string]string{"error": "persist completion"})
 		return
 	}
+	// The completion commit owes the event, so issuance no longer depends on this
+	// publish succeeding: a failure here (or a crash) leaves a claimable outbox row
+	// the drainer picks up. Publish inline anyway to keep the happy path prompt —
+	// the buyer's ticket should not wait a drain interval — but never fail the
+	// checkout on it. The old 503 told a buyer whose money was taken and whose order
+	// was committed to "retry checkout", which was both alarming and unnecessary.
 	if err := s.publishCompleted(r.Context(), order, guestRef, x); err != nil {
-		write(w, 503, map[string]string{"error": "ticket issuance pending; retry checkout"})
-		return
+		slog.Default().WarnContext(r.Context(), "inline publish of owed completion event failed; left to the outbox drainer",
+			"order_id", order, "err", err)
+	} else if err := commercestore.MarkPublished(r.Context(), s.db, commerceevents.EventID(order)); err != nil {
+		// Retire the owed row so the drainer does not republish what just went out.
+		// Failing here is harmless: the drainer's duplicate is deduped by the
+		// deterministic Nats-Msg-Id.
+		slog.Default().WarnContext(r.Context(), "retire owed completion event after inline publish",
+			"order_id", order, "err", err)
 	}
 	write(w, 200, map[string]any{"order_id": order, "guest_order_ref": guestRef, "status": "completed"})
 }

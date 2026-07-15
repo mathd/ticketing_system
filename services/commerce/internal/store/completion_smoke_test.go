@@ -43,6 +43,7 @@ func TestCompleteOrderReturnsOneCanonicalReferenceConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM completion_outbox WHERE order_id=$1`, orderID)
 		_, _ = db.Exec(`DELETE FROM orders WHERE id=$1`, orderID)
 		_, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, reservationID)
 	})
@@ -58,7 +59,10 @@ func TestCompleteOrderReturnsOneCanonicalReferenceConcurrently(t *testing.T) {
 			defer wg.Done()
 			<-start
 			candidate := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("candidate-%d", i)))
-			ref, err := CompleteOrder(ctx, db, reservationID, orderID, candidate)
+			ref, err := CompleteOrder(ctx, db, Completion{
+				ReservationID: reservationID, OrderID: orderID, OrganizerID: organizerID,
+				BuyerID: buyerID, SlotID: slotID, TicketTypeID: ticketTypeID, Quantity: 2,
+			}, candidate)
 			refs <- ref
 			errs <- err
 		}(i)
@@ -88,5 +92,15 @@ func TestCompleteOrderReturnsOneCanonicalReferenceConcurrently(t *testing.T) {
 	}
 	if orderStatus != "completed" || reservationStatus != "completed" || persisted != canonical {
 		t.Fatalf("persisted completion = order %q reservation %q ref %s; want completed/completed/%s", orderStatus, reservationStatus, persisted, canonical)
+	}
+
+	// The winner owes the event exactly once, and the losers — who took the
+	// already-completed short-circuit — owe nothing further.
+	var owed int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM completion_outbox WHERE order_id=$1`, orderID).Scan(&owed); err != nil {
+		t.Fatal(err)
+	}
+	if owed != 1 {
+		t.Fatalf("owed completion events after %d concurrent completions = %d; want 1", callers, owed)
 	}
 }

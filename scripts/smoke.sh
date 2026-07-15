@@ -34,8 +34,10 @@ if ! compose up -d --build --wait; then
 fi
 
 cd "$ROOT/services/commerce"
+# No -run filter: every smoke test in this package is part of the gate. An allowlist
+# means a newly added test silently never runs and the gate still passes green.
 COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce" \
-go test -tags smoke -count=1 -run TestCompleteOrderReturnsOneCanonicalReferenceConcurrently ./internal/store
+go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/access"
 ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \

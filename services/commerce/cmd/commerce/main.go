@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 
 	commerceapi "ticketing/services/commerce/internal/api"
 	commerceevents "ticketing/services/commerce/internal/events"
+	"ticketing/services/commerce/internal/outbox"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
@@ -130,16 +132,59 @@ func run() error {
 	}
 	httpConfig.Apply(srv)
 
+	// Commerce's first background worker (ADR-016 §Decision 6). It drains once on
+	// start, which is what recovers events owed by a process that died before
+	// publishing — the paid-but-no-ticket window.
+	drainer := outbox.New(db, publisher, drainInterval(), drainBatch(), log)
+	drainCtx, stopDrainer := context.WithCancel(context.Background())
+	drainDone := make(chan struct{})
+	go func() { defer close(drainDone); drainer.Run(drainCtx) }()
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
 
+	shutdownDrainer := func() {
+		stopDrainer()
+		select {
+		case <-drainDone:
+		case <-time.After(5 * time.Second):
+			log.WarnContext(ctx, "outbox drainer did not stop within the grace period")
+		}
+	}
+
 	select {
 	case err := <-errCh:
+		shutdownDrainer()
 		return err
 	case <-ctx.Done():
+		// Stop serving first, then the drainer: draining an owed event is useful right
+		// up to exit, and any row still leased is re-claimed once the lease lapses.
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(sctx)
+		err := srv.Shutdown(sctx)
+		shutdownDrainer()
+		return err
 	}
+}
+
+// drainInterval bounds how long an owed event can sit unpublished when the inline
+// publish failed. Short enough that a buyer is not waiting on it; long enough that an
+// idle service is not polling PostgreSQL hard.
+func drainInterval() time.Duration {
+	if v := os.Getenv("OUTBOX_DRAIN_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 5 * time.Second
+}
+
+func drainBatch() int {
+	if v := os.Getenv("OUTBOX_DRAIN_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 32
 }

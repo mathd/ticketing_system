@@ -55,9 +55,18 @@ func (p *JetStream) OrderCompleted(ctx context.Context, data OrderCompletedData)
 	if err != nil {
 		return fmt.Errorf("marshal order completed: %w", err)
 	}
-	msg := &nats.Msg{Subject: SubjectOrderCompleted, Data: body, Header: nats.Header{"Nats-Msg-Id": []string{id.String()}}}
+	return p.PublishRaw(ctx, SubjectOrderCompleted, id, body)
+}
+
+// PublishRaw transmits an already-serialized envelope verbatim. The outbox drainer
+// uses this so the frozen bytes committed with the order are what reach the broker;
+// re-marshalling here would reintroduce the retry-dependent payload the outbox exists
+// to eliminate. Nats-Msg-Id carries the deterministic event id, so JetStream dedupes
+// the duplicates that at-least-once delivery implies.
+func (p *JetStream) PublishRaw(ctx context.Context, subject string, eventID uuid.UUID, envelope []byte) error {
+	msg := &nats.Msg{Subject: subject, Data: envelope, Header: nats.Header{"Nats-Msg-Id": []string{eventID.String()}}}
 	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
-		return fmt.Errorf("publish %s: %w", SubjectOrderCompleted, err)
+		return fmt.Errorf("publish %s: %w", subject, err)
 	}
 	return nil
 }
