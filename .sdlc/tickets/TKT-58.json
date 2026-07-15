@@ -5,11 +5,11 @@
   "classification": "simple",
   "labels": [
     "risk:low",
-    "agent:plan-review"
+    "agent:coding"
   ],
   "parent": "TKT-2",
   "description": "**Promote a proven learning (from TKT-53) into AGENTS.md.**\n\nThe repo already documents the state-deriving-catalog-slot-transition row-lock rule. TKT-53 added a corollary worth making a standard: when a slot belongs to a grouping (festival, and by extension future passes/lodging), its per-member lifecycle endpoints (`PublishPerformance`/`ArchivePerformance`) must **reject** a grouped member (`ErrGroupedSlotLifecycle`) so the group aggregate cannot be desynced out-of-band. This is now proven across performance/series/festival and was a REQUEST-CHANGES finding on TKT-53.\n\n**Scope:** one paragraph added to the existing row-lock bullet in AGENTS.md, citing `ErrGroupedSlotLifecycle` + the guarded `PublishPerformance`/`ArchivePerformance` in `services/catalog/internal/store/postgres.go` as the reference impl. Docs-only.\n\n**COS:** AGENTS.md states the corollary; no code change. risk:low (documentation, isolated).",
-  "status": "Planning",
+  "status": "Building",
   "assignee": "claude",
   "pr": null,
   "comments": [
