@@ -3,31 +3,18 @@
 package store
 
 import (
-	"context"
-	"database/sql"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func TestCompleteOrderReturnsOneCanonicalReferenceConcurrently(t *testing.T) {
-	dsn := os.Getenv("COMMERCE_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("COMMERCE_TEST_DATABASE_URL is not set")
-	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	// Shares outboxDB so this test migrates the isolated store-test database too.
+	db, ctx := outboxDB(t)
+	var err error
 	reservationID, orderID := uuid.New(), uuid.New()
 	organizerID, holdID, slotID := uuid.New(), uuid.New(), uuid.New()
 	ticketTypeID, buyerID := uuid.New(), uuid.New()

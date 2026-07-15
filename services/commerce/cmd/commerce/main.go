@@ -92,6 +92,15 @@ func run() error {
 	if err := commercestore.Migrate(mctx, db); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	// Orders completed before the outbox existed owe an event no code path will ever
+	// insert, because CompleteOrder short-circuits on an already-completed order. Left
+	// alone they keep the paid-but-no-ticket window open forever — the exact bug the
+	// outbox closes. Idempotent, and a no-op on every boot after the first.
+	if owed, err := commercestore.BackfillCompletionOutbox(mctx, db); err != nil {
+		return fmt.Errorf("backfill completion outbox: %w", err)
+	} else if owed > 0 {
+		log.InfoContext(ctx, "backfilled owed completion events", "count", owed)
+	}
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))

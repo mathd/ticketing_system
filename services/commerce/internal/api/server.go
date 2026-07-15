@@ -202,14 +202,36 @@ func (s *Server) load(ctx context.Context, id uuid.UUID) (reservation, error) {
 	return x, err
 }
 
-func (s *Server) publishCompleted(ctx context.Context, order, ref uuid.UUID, x reservation) error {
+// publishOwed sends an order's committed envelope inline, for promptness only. It is
+// best-effort by design: the outbox already owes the event, so every failure path here
+// is recoverable by the drainer and none of them may fail the buyer's request.
+//
+// It publishes the FROZEN bytes rather than rebuilding the envelope. Rebuilding would
+// put a different payload on the wire than the drainer's retry would send, under the
+// same deterministic id — defeating the point of freezing it at commit.
+func (s *Server) publishOwed(ctx context.Context, order uuid.UUID) {
 	if s.publisher == nil {
-		return errors.New("order event publisher unavailable")
+		return // the drainer owns delivery
 	}
-	return s.publisher.OrderCompleted(ctx, commerceevents.OrderCompletedData{
-		OrderID: order, GuestOrderRef: ref, OrganizerID: x.OrganizerID, BuyerID: x.BuyerID,
-		SlotID: x.SlotID, TicketTypeID: x.TicketTypeID, Quantity: x.Quantity,
-	})
+	eventID, subject, envelope, ok, err := commercestore.FrozenEnvelope(ctx, s.db, order)
+	if err != nil || !ok {
+		if err != nil {
+			slog.Default().WarnContext(ctx, "read owed completion envelope; left to the outbox drainer",
+				"order_id", order, "err", err)
+		}
+		return // already published, or unreadable: either way the drainer reconciles
+	}
+	if err := s.publisher.PublishRaw(ctx, subject, eventID, envelope); err != nil {
+		slog.Default().WarnContext(ctx, "inline publish of owed completion event failed; left to the outbox drainer",
+			"order_id", order, "err", err)
+		return
+	}
+	// Retire the row so the drainer does not republish what just went out. Only
+	// retires an unleased row: if a drainer holds it, that drainer owns the outcome.
+	if err := commercestore.MarkPublishedByOrder(ctx, s.db, order); err != nil {
+		slog.Default().WarnContext(ctx, "retire owed completion event after inline publish",
+			"order_id", order, "err", err)
+	}
 }
 
 func (s *Server) guestReference(ctx context.Context, order uuid.UUID) (uuid.UUID, error) {
@@ -352,13 +374,10 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 			write(w, 503, map[string]string{"error": "ticket issuance pending; retry checkout"})
 			return
 		}
-		// The original completion already owed this event, so the replay need not
-		// re-publish to be correct — the drainer guarantees delivery. Try inline for
-		// promptness; never fail the replay on it.
-		if err := s.publishCompleted(r.Context(), order, ref, x); err != nil {
-			slog.Default().WarnContext(r.Context(), "inline republish on completed-order replay failed; owed event stands",
-				"order_id", order, "err", err)
-		}
+		// The original completion owed this event; if it is still unpublished, send the
+		// frozen bytes. If it is already published (or backfilled and drained), this is
+		// a no-op — a replay must not mint a second, differently-timestamped copy.
+		s.publishOwed(r.Context(), order)
 		write(w, 200, map[string]any{"order_id": order, "guest_order_ref": ref, "status": "completed"})
 		return
 	}
@@ -455,20 +474,11 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 	// The completion commit owes the event, so issuance no longer depends on this
 	// publish succeeding: a failure here (or a crash) leaves a claimable outbox row
-	// the drainer picks up. Publish inline anyway to keep the happy path prompt —
-	// the buyer's ticket should not wait a drain interval — but never fail the
-	// checkout on it. The old 503 told a buyer whose money was taken and whose order
-	// was committed to "retry checkout", which was both alarming and unnecessary.
-	if err := s.publishCompleted(r.Context(), order, guestRef, x); err != nil {
-		slog.Default().WarnContext(r.Context(), "inline publish of owed completion event failed; left to the outbox drainer",
-			"order_id", order, "err", err)
-	} else if err := commercestore.MarkPublished(r.Context(), s.db, commerceevents.EventID(order)); err != nil {
-		// Retire the owed row so the drainer does not republish what just went out.
-		// Failing here is harmless: the drainer's duplicate is deduped by the
-		// deterministic Nats-Msg-Id.
-		slog.Default().WarnContext(r.Context(), "retire owed completion event after inline publish",
-			"order_id", order, "err", err)
-	}
+	// the drainer picks up. Publish inline anyway to keep the happy path prompt — the
+	// buyer's ticket should not wait a drain interval — but never fail the checkout
+	// on it. The old 503 told a buyer whose money was taken and whose order was
+	// committed to "retry checkout", which was both alarming and unnecessary.
+	s.publishOwed(r.Context(), order)
 	write(w, 200, map[string]any{"order_id": order, "guest_order_ref": guestRef, "status": "completed"})
 }
 

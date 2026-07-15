@@ -34,6 +34,10 @@ type OrderCompletedData struct {
 
 type Publisher interface {
 	OrderCompleted(context.Context, OrderCompletedData) error
+	// PublishRaw transmits an already-frozen envelope. Callers holding committed
+	// bytes must use this: OrderCompleted re-marshals with a fresh timestamp, which
+	// would put a different payload on the wire under the same deterministic id.
+	PublishRaw(ctx context.Context, subject string, eventID uuid.UUID, envelope []byte) error
 }
 type JetStream struct{ js jetstream.JetStream }
 
