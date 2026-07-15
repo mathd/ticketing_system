@@ -193,6 +193,16 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   3c FINALIZE — YOU, always, whatever config.models says (a delegated worker cannot talk to the
 #      human): grill the human on the open decisions (complex tickets, one question at a time),
 #      revise, post kind=plan-final (final plan + what changed from the draft and why).
+#      REQUIRED SECTION — "introduced at plan-review, reviewed by no second model": list every
+#      design element 3b *added* rather than accepted/amended/rejected from the draft, and say the
+#      words. The cross-model guarantee covers the draft (3a reviewed by 3b) and the code (step 4
+#      reviewed by aiReview) — it does NOT cover 3b's own inventions, which reach Gate 2 unreviewed
+#      by anyone but their author. Name them, and name them again in the Gate 2 hand-off, so the
+#      human knows which parts are load-bearing AND unreviewed. If the list is empty, write `none`.
+#      (TKT-57: planReview invented the whole async-checkpoint scheme at 3b; Gate 2 approved it in
+#      19 seconds; both aiReview passes then found it materially wrong. It was caught only because
+#      the ADR *was* the deliverable — on a code ticket the premise ships and aiReview reviews the
+#      code, not the premise. This section is the cheapest thing that would have surfaced it.)
 #   If risk:low → skip to step 4.
 #   MCP editJiraIssue: -agent:plan-review +needs:human
 #   ⛔ GATE 2 — wait for the human to transition Planning → Building.
@@ -277,7 +287,13 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
   - **Aggregate volume**, even when each fix was individually small — many small edits still add up to a fix diff worth reviewing on its own. Judge the total, not the per-fix verdict.
   - New/changed control flow or logic; a changed function signature / public API / schema / migration; a touched money, auth, or concurrency path; a new or materially rewritten test; or fixes spilling into files the findings didn't name.
 
-  Any one of those → **re-run the same `adversarial-review`** on the new diff and triage it identically. Pure trivia (typos, comments, formatting, a rename the compiler verifies) → one pass; record the call in the stage comment either way. **Cap at two** — a third pass means the diff is churning; stop and hand it to the human. A rebase that materially changed the diff is also a trigger. **A Gate-3 human review round is not:** the human review *is* the authoritative adversarial pass, so address its changes under `agent:coding`, re-green, and return to `needs:human` for re-review of the new SHA — without a new codex run.
+  Any one of those → **re-run the same `adversarial-review`** on the new diff and triage it identically. Pure trivia (typos, comments, formatting, a rename the compiler verifies) → one pass; record the call in the stage comment either way. A rebase that materially changed the diff is also a trigger.
+
+  **Cap: two passes per *stable* diff — but a pass that invalidates the previous pass's fix resets the counter (absolute cap 4).** The cap exists to stop **churn**: one diff going round in circles. It must not fire while the diff is **converging on a bug nobody had found yet**. Tell them apart by what the new pass actually did:
+  - **Churn** (cap applies — stop, hand to the human): re-litigating style, resurfacing already-triaged findings, findings that shrink in severity each round.
+  - **Convergence** (reset the counter, run one more): a pass showed the previous fix was **wrong at the root**, and the response was a **structural rewrite**. That rewrite is new, unreviewed code — typically the largest and riskiest commit on the branch. Stopping there hands the human the **worst-reviewed commit in the ticket**, which is exactly backwards.
+
+  TKT-61 is the worked example: pass 2 proved pass 1's fix was hollow (it parked only the future variants that happened to be shaped like the present one), the rewrite that followed was the biggest commit on the branch, and the old flat cap sent it to Gate 3 with **no AI pass at all**. Whenever you do stop at the cap with an unreviewed fix diff, **say so explicitly in the stage comment *and* the review-guide**, and label your own verification as your own — an undisclosed unreviewed rewrite is the failure this rule exists to prevent. **A Gate-3 human review round is not:** the human review *is* the authoritative adversarial pass, so address its changes under `agent:coding`, re-green, and return to `needs:human` for re-review of the new SHA — without a new codex run.
 - **V0 is manual** — no Jira automation / webhooks. Movement is agent-driven on the user's command.
 - **Never push after setting `needs:human`** without first swapping back to an `agent:*` label.
 - **When a human pushes back** — diagnose the failing layer first (**intent / plan / implementation**) and regenerate from that layer, never patch locally at a lower one (`quality-practices.md` §4).
