@@ -2,7 +2,7 @@
   "key": "TKT-43",
   "type": "Story",
   "summary": "Production-grade checkout recovery and journal fault-injection hardening",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "agent:coding"
   ],
