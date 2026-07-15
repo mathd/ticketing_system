@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFound while answering *\"what does TKT-57 unlock?\"* — not by TKT-57's own work, and it predates ADR-021 rather than being caused by it.\n\n**A correction worth recording, since the first version of this finding was wrong.** I initially claimed offline scanning would fork the hash chain and that ADR-021 had no merge semantics. **False.** `Redeem` writes the chain **server-side** under `SELECT ... FROM tickets WHERE id=$1 FOR UPDATE` (`postgres.go:190`) — the gate never touches the chain, so a reconciling offline scan submits an event the server appends in its own serialized order. No fork, no merge problem.\n\nThe real constraint is duller and worse: **`UNIQUE(ticket_id, event_type)`**. Not a race, not a protocol gap — one line of DDL from the first migration that quietly caps every ticket at one redemption and makes the duplicate-scan path return success instead of recording anything.\n\n**Why it reads as fine today:** single-entry tickets are the only thing shipped, and for those the idempotent duplicate scan is arguably the *correct* gate answer. The constraint only becomes wrong when passes or offline land — both of which the PRD already promises (TKT-19, TKT-16). It is the kind of decision that is cheap now and expensive after TKT-67 signs the trail.\n\n**The sharp end:** ADR-003 §Decision 2 chose the trace over a mutable flag *so that duplicates are detectable at the gate*. A trail that cannot represent a double-admit does not deliver that, and TKT-67 is about to make it cryptographically trustworthy."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Context-mémo refreshed — ADR-022 (TKT-66, #50) superseded ADR-008 on placement.**\n\nThe original mémo said *\"changing the UNIQUE is a startup migration over existing rows\"*. It is not: migrations now run **out-of-band as a one-shot `access-migrate` job**, and the server path never migrates. If this ticket's decision drops or narrows `UNIQUE(ticket_id, event_type)`, that migration runs in that job, under ADR-008's surviving **30-second fail-fast deadline** — with Access `depends_on` it completing successfully.\n\nUnchanged: plain `CREATE INDEX`, never `CONCURRENTLY` (ADR-020's preconditions are conjunctive; ADR-022 satisfied only the first, and TKT-66 explicitly checked and rejected the premise that decoupling re-opens it)."
     }
   ],
   "links": [],
@@ -68,12 +73,16 @@
         "rule": "One DB per service; Access owns this schema alone — no cross-service reads."
       },
       {
+        "id": "ADR-022",
+        "rule": "SUPERSEDES ADR-008 ON PLACEMENT. Migrations run OUT-OF-BAND as a one-shot `<service>-migrate` Compose job (`migrate` subcommand); the server path never migrates and the service `depends_on` the job with `service_completed_successfully`. There is no 'before listening' any more. Single-invoker serialization is the invariant — advisory locking is deliberately deferred, and anything that could launch two migrate jobs per service must adopt it first."
+      },
+      {
         "id": "ADR-008",
-        "rule": "Migrations run at startup, fail-fast, before listening — changing the UNIQUE is a startup migration over existing rows."
+        "rule": "SUPERSEDED ON PLACEMENT by ADR-022 — do NOT read it as 'migrations run at startup'. What still stands and still binds: goose v3 as a library, migrations embedded via embed.FS, per-service schema ownership, seed data as ordinary migrations, and FAIL-FAST UNDER A 30-SECOND DEADLINE."
       },
       {
         "id": "ADR-020",
-        "rule": "Plain CREATE INDEX, never CONCURRENTLY (because of ADR-008)."
+        "rule": "Plain CREATE INDEX, never CONCURRENTLY — still. ADR-022 satisfied precondition (1) (migrations left startup), but the preconditions are CONJUNCTIVE and (2)/(3) remain false, so the decision is unchanged. TKT-66 amended ADR-020 to say exactly this; the premise that decoupling re-opens CIC was checked and rejected at its plan gate."
       }
     ],
     "reference": [
@@ -86,6 +95,6 @@
         "link": "docs/product/prd-v1.md"
       }
     ],
-    "capturedAt": "2026-07-15"
+    "capturedAt": "2026-07-15 (refreshed after ADR-022)"
   }
 }
