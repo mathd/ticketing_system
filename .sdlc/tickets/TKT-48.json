@@ -2,7 +2,7 @@
   "key": "TKT-48",
   "type": "Bug",
   "summary": "Stop scanner camera streams across unmount and re-entry races",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
