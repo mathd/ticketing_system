@@ -2,13 +2,15 @@
 
 Four practices applied at specific points of the pipeline. Each is cheap; skipping them is how plans bounce, PRs bloat, and reviews stall. (Comment-marker formats are in `SKILL.md` § Memory & metrics.)
 
-## 1. Pre-mortem pass on plans (in `agent:planning`, before the Codex critique)
+## 1. Pre-mortem pass on plans (in `agent:plan-review`, on Codex's draft)
 
-**Pick the test seam first.** Before drafting steps, decide *where* this feature is exercised: prefer an **existing** seam over a new one, the **highest** seam that still isolates the change, and the **fewest** seams possible (ideal: one). Record the chosen seam in the plan and, if it's a new one, why no existing seam fit — the executing agent tests through it, so a wrong seam is a rewrite. (Seam = a place you can alter behaviour without editing there — Feathers.)
+Codex (GPT-5.6-sol) writes the draft in `agent:planning`; the main agent reviews it here. This pass is that review's backbone — the draft is a proposal from a model that couldn't run the gate, so treat it as input, not as a plan.
 
-**Grill the human on the open decisions (complex tickets, when interactive).** For anything not `risk:low`, before the pre-mortem, put the plan's unresolved *decisions* to the user **one question at a time**, each with your recommended answer, and wait for each. Look **facts** up in the code yourself — only genuine decisions go to the human. This extracts human context the pre-mortem (author-internal) and Codex (fresh-context) both miss. Skip it for `risk:low` or when the user chose *gates only* drive style.
+**Verify the test seam it picked — or pick one.** The plan must say *where* this feature is exercised: prefer an **existing** seam over a new one, the **highest** seam that still isolates the change, and the **fewest** seams possible (ideal: one). Confirm the seam the draft names **actually exists** (`git grep -n` at HEAD) — a hallucinated seam is the drafter's most likely failure. Record the chosen seam in the final plan and, if it's a new one, why no existing seam fit — the executing agent tests through it, so a wrong seam is a rewrite. (Seam = a place you can alter behaviour without editing there — Feathers.)
 
-After drafting the plan, re-examine it through one **named** reasoning lens — a generic "double-check it" re-confirms; a named lens forces an angle of attack.
+**Grill the human on the open decisions (complex tickets, when interactive).** For anything not `risk:low`, before the pre-mortem, put the plan's unresolved *decisions* to the user **one question at a time**, each with your recommended answer, and wait for each. Look **facts** up in the code yourself — only genuine decisions go to the human. This extracts human context that neither the pre-mortem nor the Codex draft (fresh-context, no ticket history) can reach. Skip it for `risk:low` or when the user chose *gates only* drive style.
+
+Then re-examine the plan through one **named** reasoning lens — a generic "double-check it" re-confirms; a named lens forces an angle of attack.
 
 Default lens — **pre-mortem**: *assume this ticket bounced — the plan was rejected at Gate 2, or the PR at Gate 3. Work backward: what went wrong?* List the 3–5 most plausible failure causes (wrong integration point, missing migration, untestable AC, hidden coupling, scope too big…), then patch the plan where a cause is credible.
 
@@ -16,7 +18,7 @@ If pre-mortem fits poorly: **inversion** (what would guarantee failure? avoid th
 
 Record one line in the `plan-final` comment: lens applied + what it changed (or "no changes").
 
-Why both this and Codex: the pre-mortem catches wrong-approach risk from inside the author's full context; the Codex critique attacks feasibility from fresh context with no access to the reasoning. They miss different things.
+Why the two models sit this way round: Codex drafts from fresh context — fast, unattached to a favoured approach, and unable to verify itself. The main agent has the repo, the ticket thread, and the gate, so it's the one that can falsify a draft. Drafting is where a fresh angle pays; reviewing is where grounding pays.
 
 ## 2. Findings triage (in `agent:ai-review` and at Gate 3 feedback)
 

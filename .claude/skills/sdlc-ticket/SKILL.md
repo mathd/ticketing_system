@@ -70,7 +70,7 @@ Project-specific bindings live in **`.claude/sdlc.config.json`** in the code rep
 }
 ```
 
-**Cross-model review is a prerequisite, not an option.** It backs two stages (`agent:plan-review`, `agent:ai-review`). If an environment forbids sending code to an external model, this SDLC doesn't apply there — don't build a degraded variant.
+**Cross-model work is a prerequisite, not an option.** Codex (GPT-5.6-sol) backs two stages from opposite ends: it **drafts** the plan (`agent:planning`, reviewed by the main agent) and **reviews** the code (`agent:ai-review`, fixed by the main agent). The main agent is whichever model drives the Claude Code session (usually Opus 4.8) — never hardcode it. If an environment forbids sending code to an external model, this SDLC doesn't apply there — don't build a degraded variant.
 
 Resolve transition names (`getTransitionsForJiraIssue`) and the blocks link type (`getIssueLinkTypes`) at runtime — both vary by instance — and store them in `config.jira.transitions` (keyed `<from>-><to>`) and `config.jira.blocksLinkType` so later runs don't re-discover them.
 
@@ -78,10 +78,10 @@ Resolve transition names (`getTransitionsForJiraIssue`) and the blocks link type
 
 | Label | Meaning |
 |---|---|
-| `agent:planning` | Drafting the execution plan against the real code |
-| `agent:plan-review` | Codex cross-model critique of the plan; agent revising |
-| `agent:coding` | TDD in progress (tests first → implement → local gate green) |
-| `agent:ai-review` | PR open; Codex adversarial review; agent fixing findings |
+| `agent:planning` | **Codex (GPT-5.6-sol) drafting** the execution plan against the real code |
+| `agent:plan-review` | **Main agent critiquing** Codex's draft and producing the final plan |
+| `agent:coding` | Main agent: TDD in progress (tests first → implement → local gate green) |
+| `agent:ai-review` | PR open; Codex adversarial review; main agent fixing findings |
 | `needs:human` | **Agent has stopped — ball is in the human's court.** Status disambiguates: in `Planning` = plan approval; in `Building` = PR review + merge; in `PO Review` = PO functional validation |
 | `risk:low` | Orthogonal modifier set at creation: skip the plan gate. **Challengeable, not gospel** — see invariants |
 
@@ -99,8 +99,8 @@ Resolve transition names (`getTransitionsForJiraIssue`) and the blocks link type
 |---|--------|-------------|------------------------------|-----------|
 | 1 | `Backlog` | issue created | Write **COS** (Conditions of Success — this pipeline's term for acceptance criteria) + scope; suggest `risk:low` if trivial. **Every pipeline ticket gets the context-mémo bake** (`decomposition.md` § context-mémo) — standalone tickets too, not just PRD children. **Raw idea →** explore first (`exploration.md`). **PRD/multi-ticket →** decompose (`decomposition.md`): epic + children + dependency links + context-mémo bake, ending with the readiness verdict. **Then shape** (`shaping.md`): fill the 7-item DoR (`readiness` field), spawn spikes for investigations, flag human decisions (`owner: "human"`). | ⛔ human → `Ready` — **hard-blocked while any DoR item is `open` or a blocker is open** (`deferred` passes) |
 | 2 | `Ready` | approved queue | Verify **zero open blockers**, then claim: assign self, create branch `<ISSUE-KEY>-<slug>` off `origin/main` in the code repo, post a claim comment with selection reason. | agent claims → `Planning` |
-| 3 | `Planning` | agent claimed | `agent:planning`: read the real code + the ticket's context-mémo, pick the **test seam**, draft the plan (DoD, files, test plan), grill the human on open decisions (complex tickets), pre-mortem pass → `agent:plan-review`: Codex critique, revise, post final plan → `needs:human` (skip if `risk:low`). | ⛔ human → `Building` |
-| 4 | `Building` | plan approved | `agent:coding`: TDD, local gate green, push, open PR (`<ISSUE-KEY>` in title/body) → `agent:ai-review`: Codex adversarial review of the diff, triage findings, rebase if behind, re-green → `needs:human`: post the review-guide on the PR, stop. | ⛔ human reviews + **merges** → `PO Review` |
+| 3 | `Planning` | agent claimed | `agent:planning`: brief **Codex (GPT-5.6-sol)** with the ticket + context-mémo; it reads the real code and drafts the plan (DoD, files, test seam, test plan) → `agent:plan-review`: **main agent** critiques the draft against the real code, pre-mortem pass, grills the human on open decisions (complex tickets), posts the final plan → `needs:human` (skip if `risk:low`). | ⛔ human → `Building` |
+| 4 | `Building` | plan approved | `agent:coding`: **main agent** TDD, local gate green, push, open PR (`<ISSUE-KEY>` in title/body) → `agent:ai-review`: **Codex** adversarial review of the diff, main agent triages + fixes, rebase if behind, re-green, **second Codex pass if the fixes were non-trivial** → `needs:human`: post the review-guide on the PR, stop. | ⛔ human reviews + **merges** → `PO Review` |
 | 5 | `PO Review` | human merged (deployed to DEV) | `needs:human`: post a validation note showing the **COS are met** from the user's output (via code if not user-demonstrable), + any preview link; stop pushing. | ⛔ PO validates COS + gives final go before client TEST deploy → `Done` |
 | 6 | `Done` | PO accepted | Remove `needs:human`; verify PR merged + the **project DoD** is satisfied (see `references/setup.md`); post the metrics comment (durations from the Jira changelog); promote reusable learnings; delete branch. | — |
 
@@ -124,21 +124,29 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=ready kind=claim --> + selection reason.
 #   agent transitions Ready → Planning (claim is the agent's move).
 
-# 3 Plan (Jira)
+# 3 Plan — Codex drafts, main agent reviews (Jira)
 #   MCP editJiraIssue add-label agent:planning
-#   read code + the ticket's agent-context property; draft plan; pre-mortem (quality-practices.md §1);
-#   MCP addCommentToJiraIssue: <!-- sdlc:stage=planning kind=plan -->
+#   3a DRAFT — by Codex (GPT-5.6-sol). Read the ticket + agent-context property yourself first
+#      (you brief the drafter; don't make it guess the mémo).
+#      Write .plan-brief.$$.md with the Write tool (NOT printf/echo — ticket text runs shell
+#      metacharacters): COS, scope, context-mémo, constraints, the required plan shape
+#      (DoD, files touched, test seam, test plan, risks).
+#        node "$CODEX" task --prompt-file .plan-brief.$$.md --model gpt-5.6-sol --effort high \
+#          --background     # read-only: NO --write, the drafter never touches the tree
+#        node "$CODEX" status <job-id> ; node "$CODEX" result <job-id>   # poll (task honours --background)
+#      Delete only the file this run created. Codex failing ≠ stage done (see Hard rules):
+#      retry once, then stop on agent:planning and report. Never substitute your own draft
+#      silently — a plan the main agent wrote alone is a different flow, say so if you fall back.
+#      MCP addCommentToJiraIssue: <!-- sdlc:stage=planning kind=plan --> (the Codex draft, verbatim,
+#      attributed to gpt-5.6-sol)
 #   MCP editJiraIssue: -agent:planning +agent:plan-review
-#   codex (plugin, agent-invocable): the plan is NOT in git — materialize it first, else the
-#   reviewer sees nothing and "passes" vacuously (see Hard rules):
-#     Write .plan-review.$$.md with the Write tool (NOT printf/echo — plan text runs shell
-#     metacharacters), plan + only the code under discussion, kept lean.
-#     node "$CODEX" adversarial-review --scope working-tree \
-#       "Critique this plan for feasibility, missing scope, risk. Attack the approach."
-#     confirm the plan file is in the review context; then delete the file this run created.
-#   ($CODEX = ~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs)
-#   NOTE: --background is ignored for reviews — background via the harness or wrap in `timeout`.
-#   revise; post kind=plan-final.  If risk:low → skip to step 4.
+#   3b REVIEW — by the main agent (the model driving this session). Adversarial, not a rubber stamp:
+#      verify every file/symbol/test seam the draft names actually exists (`git grep -n` at HEAD —
+#      a drafter that can't run the gate will hallucinate seams); check it against the real code,
+#      the COS, and ADRs; pre-mortem (quality-practices.md §1); grill the human on open decisions.
+#      Revise into the final plan — accept, amend or reject each part of the draft with a stated reason.
+#      MCP addCommentToJiraIssue: <!-- sdlc:stage=plan-review kind=plan-final --> (final plan +
+#      what you changed from the draft and why).  If risk:low → skip to step 4.
 #   MCP editJiraIssue: -agent:plan-review +needs:human
 #   ⛔ GATE 2 — wait for the human to transition Planning → Building.
 
@@ -152,8 +160,14 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #     node "$CODEX" adversarial-review --base origin/main --scope branch \
 #       "Correctness, security, coverage. Challenge the approach, not just defects."
 #   (--background is IGNORED for reviews: background via the harness or wrap in `timeout`)
-#   triage findings (quality-practices.md §2): blocking→fix in PR; incidental→new backlog ticket; rejected→stated reason.
-#   rebase on origin/main if behind; re-green. MCP comment kind=summary (ai-review).
+#   ($CODEX = ~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs)
+#   main agent triages findings (quality-practices.md §2): blocking→fix in PR; incidental→new backlog
+#   ticket; rejected→stated reason.  Fix, rebase on origin/main if behind, re-green.
+#   SECOND PASS — re-run the same adversarial-review iff the fixes were NON-TRIVIAL (see Hard rules).
+#   Trivial → one pass, say so in the stage comment. Second pass findings are triaged the same way;
+#   there is no third — if it's still churning, stop and hand to the human.
+#   MCP comment kind=summary (ai-review): per-finding verdicts, what was fixed, and whether the
+#   second pass ran + why.
 #   MCP editJiraIssue: -agent:ai-review +needs:human ; post the review-guide on the PR. STOP pushing.
 #   ⛔ GATE 3 — human reviews + merges (squash) in the code repo, then transitions Building → PO Review. Do NOT merge yourself.
 #     Merge conflict? swap back to agent:coding, rebase, re-green, back to needs:human (re-review the new SHA).
@@ -182,21 +196,23 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 ## Hard rules
 
 - **Never merge for the human.** Gate 3 is the human's, in the code repo. Agents stop at `needs:human`.
-- **Reaching Codex — call the plugin's companion script directly; it is agent-invocable.** Where `codex@openai-codex` is installed, run the **companion script**, not raw `codex exec`. The `/codex:*` slash commands are `disable-model-invocation: true` (human-only), but the script they wrap is not — so the agent automates both review stages itself:
+- **Reaching Codex — call the plugin's companion script directly; it is agent-invocable.** Where `codex@openai-codex` is installed, run the **companion script**, not raw `codex exec`. The `/codex:*` slash commands are `disable-model-invocation: true` (human-only), but the script they wrap is not — so the agent automates both Codex stages itself:
   ```bash
   CODEX=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
-  # ai-review — the PR diff vs the base branch
+  # planning (step 3a) — Codex AUTHORS the plan draft. Read-only: no --write.
+  node "$CODEX" task --prompt-file .plan-brief.$$.md --model gpt-5.6-sol --effort high --background
+  node "$CODEX" status <job-id> ; node "$CODEX" result <job-id>
+  # ai-review (step 4) — the PR diff vs the base branch
   node "$CODEX" adversarial-review --base origin/main --scope branch "<focus: what to attack>"
-  # plan-review — the plan is NOT in git, so materialize it first (see next bullet)
-  node "$CODEX" adversarial-review --scope working-tree "<focus>"
   ```
-  Use **`adversarial-review`** for both stages: it takes focus text and challenges the approach. Plain `review` is native-review only and **rejects focus text entirely**. Both map to Codex's built-in reviewer — **no `-m` flag to get wrong**. Args: `--base <ref>`, `--scope auto|working-tree|branch`.
+  **`adversarial-review`** is the review command: it takes focus text and challenges the approach. Plain `review` is native-review only and **rejects focus text entirely**. Both map to Codex's built-in reviewer — **no `-m` flag to get wrong**; args `--base <ref>`, `--scope auto|working-tree|branch`. **`task` is the only command that takes a model** — pass `--model gpt-5.6-sol` explicitly. **The literal is `gpt-5.6-sol`; plain `gpt-5.6` does not work here** (confirmed by the owner, 2026-07-15). Don't "correct" it to `gpt-5.6`.
 - **⚠ `--background` is a lie for reviews — verified in the companion script.** It is parsed and then **ignored**: `review`/`adversarial-review` unconditionally call `runForegroundCommand` (only `task` honours it), so `status`/`result` polling does **not** work for review jobs and a stalled review blocks the caller. The plugin's own command docs are wrong about this. **Instead: run the review through the harness's own backgrounding** (`Bash(..., run_in_background: true)`) or wrap it in `timeout`, so a hang is caught rather than waited out. `--wait` is equally redundant — foreground is the only mode.
-- **`plan-review` needs the plan materialized — the reviewer only reads git, never the board.** Both commands diff a working tree or branch; a plan living in a board comment is invisible, so a bare invocation reviews *nothing* and "passes" vacuously. **A plan-review whose scope contained no plan is a failed stage, not a pass** — confirm the plan file appears in the review's context before accepting the verdict. Write it with a **file-writing tool or a quoted heredoc**, never by interpolating plan text into a shell command: ticket text and inlined code routinely contain backticks and `$(…)`, which a double-quoted `printf`/`echo` will **execute**. Use a collision-resistant name (`.plan-review.$$.md`), and only delete what this run created — never blindly `rm` a path a human might own. Keep the file lean (plan + only the code under discussion); a very large untracked file risks being dropped from the review context, which silently reproduces the vacuous pass.
-- **Raw `codex exec` — fallback only, when the plugin is absent.** (a) **Pass `-m` explicitly** — the CLI default errors `requires a newer Codex`. The value is **environment-specific**: `-m gpt-5.6-sol` on a ChatGPT-account box (plain `gpt-5.6` is rejected there), `-m gpt-5.6` where TKT-50/TKT-54 learned it (macOS, codex-cli 0.14x). Read `~/.codex/config.toml` for the local default rather than trusting either literal. (b) Feed the prompt via **STDIN redirect** (`< prompt.txt`), never as a positional arg — a large arg hangs at `Reading additional input from stdin…`. (c) **Inline the plan/diff in the prompt file** rather than telling codex to `git diff` itself. (d) Run it **backgrounded + poll**. (e) **A local skill will hijack the prompt and cannot be stopped** — "review"/"critique" loads the machine's skills (possibly an *unrelated client's*); neither `--disable plugins` nor `-c features.skills=false` prevents it (`--disable skills` isn't a valid flag). This hijack also happens *through the plugin*. Survivable, not preventable.
-- **Codex failing ≠ stage done — and exit 0 ≠ success.** **Read the output; never judge by exit status** (raw `exec` exits 0 on both a zero-findings hijack and a bad flag that never reached the model). Judge by **whether the reviewer actually ran against the intended scope and returned a conclusive verdict** — *not* by whether it found defects. **A conclusive "no findings" on a genuinely clean diff is a PASS**; a run that reviewed the wrong scope, or returned only a rubric template, is a failure however many sections it printed. A run that announces a foreign skill but returns concrete, code-cited findings is likewise a pass — the rubric is irrelevant. On failure, retry once, then **stop with the current `agent:*` label and report**. Never substitute a self-review; a skipped review that looks done is worse than a stalled ticket.
+- **Plan drafting uses `task`, not a review command — and the brief must be materialized.** `review`/`adversarial-review` only diff a working tree or branch; they cannot author a plan. Use `task` (it accepts `--model`, `--effort`, `--prompt-file`, and **actually honours `--background`** — unlike reviews — so poll with `status`/`result`). **Never pass `--write` at the planning stage:** the drafter proposes, it does not touch the tree. Write the brief with a **file-writing tool or a quoted heredoc**, never by interpolating ticket/plan text into a shell command — ticket text and inlined code routinely contain backticks and `$(…)`, which a double-quoted `printf`/`echo` will **execute**. Use a collision-resistant name (`.plan-brief.$$.md`), delete only what this run created, and keep it lean (ticket + mémo + the code actually under discussion) — a huge file risks being dropped from context.
+- **The drafter cannot run the gate — so the main agent's `plan-review` is load-bearing, not ceremony.** Codex drafts from a read-only view and will confidently name files, symbols, and test seams that don't exist. Verify each one against HEAD (`git grep -n "<sym>" HEAD`) before the plan is final; an unverified draft forwarded as a final plan is a failed stage. **A `plan-review` that accepts the draft wholesale is a smell** — say explicitly what you accepted, amended, or rejected, and why.
+- **Raw `codex exec` — fallback only, when the plugin is absent.** (a) **Pass `-m gpt-5.6-sol` explicitly** — the CLI default errors `requires a newer Codex`. **`gpt-5.6-sol` is the model's actual name; plain `gpt-5.6` does not work** (owner, 2026-07-15 — this supersedes the TKT-50/TKT-54 note that claimed the reverse). (b) Feed the prompt via **STDIN redirect** (`< prompt.txt`), never as a positional arg — a large arg hangs at `Reading additional input from stdin…`. (c) **Inline the plan/diff in the prompt file** rather than telling codex to `git diff` itself. (d) Run it **backgrounded + poll**. (e) **A local skill will hijack the prompt and cannot be stopped** — "review"/"critique" loads the machine's skills (possibly an *unrelated client's*); neither `--disable plugins` nor `-c features.skills=false` prevents it (`--disable skills` isn't a valid flag). This hijack also happens *through the plugin*. Survivable, not preventable.
+- **Codex failing ≠ stage done — and exit 0 ≠ success. Applies to the drafter too:** a `task` run that returns nothing, a rubric, or a plan for the wrong ticket is a failed stage — retry once, then stop on `agent:planning` and report. **Never quietly write the plan yourself instead**; if the human tells you to fall back, the `kind=plan` comment says so, because "who drafted this" is exactly what this flow is measuring. **Read the output; never judge by exit status** (raw `exec` exits 0 on both a zero-findings hijack and a bad flag that never reached the model). Judge by **whether the reviewer actually ran against the intended scope and returned a conclusive verdict** — *not* by whether it found defects. **A conclusive "no findings" on a genuinely clean diff is a PASS**; a run that reviewed the wrong scope, or returned only a rubric template, is a failure however many sections it printed. A run that announces a foreign skill but returns concrete, code-cited findings is likewise a pass — the rubric is irrelevant. On failure, retry once, then **stop with the current `agent:*` label and report**. Never substitute a self-review; a skipped review that looks done is worse than a stalled ticket.
 - **Verify Codex's findings against the revision under review — not the base branch.** The pass is a *lead generator*, not an oracle. Check each finding with `git grep -n "<sym>" HEAD` (or the working tree); use `origin/<default-branch>` **only** to ask whether something pre-existed the change. Grepping the base for a symbol the PR introduces finds nothing and looks like a refuted finding — it would have "disproved" `ErrGroupedSlotLifecycle` during TKT-58's own review. Record a per-finding verdict in the stage comment; surviving findings are the review's value, the rest is noise you'd otherwise promote into the codebase.
-- **One codex pass per stage.** After triaging and fixing findings, re-green the local gate and post — don't re-run codex on your own fixes. A second pass happens only if the human asks or a rebase materially changed the diff. **A Gate-3 human review round is not a trigger:** the human review *is* the authoritative adversarial pass, so address its changes under `agent:coding`, re-green, and return to `needs:human` for re-review of the new SHA — without a new codex run.
+- **A second `ai-review` pass when the fixes were non-trivial — otherwise one.** After triaging and fixing, re-green, then judge the *fix diff* (not the original PR diff): **non-trivial = any of** — new/changed control flow or logic (not just a renamed symbol or a comment), a changed function signature / public API / schema / migration, a touched money, auth, or concurrency path, a new or materially rewritten test, or fixes spilling into files the findings didn't name. Any one of those → **re-run the same `adversarial-review`** on the new diff and triage it identically. Pure trivia (typos, comments, formatting, a rename the compiler verifies) → one pass; record the call in the stage comment either way. **Cap at two** — a third pass means the diff is churning; stop and hand it to the human. A rebase that materially changed the diff is also a trigger. **A Gate-3 human review round is not:** the human review *is* the authoritative adversarial pass, so address its changes under `agent:coding`, re-green, and return to `needs:human` for re-review of the new SHA — without a new codex run.
 - **V0 is manual** — no Jira automation / webhooks. Movement is agent-driven on the user's command.
 - **Never push after setting `needs:human`** without first swapping back to an `agent:*` label.
 - **When a human pushes back** — diagnose the failing layer first (**intent / plan / implementation**) and regenerate from that layer, never patch locally at a lower one (`quality-practices.md` §4).

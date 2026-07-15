@@ -92,7 +92,7 @@ graph and writes via the same `POST /ticket`.
 2. ⛔ Gate 1 — human prioritizes → `Ready`. The board **hard-blocks** the drag while any
    `readiness` item is `open` or a blocker is open (`deferred` passes).
 3. **Ready** — verify no open blockers, claim: `assignee`, `kind=claim`, → `Planning` + `agent:planning`.
-4. **Planning** — `kind=plan` → `agent:plan-review` (codex critique) → `kind=plan-final` → `needs:human` (skip if `risk:low`).
+4. **Planning** — `kind=plan` (codex drafts) → `agent:plan-review` (main agent critiques) → `kind=plan-final` → `needs:human` (skip if `risk:low`).
 5. ⛔ Gate 2 — human approves → `Building`, swap to `agent:coding`.
 6. **Building** — TDD, PR open (`pr` field) → `agent:ai-review` → `kind=summary` → `needs:human`.
 7. ⛔ Gate 3 — human merges → `pr.state:"merged"`, → `PO Review`.
