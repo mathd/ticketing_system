@@ -36,9 +36,9 @@ wrong-by-construction inventory. "Backward compatible" held at the parser and br
 
 TKT-53 instead bumped to Schema 3 and taught inventory both variants **in the same change**
 (`3879c13`): the producer's Schema 3 fork and the consumer's Schema 3 arm landed together, so no
-deployed consumer ever met a variant it didn't know. ADR-014's lockstep objection was therefore
-answered by *making* the change lockstep — not by sequencing two deploys, which this repo cannot do
-(see §4).
+repository revision contains one side without the other. ADR-014's lockstep objection was therefore
+answered by *making* the change lockstep — not by sequencing two deploys, which this repo has no
+mechanism to order (see §5).
 
 ## Possible Solutions
 
@@ -49,47 +49,85 @@ answered by *making* the change lockstep — not by sequencing two deploys, whic
   no bump, because inventory does not fork on it (ADR-005).
 - **Draw the line at parse compatibility** ("bump only if old consumers fail to parse"). This is the
   rule that TKT-53 would have defeated: the dangerous payload parses perfectly.
-- **Draw the line at consumer semantics** (chosen). Costs a judgment call per field, but it is the
-  line the failure actually falls on.
+- **Draw the line at consumer semantics** (chosen, and per event type). Costs a judgment call per
+  field, but it is the line the failure actually falls on. In practice it splits into two triggers —
+  old-consumer incorrectness and needing a distinguishable variant to validate against — which are
+  not the same question and are kept separate in §3.
 
 ## Decision
 
-1. **Additive-without-bump remains the default** (ADR-014 §3 stands): a new optional field may ride
-   at the current schema when **every deployed consumer can ignore it and still be correct**, and
-   every existing field keeps its meaning and validation. `kind` qualifies — inventory does not fork
-   on it.
+1. **The compatibility unit is `(type, schema)`, never `schema` alone.** `schema` versions *this
+   event type's* `data` shape and carries no meaning across types. The repo already proves it:
+   `performance.published` and `performance.archived` **each** fork 2→3 on `capacity_group_id`
+   (`events.go:146-148` and `:237-239`) — same number, same trigger, **different payloads**
+   (`published` carries `shared_capacity`, `archived` does not) — while
+   `performance.closed`/`.reopened` sit at a Schema 1 (`:196`) that has nothing to do with
+   `published`'s Schema 1. Only `published` has a consumer today
+   (`inventory-performance-provisioner`, `consumer.go:101`); the others are versioned against
+   future readers, which is the point — a number is a promise to whoever subscribes to *that*
+   subject. Every rule below is scoped to the consumers of one type. "Bump to N+1" is only ever a
+   statement about one subject; there is no global version line, and two types reaching the same
+   number means nothing.
 
-2. **Bump the schema when the payload changes what a consumer *does*, not merely what it stores.**
-   Concretely, a bump is required when the change alters **identity, routing, idempotency, or
-   ownership keys** (TKT-53: the pool key moves from `performance_id` to `capacity_group_id`),
-   introduces a **required field or a cross-field invariant**, or changes the meaning of an existing
-   field. The test is not "will old consumers parse it" — the TKT-53 payload parses fine — but
-   **"would an old consumer, ignoring this field, do the wrong thing and ack?"** If yes, bump.
+2. **Additive-without-bump remains the default** (ADR-014 §3 stands): a new optional field may ride
+   at the current schema when **every deployed consumer of that type can ignore it and still be
+   correct**, and every existing field keeps its meaning and validation. `kind` qualifies —
+   inventory does not fork on it.
 
-3. **Schemas are coexisting variants, not a producer version counter.** The producer chooses per
+3. **Bump when either trigger fires. They are distinct, and only the first is about old consumers.**
+
+   a. **Old-consumer incorrectness** — the payload changes what a consumer *does*, not merely what
+      it stores: the change alters **identity, routing, idempotency, or ownership keys** (TKT-53:
+      the pool key moves from `performance_id` to `capacity_group_id`), or changes the meaning of an
+      existing field. The test is not "will old consumers parse it" — the TKT-53 payload parses
+      fine — but **"would an old consumer, ignoring this field, do the wrong thing and ack?"**
+
+   b. **The variant must be distinguishable to be validated** — the change adds a **required field
+      or a cross-field invariant** that the current schema's arm cannot enforce without rejecting
+      payloads that are legal at that schema. This fires even when (a) would not: an old consumer
+      may ignore the new field harmlessly while the *producer* still needs a separate variant so
+      the invariant has an arm to be checked in. TKT-53 fires both — the pool key moves **and**
+      `capacity_group_id`/`shared_capacity` are jointly required at Schema 3 (`consumer.go`).
+
+   Do not collapse these into one sentence: (a) is a compatibility fact about deployed binaries,
+   (b) is a validation fact about the schema itself. A change firing only (b) still bumps.
+
+4. **Schemas are coexisting variants, not a producer version counter.** The producer chooses per
    emission from the payload's own shape — catalog emits Schema 3 only when `capacity_group_id` is
-   set, Schema 2 otherwise (`services/catalog/internal/events/events.go`). Consumers switch on the
-   variant and **validate the variant's invariants**, including negatively: Schema 2 must *reject*
-   festival fields rather than tolerate them (`consumer.go`). A tolerant old arm is how a
-   mis-versioned event becomes silent corruption.
+   set, Schema 2 otherwise, independently for `published` (`events.go:140-155`) and `archived`
+   (`:231-243`). Consumers switch on the variant and **validate the variant's invariants**,
+   including negatively: Schema 2 must *reject* festival fields rather than tolerate them
+   (`consumer.go`'s `case 2`). A tolerant old arm is how a mis-versioned event becomes silent
+   corruption.
 
-4. **Ordering — three distinct cases, only one of which "consumer-first" solves.**
+5. **Ordering — three distinct cases, only one of which "consumer-first" solves.**
 
    a. **Forward rollout.** Where producer and consumer *can* run at different versions (rolling
       deploys, independently deployed services), the consumer that understands schema N+1 ships
-      before the producer emits it. **This repo cannot deploy that way today** — one
-      `docker compose up`, whole stack as a unit, no release pipeline — so it satisfies the
-      requirement the only other way available: **land both sides in one change**, as TKT-53 did.
-      Either discipline is acceptable; emitting N+1 with no consumer that understands it is not.
+      before the producer emits it. **This repo has no mechanism to order that today** — one
+      `docker compose up`, no release pipeline, nothing that sequences one service's replacement
+      ahead of another's — so it satisfies the requirement the only other way available: **land
+      both sides in one change**, as TKT-53 did. Note what that does and does not buy: an atomic
+      commit guarantees no *revision* carries one side alone, which is why the ordering cannot be
+      got wrong by a normal `git pull` + `up`. It is **not** a deployment guarantee — Compose can
+      recreate services individually, so an operator can still run a stale inventory against a
+      current catalog. Either discipline is acceptable; emitting N+1 with no consumer that
+      understands it is not.
 
-   b. **Rollback and consumer recreation — consumer-first does *not* cover this, and the current
-      failure mode is silent.** Once Schema 3 is retained on the stream, reverting inventory to a
-      binary that predates it (or rebuilding its durable consumer with one) makes that binary hit
-      the `default` arm and call `msg.Term()` (`consumer.go`) — permanently advancing past the
-      event with **no provisioning and no retry**. Nothing errors loudly; inventory is simply
-      missing. **Therefore: do not roll a consumer back past a schema the stream still retains**,
-      and treat "recreate the durable consumer" as equivalent to a rollback unless the binary
-      understands every retained variant. This is a real gap, not a hypothetical — see Consequences.
+   b. **Rollback and consumer recreation — consumer-first does *not* cover this, and the failure
+      is unactionable rather than silent.** Once Schema 3 is retained on the stream, reverting
+      inventory to a binary that predates it (or rebuilding its durable consumer with one) makes
+      `provisionInput` return an error for the unknown schema; the caller's `if e.Schema == 1`
+      test (`consumer.go:114-122`) is what picks `Nak` vs `Term`, so an unrecognized schema falls
+      through to **`msg.Term()`** — permanently advancing past the event with no provisioning and
+      no retry. It **does** log at error level, so this is not literally silent. What makes it a
+      hazard is that the log is `"invalid publication event"` — **the same message the genuinely
+      corrupt-payload path emits** — so a version-skew incident is indistinguishable from a bad
+      producer write, and `c.ready` stays `true` (`:105`), leaving the service healthy while
+      inventory quietly goes missing. **Therefore: do not roll a consumer back past a schema the
+      stream still retains**, and treat "recreate the durable consumer" as equivalent to a
+      rollback unless the binary understands every retained variant. This is a real gap, not a
+      hypothetical — see Consequences.
 
    c. **Ordinary restart is not replay.** A durable consumer resumes from its stored position and
       does **not** re-read acknowledged history, so a normal restart carries no schema risk. Replay
@@ -104,26 +142,31 @@ answered by *making* the change lockstep — not by sequencing two deploys, whic
     - The rule catches the failure that parse-compatibility misses: an event that deserializes
       cleanly and drives the wrong write.
     - ADR-014 §3's reasoning is preserved rather than reversed — its bump objection ("inventory would
-      have to change in lockstep") is accepted, not dismissed: §4a makes lockstep the *method* while
-      the stack deploys as a unit.
+      have to change in lockstep") is accepted, not dismissed: §5a makes lockstep the *method* while
+      the stack has no way to sequence one service ahead of another.
     - Schema 2's explicit rejection of festival fields becomes a documented pattern, not an accident
       of TKT-53.
+    - Scoping the version to `(type, schema)` (§1) keeps the two independent 2→3 forks
+      (`published`, `archived`) from being read as one migration, and stops a future consumer from
+      inferring anything from another type's number.
 - **Negative:**
-    - "Changes what a consumer does" needs a judgment call per field. §2's enumeration (identity,
-      routing, idempotency, ownership, required fields, cross-field invariants) bounds it, but the
-      boundary is reviewed, not compiled — a field that silently changes behavior in a way no one
-      anticipated can still slip through.
-    - Every bump costs an arm in each consumer and keeps old arms alive as long as the stream retains
-      them. There is no retirement policy for old schema arms yet; the first removal will need one
-      (how far back can the stream be re-read?).
-    - **§4b is a known live hazard, documented but unmitigated:** an inventory rollback past a
-      retained schema silently drops those events via `msg.Term()` — no error, no retry, just absent
-      inventory. This ADR states the rule ("don't roll back past a retained schema"); nothing
-      *enforces* it. Making the default arm `Nak`/park instead of `Term`, or gating consumer startup
-      on a max-known-schema check, would turn a silent gap into a loud one — **deferred, and worth
-      its own ticket.**
-    - §4's ordering rests on review, not machinery: no test exercises mixed-version skew, and Compose
-      cannot express it.
+    - "Changes what a consumer does" needs a judgment call per field. §3a's enumeration (identity,
+      routing, idempotency, ownership, field meaning) bounds it, but the boundary is reviewed, not
+      compiled — a field that silently changes behavior in a way no one anticipated can still slip
+      through. §3b is the more mechanical of the two triggers and should be checked first.
+    - Every bump costs an arm in each consumer of that type and keeps old arms alive as long as the
+      stream retains them. There is no retirement policy for old schema arms yet; the first removal
+      will need one (how far back can the stream be re-read?).
+    - **§5b is a known live hazard, documented but unmitigated:** an inventory rollback past a
+      retained schema drops those events via `msg.Term()` — logged, but under the same
+      `"invalid publication event"` message as a corrupt payload, with no retry and no effect on
+      readiness. This ADR states the rule ("don't roll back past a retained schema"); nothing
+      *enforces* it. Distinguishing unknown-schema from malformed-payload at the call site,
+      `Nak`/parking instead of `Term`ing an unknown schema, or gating consumer startup on a
+      max-known-schema check would each turn an unactionable log into an actionable signal —
+      **deferred to TKT-61.**
+    - §5's ordering rests on review, not machinery: no test exercises mixed-version skew, and
+      Compose cannot express it.
 
 ## References
 
@@ -131,6 +174,6 @@ answered by *making* the change lockstep — not by sequencing two deploys, whic
 - [ADR-009](./ADR-009-contract-first-apis.md) §5 (envelope + `schema`) ·
   [ADR-014](./ADR-014-typed-dated-slot-implementation.md) §3 (additive `kind`, bump rejected) ·
   [ADR-005](./ADR-005-unified-dated-slot-admission.md) (inventory does not fork on `kind`) ·
-  [ADR-007](./ADR-007-postgres-nats.md) (JetStream; replay is why §4 binds today)
+  [ADR-007](./ADR-007-postgres-nats.md) (JetStream; replay is why §5 binds today)
 - Reference impls: `services/catalog/internal/events/events.go` (producer picks the variant) ·
   `services/inventory/internal/consumer/consumer.go` (consumer switches + validates negatively)
