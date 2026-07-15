@@ -34,8 +34,22 @@ if ! compose up -d --build --wait; then
 fi
 
 cd "$ROOT/services/commerce"
-COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce" \
-go test -tags smoke -count=1 -run TestCompleteOrderReturnsOneCanonicalReferenceConcurrently ./internal/store
+# The commerce store tests claim and retire completion_outbox rows directly, and the
+# live commerce service runs an outbox drainer that polls the same table. Pointed at
+# the service's own database they would race it: the drainer can claim and retire a row
+# a test just seeded, so the test either fails intermittently or "passes" having proved
+# nothing. Give them their own database — they exercise store functions directly and
+# need no running service. Migrations run inside the tests (see storeSmokeDB).
+# Separate -c flags: psql wraps a multi-statement -c in a transaction, and DROP/CREATE
+# DATABASE cannot run inside one.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS commerce_store_smoke" \
+  -c "CREATE DATABASE commerce_store_smoke OWNER commerce" >/dev/null
+# No -run filter: every smoke test in this package is part of the gate. An allowlist
+# means a newly added test silently never runs and the gate still passes green — which
+# is exactly what happened to this file's first six tests.
+COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_store_smoke" \
+go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/access"
 ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
