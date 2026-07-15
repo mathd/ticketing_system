@@ -24,5 +24,91 @@
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Amended again after the SECOND Codex adversarial pass (PR #49).** The first amendment above is now partly wrong — read this one instead where they disagree.\n\n**The root cause, which supersedes the four separate items above:** every control I listed stores its state **in the Access database — the very database the adversary is defined as owning**. Quarantine rows, threshold counters, retained epoch signatures, the signer's last-observed root: all deletable or resettable by the same attacker who caused the failure. ADR-021 now leads with **§The trust boundary** saying exactly this. Do not add a control to this ticket whose evidence lives in Access and call it containment.\n\nWhat that changes for this ticket:\n\n1. **The checkpoint buys no detection today. It is scaffolding for TKT-11** — one anchorable root per interval instead of one per ticket head. Build it for that reason. Do not describe it in code comments, dashboards or metrics as rollback protection.\n2. **The signer's regression check needs a durable, attacker-independent home, or it does not exist.** ADR-021 §Decision 2 requires this ticket to either *specify that location* or *state plainly that no tripwire exists until TKT-11*. Leaving it ambiguous is what made two drafts of the ADR wrong — do not inherit the ambiguity.\n3. **Quarantine + threshold escalation are still worth building — but they bound OUR BUGS, not attackers.** A canonicalization bug or botched rotation corrupting many chains at once is the case they contain. Against a database-write adversary, fail-open is unbounded, full stop. Say so wherever this surfaces to an operator.\n4. **Epoch signatures are partial.** They stop *forgery* under a retired key, not *deletion* of the epoch row. Real containment needs an externally retained rotation manifest binding every applicable ticket to its epoch head (TKT-11's domain). Implement epoch signatures, but do not claim they contain a current-key compromise.\n\n**New coupling worth surfacing to whoever plans TKT-11:** that ticket now owns strictly more than \"fiscal archive\". It owns the trust domain that the ticket lifecycle trail's rollback protection, signer continuity, quarantine integrity and epoch manifests all depend on. That dependency did not exist before ADR-021 and should be on TKT-11's radar before it is planned.\n"
     }
   ],
-  "links": []
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Make the ticket lifecycle trail tamper-evident against modification and insertion, per ADR-021."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: per-ticket chain + companion integrity table, async organizer checkpoint, Ed25519 under access-lifecycle/, epoch signatures at rotation, fail-open + quarantine/threshold, verify-lifecycle + smoke wiring, resumable startup backfill. OUT: TKT-11's external anchor; the shared internal/signing extraction and token.go refactor are CONTESTED (see comments) and must be justified or dropped."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "ADR-021 §Decision 2 REQUIRES this ticket to either specify a durable attacker-independent home for the signer's last-observed root, or state plainly that no tripwire exists until TKT-11. That is a human call on infrastructure this repo does not have."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "ADR-021 decided (TKT-57, merged #49). Nothing blocks implementation. TKT-11 owns the external anchor and is NOT required for this to ship. See the one-redemption-cap decision ticket: deciding it after this means re-backfilling a signed trail."
+    },
+    "approach": {
+      "state": "met",
+      "note": "ADR-021 is the spec; read §The trust boundary first. Companion integrity table (never rewrite lifecycle_events), appends on the ticket row Redeem already locks, plain CREATE INDEX (ADR-020), startup backfill (ADR-008)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Migration 0003 + chain append/verify on the existing issued/delivered/redeemed path, green through the existing smoke seam. Checkpoint job and verify-lifecycle follow within the ticket."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS in the description; ADR-021's DoD is authoritative. Gate: make check, incl. verify-lifecycle against deliberately corrupted Access data mirroring smoke.sh:78-105."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below at shaping (TKT-57 retro R2: the planner reads code, not decision history)."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "id": "ADR-021",
+        "rule": "THE spec for this ticket. Deliberate divergences from the money journal (Ed25519 not HMAC; sign the head not every entry; per-ticket not per-organizer) must NOT be 'fixed' back. §The trust boundary governs every claim."
+      },
+      {
+        "id": "ADR-016",
+        "rule": "§D7 — coordinated rollback is deferred to TKT-11. Do not claim to close it; do not re-solve it here."
+      },
+      {
+        "id": "ADR-003",
+        "rule": "§D2 trace-derived redemption (why this matters); §D3 no PII and no guest_order_ref in the canonical form; §D4's NF525 no-schema-change constraint is money-specific and does NOT bind this trail."
+      },
+      {
+        "id": "ADR-002",
+        "rule": "One DB per service. Chain, heads, checkpoints, signing, verification all live inside Access. Link to orders/journal by identifier only — no cross-DB FK, no shared chain."
+      },
+      {
+        "id": "ADR-012",
+        "rule": "Access already owns Ed25519 QR signing with an injected seed + kid (token.go:61-78, the access-qr/ namespace convention). Reuse the idiom, separate the key material."
+      },
+      {
+        "id": "ADR-008",
+        "rule": "goose migrations embedded, run at startup before listening, fail-fast — so the backfill blocks boot and must be bounded and resumable."
+      },
+      {
+        "id": "ADR-020",
+        "rule": "Plain CREATE INDEX, never CONCURRENTLY — it bricks startup while ADR-008 stands."
+      },
+      {
+        "id": "ADR-010",
+        "rule": "Contention model: lock the ticket, never the organizer. The reason ADR-021 rejected the money journal's granularity."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-57 — the decision, its two adversarial review passes and six confirmed findings",
+        "link": ".sdlc/tickets/TKT-57.json"
+      },
+      {
+        "summary": "Test seam, verified at HEAD: upgrades 0001→0002, preserves history, redeems, asserts the immutability trigger",
+        "link": "services/access/internal/store/migration_smoke_test.go"
+      },
+      {
+        "summary": "Money-journal reference implementation: chain, sign, verify-journal + smoke corruption harness",
+        "link": "services/payments/internal/store/store.go"
+      }
+    ],
+    "capturedAt": "2026-07-15"
+  }
 }
