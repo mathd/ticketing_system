@@ -4,10 +4,14 @@
   "summary": "Production-grade checkout recovery and journal fault-injection hardening",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent:claude-code",
-  "pr": null,
+  "pr": {
+    "number": 35,
+    "url": "https://github.com/mathd/ticketing_system/pull/35",
+    "state": "open"
+  },
   "description": "Follow-up from the TKT-28 adversarial review. Before replacing the fake PSP, add scheduled/restart recovery for payment_unknown and confirmation_pending workflows, PSP status plus void/refund compensation, transactional outbox publication, and PostgreSQL integration/fault-injection coverage for concurrent journal appends, conflicting replay, tampering, head consistency, key rotation, PII erasure, service restarts, and crash boundaries. TKT-28 retains retry-driven recovery appropriate to its walking-skeleton COS.",
   "comments": [
     {
@@ -49,6 +53,11 @@
       "stage": "planning",
       "kind": "summary",
       "body": "<!-- sdlc:stage=planning kind=summary -->\n**Gate 2 cleared — plan approved by the human (in chat, 2026-07-14).** Recorded here because the\nthread is the memory: the approval was verbal, not a board drag, so this comment is the audit trail\nfor why the ticket moved `Planning → Building`.\n\n**Approved as posted in `kind=plan-final`:** the revised 5-slice split, ADR-first.\n\n**Decisions on the four open questions:**\n1. **Split:** approved (revised 5 slices, not the original 43a–43e).\n2. **First slice:** ADR-011 amendment (docs only, PR 1), then the commerce completion outbox +\n   restart drainer alone (PR 2). Explicitly **not** the 43a+43b I originally pitched.\n3. **Tamper anchor:** **defer the anchor, decide it in the ADR-011 amendment.** Do not build it in\n   TKT-43 — that would pull TKT-11's fiscal-archive design forward before the French market is\n   prioritized, which ADR-003 §4 deliberately deferred. Instead: state the limit explicitly, and add\n   a fault-injection test that *documents* the hole (drop an organizer's whole chain + head →\n   `verify-journal` currently passes) so it's a known, tested boundary rather than an assumption.\n   Anchor shape agreed for the ADR: a signed checkpoint `{organizer_id, last_sequence, last_hash,\n   key_id, signature, closed_at}` stored outside the payments DB — designed as the NF525 period\n   closure ADR-003 §4 already requires, not a parallel mechanism. Known limit: entries appended\n   before the first checkpoint stay unprotected.\n4. **CI:** GitHub Actions minutes exhausted; **quota resets 2026-08-01** (owner-confirmed). Until\n   then local `make check` **is** the merge gate — owner explicitly accepted this for TKT-43. Note\n   `make check` does include `verify-journal`, via `check: deps check-generate lint test build smoke`\n   → `scripts/smoke.sh:58-59`, so journal integrity is still gated locally.\n\n**Scope caveat carried into Building (raised before approval, not discovered after):** the outbox\ndrainer is commerce's **first background worker** — the service today has no ticker, no consumer,\nno scheduled work (only `go func` is the HTTP listener, `cmd/commerce/main.go:134`). PR 2 therefore\nintroduces a new lifecycle concern (replica ownership, shutdown draining) on top of the outbox\nitself. Still the right first code slice; \"just an outbox\" undersells it.\n\nLabel: `needs:human` → `agent:coding`. PR 1 is docs-only (an ADR), so the TDD rule has no test seam\nto bite on; PR 2 is where tests-first applies.\n"
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**PR 1 of the approved slice plan is open: https://github.com/mathd/ticketing_system/pull/35**\n\n```yaml\nstage: coding\nslice: 1 of 5 (ADR-011 amendment — docs only)\npr: 35\nbranch: TKT-43-checkout-recovery-journal-hardening\ncommit: 6ed932f\ndiff: +2 files (ADR-016 new; ADR-011 +5 lines) — no code, no schema, no behaviour change\ngate: make check -> exit 0 (lint + test + build + smoke, incl. verify-journal)\nci: not run — Actions minutes exhausted until 2026-08-01 (Gate 2 decision: local gate IS the gate)\ntdd: n/a — docs-only slice has no test seam; PR 2 (outbox) is where tests-first applies\n```\n\n**What landed:** `docs/adr/ADR-016-checkout-recovery-state-machine.md`, amending ADR-011's recovery\nstory and bounding its tamper-detection claim. ADR-011 keeps `Accepted` (its protocol is unchanged)\nand gains a pointer to the amendment — following the ADR-005/ADR-013 precedent for amendment\nwithout rewriting a standing decision.\n\n**The eight decisions** are listed in the PR body. The two that most shape later slices:\n- **Only `payment_unknown` needs PSP status.** `confirmation_pending` already knows the money was\n  captured (`server.go:420-427`); terminal decline/timeout release already has its answer. Both\n  recover with no PSP dependency — this is what lets slices 2–3 start now instead of queueing\n  behind the port.\n- **Tamper detection is bounded, not claimed.** TKT-43 adds a test that *documents* the\n  whole-chain-deletion hole; the anchor is an NF525 period closure and belongs to TKT-11 per\n  ADR-003 §4.\n\n**Verification note:** every file:line citation in the ADR was checked against the worktree with a\nscripted assertion, not by eye. One was wrong (`store.go:197` → the `ErrConflict` guard is at\n`:198`) and was corrected before commit. Given that this ADR's whole value is being evidence-backed,\nan unverified citation in it would be the same overclaiming the codex pass already caught me doing.\n\nLabel: `agent:coding` → `agent:ai-review`.\n"
     }
   ],
   "links": []
