@@ -3,11 +3,19 @@
   "type": "Task",
   "summary": "Scope GetPublishedSeason to the season instead of scanning the whole catalog",
   "classification": "simple",
-  "labels": [],
+  "labels": [
+    "agent:planning"
+  ],
   "parent": "TKT-2",
   "description": "**Pre-existing hot-read scale issue surfaced during TKT-53 review (R2 parallel).**\n\n`GetPublishedSeason` (`services/catalog/internal/store/postgres.go`) calls `ListPublishedEvents()` (every published event, all organizers) and filters in memory to the season's event set. On a cache miss, one season read scales with all published inventory — against ADR-004's hot-read intent. TKT-53 fixed the identical shape in `GetPublishedFestival` by querying scoped to the group; do the same for seasons: resolve the season's event ids, then read only those events' published slots (one scoped query, or filter at the SQL layer by the season's event id set).\n\n**COS:** `GetPublishedSeason` no longer loads the full published catalog; a season read's cost scales with the season's own events, not global inventory. Existing season public-read + smoke tests stay green; add a test asserting a foreign published event is not scanned/returned. make check green (contract tests if the boundary is touched — it should not be).\n\n**Note:** behavior-preserving refactor of a read path; the public response shape is unchanged.",
-  "status": "Ready",
-  "assignee": null,
+  "status": "Planning",
+  "assignee": "claude",
   "pr": null,
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed** — driving the local tracker backend (`tracker: \"local\"`, state on `sdlc-state`).\n\n**Selection reason:** user asked to take TKT-60. Status `Ready` = Gate 1 cleared by a human;\n`links` is empty, so **zero open blockers** — the claim invariant holds.\n\n**Drive style (agreed this run):** gates only — run through Ready → Planning → Building,\nstop at the human gates.\n\n**Plan gate: KEPT.** `risk:low` was offered and declined, so Gate 2 applies: plan + Codex\ncritique, then stop for human approval before any code.\n\n**Grounding read (before planning, per the skill):**\n- `GetPublishedSeason` (`services/catalog/internal/store/postgres.go:1196`) calls\n  `ListPublishedEvents` at :1220 and filters in memory at :1226 — the ticket's claim is\n  confirmed verbatim against the code.\n- The receiver is `*Postgres`, not `*Store` (the ticket's phrasing implies otherwise) —\n  no behavior impact, just noting the description is imprecise.\n"
+    }
+  ]
 }
