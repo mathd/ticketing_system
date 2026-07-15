@@ -11,5 +11,17 @@
   "status": "Ready",
   "assignee": null,
   "pr": null,
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=ready kind=blocker -->\n**Blocked on TKT-53 — the learning this ticket promotes has not landed on `main`.**\n\nVerified against `origin/main` (not the ticket text) before claiming:\n\n- `ErrGroupedSlotLifecycle` does not exist anywhere in the repo — no match in any Go file.\n- `PublishPerformance` (`services/catalog/internal/store/postgres.go:428`) and\n  `ArchivePerformance` (`:547`) exist but carry **no grouped-member guard**. There is no\n  festival concept in the catalog store beyond an incidental comment at `:810`.\n- TKT-53 is still in **Building** with `needs:human`; its PR (#37) is **open, not merged**.\n\nSo the corollary is real but lives only in an unmerged PR. AGENTS.md is repo-local gospel for\nevery future agent: documenting a symbol and a \"reference impl\" that are absent from `main`\nwould be worse than no entry at all. Promotion is also a **Done** step per the skill — TKT-53\nhas not cleared Gate 3, let alone Gate 4. This ticket was queued to `Ready` ahead of the work\nit promotes.\n\n**Unblock condition:** PR #37 merges, and `ErrGroupedSlotLifecycle` + the guarded\n`PublishPerformance`/`ArchivePerformance` are confirmed present on `origin/main`. The final\nwording must cite the merged code — if review renames the error or moves the guard, the\nparagraph follows the code, not this description.\n\nLeft in `Ready` (not dragged to `BLOCKED`): status moves are the human's call.\n"
+    }
+  ],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-53"
+    }
+  ]
 }
