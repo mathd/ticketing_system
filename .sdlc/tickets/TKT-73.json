@@ -1,0 +1,92 @@
+{
+  "key": "TKT-73",
+  "type": "Story",
+  "summary": "Lifecycle trail caps at one redemption per ticket — multi-entry passes and offline double-admits are unrepresentable",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "The lifecycle trail can physically record **at most one redemption per ticket, ever** — so two product capabilities the PRD already promises are unrepresentable, and the trail cannot evidence the fraud ADR-003 §Decision 2 relies on it for.\n\nVERIFIED IN CODE (not inferred):\n- `services/access/internal/store/migrations/0001_tickets.sql:11` — `lifecycle_events` carries `UNIQUE(ticket_id, event_type)`. At most one row per (ticket, type). One `redeemed`. Forever.\n- `0002_redeemed_lifecycle.sql` only widened the `event_type` CHECK to admit `'redeemed'`. The UNIQUE is untouched.\n- `services/access/internal/store/postgres.go:213` — the event id is `uuid.NewSHA1(uuid.NameSpaceOID, ticketID+\":redeemed\")`: deterministic, i.e. designed for exactly-one.\n- `postgres.go:202-208` — `Redeem` SELECTs an existing `redeemed` row and, if present, commits and returns `RedeemResult{OccurredAt: <original timestamp>}`. A duplicate scan is **idempotent success**, not a recorded second event.\n\nWHAT THAT COSTS:\n\n1. **Multi-entry passes are impossible.** TKT-19's COS says *\"passes follow their multi-entry semantics\"* and the PRD lists park/season passes and RFID wristbands. Entry #2 cannot be written. This is a schema-level block, not a missing feature.\n2. **Offline double-admits leave no trace.** The PRD promises offline tolerance for TKT-19 and TKT-16. If connectivity drops and two gates each admit the same ticket, reconciliation writes one `redeemed` row and the second admit is swallowed by the idempotent path — **no evidence that it happened at all**. ADR-003 §Decision 2 makes redemption decisions *from the trace* precisely so duplicates are detectable; the trace cannot express the duplicate.\n3. **ADR-021 chains an incomplete record.** TKT-67 will make this trail tamper-evident. Chaining does not change what the trail can represent — it makes a record that cannot describe a double-admit cryptographically trustworthy. That is a worse failure than an unchained trail, because it invites trust.\n\nNOT A BUG REPORT — A DECISION. The current behaviour may be exactly right for single-entry v1: an idempotent duplicate scan returning the original timestamp is a defensible gate answer, and the deterministic event id says someone chose it. The question is what the event model becomes when passes and offline land, and that is a modelling decision with several honest answers:\n\n- `redeemed` becomes repeatable (drop the UNIQUE for it, non-deterministic event ids, ordering semantics) — every reader that assumes one redemption changes.\n- Passes get distinct `entry`/`exit` event types, leaving `redeemed` single-shot for single-entry tickets — two admission models coexist.\n- Duplicate/offline admits get their own event type (e.g. `admitted_duplicate`), so the trail records what physically happened even when policy says it should not have.\n- Keep it as-is and accept that passes and offline reconciliation write no trail — an explicit, documented exception rather than a silent one.\n\nAlso to decide: **what a gate records when it admits offline and only later learns it was a duplicate.** ADR-021 §Decision 6 already chose fail-open-with-alarm for a *corrupt chain*; this is the adjacent case where the chain is fine and the world disagreed with it.\n\nSEQUENCING — why this is worth deciding before TKT-67 rather than after. ADR-021 §Status: *\"No further lifecycle event types should be added ahead of TKT-67 — each one added first is one more to backfill.\"* The inverse also holds: if this decision adds an event type or drops the UNIQUE, doing it after TKT-67 means re-backfilling a chained, signed trail rather than a plain one. It does not architecturally block TKT-67 (a per-ticket chain handles N events fine) — it is a cost and rework question, and the human should sequence it deliberately.\n\nGOVERNING ADRs (resolved from docs/adr/ at shaping, per ADR-019/020 practice):\n- **ADR-003 §Decision 2** — redemption decided *from the trace*, deliberately not from a mutable flag. This is the ADR the gap contradicts.\n- **ADR-021** — chains the trail; §Status and §Decision 3 carry the backfill and interval constraints. Read §The trust boundary before claiming anything about detection.\n- **ADR-012** — Access owns issuance, the lifecycle trace and QR credentials; `delivered` is a unique append-only event (the same UNIQUE pattern, where it is correct).\n- **ADR-002** — one database per service; Access owns this schema alone.\n- **ADR-008** — migrations run at startup, fail-fast; any change to the UNIQUE is a startup migration over existing rows.\n- **ADR-020** — plain `CREATE INDEX`, never CONCURRENTLY.\n\nTEST SEAM (verified at HEAD): `services/access/internal/store/migration_smoke_test.go` — already provisions an isolated PostgreSQL schema, upgrades 0001→0002, preserves history and redeems. `smoke/checkout_test.go` covers the duplicate-scan flow end-to-end.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFound while answering *\"what does TKT-57 unlock?\"* — not by TKT-57's own work, and it predates ADR-021 rather than being caused by it.\n\n**A correction worth recording, since the first version of this finding was wrong.** I initially claimed offline scanning would fork the hash chain and that ADR-021 had no merge semantics. **False.** `Redeem` writes the chain **server-side** under `SELECT ... FROM tickets WHERE id=$1 FOR UPDATE` (`postgres.go:190`) — the gate never touches the chain, so a reconciling offline scan submits an event the server appends in its own serialized order. No fork, no merge problem.\n\nThe real constraint is duller and worse: **`UNIQUE(ticket_id, event_type)`**. Not a race, not a protocol gap — one line of DDL from the first migration that quietly caps every ticket at one redemption and makes the duplicate-scan path return success instead of recording anything.\n\n**Why it reads as fine today:** single-entry tickets are the only thing shipped, and for those the idempotent duplicate scan is arguably the *correct* gate answer. The constraint only becomes wrong when passes or offline land — both of which the PRD already promises (TKT-19, TKT-16). It is the kind of decision that is cheap now and expensive after TKT-67 signs the trail.\n\n**The sharp end:** ADR-003 §Decision 2 chose the trace over a mutable flag *so that duplicates are detectable at the gate*. A trail that cannot represent a double-admit does not deliver that, and TKT-67 is about to make it cryptographically trustworthy."
+    }
+  ],
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Decide what the lifecycle event model must represent once multi-entry passes and offline admission land, before TKT-67 signs the trail."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the event model + UNIQUE(ticket_id,event_type) decision, recorded as an ADR, incl. what an offline gate records on a late-discovered duplicate. OUT: implementing passes (TKT-19), offline sync (TKT-19/16), and TKT-67's chain itself."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "Owner decision: repeatable `redeemed` vs distinct entry/exit types vs a duplicate-admit event vs documented exception. Needs the domain call on how passes and turnstile reality should be modelled."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None blocking. Interacts with TKT-67 on cost only (deciding after it means re-backfilling a signed trail, not a plain one) and informs TKT-19/TKT-16. ADR-021 §Status carries the constraint."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Decision ticket, same shape as TKT-57: read ADR-003 §D2 / ADR-012 / ADR-021, weigh the four options against the PRD's pass + offline promises, record an ADR, amend ADR-003 §D2's duplicate-detection claim if the model changes."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The ADR. Implementation (migration + event-type changes) is a follow-up, as TKT-57 → TKT-67."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) the event model is decided and recorded as an ADR with the trade-offs; (2) it states explicitly whether a double-admit is representable and, if not, why that is acceptable; (3) ADR-003 §D2's 'duplicate detection from the trace' claim is either upheld or amended to match reality; (4) the interaction with TKT-67's backfill is sequenced deliberately, not discovered."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below: governingAdrs resolved from docs/adr/ at shaping."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "id": "ADR-003",
+        "rule": "§D2 redemption decided FROM the trace, not a mutable flag — this is the promise the one-redemption cap breaks. §D3 no PII in the trail."
+      },
+      {
+        "id": "ADR-021",
+        "rule": "Chains the trail per ticket. §Status: no new lifecycle event types before TKT-67 or they need backfilling. §The trust boundary before any detection claim."
+      },
+      {
+        "id": "ADR-012",
+        "rule": "Access owns issuance + the lifecycle trace; `delivered` is a unique append-only event — the same UNIQUE pattern, where it is correct."
+      },
+      {
+        "id": "ADR-002",
+        "rule": "One DB per service; Access owns this schema alone — no cross-service reads."
+      },
+      {
+        "id": "ADR-008",
+        "rule": "Migrations run at startup, fail-fast, before listening — changing the UNIQUE is a startup migration over existing rows."
+      },
+      {
+        "id": "ADR-020",
+        "rule": "Plain CREATE INDEX, never CONCURRENTLY (because of ADR-008)."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-57 / ADR-021 — the chain this decision must precede or pay for",
+        "link": ".sdlc/tickets/TKT-57.json"
+      },
+      {
+        "summary": "PRD: TKT-19 offline tolerance + multi-entry passes; TKT-16 POS offline tolerance",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "capturedAt": "2026-07-15"
+  }
+}
