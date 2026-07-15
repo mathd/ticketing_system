@@ -54,3 +54,10 @@ experiment stays valid.
   Plain `CREATE INDEX` stays — `CONCURRENTLY` is deliberately *not* adopted while migrations run at
   service startup (ADR-008), and adopting it early bricks startup. The ADR names the preconditions
   and the traps.
+- **Claiming an audit or integrity guarantee? Read [ADR-021](docs/adr/ADR-021-ticket-lifecycle-trail-integrity.md) first.**
+  **State inside the database cannot constrain an adversary who writes to the database** — so a
+  quarantine row, a retry counter, a retained signature or a chain head proves nothing against one.
+  A hash chain over data they cannot re-sign *does*, which is why modification and insertion are
+  closed and rollback is not. Say which adversary you mean before writing "tamper-evident". Three
+  clauses of ADR-021 broke this rule across two adversarial review passes — it is easy to get
+  wrong while every individual fact is correct.
