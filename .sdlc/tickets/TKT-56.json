@@ -1,0 +1,23 @@
+{
+  "key": "TKT-56",
+  "type": "Story",
+  "summary": "PSP port, compensation and journal keyring (deferred from TKT-43 until a real processor)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Deferred remainder of TKT-43, gated on a real payment processor being chosen (human decision, 2026-07-14). TKT-43 shipped the recovery state machine (ADR-016), the commerce completion outbox and deterministic recovery for the paths that need no PSP port. This ticket carries what only makes sense against a real provider: the PSP port (authorize/capture/void/refund/status) with a durable operation model (provider reference identity, void/refund idempotency keys, captured-vs-authorized, normalized terminal-no-side-effect outcome); payment.voided/payment.refunded journal fact types; payment_unknown recovery via PSP status; compensation for reconciliation_required orders (captured money whose confirm proved impossible); the journal signing keyring (sign active / verify historical / retirement policy) with the access ACCESS_QR_KID keyring as the in-repo precedent; and journal-specific PostgreSQL fault injection (concurrent appends, conflicting replay, tampering, head consistency, key rotation, restarts, crash boundaries). Blocked until the processor is chosen: provider reference identity, status semantics, void-vs-refund rules and the error taxonomy are all provider-specific, so an abstraction built over the fake PSP would be rewritten on contact with a real one. LAUNCH-BLOCKING: while deferred, payment_unknown orders have no automated resolution and reconciliation_required orders hold captured money with no automated refund path. Both are safe only while the PSP is fake and no real money moves. See ADR-016 for the state machine and the tamper boundary this completes.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nSplit from TKT-43 on a human scope decision (2026-07-14): defer everything that only makes sense against a real payment processor.\n\n**Do not start this before the processor is chosen.** The whole point of the deferral is that provider reference identity, status semantics, void-vs-refund rules and the error taxonomy are provider-specific — an abstraction designed over the fake PSP gets rewritten on contact with a real one.\n\n**Launch-blocking, not merely deferred:** while this is open, `payment_unknown` orders have no automated resolution, and `reconciliation_required` orders hold captured money with no automated refund path. Safe only while the PSP is fake. Connecting a real processor without this ticket means real money can strand with no recovery path.\n\nDesign is already recorded — see ADR-016 (recovery state machine, §Decision 3 lookup-vs-PSP-status split, §Decision 4 compensation-as-facts, §Decision 7 tamper boundary, §Decision 8 keyring). This ticket implements against it; it should not need to re-derive it."
+    }
+  ],
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-43"
+    }
+  ]
+}
