@@ -40,6 +40,7 @@ func (s *Server) Router() http.Handler {
 	})
 	r.Post("/internal/facts", s.fact)
 	r.Post("/internal/charges", s.charge)
+	r.Get("/internal/operations", s.operation)
 	validated, err := contract.RequestValidator(apispec.Spec, r)
 	if err != nil {
 		panic(err)
@@ -62,6 +63,43 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	return true
 }
+// operation reports an already-bound payment operation's recorded outcome. Read-only:
+// it never binds, so a recovery pass cannot fabricate an operation for an order that
+// never charged. 404 means no operation exists — evidence the charge was never
+// submitted, which is what lets commerce release the claim rather than guess.
+func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		write(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	org, err := uuid.Parse(r.URL.Query().Get("organizer_id"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "valid organizer_id required"})
+		return
+	}
+	key := strings.TrimSpace(r.URL.Query().Get("idempotency_key"))
+	if key == "" || len(key) > 200 {
+		write(w, 400, map[string]string{"error": "idempotency_key required"})
+		return
+	}
+	op, found, err := s.journal.LookupOperation(r.Context(), org, key)
+	if err != nil {
+		write(w, 500, map[string]string{"error": "lookup operation"})
+		return
+	}
+	if !found {
+		write(w, 404, map[string]string{"error": "operation not found"})
+		return
+	}
+	out := map[string]any{"resolved": op.Resolved}
+	if op.Resolved {
+		out["status"] = op.Status
+		out["fact_id"] = op.FactID
+		out["occurred_at"] = op.OccurredAt
+	}
+	write(w, 200, out)
+}
+
 func (s *Server) fact(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(r) {
 		write(w, 401, map[string]string{"error": "unauthorized"})

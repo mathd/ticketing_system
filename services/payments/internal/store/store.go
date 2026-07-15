@@ -280,6 +280,44 @@ func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerp
 	return status.String, factID.UUID, occurredAt.UTC().Truncate(time.Microsecond), status.Valid, nil
 }
 
+// Operation is the recorded outcome of a payment operation, read without binding.
+type Operation struct {
+	Status     string
+	FactID     uuid.UUID
+	OccurredAt time.Time
+	// Resolved is false when the operation exists but carries no terminal result: the
+	// charge was bound and is still in flight, or the process driving it died. Callers
+	// must not read that as "no side effect" — it is the payment_unknown case.
+	Resolved bool
+}
+
+// LookupOperation reads an operation's recorded outcome. Strictly read-only, unlike
+// BindOperation, which inserts and takes a lease: commerce's recovery runner calls this
+// to resolve an ambiguous order, and binding there would fabricate an operation for an
+// order that may never have charged.
+//
+// Returns found=false when no operation exists for the key — evidence the charge was
+// never submitted, which is what lets recovery release the claim safely.
+func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string) (Operation, bool, error) {
+	var op Operation
+	var status sql.NullString
+	var factID uuid.NullUUID
+	var occurredAt time.Time
+	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&status, &factID, &occurredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Operation{}, false, nil
+	}
+	if err != nil {
+		return Operation{}, false, err
+	}
+	op.Resolved = status.Valid
+	op.Status = status.String
+	op.FactID = factID.UUID
+	op.OccurredAt = occurredAt.UTC().Truncate(time.Microsecond)
+	return op, true, nil
+}
+
 func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID) error {
 	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4 WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID)
 	return err

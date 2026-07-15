@@ -38,10 +38,10 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 // envelope needs reservation-scoped identifiers, so completion cannot be expressed
 // by order id alone.
 type Completion struct {
-	ReservationID, OrderID             uuid.UUID
-	OrganizerID, BuyerID               uuid.UUID
-	SlotID, TicketTypeID               uuid.UUID
-	Quantity                           int32
+	ReservationID, OrderID uuid.UUID
+	OrganizerID, BuyerID   uuid.UUID
+	SlotID, TicketTypeID   uuid.UUID
+	Quantity               int32
 }
 
 // OutboxMessage is one owed publication, held under a lease. ClaimID identifies the
