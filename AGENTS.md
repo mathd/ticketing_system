@@ -46,3 +46,7 @@ experiment stays valid.
   State-deriving transitions decide under a row lock and emit after commit; grouped members
   (festival days) refuse their own publish/archive. Both rules are narrower than they sound —
   the ADR draws the lines.
+- **Scoping a catalog read to a subset? Read [ADR-019](docs/adr/ADR-019-catalog-read-path-scoping.md) first.**
+  A scoped read is only scoped if an index backs the filter — copying a query shape that scales
+  ships a no-op. Proving it takes two tests: the result is scoped, *and* the scan is. Narrower
+  than it sounds — the ADR draws the lines.

@@ -6,6 +6,11 @@ Date: 2026-07-12
 
 Accepted
 
+*Extended by [ADR-019](./ADR-019-catalog-read-path-scoping.md): this decision stands; it fixes what a
+read costs when the cache **hits**. ADR-019 covers the **miss** path for catalog reads scoped to a
+subset — the filter needs an index behind it, and proving so takes a plan assertion, not an
+output assertion.*
+
 ## Context
 
 High-contention on-sales are a core v1 requirement (brief). Correct atomic claims (ADR-002's inventory hot path) solve oversell, but an on-sale's load is overwhelmingly **reads** — event lists, event pages, price displays, remaining-capacity checks — and an uncached read path melts the database long before the write path is stressed. The owner directed (2026-07-12): endpoints should be cacheable wherever possible with TTLs matched to data volatility, hot events should be served from in-memory structures to shed database reads, and the web frontends should minimize API calls and refresh on TTL-appropriate cadences.
