@@ -4,7 +4,7 @@
   "summary": "Ticket lifecycle trail has no hash chain, signature or verifier (ADR-003 'one discipline' gap)",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
