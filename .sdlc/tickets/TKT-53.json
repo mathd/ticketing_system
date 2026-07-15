@@ -94,7 +94,7 @@
       "body": "<!-- sdlc:stage=coding kind=summary -->\nAddressed the two human-review findings (commit 37c2ee2), back to the merge gate:\n\n- R1 (correctness/UX): the festival page rendered a Reserve/HoldPicker per day, but grouped festival days have no per-slot pool (claims are TKT-14) so every Reserve would 409. Days are now display-only with a 'Festival passes go on sale soon.' note; PerformanceCard gained a purchasable prop (event page unchanged). Browser-verified, screenshot updated.\n- R2 (scale): GetPublishedFestival scanned the whole published catalog and filtered in memory (against ADR-004). Now one query scoped to capacity_group_id, joining only the festival's days. (GetPublishedSeason shares the old shape — pre-existing, flagged for a separate ticket.)\n\nmake check green (full docker-compose smoke). PR #37 now has 3 commits. Merge is yours (squash, then Building -> PO Review). Not pushing again while needs:human."
     }
   ],
-  "status": "Building",
+  "status": "PO Review",
   "assignee": "claude",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/37",
