@@ -14,5 +14,62 @@
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFrom the **TKT-57 retro (R3)**. I hit this running the local gate and could not get `smoke` green on this machine; TKT-57 shipped with the gate partially red, reported rather than hidden.\n\n**The tell is that it is intermittent, not broken.** Cold volume → fails; warm volume → all 12 containers healthy. That is a startup race, not a defect in the stack.\n\n**Do not debug the error message you see.** `No such container: <id>` is smoke.sh's cleanup trap racing its own `compose logs` after the real failure. The real failure is postgres being declared unhealthy during `initdb`.\n\nLocal daemon contention makes it worse (this machine hosts unrelated containers, one in a restart loop), but the missing `start_period` is the actual defect — the grace window is too small for a cold `initdb` on *any* loaded host, including CI runners."
     }
   ],
-  "links": []
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Make `make check`'s smoke stage pass reliably from a cold Docker volume."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: add start_period to the postgres healthcheck in compose.yaml; verify cold-start twice. OUT: the daemon contention on any individual dev machine; smoke.sh's cleanup-trap log race (cosmetic, note only)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None material. 30s is a starting value; the fix is verified by running make check twice from a torn-down state, since the bug only appears cold."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None."
+    },
+    "approach": {
+      "state": "met",
+      "note": "One-line compose.yaml change. Ticketed rather than direct-committed because compose.yaml defines the deployed stack, not just the test rig: widening the startup health grace means dependents wait longer before failing on a genuinely broken postgres."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The start_period line + a cold-start verification run."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: make check green twice consecutively from `docker compose -p ticketing-smoke down -v`, on a loaded daemon."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "id": "ADR-008",
+        "rule": "Migrations run at startup before listening — services legitimately wait on postgres being healthy, which is why its health grace is load-bearing."
+      },
+      {
+        "id": "ADR-007",
+        "rule": "PostgreSQL + NATS are the substrate; compose.yaml is the local topology for all of it."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-57 retro R3 — found running the gate; pristine main @ edafcec reproduces with zero changes",
+        "link": ".sdlc/tickets/TKT-57.json"
+      },
+      {
+        "summary": "The gate script whose cleanup trap turns the real failure into a misleading 'No such container'",
+        "link": "scripts/smoke.sh"
+      }
+    ],
+    "capturedAt": "2026-07-15"
+  }
 }
