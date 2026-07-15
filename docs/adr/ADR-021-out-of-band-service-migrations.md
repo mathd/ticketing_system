@@ -130,24 +130,38 @@ never before; this is not that change.
     - ADR-020 precondition (1) is satisfied. **CIC remains deferred**: (2) and (3) are still false.
     - Each schema stays owned by its service and role (ADR-002/007); the five jobs are independent
       and could run in parallel, since they touch five separate databases.
-    - The boundary is enforced by the gate, not by prose, and it takes **two** assertions:
-      `TestMigrationsAppliedOutOfBand` compares each database's applied goose version against that
-      service's checked-in migration files, and `TestMigrationsRanBeforeServicesStarted` asserts each
-      job exited 0 *before* its service started. The first alone would be vacuous for this decision —
-      it was equally true under ADR-008 and passes unchanged on the code this ADR replaces. It proves
-      migratedness; only the second proves *placement*.
+    - The boundary is enforced by the gate, not by prose, and it takes **three** assertions, because
+      each is vacuous for what the next one proves:
+        1. `TestMigrationsAppliedOutOfBand` — each database is at its latest checked-in version.
+           Proves *migratedness*. It was equally true under ADR-008, so it passes unchanged on the
+           code this ADR replaces and proves nothing about placement on its own.
+        2. `TestMigrationsRanBeforeServicesStarted` — each job exited 0 before its service started.
+           Catches an absent, failing, or ungated job. Still not placement: a job that exits 0 first
+           and a server that *also* migrates satisfies it.
+        3. `TestServerModeDoesNotMigrate` — catalog in server mode against an empty database never
+           creates `goose_db_version`. **This is the one that fails if `store.Migrate` returns to
+           `run()`**, which the other two would let through as a silent no-op. A passing healthcheck
+           is its positive control, so a crash-on-boot cannot pass it vacuously.
 - **Negative:**
     - **Buys no availability today**, and local startup still waits for migrations. This ADR spends
       real diff on a future option, and `AGENTS.md`'s testbed framing is the whole justification.
     - **The startup path is not actually clean — commerce is a named exception.**
       `BackfillCompletionOutbox` (`services/commerce/internal/store/store.go:193`) stays on the
       server path: it is data repair rather than schema, it is idempotent, and the migrate job has
-      already applied the schema it reads. But it *scans* `orders` on every boot under
-      `main.go`'s 30-second deadline and buffers matches in memory, and a failure fails the service —
-      which is precisely the fail-fast startup coupling this ADR removes from migrations. It is
-      bounded today (narrow predicate, small table) and moving it into the migrate job would not
-      help, since the service waits on that job anyway. Recorded rather than hidden: this decision
-      removed migrations from startup, **not** all startup-coupled data work.
+      already applied the schema it reads. But it **sequentially scans** `orders` on every boot —
+      nothing indexes `status` or `guest_order_ref`; the only index on the table is
+      `orders_recovery_claimable_idx (recovery_next_attempt_at)` — buffers every match in memory,
+      runs under `main.go`'s 30-second deadline, and fails the service if it trips. That is
+      precisely the fail-fast startup coupling this ADR removes from migrations, still live for one
+      service. Nothing in code bounds the table; it is small **today**, which is a fact about the
+      data, not a guarantee.
+      **Moving it into the migrate job would help, and the first draft of this ADR wrongly said it
+      would not.** `service_completed_successfully` gates at stack *creation*; a restarted commerce
+      container does **not** re-run its completed one-shot job, but *does* re-run `run()` and so
+      re-scans. So the job placement would pay the scan once per deploy instead of once per boot.
+      It stays on the server path by the TKT-66 gate's decision, with the ceiling filed as TKT-71 —
+      recorded rather than hidden: this decision removed migrations from startup, **not** all
+      startup-coupled data work.
     - Correct ordering is now an orchestration invariant. A missing `service_completed_successfully`
       edge starts a service against an old schema — invisible to `/healthz`, which only pings the
       connection. The version assertion in `smoke/smoke_test.go` exists for exactly this.

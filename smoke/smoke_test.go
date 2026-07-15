@@ -311,16 +311,14 @@ func inspect(t *testing.T, container, format string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// TestMigrationsRanBeforeServicesStarted: each service's migrations were applied
-// by its one-shot job, which exited 0 *before* the service process started
-// (ADR-021).
+// TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
+// exited 0 before the service process started (ADR-021).
 //
-// TestMigrationsAppliedOutOfBand alone cannot prove this. It asserts the database
-// is at the latest version, which was equally true under ADR-008's startup
-// migration — so it would pass unchanged on the very code this ticket replaced.
-// It proves migratedness, not placement. This test is the one that fails if
-// migrations creep back onto the server path: it asserts the *provenance and
-// ordering* the decision actually turns on.
+// What this does and does not prove. It catches the job being absent, failing,
+// or not gating the service — i.e. the depends_on edge being wrong. It does NOT
+// prove the server never migrates: a job that exits 0 first and a server that
+// also migrates satisfies it. TestServerModeDoesNotMigrate is what closes that;
+// the two are complementary and neither is sufficient alone.
 func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 	for _, service := range migratedServices {
 		t.Run(service, func(t *testing.T) {
@@ -347,6 +345,81 @@ func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 					"its migrations completed", job, finished, srv, started)
 			}
 		})
+	}
+}
+
+// TestServerModeDoesNotMigrate: the server path never applies migrations
+// (ADR-021) — the negative proof the other two assertions cannot give.
+//
+// Neither TestMigrationsAppliedOutOfBand nor TestMigrationsRanBeforeServicesStarted
+// fails if someone re-adds store.Migrate to run(): the job would migrate first and
+// the server's call would be a silent no-op, so both stay green while the startup
+// coupling this ADR removes is quietly back. This test is the one that fails.
+//
+// Method: run catalog in server mode against an empty database, with everything
+// else real. Reaching a passing healthcheck is the positive control — it proves
+// the process got past the point where migration used to run (main.go opened the
+// DB, then listened), so an absent goose_db_version is a real negative and not a
+// process that died early. If run() migrates, the table appears and this fails.
+func TestServerModeDoesNotMigrate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	const probeDB = "placement_probe"
+	pg := project + "-postgres-1"
+	psql := func(sql string) {
+		t.Helper()
+		if out, err := exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-v", "ON_ERROR_STOP=1", "-c", sql).CombinedOutput(); err != nil {
+			t.Fatalf("psql %q: %v: %s", sql, err, out)
+		}
+	}
+	// Separate -c flags: psql wraps a multi-statement -c in a transaction, and
+	// DROP/CREATE DATABASE cannot run inside one.
+	psql("DROP DATABASE IF EXISTS " + probeDB)
+	psql("CREATE DATABASE " + probeDB + " OWNER catalog")
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-c", "DROP DATABASE IF EXISTS "+probeDB).Run()
+	})
+
+	probe := project + "-placement-probe"
+	_ = exec.Command("docker", "rm", "-f", probe).Run()
+	out, err := exec.Command("docker", "run", "-d", "--name", probe,
+		"--network", project+"_default",
+		"-e", fmt.Sprintf("DATABASE_URL=postgres://catalog:catalog@postgres:5432/%s", probeDB),
+		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
+		"-e", "INTERNAL_SERVICE_TOKEN=local-service-token",
+		project+"-catalog").CombinedOutput()
+	if err != nil {
+		t.Fatalf("start probe: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", probe).Run() })
+
+	// Positive control: wait until the server is actually serving. Without this a
+	// crash-on-boot would look identical to "did not migrate" and pass vacuously.
+	for exec.Command("docker", "exec", probe, "/app", "healthcheck").Run() != nil {
+		if ctx.Err() != nil {
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", probe).CombinedOutput()
+			t.Fatalf("probe never became healthy — cannot conclude anything about migration; logs:\n%s", logs)
+		}
+		time.Sleep(time.Second)
+	}
+
+	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/%s", pgHostPort, probeDB))
+	if err != nil {
+		t.Fatalf("connect %s: %v", probeDB, err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	var table *string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.goose_db_version')::text`).Scan(&table); err != nil {
+		t.Fatalf("probe goose table: %v", err)
+	}
+	if table != nil {
+		t.Fatalf("catalog in server mode created %q in an unmigrated database — the server path is "+
+			"migrating again (ADR-021: migrations belong to the one-shot job only)", *table)
 	}
 }
 
