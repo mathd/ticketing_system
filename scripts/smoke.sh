@@ -56,9 +56,13 @@ ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POS
 go test -tags smoke -count=1 -run TestRedeemedLifecycleMigrationPreservesHistory ./internal/store
 
 cd "$ROOT/services/catalog"
+# No -run filter, for the same reason as commerce above: an allowlist means a newly
+# added test silently never runs while the gate still passes green. This block used to
+# carry one, and it had already stranded two tests that never ran once merged —
+# TestDirectArchiveRacingFestivalPublishCannotDesync and
+# TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically (TKT-53's scoped-read test).
 CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 \
-	-run 'TestArchivedLifecycleMigrationRollbackGuard|TestArchiveDoesNotRacePublish|TestSeriesArchiveDoesNotDeadlockDirectArchive|TestConcurrentFestivalAttachChoosesOneGroup|TestFestivalPublishPreflightRollsBackAllMembers|TestFestivalPublishArchiveRaceIsConsistent' ./internal/store
+go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/inventory"
 INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
