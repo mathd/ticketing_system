@@ -2,9 +2,11 @@
   "key": "TKT-57",
   "type": "Story",
   "summary": "Ticket lifecycle trail has no hash chain, signature or verifier (ADR-003 'one discipline' gap)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "description": "The ticket lifecycle trail has no cryptographic integrity, while ADR-003 promises 'two append-only trails, one discipline' and the owner's directive puts tickets on equal footing with money. Verified 2026-07-14 while widening ADR-003's scope for TKT-43: grep -ciE 'hash|signature' returns 4 in services/payments/internal/store/migrations/0001_journal.sql and 0 in services/access/internal/store/migrations/0001_tickets.sql. The money journal is hash-chained (previous_hash/entry_hash), HMAC-SHA-256 signed, and verified end-to-end by verify-journal in the local gate. The lifecycle_events trail has no hash chain, no signature and no verifier: its only defence is the lifecycle_events_immutable trigger, which is DDL and therefore removable by anyone who can alter the schema. A modified lifecycle_events row leaves no cryptographic evidence, so the trail is append-only by policy rather than tamper-evident by construction — strictly weaker than the money journal it is supposed to share a discipline with. Redemption decisions are made from this trace (ADR-003 decision 2, duplicate detection at the gate), so a tampered trail is a fraud surface, not just an audit gap. Scope: decide whether the lifecycle trail gets the money journal's chain+signature+verifier treatment, a lighter scheme, or an explicit documented exception to 'one discipline'. Out of scope for TKT-43, which hardens the money path only. See the ADR-003 status block (scoped by ADR-016 via TKT-43) for the recorded gap.",
   "comments": [
@@ -12,6 +14,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFound 2026-07-14 while widening ADR-003's scope for TKT-43 (PR #35) — not a TKT-43 deliverable; TKT-43 hardens the money path.\n\n**The evidence, verified in code:** `grep -ciE 'hash|signature'` → **4** in the payments journal migration, **0** in the access tickets migration. The lifecycle trail's only defence is the `lifecycle_events_immutable` trigger, and a trigger is DDL — `DROP TRIGGER` and the trail is plain mutable rows leaving no cryptographic evidence.\n\n**Why it matters beyond audit:** ADR-003 decision 2 says redemption decisions are made *from* the trace (duplicate detection at the gate), not from a mutable flag. A tampered trail is therefore a **fraud surface**, not just a compliance gap.\n\n**Not obviously 'add a hash chain'** — the money journal's chain is per-organizer and serialized under a head row lock, which is a poor fit for gate scans that must stay fast under contention. The decision is genuinely open: full chain+signature+verifier, a lighter per-ticket scheme, or an explicit documented exception to 'one discipline'."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Selection reason: top of the Ready queue with **zero open blockers** (`links: []`), and it is the open half of a split the pipeline already made — TKT-43 hardened the money path and explicitly deferred the lifecycle trail here.\n\n**Backend:** local tracker (`.sdlc/`, state on `sdlc-state`). **Branch:** `TKT-57-lifecycle-trail-integrity` off `origin/main` @ `edafcec`, in a dedicated worktree.\n\n**Model routing** (from `.claude/sdlc.config.json`, declared not inferred): plan = `gpt-5.6-sol` (Codex), planReview = `main-agent`, implement = `main-agent`, aiReview = `gpt-5.6-sol`. Both cross-model pairs are distinct — no author-reviews-own-output violation.\n\n**Not `risk:low`.** This is a decision ticket on a fraud surface: the scope line offers three outcomes (full chain+signature+verifier, a lighter per-ticket scheme, or a documented exception to ADR-003's 'one discipline'), and picking among them is exactly what Gate 2 exists to judge. The plan gate stays.\n"
     }
   ],
   "links": []
