@@ -2,9 +2,12 @@
   "key": "TKT-48",
   "type": "Bug",
   "summary": "Stop scanner camera streams across unmount and re-entry races",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "risk:low",
+    "agent:planning"
+  ],
+  "assignee": "claude",
   "pr": null,
   "classification": "standard",
   "description": "Follow-up from PR #10 review. If getUserMedia resolves after scanner unmount, the stream can be assigned after cleanup and remain live. Re-entering camera startup before the first await completes can also orphan a stream.\n\nConditions of Success:\n- A stream resolving after unmount is stopped immediately and never attached\n- Repeated camera-start actions cannot create or orphan multiple streams\n- Normal camera startup, detector failure fallback, and paste mode continue to work\n- Tests deterministically cover delayed getUserMedia resolution, unmount, and re-entry\n- make check passes",
@@ -58,6 +61,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness — READY\nThe race, test seam, and success conditions are concrete with no open blocker. Awaiting owner prioritization at Gate 1."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed by agent (gates-only run). Zero open blockers (only a non-blocking `found-in` link to TKT-46). Branch `TKT-48-scanner-stream-lifecycle` cut off origin/main.\n\n**risk:low justification (challengeable):** isolated to the scanner `startCamera`/`stopCamera` lifecycle in one file (`web/scanner/src/App.tsx`) plus its test file. No auth, no data migrations, no CI/deploy config; expected ≤2 files. Skips Gate 2 (plan approval); the diff is still Codex-reviewed at the PR stage and merged by a human at Gate 3.\n\nSelection: prioritized by owner into Ready; all 7 readiness items met."
     }
   ]
 }
