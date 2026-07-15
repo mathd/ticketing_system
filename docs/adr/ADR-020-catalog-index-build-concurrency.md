@@ -4,7 +4,17 @@ Date: 2026-07-15
 
 ## Status
 
-Accepted (approved at the TKT-62 plan gate, 2026-07-15)
+Accepted (approved at the TKT-62 plan gate, 2026-07-15).
+
+**Amended 2026-07-15 (TKT-66):** precondition (1) is now **satisfied** —
+[ADR-022](./ADR-022-out-of-band-service-migrations.md) moved migrations out of the startup path.
+**Preconditions (2) and (3) remain false, so this ADR's decision is unchanged: CIC is still not
+adopted.** The preconditions are conjunctive; satisfying (1) alone changes nothing. TKT-66's premise
+that decoupling would let TKT-62's CIC question be re-opened was **incorrect** and was corrected at
+its plan gate — re-opening CIC needs a second replica or external writer **and** a populated target
+table. Where this ADR describes migrations running at startup, read it as the state that held before
+ADR-022; the reasoning is unaffected, because it turned on there being no *other session* to protect,
+which is still true.
 
 ## Context
 
@@ -79,8 +89,9 @@ startup coupling, not the DDL.**
 
 **Preconditions that unblock adoption** — when all hold, revisit this ADR:
 
-1. Migrations are decoupled from service startup (run out-of-band, or advisory-locked and run once)
-   — this is ADR-008's own "revisit when a second replica exists" hook; **and**
+1. ~~Migrations are decoupled from service startup (run out-of-band, or advisory-locked and run once)
+   — this is ADR-008's own "revisit when a second replica exists" hook~~ — **satisfied** by
+   [ADR-022](./ADR-022-out-of-band-service-migrations.md) (TKT-66); **and**
 2. more than one replica or an external writer exists, so there is a session for CIC to protect; **and**
 3. a target table is populated enough that the build duration matters.
 
@@ -89,16 +100,20 @@ startup coupling, not the DDL.**
 - CIC cannot run inside a transaction: the migration needs `-- +goose NO TRANSACTION`, which applies
   to both its Up and its Down (goose parses it per file, not per direction).
 - **The 30s deadline does reach a non-transactional statement.** goose's no-transaction branch runs
-  `db.ExecContext(ctx, query)` (`migration_sql.go:71-77` in v3.27.2), so the context from
-  `main.go:92` is propagated: a build still running at 30s is cancelled, not merely un-awaited.
-  This is why the deadline and CIC cannot coexist — verified in the dependency source, not assumed.
+  `db.ExecContext(ctx, query)` (`migration_sql.go:71-77` in v3.27.2), so the deadline's context is
+  propagated: a build still running at 30s is cancelled, not merely un-awaited. This is why the
+  deadline and CIC cannot coexist — verified in the dependency source, not assumed. Since ADR-022
+  the deadline lives in each binary's `migrate` subcommand
+  (`services/catalog/cmd/catalog/main.go:55`), not on the startup path; it is still propagated, so
+  this trap is unchanged.
 - A cancelled or failed CIC leaves an **INVALID** index behind. `CREATE INDEX CONCURRENTLY IF NOT
   EXISTS` then sees a same-named relation and does nothing: the index exists, is never used by the
   planner, and ADR-019's scan assertions are the only thing that would catch it. Reconcile the
   invalid index explicitly (drop it, then rebuild) rather than relying on `IF NOT EXISTS`.
 - Recovery must use a plain `DROP INDEX`; `DROP INDEX CONCURRENTLY` cannot run inside a `DO` block.
-- The `main.go:92` deadline must be removed **in the same change** that adopts CIC, never before —
-  it is correct for the plain builds we keep, and fatal to a concurrent one.
+- The 30s deadline (now in the `migrate` subcommand — `services/catalog/cmd/catalog/main.go:55`)
+  must be removed **in the same change** that adopts CIC, never before — it is correct for the plain
+  builds we keep, and fatal to a concurrent one.
 - Scope any adoption to indexes added to **pre-existing** tables. Making 0001/0005 non-transactional
   would weaken schema atomicity and slow bootstrap to protect a table nobody can see.
 

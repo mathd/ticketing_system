@@ -182,9 +182,18 @@ func CompleteOrder(ctx context.Context, db *sql.DB, c Completion, candidate uuid
 // inserts for those rows, so without this the paid-but-no-ticket window stays open
 // forever for exactly the historical orders the outbox is meant to protect.
 //
-// Runs at startup, after Migrate. It is idempotent (ON CONFLICT DO NOTHING on the
-// derived event id) and cheap once drained: the insert matches nothing on every
-// subsequent boot.
+// Runs at startup. Since ADR-022 moved migrations into a one-shot job, this is the
+// only startup-coupled data work left: it is data repair, not schema, and the job
+// has already migrated the schema it reads. It is idempotent (ON CONFLICT DO NOTHING
+// on the derived event id) and matches nothing on every subsequent boot.
+//
+// It still sequentially scans orders on every boot (nothing indexes status or
+// guest_order_ref), buffers every match in memory, and runs under main.go's 30s
+// deadline — so on a large historical orders table it inherits exactly the fail-fast
+// startup coupling ADR-022 removed from migrations. Small table today; nothing in
+// code bounds it. Note a restarted container re-runs this but not the migrate job,
+// so this is per-boot, not per-deploy. See ADR-022 § Consequences (the known
+// exception) and TKT-71 (the ceiling).
 //
 // Backfilled events are republished once. That is safe and deliberate: publication is
 // at-least-once by design and access dedupes issuance transactionally on

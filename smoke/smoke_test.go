@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -221,6 +223,203 @@ func TestDBCredentialIsolation(t *testing.T) {
 	if err == nil {
 		_ = cross.Close(ctx)
 		t.Fatal("catalog creds connected to inventory db — boundary not enforced")
+	}
+}
+
+// services and their database/role names — every one is its own database and
+// role (ADR-007), so the migrate jobs are five independent steps, never a
+// cross-service coordinator (ADR-002).
+var migratedServices = []string{"catalog", "inventory", "commerce", "payments", "access"}
+
+// latestMigrationVersion reads the service's checked-in migration filenames and
+// returns the highest goose version id. Derived from the files rather than
+// hardcoded, so a new migration cannot silently make this assertion stale.
+func latestMigrationVersion(t *testing.T, service string) int64 {
+	t.Helper()
+	dir := filepath.Join("..", "services", service, "internal", "store", "migrations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s migrations: %v", service, err)
+	}
+	var latest int64
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		num, _, ok := strings.Cut(e.Name(), "_")
+		if !ok {
+			t.Fatalf("%s: migration %q has no version prefix", service, e.Name())
+		}
+		v, err := strconv.ParseInt(num, 10, 64)
+		if err != nil {
+			t.Fatalf("%s: migration %q version: %v", service, e.Name(), err)
+		}
+		if v > latest {
+			latest = v
+		}
+	}
+	if latest == 0 {
+		t.Fatalf("%s: no migrations found in %s", service, dir)
+	}
+	return latest
+}
+
+// TestMigrationsAppliedOutOfBand: every service's database is migrated to the
+// latest checked-in version by its one-shot migrate job (ADR-022), before the
+// service is allowed to start.
+//
+// This is the assertion that catches a migrate job which is missing, wired to
+// the wrong database, built from a stale image, or silently a no-op: /healthz
+// only pings the connection, so a service will report healthy against an
+// unmigrated schema right up until the first query fails. Comparing the applied
+// goose version against the migration files on disk is what makes the decoupling
+// real rather than assumed.
+func TestMigrationsAppliedOutOfBand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, service := range migratedServices {
+		t.Run(service, func(t *testing.T) {
+			want := latestMigrationVersion(t, service)
+
+			conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://%s:%s@%s/%s",
+				service, service, pgHostPort, service))
+			if err != nil {
+				t.Fatalf("connect %s db: %v", service, err)
+			}
+			defer func() { _ = conn.Close(ctx) }()
+
+			var got int64
+			if err := conn.QueryRow(ctx,
+				`SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&got); err != nil {
+				t.Fatalf("%s: read goose_db_version (migrate job did not run?): %v", service, err)
+			}
+			if got != want {
+				t.Fatalf("%s: applied migration version = %d, want %d — the migrate job did not "+
+					"apply every checked-in migration", service, got, want)
+			}
+		})
+	}
+}
+
+func inspect(t *testing.T, container, format string) string {
+	t.Helper()
+	out, err := exec.Command("docker", "inspect", "-f", format, container).Output()
+	if err != nil {
+		t.Fatalf("docker inspect %s: %v", container, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
+// exited 0 before the service process started (ADR-022).
+//
+// What this does and does not prove. It catches the job being absent, failing,
+// or not gating the service — i.e. the depends_on edge being wrong. It does NOT
+// prove the server never migrates: a job that exits 0 first and a server that
+// also migrates satisfies it. TestServerModeDoesNotMigrate is what closes that;
+// the two are complementary and neither is sufficient alone.
+func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
+	for _, service := range migratedServices {
+		t.Run(service, func(t *testing.T) {
+			job := fmt.Sprintf("%s-%s-migrate-1", project, service)
+			srv := fmt.Sprintf("%s-%s-1", project, service)
+
+			if code := inspect(t, job, "{{.State.ExitCode}}"); code != "0" {
+				t.Fatalf("%s exited %s, want 0", job, code)
+			}
+			if running := inspect(t, job, "{{.State.Running}}"); running != "false" {
+				t.Fatalf("%s still running — it must be one-shot", job)
+			}
+
+			finished, err := time.Parse(time.RFC3339Nano, inspect(t, job, "{{.State.FinishedAt}}"))
+			if err != nil {
+				t.Fatalf("%s FinishedAt: %v", job, err)
+			}
+			started, err := time.Parse(time.RFC3339Nano, inspect(t, srv, "{{.State.StartedAt}}"))
+			if err != nil {
+				t.Fatalf("%s StartedAt: %v", srv, err)
+			}
+			if !finished.Before(started) {
+				t.Fatalf("%s finished at %s, but %s started at %s — the service started before "+
+					"its migrations completed", job, finished, srv, started)
+			}
+		})
+	}
+}
+
+// TestServerModeDoesNotMigrate: the server path never applies migrations
+// (ADR-022) — the negative proof the other two assertions cannot give.
+//
+// Neither TestMigrationsAppliedOutOfBand nor TestMigrationsRanBeforeServicesStarted
+// fails if someone re-adds store.Migrate to run(): the job would migrate first and
+// the server's call would be a silent no-op, so both stay green while the startup
+// coupling this ADR removes is quietly back. This test is the one that fails.
+//
+// Method: run catalog in server mode against an empty database, with everything
+// else real. Reaching a passing healthcheck is the positive control — it proves
+// the process got past the point where migration used to run (main.go opened the
+// DB, then listened), so an absent goose_db_version is a real negative and not a
+// process that died early. If run() migrates, the table appears and this fails.
+func TestServerModeDoesNotMigrate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	const probeDB = "placement_probe"
+	pg := project + "-postgres-1"
+	psql := func(sql string) {
+		t.Helper()
+		if out, err := exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-v", "ON_ERROR_STOP=1", "-c", sql).CombinedOutput(); err != nil {
+			t.Fatalf("psql %q: %v: %s", sql, err, out)
+		}
+	}
+	// Separate -c flags: psql wraps a multi-statement -c in a transaction, and
+	// DROP/CREATE DATABASE cannot run inside one.
+	psql("DROP DATABASE IF EXISTS " + probeDB)
+	psql("CREATE DATABASE " + probeDB + " OWNER catalog")
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-c", "DROP DATABASE IF EXISTS "+probeDB).Run()
+	})
+
+	probe := project + "-placement-probe"
+	_ = exec.Command("docker", "rm", "-f", probe).Run()
+	out, err := exec.Command("docker", "run", "-d", "--name", probe,
+		"--network", project+"_default",
+		"-e", fmt.Sprintf("DATABASE_URL=postgres://catalog:catalog@postgres:5432/%s", probeDB),
+		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
+		"-e", "INTERNAL_SERVICE_TOKEN=local-service-token",
+		project+"-catalog").CombinedOutput()
+	if err != nil {
+		t.Fatalf("start probe: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", probe).Run() })
+
+	// Positive control: wait until the server is actually serving. Without this a
+	// crash-on-boot would look identical to "did not migrate" and pass vacuously.
+	for exec.Command("docker", "exec", probe, "/app", "healthcheck").Run() != nil {
+		if ctx.Err() != nil {
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", probe).CombinedOutput()
+			t.Fatalf("probe never became healthy — cannot conclude anything about migration; logs:\n%s", logs)
+		}
+		time.Sleep(time.Second)
+	}
+
+	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/%s", pgHostPort, probeDB))
+	if err != nil {
+		t.Fatalf("connect %s: %v", probeDB, err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	var table *string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.goose_db_version')::text`).Scan(&table); err != nil {
+		t.Fatalf("probe goose table: %v", err)
+	}
+	if table != nil {
+		t.Fatalf("catalog in server mode created %q in an unmigrated database — the server path is "+
+			"migrating again (ADR-022: migrations belong to the one-shot job only)", *table)
 	}
 }
 

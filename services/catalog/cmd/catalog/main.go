@@ -31,6 +31,13 @@ import (
 const serviceName = "catalog"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		if err := migrate(); err != nil {
+			fmt.Fprintf(os.Stderr, "%s migrate: %v\n", serviceName, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
 	}
@@ -38,6 +45,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
 		os.Exit(1)
 	}
+}
+
+// migrate applies this service's embedded migrations and exits (ADR-022).
+// It runs as a one-shot job that must complete before the service starts;
+// the server path never migrates. Fail-fast and the 30s deadline are kept
+// from ADR-008 — only the placement changed.
+func migrate() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := store.Migrate(ctx, db); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return nil
 }
 
 // healthcheck is the container health probe: distroless images have no
@@ -88,13 +115,8 @@ func run() error {
 	defer func() { _ = db.Close() }()
 	dbConfig.Apply(db)
 
-	// Migrate before listening; fail fast on a bad migration (ADR-008).
-	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
-	defer mcancel()
-	if err := store.Migrate(mctx, db); err != nil {
-		return fmt.Errorf("migrate: %w", err)
-	}
-	log.InfoContext(ctx, "migrations applied")
+	// Migrations ran out-of-band before this process started (ADR-022): the
+	// `migrate` subcommand, as a one-shot job the service depends on.
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))

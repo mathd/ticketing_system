@@ -59,9 +59,9 @@ experiment stays valid.
   ships a no-op. Proving it takes two tests: the result is scoped, *and* the scan is. Narrower
   than it sounds — the ADR draws the lines.
 - **Adding an index to a catalog migration? Read [ADR-020](docs/adr/ADR-020-catalog-index-build-concurrency.md) first.**
-  Plain `CREATE INDEX` stays — `CONCURRENTLY` is deliberately *not* adopted while migrations run at
-  service startup (ADR-008), and adopting it early bricks startup. The ADR names the preconditions
-  and the traps.
+  Plain `CREATE INDEX` stays — `CONCURRENTLY` is still *not* adopted. [ADR-022](docs/adr/ADR-022-out-of-band-service-migrations.md)
+  satisfied its precondition (1), but the preconditions are conjunctive and (2) and (3) remain false,
+  so nothing changed. The ADR names the preconditions and the traps.
 - **Claiming an audit or integrity guarantee? Read [ADR-021](docs/adr/ADR-021-ticket-lifecycle-trail-integrity.md) first.**
   **State inside the database cannot constrain an adversary who writes to the database** — so a
   quarantine row, a retry counter, a retained signature or a chain head proves nothing against one.
@@ -69,3 +69,8 @@ experiment stays valid.
   closed and rollback is not. Say which adversary you mean before writing "tamper-evident". Three
   clauses of ADR-021 broke this rule across two adversarial review passes — it is easy to get
   wrong while every individual fact is correct.
+- **Touching how or where migrations run? Read [ADR-022](docs/adr/ADR-022-out-of-band-service-migrations.md) first.**
+  Migrations run **out-of-band**: each binary's `migrate` subcommand, as a one-shot Compose job the
+  service waits on (`service_completed_successfully`). The server path never migrates. ADR-008 still
+  governs everything else (goose-as-library, embedded SQL, per-service ownership, fail-fast, 30s
+  bound) — ADR-022 superseded it on *placement only*.
