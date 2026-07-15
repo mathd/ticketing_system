@@ -4,7 +4,7 @@
   "summary": "Production-grade checkout recovery and journal fault-injection hardening",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent:claude-code",
   "pr": {
@@ -73,6 +73,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Scope decision (human, 2026-07-14): defer the PSP-gated work until a real payment processor is on\nthe table.**\n\nTKT-43's own framing was *\"Before replacing the fake PSP, add … PSP status plus void/refund\ncompensation.\"* That ordering was speculative — a PSP port can't be honestly designed against an\nunknown provider (provider reference identity, status semantics, void-vs-refund rules and error\ntaxonomy are all provider-specific). Building it now means inventing an abstraction over a fake and\nrewriting it when a real processor lands. Deferring inverts the ticket's stated order, and that is\nthe right call.\n\n**TKT-43 now ends after slice 3.** Remaining scope:\n\n| Slice | Status |\n|---|---|\n| 1 — ADR-016 (recovery state machine + tamper boundary) | **PR #35, awaiting Gate 3** |\n| 2 — commerce completion outbox + restart drainer | in TKT-43 |\n| 3 — deterministic recovery (`confirmation_pending`, proven-terminal release, ambiguous `created` via payments lookup) | in TKT-43 |\n| 4 — PSP port + durable operation model + void/refund | **deferred → TKT-53** |\n| 5 — journal keyring + journal fault injection | **deferred → TKT-53** |\n\nSlices 2–3 are unaffected: neither needs the port. That is exactly what ADR-016 §Decision 3\nestablishes, and it is why the deferral costs nothing today.\n\n**ADR-016 needs no change.** It consistently says *\"when the PSP port lands\"* and *\"the PSP slice\"* —\nit defers **to** the port without promising when the port arrives. PR #35 stands as written.\n\n**What the deferral leaves open — state it, don't bury it:**\n- `payment_unknown` orders stay parked. No automated resolution exists; the money's fate is unknown\n  until someone asks the provider. Slice 3 does not touch them.\n- `confirmation_pending` whose confirm is terminally impossible parks as `reconciliation_required`:\n  **captured money, no automated way to give it back** until void/refund exists.\n- Both are acceptable **only while the PSP is fake** — no real money moves. They become\n  launch-blocking the moment a real processor is connected, which is what TKT-53 gates.\n- Journal key rotation stays impossible without invalidating history (`Verify` rejects unknown\n  `key_id`, `store.go:213-215`). Acceptable at one key with no rotation event pending.\n\n**TKT-53** carries the deferred remainder, blocked on the real-PSP decision. **TKT-54** carries the\nticket-lifecycle-trail integrity gap found while widening ADR-003 — unrelated to the PSP, and not\nTKT-43's money-path scope.\n"
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**Resuming for slice 2 (commerce completion outbox + restart drainer).** Label `needs:human` →\n`agent:coding` — the skill forbids pushing while `needs:human` is set, so this swap precedes any commit.\n\n**Gate 3 on PR #35 is still open and still the human's.** This does not merge it, and slice 2 does\nnot touch ADR-016. Human directive: proceed to slice 2 rather than wait on the merge.\n\n**Branching:** slice 2 is **stacked on PR #35's branch**, not `main`. It builds on ADR-016's\ndecisions (outbox carries a frozen canonical envelope; decide under the row lock, commit, then emit),\nso branching off `main` would produce a PR whose rationale isn't in the tree. Consequence, stated\nplainly: **PR #35 must merge before slice 2's PR**, and slice 2's diff will show ADR-016 until it\ndoes. Branch `TKT-43-commerce-completion-outbox`, rebased onto\n`TKT-43-checkout-recovery-journal-hardening`.\n"
     }
   ],
   "links": [
