@@ -8,7 +8,7 @@
   ],
   "parent": "TKT-2",
   "description": "**Found by the Codex adversarial review of PR #42 (TKT-60), verified against the code.**\n\nEvery index in `services/catalog/internal/store/migrations/` is built with a plain `CREATE INDEX`, which takes a lock that conflicts with inserts/updates/deletes for the duration of the build: `performances_public_read` and `ticket_types_by_performance` (0001), `series_by_event` (0005), `performances_capacity_group_idx` (0006), and `performances_by_event` (0007).\n\nOn a production-sized `performances` table this stalls publishing, archiving and slot creation while the index builds — a potential catalog outage on deploy. Goose supports non-transactional migrations (`-- +goose NO TRANSACTION`), which is what `CREATE INDEX CONCURRENTLY` requires.\n\n**This is repo-wide migration practice, not a TKT-60 defect** — 0007 followed the existing convention. Deliberately filed rather than fixed in #42: changing how every index in the service is built is its own decision, likely an ADR.\n\n**Also worth deciding here:** whether `performances_by_event` should be partial — `(event_id) WHERE status='published'` — since its only consumer filters on published. That trades a smaller/cheaper index against losing the draft-row lookups. **Measure before choosing**; the review asserted the win without evidence.\n\n**COS:** a decision recorded (ADR if the convention changes repo-wide) on concurrent index builds for catalog migrations; if adopted, existing + future index migrations use it. `make check` green. No behavior change to reads.",
-  "status": "Planning",
+  "status": "Building",
   "assignee": "agent",
   "pr": null,
   "comments": [
