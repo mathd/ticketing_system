@@ -52,6 +52,10 @@ We adopt, for US-009:
    `performance.published`. Additive optional fields are backward compatible
    (ADR-009); a bump is reserved for a breaking change. Inventory does not fork
    on kind (ADR-005), so it needs no change.
+   *Refined by [ADR-017](./ADR-017-domain-event-schema-evolution.md): this decision stands for
+   `kind`, but "additive ⇒ compatible" is not general — a field that changes what a consumer **does**
+   (TKT-53's `capacity_group_id` moves inventory's pool key) requires a bump even though it parses
+   cleanly. ADR-017 §4 also answers the lockstep objection weighed above.*
 4. **Closure uses a monotonic `closure_version` + a single
    `closure_emitted_version` outbox marker**, not a table. The
    `closed`/`reopened` envelope id is derived from the version (deterministic,
