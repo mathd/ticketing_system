@@ -171,3 +171,85 @@ func TestFestivalPublishArchiveRaceIsConsistent(t *testing.T) {
 		t.Fatalf("archive rejected with festival=%s day=%s", festivalStatus, dayStatus)
 	}
 }
+
+func TestDirectArchiveRacingFestivalPublishCannotDesync(t *testing.T) {
+	ctx, db, st := festivalSmokeStore(t)
+	orgID, _, _, dayID := seedFestivalDay(t, ctx, db, true)
+	festival, err := st.CreateFestival(ctx, FestivalInput{OrganizerID: orgID, Name: LocalizedText{"en": "f", "fr": "f"}, SharedCapacity: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.AttachDayToFestival(ctx, festival.ID, dayID); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	var publishErr, archiveErr error
+	wg.Add(2)
+	go func() { defer wg.Done(); _, publishErr = st.PublishFestival(ctx, festival.ID) }()
+	go func() { defer wg.Done(); _, _, _, archiveErr = st.ArchivePerformance(ctx, dayID) }()
+	wg.Wait()
+	if publishErr != nil {
+		t.Fatalf("festival publish: %v", publishErr)
+	}
+	if !errors.Is(archiveErr, ErrGroupedSlotLifecycle) {
+		t.Fatalf("direct archive error=%v, want ErrGroupedSlotLifecycle", archiveErr)
+	}
+	var festivalStatus, dayStatus string
+	if err = db.QueryRowContext(ctx, `SELECT f.status,p.status FROM festivals f JOIN performances p ON p.capacity_group_id=f.id WHERE f.id=$1`, festival.ID).Scan(&festivalStatus, &dayStatus); err != nil {
+		t.Fatal(err)
+	}
+	if festivalStatus != "published" || dayStatus != "published" {
+		t.Fatalf("festival=%s day=%s", festivalStatus, dayStatus)
+	}
+}
+
+func TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically(t *testing.T) {
+	ctx, db, st := festivalSmokeStore(t)
+	orgID, venueID := uuid.New(), uuid.New()
+	firstEventID, secondEventID := uuid.New(), uuid.New()
+	firstDayID, secondDayID, unrelatedID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO organizers(id,name) VALUES($1,'festival');
+		INSERT INTO venues(id,organizer_id,name,ga_capacity) VALUES($2,$1,'v',250);
+		INSERT INTO events(id,organizer_id,name) VALUES
+			($3,$1,'{"en":"first","fr":"first"}'),
+			($4,$1,'{"en":"second","fr":"second"}');
+		INSERT INTO performances(id,organizer_id,event_id,venue_id,kind,operating_date,opens_at,closes_at,timezone) VALUES
+			($5,$1,$3,$2,'festival_day',DATE '2026-08-02','12:00','23:00','America/Toronto'),
+			($6,$1,$4,$2,'festival_day',DATE '2026-08-03','12:00','23:00','America/Toronto'),
+			($7,$1,$4,$2,'festival_day',DATE '2026-08-01','12:00','23:00','America/Toronto');
+		INSERT INTO ticket_types(organizer_id,performance_id,name,price_amount,currency) VALUES
+			($1,$5,'{"en":"ga","fr":"ga"}',7500,'CAD'),
+			($1,$6,'{"en":"ga","fr":"ga"}',7500,'CAD'),
+			($1,$7,'{"en":"ga","fr":"ga"}',7500,'CAD')`,
+		orgID, venueID, firstEventID, secondEventID, firstDayID, secondDayID, unrelatedID); err != nil {
+		t.Fatal(err)
+	}
+	festival, err := st.CreateFestival(ctx, FestivalInput{OrganizerID: orgID, Name: LocalizedText{"en": "f", "fr": "f"}, SharedCapacity: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{firstDayID, secondDayID} {
+		if _, err = st.AttachDayToFestival(ctx, festival.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = st.PublishFestival(ctx, festival.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.PublishPerformance(ctx, unrelatedID); err != nil {
+		t.Fatal(err)
+	}
+
+	agg, err := st.GetPublishedFestival(ctx, festival.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agg.Performances) != 2 {
+		t.Fatalf("festival day count = %d", len(agg.Performances))
+	}
+	if agg.Performances[0].Performance.ID != firstDayID || agg.Performances[1].Performance.ID != secondDayID {
+		t.Fatalf("festival day order = %v", []uuid.UUID{agg.Performances[0].Performance.ID, agg.Performances[1].Performance.ID})
+	}
+}

@@ -156,6 +156,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "only festival_day slots can join a festival"})
 	case errors.Is(err, store.ErrAlreadyGrouped):
 		writeJSON(w, http.StatusConflict, Error{Error: "slot already belongs to a festival"})
+	case errors.Is(err, store.ErrGroupedSlotLifecycle):
+		writeJSON(w, http.StatusConflict, Error{Error: "grouped festival day must be published/archived via its festival"})
 	case errors.Is(err, store.ErrFestivalNotDraft):
 		writeJSON(w, http.StatusConflict, Error{Error: "festival is not draft"})
 	case errors.Is(err, store.ErrEmptyFestival):

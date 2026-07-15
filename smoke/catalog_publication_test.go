@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -623,6 +624,13 @@ func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	archiveConsumer, err := stream.CreateOrUpdateConsumer(t.Context(), jetstream.ConsumerConfig{
+		Durable: "smoke-festival-archive-" + suffix, FilterSubject: "platform.catalog.performance.archived",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	publishURL := fmt.Sprintf("%s/festivals/%v/publish", catalog, festival["id"])
 	if code, body := postJSON(t, publishURL, nil); code != http.StatusOK {
 		t.Fatalf("festival publish: %d %s", code, body)
@@ -646,7 +654,7 @@ func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = msg.Ack()
-		if envelope.Schema != 2 || envelope.Data.Kind != "festival_day" || envelope.Data.CapacityGroupID != fmt.Sprint(festival["id"]) || envelope.Data.SharedCapacity != 1000 {
+		if envelope.Schema != 3 || envelope.Data.Kind != "festival_day" || envelope.Data.CapacityGroupID != fmt.Sprint(festival["id"]) || envelope.Data.SharedCapacity != 1000 {
 			t.Fatalf("festival envelope = %+v", envelope)
 		}
 		seen[envelope.Data.PerformanceID] = true
@@ -655,6 +663,26 @@ func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
 		if !seen[dayID] {
 			t.Fatalf("missing festival day event for %s: %v", dayID, seen)
 		}
+	}
+
+	// The two real publication events are consumed by inventory and converge on
+	// exactly one pool keyed by the festival id.
+	db, err := pgx.Connect(t.Context(), fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(t.Context()) }()
+	var poolCount int
+	var poolCapacity int32
+	for i := 0; i < 40; i++ {
+		err = db.QueryRow(t.Context(), `SELECT count(*),COALESCE(max(capacity),0) FROM inventory_pools WHERE slot_id=$1`, festival["id"]).Scan(&poolCount, &poolCapacity)
+		if err == nil && poolCount == 1 && poolCapacity == 1000 {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if err != nil || poolCount != 1 || poolCapacity != 1000 {
+		t.Fatalf("festival inventory pools=%d capacity=%d err=%v, want one pool of 1000", poolCount, poolCapacity, err)
 	}
 	code, body, headers := getWithHeaders(t, fmt.Sprintf("%s/public/festivals/%v?locale=en", catalog, festival["id"]))
 	if code != http.StatusOK || headers.Get("Cache-Control") != "public, max-age=300, s-maxage=300" {
@@ -668,6 +696,33 @@ func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
 	archiveURL := fmt.Sprintf("%s/festivals/%v/archive", catalog, festival["id"])
 	if code, body := postJSON(t, archiveURL, nil); code != http.StatusOK {
 		t.Fatalf("festival archive: %d %s", code, body)
+	}
+	archived := map[string]bool{}
+	for range 2 {
+		msg, err := archiveConsumer.Next(jetstream.FetchMaxWait(15 * time.Second))
+		if err != nil {
+			t.Fatalf("festival archive event: %v", err)
+		}
+		var envelope struct {
+			Schema int `json:"schema"`
+			Data   struct {
+				PerformanceID   string `json:"performance_id"`
+				CapacityGroupID string `json:"capacity_group_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		_ = msg.Ack()
+		if envelope.Schema != 3 || envelope.Data.CapacityGroupID != fmt.Sprint(festival["id"]) {
+			t.Fatalf("festival archive envelope = %+v", envelope)
+		}
+		archived[envelope.Data.PerformanceID] = true
+	}
+	for _, dayID := range dayIDs {
+		if !archived[dayID] {
+			t.Fatalf("missing festival archive event for %s: %v", dayID, archived)
+		}
 	}
 	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/festivals/%v?locale=en", catalog, festival["id"])); code != http.StatusNotFound {
 		t.Fatalf("archived festival remains public: %d %s", code, body)

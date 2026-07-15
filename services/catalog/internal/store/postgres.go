@@ -544,6 +544,7 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE performances SET status = 'published', published_at = now()
 		 WHERE id = $1 AND status = 'draft'
+		   AND capacity_group_id IS NULL
 		   AND EXISTS (SELECT 1 FROM ticket_types t WHERE t.performance_id = $1)`, id)
 	if err != nil {
 		return Performance{}, false, fmt.Errorf("publish: %w", err)
@@ -553,6 +554,9 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 		perf, _, _, err := p.getPerformance(ctx, id)
 		if err != nil {
 			return Performance{}, false, err
+		}
+		if perf.CapacityGroupID != nil {
+			return Performance{}, false, ErrGroupedSlotLifecycle
 		}
 		if perf.Status == "draft" {
 			return Performance{}, false, ErrNotSellable
@@ -669,15 +673,19 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 	defer func() { _ = tx.Rollback() }()
 
 	var status string
+	var capacityGroup uuid.NullUUID
 	var closureVersion, closureEmitted int32
 	err = tx.QueryRowContext(ctx,
-		`SELECT status, closure_version, closure_emitted_version
-		 FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status, &closureVersion, &closureEmitted)
+		`SELECT status, capacity_group_id, closure_version, closure_emitted_version
+		 FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status, &capacityGroup, &closureVersion, &closureEmitted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
 	}
 	if err != nil {
 		return Performance{}, false, false, fmt.Errorf("lock performance: %w", err)
+	}
+	if capacityGroup.Valid {
+		return Performance{}, false, false, ErrGroupedSlotLifecycle
 	}
 	switch status {
 	case "draft":
@@ -1249,5 +1257,13 @@ func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (Fest
 	if len(out.Performances) == 0 {
 		return FestivalAggregate{}, ErrNotFound
 	}
+	sort.Slice(out.Performances, func(i, j int) bool {
+		left := out.Performances[i].Performance
+		right := out.Performances[j].Performance
+		if !left.StartsAt.Equal(*right.StartsAt) {
+			return left.StartsAt.Before(*right.StartsAt)
+		}
+		return left.ID.String() < right.ID.String()
+	})
 	return out, nil
 }

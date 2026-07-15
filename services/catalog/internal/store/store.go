@@ -29,14 +29,15 @@ var (
 	// closure_version). The caller must retry the pending transition — which
 	// re-emits with the same deterministic id — before toggling again, so the
 	// single outbox marker never drops an event.
-	ErrClosurePending     = errors.New("previous closure event still owed; retry that transition first")
-	ErrMembershipConflict = errors.New("group membership conflict")
-	ErrMembershipFrozen   = errors.New("series membership is frozen")
-	ErrEmptySeries        = errors.New("series has no members")
-	ErrSlotKindMismatch   = errors.New("only festival_day slots can join a festival")
-	ErrAlreadyGrouped     = errors.New("slot already belongs to a festival")
-	ErrFestivalNotDraft   = errors.New("festival is not draft")
-	ErrEmptyFestival      = errors.New("festival has no members")
+	ErrClosurePending       = errors.New("previous closure event still owed; retry that transition first")
+	ErrMembershipConflict   = errors.New("group membership conflict")
+	ErrMembershipFrozen     = errors.New("series membership is frozen")
+	ErrEmptySeries          = errors.New("series has no members")
+	ErrSlotKindMismatch     = errors.New("only festival_day slots can join a festival")
+	ErrAlreadyGrouped       = errors.New("slot already belongs to a festival")
+	ErrGroupedSlotLifecycle = errors.New("grouped festival day must transition via its festival")
+	ErrFestivalNotDraft     = errors.New("festival is not draft")
+	ErrEmptyFestival        = errors.New("festival has no members")
 )
 
 type SeriesTransitionConflict struct {

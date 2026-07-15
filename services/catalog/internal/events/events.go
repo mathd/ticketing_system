@@ -37,8 +37,7 @@ type PerformancePublishedData struct {
 	EventID       uuid.UUID `json:"event_id"`
 	OrganizerID   uuid.UUID `json:"organizer_id"`
 	// Kind lets inventory attribute the pool to a slot kind without forking the
-	// claim path (ADR-005). Added additively; Schema stays 2 (backward
-	// compatible — existing consumers ignore it, ADR-009).
+	// claim path (ADR-005).
 	Kind            string     `json:"kind"`
 	Capacity        int32      `json:"capacity"`
 	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
@@ -52,13 +51,16 @@ type PerformanceArchivedData struct {
 	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
 }
 
-// festivalCapacity keeps the additive schema-2 fields atomic: they are only
-// emitted as a valid pair for a grouped festival day.
-func festivalCapacity(perf store.Performance) (*uuid.UUID, *int32) {
-	if perf.Kind != store.KindFestivalDay || perf.CapacityGroupID == nil || perf.SharedCapacity == nil || *perf.SharedCapacity <= 0 {
-		return nil, nil
+// festivalCapacity keeps grouped capacity fields atomic and fails closed when
+// a persisted group reference cannot produce a valid festival pool.
+func festivalCapacity(perf store.Performance) (*uuid.UUID, *int32, error) {
+	if perf.CapacityGroupID == nil {
+		return nil, nil, nil
 	}
-	return perf.CapacityGroupID, perf.SharedCapacity
+	if *perf.CapacityGroupID == uuid.Nil || perf.Kind != store.KindFestivalDay || perf.SharedCapacity == nil || *perf.SharedCapacity <= 0 {
+		return nil, nil, fmt.Errorf("grouped performance has invalid festival capacity")
+	}
+	return perf.CapacityGroupID, perf.SharedCapacity, nil
 }
 
 // SlotClosureData carries a weather-closure transition (spike §Case 3). Version
@@ -123,12 +125,33 @@ func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Perform
 		occurred = *perf.PublishedAt
 	}
 	id := EventID(perf)
-	capacityGroupID, sharedCapacity := festivalCapacity(perf)
+	body, err := performancePublishedEnvelope(perf, occurred)
+	if err != nil {
+		return err
+	}
+	msg := &nats.Msg{Subject: SubjectPerformancePublished, Data: body}
+	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
+	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
+		return fmt.Errorf("publish %s: %w", SubjectPerformancePublished, err)
+	}
+	return nil
+}
+
+func performancePublishedEnvelope(perf store.Performance, occurred time.Time) ([]byte, error) {
+	id := EventID(perf)
+	capacityGroupID, sharedCapacity, err := festivalCapacity(perf)
+	if err != nil {
+		return nil, err
+	}
+	schema := 2
+	if capacityGroupID != nil {
+		schema = 3
+	}
 	body, err := json.Marshal(Envelope{
 		ID:         id,
 		Type:       SubjectPerformancePublished,
 		OccurredAt: occurred,
-		Schema:     2,
+		Schema:     schema,
 		Data: PerformancePublishedData{
 			PerformanceID:   perf.ID,
 			EventID:         perf.EventID,
@@ -140,14 +163,9 @@ func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Perform
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
+		return nil, fmt.Errorf("marshal envelope: %w", err)
 	}
-	msg := &nats.Msg{Subject: SubjectPerformancePublished, Data: body}
-	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
-	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
-		return fmt.Errorf("publish %s: %w", SubjectPerformancePublished, err)
-	}
-	return nil
+	return body, nil
 }
 
 // ClosureEventID derives the closed/reopened envelope id from the slot id and
@@ -198,13 +216,9 @@ func (p *JetStream) PerformanceArchived(ctx context.Context, perf store.Performa
 		occurred = *perf.ArchivedAt
 	}
 	id := ArchivedEventID(perf)
-	capacityGroupID, _ := festivalCapacity(perf)
-	body, err := json.Marshal(Envelope{
-		ID: id, Type: SubjectPerformanceArchived, OccurredAt: occurred, Schema: 2,
-		Data: PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID, CapacityGroupID: capacityGroupID},
-	})
+	body, err := performanceArchivedEnvelope(perf, occurred)
 	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
+		return err
 	}
 	msg := &nats.Msg{Subject: SubjectPerformanceArchived, Data: body}
 	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
@@ -212,4 +226,24 @@ func (p *JetStream) PerformanceArchived(ctx context.Context, perf store.Performa
 		return fmt.Errorf("publish %s: %w", SubjectPerformanceArchived, err)
 	}
 	return nil
+}
+
+func performanceArchivedEnvelope(perf store.Performance, occurred time.Time) ([]byte, error) {
+	id := ArchivedEventID(perf)
+	capacityGroupID, _, err := festivalCapacity(perf)
+	if err != nil {
+		return nil, err
+	}
+	schema := 2
+	if capacityGroupID != nil {
+		schema = 3
+	}
+	body, err := json.Marshal(Envelope{
+		ID: id, Type: SubjectPerformanceArchived, OccurredAt: occurred, Schema: schema,
+		Data: PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID, CapacityGroupID: capacityGroupID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal envelope: %w", err)
+	}
+	return body, nil
 }

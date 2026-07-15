@@ -269,6 +269,9 @@ func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.P
 	if !ok {
 		return store.Performance{}, false, store.ErrNotFound
 	}
+	if p.CapacityGroupID != nil {
+		return store.Performance{}, false, store.ErrGroupedSlotLifecycle
+	}
 	if p.Status == "draft" && !f.hasTicketType(id) {
 		return store.Performance{}, false, store.ErrNotSellable
 	}
@@ -288,6 +291,9 @@ func (f *fakeStore) ArchivePerformance(_ context.Context, id uuid.UUID) (store.P
 	p, ok := f.performances[id]
 	if !ok {
 		return store.Performance{}, false, false, store.ErrNotFound
+	}
+	if p.CapacityGroupID != nil {
+		return store.Performance{}, false, false, store.ErrGroupedSlotLifecycle
 	}
 	if p.Status == "draft" {
 		return store.Performance{}, false, false, store.ErrIllegalTransition
@@ -1281,6 +1287,44 @@ func TestFestivalPublishCascadesAndEmitsSharedCapacity(t *testing.T) {
 	e.do("POST", "/festivals/"+festival.Id.String()+"/archive", nil)
 	if !slices.Equal(e.pub.calls, []string{"published", "archived", "published", "archived"}) {
 		t.Fatalf("owed publication/archive order = %v", e.pub.calls)
+	}
+}
+
+func TestGroupedFestivalDayLifecycleMustUseFestivalCascade(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	day := e.createFestivalDay(venueID, eventID, 1)
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{
+		OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000,
+	}))
+	e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: day.Id})
+
+	rec := e.do("POST", "/performances/"+day.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("direct grouped publish: %d", rec.Code)
+	}
+	if body := decode[Error](t, rec); body.Error != "grouped festival day must be published/archived via its festival" {
+		t.Fatalf("direct grouped publish error = %q", body.Error)
+	}
+	if rec := e.do("POST", "/festivals/"+festival.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
+		t.Fatalf("festival publish: %d", rec.Code)
+	}
+	if got := e.store.performances[day.Id].Status; got != "published" {
+		t.Fatalf("day after festival publish = %q", got)
+	}
+
+	rec = e.do("POST", "/performances/"+day.Id.String()+"/archive", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("direct grouped archive: %d", rec.Code)
+	}
+	if body := decode[Error](t, rec); body.Error != "grouped festival day must be published/archived via its festival" {
+		t.Fatalf("direct grouped archive error = %q", body.Error)
+	}
+	if rec := e.do("POST", "/festivals/"+festival.Id.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("festival archive: %d", rec.Code)
+	}
+	if got := e.store.performances[day.Id].Status; got != "archived" {
+		t.Fatalf("day after festival archive = %q", got)
 	}
 }
 

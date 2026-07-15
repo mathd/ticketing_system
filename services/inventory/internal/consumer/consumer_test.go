@@ -43,7 +43,7 @@ func TestProvisionInputResolvesSchema1Capacity(t *testing.T) {
 func TestProvisionInputUsesOneSharedFestivalPool(t *testing.T) {
 	organizerID, groupID := uuid.New(), uuid.New()
 	sharedCapacity := int32(1000)
-	e := publication{ID: uuid.New(), Schema: 2}
+	e := publication{ID: uuid.New(), Schema: 3}
 	e.Data.PerformanceID = uuid.New()
 	e.Data.OrganizerID = organizerID
 	e.Data.Capacity = 250
@@ -66,7 +66,7 @@ func TestProvisionInputResolvesLegacyFestivalGroup(t *testing.T) {
 	e.Data.PerformanceID = uuid.New()
 	e.Data.OrganizerID = organizerID
 	c := &Consumer{resolver: fakeResolver{
-		organizerID: organizerID, capacity: 250, capacityGroupID: &groupID, sharedCapacity: &sharedCapacity,
+		organizerID: organizerID, capacityGroupID: &groupID, sharedCapacity: &sharedCapacity,
 	}}
 	got, err := c.provisionInput(context.Background(), e)
 	if err != nil {
@@ -79,13 +79,44 @@ func TestProvisionInputResolvesLegacyFestivalGroup(t *testing.T) {
 
 func TestProvisionInputRejectsPartialFestivalCapacity(t *testing.T) {
 	groupID := uuid.New()
+	sharedCapacity := int32(1000)
+	zeroCapacity := int32(0)
+	tests := []struct {
+		name     string
+		groupID  *uuid.UUID
+		capacity *int32
+	}{
+		{name: "both missing"},
+		{name: "shared capacity missing", groupID: &groupID},
+		{name: "group missing", capacity: &sharedCapacity},
+		{name: "zero group", groupID: new(uuid.UUID), capacity: &sharedCapacity},
+		{name: "zero shared capacity", groupID: &groupID, capacity: &zeroCapacity},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := publication{ID: uuid.New(), Schema: 3}
+			e.Data.PerformanceID = uuid.New()
+			e.Data.OrganizerID = uuid.New()
+			e.Data.CapacityGroupID = tt.groupID
+			e.Data.SharedCapacity = tt.capacity
+			if _, err := (&Consumer{}).provisionInput(context.Background(), e); err == nil {
+				t.Fatal("expected invalid schema-3 festival capacity to be rejected")
+			}
+		})
+	}
+}
+
+func TestProvisionInputRejectsFestivalCapacityOnSchema2(t *testing.T) {
+	groupID := uuid.New()
+	sharedCapacity := int32(1000)
 	e := publication{ID: uuid.New(), Schema: 2}
 	e.Data.PerformanceID = uuid.New()
 	e.Data.OrganizerID = uuid.New()
 	e.Data.Capacity = 250
 	e.Data.CapacityGroupID = &groupID
+	e.Data.SharedCapacity = &sharedCapacity
 	if _, err := (&Consumer{}).provisionInput(context.Background(), e); err == nil {
-		t.Fatal("expected partial festival capacity to be rejected")
+		t.Fatal("expected schema-2 festival fields to be rejected")
 	}
 }
 
@@ -115,7 +146,7 @@ func TestProvisionInputRejectsSchema1CatalogMismatch(t *testing.T) {
 }
 
 func TestProvisionInputRejectsUnsupportedSchema(t *testing.T) {
-	e := publication{ID: uuid.New(), Schema: 3}
+	e := publication{ID: uuid.New(), Schema: 4}
 	e.Data.PerformanceID = uuid.New()
 	e.Data.OrganizerID = uuid.New()
 	c := &Consumer{resolver: fakeResolver{err: errors.New("must not resolve")}}

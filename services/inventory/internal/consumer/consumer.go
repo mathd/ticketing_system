@@ -56,14 +56,17 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		if e.Data.Capacity <= 0 {
 			return provisionInput{}, fmt.Errorf("schema-2 publication has invalid capacity")
 		}
-		if (e.Data.CapacityGroupID == nil) != (e.Data.SharedCapacity == nil) || e.Data.SharedCapacity != nil && *e.Data.SharedCapacity <= 0 {
-			return provisionInput{}, fmt.Errorf("schema-2 publication has invalid festival capacity")
+		if e.Data.CapacityGroupID != nil || e.Data.SharedCapacity != nil {
+			return provisionInput{}, fmt.Errorf("schema-2 publication must not carry festival capacity")
 		}
-		poolID, capacity := e.Data.PerformanceID, e.Data.Capacity
-		if e.Data.CapacityGroupID != nil {
-			poolID, capacity = *e.Data.CapacityGroupID, *e.Data.SharedCapacity
+		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity}, nil
+	case 3:
+		// Deploy this consumer before catalog starts emitting Schema 3 so grouped
+		// festival publications remain safe during a rolling rollout.
+		if e.Data.CapacityGroupID == nil || *e.Data.CapacityGroupID == uuid.Nil || e.Data.SharedCapacity == nil || *e.Data.SharedCapacity <= 0 {
+			return provisionInput{}, fmt.Errorf("schema-3 publication has invalid festival capacity")
 		}
-		return provisionInput{organizerID: e.Data.OrganizerID, poolID: poolID, capacity: capacity}, nil
+		return provisionInput{organizerID: e.Data.OrganizerID, poolID: *e.Data.CapacityGroupID, capacity: *e.Data.SharedCapacity}, nil
 	case 1:
 		if c.resolver == nil {
 			return provisionInput{}, fmt.Errorf("schema-1 publication needs catalog resolver")
@@ -72,15 +75,19 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		if err != nil {
 			return provisionInput{}, err
 		}
-		if resolved.OrganizerID != e.Data.OrganizerID || resolved.Capacity <= 0 ||
-			(resolved.CapacityGroupID == nil) != (resolved.SharedCapacity == nil) || resolved.SharedCapacity != nil && *resolved.SharedCapacity <= 0 {
+		if resolved.OrganizerID != e.Data.OrganizerID {
 			return provisionInput{}, fmt.Errorf("schema-1 publication conflicts with catalog")
 		}
-		poolID, capacity := e.Data.PerformanceID, resolved.Capacity
-		if resolved.CapacityGroupID != nil {
-			poolID, capacity = *resolved.CapacityGroupID, *resolved.SharedCapacity
+		if resolved.CapacityGroupID == nil {
+			if resolved.SharedCapacity != nil || resolved.Capacity <= 0 {
+				return provisionInput{}, fmt.Errorf("schema-1 publication conflicts with catalog")
+			}
+			return provisionInput{organizerID: resolved.OrganizerID, poolID: e.Data.PerformanceID, capacity: resolved.Capacity}, nil
 		}
-		return provisionInput{organizerID: resolved.OrganizerID, poolID: poolID, capacity: capacity}, nil
+		if *resolved.CapacityGroupID == uuid.Nil || resolved.SharedCapacity == nil || *resolved.SharedCapacity <= 0 {
+			return provisionInput{}, fmt.Errorf("schema-1 publication conflicts with catalog")
+		}
+		return provisionInput{organizerID: resolved.OrganizerID, poolID: *resolved.CapacityGroupID, capacity: *resolved.SharedCapacity}, nil
 	default:
 		return provisionInput{}, fmt.Errorf("unsupported publication schema %d", e.Schema)
 	}
