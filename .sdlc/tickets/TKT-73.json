@@ -25,9 +25,8 @@
       "note": "IN: the event model + UNIQUE(ticket_id,event_type) decision, recorded as an ADR, incl. what an offline gate records on a late-discovered duplicate. OUT: implementing passes (TKT-19), offline sync (TKT-19/16), and TKT-67's chain itself."
     },
     "uncertainties": {
-      "state": "open",
-      "owner": "human",
-      "note": "Owner decision: repeatable `redeemed` vs distinct entry/exit types vs a duplicate-admit event vs documented exception. Needs the domain call on how passes and turnstile reality should be modelled."
+      "state": "met",
+      "note": "Identified, resolved at the plan gate — the decision IS the deliverable (TKT-57's shape): repeatable `redeemed` vs distinct entry/exit types vs a duplicate-admit event vs a documented exception. Also identified: what an offline gate records on a late-discovered duplicate."
     },
     "dependencies": {
       "state": "met",
