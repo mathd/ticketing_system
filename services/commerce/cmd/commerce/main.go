@@ -153,8 +153,12 @@ func run() error {
 	// awaited. Without it an order that lost its request stays parked forever and its
 	// seat leaks — a byte-identical checkout replay is the only other thing that would
 	// advance it, and nothing in the system generates one.
+	// One constant for both the client and the lease: the lease must outlast the calls
+	// it covers, so deriving them from different numbers is how the lease ends up
+	// shorter than its own batch.
+	const recoveryCallTimeout = 10 * time.Second
 	recoveryClients := recovery.HTTPClients{
-		Client:       &http.Client{Timeout: 10 * time.Second},
+		Client:       &http.Client{Timeout: recoveryCallTimeout},
 		InventoryURL: inventoryURL,
 		PaymentsURL:  paymentsURL,
 		Token:        token,
@@ -166,7 +170,7 @@ func run() error {
 		DB:          recovery.StoreFactDB{DB: db},
 	}
 	recoverer := recovery.New(recovery.DBStore{DB: db}, recoveryClients, recoveryClients, journal,
-		recovery.StoreCompleter{DB: db}, recoveryInterval(), recoveryBatch(), log)
+		recovery.StoreCompleter{DB: db}, recoveryInterval(), recoveryBatch(), recoveryCallTimeout, log)
 	stopRecovery := start(log, "recovery runner", recoverer.Run)
 
 	errCh := make(chan error, 1)

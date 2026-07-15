@@ -221,20 +221,21 @@ func MarkReleased(ctx context.Context, db *sql.DB, s StuckOrder) error {
 //
 // occurred_at is read back rather than assumed: on the conflict path the stored row
 // keeps the FIRST attempt's timestamp, and that is the one the journal must carry.
-// Insert and read-back are one statement so a concurrent re-drive cannot land between
-// them, and so this needs no surface beyond the narrowed OutboxDB.
+//
+// ON CONFLICT DO UPDATE, not DO NOTHING. DO NOTHING returns no row on conflict, and
+// recovering the timestamp from a second SELECT — even inside the same statement via a
+// CTE — can return NOTHING at all: the statement snapshot is taken before ON CONFLICT
+// waits on a concurrent uncommitted insert of the same id, so the SELECT still cannot
+// see the row that insert just committed. Two runners re-driving one order is precisely
+// the case this function exists to survive. DO UPDATE locks the conflicting row and
+// returns it, which is why the no-op SET is not pointless.
 func RecordOrderFact(ctx context.Context, db OutboxDB, s StuckOrder, factType string) (uuid.UUID, time.Time, error) {
 	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(s.OrderID.String()+":"+factType))
 	rows, err := db.QueryContext(ctx, `
-		WITH inserted AS (
-			INSERT INTO order_facts(fact_id,order_id,organizer_id,buyer_id,fact_type,amount,currency)
-			VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING
-			RETURNING occurred_at
-		)
-		SELECT occurred_at FROM inserted
-		UNION ALL
-		SELECT occurred_at FROM order_facts WHERE fact_id=$1
-		LIMIT 1`,
+		INSERT INTO order_facts(fact_id,order_id,organizer_id,buyer_id,fact_type,amount,currency)
+		VALUES($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (fact_id) DO UPDATE SET fact_id=order_facts.fact_id
+		RETURNING occurred_at`,
 		factID, s.OrderID, s.OrganizerID, s.BuyerID, factType, s.Amount, s.Currency)
 	if err != nil {
 		return uuid.Nil, time.Time{}, err
@@ -245,7 +246,7 @@ func RecordOrderFact(ctx context.Context, db OutboxDB, s StuckOrder, factType st
 		if err := rows.Err(); err != nil {
 			return uuid.Nil, time.Time{}, err
 		}
-		return uuid.Nil, time.Time{}, fmt.Errorf("order fact %s vanished after insert", factID)
+		return uuid.Nil, time.Time{}, fmt.Errorf("order fact %s returned no row", factID)
 	}
 	if err := rows.Scan(&occurred); err != nil {
 		return uuid.Nil, time.Time{}, err

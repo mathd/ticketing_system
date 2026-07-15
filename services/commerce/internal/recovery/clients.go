@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -91,17 +92,33 @@ func (c HTTPClients) Confirm(ctx context.Context, org, hold uuid.UUID) error {
 	}
 }
 
+// ErrClaimNotReleasable reports that a release was refused because the claim reached a
+// terminal state that is not `released` — in practice `confirmed`. The seat is sold and
+// the order must not be journalled as failed against it.
+var ErrClaimNotReleasable = errors.New("inventory claim cannot be released")
+
 func (c HTTPClients) Release(ctx context.Context, org, hold uuid.UUID) error {
 	u := fmt.Sprintf("%s/holds/%s/release?organizer_id=%s", c.InventoryURL, hold, org)
 	code, err := c.do(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return err
 	}
-	// Idempotent for a repeated target: inventory returns 200 for an already-released
-	// claim, which is exactly the "committed but response lost" case that makes an
-	// ambiguous release ambiguous. 409/404 mean the claim is already gone — also done.
 	switch code {
-	case http.StatusOK, http.StatusConflict, http.StatusNotFound:
+	case http.StatusOK:
+		// Inventory returns 200 when the claim is already `released` (status == target),
+		// which is exactly the "committed but response lost" case that makes an ambiguous
+		// release ambiguous. Genuinely idempotent for a repeated target.
+		return nil
+	case http.StatusConflict:
+		// NOT "already gone". Inventory answers 200 for an already-released claim, so a
+		// 409 here means a terminal state that is not released — `confirmed`, i.e. the
+		// seat is sold. Treating it as success would journal order.failed for an order
+		// inventory counts as confirmed, and permanently strand the seat as sold against
+		// a failed order. Surface it: the runner parks it for a human.
+		return ErrClaimNotReleasable
+	case http.StatusNotFound:
+		// No such claim for this organizer. Nothing is holding the seat, so there is no
+		// obligation left to discharge and the release is vacuously satisfied.
 		return nil
 	default:
 		return fmt.Errorf("release claim: status %d", code)

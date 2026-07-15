@@ -119,8 +119,32 @@ type Runner struct {
 	log       *slog.Logger
 }
 
+// MaxCallsPerOrder is the longest external-call chain one order can drive: resolve the
+// payment operation, act on the claim, then journal the fact.
+const MaxCallsPerOrder = 3
+
+// LeaseFor sizes the batch lease from the caller's own I/O budget.
+//
+// The lease has to outlast the work it covers. A batch is driven sequentially and each
+// order can make MaxCallsPerOrder calls, each bounded only by the HTTP client timeout —
+// so the pass's worst case is batch × calls × timeout. Sizing the lease from an
+// unrelated per-order guess is how it silently ends up shorter than the batch it
+// protects: the lease lapses mid-pass, a second runner claims rows the first is still
+// driving, and the claim token only fences the final database write — not the inventory
+// call or the journal submission already in flight.
+func LeaseFor(batch int, callTimeout time.Duration) time.Duration {
+	if batch <= 0 {
+		batch = 1
+	}
+	if callTimeout <= 0 {
+		callTimeout = 10 * time.Second
+	}
+	// Plus a margin for database work and scheduling between calls.
+	return time.Duration(batch)*MaxCallsPerOrder*callTimeout + 60*time.Second
+}
+
 func New(st Store, payments Payments, inventory Inventory, journal Journal, completer Completer,
-	interval time.Duration, batch int, log *slog.Logger) *Runner {
+	interval time.Duration, batch int, callTimeout time.Duration, log *slog.Logger) *Runner {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -130,11 +154,9 @@ func New(st Store, payments Payments, inventory Inventory, journal Journal, comp
 	if log == nil {
 		log = slog.Default()
 	}
-	// One lease covers the whole batch, which is driven sequentially and makes network
-	// calls per order. Size it for the slowest plausible pass, not one order.
-	lease := time.Duration(batch)*5*time.Second + 60*time.Second
 	return &Runner{store: st, payments: payments, inventory: inventory, journal: journal,
-		completer: completer, interval: interval, batch: batch, lease: lease, log: log}
+		completer: completer, interval: interval, batch: batch,
+		lease: LeaseFor(batch, callTimeout), log: log}
 }
 
 // Run drives until ctx is cancelled. It runs once immediately: on restart, orders
@@ -276,7 +298,18 @@ func (r *Runner) confirmAndComplete(ctx context.Context, s store.StuckOrder) err
 func (r *Runner) releaseAndFail(ctx context.Context, s store.StuckOrder) error {
 	// Idempotent for a repeated target, including the case that made this ambiguous:
 	// inventory committed the release and lost the response.
-	if err := r.inventory.Release(ctx, s.OrganizerID, s.HoldID); err != nil {
+	err := r.inventory.Release(ctx, s.OrganizerID, s.HoldID)
+	if errors.Is(err, ErrClaimNotReleasable) {
+		// The claim is confirmed: inventory counts the seat as sold, while this order's
+		// payment did not capture. Journalling order.failed here would leave a sold seat
+		// attached to a failed order and silently remove it from availability forever.
+		// Retrying cannot help — confirmed is terminal. A human must reconcile.
+		r.log.ErrorContext(ctx, "failed order holds a confirmed claim; parked for reconciliation",
+			"order_id", s.OrderID, "hold_id", s.HoldID, "outcome", s.TerminalOutcome)
+		return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
+			"claim is confirmed but payment did not capture; needs manual reconciliation")
+	}
+	if err != nil {
 		return fmt.Errorf("release claim: %w", err)
 	}
 	if err := r.journal.OrderFailed(ctx, s); err != nil {

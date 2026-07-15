@@ -374,6 +374,62 @@ func TestRecordOrderFactIsIdempotentAcrossRedrives(t *testing.T) {
 	}
 }
 
+// Two runners re-driving one order concurrently is the case RecordOrderFact exists to
+// survive, and it is the one a sequential test cannot reach: with ON CONFLICT DO
+// NOTHING the loser's statement returns no row at all (its snapshot predates the
+// winner's commit), so the fact "vanishes" and the re-drive fails for no real reason.
+func TestRecordOrderFactUnderConcurrentRedrive(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := seedStuck(t, "created")
+
+	const racers = 4
+	start := make(chan struct{})
+	type result struct {
+		id       uuid.UUID
+		occurred time.Time
+		err      error
+	}
+	out := make(chan result, racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			<-start // release them together, into the same conflict
+			id, occurred, err := RecordOrderFact(ctx, db, s, "order.failed")
+			out <- result{id, occurred, err}
+		}()
+	}
+	close(start)
+
+	var first result
+	for i := 0; i < racers; i++ {
+		r := <-out
+		if r.err != nil {
+			t.Fatalf("concurrent re-drive %d: %v", i, r.err)
+		}
+		if i == 0 {
+			first = r
+			continue
+		}
+		if r.id != first.id {
+			t.Errorf("racer %d got fact id %s, want %s", i, r.id, first.id)
+		}
+		// Every racer must see the winner's timestamp: the journal payload is derived
+		// from it, so racers disagreeing would submit conflicting facts for one order.
+		if !r.occurred.Equal(first.occurred) {
+			t.Errorf("racer %d got occurred_at %s, want %s", i, r.occurred, first.occurred)
+		}
+	}
+
+	var rows int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM order_facts WHERE order_id=$1 AND fact_type='order.failed'`,
+		s.OrderID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("order_facts has %d rows after %d concurrent re-drives, want 1", rows, racers)
+	}
+}
+
 // The id is per (order, type): two fact types on the same order must not collide.
 func TestRecordOrderFactSeparatesFactTypes(t *testing.T) {
 	db, ctx := outboxDB(t)
@@ -394,31 +450,50 @@ func TestRecordOrderFactSeparatesFactTypes(t *testing.T) {
 
 // The fact carries the money as the order recorded it. A fact that disagrees with its
 // order is worse than no fact: the journal is the audit record.
+// The journal is the audit record, so the fact must carry the money the RESERVATION
+// durably holds — not merely whatever was in the caller's struct. Claiming through
+// ClaimStuckOrders rather than hand-filling StuckOrder is the point: it proves the
+// whole path (durable row → claim → fact) agrees, which asserting a value against the
+// same in-memory value it came from cannot.
 func TestRecordOrderFactPersistsTheOrdersMoney(t *testing.T) {
 	db, ctx := outboxDB(t)
-	s := seedStuck(t, "created")
-	// seedStuck leaves the money zero-valued; assert against a non-zero amount so this
-	// cannot pass by comparing 0 to 0.
-	s.Amount, s.Currency = 12345, "CAD"
+	seeded := seedStuck(t, "created")
 
+	var wantAmount int64
+	var wantCurrency string
+	if err := db.QueryRowContext(ctx,
+		`SELECT total_amount,currency FROM reservations WHERE id=$1`,
+		seeded.ReservationID).Scan(&wantAmount, &wantCurrency); err != nil {
+		t.Fatal(err)
+	}
+	if wantAmount == 0 {
+		t.Fatal("seed has zero money: this test would pass by comparing 0 to 0")
+	}
+
+	s := claimStuckOne(t, seeded.OrderID)
 	factID, _, err := RecordOrderFact(ctx, db, s, "order.failed")
 	if err != nil {
 		t.Fatalf("record order fact: %v", err)
 	}
+
 	var amount int64
 	var currency string
-	var buyer, organizer uuid.UUID
+	var buyer, organizer, order uuid.UUID
 	if err := db.QueryRowContext(ctx,
-		`SELECT amount,currency,buyer_id,organizer_id FROM order_facts WHERE fact_id=$1`,
-		factID).Scan(&amount, &currency, &buyer, &organizer); err != nil {
+		`SELECT amount,currency,buyer_id,organizer_id,order_id FROM order_facts WHERE fact_id=$1`,
+		factID).Scan(&amount, &currency, &buyer, &organizer, &order); err != nil {
 		t.Fatal(err)
 	}
-	if amount != s.Amount || currency != s.Currency {
-		t.Errorf("fact money = %d %s, want %d %s", amount, currency, s.Amount, s.Currency)
+	if amount != wantAmount || currency != wantCurrency {
+		t.Errorf("fact money = %d %s, want the reservation's %d %s",
+			amount, currency, wantAmount, wantCurrency)
 	}
-	if buyer != s.BuyerID || organizer != s.OrganizerID {
+	if order != seeded.OrderID {
+		t.Errorf("fact order_id = %s, want %s", order, seeded.OrderID)
+	}
+	if buyer != seeded.BuyerID || organizer != seeded.OrganizerID {
 		t.Errorf("fact parties = buyer %s organizer %s, want buyer %s organizer %s",
-			buyer, organizer, s.BuyerID, s.OrganizerID)
+			buyer, organizer, seeded.BuyerID, seeded.OrganizerID)
 	}
 }
 

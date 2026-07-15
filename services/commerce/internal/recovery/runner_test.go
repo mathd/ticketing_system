@@ -23,6 +23,7 @@ import (
 // fakeStore records the transitions the runner chose. It is not a database simulator:
 // every method exists to answer "was this transition taken, with what arguments".
 type fakeStore struct {
+	tr    *trace
 	claim []store.StuckOrder
 
 	outcomes []string           // RecordTerminalOutcome
@@ -39,31 +40,37 @@ func (f *fakeStore) ClaimStuckOrders(context.Context, int, time.Duration) ([]sto
 }
 
 func (f *fakeStore) RecordTerminalOutcome(_ context.Context, _ uuid.UUID, outcome string) error {
+	f.tr.add("store.RecordTerminalOutcome")
 	f.outcomes = append(f.outcomes, outcome)
 	return nil
 }
 
 func (f *fakeStore) ParkForReconciliation(_ context.Context, _, _ uuid.UUID, reason string) error {
+	f.tr.add("store.ParkForReconciliation")
 	f.parked = append(f.parked, reason)
 	return nil
 }
 
 func (f *fakeStore) ClearRecoveryClaim(context.Context, uuid.UUID, uuid.UUID) error {
+	f.tr.add("store.ClearRecoveryClaim")
 	f.cleared++
 	return nil
 }
 
 func (f *fakeStore) MarkReleased(_ context.Context, s store.StuckOrder) error {
+	f.tr.add("store.MarkReleased")
 	f.released = append(f.released, s)
 	return nil
 }
 
 func (f *fakeStore) ReleaseStuckOrder(_ context.Context, _, _ uuid.UUID, cause error) error {
+	f.tr.add("store.ReleaseStuckOrder")
 	f.failed = append(f.failed, cause)
 	return nil
 }
 
 type fakePayments struct {
+	tr    *trace
 	op    Operation
 	found bool
 	err   error
@@ -71,32 +78,39 @@ type fakePayments struct {
 }
 
 func (f *fakePayments) LookupOperation(context.Context, uuid.UUID, string) (Operation, bool, error) {
+	f.tr.add("payments.LookupOperation")
 	f.calls++
 	return f.op, f.found, f.err
 }
 
 type fakeInventory struct {
+	tr         *trace
 	confirmErr error
+	releaseErr error
 	confirmed  int
 	releases   int
 }
 
 func (f *fakeInventory) Confirm(context.Context, uuid.UUID, uuid.UUID) error {
+	f.tr.add("inventory.Confirm")
 	f.confirmed++
 	return f.confirmErr
 }
 
 func (f *fakeInventory) Release(context.Context, uuid.UUID, uuid.UUID) error {
+	f.tr.add("inventory.Release")
 	f.releases++
-	return nil
+	return f.releaseErr
 }
 
 type fakeJournal struct {
+	tr    *trace
 	facts []store.StuckOrder
 	err   error
 }
 
 func (f *fakeJournal) OrderFailed(_ context.Context, s store.StuckOrder) error {
+	f.tr.add("journal.OrderFailed")
 	if f.err != nil {
 		return f.err
 	}
@@ -105,11 +119,13 @@ func (f *fakeJournal) OrderFailed(_ context.Context, s store.StuckOrder) error {
 }
 
 type fakeCompleter struct {
+	tr        *trace
 	completed []store.StuckOrder
 	err       error
 }
 
 func (f *fakeCompleter) Complete(_ context.Context, s store.StuckOrder) error {
+	f.tr.add("completer.Complete")
 	if f.err != nil {
 		return f.err
 	}
@@ -123,6 +139,40 @@ type ports struct {
 	inventory *fakeInventory
 	journal   *fakeJournal
 	completer *fakeCompleter
+	trace     *trace
+}
+
+// trace is one ordered log across every port. Per-port counters cannot express
+// "recorded the outcome BEFORE releasing", and that ordering is the whole reason the
+// release is restartable — so it needs an assertion that can actually see order.
+type trace struct {
+	steps []string
+}
+
+func (t *trace) add(step string) { t.steps = append(t.steps, step) }
+
+func (t *trace) indexOf(step string) int {
+	for i, s := range t.steps {
+		if s == step {
+			return i
+		}
+	}
+	return -1
+}
+
+// mustPrecede fails unless both steps happened, in this order.
+func (t *trace) mustPrecede(tb testing.TB, first, second string) {
+	tb.Helper()
+	i, j := t.indexOf(first), t.indexOf(second)
+	if i < 0 {
+		tb.Fatalf("%q never happened; trace=%v", first, t.steps)
+	}
+	if j < 0 {
+		tb.Fatalf("%q never happened; trace=%v", second, t.steps)
+	}
+	if i > j {
+		tb.Errorf("%q must precede %q; trace=%v", first, second, t.steps)
+	}
 }
 
 func stuck(status string) store.StuckOrder {
@@ -137,19 +187,49 @@ func stuck(status string) store.StuckOrder {
 // run drives exactly one pass over the given orders and returns the ports for assertion.
 func run(t *testing.T, orders []store.StuckOrder, tune func(*ports)) (*ports, int) {
 	t.Helper()
+	tr := &trace{}
 	p := &ports{
-		store:     &fakeStore{claim: orders},
-		payments:  &fakePayments{},
-		inventory: &fakeInventory{},
-		journal:   &fakeJournal{},
-		completer: &fakeCompleter{},
+		store:     &fakeStore{tr: tr, claim: orders},
+		payments:  &fakePayments{tr: tr},
+		inventory: &fakeInventory{tr: tr},
+		journal:   &fakeJournal{tr: tr},
+		completer: &fakeCompleter{tr: tr},
+		trace:     tr,
 	}
 	if tune != nil {
 		tune(p)
 	}
 	r := New(p.store, p.payments, p.inventory, p.journal, p.completer,
-		time.Minute, 8, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		time.Minute, 8, 10*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return p, r.RunOnce(context.Background())
+}
+
+// The lease must outlast the pass it protects. If it lapses mid-batch a second runner
+// claims rows the first is still driving, and the claim token fences only the final
+// database write — not the inventory call or journal submission already in flight.
+func TestLeaseOutlastsTheBatchsWorstCaseIO(t *testing.T) {
+	for _, tc := range []struct {
+		batch   int
+		timeout time.Duration
+	}{{1, 10 * time.Second}, {16, 10 * time.Second}, {64, 30 * time.Second}} {
+		worst := time.Duration(tc.batch) * MaxCallsPerOrder * tc.timeout
+		got := LeaseFor(tc.batch, tc.timeout)
+		if got <= worst {
+			t.Errorf("LeaseFor(%d, %s) = %s, which does not outlast the worst-case pass of %s",
+				tc.batch, tc.timeout, got, worst)
+		}
+	}
+}
+
+// Zero/negative inputs must not collapse the lease to something shorter than a single
+// call — New falls back to a default batch, and the lease has to match that reality.
+func TestLeaseForRejectsDegenerateInputs(t *testing.T) {
+	if got := LeaseFor(0, 0); got < time.Minute {
+		t.Errorf("LeaseFor(0,0) = %s, want at least the 60s margin", got)
+	}
+	if got := LeaseFor(-5, -1); got < time.Minute {
+		t.Errorf("LeaseFor(-5,-1) = %s, want at least the 60s margin", got)
+	}
 }
 
 // Row: confirmation_pending — capture returned 200, money is KNOWN captured.
@@ -181,6 +261,11 @@ func TestConfirmationPendingConfirmsAndCompletes(t *testing.T) {
 		t.Errorf("captured order must not be released or parked: released=%v parked=%v",
 			p.store.released, p.store.parked)
 	}
+	// The seat must be secured before the order is completed, and the claim released
+	// only once the completion is durable: clearing first would drop the lease on an
+	// order that still owes its completion.
+	p.trace.mustPrecede(t, "inventory.Confirm", "completer.Complete")
+	p.trace.mustPrecede(t, "completer.Complete", "store.ClearRecoveryClaim")
 }
 
 // Row: confirmation_pending + confirm terminally impossible — captured money, no seat.
@@ -245,6 +330,11 @@ func TestCreatedWithNoOperationIsNotAttemptedThenReleased(t *testing.T) {
 	if len(p.completer.completed) != 0 {
 		t.Error("must not complete an order that never charged")
 	}
+	// Evidence, then answer, then act: the lookup must precede the recorded outcome, and
+	// the outcome must be durable before the seat is released.
+	p.trace.mustPrecede(t, "payments.LookupOperation", "store.RecordTerminalOutcome")
+	p.trace.mustPrecede(t, "store.RecordTerminalOutcome", "inventory.Release")
+	p.trace.mustPrecede(t, "journal.OrderFailed", "store.MarkReleased")
 }
 
 // Row: created + payments resolved `captured` — crashed before persisting the state.
@@ -299,6 +389,13 @@ func TestCreatedResolvedTerminalFailureRecordsOutcomeThenReleases(t *testing.T) 
 			if len(p.completer.completed) != 0 {
 				t.Error("must not complete a declined/timed-out order")
 			}
+			// The ordering IS the invariant: the outcome must be durable before the
+			// release is attempted, or a crash mid-release leaves no evidence the answer
+			// was ever known and the release is not restartable. Per-port counters cannot
+			// see this — they pass just as well with the order reversed.
+			p.trace.mustPrecede(t, "store.RecordTerminalOutcome", "inventory.Release")
+			p.trace.mustPrecede(t, "inventory.Release", "journal.OrderFailed")
+			p.trace.mustPrecede(t, "journal.OrderFailed", "store.MarkReleased")
 		})
 	}
 }
@@ -434,6 +531,32 @@ func TestLookupFailureIsNotTreatedAsNoOperation(t *testing.T) {
 	}
 	if len(p.store.failed) != 1 {
 		t.Errorf("recorded %d failures, want 1", len(p.store.failed))
+	}
+}
+
+// Inventory answers 200 for an already-released claim, so a 409 on release is NOT
+// "already gone" — it means the claim is confirmed and the seat is sold, while this
+// order's payment did not capture. Journalling order.failed against a confirmed claim
+// would remove the seat from availability forever, attached to a failed order.
+func TestFailedOrderWithConfirmedClaimIsParkedNotJournalled(t *testing.T) {
+	order := stuck("release_pending")
+	order.TerminalOutcome = "declined"
+	p, resolved := run(t, []store.StuckOrder{order}, func(p *ports) {
+		p.inventory.releaseErr = ErrClaimNotReleasable
+	})
+
+	// Parking is the resolution: `confirmed` is terminal, so retrying cannot help.
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1 (parking is a terminal decision)", resolved)
+	}
+	if len(p.store.parked) != 1 {
+		t.Fatalf("parked %d orders, want 1", len(p.store.parked))
+	}
+	if len(p.journal.facts) != 0 {
+		t.Error("must not journal order.failed against a confirmed claim")
+	}
+	if len(p.store.released) != 0 {
+		t.Error("must not mark released an order whose claim is confirmed")
 	}
 }
 
