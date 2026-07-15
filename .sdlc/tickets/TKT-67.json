@@ -22,6 +22,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Amended again after the SECOND Codex adversarial pass (PR #49).** The first amendment above is now partly wrong — read this one instead where they disagree.\n\n**The root cause, which supersedes the four separate items above:** every control I listed stores its state **in the Access database — the very database the adversary is defined as owning**. Quarantine rows, threshold counters, retained epoch signatures, the signer's last-observed root: all deletable or resettable by the same attacker who caused the failure. ADR-021 now leads with **§The trust boundary** saying exactly this. Do not add a control to this ticket whose evidence lives in Access and call it containment.\n\nWhat that changes for this ticket:\n\n1. **The checkpoint buys no detection today. It is scaffolding for TKT-11** — one anchorable root per interval instead of one per ticket head. Build it for that reason. Do not describe it in code comments, dashboards or metrics as rollback protection.\n2. **The signer's regression check needs a durable, attacker-independent home, or it does not exist.** ADR-021 §Decision 2 requires this ticket to either *specify that location* or *state plainly that no tripwire exists until TKT-11*. Leaving it ambiguous is what made two drafts of the ADR wrong — do not inherit the ambiguity.\n3. **Quarantine + threshold escalation are still worth building — but they bound OUR BUGS, not attackers.** A canonicalization bug or botched rotation corrupting many chains at once is the case they contain. Against a database-write adversary, fail-open is unbounded, full stop. Say so wherever this surfaces to an operator.\n4. **Epoch signatures are partial.** They stop *forgery* under a retired key, not *deletion* of the epoch row. Real containment needs an externally retained rotation manifest binding every applicable ticket to its epoch head (TKT-11's domain). Implement epoch signatures, but do not claim they contain a current-key compromise.\n\n**New coupling worth surfacing to whoever plans TKT-11:** that ticket now owns strictly more than \"fiscal archive\". It owns the trust domain that the ticket lifecycle trail's rollback protection, signer continuity, quarantine integrity and epoch manifests all depend on. That dependency did not exist before ADR-021 and should be on TKT-11's radar before it is planned.\n"
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Context-mémo refreshed — ADR-022 landed hours after ADR-021 and moved the ground under §Decision 9.**\n\nMigrations no longer run at service startup ([ADR-022](../../docs/adr/ADR-022-out-of-band-service-migrations.md), TKT-66, merged #50). ADR-021 §Decision 9 said the backfill runs *\"at startup, before listening, per ADR-008\"*. **That premise is gone**, and I have amended the ADR rather than leave this ticket to discover it at drafting time.\n\n**The part that is a real design problem, not a word swap:** the backfill now runs in the one-shot `access-migrate` job, and ADR-008's surviving **30-second fail-fast deadline** now bounds *that job* — which the service `depends_on` with `service_completed_successfully`. This backfill is **not DDL**: it Ed25519-signs every existing `lifecycle_events` row, so its cost scales with history. **Blow the deadline and the migrate job fails, so Access never starts.** Deciding whether it fits — or needs its own resumable job outside the migrate deadline — is this ticket's call, and it is now flagged in `readiness.uncertainties`.\n\n**Also worth noticing:** this mémo was baked ~1 hour before it went stale. The mémo exists so the planner does not have to re-derive decision history — but a mémo is a *snapshot*, and a fast-moving registry outruns it. Re-validate `governingAdrs` against `docs/adr/` at claim time; do not trust `capturedAt` alone."
     }
   ],
   "links": [],
@@ -36,7 +41,7 @@
     },
     "uncertainties": {
       "state": "met",
-      "note": "Identified, resolved at the plan gate: where the checkpoint signer's last-observed root lives so a DB-write adversary cannot reach it (ADR-021 §D2). Not blocking — the ADR provides the fallback of stating plainly that no tripwire exists until TKT-11. Also identified: whether the contested internal/signing extraction earns its keep."
+      "note": "Identified, resolved at the plan gate. (1) Where the checkpoint signer's last-observed root lives so a DB-write adversary cannot reach it (ADR-021 §D2) — not blocking, the ADR allows stating plainly that no tripwire exists until TKT-11. (2) NEW, via ADR-022: the backfill now runs in the one-shot migrate job under ADR-008's 30s fail-fast deadline, and it Ed25519-signs every existing lifecycle row — so it may not fit, and the service `depends_on` that job completing. Decide whether it fits or needs its own resumable job outside the deadline. (3) Whether the contested internal/signing extraction earns its keep."
     },
     "dependencies": {
       "state": "met",
@@ -82,16 +87,20 @@
         "rule": "Access already owns Ed25519 QR signing with an injected seed + kid (token.go:61-78, the access-qr/ namespace convention). Reuse the idiom, separate the key material."
       },
       {
+        "id": "ADR-010",
+        "rule": "Contention model: lock the ticket, never the organizer. The reason ADR-021 rejected the money journal's granularity."
+      },
+      {
+        "id": "ADR-022",
+        "rule": "SUPERSEDES ADR-008 ON PLACEMENT. Migrations run OUT-OF-BAND as a one-shot `<service>-migrate` Compose job (`migrate` subcommand); the server path never migrates and the service `depends_on` the job with `service_completed_successfully`. There is no 'before listening' any more. Single-invoker serialization is the invariant — advisory locking is deliberately deferred, and anything that could launch two migrate jobs per service must adopt it first."
+      },
+      {
         "id": "ADR-008",
-        "rule": "goose migrations embedded, run at startup before listening, fail-fast — so the backfill blocks boot and must be bounded and resumable."
+        "rule": "SUPERSEDED ON PLACEMENT by ADR-022 — do NOT read it as 'migrations run at startup'. What still stands and still binds: goose v3 as a library, migrations embedded via embed.FS, per-service schema ownership, seed data as ordinary migrations, and FAIL-FAST UNDER A 30-SECOND DEADLINE."
       },
       {
         "id": "ADR-020",
-        "rule": "Plain CREATE INDEX, never CONCURRENTLY — it bricks startup while ADR-008 stands."
-      },
-      {
-        "id": "ADR-010",
-        "rule": "Contention model: lock the ticket, never the organizer. The reason ADR-021 rejected the money journal's granularity."
+        "rule": "Plain CREATE INDEX, never CONCURRENTLY — still. ADR-022 satisfied precondition (1) (migrations left startup), but the preconditions are CONJUNCTIVE and (2)/(3) remain false, so the decision is unchanged. TKT-66 amended ADR-020 to say exactly this; the premise that decoupling re-opens CIC was checked and rejected at its plan gate."
       }
     ],
     "reference": [
@@ -106,8 +115,12 @@
       {
         "summary": "Money-journal reference implementation: chain, sign, verify-journal + smoke corruption harness",
         "link": "services/payments/internal/store/store.go"
+      },
+      {
+        "summary": "ADR-021 §Decision 9 was AMENDED for ADR-022 — the backfill moved to the migrate job and now sits under a 30s job deadline it may not fit. Read the amendment, not the original clause.",
+        "link": "docs/adr/ADR-021-ticket-lifecycle-trail-integrity.md"
       }
     ],
-    "capturedAt": "2026-07-15"
+    "capturedAt": "2026-07-15 (refreshed after ADR-022)"
   }
 }
