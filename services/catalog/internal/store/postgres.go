@@ -1043,7 +1043,14 @@ func (p *Postgres) transitionFestival(ctx context.Context, id uuid.UUID, target 
 // publicPerformances returns the publicly listable slots (published AND
 // priced — no sellable offer, no listing) grouped into event aggregates,
 // events ordered by their earliest slot, slots by start time.
-func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) ([]EventAggregate, error) {
+//
+// eventIDs scopes the read: nil means every published event (the catalog
+// listing), otherwise only those events. A non-nil *empty* slice means no
+// events and returns nothing — callers must not collapse it to nil, or a
+// caller with zero events would get the whole catalog back. The scoped path
+// is index-backed by performances_by_event (TKT-60): a season read must cost
+// what its own events cost, not what the catalog costs (ADR-004).
+func (p *Postgres) publicPerformances(ctx context.Context, eventIDs []uuid.UUID) ([]EventAggregate, error) {
 	// A day kind has no starts_at instant; derive a representative one from its
 	// operating window (opening moment, resolved in the slot's local zone) so
 	// the public read has a stable non-null sort/display key for every kind.
@@ -1062,9 +1069,9 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 		JOIN ticket_types t ON t.performance_id = p.id
 		LEFT JOIN series_performances sp ON sp.performance_id = p.id
 		LEFT JOIN series s ON s.id = sp.series_id
-		WHERE p.status = 'published' AND ($1::uuid IS NULL OR e.id = $1)
+		WHERE p.status = 'published' AND ($1::uuid[] IS NULL OR e.id = ANY($1))
 		ORDER BY ` + startsAtExpr + `, p.id, t.price_amount, t.id`
-	rows, err := p.db.QueryContext(ctx, query, eventID)
+	rows, err := p.db.QueryContext(ctx, query, eventIDs)
 	if err != nil {
 		return nil, fmt.Errorf("public read: %w", err)
 	}
@@ -1183,7 +1190,7 @@ func (p *Postgres) ListPublishedEvents(ctx context.Context) ([]EventAggregate, e
 }
 
 func (p *Postgres) GetPublishedEvent(ctx context.Context, id uuid.UUID) (EventAggregate, error) {
-	aggs, err := p.publicPerformances(ctx, &id)
+	aggs, err := p.publicPerformances(ctx, []uuid.UUID{id})
 	if err != nil {
 		return EventAggregate{}, err
 	}
@@ -1217,20 +1224,21 @@ func (p *Postgres) GetPublishedSeason(ctx context.Context, id uuid.UUID) (Season
 	if err := rows.Close(); err != nil {
 		return SeasonAggregate{}, err
 	}
-	all, err := p.ListPublishedEvents(ctx)
+	// Read only this season's events. Passing the id set (never nil — an empty
+	// set must stay empty, not widen to the whole catalog) keeps the read's cost
+	// proportional to the season, per ADR-004.
+	scoped := make([]uuid.UUID, 0, len(ids))
+	for eventID := range ids {
+		scoped = append(scoped, eventID)
+	}
+	events, err := p.publicPerformances(ctx, scoped)
 	if err != nil {
 		return SeasonAggregate{}, err
 	}
-	out := SeasonAggregate{Season: season, Events: []EventAggregate{}}
-	for _, agg := range all {
-		if ids[agg.Event.ID] {
-			out.Events = append(out.Events, agg)
-		}
-	}
-	if len(out.Events) == 0 {
+	if len(events) == 0 {
 		return SeasonAggregate{}, ErrNotFound
 	}
-	return out, nil
+	return SeasonAggregate{Season: season, Events: events}, nil
 }
 
 func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (FestivalAggregate, error) {

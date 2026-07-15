@@ -16,6 +16,19 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+// Rollback targets, named rather than counted. These tests assert that a
+// specific migration's Down guard refuses to discard data, which means naming
+// the version to roll back *to* — a bare provider.Down() pops whatever happens
+// to be on top, so every new migration shifted these assertions onto the wrong
+// one (TKT-60's 0007 index is what surfaced it: the guards silently started
+// testing the migration below their target).
+const (
+	versionBeforeTypedSlot = 3 // roll 0004_typed_slot down
+	versionBeforeSeries    = 4 // roll 0005_series_seasons down
+	versionBeforeFestivals = 5 // roll 0006_festivals down
+	versionBeforeArchived  = 2 // roll 0003_archived_performance_lifecycle down
+)
+
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 	dsn := os.Getenv("CATALOG_MIGRATION_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -110,7 +123,7 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 			organizerID, venueID, eventID, festivalID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.Down(ctx); err == nil {
+		if _, err := provider.DownTo(ctx, versionBeforeFestivals); err == nil {
 			t.Fatal("0006 down unexpectedly accepted festival data")
 		}
 		var festivalTable, groupIndex, groupFK, groupKind bool
@@ -200,10 +213,7 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO series(organizer_id,event_id,name) VALUES($1,$2,'{"en":"run","fr":"série"}')`, organizerID, eventID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.Down(ctx); err != nil { // 0006
-			t.Fatalf("0006 down: %v", err)
-		}
-		if _, err := provider.Down(ctx); err == nil {
+		if _, err := provider.DownTo(ctx, versionBeforeSeries); err == nil {
 			t.Fatal("0005 down unexpectedly accepted series data")
 		}
 		var allTablesPresent bool
@@ -294,11 +304,8 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 				if _, err := provider.Up(ctx); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := provider.Down(ctx); err != nil { // 0006
-					t.Fatalf("0006 down: %v", err)
-				}
-				if _, err := provider.Down(ctx); err != nil { // 0005
-					t.Fatalf("0005 down: %v", err)
+				if _, err := provider.DownTo(ctx, versionBeforeSeries+1); err != nil { // down to 0005 applied
+					t.Fatalf("down to 0005: %v", err)
 				}
 				organizerID, venueID, eventID := uuid.New(), uuid.New(), uuid.New()
 				if _, err := db.ExecContext(ctx, `WITH o AS (
@@ -312,7 +319,7 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 				SELECT $1,e.id,v.id,'UTC',now()`+c.vals+` FROM e,v`, organizerID, venueID, eventID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := provider.Down(ctx); err == nil {
+				if _, err := provider.DownTo(ctx, versionBeforeTypedSlot); err == nil {
 					t.Fatalf("down unexpectedly accepted a performance carrying %s state", c.name)
 				}
 				var kindCol bool
@@ -332,11 +339,8 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		if _, err := provider.Up(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.Down(ctx); err != nil { // 0006
-			t.Fatalf("0006 down: %v", err)
-		}
-		if _, err := provider.Down(ctx); err != nil { // 0005
-			t.Fatalf("0005 down: %v", err)
+		if _, err := provider.DownTo(ctx, versionBeforeSeries+1); err != nil { // down to 0005 applied
+			t.Fatalf("down to 0005: %v", err)
 		}
 		organizerID, venueID, eventID := uuid.New(), uuid.New(), uuid.New()
 		// an operating_day slot: no starts_at, carries the operating window.
@@ -352,7 +356,7 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 			organizerID, venueID, eventID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.Down(ctx); err == nil {
+		if _, err := provider.DownTo(ctx, versionBeforeTypedSlot); err == nil {
 			t.Fatal("down unexpectedly accepted a non-performance slot")
 		}
 		var kindCol bool
@@ -386,19 +390,13 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// 0006 and 0005 have no grouping data, so they roll back cleanly. The row is kind
-		// 'performance' (default) with starts_at set, so 0004 also rolls back;
-		// the archived-row guard being asserted lives in 0003.
-		if _, err := provider.Down(ctx); err != nil {
-			t.Fatalf("0006 down should succeed without festival data: %v", err)
+		// Everything above 0003 has no data that its guard objects to (no grouping
+		// rows; the row is kind 'performance' with starts_at set), so those roll
+		// back cleanly. The archived-row guard being asserted lives in 0003.
+		if _, err := provider.DownTo(ctx, versionBeforeArchived+1); err != nil {
+			t.Fatalf("down to 0003 applied should succeed: %v", err)
 		}
-		if _, err := provider.Down(ctx); err != nil {
-			t.Fatalf("0005 down should succeed without grouping data: %v", err)
-		}
-		if _, err := provider.Down(ctx); err != nil {
-			t.Fatalf("0004 down should succeed for a performance-kind row: %v", err)
-		}
-		if _, err := provider.Down(ctx); err == nil {
+		if _, err := provider.DownTo(ctx, versionBeforeArchived); err == nil {
 			t.Fatal("0003 down unexpectedly accepted archived row")
 		}
 		var archivedAt, archiveEmittedAt bool

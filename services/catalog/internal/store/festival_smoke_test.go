@@ -209,22 +209,32 @@ func TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically(t *testing.T)
 	orgID, venueID := uuid.New(), uuid.New()
 	firstEventID, secondEventID := uuid.New(), uuid.New()
 	firstDayID, secondDayID, unrelatedID := uuid.New(), uuid.New(), uuid.New()
-	if _, err := db.ExecContext(ctx, `
-		INSERT INTO organizers(id,name) VALUES($1,'festival');
-		INSERT INTO venues(id,organizer_id,name,ga_capacity) VALUES($2,$1,'v',250);
-		INSERT INTO events(id,organizer_id,name) VALUES
-			($3,$1,'{"en":"first","fr":"first"}'),
-			($4,$1,'{"en":"second","fr":"second"}');
-		INSERT INTO performances(id,organizer_id,event_id,venue_id,kind,operating_date,opens_at,closes_at,timezone) VALUES
-			($5,$1,$3,$2,'festival_day',DATE '2026-08-02','12:00','23:00','America/Toronto'),
-			($6,$1,$4,$2,'festival_day',DATE '2026-08-03','12:00','23:00','America/Toronto'),
-			($7,$1,$4,$2,'festival_day',DATE '2026-08-01','12:00','23:00','America/Toronto');
-		INSERT INTO ticket_types(organizer_id,performance_id,name,price_amount,currency) VALUES
-			($1,$5,'{"en":"ga","fr":"ga"}',7500,'CAD'),
-			($1,$6,'{"en":"ga","fr":"ga"}',7500,'CAD'),
-			($1,$7,'{"en":"ga","fr":"ga"}',7500,'CAD')`,
-		orgID, venueID, firstEventID, secondEventID, firstDayID, secondDayID, unrelatedID); err != nil {
-		t.Fatal(err)
+	// One statement per Exec: a multi-command string cannot carry $N parameters
+	// (SQLSTATE 42601). This seed used to be a single multi-statement Exec, so the
+	// test failed on its first line and had never passed — the -run allowlist in
+	// scripts/smoke.sh meant it never ran to reveal that (fixed in TKT-60).
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO organizers(id,name) VALUES($1,'festival')`, []any{orgID}},
+		{`INSERT INTO venues(id,organizer_id,name,ga_capacity) VALUES($1,$2,'v',250)`, []any{venueID, orgID}},
+		{`INSERT INTO events(id,organizer_id,name) VALUES($1,$3,'{"en":"first","fr":"first"}'),($2,$3,'{"en":"second","fr":"second"}')`,
+			[]any{firstEventID, secondEventID, orgID}},
+		{`INSERT INTO performances(id,organizer_id,event_id,venue_id,kind,operating_date,opens_at,closes_at,timezone) VALUES
+			($1,$5,$6,$4,'festival_day',DATE '2026-08-02','12:00','23:00','America/Toronto'),
+			($2,$5,$7,$4,'festival_day',DATE '2026-08-03','12:00','23:00','America/Toronto'),
+			($3,$5,$7,$4,'festival_day',DATE '2026-08-01','12:00','23:00','America/Toronto')`,
+			[]any{firstDayID, secondDayID, unrelatedID, venueID, orgID, firstEventID, secondEventID}},
+		{`INSERT INTO ticket_types(organizer_id,performance_id,name,price_amount,currency) VALUES
+			($1,$2,'{"en":"ga","fr":"ga"}',7500,'CAD'),
+			($1,$3,'{"en":"ga","fr":"ga"}',7500,'CAD'),
+			($1,$4,'{"en":"ga","fr":"ga"}',7500,'CAD')`,
+			[]any{orgID, firstDayID, secondDayID, unrelatedID}},
+	} {
+		if _, err := db.ExecContext(ctx, step.sql, step.args...); err != nil {
+			t.Fatal(err)
+		}
 	}
 	festival, err := st.CreateFestival(ctx, FestivalInput{OrganizerID: orgID, Name: LocalizedText{"en": "f", "fr": "f"}, SharedCapacity: 1000})
 	if err != nil {
