@@ -55,7 +55,8 @@ We adopt, for US-009:
    *Refined by [ADR-017](./ADR-017-domain-event-schema-evolution.md): this decision stands for
    `kind`, but "additive ⇒ compatible" is not general — a field that changes what a consumer **does**
    (TKT-53's `capacity_group_id` moves inventory's pool key) requires a bump even though it parses
-   cleanly. ADR-017 §4 also answers the lockstep objection weighed above.*
+   cleanly. The lockstep objection weighed above is **accepted, not overturned**: TKT-53 bumped by
+   changing producer and consumer in one commit (ADR-017 §4a).*
 4. **Closure uses a monotonic `closure_version` + a single
    `closure_emitted_version` outbox marker**, not a table. The
    `closed`/`reopened` envelope id is derived from the version (deterministic,
