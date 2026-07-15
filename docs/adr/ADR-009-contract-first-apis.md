@@ -47,6 +47,8 @@ We adopt **contract-first APIs**:
    subject, `schema` an integer version of `data`'s shape, `data` the minimal identifying
    payload (IDs, not entity bodies). Subjects follow `platform.<service>.<entity>.<fact>`.
    Publishes are JetStream ack'd (`js.Publish`), never fire-and-forget core NATS.
+   *When `schema` must be bumped — and why parse-compatibility is the wrong test — is decided by
+   [ADR-017](./ADR-017-domain-event-schema-evolution.md), which amends this point.*
 
 ## Consequences
 
