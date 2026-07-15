@@ -176,15 +176,37 @@ func TerminalStatus(outcome string) string {
 // a later pass knows what it is completing (ADR-016 §Decision 2). Without it the release
 // is un-restartable: a crash after releasing but before marking the order leaves no
 // evidence the outcome was ever known.
-func RecordTerminalOutcome(ctx context.Context, db OutboxDB, orderID uuid.UUID, outcome string) error {
+//
+// It establishes `release_pending` in the SAME statement as the outcome, fenced on the
+// claim token, and requires exactly one affected row. All three matter:
+//   - Writing the outcome without the status left the durable state unreachable: the
+//     next pass saw `created` and re-ran the payments lookup it had already answered,
+//     which is the un-restartable case this function exists to prevent. `release_pending`
+//     is the state the runner reads to skip straight to the release.
+//   - Without the claim fence a runner whose lease lapsed could overwrite the decision of
+//     the successor that superseded it.
+//   - Without the row check a no-op UPDATE reads as success, and the caller proceeds to
+//     release a seat on the strength of an outcome that was never persisted.
+func RecordTerminalOutcome(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID, outcome string) error {
 	if !releasableOutcome(outcome) {
 		return fmt.Errorf("terminal outcome %q does not prove absence of a side effect", outcome)
 	}
-	_, err := db.ExecContext(ctx, `
-		UPDATE orders SET terminal_outcome=$2,updated_at=now()
-		WHERE id=$1 AND terminal_outcome IS NULL AND status IN ('created','release_pending')`,
-		orderID, outcome)
-	return err
+	result, err := db.ExecContext(ctx, `
+		UPDATE orders SET terminal_outcome=$2,status='release_pending',updated_at=now()
+		WHERE id=$1 AND recovery_claim_id=$3 AND terminal_outcome IS NULL
+		  AND status IN ('created','release_pending')`,
+		orderID, outcome, claimID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrRecoveryConflict
+	}
+	return nil
 }
 
 // MarkReleased finishes a release-driven failure: the claim is gone, so the order and
@@ -255,6 +277,21 @@ func RecordOrderFact(ctx context.Context, db OutboxDB, s StuckOrder, factType st
 		return uuid.Nil, time.Time{}, err
 	}
 	return factID, occurred, nil
+}
+
+// AbandonRecoveryClaim hands back a claim whose order was never driven — a shutdown
+// caught the pass mid-batch. It refunds the attempt ClaimStuckOrders charged up front.
+//
+// The refund is the point, and it is why this is not ClearRecoveryClaim: attempts are
+// incremented at claim time, so an order abandoned by a rolling restart has paid for a
+// re-drive it never received. Left uncounted, a few restarts would park a perfectly
+// healthy order at MaxRecoveryAttempts without a single actual attempt having been made.
+func AbandonRecoveryClaim(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE orders SET recovery_lease_until=NULL,recovery_claim_id=NULL,
+		    recovery_attempts=GREATEST(recovery_attempts-1,0)
+		WHERE id=$1 AND recovery_claim_id=$2`, orderID, claimID)
+	return err
 }
 
 // ClearRecoveryClaim drops the lease after a successful re-drive, so the row stops

@@ -26,11 +26,12 @@ type fakeStore struct {
 	tr    *trace
 	claim []store.StuckOrder
 
-	outcomes []string           // RecordTerminalOutcome
-	parked   []string           // ParkForReconciliation reasons
-	cleared  int                // ClearRecoveryClaim
-	released []store.StuckOrder // MarkReleased
-	failed   []error            // ReleaseStuckOrder causes
+	outcomes  []string           // RecordTerminalOutcome
+	parked    []string           // ParkForReconciliation reasons
+	cleared   int                // ClearRecoveryClaim
+	released  []store.StuckOrder // MarkReleased
+	failed    []error            // ReleaseStuckOrder causes
+	abandoned []uuid.UUID        // AbandonRecoveryClaim (shutdown hand-back)
 }
 
 func (f *fakeStore) ClaimStuckOrders(context.Context, int, time.Duration) ([]store.StuckOrder, error) {
@@ -39,7 +40,7 @@ func (f *fakeStore) ClaimStuckOrders(context.Context, int, time.Duration) ([]sto
 	return out, nil
 }
 
-func (f *fakeStore) RecordTerminalOutcome(_ context.Context, _ uuid.UUID, outcome string) error {
+func (f *fakeStore) RecordTerminalOutcome(_ context.Context, _, _ uuid.UUID, outcome string) error {
 	f.tr.add("store.RecordTerminalOutcome")
 	f.outcomes = append(f.outcomes, outcome)
 	return nil
@@ -54,6 +55,12 @@ func (f *fakeStore) ParkForReconciliation(_ context.Context, _, _ uuid.UUID, rea
 func (f *fakeStore) ClearRecoveryClaim(context.Context, uuid.UUID, uuid.UUID) error {
 	f.tr.add("store.ClearRecoveryClaim")
 	f.cleared++
+	return nil
+}
+
+func (f *fakeStore) AbandonRecoveryClaim(_ context.Context, orderID, _ uuid.UUID) error {
+	f.tr.add("store.AbandonRecoveryClaim")
+	f.abandoned = append(f.abandoned, orderID)
 	return nil
 }
 
@@ -119,13 +126,17 @@ func (f *fakeJournal) OrderFailed(_ context.Context, s store.StuckOrder) error {
 }
 
 type fakeCompleter struct {
-	tr        *trace
-	completed []store.StuckOrder
-	err       error
+	tr         *trace
+	completed  []store.StuckOrder
+	err        error
+	onComplete func() // fires after the first completion; used to cancel mid-batch
 }
 
 func (f *fakeCompleter) Complete(_ context.Context, s store.StuckOrder) error {
 	f.tr.add("completer.Complete")
+	if f.onComplete != nil {
+		f.onComplete()
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -229,6 +240,51 @@ func TestLeaseForRejectsDegenerateInputs(t *testing.T) {
 	}
 	if got := LeaseFor(-5, -1); got < time.Minute {
 		t.Errorf("LeaseFor(-5,-1) = %s, want at least the 60s margin", got)
+	}
+}
+
+// Shutdown mid-batch must hand back the claims it never drove. The whole batch is
+// leased up front, so walking away parks every undriven order behind the full lease —
+// with the default batch that is nine minutes of nothing happening to orders whose seats
+// are already leaking. The lease is there to survive a crash, not to be the price of an
+// orderly restart.
+func TestShutdownHandsBackUndrivenClaims(t *testing.T) {
+	orders := []store.StuckOrder{
+		stuck("confirmation_pending"), stuck("confirmation_pending"), stuck("confirmation_pending"),
+	}
+	tr := &trace{}
+	p := &ports{
+		store: &fakeStore{tr: tr, claim: orders}, payments: &fakePayments{tr: tr},
+		inventory: &fakeInventory{tr: tr}, journal: &fakeJournal{tr: tr},
+		completer: &fakeCompleter{tr: tr}, trace: tr,
+	}
+
+	// Cancel as soon as the first order is driven: the remaining two are claimed but
+	// undriven, which is exactly the shutdown case.
+	ctx, cancel := context.WithCancel(context.Background())
+	p.completer.onComplete = cancel
+
+	r := New(p.store, p.payments, p.inventory, p.journal, p.completer,
+		time.Minute, 8, 10*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	resolved := r.RunOnce(ctx)
+
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1 (cancelled after the first order)", resolved)
+	}
+	if len(p.store.abandoned) != 2 {
+		t.Fatalf("handed back %d undriven claims, want 2; abandoned=%v", len(p.store.abandoned), p.store.abandoned)
+	}
+	// The exact orders that were never driven, not just any two.
+	for i, want := range []store.StuckOrder{orders[1], orders[2]} {
+		if p.store.abandoned[i] != want.OrderID {
+			t.Errorf("abandoned[%d] = %s, want %s", i, p.store.abandoned[i], want.OrderID)
+		}
+	}
+	// The driven order completed: its claim is cleared, not abandoned.
+	for _, id := range p.store.abandoned {
+		if id == orders[0].OrderID {
+			t.Error("handed back the claim of an order that was fully driven")
+		}
 	}
 }
 

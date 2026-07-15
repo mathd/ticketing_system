@@ -71,9 +71,10 @@ type Completer interface {
 // themselves are covered against real PostgreSQL by the store's smoke tests.
 type Store interface {
 	ClaimStuckOrders(ctx context.Context, limit int, lease time.Duration) ([]store.StuckOrder, error)
-	RecordTerminalOutcome(ctx context.Context, orderID uuid.UUID, outcome string) error
+	RecordTerminalOutcome(ctx context.Context, orderID, claimID uuid.UUID, outcome string) error
 	ParkForReconciliation(ctx context.Context, orderID, claimID uuid.UUID, reason string) error
 	ClearRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error
+	AbandonRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error
 	MarkReleased(ctx context.Context, s store.StuckOrder) error
 	ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error
 }
@@ -87,8 +88,8 @@ func (d DBStore) ClaimStuckOrders(ctx context.Context, limit int, lease time.Dur
 	return store.ClaimStuckOrders(ctx, d.DB, limit, lease)
 }
 
-func (d DBStore) RecordTerminalOutcome(ctx context.Context, orderID uuid.UUID, outcome string) error {
-	return store.RecordTerminalOutcome(ctx, d.DB, orderID, outcome)
+func (d DBStore) RecordTerminalOutcome(ctx context.Context, orderID, claimID uuid.UUID, outcome string) error {
+	return store.RecordTerminalOutcome(ctx, d.DB, orderID, claimID, outcome)
 }
 
 func (d DBStore) ParkForReconciliation(ctx context.Context, orderID, claimID uuid.UUID, reason string) error {
@@ -97,6 +98,10 @@ func (d DBStore) ParkForReconciliation(ctx context.Context, orderID, claimID uui
 
 func (d DBStore) ClearRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error {
 	return store.ClearRecoveryClaim(ctx, d.DB, orderID, claimID)
+}
+
+func (d DBStore) AbandonRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error {
+	return store.AbandonRecoveryClaim(ctx, d.DB, orderID, claimID)
 }
 
 func (d DBStore) MarkReleased(ctx context.Context, s store.StuckOrder) error {
@@ -187,8 +192,13 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 		return 0
 	}
 	var resolved int
-	for _, s := range orders {
+	for i, s := range orders {
 		if ctx.Err() != nil {
+			// Shutdown. The rest of the batch is claimed but undriven, and abandoning it
+			// parks those orders behind the full lease — with a big batch that is minutes
+			// of doing nothing, for orders whose seats are already leaking. The lease
+			// exists to survive a crash, not to be the cost of an orderly restart.
+			r.releaseUndriven(orders[i:])
 			return resolved
 		}
 		if err := r.drive(ctx, s); err != nil {
@@ -198,6 +208,32 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 		resolved++
 	}
 	return resolved
+}
+
+// releaseUndriven hands back claims the pass never got to, so the next runner (or the
+// next boot) can pick them up immediately rather than waiting out the lease.
+//
+// It uses a fresh, bounded context: the caller's is already cancelled, so reusing it
+// would fail every one of these writes and defeat the point.
+func (r *Runner) releaseUndriven(orders []store.StuckOrder) {
+	if len(orders) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var released int
+	for _, s := range orders {
+		// Conditional on the claim token, so a lease that lapsed and was re-claimed by a
+		// successor mid-shutdown is left alone.
+		if err := r.store.AbandonRecoveryClaim(ctx, s.OrderID, s.ClaimID); err != nil {
+			r.log.WarnContext(ctx, "release undriven recovery claim",
+				"order_id", s.OrderID, "err", err)
+			continue
+		}
+		released++
+	}
+	r.log.InfoContext(ctx, "released undriven recovery claims on shutdown",
+		"released", released, "of", len(orders))
 }
 
 // drive re-drives one order per ADR-016 §Decision 3.
@@ -244,10 +280,12 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 		// Recorded as `not_attempted` rather than `timeout`: nothing timed out, and
 		// overloading a PSP answer to mean "we never called it" would make the column
 		// lie to whoever reads it next.
-		if err := r.store.RecordTerminalOutcome(ctx, s.OrderID, "not_attempted"); err != nil {
+		if err := r.store.RecordTerminalOutcome(ctx, s.OrderID, s.ClaimID, "not_attempted"); err != nil {
 			return fmt.Errorf("record terminal outcome: %w", err)
 		}
-		s.TerminalOutcome = "not_attempted"
+		// Mirror the transition the store just committed: the row is release_pending now,
+		// and MarkReleased's predicate is written against that.
+		s.TerminalOutcome, s.Status = "not_attempted", "release_pending"
 		return r.releaseAndFail(ctx, s)
 	}
 	if !op.Resolved {
@@ -264,10 +302,10 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 		return r.confirmAndComplete(ctx, s)
 	case "declined", "timeout":
 		// A terminal answer proving no side effect. Record it, then release.
-		if err := r.store.RecordTerminalOutcome(ctx, s.OrderID, op.Status); err != nil {
+		if err := r.store.RecordTerminalOutcome(ctx, s.OrderID, s.ClaimID, op.Status); err != nil {
 			return fmt.Errorf("record terminal outcome: %w", err)
 		}
-		s.TerminalOutcome = op.Status
+		s.TerminalOutcome, s.Status = op.Status, "release_pending"
 		return r.releaseAndFail(ctx, s)
 	default:
 		return fmt.Errorf("unrecognized payment status %q", op.Status)

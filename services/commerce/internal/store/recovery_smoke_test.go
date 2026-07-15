@@ -3,6 +3,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -205,9 +206,9 @@ func TestExhaustedRecoveryParksAndStopsBlocking(t *testing.T) {
 // than a constraint violation, and so `""` is rejected rather than written as NULL.
 func TestOnlyProvenOutcomesAreRecordable(t *testing.T) {
 	db, ctx := outboxDB(t)
-	s := seedStuck(t, "created")
+	s := claimStuckOne(t, seedStuck(t, "created").OrderID)
 	for _, bad := range []string{"unknown", "captured", "network_error", ""} {
-		err := RecordTerminalOutcome(ctx, db, s.OrderID, bad)
+		err := RecordTerminalOutcome(ctx, db, s.OrderID, s.ClaimID, bad)
 		if err == nil {
 			t.Fatalf("outcome %q does not prove absence of a side effect and must be rejected", bad)
 		}
@@ -217,8 +218,8 @@ func TestOnlyProvenOutcomesAreRecordable(t *testing.T) {
 		}
 	}
 	for _, good := range []string{"declined", "timeout", "not_attempted"} {
-		s2 := seedStuck(t, "created")
-		if err := RecordTerminalOutcome(ctx, db, s2.OrderID, good); err != nil {
+		s2 := claimStuckOne(t, seedStuck(t, "created").OrderID)
+		if err := RecordTerminalOutcome(ctx, db, s2.OrderID, s2.ClaimID, good); err != nil {
 			t.Fatalf("outcome %q must be recordable: %v", good, err)
 		}
 		var got string
@@ -231,17 +232,121 @@ func TestOnlyProvenOutcomesAreRecordable(t *testing.T) {
 	}
 }
 
+// A runner whose lease lapsed must not overwrite the decision of the successor that
+// superseded it. Without the claim fence the stale runner's outcome — computed from a
+// lookup that is now minutes old — silently lands on a row someone else owns.
+func TestStaleClaimantCannotRecordAnOutcome(t *testing.T) {
+	db, ctx := outboxDB(t)
+	seeded := seedStuck(t, "created")
+	stale := claimStuckOne(t, seeded.OrderID)
+
+	// The lease lapses and a successor claims the row.
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_lease_until=now()-interval '1 minute',updated_at=now()-interval '10 minutes' WHERE id=$1`, seeded.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	successor := claimStuckOne(t, seeded.OrderID)
+	if successor.ClaimID == stale.ClaimID {
+		t.Fatal("successor must hold a different claim token")
+	}
+
+	if err := RecordTerminalOutcome(ctx, db, stale.OrderID, stale.ClaimID, "declined"); !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("stale claimant recorded an outcome: err = %v, want ErrRecoveryConflict", err)
+	}
+	var outcome sql.NullString
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT terminal_outcome,status FROM orders WHERE id=$1`, seeded.OrderID).Scan(&outcome, &status); err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Valid {
+		t.Errorf("stale claimant wrote outcome %q", outcome.String)
+	}
+	if status != "created" {
+		t.Errorf("stale claimant moved status to %q; want it untouched at created", status)
+	}
+}
+
+// A no-op UPDATE must not read as success. If the row moved on — completed by a replay,
+// already carrying an outcome — the caller must NOT go on to release the seat believing
+// its outcome is durable.
+func TestOutcomeWriteThatChangesNothingIsAConflict(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := claimStuckOne(t, seedStuck(t, "created").OrderID)
+
+	if err := RecordTerminalOutcome(ctx, db, s.OrderID, s.ClaimID, "declined"); err != nil {
+		t.Fatal(err)
+	}
+	// Second write: terminal_outcome is no longer NULL, so the predicate matches nothing.
+	if err := RecordTerminalOutcome(ctx, db, s.OrderID, s.ClaimID, "timeout"); !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("re-recording over an existing outcome: err = %v, want ErrRecoveryConflict", err)
+	}
+	var got string
+	if err := db.QueryRowContext(ctx, `SELECT terminal_outcome FROM orders WHERE id=$1`, s.OrderID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "declined" {
+		t.Errorf("outcome = %q; the first proven answer must stand", got)
+	}
+}
+
+// Abandoning an undriven claim refunds the attempt ClaimStuckOrders charged at claim
+// time. Otherwise a few rolling restarts park a healthy order at MaxRecoveryAttempts
+// without a single re-drive having actually been attempted.
+func TestAbandonRefundsTheClaimAttempt(t *testing.T) {
+	db, ctx := outboxDB(t)
+	seeded := seedStuck(t, "created")
+
+	claimed := claimStuckOne(t, seeded.OrderID)
+	var after int
+	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts FROM orders WHERE id=$1`, seeded.OrderID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != 1 {
+		t.Fatalf("claim charged %d attempts, want 1 — this test is not exercising the refund", after)
+	}
+
+	if err := AbandonRecoveryClaim(ctx, db, claimed.OrderID, claimed.ClaimID); err != nil {
+		t.Fatal(err)
+	}
+	var refunded int
+	var lease sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts,recovery_lease_until FROM orders WHERE id=$1`, seeded.OrderID).Scan(&refunded, &lease); err != nil {
+		t.Fatal(err)
+	}
+	if refunded != 0 {
+		t.Errorf("recovery_attempts = %d after abandoning an undriven claim, want 0", refunded)
+	}
+	if lease.Valid {
+		t.Error("abandoning must drop the lease so the next pass can claim immediately")
+	}
+}
+
 // Releasing must be restartable: the outcome is recorded BEFORE the release, so a crash
 // in between leaves the next pass able to finish rather than guess.
 func TestRecordedOutcomeSurvivesForTheNextPass(t *testing.T) {
 	db, ctx := outboxDB(t)
-	s := seedStuck(t, "created")
-	if err := RecordTerminalOutcome(ctx, db, s.OrderID, "declined"); err != nil {
+	seeded := seedStuck(t, "created")
+	// Claim it: the outcome write is fenced on the claim token, exactly as the runner
+	// does it. Hand-filling a StuckOrder here would skip the fence under test.
+	s := claimStuckOne(t, seeded.OrderID)
+	if err := RecordTerminalOutcome(ctx, db, s.OrderID, s.ClaimID, "declined"); err != nil {
 		t.Fatal(err)
 	}
+	// The transition must be the CODE's, not the test's. This assertion is the whole
+	// point: an earlier version wrote only terminal_outcome and left the row `created`,
+	// and this test passed anyway because it set release_pending itself — proving the
+	// state existed rather than that anything produced it.
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, s.OrderID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "release_pending" {
+		t.Fatalf("RecordTerminalOutcome left status %q; want release_pending — the durable "+
+			"release state must be established by the outcome write itself", status)
+	}
 	// RecordTerminalOutcome bumps updated_at, so the row re-enters the in-flight grace
-	// period. Age it again: in production the next pass simply arrives later.
-	if _, err := db.ExecContext(ctx, `UPDATE orders SET status='release_pending',updated_at=now()-interval '10 minutes' WHERE id=$1`, s.OrderID); err != nil {
+	// period. Age it again: in production the next pass simply arrives later. The lease
+	// is cleared too, since the original claimant is gone in this scenario.
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET updated_at=now()-interval '10 minutes',recovery_lease_until=NULL,recovery_claim_id=NULL WHERE id=$1`, s.OrderID); err != nil {
 		t.Fatal(err)
 	}
 	// A later pass claims it and knows exactly what it is completing.
@@ -268,12 +373,13 @@ func TestRecordedOutcomeSurvivesForTheNextPass(t *testing.T) {
 // audit column: nothing was charged either way, but only one of them called the PSP.
 func TestNotAttemptedPresentsAsTimeoutButStaysDistinguishable(t *testing.T) {
 	db, ctx := outboxDB(t)
-	s := seedStuck(t, "created")
-	if err := RecordTerminalOutcome(ctx, db, s.OrderID, "not_attempted"); err != nil {
+	s := claimStuckOne(t, seedStuck(t, "created").OrderID)
+	if err := RecordTerminalOutcome(ctx, db, s.OrderID, s.ClaimID, "not_attempted"); err != nil {
 		t.Fatal(err)
 	}
-	// Age past the grace period the outcome write just reset.
-	if _, err := db.ExecContext(ctx, `UPDATE orders SET updated_at=now()-interval '10 minutes' WHERE id=$1`, s.OrderID); err != nil {
+	// Age past the grace period the outcome write just reset, and drop the lease so the
+	// next pass can claim it — the original claimant is gone in this scenario.
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET updated_at=now()-interval '10 minutes',recovery_lease_until=NULL,recovery_claim_id=NULL WHERE id=$1`, s.OrderID); err != nil {
 		t.Fatal(err)
 	}
 	got := claimStuckOne(t, s.OrderID)

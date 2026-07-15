@@ -29,6 +29,11 @@ import (
 
 var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
 
+// errRecoveryInProgress reports that the recovery runner holds this order under a live
+// lease. Unlike errCheckoutConflict this is transient: the lease lapses, and the buyer's
+// retry then either finds the order resolved or claims it cleanly.
+var errRecoveryInProgress = errors.New("order is being recovered; retry shortly")
+
 type Server struct {
 	db                                           *sql.DB
 	client                                       *http.Client
@@ -267,13 +272,37 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 	}
 	var id uuid.UUID
 	var storedKey, storedFingerprint, status string
-	err = tx.QueryRowContext(ctx, `SELECT id,idempotency_key,request_fingerprint,status FROM orders WHERE reservation_id=$1`, x.ID).Scan(&id, &storedKey, &storedFingerprint, &status)
+	var recoveryClaim uuid.NullUUID
+	var recoveryLease sql.NullTime
+	// FOR UPDATE, and the recovery columns are read here rather than ignored: the
+	// recovery runner decides from a payments lookup that is only durable evidence while
+	// no one else can charge this order. Reading the row without locking it would let
+	// this replay bind a charge in the window between recovery's lookup and its release.
+	err = tx.QueryRowContext(ctx, `SELECT id,idempotency_key,request_fingerprint,status,recovery_claim_id,recovery_lease_until FROM orders WHERE reservation_id=$1 FOR UPDATE`, x.ID).
+		Scan(&id, &storedKey, &storedFingerprint, &status, &recoveryClaim, &recoveryLease)
 	if errors.Is(err, sql.ErrNoRows) {
 		id = uuid.NewSHA1(uuid.NameSpaceOID, []byte("order:"+x.OrganizerID.String()+":"+key))
 		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint) VALUES($1,$2,'created',$3,$4)`, id, x.ID, key, fingerprint)
 		status = "created"
-	} else if err == nil && (storedKey != key || storedFingerprint != fingerprint) {
-		return uuid.Nil, "", errCheckoutConflict
+	} else if err == nil {
+		if storedKey != key || storedFingerprint != fingerprint {
+			return uuid.Nil, "", errCheckoutConflict
+		}
+		// A recovery pass holds this order under an unexpired lease. It may already have
+		// asked payments whether a charge exists and been told no; binding one now would
+		// turn that true answer into a false one, and the seat would be released out from
+		// under a captured payment. Recovery's decision is bounded by its lease, so the
+		// buyer can retry once it lapses.
+		if recoveryClaim.Valid && recoveryLease.Valid && recoveryLease.Time.After(time.Now()) {
+			return uuid.Nil, "", errRecoveryInProgress
+		}
+		// Reopening an existing order is fresh activity on it. Without this the row keeps
+		// the timestamp of the checkout that died, stays past recovery's grace period,
+		// and recovery can claim it while this request is live — the grace period only
+		// protects orders whose updated_at actually moves.
+		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1`, id); err != nil {
+			return uuid.Nil, "", err
+		}
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -288,6 +317,11 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 func checkoutClaimProblem(err error) (int, string) {
 	if errors.Is(err, errCheckoutConflict) {
 		return http.StatusConflict, "checkout conflicts with an existing request"
+	}
+	if errors.Is(err, errRecoveryInProgress) {
+		// 409 like the conflict above, but the distinct message matters: this one clears
+		// on its own once the recovery lease lapses.
+		return http.StatusConflict, "this order is being recovered; retry shortly"
 	}
 	return http.StatusInternalServerError, "persist checkout"
 }
