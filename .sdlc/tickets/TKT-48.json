@@ -5,7 +5,7 @@
   "status": "Planning",
   "labels": [
     "risk:low",
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "claude",
   "pr": null,
@@ -66,6 +66,11 @@
       "stage": "ready",
       "kind": "claim",
       "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed by agent (gates-only run). Zero open blockers (only a non-blocking `found-in` link to TKT-46). Branch `TKT-48-scanner-stream-lifecycle` cut off origin/main.\n\n**risk:low justification (challengeable):** isolated to the scanner `startCamera`/`stopCamera` lifecycle in one file (`web/scanner/src/App.tsx`) plus its test file. No auth, no data migrations, no CI/deploy config; expected ≤2 files. Skips Gate 2 (plan approval); the diff is still Codex-reviewed at the PR stage and merged by a human at Gate 3.\n\nSelection: prioritized by owner into Ready; all 7 readiness items met."
+    },
+    {
+      "stage": "planning",
+      "kind": "plan",
+      "body": "<!-- sdlc:stage=planning kind=plan -->\n### Plan — TKT-48 scanner stream lifecycle\n\n**Root cause.** `startCamera` awaits `getUserMedia` then `video.play()` with no guard that (a) the\ncomponent is still mounted and (b) this invocation is still the current one. Two races follow:\n- *resolve-after-unmount*: unmount cleanup (`stopCamera`) runs while `getUserMedia` is pending; the\n  promise still resolves and the stream is assigned to `stream.current` + `video.srcObject`, never stopped.\n- *re-entry*: `cameraActive` (the button-disable guard) is only set true after the await, so two rapid\n  clicks issue two `getUserMedia` calls; the first `stream.current` is overwritten and orphaned.\n\n**Fix — generation guard.** Add two refs:\n- `mountedRef` (true until unmount cleanup).\n- `startGeneration` counter. `stopCamera()` bumps it (invalidates any in-flight start). `startCamera()`\n  captures `const gen = ++startGeneration.current` at entry — bumping invalidates any *prior* pending\n  start (re-entry fix). After each await, if `!mountedRef.current || startGeneration.current !== gen`,\n  stop the just-resolved tracks and return without assigning (unmount + re-entry fix). The in-loop\n  `detect()` also checks the generation before continuing.\n\n**Files (2, consistent with risk:low):**\n- `web/scanner/src/App.tsx` — refs + guards.\n- `web/scanner/src/App.test.tsx` — deterministic race tests.\n\n**Test seam / TDD (tests first).** Deferred `getUserMedia` (manually-resolved promise) + `stop` spy on\nthe returned track:\n1. resolve-after-unmount: Use camera → `unmount()` while pending → resolve → `stop` called, no attach.\n2. re-entry: Use camera x2 before first resolves → resolve both → exactly one live stream; the orphaned\n   one's `stop` called.\n3. regressions: existing accept/reject/fallback/detector-failure tests stay green.\n\n**DoD.** `make check` green (lint + unit + build, mirrors CI). No new deps. Scanner UX unchanged.\n"
     }
   ]
 }
