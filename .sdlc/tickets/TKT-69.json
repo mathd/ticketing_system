@@ -1,0 +1,13 @@
+{
+  "key": "TKT-69",
+  "type": "Task",
+  "classification": "simple",
+  "parent": "TKT-2",
+  "summary": "Make the smoke gate concurrency-safe: scripts/smoke.sh hardcodes its ports",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [],
+  "description": "**Found by TKT-66, which lost roughly an hour of wall-clock to it.**\n\n`scripts/smoke.sh:11-14` reads the project name from the environment but **`export`s the ports\nunconditionally**:\n\n```bash\nPROJECT=\"${SMOKE_COMPOSE_PROJECT:-ticketing-smoke}\"\nexport GATEWAY_PORT=18080 POSTGRES_PORT=15432 NATS_PORT=14222 \\\n       GRAFANA_PORT=13000 PROM_PORT=19090 OTLP_PORT=14318\n```\n\nSo `SMOKE_COMPOSE_PROJECT` buys **project-name isolation but not port isolation**, and the default\nproject name is shared besides. Two `make smoke` runs at once therefore fight over\n`18080/15432/13000/14222/14318/19090` — and, on the default project name, tear down each other's\ncontainers.\n\nThis directly blocks the repo's own workflow: the owner runs **multiple ticket sessions in parallel**\n(git worktrees isolate the files; Docker ports are global). It is not a theoretical race — during\nTKT-66 it produced `No such container`, `removal of container ... is already in progress`,\n`name already in use`, a gateway exiting 0, and postgres shutting down mid-test. Those read as a\nwedged Docker daemon, and TKT-66 initially misdiagnosed them as exactly that, concluding the gate was\nred on pristine `main`. It was not: another session's stack held the ports. **The cost here is not\nthe collision, it is that the failure mode lies about its cause.**\n\n`compose.yaml:1-5` already anticipates this — *\"Published ports are env-overridable so `make smoke`\ncan run an isolated copy (-p ticketing-smoke) next to a running dev stack\"* — the script is what\nthrows the override away.\n\n**COS:** two `make smoke` runs from two worktrees complete concurrently without touching each other's\ncontainers or ports. Likely shape: `export GATEWAY_PORT=\"${GATEWAY_PORT:-18080}\"` (etc.) so the\nvalues stay defaults, plus deriving a default port offset from the project name, or documenting the\nenv recipe. Whatever is chosen must keep the current single-session invocation byte-identical.\n\n**Not in scope:** the teardown-trap hole (TKT-70)."
+}
