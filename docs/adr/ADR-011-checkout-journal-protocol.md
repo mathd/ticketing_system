@@ -6,6 +6,11 @@ Date: 2026-07-12
 
 Accepted (approved at the TKT-28 plan gate)
 
+The protocol below stands unchanged. Its **recovery** story — retry-driven, with automated scheduling
+and real-PSP status/compensation named as prerequisites — is amended by
+[ADR-016](./ADR-016-checkout-recovery-state-machine.md) (TKT-43), which also bounds the journal's
+tamper-detection claim.
+
 ## Context
 
 Checkout crosses catalog pricing, inventory expiry, commerce orders and a PSP. There is no

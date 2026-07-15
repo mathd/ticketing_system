@@ -6,6 +6,33 @@ Date: 2026-07-12 (reworked same day: NF525 demoted from v1 goal to later-phase p
 
 Accepted
 
+The two-trail decision stands. Its inalterability language is **scoped** by
+[ADR-016](./ADR-016-checkout-recovery-state-machine.md) §Decision 7 (TKT-43), which carries the
+threat model. Read the following claims in this ADR with that scope:
+
+- **"inalterable history exactly where value and entitlements move"** (Option 3) and **"immutable,
+  sequence-numbered, hash-chained … and signed"** (Decision 1) describe *application-level
+  append-only, tamper-evident* behaviour. `verify-journal` detects modification and insertion, but
+  **cannot detect a coordinated rollback** — suffix truncation with the head rolled back,
+  whole-organizer removal, or a database restore to an older snapshot. Nothing inside the instance
+  attests how long a chain should be. Closing that requires an attestation outside the database;
+  the anchor is deferred to TKT-11 (see ADR-016 §Decision 7).
+- **"Two append-only trails, one discipline"** (Decision) currently overstates the symmetry. The
+  **money journal** is hash-chained, HMAC-signed and verified (`verify-journal`, in the local gate).
+  The **ticket lifecycle trail** has neither a hash chain, a signature, nor a verifier: its only
+  defence is an append-only trigger (`lifecycle_events_immutable`,
+  `services/access/internal/store/migrations/0001_tickets.sql`), which is DDL and therefore removable
+  by anyone who can alter the schema. The trail is *append-only by policy*, not tamper-evident by
+  construction — strictly weaker than the money journal, since a modified `lifecycle_events` row
+  leaves no cryptographic evidence. The owner's directive puts tickets on equal footing with money,
+  so this asymmetry is a **known gap, not a decision**; it is not TKT-43's scope (TKT-43 hardens the
+  money path) and needs its own ticket.
+- **"A GDPR erasure request … never touches the trails — inalterability and the right to erasure stop
+  conflicting by construction"** (Decision 3) holds only while the pseudonym is unlinkable. The buyer
+  UUID is an *unsalted* SHA-1 of the reservation ID (`services/commerce/internal/api/server.go:162`),
+  so it is derived, not keyed — "destroy the key" is not available as an erasure mechanism here. The
+  erasure machinery is TKT-33; that ticket owns the question.
+
 ## Context
 
 The owner's directive (2026-07-12): **traceability is a must** — the same audit-trail thinking must apply to money flows *and* to tickets. The French market and its anti-VAT-fraud regime (art. 286-I-3° bis CGI, commonly met via NF525 certification, requiring inalterability/security/conservation/archiving of receipts) is **not an immediate goal**, but it is far cheaper to design for from the start than to retrofit: NF525 changes how internal flows are tracked, and bolting inalterability onto a mutable store later is effectively a rewrite. The decision is needed before the first order is stored (US-004). *Note: the ISCA characterization is inferred from how NF525 works, not verified against the standard's text; verification happens when the compliance profile is prioritized (TKT-11).*
