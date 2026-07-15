@@ -4,12 +4,13 @@
   "summary": "AGENTS.md: promote the grouped-member lifecycle corollary to the row-lock rule",
   "classification": "simple",
   "labels": [
-    "risk:low"
+    "risk:low",
+    "agent:planning"
   ],
   "parent": "TKT-2",
   "description": "**Promote a proven learning (from TKT-53) into AGENTS.md.**\n\nThe repo already documents the state-deriving-catalog-slot-transition row-lock rule. TKT-53 added a corollary worth making a standard: when a slot belongs to a grouping (festival, and by extension future passes/lodging), its per-member lifecycle endpoints (`PublishPerformance`/`ArchivePerformance`) must **reject** a grouped member (`ErrGroupedSlotLifecycle`) so the group aggregate cannot be desynced out-of-band. This is now proven across performance/series/festival and was a REQUEST-CHANGES finding on TKT-53.\n\n**Scope:** one paragraph added to the existing row-lock bullet in AGENTS.md, citing `ErrGroupedSlotLifecycle` + the guarded `PublishPerformance`/`ArchivePerformance` in `services/catalog/internal/store/postgres.go` as the reference impl. Docs-only.\n\n**COS:** AGENTS.md states the corollary; no code change. risk:low (documentation, isolated).",
   "status": "Planning",
-  "assignee": null,
+  "assignee": "claude",
   "pr": null,
   "comments": [
     {
@@ -21,6 +22,16 @@
       "stage": "ready",
       "kind": "blocker",
       "body": "<!-- sdlc:stage=ready kind=blocker -->\n**Retracted — TKT-53 merged; TKT-58 is unblocked.**\n\nThe blocker above was accurate when posted and stale minutes later: TKT-53's PR #37 merged as\n`3879c13` mid-session, and the earlier verification had also been run against a local checkout\none commit behind `origin/main`.\n\nRe-verified against `origin/main` @ `3879c13`:\n\n- `store.ErrGroupedSlotLifecycle` — `services/catalog/internal/store/store.go:38`\n  (\"grouped festival day must transition via its festival\")\n- guards returning it — `postgres.go:559` (publish), `postgres.go:688` (archive)\n- API mapping — `server.go:159`; coverage — `festival_smoke_test.go:195`\n\nThe premise this ticket promotes now holds on `main`. Proceeding with the AGENTS.md paragraph,\ncited against the merged code.\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Branch `TKT-58-grouped-member-lifecycle-corollary` off `origin/main` @ `3879c13`.\n\n**Selection reason:** unblocked by TKT-53 merging (#37 → `3879c13`) earlier this session; the\npremise this ticket promotes is now verifiable on `main`. Docs-only, `risk:low`, isolated to\nAGENTS.md.\n\nLocal checkout was fast-forwarded `a7df451` → `3879c13` before starting — the first pass in this\nsession verified against the stale checkout and produced a blocker that was obsolete on arrival\n(retracted above).\n"
+    },
+    {
+      "stage": "planning",
+      "kind": "plan",
+      "body": "<!-- sdlc:stage=planning kind=plan -->\n**Goal (COS):** AGENTS.md states the grouped-member lifecycle corollary. No code change.\n\n**Verified on `origin/main` @ `3879c13`** (every citation read, not inferred):\n\n| Claim | Location |\n|---|---|\n| `ErrGroupedSlotLifecycle` — \"grouped festival day must transition via its festival\" | `services/catalog/internal/store/store.go:38` |\n| publish guard — `capacity_group_id IS NULL` in the conditional `UPDATE`, diagnosed on zero-rows | `postgres.go:545-566` |\n| archive guard — `capacity_group_id` read under `FOR UPDATE`, refuses pre-mutation | `postgres.go:678-690` |\n| API mapping | `server.go:159` |\n| coverage | `festival_smoke_test.go:195` |\n\n**Deviation from the ticket description (deliberate).** The ticket says both endpoints \"reject a\ngrouped member\" and asks to cite them as one reference impl. The merged code is asymmetric, and the\nasymmetry is the teachable part:\n\n- `ArchivePerformance` is state-deriving → decides under the existing `FOR UPDATE` row lock.\n- `PublishPerformance` is monotonic → folds the predicate into the conditional `UPDATE` and\n  diagnoses the grouped case on the zero-rows path, staying lock-free.\n\nThat split mirrors the distinction the existing bullet already draws (state-deriving vs. monotonic),\nso the paragraph is written to *extend* that logic rather than restate it flatly. Added the\nnon-obvious consequence: a pre-check outside the locked decision / `UPDATE` predicate reintroduces\nthe original race (a slot can join a group between check and write).\n\n**Files:** `AGENTS.md` — one paragraph appended to the existing row-lock bullet. Nothing else.\n\n**Test plan:** no runtime surface. Gate is `make check` green (unchanged — docs-only) plus every\ncited path/symbol confirmed to exist at the cited location on `main`.\n\n**Pre-mortem — how this ticket fails:**\n1. *Cites code that doesn't exist* — the failure this ticket nearly shipped. Mitigated: every\n   citation above was read from `origin/main`, not from the ticket text or memory.\n2. *Cites line numbers that rot* — mitigated: the paragraph names symbols and files, no line numbers.\n3. *Contradicts the bullet it extends* — mitigated: written as a corollary that reuses the existing\n   monotonic/state-deriving frame rather than a competing rule.\n4. *Over-generalizes to future groupings* — the code only knows festivals today. Mitigated: the\n   paragraph says `capacity_group_id` set (festival today, passes/lodging later), which is exactly\n   what the column means per ADR-014.\n\n`risk:low` holds: one file, docs-only, no auth/migration/CI surface. Skipping Gate 2 per the skill.\n"
     }
   ],
   "links": []
