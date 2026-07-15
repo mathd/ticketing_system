@@ -61,3 +61,23 @@ experiment stays valid.
   Reference impls: `ArchivePerformance` and `CloseSlot`/`ReopenSlot` in
   `services/catalog/internal/store/postgres.go`; the same row-lock decision pattern underlies access
   `Redeem` (`services/access/internal/store/postgres.go`).
+
+  **Corollary — a festival member's own publish/archive is refused, and the refusal rides the
+  transition's existing decision.** A slot whose `capacity_group_id` is set (today: a `festival_day`
+  in a festival — the column is CHECK-constrained to that kind) must not go through *direct*
+  `PublishPerformance`/`ArchivePerformance`: both return `ErrGroupedSlotLifecycle` so the festival
+  stays the only writer of its members' status. Enforce this on the decision the transition already
+  makes, never as a separate pre-check — a pre-check outside the locked read (or outside the
+  `UPDATE` predicate) reopens the race above, since a slot can join a group between check and write.
+  The two endpoints do it differently on purpose, matching the split drawn above: `ArchivePerformance`
+  is state-deriving, so it reads `capacity_group_id` under the same `FOR UPDATE` lock that decides
+  the transition; `PublishPerformance` is monotonic, so it folds `capacity_group_id IS NULL` into its
+  conditional `UPDATE` and only diagnoses the grouped case on the zero-rows path — staying lock-free.
+  **Scope this narrowly — it is not a general "group owns its members" invariant.** Closure is
+  orthogonal and stays per-member: `CloseSlot`/`ReopenSlot` deliberately don't consult
+  `capacity_group_id`. Series transitions don't guard it either, so a festival day that also belongs
+  to a series can still be flipped via `PublishSeries`/`ArchiveSeries` — ADR-015 accepts partial
+  series states by design. Before relying on group ownership beyond these two endpoints, read the
+  code; don't extrapolate from this paragraph. See `ErrGroupedSlotLifecycle`
+  (`services/catalog/internal/store/store.go`) and its guards in
+  `services/catalog/internal/store/postgres.go`.
