@@ -64,8 +64,51 @@ type Completer interface {
 	Complete(ctx context.Context, s store.StuckOrder) error
 }
 
+// Store is the durable state the runner decides against and writes back to. It is a
+// port rather than a *sql.DB so the decision table can be exercised against fakes: the
+// question these tests must answer is "which transition did the runner choose for this
+// evidence", and that is unreadable through SQL side effects alone. The transitions
+// themselves are covered against real PostgreSQL by the store's smoke tests.
+type Store interface {
+	ClaimStuckOrders(ctx context.Context, limit int, lease time.Duration) ([]store.StuckOrder, error)
+	RecordTerminalOutcome(ctx context.Context, orderID uuid.UUID, outcome string) error
+	ParkForReconciliation(ctx context.Context, orderID, claimID uuid.UUID, reason string) error
+	ClearRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error
+	MarkReleased(ctx context.Context, s store.StuckOrder) error
+	ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error
+}
+
+// DBStore binds Store to the commerce store package.
+type DBStore struct {
+	DB *sql.DB
+}
+
+func (d DBStore) ClaimStuckOrders(ctx context.Context, limit int, lease time.Duration) ([]store.StuckOrder, error) {
+	return store.ClaimStuckOrders(ctx, d.DB, limit, lease)
+}
+
+func (d DBStore) RecordTerminalOutcome(ctx context.Context, orderID uuid.UUID, outcome string) error {
+	return store.RecordTerminalOutcome(ctx, d.DB, orderID, outcome)
+}
+
+func (d DBStore) ParkForReconciliation(ctx context.Context, orderID, claimID uuid.UUID, reason string) error {
+	return store.ParkForReconciliation(ctx, d.DB, orderID, claimID, reason)
+}
+
+func (d DBStore) ClearRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error {
+	return store.ClearRecoveryClaim(ctx, d.DB, orderID, claimID)
+}
+
+func (d DBStore) MarkReleased(ctx context.Context, s store.StuckOrder) error {
+	return store.MarkReleased(ctx, d.DB, s)
+}
+
+func (d DBStore) ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error {
+	return store.ReleaseStuckOrder(ctx, d.DB, orderID, claimID, cause)
+}
+
 type Runner struct {
-	db        *sql.DB
+	store     Store
 	payments  Payments
 	inventory Inventory
 	journal   Journal
@@ -76,7 +119,7 @@ type Runner struct {
 	log       *slog.Logger
 }
 
-func New(db *sql.DB, payments Payments, inventory Inventory, journal Journal, completer Completer,
+func New(st Store, payments Payments, inventory Inventory, journal Journal, completer Completer,
 	interval time.Duration, batch int, log *slog.Logger) *Runner {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -90,7 +133,7 @@ func New(db *sql.DB, payments Payments, inventory Inventory, journal Journal, co
 	// One lease covers the whole batch, which is driven sequentially and makes network
 	// calls per order. Size it for the slowest plausible pass, not one order.
 	lease := time.Duration(batch)*5*time.Second + 60*time.Second
-	return &Runner{db: db, payments: payments, inventory: inventory, journal: journal,
+	return &Runner{store: st, payments: payments, inventory: inventory, journal: journal,
 		completer: completer, interval: interval, batch: batch, lease: lease, log: log}
 }
 
@@ -114,7 +157,7 @@ func (r *Runner) Run(ctx context.Context) {
 // RunOnce claims a batch and re-drives each order. Returns how many reached a terminal
 // state, for tests and for callers draining to quiescence.
 func (r *Runner) RunOnce(ctx context.Context) int {
-	orders, err := store.ClaimStuckOrders(ctx, r.db, r.batch, r.lease)
+	orders, err := r.store.ClaimStuckOrders(ctx, r.batch, r.lease)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			r.log.ErrorContext(ctx, "claim stuck orders", "err", err)
@@ -179,7 +222,7 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 		// Recorded as `not_attempted` rather than `timeout`: nothing timed out, and
 		// overloading a PSP answer to mean "we never called it" would make the column
 		// lie to whoever reads it next.
-		if err := store.RecordTerminalOutcome(ctx, r.db, s.OrderID, "not_attempted"); err != nil {
+		if err := r.store.RecordTerminalOutcome(ctx, s.OrderID, "not_attempted"); err != nil {
 			return fmt.Errorf("record terminal outcome: %w", err)
 		}
 		s.TerminalOutcome = "not_attempted"
@@ -189,7 +232,7 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 		// Bound but no terminal result: this is payment_unknown. Resolving it needs
 		// real-PSP status (TKT-56). Leaving it claimable would spin; park it so a human
 		// sees a real order awaiting a capability that does not exist yet.
-		return store.ParkForReconciliation(ctx, r.db, s.OrderID, s.ClaimID,
+		return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
 			"payment result unknown; needs PSP status (TKT-56)")
 	}
 	switch op.Status {
@@ -199,7 +242,7 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 		return r.confirmAndComplete(ctx, s)
 	case "declined", "timeout":
 		// A terminal answer proving no side effect. Record it, then release.
-		if err := store.RecordTerminalOutcome(ctx, r.db, s.OrderID, op.Status); err != nil {
+		if err := r.store.RecordTerminalOutcome(ctx, s.OrderID, op.Status); err != nil {
 			return fmt.Errorf("record terminal outcome: %w", err)
 		}
 		s.TerminalOutcome = op.Status
@@ -218,7 +261,7 @@ func (r *Runner) confirmAndComplete(ctx context.Context, s store.StuckOrder) err
 		// visibly rather than silently pick one.
 		r.log.ErrorContext(ctx, "captured order cannot be confirmed; parked for reconciliation",
 			"order_id", s.OrderID, "amount", s.Amount, "currency", s.Currency)
-		return store.ParkForReconciliation(ctx, r.db, s.OrderID, s.ClaimID,
+		return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
 			"captured payment whose claim is gone; needs void/refund (TKT-56)")
 	}
 	if err != nil {
@@ -227,7 +270,7 @@ func (r *Runner) confirmAndComplete(ctx context.Context, s store.StuckOrder) err
 	if err := r.completer.Complete(ctx, s); err != nil {
 		return fmt.Errorf("complete order: %w", err)
 	}
-	return store.ClearRecoveryClaim(ctx, r.db, s.OrderID, s.ClaimID)
+	return r.store.ClearRecoveryClaim(ctx, s.OrderID, s.ClaimID)
 }
 
 func (r *Runner) releaseAndFail(ctx context.Context, s store.StuckOrder) error {
@@ -239,11 +282,11 @@ func (r *Runner) releaseAndFail(ctx context.Context, s store.StuckOrder) error {
 	if err := r.journal.OrderFailed(ctx, s); err != nil {
 		return fmt.Errorf("journal order.failed: %w", err)
 	}
-	return store.MarkReleased(ctx, r.db, s)
+	return r.store.MarkReleased(ctx, s)
 }
 
 func (r *Runner) fail(ctx context.Context, s store.StuckOrder, cause error) {
-	if err := store.ReleaseStuckOrder(ctx, r.db, s.OrderID, s.ClaimID, cause); err != nil {
+	if err := r.store.ReleaseStuckOrder(ctx, s.OrderID, s.ClaimID, cause); err != nil {
 		r.log.ErrorContext(ctx, "release stuck order", "order_id", s.OrderID, "err", err)
 	}
 	if s.Attempts >= store.MaxRecoveryAttempts {

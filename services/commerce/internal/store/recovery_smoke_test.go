@@ -335,6 +335,93 @@ func TestOrderStatusVocabularyIsEnforced(t *testing.T) {
 	}
 }
 
+// Recovery re-drives by construction: the same order is journalled again on every
+// retry. The fact id is derived from the order and type precisely so those collapse
+// into one row — a generated id would emit a duplicate order.failed per attempt.
+func TestRecordOrderFactIsIdempotentAcrossRedrives(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := seedStuck(t, "created")
+
+	first, firstAt, err := RecordOrderFact(ctx, db, s, "order.failed")
+	if err != nil {
+		t.Fatalf("record order fact: %v", err)
+	}
+	if first == uuid.Nil {
+		t.Fatal("fact id must not be nil")
+	}
+
+	second, secondAt, err := RecordOrderFact(ctx, db, s, "order.failed")
+	if err != nil {
+		t.Fatalf("re-record order fact: %v", err)
+	}
+	if second != first {
+		t.Errorf("fact id %s != %s: a re-drive must recompute the same id", second, first)
+	}
+	// The stored row keeps the FIRST attempt's time. Returning "now" on the conflict
+	// path would journal a fact whose timestamp disagrees with the row it describes.
+	if !secondAt.Equal(firstAt) {
+		t.Errorf("occurred_at moved from %s to %s on re-drive", firstAt, secondAt)
+	}
+
+	var rows int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM order_facts WHERE order_id=$1 AND fact_type='order.failed'`,
+		s.OrderID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("order_facts has %d order.failed rows for one order, want 1", rows)
+	}
+}
+
+// The id is per (order, type): two fact types on the same order must not collide.
+func TestRecordOrderFactSeparatesFactTypes(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := seedStuck(t, "created")
+
+	failed, _, err := RecordOrderFact(ctx, db, s, "order.failed")
+	if err != nil {
+		t.Fatalf("record order.failed: %v", err)
+	}
+	completed, _, err := RecordOrderFact(ctx, db, s, "order.completed")
+	if err != nil {
+		t.Fatalf("record order.completed: %v", err)
+	}
+	if failed == completed {
+		t.Fatal("distinct fact types on one order must not share a fact id")
+	}
+}
+
+// The fact carries the money as the order recorded it. A fact that disagrees with its
+// order is worse than no fact: the journal is the audit record.
+func TestRecordOrderFactPersistsTheOrdersMoney(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := seedStuck(t, "created")
+	// seedStuck leaves the money zero-valued; assert against a non-zero amount so this
+	// cannot pass by comparing 0 to 0.
+	s.Amount, s.Currency = 12345, "CAD"
+
+	factID, _, err := RecordOrderFact(ctx, db, s, "order.failed")
+	if err != nil {
+		t.Fatalf("record order fact: %v", err)
+	}
+	var amount int64
+	var currency string
+	var buyer, organizer uuid.UUID
+	if err := db.QueryRowContext(ctx,
+		`SELECT amount,currency,buyer_id,organizer_id FROM order_facts WHERE fact_id=$1`,
+		factID).Scan(&amount, &currency, &buyer, &organizer); err != nil {
+		t.Fatal(err)
+	}
+	if amount != s.Amount || currency != s.Currency {
+		t.Errorf("fact money = %d %s, want %d %s", amount, currency, s.Amount, s.Currency)
+	}
+	if buyer != s.BuyerID || organizer != s.OrganizerID {
+		t.Errorf("fact parties = buyer %s organizer %s, want buyer %s organizer %s",
+			buyer, organizer, s.BuyerID, s.OrganizerID)
+	}
+}
+
 func claimStuckOne(t *testing.T, order uuid.UUID) StuckOrder {
 	t.Helper()
 	db, ctx := outboxDB(t)

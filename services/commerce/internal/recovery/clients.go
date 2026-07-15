@@ -3,6 +3,7 @@ package recovery
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,12 +18,14 @@ import (
 // HTTPClients adapts the recovery runner's ports to the internal service APIs. The
 // runner is background work with no request on the stack, so it owns its own client
 // rather than borrowing the API server's.
+//
+// It implements the Payments and Inventory ports only. Completer is a pure database
+// transaction and Journal composes a database write with an HTTP post, so neither
+// belongs on the type whose whole job is talking HTTP to another service.
 type HTTPClients struct {
 	Client                    *http.Client
 	InventoryURL, PaymentsURL string
 	Token                     string
-	Completer                 Completer
-	Journal                   Journal
 }
 
 func (c HTTPClients) do(ctx context.Context, method, url string, out any) (int, error) {
@@ -105,6 +108,27 @@ func (c HTTPClients) Release(ctx context.Context, org, hold uuid.UUID) error {
 	}
 }
 
+// StoreCompleter completes an order through the same store transaction the checkout
+// path uses. No HTTP: completion is commerce's own state.
+type StoreCompleter struct {
+	DB *sql.DB
+}
+
+// Complete finishes a stuck order whose claim is confirmed. The completion transaction
+// owes the event via the outbox (ADR-016 §Decision 6), so the recovery runner does not
+// publish anything itself — the drainer already mounted in this service picks the row
+// up. That is why StuckOrder carries the projection: recovery reuses the checkout
+// path's completion rather than a parallel one that could drift from it.
+//
+// The guest reference is a fresh candidate, not a stored value: CompleteOrder returns
+// the persisted canonical ref and only commits a candidate for an order that had none.
+// A re-drive of an already-completed order therefore short-circuits and keeps the
+// reference the buyer was originally shown.
+func (c StoreCompleter) Complete(ctx context.Context, s store.StuckOrder) error {
+	_, err := store.CompleteOrder(ctx, c.DB, s.Completion(), uuid.New())
+	return err
+}
+
 // JournalFact submits the order.failed fact through payments, mirroring the checkout
 // path's fact submission.
 type JournalFact struct {
@@ -117,6 +141,15 @@ type JournalFact struct {
 // FactDB is the commerce-side fact table write the journal submission is derived from.
 type FactDB interface {
 	RecordOrderFact(ctx context.Context, s store.StuckOrder, factType string) (uuid.UUID, time.Time, error)
+}
+
+// StoreFactDB binds FactDB to the commerce store.
+type StoreFactDB struct {
+	DB *sql.DB
+}
+
+func (f StoreFactDB) RecordOrderFact(ctx context.Context, s store.StuckOrder, factType string) (uuid.UUID, time.Time, error) {
+	return store.RecordOrderFact(ctx, f.DB, s, factType)
 }
 
 func (j JournalFact) OrderFailed(ctx context.Context, s store.StuckOrder) error {

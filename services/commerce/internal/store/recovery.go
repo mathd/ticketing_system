@@ -211,6 +211,51 @@ func MarkReleased(ctx context.Context, db *sql.DB, s StuckOrder) error {
 	return tx.Commit()
 }
 
+// RecordOrderFact writes the fact and returns its identity and time, mirroring the
+// checkout path's fact write in internal/api/server.go.
+//
+// The id is derived from the order and fact type rather than generated, so a re-drive
+// of the same order recomputes the same id and the insert collapses. Recovery re-drives
+// by construction — a generated id would journal a second order.failed for the same
+// order on every retry.
+//
+// occurred_at is read back rather than assumed: on the conflict path the stored row
+// keeps the FIRST attempt's timestamp, and that is the one the journal must carry.
+// Insert and read-back are one statement so a concurrent re-drive cannot land between
+// them, and so this needs no surface beyond the narrowed OutboxDB.
+func RecordOrderFact(ctx context.Context, db OutboxDB, s StuckOrder, factType string) (uuid.UUID, time.Time, error) {
+	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(s.OrderID.String()+":"+factType))
+	rows, err := db.QueryContext(ctx, `
+		WITH inserted AS (
+			INSERT INTO order_facts(fact_id,order_id,organizer_id,buyer_id,fact_type,amount,currency)
+			VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING
+			RETURNING occurred_at
+		)
+		SELECT occurred_at FROM inserted
+		UNION ALL
+		SELECT occurred_at FROM order_facts WHERE fact_id=$1
+		LIMIT 1`,
+		factID, s.OrderID, s.OrganizerID, s.BuyerID, factType, s.Amount, s.Currency)
+	if err != nil {
+		return uuid.Nil, time.Time{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	var occurred time.Time
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return uuid.Nil, time.Time{}, err
+		}
+		return uuid.Nil, time.Time{}, fmt.Errorf("order fact %s vanished after insert", factID)
+	}
+	if err := rows.Scan(&occurred); err != nil {
+		return uuid.Nil, time.Time{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return uuid.Nil, time.Time{}, err
+	}
+	return factID, occurred, nil
+}
+
 // ClearRecoveryClaim drops the lease after a successful re-drive, so the row stops
 // being re-claimed once it has reached a terminal state by other means.
 func ClearRecoveryClaim(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID) error {
