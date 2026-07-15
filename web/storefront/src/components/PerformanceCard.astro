@@ -11,8 +11,23 @@ interface Props {
   locale: Locale;
   venueLabel: string;
   ticketsLabel: string;
+  // Whether a day is individually purchasable. Festival days draw on a shared
+  // festival pool and are NOT claimable per-day in this skeleton — the picker
+  // would resolve to a nonexistent per-slot pool. Per-day/multi-day festival
+  // purchase arrives with the pass products in TKT-14. Defaults to true so the
+  // event detail page (independent performances) is unaffected.
+  purchasable?: boolean;
+  soldSeparatelyLabel?: string;
 }
-const { performance: perf, organizerId, locale, venueLabel, ticketsLabel } = Astro.props;
+const {
+  performance: perf,
+  organizerId,
+  locale,
+  venueLabel,
+  ticketsLabel,
+  purchasable = true,
+  soldSeparatelyLabel,
+} = Astro.props;
 ---
 
 <section class="performance">
@@ -22,7 +37,11 @@ const { performance: perf, organizerId, locale, venueLabel, ticketsLabel } = Ast
   <ul class="tickets">
     {perf.ticket_types.map((tt) => <li><span>{tt.name}</span><span class="price">{formatMoney(tt.price.amount, tt.price.currency, locale)}</span></li>)}
   </ul>
-  {perf.ticket_types[0] && <HoldPicker client:load organizerId={organizerId} ticketTypeId={perf.ticket_types[0].id} locale={locale} />}
+  {
+    purchasable
+      ? perf.ticket_types[0] && <HoldPicker client:load organizerId={organizerId} ticketTypeId={perf.ticket_types[0].id} locale={locale} />
+      : soldSeparatelyLabel && <p class="sold-separately">{soldSeparatelyLabel}</p>
+  }
 </section>
 
 <style>
@@ -33,4 +52,5 @@ const { performance: perf, organizerId, locale, venueLabel, ticketsLabel } = Ast
   .tickets { list-style: none; margin: 0; padding: 0; }
   .tickets li { display: flex; justify-content: space-between; padding: 0.4rem 0; border-top: 1px solid var(--line); }
   .price { font-weight: 600; color: var(--accent); }
+  .sold-separately { margin: 0.9rem 0 0; padding-top: 0.9rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
 </style>

@@ -1241,29 +1241,69 @@ func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (Fest
 	if festival.Status != "published" {
 		return FestivalAggregate{}, ErrNotFound
 	}
-	out := FestivalAggregate{Festival: festival, Performances: []PerformanceAggregate{}}
-	all, err := p.ListPublishedEvents(ctx)
+	// Scope the read to this festival's own days (ADR-004: a single festival
+	// read must not scale with the whole published catalog). One query joins
+	// only the group's published, priced festival_day slots + venue + ticket
+	// types, ordered chronologically by the day's opening instant.
+	const startsAtExpr = `COALESCE(p.starts_at,
+		(p.operating_date + p.opens_at::time) AT TIME ZONE p.timezone)`
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT p.id, `+startsAtExpr+`, p.timezone, p.kind,
+		       v.id, v.name, v.ga_capacity, v.created_at,
+		       t.id, t.name, t.price_amount, t.currency, t.created_at
+		FROM performances p
+		JOIN venues v ON v.id = p.venue_id
+		JOIN ticket_types t ON t.performance_id = p.id
+		WHERE p.capacity_group_id = $1 AND p.status = 'published'
+		ORDER BY `+startsAtExpr+`, p.id, t.price_amount, t.id`, id)
 	if err != nil {
-		return FestivalAggregate{}, err
+		return FestivalAggregate{}, fmt.Errorf("festival read: %w", err)
 	}
-	for _, event := range all {
-		for _, performance := range event.Performances {
-			groupID := performance.Performance.CapacityGroupID
-			if performance.Performance.Kind == KindFestivalDay && groupID != nil && *groupID == id {
-				out.Performances = append(out.Performances, performance)
-			}
+	defer func() { _ = rows.Close() }()
+
+	out := FestivalAggregate{Festival: festival, Performances: []PerformanceAggregate{}}
+	type perfRef struct{ idx int }
+	seen := map[uuid.UUID]perfRef{}
+	for rows.Next() {
+		var (
+			perf     Performance
+			venue    Venue
+			tt       TicketType
+			startsAt time.Time
+			ttName   []byte
+		)
+		if err := rows.Scan(
+			&perf.ID, &startsAt, &perf.Timezone, &perf.Kind,
+			&venue.ID, &venue.Name, &venue.GACapacity, &venue.CreatedAt,
+			&tt.ID, &ttName, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt,
+		); err != nil {
+			return FestivalAggregate{}, fmt.Errorf("scan festival read: %w", err)
 		}
+		if err := json.Unmarshal(ttName, &tt.Name); err != nil {
+			return FestivalAggregate{}, fmt.Errorf("ticket type name jsonb: %w", err)
+		}
+		perf.StartsAt = &startsAt
+		perf.Status = "published"
+		perf.OrganizerID = festival.OrganizerID
+		perf.CapacityGroupID = &id
+		perf.VenueID = venue.ID
+		venue.OrganizerID = festival.OrganizerID
+		tt.OrganizerID = festival.OrganizerID
+		tt.PerformanceID = perf.ID
+
+		ref, ok := seen[perf.ID]
+		if !ok {
+			out.Performances = append(out.Performances, PerformanceAggregate{Performance: perf, Venue: venue})
+			ref = perfRef{idx: len(out.Performances) - 1}
+			seen[perf.ID] = ref
+		}
+		out.Performances[ref.idx].TicketTypes = append(out.Performances[ref.idx].TicketTypes, tt)
+	}
+	if err := rows.Err(); err != nil {
+		return FestivalAggregate{}, fmt.Errorf("festival read rows: %w", err)
 	}
 	if len(out.Performances) == 0 {
 		return FestivalAggregate{}, ErrNotFound
 	}
-	sort.Slice(out.Performances, func(i, j int) bool {
-		left := out.Performances[i].Performance
-		right := out.Performances[j].Performance
-		if !left.StartsAt.Equal(*right.StartsAt) {
-			return left.StartsAt.Before(*right.StartsAt)
-		}
-		return left.ID.String() < right.ID.String()
-	})
 	return out, nil
 }
