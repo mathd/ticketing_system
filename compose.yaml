@@ -5,7 +5,7 @@
 # copy (-p ticketing-smoke) next to a running dev stack.
 name: ticketing
 
-# One-shot migration job (ADR-021): runs the service's own binary with the
+# One-shot migration job (ADR-022): runs the service's own binary with the
 # `migrate` subcommand against its own database, then exits. Services depend on
 # their job with service_completed_successfully, so no process ever starts
 # against an unmigrated schema. Five independent jobs, never a cross-service
