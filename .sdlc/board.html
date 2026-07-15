@@ -545,6 +545,17 @@ function canMove(t, to){
 function noCloseout(t){
   return t.type !== "Spike" && !(t.comments || []).some(c => c.kind === "metrics");
 }
+/* Gate 3 hard block: PO Review *means* "the human merged" — it is the post-merge state, and the
+   agent's next step there is a note showing the COS are met on the merged work. Dragged early, that
+   note is written about code that is not on main: it reads as evidence and is worth nothing. The
+   board knows the PR's state already (t.pr.state), so it can refuse instead of trusting the drag.
+   TKT-66 was dragged here with #50 still open and had to be walked back. Spikes never open a PR. */
+function notMerged(t){
+  if (t.type === "Spike") return "";
+  if (!t.pr) return "no PR recorded on the ticket";
+  if (t.pr.state !== "merged") return `PR #${t.pr.number || "?"} is ${t.pr.state || "not merged"}`;
+  return "";
+}
 /* Gate 1 hard block: DoR items still open, or open blockers (spikes). Returns the reason or "". */
 function notReady(t){
   const d = dorState(t);
@@ -584,6 +595,8 @@ function drop(e, status, el){
       toast(`✋ ${t.key} has open blockers (${openBlockers(t).map(b=>b.key).join(", ")}) — never claim a blocked ticket`);
     } else if (status === "Ready" && notReady(t)){
       toast(`✋ ${t.key} isn't Ready — ${notReady(t)}`);
+    } else if (status === "PO Review" && notMerged(t)){
+      toast(`✋ ${t.key}: PO Review means merged — ${notMerged(t)}. Merge the PR first (Gate 3 is yours; the agent never merges).`);
     } else if (status === "Done" && noCloseout(t)){
       toast(`✋ ${t.key} has no kind=metrics closing comment — have the agent close it out (metrics + learnings + retro)`);
     } else {
