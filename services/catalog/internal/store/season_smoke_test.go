@@ -210,12 +210,20 @@ func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query str
 // assert the query plan itself: the season read must reach its performances
 // through performances_by_event, never a sequential scan.
 //
-// It EXPLAINs publicPerformancesScopedPredicate — the predicate the shipped
-// scoped read actually executes, shared as a const rather than retyped (TKT-63),
-// so editing the production predicate is what this test reads. The surrounding
-// query is still a reduced hand-copy: the production read joins four more tables,
-// projects ~24 columns and sorts, and a regression *there* would leave this green.
-// Closing that remainder is TKT-65; ADR-019 books the gap.
+// It EXPLAINs scopedPublicPerformancesQuery itself — the exact SQL the shipped
+// season read executes, referenced as a const rather than retyped. Nothing here
+// is a surrogate: the four extra joins, the ~24-column projection and the sort
+// are all in the plan under assertion, so a scoping regression anywhere in the
+// production query text reddens this test.
+//
+// It used to EXPLAIN a hand-copied, reduced `SELECT p.id` around the predicate,
+// which could only prove the predicate was index-*compatible* — production was
+// free to drift to a catalog scan with this green (ADR-019 booked that as an
+// enforcement gap, TKT-65). Splitting the query into consts (TKT-63) is what made
+// binding to the real statement a one-liner.
+//
+// Only the two scoping indexes are asserted, not every join's — the other joins
+// may legitimately change access path without touching the scoping claim.
 //
 // Both tables are asserted. Under force_generic_plan the old
 // `($1 IS NULL OR e.id = ANY($1))` shape kept performances_by_event but lost
@@ -249,15 +257,11 @@ func TestGetPublishedSeasonIsIndexScoped(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `ANALYZE events, performances`); err != nil {
 		t.Fatal(err)
 	}
-	plan := explainGenericPlan(ctx, t, db, `
-		SELECT p.id FROM performances p
-		JOIN events e ON e.id = p.event_id
-		WHERE `+publicPerformancesScopedPredicate,
-		[]uuid.UUID{season.EventIDs[0]})
+	plan := explainGenericPlan(ctx, t, db, scopedPublicPerformancesQuery, []uuid.UUID{season.EventIDs[0]})
 
 	for _, index := range []string{"performances_by_event", "events_pkey"} {
 		if !strings.Contains(plan, index) {
-			t.Fatalf("scoped season read does not use %s under force_generic_plan — it scans.\nplan:\n%s", index, plan)
+			t.Fatalf("the shipped scoped season read does not use %s under force_generic_plan — it scans.\nplan:\n%s", index, plan)
 		}
 	}
 }
