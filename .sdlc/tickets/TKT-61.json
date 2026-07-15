@@ -1,0 +1,19 @@
+{
+  "key": "TKT-61",
+  "type": "Task",
+  "summary": "Inventory silently drops events whose schema it doesn't know (Term() on unknown variant)",
+  "classification": "simple",
+  "labels": [],
+  "parent": "TKT-2",
+  "description": "**An inventory rollback past a retained event schema silently drops those events.**\n\nFound by TKT-59's `ai-review` (codex adversarial pass) and verified against the code — incidental to\nthat docs-only ticket, so filed rather than fixed in it.\n\n**The hazard.** `services/inventory/internal/consumer/consumer.go` handles an unparseable or\nunknown-variant publication by calling `msg.Term()` — which permanently advances the durable\nconsumer past the message. For a **non-Schema-1** variant it does not know, inventory therefore:\nprovisions nothing, retries nothing, and logs an error nobody is paged on. The pool is simply\nmissing.\n\nToday Schema 3 (festival shared capacity, TKT-53 / `3879c13`) is retained on the stream. So:\n\n- rolling inventory back to a pre-festival binary, **or**\n- rebuilding/recreating its durable consumer with such a binary,\n\nsilently loses every retained Schema 3 publication. Note an ordinary restart is safe — a durable\nconsumer resumes from its stored position and doesn't re-read acked history. The hazard is\nspecifically rollback / consumer recreation / position reset.\n\nADR-017 §4b states the rule (\"do not roll a consumer back past a schema the stream still retains\")\nand its Consequences record the gap as **live and unmitigated**: the ADR documents it, nothing\nenforces it.\n\n**Options (decide in planning):**\n1. `Nak`/park unknown non-Schema-1 variants instead of `Term` — turns a silent drop into visible\n   back-pressure. Needs a poison-message story so a genuinely bad event can't wedge the consumer.\n2. Gate consumer startup on a max-known-schema check against the stream — fail loudly at boot\n   rather than mid-stream.\n3. Both: (2) for the deploy-time class, (1) for the runtime class.\n\n**COS:** an inventory binary that meets a retained schema it does not understand fails **loudly**\n(refuses to start, or parks the message with an alert) instead of terminally skipping it; a\nregression test exercises the version-skew path — the case ADR-017 notes no test covers today.\n\n**Not risk:low** — touches the provisioning consumer's message-disposition path.\n",
+  "status": "Backlog",
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-59"
+    }
+  ],
+  "comments": []
+}
