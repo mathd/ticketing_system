@@ -32,21 +32,42 @@ func (e ClosureStatus) Valid() bool {
 	}
 }
 
+// Defines values for FestivalStatus.
+const (
+	FestivalStatusArchived  FestivalStatus = "archived"
+	FestivalStatusDraft     FestivalStatus = "draft"
+	FestivalStatusPublished FestivalStatus = "published"
+)
+
+// Valid indicates whether the value is a known member of the FestivalStatus enum.
+func (e FestivalStatus) Valid() bool {
+	switch e {
+	case FestivalStatusArchived:
+		return true
+	case FestivalStatusDraft:
+		return true
+	case FestivalStatusPublished:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PerformanceStatus.
 const (
-	Archived  PerformanceStatus = "archived"
-	Draft     PerformanceStatus = "draft"
-	Published PerformanceStatus = "published"
+	PerformanceStatusArchived  PerformanceStatus = "archived"
+	PerformanceStatusDraft     PerformanceStatus = "draft"
+	PerformanceStatusPublished PerformanceStatus = "published"
 )
 
 // Valid indicates whether the value is a known member of the PerformanceStatus enum.
 func (e PerformanceStatus) Valid() bool {
 	switch e {
-	case Archived:
+	case PerformanceStatusArchived:
 		return true
-	case Draft:
+	case PerformanceStatusDraft:
 		return true
-	case Published:
+	case PerformanceStatusPublished:
 		return true
 	default:
 		return false
@@ -133,6 +154,41 @@ type EventCreate struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
+// Festival defines model for Festival.
+type Festival struct {
+	CreatedAt time.Time            `json:"created_at"`
+	Id        openapi_types.UUID   `json:"id"`
+	MemberIds []openapi_types.UUID `json:"member_ids"`
+
+	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
+	Name           LocalizedString    `json:"name"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	SharedCapacity int32              `json:"shared_capacity"`
+	Status         FestivalStatus     `json:"status"`
+}
+
+// FestivalStatus defines model for Festival.Status.
+type FestivalStatus string
+
+// FestivalCreate defines model for FestivalCreate.
+type FestivalCreate struct {
+	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
+	Name           LocalizedString    `json:"name"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	SharedCapacity int32              `json:"shared_capacity"`
+}
+
+// FestivalDayAttach defines model for FestivalDayAttach.
+type FestivalDayAttach struct {
+	PerformanceId openapi_types.UUID `json:"performance_id"`
+}
+
+// FestivalLifecycleResult defines model for FestivalLifecycleResult.
+type FestivalLifecycleResult struct {
+	FestivalId   openapi_types.UUID `json:"festival_id"`
+	Performances []Performance      `json:"performances"`
+}
+
 // LocalizedString Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
 type LocalizedString map[string]string
 
@@ -145,7 +201,10 @@ type Money struct {
 // Performance defines model for Performance.
 type Performance struct {
 	ArchivedAt *time.Time `json:"archived_at,omitempty"`
-	ClosesAt   *string    `json:"closes_at,omitempty"`
+
+	// CapacityGroupId Festival capacity-group id for grouped festival days
+	CapacityGroupId *openapi_types.UUID `json:"capacity_group_id,omitempty"`
+	ClosesAt        *string             `json:"closes_at,omitempty"`
 
 	// Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.
 	Closure   Closure            `json:"closure"`
@@ -221,6 +280,14 @@ type PublicEventSummary struct {
 	Id           openapi_types.UUID         `json:"id"`
 	Name         string                     `json:"name"`
 	Performances []PublicPerformanceSummary `json:"performances"`
+}
+
+// PublicFestivalDetail defines model for PublicFestivalDetail.
+type PublicFestivalDetail struct {
+	Days        []PublicPerformanceDetail `json:"days"`
+	Id          openapi_types.UUID        `json:"id"`
+	Name        string                    `json:"name"`
+	OrganizerId openapi_types.UUID        `json:"organizer_id"`
 }
 
 // PublicPerformanceDetail defines model for PublicPerformanceDetail.
@@ -409,6 +476,9 @@ type VenueCreate struct {
 // EventId defines model for EventId.
 type EventId = openapi_types.UUID
 
+// FestivalId defines model for FestivalId.
+type FestivalId = openapi_types.UUID
+
 // Locale defines model for Locale.
 type Locale = string
 
@@ -439,6 +509,12 @@ type GetPublicEventParams struct {
 	Locale Locale `form:"locale" json:"locale"`
 }
 
+// GetPublicFestivalParams defines parameters for GetPublicFestival.
+type GetPublicFestivalParams struct {
+	// Locale BCP-47 primary subtag; supported set is data, not schema (TKT-36)
+	Locale Locale `form:"locale" json:"locale"`
+}
+
 // GetPublicSeasonParams defines parameters for GetPublicSeason.
 type GetPublicSeasonParams struct {
 	// Locale BCP-47 primary subtag; supported set is data, not schema (TKT-36)
@@ -447,6 +523,12 @@ type GetPublicSeasonParams struct {
 
 // CreateEventJSONRequestBody defines body for CreateEvent for application/json ContentType.
 type CreateEventJSONRequestBody = EventCreate
+
+// CreateFestivalJSONRequestBody defines body for CreateFestival for application/json ContentType.
+type CreateFestivalJSONRequestBody = FestivalCreate
+
+// AttachDayToFestivalJSONRequestBody defines body for AttachDayToFestival for application/json ContentType.
+type AttachDayToFestivalJSONRequestBody = FestivalDayAttach
 
 // CreatePerformanceJSONRequestBody defines body for CreatePerformance for application/json ContentType.
 type CreatePerformanceJSONRequestBody = PerformanceCreate
@@ -480,6 +562,18 @@ type ServerInterface interface {
 	// Create an event (localizable content)
 	// (POST /events)
 	CreateEvent(w http.ResponseWriter, r *http.Request)
+	// Create a localized shared-capacity festival
+	// (POST /festivals)
+	CreateFestival(w http.ResponseWriter, r *http.Request)
+	// Atomically archive the festival and every member day
+	// (POST /festivals/{festivalId}/archive)
+	ArchiveFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId)
+	// Attach a draft festival day to the shared-capacity festival
+	// (POST /festivals/{festivalId}/days)
+	AttachDayToFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId)
+	// Atomically publish the festival and every member day
+	// (POST /festivals/{festivalId}/publish)
+	PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId)
 	// This contract, as committed (ADR-009)
 	// (GET /openapi.yaml)
 	GetOpenAPISpec(w http.ResponseWriter, r *http.Request)
@@ -504,6 +598,9 @@ type ServerInterface interface {
 	// Aggregated storefront detail read (minutes tier)
 	// (GET /public/events/{eventId})
 	GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId EventId, params GetPublicEventParams)
+	// Aggregated public festival detail (minutes tier)
+	// (GET /public/festivals/{festivalId})
+	GetPublicFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId, params GetPublicFestivalParams)
 	// Aggregated public season detail (minutes tier)
 	// (GET /public/seasons/{seasonId})
 	GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId, params GetPublicSeasonParams)
@@ -543,6 +640,30 @@ type Unimplemented struct{}
 // Create an event (localizable content)
 // (POST /events)
 func (_ Unimplemented) CreateEvent(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create a localized shared-capacity festival
+// (POST /festivals)
+func (_ Unimplemented) CreateFestival(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Atomically archive the festival and every member day
+// (POST /festivals/{festivalId}/archive)
+func (_ Unimplemented) ArchiveFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Attach a draft festival day to the shared-capacity festival
+// (POST /festivals/{festivalId}/days)
+func (_ Unimplemented) AttachDayToFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Atomically publish the festival and every member day
+// (POST /festivals/{festivalId}/publish)
+func (_ Unimplemented) PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -591,6 +712,12 @@ func (_ Unimplemented) ListPublicEvents(w http.ResponseWriter, r *http.Request, 
 // Aggregated storefront detail read (minutes tier)
 // (GET /public/events/{eventId})
 func (_ Unimplemented) GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId EventId, params GetPublicEventParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Aggregated public festival detail (minutes tier)
+// (GET /public/festivals/{festivalId})
+func (_ Unimplemented) GetPublicFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId, params GetPublicFestivalParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -668,6 +795,98 @@ func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateEvent(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateFestival operation middleware
+func (siw *ServerInterfaceWrapper) CreateFestival(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateFestival(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ArchiveFestival operation middleware
+func (siw *ServerInterfaceWrapper) ArchiveFestival(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "festivalId" -------------
+	var festivalId FestivalId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "festivalId", chi.URLParam(r, "festivalId"), &festivalId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "festivalId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ArchiveFestival(w, r, festivalId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AttachDayToFestival operation middleware
+func (siw *ServerInterfaceWrapper) AttachDayToFestival(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "festivalId" -------------
+	var festivalId FestivalId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "festivalId", chi.URLParam(r, "festivalId"), &festivalId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "festivalId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AttachDayToFestival(w, r, festivalId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PublishFestival operation middleware
+func (siw *ServerInterfaceWrapper) PublishFestival(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "festivalId" -------------
+	var festivalId FestivalId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "festivalId", chi.URLParam(r, "festivalId"), &festivalId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "festivalId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PublishFestival(w, r, festivalId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -875,6 +1094,48 @@ func (siw *ServerInterfaceWrapper) GetPublicEvent(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetPublicEvent(w, r, eventId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPublicFestival operation middleware
+func (siw *ServerInterfaceWrapper) GetPublicFestival(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "festivalId" -------------
+	var festivalId FestivalId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "festivalId", chi.URLParam(r, "festivalId"), &festivalId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "festivalId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPublicFestivalParams
+
+	// ------------- Required query parameter "locale" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "locale", r.URL.Query(), &params.Locale, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "locale"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "locale", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPublicFestival(w, r, festivalId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1229,6 +1490,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/events", wrapper.CreateEvent)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/festivals", wrapper.CreateFestival)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/festivals/{festivalId}/archive", wrapper.ArchiveFestival)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/festivals/{festivalId}/days", wrapper.AttachDayToFestival)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/festivals/{festivalId}/publish", wrapper.PublishFestival)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)
 	})
 	r.Group(func(r chi.Router) {
@@ -1251,6 +1524,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/public/events/{eventId}", wrapper.GetPublicEvent)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/public/festivals/{festivalId}", wrapper.GetPublicFestival)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/public/seasons/{seasonId}", wrapper.GetPublicSeason)

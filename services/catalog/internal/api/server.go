@@ -117,9 +117,12 @@ func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request)
 		s.writeStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": perf.ID, "organizer_id": perf.OrganizerID, "capacity": perf.Capacity,
-	})
+	out := map[string]any{"id": perf.ID, "organizer_id": perf.OrganizerID, "capacity": perf.Capacity}
+	if perf.CapacityGroupID != nil && perf.SharedCapacity != nil {
+		out["capacity_group_id"] = perf.CapacityGroupID
+		out["shared_capacity"] = perf.SharedCapacity
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
@@ -149,6 +152,16 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "series membership is frozen after launch"})
 	case errors.Is(err, store.ErrEmptySeries):
 		writeJSON(w, http.StatusConflict, Error{Error: "series has no members"})
+	case errors.Is(err, store.ErrSlotKindMismatch):
+		writeJSON(w, http.StatusConflict, Error{Error: "only festival_day slots can join a festival"})
+	case errors.Is(err, store.ErrAlreadyGrouped):
+		writeJSON(w, http.StatusConflict, Error{Error: "slot already belongs to a festival"})
+	case errors.Is(err, store.ErrGroupedSlotLifecycle):
+		writeJSON(w, http.StatusConflict, Error{Error: "grouped festival day must be published/archived via its festival"})
+	case errors.Is(err, store.ErrFestivalNotDraft):
+		writeJSON(w, http.StatusConflict, Error{Error: "festival is not draft"})
+	case errors.Is(err, store.ErrEmptyFestival):
+		writeJSON(w, http.StatusConflict, Error{Error: "festival has no members"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})
@@ -237,6 +250,14 @@ func seasonToAPI(s store.Season) Season {
 	return Season{Id: s.ID, OrganizerId: s.OrganizerID, Name: LocalizedString(s.Name), SeriesIds: s.SeriesIDs, EventIds: s.EventIDs, CreatedAt: s.CreatedAt}
 }
 
+func festivalToAPI(f store.Festival) Festival {
+	return Festival{
+		Id: f.ID, OrganizerId: f.OrganizerID, Name: LocalizedString(f.Name),
+		SharedCapacity: f.SharedCapacity, Status: FestivalStatus(f.Status),
+		MemberIds: f.MemberIDs, CreatedAt: f.CreatedAt,
+	}
+}
+
 func (s *Server) CreateSeries(w http.ResponseWriter, r *http.Request) {
 	var in SeriesCreate
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -313,6 +334,44 @@ func (s *Server) AttachEventToSeason(w http.ResponseWriter, r *http.Request, sea
 		return
 	}
 	writeJSON(w, http.StatusOK, seasonToAPI(out))
+}
+
+func (s *Server) CreateFestival(w http.ResponseWriter, r *http.Request) {
+	var in FestivalCreate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	if err := validateLocalized("name", in.Name); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
+		return
+	}
+	if in.SharedCapacity <= 0 {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "shared_capacity must be positive"})
+		return
+	}
+	out, err := s.store.CreateFestival(r.Context(), store.FestivalInput{
+		OrganizerID: in.OrganizerId, Name: store.LocalizedText(in.Name), SharedCapacity: in.SharedCapacity,
+	})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, festivalToAPI(out))
+}
+
+func (s *Server) AttachDayToFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
+	var in FestivalDayAttach
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	out, err := s.store.AttachDayToFestival(r.Context(), festivalId, in.PerformanceId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, festivalToAPI(out))
 }
 
 func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +459,7 @@ func performanceToAPI(p store.Performance) Performance {
 			Status: ClosureStatus(p.Closure.Status), ClosedAt: p.Closure.ClosedAt, Reason: p.Closure.Reason,
 		},
 		Status: PerformanceStatus(p.Status), PublishedAt: p.PublishedAt,
-		ArchivedAt: p.ArchivedAt, CreatedAt: p.CreatedAt,
+		ArchivedAt: p.ArchivedAt, CapacityGroupId: p.CapacityGroupID, CreatedAt: p.CreatedAt,
 	}
 	if p.OperatingDate != nil {
 		out.OperatingDate = &openapi_types.Date{Time: *p.OperatingDate}
@@ -541,6 +600,77 @@ func (s *Server) writeSeriesTransitionError(w http.ResponseWriter, r *http.Reque
 	}
 	if errors.Is(err, store.ErrEmptySeries) {
 		writeJSON(w, http.StatusConflict, SeriesTransitionConflict{Error: "series transition blocked", Reason: "series has no members"})
+		return
+	}
+	s.writeStoreError(w, r, err)
+}
+
+func (s *Server) PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
+	items, err := s.store.PublishFestival(r.Context(), festivalId)
+	if err != nil {
+		s.writeFestivalTransitionError(w, r, err)
+		return
+	}
+	for _, item := range items {
+		if item.PublishNeedsEmit {
+			if err = s.pub.PerformancePublished(r.Context(), item.Performance); err != nil {
+				writeJSON(w, http.StatusInternalServerError, Error{Error: "festival is published but a member event is still owed; retry publish"})
+				return
+			}
+			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+				s.log.ErrorContext(r.Context(), "festival publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
+			}
+		}
+	}
+	s.writeFestivalResult(w, festivalId, items)
+}
+
+func (s *Server) ArchiveFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
+	items, err := s.store.ArchiveFestival(r.Context(), festivalId)
+	if err != nil {
+		s.writeFestivalTransitionError(w, r, err)
+		return
+	}
+	for _, item := range items {
+		if item.PublishNeedsEmit {
+			if err = s.pub.PerformancePublished(r.Context(), item.Performance); err != nil {
+				writeJSON(w, http.StatusInternalServerError, Error{Error: "festival is archived but a member publication event is still owed; retry archive"})
+				return
+			}
+			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+				s.log.ErrorContext(r.Context(), "festival publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
+			}
+		}
+		if item.ArchiveNeedsEmit {
+			if err = s.pub.PerformanceArchived(r.Context(), item.Performance); err != nil {
+				writeJSON(w, http.StatusInternalServerError, Error{Error: "festival is archived but a member archive event is still owed; retry archive"})
+				return
+			}
+			if markErr := s.store.MarkPerformanceArchiveEmitted(r.Context(), item.Performance.ID); markErr != nil {
+				s.log.ErrorContext(r.Context(), "festival archive emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
+			}
+		}
+	}
+	s.writeFestivalResult(w, festivalId, items)
+}
+
+func (s *Server) writeFestivalResult(w http.ResponseWriter, id uuid.UUID, items []store.SeriesTransition) {
+	performances := make([]Performance, 0, len(items))
+	for _, item := range items {
+		performances = append(performances, performanceToAPI(item.Performance))
+	}
+	writeJSON(w, http.StatusOK, FestivalLifecycleResult{FestivalId: id, Performances: performances})
+}
+
+func (s *Server) writeFestivalTransitionError(w http.ResponseWriter, r *http.Request, err error) {
+	var conflict *store.FestivalTransitionConflict
+	if errors.As(err, &conflict) {
+		id := conflict.PerformanceID
+		writeJSON(w, http.StatusConflict, SeriesTransitionConflict{Error: "festival transition blocked", Reason: conflict.Reason, BlockingPerformanceId: &id})
+		return
+	}
+	if errors.Is(err, store.ErrEmptyFestival) {
+		writeJSON(w, http.StatusConflict, SeriesTransitionConflict{Error: "festival transition blocked", Reason: "festival has no members"})
 		return
 	}
 	s.writeStoreError(w, r, err)
@@ -764,6 +894,36 @@ func (s *Server) GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonI
 	out := PublicSeasonDetail{Id: agg.Season.ID, OrganizerId: agg.Season.OrganizerID, Name: resolve(agg.Season.Name, params.Locale), Events: make([]PublicEventDetail, 0, len(agg.Events))}
 	for _, event := range agg.Events {
 		out.Events = append(out.Events, publicEventDetail(event, params.Locale))
+	}
+	w.Header().Set("Cache-Control", CacheControlPublicReads)
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) GetPublicFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId, params GetPublicFestivalParams) {
+	if !localeSupported(params.Locale) {
+		writeJSON(w, http.StatusBadRequest, Error{Error: fmt.Sprintf("unsupported locale %q", params.Locale)})
+		return
+	}
+	agg, err := s.store.GetPublishedFestival(r.Context(), festivalId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	out := PublicFestivalDetail{
+		Id: agg.Festival.ID, OrganizerId: agg.Festival.OrganizerID,
+		Name: resolve(agg.Festival.Name, params.Locale), Days: make([]PublicPerformanceDetail, 0, len(agg.Performances)),
+	}
+	for _, pa := range agg.Performances {
+		day := PublicPerformanceDetail{
+			Id: pa.Performance.ID, StartsAt: publicStartsAt(pa.Performance), Timezone: pa.Performance.Timezone,
+			Venue: PublicVenue{Id: pa.Venue.ID, Name: pa.Venue.Name}, TicketTypes: make([]PublicTicketType, 0, len(pa.TicketTypes)),
+		}
+		for _, tt := range pa.TicketTypes {
+			day.TicketTypes = append(day.TicketTypes, PublicTicketType{
+				Id: tt.ID, Name: resolve(tt.Name, params.Locale), Price: Money{Amount: tt.PriceAmount, Currency: tt.Currency},
+			})
+		}
+		out.Days = append(out.Days, day)
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicReads)
 	writeJSON(w, http.StatusOK, out)

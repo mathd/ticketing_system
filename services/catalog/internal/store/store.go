@@ -29,10 +29,15 @@ var (
 	// closure_version). The caller must retry the pending transition — which
 	// re-emits with the same deterministic id — before toggling again, so the
 	// single outbox marker never drops an event.
-	ErrClosurePending     = errors.New("previous closure event still owed; retry that transition first")
-	ErrMembershipConflict = errors.New("group membership conflict")
-	ErrMembershipFrozen   = errors.New("series membership is frozen")
-	ErrEmptySeries        = errors.New("series has no members")
+	ErrClosurePending       = errors.New("previous closure event still owed; retry that transition first")
+	ErrMembershipConflict   = errors.New("group membership conflict")
+	ErrMembershipFrozen     = errors.New("series membership is frozen")
+	ErrEmptySeries          = errors.New("series has no members")
+	ErrSlotKindMismatch     = errors.New("only festival_day slots can join a festival")
+	ErrAlreadyGrouped       = errors.New("slot already belongs to a festival")
+	ErrGroupedSlotLifecycle = errors.New("grouped festival day must transition via its festival")
+	ErrFestivalNotDraft     = errors.New("festival is not draft")
+	ErrEmptyFestival        = errors.New("festival has no members")
 )
 
 type SeriesTransitionConflict struct {
@@ -43,6 +48,15 @@ type SeriesTransitionConflict struct {
 
 func (e *SeriesTransitionConflict) Error() string { return e.Reason }
 func (e *SeriesTransitionConflict) Unwrap() error { return e.Cause }
+
+type FestivalTransitionConflict struct {
+	PerformanceID uuid.UUID
+	Reason        string
+	Cause         error
+}
+
+func (e *FestivalTransitionConflict) Error() string { return e.Reason }
+func (e *FestivalTransitionConflict) Unwrap() error { return e.Cause }
 
 // Slot kinds (ADR-005 amendment / US-009). A performance is one kind of dated
 // slot; festival days and park operating days share the same machinery.
@@ -116,6 +130,16 @@ type Season struct {
 	CreatedAt   time.Time
 }
 
+type Festival struct {
+	ID             uuid.UUID
+	OrganizerID    uuid.UUID
+	Name           LocalizedText
+	SharedCapacity int32
+	Status         string
+	MemberIDs      []uuid.UUID
+	CreatedAt      time.Time
+}
+
 // Performance is a dated slot (ADR-005). kind selects the temporal shape:
 // 'performance' carries StartsAt (an instant); 'festival_day'/'operating_day'
 // carry the operating window (OperatingDate + OpensAt/ClosesAt, local-date
@@ -136,8 +160,8 @@ type Performance struct {
 	Timezone      string
 	ReEntry       ReEntryPolicy
 	Closure       Closure
-	// CapacityGroupID is a nullable forward-compat seam for shared festival
-	// capacity (TKT-14); unused until then.
+	// CapacityGroupID identifies the festival capacity group for grouped
+	// festival days; nil keeps ordinary slots keyed by their own id.
 	CapacityGroupID *uuid.UUID
 	Status          string // draft | published | archived
 	PublishedAt     *time.Time
@@ -146,6 +170,9 @@ type Performance struct {
 	// Capacity is the publication-time snapshot used to provision the
 	// inventory-owned dated-slot pool. It is not persisted on performances.
 	Capacity int32
+	// SharedCapacity is the publication-time snapshot used to provision a
+	// festival's shared inventory pool. It is not persisted on performances.
+	SharedCapacity *int32
 }
 
 type TicketType struct {
@@ -202,6 +229,12 @@ type SeasonInput struct {
 	Name        LocalizedText
 }
 
+type FestivalInput struct {
+	OrganizerID    uuid.UUID
+	Name           LocalizedText
+	SharedCapacity int32
+}
+
 type SeriesTransition struct {
 	Performance      Performance
 	PublishNeedsEmit bool
@@ -233,6 +266,11 @@ type SeasonAggregate struct {
 	Events []EventAggregate
 }
 
+type FestivalAggregate struct {
+	Festival     Festival
+	Performances []PerformanceAggregate
+}
+
 // Store is the persistence port. Referential and tenancy checks live behind
 // it (they need the data); shape/locale validation lives in the API layer.
 type Store interface {
@@ -245,6 +283,8 @@ type Store interface {
 	CreateSeason(ctx context.Context, in SeasonInput) (Season, error)
 	AttachSeriesToSeason(ctx context.Context, seasonID, seriesID uuid.UUID) (Season, error)
 	AttachEventToSeason(ctx context.Context, seasonID, eventID uuid.UUID) (Season, error)
+	CreateFestival(ctx context.Context, in FestivalInput) (Festival, error)
+	AttachDayToFestival(ctx context.Context, festivalID, performanceID uuid.UUID) (Festival, error)
 	GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error)
 	GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error)
 	// PublishPerformance flips draft->published (idempotent). needsEmit is
@@ -271,9 +311,12 @@ type Store interface {
 	MarkClosureEmitted(ctx context.Context, id uuid.UUID, version int32) error
 	PublishSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
 	ArchiveSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
+	PublishFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
+	ArchiveFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
 	// ListPublishedEvents returns events having at least one published
 	// performance, each appearing once with all its published slots.
 	ListPublishedEvents(ctx context.Context) ([]EventAggregate, error)
 	GetPublishedEvent(ctx context.Context, id uuid.UUID) (EventAggregate, error)
 	GetPublishedSeason(ctx context.Context, id uuid.UUID) (SeasonAggregate, error)
+	GetPublishedFestival(ctx context.Context, id uuid.UUID) (FestivalAggregate, error)
 }

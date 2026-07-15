@@ -36,6 +36,7 @@ type fakeStore struct {
 	ticketTypes    map[uuid.UUID]store.TicketType
 	series         map[uuid.UUID]store.Series
 	seasons        map[uuid.UUID]store.Season
+	festivals      map[uuid.UUID]store.Festival
 	emitted        map[uuid.UUID]bool // performance id -> event_emitted_at set
 	archiveEmitted map[uuid.UUID]bool
 	closureEmitted map[uuid.UUID]int32 // performance id -> closure_emitted_version
@@ -49,10 +50,52 @@ func newFakeStore() *fakeStore {
 		ticketTypes:    map[uuid.UUID]store.TicketType{},
 		series:         map[uuid.UUID]store.Series{},
 		seasons:        map[uuid.UUID]store.Season{},
+		festivals:      map[uuid.UUID]store.Festival{},
 		emitted:        map[uuid.UUID]bool{},
 		archiveEmitted: map[uuid.UUID]bool{},
 		closureEmitted: map[uuid.UUID]int32{},
 	}
+}
+
+func (f *fakeStore) CreateFestival(_ context.Context, in store.FestivalInput) (store.Festival, error) {
+	festival := store.Festival{
+		ID: uuid.New(), OrganizerID: in.OrganizerID, Name: in.Name,
+		SharedCapacity: in.SharedCapacity, Status: "draft", MemberIDs: []uuid.UUID{}, CreatedAt: time.Now().UTC(),
+	}
+	f.festivals[festival.ID] = festival
+	return festival, nil
+}
+
+func (f *fakeStore) AttachDayToFestival(_ context.Context, festivalID, performanceID uuid.UUID) (store.Festival, error) {
+	festival, ok := f.festivals[festivalID]
+	if !ok {
+		return store.Festival{}, store.ErrNotFound
+	}
+	performance, ok := f.performances[performanceID]
+	if !ok {
+		return store.Festival{}, store.ErrNotFound
+	}
+	if festival.OrganizerID != performance.OrganizerID {
+		return store.Festival{}, store.ErrOrganizerMismatch
+	}
+	if performance.Kind != store.KindFestivalDay {
+		return store.Festival{}, store.ErrSlotKindMismatch
+	}
+	if festival.Status != "draft" {
+		return store.Festival{}, store.ErrFestivalNotDraft
+	}
+	if performance.Status != "draft" {
+		return store.Festival{}, store.ErrMembershipFrozen
+	}
+	if performance.CapacityGroupID != nil {
+		return store.Festival{}, store.ErrAlreadyGrouped
+	}
+	performance.CapacityGroupID = &festivalID
+	f.performances[performanceID] = performance
+	festival.MemberIDs = append(festival.MemberIDs, performanceID)
+	sort.Slice(festival.MemberIDs, func(i, j int) bool { return festival.MemberIDs[i].String() < festival.MemberIDs[j].String() })
+	f.festivals[festivalID] = festival
+	return festival, nil
 }
 
 func (f *fakeStore) CreateSeries(_ context.Context, in store.SeriesInput) (store.Series, error) {
@@ -226,6 +269,9 @@ func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.P
 	if !ok {
 		return store.Performance{}, false, store.ErrNotFound
 	}
+	if p.CapacityGroupID != nil {
+		return store.Performance{}, false, store.ErrGroupedSlotLifecycle
+	}
 	if p.Status == "draft" && !f.hasTicketType(id) {
 		return store.Performance{}, false, store.ErrNotSellable
 	}
@@ -245,6 +291,9 @@ func (f *fakeStore) ArchivePerformance(_ context.Context, id uuid.UUID) (store.P
 	p, ok := f.performances[id]
 	if !ok {
 		return store.Performance{}, false, false, store.ErrNotFound
+	}
+	if p.CapacityGroupID != nil {
+		return store.Performance{}, false, false, store.ErrGroupedSlotLifecycle
 	}
 	if p.Status == "draft" {
 		return store.Performance{}, false, false, store.ErrIllegalTransition
@@ -373,6 +422,61 @@ func (f *fakeStore) transitionSeries(_ context.Context, id uuid.UUID, target str
 	return out, nil
 }
 
+func (f *fakeStore) PublishFestival(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+	return f.transitionFestival(ctx, id, "published")
+}
+
+func (f *fakeStore) ArchiveFestival(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+	return f.transitionFestival(ctx, id, "archived")
+}
+
+func (f *fakeStore) transitionFestival(_ context.Context, id uuid.UUID, target string) ([]store.SeriesTransition, error) {
+	festival, ok := f.festivals[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	if len(festival.MemberIDs) == 0 {
+		return nil, store.ErrEmptyFestival
+	}
+	for _, memberID := range festival.MemberIDs {
+		p := f.performances[memberID]
+		if target == "published" && p.Status == "archived" {
+			return nil, &store.FestivalTransitionConflict{PerformanceID: p.ID, Reason: "archived member cannot be published", Cause: store.ErrIllegalTransition}
+		}
+		if target == "published" && p.Status == "draft" && !f.hasTicketType(p.ID) {
+			return nil, &store.FestivalTransitionConflict{PerformanceID: p.ID, Reason: "member has no ticket type", Cause: store.ErrNotSellable}
+		}
+		if target == "archived" && p.Status == "draft" {
+			return nil, &store.FestivalTransitionConflict{PerformanceID: p.ID, Reason: "draft member cannot be archived", Cause: store.ErrIllegalTransition}
+		}
+		if target == "archived" && p.Status == "published" && f.closureEmitted[p.ID] < p.Closure.Version {
+			return nil, &store.FestivalTransitionConflict{PerformanceID: p.ID, Reason: "member has an owed closure event", Cause: store.ErrClosurePending}
+		}
+	}
+	out := make([]store.SeriesTransition, 0, len(festival.MemberIDs))
+	for _, memberID := range festival.MemberIDs {
+		p := f.performances[memberID]
+		if target == "published" && p.Status == "draft" {
+			now := time.Now().UTC()
+			p.Status, p.PublishedAt = "published", &now
+		}
+		if target == "archived" && p.Status == "published" {
+			now := time.Now().UTC()
+			p.Status, p.ArchivedAt = "archived", &now
+		}
+		capacity := festival.SharedCapacity
+		p.SharedCapacity = &capacity
+		f.performances[p.ID] = p
+		out = append(out, store.SeriesTransition{
+			Performance: p, PublishNeedsEmit: !f.emitted[p.ID],
+			ArchiveNeedsEmit: target == "archived" && !f.archiveEmitted[p.ID],
+		})
+	}
+	festival.Status = target
+	f.festivals[id] = festival
+	return out, nil
+}
+
 func (f *fakeStore) aggregates() []store.EventAggregate {
 	var aggs []store.EventAggregate
 	for _, ev := range f.events {
@@ -445,6 +549,33 @@ func (f *fakeStore) GetPublishedSeason(_ context.Context, id uuid.UUID) (store.S
 	}
 	if len(out.Events) == 0 {
 		return store.SeasonAggregate{}, store.ErrNotFound
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetPublishedFestival(_ context.Context, id uuid.UUID) (store.FestivalAggregate, error) {
+	festival, ok := f.festivals[id]
+	if !ok || festival.Status != "published" {
+		return store.FestivalAggregate{}, store.ErrNotFound
+	}
+	out := store.FestivalAggregate{Festival: festival, Performances: []store.PerformanceAggregate{}}
+	for _, memberID := range festival.MemberIDs {
+		p := f.performances[memberID]
+		if p.Status != "published" || p.Kind != store.KindFestivalDay {
+			continue
+		}
+		pa := store.PerformanceAggregate{Performance: p, Venue: f.venues[p.VenueID]}
+		for _, tt := range f.ticketTypes {
+			if tt.PerformanceID == p.ID {
+				pa.TicketTypes = append(pa.TicketTypes, tt)
+			}
+		}
+		if len(pa.TicketTypes) > 0 {
+			out.Performances = append(out.Performances, pa)
+		}
+	}
+	if len(out.Performances) == 0 {
+		return store.FestivalAggregate{}, store.ErrNotFound
 	}
 	return out, nil
 }
@@ -786,7 +917,7 @@ func TestArchiveEmitsOnceAndIsIdempotent(t *testing.T) {
 		t.Fatalf("archive: %d %s", rec.Code, rec.Body.String())
 	}
 	p := decode[Performance](t, rec)
-	if p.Status != Archived || p.ArchivedAt == nil {
+	if p.Status != PerformanceStatusArchived || p.ArchivedAt == nil {
 		t.Fatalf("archived response = %+v", p)
 	}
 	if len(e.pub.archived) != 1 {
@@ -1063,6 +1194,158 @@ func TestSeriesSeasonLifecycleAndPublicGrouping(t *testing.T) {
 	conflictRec := e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: uuid.New(), Position: 3})
 	if conflictRec.Code != http.StatusNotFound {
 		t.Fatalf("attach unknown = %d", conflictRec.Code)
+	}
+}
+
+func (e *env) createFestivalDay(venueID, eventID uuid.UUID, day int) Performance {
+	e.t.Helper()
+	kind := SlotKind(store.KindFestivalDay)
+	opens, closes := "12:00", "23:00"
+	date := openapi_types.Date{Time: time.Date(2026, 8, day, 0, 0, 0, 0, time.UTC)}
+	p := decode[Performance](e.t, e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: eventID, VenueId: venueID, Kind: &kind,
+		OperatingDate: &date, OpensAt: &opens, ClosesAt: &closes, Timezone: "America/Toronto",
+	}))
+	e.do("POST", "/ticket-types", TicketTypeCreate{
+		OrganizerId: orgID, PerformanceId: p.Id,
+		Name:  LocalizedString{"en": fmt.Sprintf("Day %d", day), "fr": fmt.Sprintf("Jour %d", day)},
+		Price: Money{Amount: 7500, Currency: "CAD"},
+	})
+	return p
+}
+
+func TestFestivalCreateAttachDaysAndSharedCapacity(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	first, second := e.createFestivalDay(venueID, eventID, 1), e.createFestivalDay(venueID, eventID, 2)
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{
+		OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000,
+	}))
+	festival = decode[Festival](t, e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}))
+	festival = decode[Festival](t, e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: second.Id}))
+	if festival.SharedCapacity != 1000 || len(festival.MemberIds) != 2 {
+		t.Fatalf("festival = %+v", festival)
+	}
+	for _, id := range []uuid.UUID{first.Id, second.Id} {
+		if group := e.store.performances[id].CapacityGroupID; group == nil || *group != festival.Id {
+			t.Fatalf("day %s capacity group = %v", id, group)
+		}
+	}
+
+	_, performanceID := e.createFixture(false)
+	if rec := e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: performanceID}); rec.Code != http.StatusConflict {
+		t.Fatalf("performance-kind attach: %d", rec.Code)
+	}
+	crossOrg := e.store.performances[first.Id]
+	crossOrg.CapacityGroupID = nil
+	crossOrg.OrganizerID = uuid.New()
+	e.store.performances[first.Id] = crossOrg
+	otherFestival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Other", "fr": "Autre"}, SharedCapacity: 50}))
+	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("cross-organizer attach: %d", rec.Code)
+	}
+	crossOrg.OrganizerID = orgID
+	crossOrg.CapacityGroupID = &festival.Id
+	e.store.performances[first.Id] = crossOrg
+	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}); rec.Code != http.StatusConflict {
+		t.Fatalf("already-grouped attach: %d", rec.Code)
+	}
+	launched := e.store.festivals[otherFestival.Id]
+	launched.Status = "published"
+	e.store.festivals[otherFestival.Id] = launched
+	third := e.createFestivalDay(venueID, eventID, 3)
+	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: third.Id}); rec.Code != http.StatusConflict {
+		t.Fatalf("non-draft festival attach: %d", rec.Code)
+	}
+}
+
+func TestFestivalPublishCascadesAndEmitsSharedCapacity(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	days := []Performance{e.createFestivalDay(venueID, eventID, 1), e.createFestivalDay(venueID, eventID, 2)}
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000}))
+	for _, day := range days {
+		e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: day.Id})
+	}
+	result := decode[FestivalLifecycleResult](t, e.do("POST", "/festivals/"+festival.Id.String()+"/publish", nil))
+	if len(result.Performances) != 2 || len(e.pub.published) != 2 {
+		t.Fatalf("publish result=%d events=%d", len(result.Performances), len(e.pub.published))
+	}
+	for _, p := range e.pub.published {
+		if p.Status != "published" || p.CapacityGroupID == nil || *p.CapacityGroupID != festival.Id || p.SharedCapacity == nil || *p.SharedCapacity != 1000 {
+			t.Fatalf("published festival day = %+v", p)
+		}
+	}
+	e.do("POST", "/festivals/"+festival.Id.String()+"/publish", nil)
+	if len(e.pub.published) != 2 {
+		t.Fatal("idempotent festival publish re-emitted")
+	}
+	for _, day := range days {
+		e.store.emitted[day.Id] = false
+	}
+	e.pub.calls = nil
+	e.do("POST", "/festivals/"+festival.Id.String()+"/archive", nil)
+	if !slices.Equal(e.pub.calls, []string{"published", "archived", "published", "archived"}) {
+		t.Fatalf("owed publication/archive order = %v", e.pub.calls)
+	}
+}
+
+func TestGroupedFestivalDayLifecycleMustUseFestivalCascade(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	day := e.createFestivalDay(venueID, eventID, 1)
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{
+		OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000,
+	}))
+	e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: day.Id})
+
+	rec := e.do("POST", "/performances/"+day.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("direct grouped publish: %d", rec.Code)
+	}
+	if body := decode[Error](t, rec); body.Error != "grouped festival day must be published/archived via its festival" {
+		t.Fatalf("direct grouped publish error = %q", body.Error)
+	}
+	if rec := e.do("POST", "/festivals/"+festival.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
+		t.Fatalf("festival publish: %d", rec.Code)
+	}
+	if got := e.store.performances[day.Id].Status; got != "published" {
+		t.Fatalf("day after festival publish = %q", got)
+	}
+
+	rec = e.do("POST", "/performances/"+day.Id.String()+"/archive", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("direct grouped archive: %d", rec.Code)
+	}
+	if body := decode[Error](t, rec); body.Error != "grouped festival day must be published/archived via its festival" {
+		t.Fatalf("direct grouped archive error = %q", body.Error)
+	}
+	if rec := e.do("POST", "/festivals/"+festival.Id.String()+"/archive", nil); rec.Code != http.StatusOK {
+		t.Fatalf("festival archive: %d", rec.Code)
+	}
+	if got := e.store.performances[day.Id].Status; got != "archived" {
+		t.Fatalf("day after festival archive = %q", got)
+	}
+}
+
+func TestFestivalPublicGroupedRead(t *testing.T) {
+	e := newEnv(t)
+	venueID, eventID := e.dayEnv()
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000}))
+	if rec := e.do("GET", "/public/festivals/"+festival.Id.String()+"?locale=en", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("draft festival public read: %d", rec.Code)
+	}
+	for _, day := range []Performance{e.createFestivalDay(venueID, eventID, 1), e.createFestivalDay(venueID, eventID, 2)} {
+		e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: day.Id})
+	}
+	e.do("POST", "/festivals/"+festival.Id.String()+"/publish", nil)
+	rec := e.do("GET", "/public/festivals/"+festival.Id.String()+"?locale=en", nil)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != CacheControlPublicReads {
+		t.Fatalf("public festival: %d cache=%q", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	detail := decode[PublicFestivalDetail](t, rec)
+	if detail.Name != "Summer Fest" || len(detail.Days) != 2 {
+		t.Fatalf("public festival = %+v", detail)
 	}
 }
 

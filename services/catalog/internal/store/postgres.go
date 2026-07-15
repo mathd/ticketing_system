@@ -278,6 +278,117 @@ func getSeasonFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Season, err
 	return s, nil
 }
 
+func (p *Postgres) CreateFestival(ctx context.Context, in FestivalInput) (Festival, error) {
+	raw, err := json.Marshal(in.Name)
+	if err != nil {
+		return Festival{}, err
+	}
+	var f Festival
+	err = p.db.QueryRowContext(ctx, `INSERT INTO festivals(organizer_id,name,shared_capacity)
+		SELECT o.id,$2,$3 FROM organizers o WHERE o.id=$1
+		RETURNING id,organizer_id,name,shared_capacity,status,created_at`, in.OrganizerID, raw, in.SharedCapacity).
+		Scan(&f.ID, &f.OrganizerID, &raw, &f.SharedCapacity, &f.Status, &f.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Festival{}, ErrNotFound
+	}
+	if err != nil {
+		return Festival{}, err
+	}
+	if err = json.Unmarshal(raw, &f.Name); err != nil {
+		return Festival{}, err
+	}
+	f.MemberIDs = []uuid.UUID{}
+	return f, nil
+}
+
+func getFestivalFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Festival, error) {
+	var f Festival
+	var raw []byte
+	err := q.QueryRowContext(ctx, `SELECT id,organizer_id,name,shared_capacity,status,created_at FROM festivals WHERE id=$1`, id).
+		Scan(&f.ID, &f.OrganizerID, &raw, &f.SharedCapacity, &f.Status, &f.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Festival{}, ErrNotFound
+	}
+	if err != nil {
+		return Festival{}, err
+	}
+	if err = json.Unmarshal(raw, &f.Name); err != nil {
+		return Festival{}, err
+	}
+	f.MemberIDs = []uuid.UUID{}
+	rows, err := q.QueryContext(ctx, `SELECT id FROM performances WHERE capacity_group_id=$1 ORDER BY id`, id)
+	if err != nil {
+		return Festival{}, err
+	}
+	for rows.Next() {
+		var memberID uuid.UUID
+		if err = rows.Scan(&memberID); err != nil {
+			_ = rows.Close()
+			return Festival{}, err
+		}
+		f.MemberIDs = append(f.MemberIDs, memberID)
+	}
+	if err = rows.Close(); err != nil {
+		return Festival{}, err
+	}
+	if err = rows.Err(); err != nil {
+		return Festival{}, err
+	}
+	return f, nil
+}
+
+func (p *Postgres) AttachDayToFestival(ctx context.Context, festivalID, performanceID uuid.UUID) (Festival, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Festival{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var festivalOrg uuid.UUID
+	var festivalStatus string
+	var sharedCapacity int32
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,status,shared_capacity FROM festivals WHERE id=$1 FOR UPDATE`, festivalID).
+		Scan(&festivalOrg, &festivalStatus, &sharedCapacity); errors.Is(err, sql.ErrNoRows) {
+		return Festival{}, ErrNotFound
+	} else if err != nil {
+		return Festival{}, err
+	}
+	var performanceOrg uuid.UUID
+	var kind, performanceStatus string
+	var capacityGroup uuid.NullUUID
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,kind,status,capacity_group_id FROM performances WHERE id=$1 FOR UPDATE`, performanceID).
+		Scan(&performanceOrg, &kind, &performanceStatus, &capacityGroup); errors.Is(err, sql.ErrNoRows) {
+		return Festival{}, ErrNotFound
+	} else if err != nil {
+		return Festival{}, err
+	}
+	if festivalOrg != performanceOrg {
+		return Festival{}, ErrOrganizerMismatch
+	}
+	if kind != KindFestivalDay {
+		return Festival{}, ErrSlotKindMismatch
+	}
+	if festivalStatus != "draft" {
+		return Festival{}, ErrFestivalNotDraft
+	}
+	if performanceStatus != "draft" {
+		return Festival{}, ErrMembershipFrozen
+	}
+	if capacityGroup.Valid {
+		return Festival{}, ErrAlreadyGrouped
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE performances SET capacity_group_id=$1 WHERE id=$2`, festivalID, performanceID); err != nil {
+		return Festival{}, err
+	}
+	f, err := getFestivalFrom(ctx, tx, festivalID)
+	if err != nil {
+		return Festival{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Festival{}, err
+	}
+	return f, nil
+}
+
 func (p *Postgres) AttachSeriesToSeason(ctx context.Context, seasonID, seriesID uuid.UUID) (Season, error) {
 	return p.attachSeasonMember(ctx, seasonID, seriesID, true)
 }
@@ -433,6 +544,7 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE performances SET status = 'published', published_at = now()
 		 WHERE id = $1 AND status = 'draft'
+		   AND capacity_group_id IS NULL
 		   AND EXISTS (SELECT 1 FROM ticket_types t WHERE t.performance_id = $1)`, id)
 	if err != nil {
 		return Performance{}, false, fmt.Errorf("publish: %w", err)
@@ -442,6 +554,9 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 		perf, _, _, err := p.getPerformance(ctx, id)
 		if err != nil {
 			return Performance{}, false, err
+		}
+		if perf.CapacityGroupID != nil {
+			return Performance{}, false, ErrGroupedSlotLifecycle
 		}
 		if perf.Status == "draft" {
 			return Performance{}, false, ErrNotSellable
@@ -481,6 +596,7 @@ func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid
 		opensAt, closesAt, closeReason sql.NullString
 		maxEntries                     sql.NullInt32
 		capacityGroup                  uuid.NullUUID
+		sharedCapacity                 sql.NullInt32
 	)
 	err := q.QueryRowContext(ctx,
 		`SELECT p.id, p.organizer_id, p.event_id, p.venue_id, p.kind, p.starts_at,
@@ -488,14 +604,16 @@ func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid
 		        p.re_entry_mode, p.max_entries, p.requires_exit,
 		        p.closure_status, p.closed_at, p.closure_reason, p.closure_version,
 		        p.closure_changed_at, p.capacity_group_id, p.status, p.published_at, p.archived_at,
-		        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity
-		 FROM performances p JOIN venues v ON v.id = p.venue_id WHERE p.id = $1`, id).
+		        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity,
+		        f.shared_capacity
+		 FROM performances p JOIN venues v ON v.id = p.venue_id
+		 LEFT JOIN festivals f ON f.id = p.capacity_group_id WHERE p.id = $1`, id).
 		Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.Kind, &perf.StartsAt,
 			&perf.OperatingDate, &opensAt, &closesAt, &perf.Timezone,
 			&perf.ReEntry.Mode, &maxEntries, &perf.ReEntry.RequiresExit,
 			&perf.Closure.Status, &perf.Closure.ClosedAt, &closeReason, &perf.Closure.Version,
 			&perf.Closure.ChangedAt, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
-			&archiveEmitted, &perf.CreatedAt, &perf.Capacity)
+			&archiveEmitted, &perf.CreatedAt, &perf.Capacity, &sharedCapacity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, nil, nil, fmt.Errorf("performance: %w", ErrNotFound)
 	}
@@ -516,6 +634,9 @@ func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid
 	}
 	if capacityGroup.Valid {
 		perf.CapacityGroupID = &capacityGroup.UUID
+	}
+	if sharedCapacity.Valid {
+		perf.SharedCapacity = &sharedCapacity.Int32
 	}
 	var emittedPtr, archiveEmittedPtr *sql.NullTime
 	if emitted.Valid {
@@ -552,15 +673,19 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 	defer func() { _ = tx.Rollback() }()
 
 	var status string
+	var capacityGroup uuid.NullUUID
 	var closureVersion, closureEmitted int32
 	err = tx.QueryRowContext(ctx,
-		`SELECT status, closure_version, closure_emitted_version
-		 FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status, &closureVersion, &closureEmitted)
+		`SELECT status, capacity_group_id, closure_version, closure_emitted_version
+		 FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status, &capacityGroup, &closureVersion, &closureEmitted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
 	}
 	if err != nil {
 		return Performance{}, false, false, fmt.Errorf("lock performance: %w", err)
+	}
+	if capacityGroup.Valid {
+		return Performance{}, false, false, ErrGroupedSlotLifecycle
 	}
 	switch status {
 	case "draft":
@@ -806,6 +931,115 @@ func (p *Postgres) transitionSeries(ctx context.Context, id uuid.UUID, target st
 	return out, nil
 }
 
+func (p *Postgres) PublishFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionFestival(ctx, id, "published")
+}
+
+func (p *Postgres) ArchiveFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionFestival(ctx, id, "archived")
+}
+
+// transitionFestival keeps the group status, every member transition and the
+// owed-event snapshots in one row-locked decision. Emission happens only after
+// this transaction commits in the API layer.
+func (p *Postgres) transitionFestival(ctx context.Context, id uuid.UUID, target string) ([]SeriesTransition, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var festivalStatus string
+	var sharedCapacity int32
+	if err = tx.QueryRowContext(ctx, `SELECT status,shared_capacity FROM festivals WHERE id=$1 FOR UPDATE`, id).
+		Scan(&festivalStatus, &sharedCapacity); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	type member struct {
+		id               uuid.UUID
+		status           string
+		version, emitted int32
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT p.id,p.status,p.closure_version,p.closure_emitted_version
+		FROM performances p WHERE p.capacity_group_id=$1 ORDER BY p.id FOR UPDATE OF p`, id)
+	if err != nil {
+		return nil, err
+	}
+	var members []member
+	for rows.Next() {
+		var m member
+		if err = rows.Scan(&m.id, &m.status, &m.version, &m.emitted); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(members) == 0 {
+		return nil, ErrEmptyFestival
+	}
+	for _, m := range members {
+		switch target {
+		case "published":
+			if m.status == "archived" {
+				return nil, &FestivalTransitionConflict{PerformanceID: m.id, Reason: "archived member cannot be published", Cause: ErrIllegalTransition}
+			}
+			if m.status == "draft" {
+				var sellable bool
+				if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ticket_types WHERE performance_id=$1)`, m.id).Scan(&sellable); err != nil {
+					return nil, err
+				}
+				if !sellable {
+					return nil, &FestivalTransitionConflict{PerformanceID: m.id, Reason: "member has no ticket type", Cause: ErrNotSellable}
+				}
+			}
+		case "archived":
+			if m.status == "draft" {
+				return nil, &FestivalTransitionConflict{PerformanceID: m.id, Reason: "draft member cannot be archived", Cause: ErrIllegalTransition}
+			}
+			if m.status == "published" && m.emitted < m.version {
+				return nil, &FestivalTransitionConflict{PerformanceID: m.id, Reason: "member has an owed closure event", Cause: ErrClosurePending}
+			}
+		}
+	}
+	for _, m := range members {
+		if target == "published" && m.status == "draft" {
+			if _, err = tx.ExecContext(ctx, `UPDATE performances SET status='published',published_at=now() WHERE id=$1`, m.id); err != nil {
+				return nil, err
+			}
+		}
+		if target == "archived" && m.status == "published" {
+			if _, err = tx.ExecContext(ctx, `UPDATE performances SET status='archived',archived_at=now() WHERE id=$1`, m.id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if festivalStatus != target {
+		if _, err = tx.ExecContext(ctx, `UPDATE festivals SET status=$2 WHERE id=$1`, id, target); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]SeriesTransition, 0, len(members))
+	for _, m := range members {
+		perf, pubMark, archiveMark, getErr := p.getPerformanceTx(ctx, tx, m.id)
+		if getErr != nil {
+			return nil, getErr
+		}
+		perf.SharedCapacity = &sharedCapacity
+		out = append(out, SeriesTransition{Performance: perf, PublishNeedsEmit: pubMark == nil, ArchiveNeedsEmit: target == "archived" && archiveMark == nil})
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // publicPerformances returns the publicly listable slots (published AND
 // priced — no sellable offer, no listing) grouped into event aggregates,
 // events ordered by their earliest slot, slots by start time.
@@ -818,7 +1052,7 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 		(p.operating_date + p.opens_at::time) AT TIME ZONE p.timezone)`
 	query := `
 		SELECT e.id, e.organizer_id, e.name, e.description, e.created_at,
-		       p.id, ` + startsAtExpr + `, p.timezone, p.status, p.published_at, p.created_at,
+		       p.id, ` + startsAtExpr + `, p.timezone, p.kind, p.capacity_group_id, p.status, p.published_at, p.created_at,
 		       v.id, v.name, v.ga_capacity, v.created_at,
 		       t.id, t.name, t.price_amount, t.currency, t.created_at,
 		       s.id, s.name, sp.position, s.created_at
@@ -861,10 +1095,11 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 			seriesName    []byte
 			seriesPos     sql.NullInt32
 			seriesCreated sql.NullTime
+			capacityGroup uuid.NullUUID
 		)
 		if err := rows.Scan(
 			&ev.ID, &ev.OrganizerID, &evName, &evDesc, &ev.CreatedAt,
-			&perf.ID, &startsAt, &perf.Timezone, &perf.Status, &perf.PublishedAt, &perf.CreatedAt,
+			&perf.ID, &startsAt, &perf.Timezone, &perf.Kind, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.CreatedAt,
 			&venue.ID, &venue.Name, &venue.GACapacity, &venue.CreatedAt,
 			&tt.ID, &ttName, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt,
 			&seriesID, &seriesName, &seriesPos, &seriesCreated,
@@ -883,6 +1118,9 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventID *uuid.UUID) (
 			return nil, fmt.Errorf("ticket type name jsonb: %w", err)
 		}
 		perf.StartsAt = &startsAt
+		if capacityGroup.Valid {
+			perf.CapacityGroupID = &capacityGroup.UUID
+		}
 		// Public reads are cross-organizer; each row still carries its
 		// owner so aggregates stay tenancy-complete (ADR-002).
 		perf.OrganizerID = ev.OrganizerID
@@ -991,6 +1229,81 @@ func (p *Postgres) GetPublishedSeason(ctx context.Context, id uuid.UUID) (Season
 	}
 	if len(out.Events) == 0 {
 		return SeasonAggregate{}, ErrNotFound
+	}
+	return out, nil
+}
+
+func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (FestivalAggregate, error) {
+	festival, err := getFestivalFrom(ctx, p.db, id)
+	if err != nil {
+		return FestivalAggregate{}, err
+	}
+	if festival.Status != "published" {
+		return FestivalAggregate{}, ErrNotFound
+	}
+	// Scope the read to this festival's own days (ADR-004: a single festival
+	// read must not scale with the whole published catalog). One query joins
+	// only the group's published, priced festival_day slots + venue + ticket
+	// types, ordered chronologically by the day's opening instant.
+	const startsAtExpr = `COALESCE(p.starts_at,
+		(p.operating_date + p.opens_at::time) AT TIME ZONE p.timezone)`
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT p.id, `+startsAtExpr+`, p.timezone, p.kind,
+		       v.id, v.name, v.ga_capacity, v.created_at,
+		       t.id, t.name, t.price_amount, t.currency, t.created_at
+		FROM performances p
+		JOIN venues v ON v.id = p.venue_id
+		JOIN ticket_types t ON t.performance_id = p.id
+		WHERE p.capacity_group_id = $1 AND p.status = 'published'
+		ORDER BY `+startsAtExpr+`, p.id, t.price_amount, t.id`, id)
+	if err != nil {
+		return FestivalAggregate{}, fmt.Errorf("festival read: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := FestivalAggregate{Festival: festival, Performances: []PerformanceAggregate{}}
+	type perfRef struct{ idx int }
+	seen := map[uuid.UUID]perfRef{}
+	for rows.Next() {
+		var (
+			perf     Performance
+			venue    Venue
+			tt       TicketType
+			startsAt time.Time
+			ttName   []byte
+		)
+		if err := rows.Scan(
+			&perf.ID, &startsAt, &perf.Timezone, &perf.Kind,
+			&venue.ID, &venue.Name, &venue.GACapacity, &venue.CreatedAt,
+			&tt.ID, &ttName, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt,
+		); err != nil {
+			return FestivalAggregate{}, fmt.Errorf("scan festival read: %w", err)
+		}
+		if err := json.Unmarshal(ttName, &tt.Name); err != nil {
+			return FestivalAggregate{}, fmt.Errorf("ticket type name jsonb: %w", err)
+		}
+		perf.StartsAt = &startsAt
+		perf.Status = "published"
+		perf.OrganizerID = festival.OrganizerID
+		perf.CapacityGroupID = &id
+		perf.VenueID = venue.ID
+		venue.OrganizerID = festival.OrganizerID
+		tt.OrganizerID = festival.OrganizerID
+		tt.PerformanceID = perf.ID
+
+		ref, ok := seen[perf.ID]
+		if !ok {
+			out.Performances = append(out.Performances, PerformanceAggregate{Performance: perf, Venue: venue})
+			ref = perfRef{idx: len(out.Performances) - 1}
+			seen[perf.ID] = ref
+		}
+		out.Performances[ref.idx].TicketTypes = append(out.Performances[ref.idx].TicketTypes, tt)
+	}
+	if err := rows.Err(); err != nil {
+		return FestivalAggregate{}, fmt.Errorf("festival read rows: %w", err)
+	}
+	if len(out.Performances) == 0 {
+		return FestivalAggregate{}, ErrNotFound
 	}
 	return out, nil
 }

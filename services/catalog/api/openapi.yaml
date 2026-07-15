@@ -333,6 +333,83 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '400': { $ref: '#/components/responses/BadRequest' }
+  /festivals:
+    post:
+      operationId: createFestival
+      summary: Create a localized shared-capacity festival
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FestivalCreate' }
+      responses:
+        '201':
+          description: Festival created in draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Festival' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /festivals/{festivalId}/days:
+    post:
+      operationId: attachDayToFestival
+      summary: Attach a draft festival day to the shared-capacity festival
+      parameters:
+        - $ref: '#/components/parameters/FestivalId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FestivalDayAttach' }
+      responses:
+        '200':
+          description: Updated festival
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Festival' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Wrong slot kind, existing group, frozen day, or launched festival
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /festivals/{festivalId}/publish:
+    post:
+      operationId: publishFestival
+      summary: Atomically publish the festival and every member day
+      parameters:
+        - $ref: '#/components/parameters/FestivalId'
+      responses:
+        '200':
+          description: Festival and member days are published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FestivalLifecycleResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Empty festival or a member cannot publish
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesTransitionConflict' }
+  /festivals/{festivalId}/archive:
+    post:
+      operationId: archiveFestival
+      summary: Atomically archive the festival and every member day
+      parameters:
+        - $ref: '#/components/parameters/FestivalId'
+      responses:
+        '200':
+          description: Festival and member days are archived
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FestivalLifecycleResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Empty festival, draft member, or member with an owed closure event
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesTransitionConflict' }
   /ticket-types:
     post:
       operationId: createTicketType
@@ -427,6 +504,28 @@ paths:
               schema: { $ref: '#/components/schemas/PublicSeasonDetail' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /public/festivals/{festivalId}:
+    get:
+      operationId: getPublicFestival
+      summary: Aggregated public festival detail (minutes tier)
+      description: >
+        One call returns the localized festival and all publicly listable
+        festival days drawing on its shared capacity. Festival programming
+        uses the ADR-004 minutes tier: Cache-Control: public, max-age=300,
+        s-maxage=300.
+      parameters:
+        - $ref: '#/components/parameters/FestivalId'
+        - $ref: '#/components/parameters/Locale'
+      responses:
+        '200':
+          description: Published festival detail, localized
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicFestivalDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec
@@ -469,6 +568,11 @@ components:
       schema: { type: string, format: uuid }
     SeasonId:
       name: seasonId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    FestivalId:
+      name: festivalId
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -713,6 +817,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        capacity_group_id:
+          description: Festival capacity-group id for grouped festival days
+          type: string
+          format: uuid
         created_at:
           type: string
           format: date-time
@@ -826,6 +934,39 @@ components:
           type: array
           items: { type: string, format: uuid }
         created_at: { type: string, format: date-time }
+    FestivalCreate:
+      type: object
+      required: [organizer_id, name, shared_capacity]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        name: { $ref: '#/components/schemas/LocalizedString' }
+        shared_capacity: { type: integer, format: int32, minimum: 1 }
+    FestivalDayAttach:
+      type: object
+      required: [performance_id]
+      properties:
+        performance_id: { type: string, format: uuid }
+    Festival:
+      type: object
+      required: [id, organizer_id, name, shared_capacity, status, member_ids, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        organizer_id: { type: string, format: uuid }
+        name: { $ref: '#/components/schemas/LocalizedString' }
+        shared_capacity: { type: integer, format: int32, minimum: 1 }
+        status: { type: string, enum: [draft, published, archived] }
+        member_ids:
+          type: array
+          items: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+    FestivalLifecycleResult:
+      type: object
+      required: [festival_id, performances]
+      properties:
+        festival_id: { type: string, format: uuid }
+        performances:
+          type: array
+          items: { $ref: '#/components/schemas/Performance' }
     PublicEventList:
       type: object
       required: [events]
@@ -923,6 +1064,16 @@ components:
         events:
           type: array
           items: { $ref: '#/components/schemas/PublicEventDetail' }
+    PublicFestivalDetail:
+      type: object
+      required: [id, organizer_id, name, days]
+      properties:
+        id: { type: string, format: uuid }
+        organizer_id: { type: string, format: uuid }
+        name: { type: string }
+        days:
+          type: array
+          items: { $ref: '#/components/schemas/PublicPerformanceDetail' }
     PublicVenue:
       type: object
       required: [id, name]

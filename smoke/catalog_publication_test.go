@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -563,6 +564,168 @@ func TestSeriesSeasonPublicationAndStorefrontGrouping(t *testing.T) {
 	}
 	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/seasons/%v?locale=en", catalog, season["id"])); code != http.StatusNotFound {
 		t.Fatalf("season with no published events: %d %s", code, body)
+	}
+}
+
+func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
+	catalog := gatewayURL + "/api/catalog"
+	suffixBytes := make([]byte, 4)
+	_, _ = rand.Read(suffixBytes)
+	suffix := hex.EncodeToString(suffixBytes)
+	venue := created(t, catalog+"/venues", map[string]any{
+		"organizer_id": organizerID, "name": "Festival Grounds " + suffix, "ga_capacity": 250,
+	})
+	event := created(t, catalog+"/events", map[string]any{
+		"organizer_id": organizerID,
+		"name":         map[string]string{"fr": "Festival " + suffix, "en": "Festival " + suffix},
+	})
+	dayIDs := make([]string, 0, 2)
+	for i, date := range []string{"2026-08-01", "2026-08-02"} {
+		day := created(t, catalog+"/performances", map[string]any{
+			"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+			"kind": "festival_day", "operating_date": date,
+			"opens_at": "12:00", "closes_at": "23:00", "timezone": "America/Toronto",
+		})
+		dayIDs = append(dayIDs, fmt.Sprint(day["id"]))
+		created(t, catalog+"/ticket-types", map[string]any{
+			"organizer_id": organizerID, "performance_id": day["id"],
+			"name":  map[string]string{"fr": fmt.Sprintf("Jour %d", i+1), "en": fmt.Sprintf("Day %d", i+1)},
+			"price": map[string]any{"amount": 7500, "currency": "CAD"},
+		})
+	}
+	festival := created(t, catalog+"/festivals", map[string]any{
+		"organizer_id":    organizerID,
+		"name":            map[string]string{"fr": "Festival partagé " + suffix, "en": "Shared festival " + suffix},
+		"shared_capacity": 1000,
+	})
+	for _, dayID := range dayIDs {
+		if code, body := postJSON(t, fmt.Sprintf("%s/festivals/%v/days", catalog, festival["id"]), map[string]any{"performance_id": dayID}); code != http.StatusOK {
+			t.Fatalf("attach festival day: %d %s", code, body)
+		}
+	}
+
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := js.Stream(t.Context(), "PLATFORM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, err := stream.CreateOrUpdateConsumer(t.Context(), jetstream.ConsumerConfig{
+		Durable: "smoke-festival-publish-" + suffix, FilterSubject: "platform.catalog.performance.published",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveConsumer, err := stream.CreateOrUpdateConsumer(t.Context(), jetstream.ConsumerConfig{
+		Durable: "smoke-festival-archive-" + suffix, FilterSubject: "platform.catalog.performance.archived",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishURL := fmt.Sprintf("%s/festivals/%v/publish", catalog, festival["id"])
+	if code, body := postJSON(t, publishURL, nil); code != http.StatusOK {
+		t.Fatalf("festival publish: %d %s", code, body)
+	}
+	seen := map[string]bool{}
+	for range 2 {
+		msg, err := consumer.Next(jetstream.FetchMaxWait(15 * time.Second))
+		if err != nil {
+			t.Fatalf("festival publication event: %v", err)
+		}
+		var envelope struct {
+			Schema int `json:"schema"`
+			Data   struct {
+				PerformanceID   string `json:"performance_id"`
+				Kind            string `json:"kind"`
+				CapacityGroupID string `json:"capacity_group_id"`
+				SharedCapacity  int32  `json:"shared_capacity"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		_ = msg.Ack()
+		if envelope.Schema != 3 || envelope.Data.Kind != "festival_day" || envelope.Data.CapacityGroupID != fmt.Sprint(festival["id"]) || envelope.Data.SharedCapacity != 1000 {
+			t.Fatalf("festival envelope = %+v", envelope)
+		}
+		seen[envelope.Data.PerformanceID] = true
+	}
+	for _, dayID := range dayIDs {
+		if !seen[dayID] {
+			t.Fatalf("missing festival day event for %s: %v", dayID, seen)
+		}
+	}
+
+	// The two real publication events are consumed by inventory and converge on
+	// exactly one pool keyed by the festival id.
+	db, err := pgx.Connect(t.Context(), fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(t.Context()) }()
+	var poolCount int
+	var poolCapacity int32
+	for i := 0; i < 40; i++ {
+		err = db.QueryRow(t.Context(), `SELECT count(*),COALESCE(max(capacity),0) FROM inventory_pools WHERE slot_id=$1`, festival["id"]).Scan(&poolCount, &poolCapacity)
+		if err == nil && poolCount == 1 && poolCapacity == 1000 {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if err != nil || poolCount != 1 || poolCapacity != 1000 {
+		t.Fatalf("festival inventory pools=%d capacity=%d err=%v, want one pool of 1000", poolCount, poolCapacity, err)
+	}
+	code, body, headers := getWithHeaders(t, fmt.Sprintf("%s/public/festivals/%v?locale=en", catalog, festival["id"]))
+	if code != http.StatusOK || headers.Get("Cache-Control") != "public, max-age=300, s-maxage=300" {
+		t.Fatalf("public festival: %d cache=%q %s", code, headers.Get("Cache-Control"), body)
+	}
+	for _, dayID := range dayIDs {
+		if !strings.Contains(string(body), dayID) {
+			t.Fatalf("public festival missing day %s: %s", dayID, body)
+		}
+	}
+	archiveURL := fmt.Sprintf("%s/festivals/%v/archive", catalog, festival["id"])
+	if code, body := postJSON(t, archiveURL, nil); code != http.StatusOK {
+		t.Fatalf("festival archive: %d %s", code, body)
+	}
+	archived := map[string]bool{}
+	for range 2 {
+		msg, err := archiveConsumer.Next(jetstream.FetchMaxWait(15 * time.Second))
+		if err != nil {
+			t.Fatalf("festival archive event: %v", err)
+		}
+		var envelope struct {
+			Schema int `json:"schema"`
+			Data   struct {
+				PerformanceID   string `json:"performance_id"`
+				CapacityGroupID string `json:"capacity_group_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(msg.Data(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		_ = msg.Ack()
+		if envelope.Schema != 3 || envelope.Data.CapacityGroupID != fmt.Sprint(festival["id"]) {
+			t.Fatalf("festival archive envelope = %+v", envelope)
+		}
+		archived[envelope.Data.PerformanceID] = true
+	}
+	for _, dayID := range dayIDs {
+		if !archived[dayID] {
+			t.Fatalf("missing festival archive event for %s: %v", dayID, archived)
+		}
+	}
+	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/public/festivals/%v?locale=en", catalog, festival["id"])); code != http.StatusNotFound {
+		t.Fatalf("archived festival remains public: %d %s", code, body)
 	}
 }
 

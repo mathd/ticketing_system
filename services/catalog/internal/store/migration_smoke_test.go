@@ -62,6 +62,129 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("festival migration installs capacity-group integrity constraints and index", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var festivalTable, groupIndex, groupFK, groupKind, festivalTenantKey bool
+		if err := db.QueryRowContext(ctx, `SELECT
+			to_regclass(current_schema() || '.festivals') IS NOT NULL,
+			to_regclass(current_schema() || '.performances_capacity_group_idx') IS NOT NULL,
+			EXISTS (SELECT 1 FROM information_schema.table_constraints
+			 WHERE constraint_schema=current_schema() AND table_name='performances'
+			 AND constraint_name='performances_capacity_group_fk' AND constraint_type='FOREIGN KEY'),
+			EXISTS (SELECT 1 FROM information_schema.table_constraints
+			 WHERE constraint_schema=current_schema() AND table_name='performances'
+			 AND constraint_name='performances_capacity_group_kind' AND constraint_type='CHECK'),
+			EXISTS (SELECT 1 FROM information_schema.table_constraints
+			 WHERE constraint_schema=current_schema() AND table_name='festivals'
+			 AND constraint_name='festivals_id_organizer_unique' AND constraint_type='UNIQUE')`).
+			Scan(&festivalTable, &groupIndex, &groupFK, &groupKind, &festivalTenantKey); err != nil {
+			t.Fatal(err)
+		}
+		if !festivalTable || !groupIndex || !groupFK || !groupKind || !festivalTenantKey {
+			t.Fatalf("festival migration: table=%v index=%v fk=%v kind_check=%v tenant_key=%v",
+				festivalTable, groupIndex, groupFK, groupKind, festivalTenantKey)
+		}
+	})
+
+	t.Run("festival rollback guard preserves schema", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID, eventID, festivalID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'m') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'v',10 FROM o RETURNING id
+		), e AS (
+			INSERT INTO events(id,organizer_id,name) SELECT $3,id,'{"en":"e","fr":"e"}' FROM o RETURNING id
+		), f AS (
+			INSERT INTO festivals(id,organizer_id,name,shared_capacity)
+			SELECT $4,id,'{"en":"f","fr":"f"}',10 FROM o RETURNING id
+		)
+		INSERT INTO performances(organizer_id,event_id,venue_id,kind,operating_date,opens_at,closes_at,timezone,capacity_group_id)
+		SELECT $1,e.id,v.id,'festival_day',DATE '2026-07-04','10:00','18:00','UTC',f.id FROM e,v,f`,
+			organizerID, venueID, eventID, festivalID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.Down(ctx); err == nil {
+			t.Fatal("0006 down unexpectedly accepted festival data")
+		}
+		var festivalTable, groupIndex, groupFK, groupKind bool
+		if err := db.QueryRowContext(ctx, `SELECT
+			to_regclass(current_schema() || '.festivals') IS NOT NULL,
+			to_regclass(current_schema() || '.performances_capacity_group_idx') IS NOT NULL,
+			EXISTS (SELECT 1 FROM information_schema.table_constraints
+			 WHERE constraint_schema=current_schema() AND table_name='performances'
+			 AND constraint_name='performances_capacity_group_fk'),
+			EXISTS (SELECT 1 FROM information_schema.table_constraints
+			 WHERE constraint_schema=current_schema() AND table_name='performances'
+			 AND constraint_name='performances_capacity_group_kind')`).
+			Scan(&festivalTable, &groupIndex, &groupFK, &groupKind); err != nil {
+			t.Fatal(err)
+		}
+		if !festivalTable || !groupIndex || !groupFK || !groupKind {
+			t.Fatalf("failed 0006 down partially dropped festival schema: table=%v index=%v fk=%v kind_check=%v",
+				festivalTable, groupIndex, groupFK, groupKind)
+		}
+	})
+
+	t.Run("festival membership requires matching organizer", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		festivalOrganizerID, memberOrganizerID := uuid.New(), uuid.New()
+		venueID, eventID, festivalID := uuid.New(), uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'festival'),($2,'member') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity)
+			SELECT $3,id,'v',10 FROM o WHERE id=$2 RETURNING id
+		), e AS (
+			INSERT INTO events(id,organizer_id,name)
+			SELECT $4,id,'{"en":"e","fr":"e"}' FROM o WHERE id=$2 RETURNING id
+		)
+		INSERT INTO festivals(id,organizer_id,name,shared_capacity)
+		SELECT $5,id,'{"en":"f","fr":"f"}',10 FROM o WHERE id=$1`,
+			festivalOrganizerID, memberOrganizerID, venueID, eventID, festivalID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO performances
+			(organizer_id,event_id,venue_id,kind,operating_date,opens_at,closes_at,timezone,capacity_group_id)
+			VALUES($1,$2,$3,'festival_day',DATE '2026-07-04','10:00','18:00','UTC',$4)`,
+			memberOrganizerID, eventID, venueID, festivalID); err == nil {
+			t.Fatal("capacity-group foreign key accepted a member from another organizer")
+		}
+	})
+
+	t.Run("only festival days may carry a capacity group", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID, eventID, festivalID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'m') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'v',10 FROM o RETURNING id
+		), e AS (
+			INSERT INTO events(id,organizer_id,name) SELECT $3,id,'{"en":"e","fr":"e"}' FROM o RETURNING id
+		)
+		INSERT INTO festivals(id,organizer_id,name,shared_capacity)
+		SELECT $4,id,'{"en":"f","fr":"f"}',10 FROM o`, organizerID, venueID, eventID, festivalID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO performances
+			(organizer_id,event_id,venue_id,starts_at,timezone,capacity_group_id)
+			VALUES($1,$2,$3,now(),'UTC',$4)`, organizerID, eventID, venueID, festivalID); err == nil {
+			t.Fatal("capacity-group CHECK accepted a non-festival-day performance")
+		}
+	})
+
 	t.Run("series and season rollback guard preserves schema", func(t *testing.T) {
 		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {
@@ -76,6 +199,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if _, err := db.ExecContext(ctx, `INSERT INTO series(organizer_id,event_id,name) VALUES($1,$2,'{"en":"run","fr":"série"}')`, organizerID, eventID); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := provider.Down(ctx); err != nil { // 0006
+			t.Fatalf("0006 down: %v", err)
 		}
 		if _, err := provider.Down(ctx); err == nil {
 			t.Fatal("0005 down unexpectedly accepted series data")
@@ -168,6 +294,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 				if _, err := provider.Up(ctx); err != nil {
 					t.Fatal(err)
 				}
+				if _, err := provider.Down(ctx); err != nil { // 0006
+					t.Fatalf("0006 down: %v", err)
+				}
 				if _, err := provider.Down(ctx); err != nil { // 0005
 					t.Fatalf("0005 down: %v", err)
 				}
@@ -202,6 +331,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := provider.Down(ctx); err != nil { // 0006
+			t.Fatalf("0006 down: %v", err)
 		}
 		if _, err := provider.Down(ctx); err != nil { // 0005
 			t.Fatalf("0005 down: %v", err)
@@ -254,9 +386,12 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// 0005 has no grouping data, so it rolls back cleanly. The row is kind
+		// 0006 and 0005 have no grouping data, so they roll back cleanly. The row is kind
 		// 'performance' (default) with starts_at set, so 0004 also rolls back;
 		// the archived-row guard being asserted lives in 0003.
+		if _, err := provider.Down(ctx); err != nil {
+			t.Fatalf("0006 down should succeed without festival data: %v", err)
+		}
 		if _, err := provider.Down(ctx); err != nil {
 			t.Fatalf("0005 down should succeed without grouping data: %v", err)
 		}
