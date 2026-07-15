@@ -56,7 +56,8 @@ We adopt, for US-009:
    `kind`, but "additive ⇒ compatible" is not general — a field that changes what a consumer **does**
    (TKT-53's `capacity_group_id` moves inventory's pool key) requires a bump even though it parses
    cleanly. The lockstep objection weighed above is **accepted, not overturned**: TKT-53 bumped by
-   changing producer and consumer in one commit (ADR-017 §5a).*
+   changing producer and consumer in one commit — though ADR-017 §5a prefers splitting the two
+   sides across two revisions (consumer first) where deployment skew matters.*
 4. **Closure uses a monotonic `closure_version` + a single
    `closure_emitted_version` outbox marker**, not a table. The
    `closed`/`reopened` envelope id is derived from the version (deterministic,

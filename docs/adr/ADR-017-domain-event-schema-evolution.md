@@ -37,8 +37,9 @@ wrong-by-construction inventory. "Backward compatible" held at the parser and br
 TKT-53 instead bumped to Schema 3 and taught inventory both variants **in the same change**
 (`3879c13`): the producer's Schema 3 fork and the consumer's Schema 3 arm landed together, so no
 repository revision contains one side without the other. ADR-014's lockstep objection was therefore
-answered by *making* the change lockstep — not by sequencing two deploys, which this repo has no
-mechanism to order (see §5).
+answered by *making* the change lockstep. That was sufficient here, but it is not the ordering rule
+this ADR adopts — §5a prefers splitting the two sides across two revisions, which gets consumer-first
+ordering from git without needing deploy tooling the repo lacks.
 
 ## Possible Solutions
 
@@ -53,6 +54,16 @@ mechanism to order (see §5).
   field, but it is the line the failure actually falls on. In practice it splits into two triggers —
   old-consumer incorrectness and needing a distinguishable variant to validate against — which are
   not the same question and are kept separate in §3.
+
+On *ordering* the two sides, given a bump is required:
+
+- **One atomic commit** (what TKT-53 did). Removes the forgotten-consumer failure; orders nothing at
+  runtime. Adequate only where the skew window is harmless.
+- **Two revisions, consumer first** (chosen as the default, §5a). Costs one extra deploy, and gets
+  real consumer-first ordering out of git — no deploy tooling required, because a consumer arm for a
+  variant nobody emits yet is inert.
+- **An enforced deploy mechanism** (readiness-gated replacement, producer pause, `depends_on`).
+  Strictly better than either, and unavailable today — recorded as what production must add.
 
 ## Decision
 
@@ -102,26 +113,30 @@ mechanism to order (see §5).
 
 5. **Ordering — three distinct cases, only one of which "consumer-first" solves.**
 
-   a. **Forward rollout — landing both sides in one commit is necessary, and it is not
-      sufficient.** Where producer and consumer *can* run at different versions, the consumer that
-      understands schema N+1 must ship before the producer emits it. **This repo has no mechanism
-      to order that today** — `compose.yaml` gives catalog and inventory no dependency on each
-      other (both wait only on postgres and nats, `compose.yaml:25-29`), so `up` may recreate them
-      concurrently or individually. TKT-53 therefore did the only thing available: **land both
-      sides in one change** (`3879c13`).
+   a. **Forward rollout — the rule is consumer-first. Prefer two revisions; one atomic commit is
+      a weaker fallback.** The consumer that understands schema N+1 must be running before the
+      producer can emit it. Two mechanisms are available, and they are not equivalent:
 
-      Be precise about what that buys. An atomic commit guarantees no *revision* carries one side
-      alone — it removes the "someone forgot to ship the consumer" failure entirely. It does
-      **not** order the rollout: during a `git pull` + `up`, a new catalog can start and emit
-      Schema 3 while the previous inventory container is still running, and that container will
-      `Term()` the event (§5b). The window is real, not theoretical.
+      **Preferred — split into two revisions.** Land consumer support for N+1 first, while the
+      producer still emits only N. That revision is backward compatible *on its own*: an arm for a
+      variant nobody emits is dead code, and it needs nothing from the producer — TKT-53's Schema 3
+      arm reads only envelope fields (`consumer.go`'s `case 3`). Deploy it, confirm it is live,
+      then land a second revision enabling N+1 emission. This is ordinary consumer-first, achieved
+      with git alone, and it needs no deploy tooling this repo lacks.
 
-      **So the atomic commit is the floor, not the guarantee.** Emitting N+1 with no consumer that
-      understands it is never acceptable; where the skew window matters, it needs an enforced
-      mechanism — replacing the consumer first and gating on its readiness, pausing producer
-      emission across the swap, or a `depends_on`-style ordering constraint. This repo has none of
-      those, and its exposure is bounded only by being a testbed with no live stream to protect.
-      **A production deployment of this system must close the window before relying on §5a.**
+      **Fallback — land both sides in one commit**, as TKT-53 did (`3879c13`). This guarantees no
+      *revision* carries one side alone, so the consumer can never be forgotten. It buys nothing
+      else, and specifically **does not order the rollout**: `compose.yaml` gives catalog and
+      inventory no dependency on each other (both wait only on postgres and nats, `:25-29`), so
+      during a `git pull` + `up` a new catalog can emit Schema 3 while the previous inventory
+      container is still running — and that container will `Term()` the event (§5b). The window is
+      real, not theoretical.
+
+      **So: two revisions where the skew window matters; one commit only when it does not** (a
+      testbed with no live stream, as here). Neither substitutes for an enforced mechanism —
+      replacing the consumer first and gating on its readiness, pausing producer emission across
+      the swap, or a `depends_on`-style ordering constraint. This repo has none of those. **A
+      production deployment of this system must close the window before relying on §5a.**
 
    b. **Rollback and consumer recreation — consumer-first does *not* cover this, and the event is
       dropped with no automated recovery.** Once Schema 3 is on the stream, running an inventory
@@ -167,9 +182,9 @@ mechanism to order (see §5).
     - The rule catches the failure that parse-compatibility misses: an event that deserializes
       cleanly and drives the wrong write.
     - ADR-014 §3's reasoning is preserved rather than reversed — its bump objection ("inventory would
-      have to change in lockstep") is accepted, not dismissed: §5a makes lockstep the *method* while
-      the stack has no way to sequence one service ahead of another, and is explicit that this
-      removes the forgotten-consumer failure without closing the rollout window.
+      have to change in lockstep") is accepted, not dismissed. TKT-53 answered it by making the
+      change lockstep; §5a keeps that as a fallback but prefers two revisions, which gives
+      consumer-first ordering without any deploy mechanism the repo lacks.
     - Schema 2's explicit rejection of festival fields becomes a documented pattern, not an accident
       of TKT-53.
     - Scoping the version to `(type, schema)` (§1) keeps the two independent 2→3 forks
