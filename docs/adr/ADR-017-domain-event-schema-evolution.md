@@ -102,32 +102,46 @@ mechanism to order (see §5).
 
 5. **Ordering — three distinct cases, only one of which "consumer-first" solves.**
 
-   a. **Forward rollout.** Where producer and consumer *can* run at different versions (rolling
-      deploys, independently deployed services), the consumer that understands schema N+1 ships
-      before the producer emits it. **This repo has no mechanism to order that today** — one
-      `docker compose up`, no release pipeline, nothing that sequences one service's replacement
-      ahead of another's — so it satisfies the requirement the only other way available: **land
-      both sides in one change**, as TKT-53 did. Note what that does and does not buy: an atomic
-      commit guarantees no *revision* carries one side alone, which is why the ordering cannot be
-      got wrong by a normal `git pull` + `up`. It is **not** a deployment guarantee — Compose can
-      recreate services individually, so an operator can still run a stale inventory against a
-      current catalog. Either discipline is acceptable; emitting N+1 with no consumer that
-      understands it is not.
+   a. **Forward rollout — landing both sides in one commit is necessary, and it is not
+      sufficient.** Where producer and consumer *can* run at different versions, the consumer that
+      understands schema N+1 must ship before the producer emits it. **This repo has no mechanism
+      to order that today** — `compose.yaml` gives catalog and inventory no dependency on each
+      other (both wait only on postgres and nats, `compose.yaml:25-29`), so `up` may recreate them
+      concurrently or individually. TKT-53 therefore did the only thing available: **land both
+      sides in one change** (`3879c13`).
 
-   b. **Rollback and consumer recreation — consumer-first does *not* cover this, and the failure
-      is unactionable rather than silent.** Once Schema 3 is retained on the stream, reverting
+      Be precise about what that buys. An atomic commit guarantees no *revision* carries one side
+      alone — it removes the "someone forgot to ship the consumer" failure entirely. It does
+      **not** order the rollout: during a `git pull` + `up`, a new catalog can start and emit
+      Schema 3 while the previous inventory container is still running, and that container will
+      `Term()` the event (§5b). The window is real, not theoretical.
+
+      **So the atomic commit is the floor, not the guarantee.** Emitting N+1 with no consumer that
+      understands it is never acceptable; where the skew window matters, it needs an enforced
+      mechanism — replacing the consumer first and gating on its readiness, pausing producer
+      emission across the swap, or a `depends_on`-style ordering constraint. This repo has none of
+      those, and its exposure is bounded only by being a testbed with no live stream to protect.
+      **A production deployment of this system must close the window before relying on §5a.**
+
+   b. **Rollback and consumer recreation — consumer-first does *not* cover this, and the event is
+      dropped with no automated recovery.** Once Schema 3 is retained on the stream, reverting
       inventory to a binary that predates it (or rebuilding its durable consumer with one) makes
-      `provisionInput` return an error for the unknown schema; the caller's `if e.Schema == 1`
-      test (`consumer.go:114-122`) is what picks `Nak` vs `Term`, so an unrecognized schema falls
-      through to **`msg.Term()`** — permanently advancing past the event with no provisioning and
-      no retry. It **does** log at error level, so this is not literally silent. What makes it a
-      hazard is that the log is `"invalid publication event"` — **the same message the genuinely
-      corrupt-payload path emits** — so a version-skew incident is indistinguishable from a bad
-      producer write, and `c.ready` stays `true` (`:105`), leaving the service healthy while
-      inventory quietly goes missing. **Therefore: do not roll a consumer back past a schema the
-      stream still retains**, and treat "recreate the durable consumer" as equivalent to a
-      rollback unless the binary understands every retained variant. This is a real gap, not a
-      hypothetical — see Consequences.
+      `provisionInput` hit its `default` arm and return `unsupported publication schema N`
+      (`consumer.go:91-92`); the caller's `if e.Schema == 1` test (`:114-122`) is what picks `Nak`
+      vs `Term`, so an unrecognized schema falls through to **`msg.Term()`** — permanently
+      advancing past the event with no provisioning and no retry.
+
+      The failure is **diagnosable but not actionable**. It logs at error level, and the `err`
+      attribute carries `unsupported publication schema N`, which is distinct from the malformed
+      -payload errors — so an operator reading logs *can* tell version skew from a bad producer
+      write. What is missing is everything that would make them look: the headline is the generic
+      `"invalid publication event"` shared with corrupt payloads, `c.ready` stays `true` (`:105`)
+      so the service reports healthy, nothing alerts, and `Term()` means there is no retry to
+      notice. Inventory is simply absent for those performances until someone asks why.
+
+      **Therefore: do not roll a consumer back past a schema the stream still retains**, and treat
+      "recreate the durable consumer" as equivalent to a rollback unless the binary understands
+      every retained variant. This is a real gap, not a hypothetical — see Consequences.
 
    c. **Ordinary restart is not replay.** A durable consumer resumes from its stored position and
       does **not** re-read acknowledged history, so a normal restart carries no schema risk. Replay
@@ -143,7 +157,8 @@ mechanism to order (see §5).
       cleanly and drives the wrong write.
     - ADR-014 §3's reasoning is preserved rather than reversed — its bump objection ("inventory would
       have to change in lockstep") is accepted, not dismissed: §5a makes lockstep the *method* while
-      the stack has no way to sequence one service ahead of another.
+      the stack has no way to sequence one service ahead of another, and is explicit that this
+      removes the forgotten-consumer failure without closing the rollout window.
     - Schema 2's explicit rejection of festival fields becomes a documented pattern, not an accident
       of TKT-53.
     - Scoping the version to `(type, schema)` (§1) keeps the two independent 2→3 forks
@@ -157,16 +172,16 @@ mechanism to order (see §5).
     - Every bump costs an arm in each consumer of that type and keeps old arms alive as long as the
       stream retains them. There is no retirement policy for old schema arms yet; the first removal
       will need one (how far back can the stream be re-read?).
-    - **§5b is a known live hazard, documented but unmitigated:** an inventory rollback past a
-      retained schema drops those events via `msg.Term()` — logged, but under the same
-      `"invalid publication event"` message as a corrupt payload, with no retry and no effect on
-      readiness. This ADR states the rule ("don't roll back past a retained schema"); nothing
-      *enforces* it. Distinguishing unknown-schema from malformed-payload at the call site,
-      `Nak`/parking instead of `Term`ing an unknown schema, or gating consumer startup on a
-      max-known-schema check would each turn an unactionable log into an actionable signal —
-      **deferred to TKT-61.**
+    - **§5a's rollout window and §5b's rollback drop are known live hazards, documented but
+      unmitigated.** Both bottom out in the same place: an inventory that meets a schema it doesn't
+      know `Term()`s the event — no retry, no readiness change, no alert — and the only thing
+      standing between the repo and that outcome is that nobody has recreated the services out of
+      step yet. This ADR states the rules ("land both sides together", "don't roll back past a
+      retained schema"); nothing *enforces* either. `Nak`/parking instead of `Term`ing an unknown
+      schema, gating consumer startup on a max-known-schema check, or ordering the swap in Compose
+      would each convert a quiet drop into a signal — **deferred to TKT-61.**
     - §5's ordering rests on review, not machinery: no test exercises mixed-version skew, and
-      Compose cannot express it.
+      `compose.yaml` expresses no ordering between catalog and inventory to exercise.
 
 ## References
 
