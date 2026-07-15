@@ -302,11 +302,26 @@ checkpoint chain off it**.
    domain/version bytes are pinned by golden tests; changing any of them later requires an explicit
    canonical-version migration.
 
-9. **Backfill.** Existing rows are backfilled into the companion table at startup, before listening,
-   bounded and fail-fast per [ADR-008](./ADR-008-embedded-migrations.md), resumable after
-   interruption. It **cannot prove legacy rows were honest** — QR credentials anchor ticket identity,
-   not event history. Existing history is adopted as the baseline, and that limit is a property of
-   the scheme, not a bug in it.
+9. **Backfill.** Existing rows are backfilled into the companion table **out-of-band, in the
+   service's one-shot `migrate` job**, bounded and fail-fast, resumable after interruption. It
+   **cannot prove legacy rows were honest** — QR credentials anchor ticket identity, not event
+   history. Existing history is adopted as the baseline, and that limit is a property of the scheme,
+   not a bug in it.
+
+   **Amended 2026-07-15 (TKT-66/ADR-022), same day this ADR landed.** The clause originally read
+   *"backfilled at startup, before listening, per ADR-008"*. [ADR-022](./ADR-022-out-of-band-service-migrations.md)
+   superseded ADR-008 **on placement** hours later: migrations no longer run on the server path, so
+   there is no "before listening" left to run in. ADR-008's *other* rulings — goose as a library,
+   `embed.FS`, per-service schema ownership, fail-fast under a **30-second deadline** — still stand
+   and still bind this backfill.
+
+   **This is not a search-and-replace, and TKT-67 must not treat it as one.** The 30-second deadline
+   was survivable when it bounded a service's own boot; it now bounds a **one-shot job the service
+   `depends_on` with `service_completed_successfully`**, so a backfill that exceeds it fails the job
+   and the service never starts at all. This backfill is **not** pure DDL — it Ed25519-signs every
+   existing lifecycle row, so its cost scales with history and it is precisely the kind of work that
+   blows a 30-second budget on a populated database. TKT-67 owns deciding whether it fits, or whether
+   it needs its own resumable job outside the migrate deadline. Do not assume it fits.
 
 ### Threat model
 
@@ -395,6 +410,11 @@ to the lifecycle trail.
   threat model, re-argued here for per-ticket granularity)
 - [ADR-002 — Services from day one](./ADR-002-services-from-day-one.md) (one database per service)
 - [ADR-012 — Ticket issuance and QR credentials](./ADR-012-ticket-issuance-and-qr-credentials.md)
-- [ADR-008 — Embedded migrations](./ADR-008-embedded-migrations.md) ·
-  [ADR-020 — Non-concurrent index builds](./ADR-020-catalog-index-build-concurrency.md) ·
+- [ADR-022 — Out-of-band service migrations](./ADR-022-out-of-band-service-migrations.md) (supersedes
+  ADR-008 **on placement**; §Decision 9 is amended for it) ·
+  [ADR-008 — Embedded migrations](./ADR-008-embedded-migrations.md) (goose-as-library, `embed.FS`,
+  per-service ownership and the 30s fail-fast deadline still stand) ·
+  [ADR-020 — Non-concurrent index builds](./ADR-020-catalog-index-build-concurrency.md) (still no
+  `CONCURRENTLY`: ADR-022 satisfied precondition (1), but they are conjunctive and (2)/(3) remain
+  false) ·
   [ADR-010 — PostgreSQL claim transaction](./ADR-010-postgres-claim-transaction.md)
