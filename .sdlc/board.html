@@ -399,16 +399,21 @@ const TRANSITIONS = {
 
 const TICONS = { "Story":["story","S"], "Task":["task","T"], "Bug":["bug","B"], "Epic":["epic","E"], "Spike":["spike","?"] };
 
-/* DoR — the 7 readiness items (mirrors shaping.md); missing item = open */
+/* DoR — the 8 readiness items (mirrors shaping.md); missing item = open */
 const DOR = [
   ["objective","Clear objective"], ["scope","Stabilized scope"],
   ["uncertainties","Uncertainties identified"], ["dependencies","Dependencies identified"],
   ["approach","Technical approach"], ["first_slice","First deliverable slice"],
-  ["success","Success criteria (COS)"]
+  ["success","Success criteria (COS)"], ["context_memo","Context-mémo baked (governingAdrs)"]
 ];
+/* No `readiness` at all = nothing shaped = 8 open items, NOT a pass. Returning null here used to
+   make notReady() see zero open items, so an unshaped ticket sailed through Gate 1 — which is
+   exactly how TKT-57 reached Planning with no context-mémo and had its governing ADRs
+   reconstructed by hand at drafting time. Absence of evidence was reading as evidence of
+   readiness. Done tickets are exempt at the call sites: they predate the DoR and shipped anyway. */
 function dorState(t){
-  if (!t.readiness) return null;
-  const items = DOR.map(([k, label]) => ({ k, label, state:"open", ...(t.readiness[k] || {}) }));
+  const r = t.readiness || {};
+  const items = DOR.map(([k, label]) => ({ k, label, state:"open", ...(r[k] || {}) }));
   const met = items.filter(i => i.state !== "open").length;
   return { items, met, total: DOR.length, pass: met === DOR.length };
 }
@@ -467,7 +472,7 @@ function card(t, sub){
   const pr = t.pr ? `<span class="pr">PR #${t.pr.number} · <span class="${t.pr.state}">${t.pr.state}</span></span>` : "";
   const blk = openBlockers(t);
   const blkChip = blk.length ? `<span class="blkchip" title="blocked by ${blk.map(b=>b.key).join(", ")}">🔗 ${blk.map(b=>esc(b.key)).join(", ")}</span>` : "";
-  const dor = dorState(t);
+  const dor = t.status === "Done" ? null : dorState(t);   /* Done predates the DoR — no chip */
   const dorChip = dor ? `<span class="dorchip ${dor.pass?'pass':'open'}" title="Definition of Ready — ${dor.met}/${dor.total} items met or deferred">${dor.pass ? "DoR ✓" : `DoR ${dor.met}/${dor.total}`}</span>` : "";
   const moved = movedKeys.has(t.key) ? " moved" : "";
   const spike = t.type === "Spike" ? " spike" : "";
@@ -683,7 +688,7 @@ function renderModal(){
   const gate = ga ? `<div class="gaterow"><button class="gatebtn" onclick="gateAction('${t.key}')">${ga.btn}</button><span class="hint">${ga.hint}</span></div>` : "";
   const parent = spikeParent(t);
   const prepares = parent ? `<span class="k">Prepares</span><span class="v"><span class="spk" onclick="openTicket('${parent.key}')">🔍 ${esc(parent.key)}</span> — readiness spike</span>` : "";
-  const dor = dorState(t);
+  const dor = t.status === "Done" ? null : dorState(t);   /* Done predates the DoR — no panel */
   const DOR_ICON = { met:"✓", open:"○", deferred:"–" };
   const dorHtml = dor ? `<div class="dorlist">
       <h3>Definition of Ready — ${dor.pass ? "✓ passes Gate 1" : `${dor.met}/${dor.total} · Gate 1 blocked`}</h3>
