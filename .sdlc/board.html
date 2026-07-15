@@ -520,7 +520,7 @@ function column(name, tickets, blocked){
             title="cutoff: archive tickets closed before this date (empty = all)">
           <button class="mbtn" onclick="archiveDone(event)" title="move Done tickets to .sdlc/tickets/archive/ on the state branch">🗂</button>` : ""}
       <span class="cnt">${list.length}</span></h2>
-    <div class="cards">${cards}</div>
+    <div class="cards" data-cards="${s}">${cards}</div>
   </div>`;
 }
 function gate(afterStatus){
@@ -601,6 +601,13 @@ async function save(ticket, msg){
   } catch(err){ toast("save failed: " + err.message); }
 }
 let archBefore = "";  // survives repaints (the board redraws every 1.5s)
+let painted = "";     // signature of the last paint; unchanged polls skip the repaint entirely
+/* Repaint signature. Excludes `now` (server clock, ticks every poll) but keeps it bucketed to
+   the minute: ageChip renders via fmtDur, whose finest unit is minutes, so a finer bucket would
+   repaint the board ~40x per visible change. */
+function sig(b){
+  return JSON.stringify(b, (k, v) => k === "now" ? Math.floor(v / 60) : v);
+}
 async function archiveDone(e){
   e.stopPropagation();
   try {
@@ -803,11 +810,18 @@ function paint(){
   });
   cols.push(column(BOARD.blocked || "BLOCKED", BOARD.tickets, true));
   document.getElementById("focusbtn").classList.toggle("on", FOCUS);
+  const scrolls = {};
+  document.querySelectorAll("#board .cards").forEach(c => scrolls[c.dataset.cards] = c.scrollTop);
   document.getElementById("board").innerHTML = cols.join("");
+  // innerHTML discards the old .cards nodes, so scrollTop must be reapplied to the new ones
+  document.querySelectorAll("#board .cards").forEach(c => {
+    if (scrolls[c.dataset.cards]) c.scrollTop = scrolls[c.dataset.cards];
+  });
   paintYourMove();
   if (selectedKey) renderModal();
   movedKeys.clear();                          // pulse plays once
   BOARD.tickets.forEach(t => prevStatus[t.key] = t.status);
+  painted = sig(BOARD);                       // every repaint path lands here, incl. focus toggle + drag
 }
 
 /* --- metrics overlay: exact stage durations from the state-branch git history --- */
@@ -851,12 +865,16 @@ async function render(){
   if (dragKey) return;                        // don't wipe drag state mid-drag
   if (document.activeElement && document.activeElement.classList.contains("archdate")) return;  // date picker open
   try {
-    BOARD = await (await fetch("/board?t="+Date.now())).json();
-    BOARD.tickets.forEach(t => {
-      if (prevStatus[t.key] && prevStatus[t.key] !== t.status) movedKeys.add(t.key);
-    });
-    if (movedKeys.size) paintMoved();   // agent moved something: card glides to its new column
-    else paint();
+    const fetched = await (await fetch("/board?t="+Date.now())).json();
+    const same = painted === sig(fetched);   // most polls change nothing
+    BOARD = fetched;
+    if (!same) {
+      BOARD.tickets.forEach(t => {
+        if (prevStatus[t.key] && prevStatus[t.key] !== t.status) movedKeys.add(t.key);
+      });
+      if (movedKeys.size) paintMoved();   // agent moved something: card glides to its new column
+      else paint();
+    }
     const now = new Date();
     document.getElementById("stamp").innerHTML = `<span class="dot"></span>live · ${now.toLocaleTimeString([], {hour12:false})}`;
   } catch(e){
