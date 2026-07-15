@@ -92,8 +92,24 @@ proportional to a subset**.
    sequential scan is the *wrong* choice — on a two-row table Postgres rightly ignores the
    index and the assertion fails for an unrelated reason — so the test seeds a catalog large
    enough that scanning it is the expensive option, which is also the only condition under
-   which the defect bites. Both tests live in
-   `services/catalog/internal/store/season_smoke_test.go`.
+   which the defect bites. Both subset reads carry both tests: the season pair in
+   `season_smoke_test.go`, the festival pair in `festival_smoke_test.go` (TKT-65).
+
+   **Assert the plan under `force_generic_plan`, not a value-bound custom plan** — even for a
+   read with no nullable predicate. **This is a mutation-sensitive check on predicate shape, not
+   a simulation of production.** It is worth doing for one reason only: it is the condition under
+   which the assertion can *fail* when the predicate is wrong.
+
+   A custom plan is built knowing the parameter, so it can use the scoping index *whether or not
+   the predicate is sound*. Measured on the festival read, under the test's seeded statistics: an
+   `EXPLAIN` of a deliberately widened `(capacity_group_id = $1 OR $1 IS NULL)` still chose
+   `performances_capacity_group_idx` when planned with the value bound, and only the generic plan
+   refused it. So a custom-plan assertion is green against both the sound and the widened
+   predicate — the definition of a test that proves nothing. Planning blind is what distinguishes
+   the shapes, so planning blind is what the test does.
+
+   Both reads use the same `explainGenericPlan` helper; forking it per read is how one copy
+   quietly stops asserting anything.
 
    **EXPLAIN the statement production runs — not a copy of it.** Until TKT-63,
    `TestGetPublishedSeasonIsIndexScoped` EXPLAINed a *hand-copied, reduced* query (`SELECT p.id`
@@ -135,23 +151,44 @@ proportional to a subset**.
   is slower than the smoke tests around it, and a future Postgres could pick a different but
   equally scoped plan and fail it for the wrong reason — the assertion is on the index name,
   not on cost.
-- **Positive — for the season read, rule 2 is now a gate rather than a review standard.**
-  This ADR previously recorded that the rule outran its enforcement: the `EXPLAIN` test
-  duplicated a reduced query, so a scoping regression in `publicPerformances` would not have
-  reddened it. TKT-63 closed that by EXPLAINing `scopedPublicPerformancesQuery` itself. The
-  enforcement gap does **not** generalise to closed: the festival read (TKT-53) still has only a
-  result-scope test, so for `GetPublishedFestival` rule 2 remains a standard that the tests do
-  not discharge.
+- **Positive — rule 2 is now a gate for both subset reads, not a review standard.** This ADR
+  first recorded that the rule outran its enforcement: the season `EXPLAIN` test duplicated a
+  reduced query (so a regression in `publicPerformances` would not have reddened it), and the
+  festival read had no plan assertion at all. TKT-63 closed the first by EXPLAINing
+  `scopedPublicPerformancesQuery`; TKT-65 closed the second by extracting
+  `publishedFestivalPerformancesQuery` and EXPLAINing that. Each read's physical-cost assertion
+  is now bound to the statement it actually executes, and each is sabotage-verified — including,
+  for the festival, the nullable-`OR` regression transplanted from TKT-63.
+- **Negative — the evidence is conditional, and saying so is part of the rule.** Both plan tests
+  measure `force_generic_plan` against *seeded* statistics. They do not prove what production's
+  planner does against production's data distribution, and a future Postgres could pick a
+  different but equally scoped plan and redden them for the wrong reason (the assertion is on the
+  index name, not on cost). What they do prove is that the shipped statement's predicate is
+  index-compatible when planned blind — which is the claim the two defects this ADR came from
+  both violated.
 - **Negative — a scoping test costs a query const.** Binding a plan assertion to the shipped
   statement requires the query to *be* a referenceable value rather than a literal built inside
   its function. That is a real constraint on how these reads are written, and it is the price of
   the assertion being about production instead of about a copy.
-- **Negative — the plan assertion measures a mode production does not run.** `force_generic_plan`
-  is what makes the scoped predicate's shape testable at all: under the default `auto` mode
-  Postgres picks a custom plan per execution and *both* the old and new predicate shapes
-  index-scan, so `auto` cannot distinguish them. The forced mode can — which is also why the
-  assertion says nothing directly about production's `auto`-mode plans, only that the shipped
-  shape is robust to the planner not having the parameter's value.
+- **Negative — the plan assertion measures a mode production may never run, and cannot tell you
+  whether it does.** `force_generic_plan` is what makes the predicate's *shape* testable: a plan
+  built with the parameter in hand can use the scoping index whether the predicate is sound or
+  widened, so a value-bound plan cannot distinguish them. A blind plan can.
+
+  Production runs `auto`, and `auto` is conditional: it uses custom plans for roughly the first
+  five executions, then builds a generic plan and compares its estimated cost against the average
+  custom-plan cost (which includes repeated planning), adopting the generic plan only if it is not
+  more expensive and otherwise continuing to re-plan per execution. **Whether these reads ever run
+  a generic plan in production is therefore not something this ADR knows, and not something these
+  tests can establish** — the experiment above ran against seeded fixture statistics, not
+  production's data distribution, and plan choice is a function of that distribution.
+
+  So the assertion's scope is exactly: *the shipped predicate is index-compatible when planned
+  blind, under the fixture's statistics, and the assertion reddens if the predicate is widened.*
+  That is a canary on query shape. It is worth having because it is the only mechanism here that
+  reddens on the regression — and it must not be sold as more. Both directions of overclaim are
+  available and both are wrong: "this is what production runs" and "production would never run
+  this" are equally unsupported. Reaching for either would be this ADR's own failure mode.
 - **Resolved by TKT-63 — the generic-plan gap on `events`.** The `($1::uuid[] IS NULL OR e.id =
   ANY($1))` predicate had to be planned for a NULL `$1` as well, so under `force_generic_plan`
   the planner could not use `events_pkey` and fell back to scanning `events`
@@ -163,8 +200,10 @@ proportional to a subset**.
 ## References
 
 - TKT-53 (festival scoped read), TKT-60 (season scoped read + `performances_by_event`), TKT-64 (promotion),
-  TKT-63 (scoped/unscoped SQL split; generic-plan robustness; binds the plan assertion to the shipped SQL)
+  TKT-63 (scoped/unscoped SQL split; generic-plan robustness; binds the season plan assertion to the shipped SQL),
+  TKT-65 (festival plan assertion + result-scope test; rule 2 becomes a gate for both reads)
 - [ADR-004](./ADR-004-cache-first-read-path.md) — cache-first intent; this ADR covers the miss path
 - [ADR-018](./ADR-018-catalog-slot-transition-concurrency.md) — the write side of the same table
-- `services/catalog/internal/store/postgres.go` (`publicPerformances`), `season_smoke_test.go`
+- `services/catalog/internal/store/postgres.go` (`publicPerformances`, `publishedFestivalPerformancesQuery`),
+  `season_smoke_test.go` (`explainGenericPlan`), `festival_smoke_test.go`
 - `docs/learnings/2026-07-15-prove-tests-fail.md` — the general form of rule 2

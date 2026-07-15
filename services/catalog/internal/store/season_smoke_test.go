@@ -6,9 +6,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +19,37 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
+
+// assertReachesVia asserts a plan reaches relation through index and never
+// sequentially scans relation.
+//
+// Both halves are needed. Asserting the index name appears *somewhere* in the plan
+// text is weaker than it looks: a regressed query can use the index in one branch
+// and still scan the whole relation in another (an Append/UNION arm, say), which is
+// precisely the catalog-wide read the assertion claims to exclude — and the test
+// would stay green through it. Matching "Seq Scan on <relation>" also catches
+// "Parallel Seq Scan on <relation>".
+//
+// This still asserts on plan *text*, so it is not a proof that every access path to
+// the relation is scoped — an exhaustive check would walk EXPLAIN (FORMAT JSON)
+// nodes. It is the invariant these tests actually claim; do not describe it as more.
+func assertReachesVia(t *testing.T, plan, relation, index string) {
+	t.Helper()
+	if !strings.Contains(plan, index) {
+		t.Fatalf("plan does not reach %s through %s — it scans.\nplan:\n%s", relation, index, plan)
+	}
+	if strings.Contains(plan, "Seq Scan on "+relation) {
+		t.Fatalf("plan sequentially scans %s even though %s appears in it.\nplan:\n%s", relation, index, plan)
+	}
+}
+
+// planProbeSeq names each PREPARE uniquely. A prepared statement outlives the
+// rolled-back transaction that created it, so a fixed name makes a second
+// explainGenericPlan call on the same pooled connection die with
+// `prepared statement "plan_probe" already exists` (SQLSTATE 42P05) — a confusing
+// failure a long way from its cause. DEALLOCATE ALL would fix it and also discard
+// the driver's own cached statements, so: a fresh name per call.
+var planProbeSeq atomic.Uint64
 
 func seasonSmokeStore(t *testing.T) (context.Context, *sql.DB, *Postgres) {
 	t.Helper()
@@ -154,32 +188,49 @@ func TestGetPublishedSeasonDoesNotScanForeignEvents(t *testing.T) {
 // to govern — so all three run in one transaction, rolled back to drop both the
 // setting and the prepared statement.
 //
-// scope is interpolated into the EXECUTE as a literal because EXECUTE arguments
-// cannot be driver parameters (they would belong to the outer statement) nor
-// subqueries. The values are fixture-generated uuid.UUIDs, formatted by their
-// own String method — there is no injection surface here.
-func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query string, scope []uuid.UUID) string {
+// scope is the query's single parameter — a uuid.UUID (a scalar scope, e.g. the
+// festival read) or a []uuid.UUID (an array scope, e.g. the season read). It is
+// interpolated into the EXECUTE as a literal because EXECUTE arguments cannot be
+// driver parameters (they would belong to the outer statement) nor subqueries. The
+// values are fixture-generated uuid.UUIDs formatted by their own String method —
+// there is no injection surface here.
+//
+// Both catalog subset reads share this helper deliberately: the plan mode and the
+// $1 guard below are the discipline ADR-019 rule 2 asks for, and forking them per
+// read is how one copy quietly stops asserting anything.
+func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query string, scope any) string {
 	t.Helper()
+	var paramType, literal string
+	switch v := scope.(type) {
+	case uuid.UUID:
+		paramType, literal = `uuid`, `'`+v.String()+`'::uuid`
+	case []uuid.UUID:
+		ids := make([]string, 0, len(v))
+		for _, id := range v {
+			ids = append(ids, id.String())
+		}
+		paramType, literal = `uuid[]`, `'{`+strings.Join(ids, ",")+`}'::uuid[]`
+	default:
+		t.Fatalf("explainGenericPlan: unsupported scope type %T", scope)
+	}
+
+	stmt := "plan_probe_" + strconv.FormatUint(planProbeSeq.Add(1), 10)
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err = tx.ExecContext(ctx, `PREPARE plan_probe(uuid[]) AS `+query); err != nil {
+	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`PREPARE %s(%s) AS %s`, stmt, paramType, query)); err != nil {
 		t.Fatal(err)
 	}
 	// Set before the first EXECUTE: the cached plan is built then.
 	if _, err = tx.ExecContext(ctx, `SET LOCAL plan_cache_mode = force_generic_plan`); err != nil {
 		t.Fatal(err)
 	}
-	ids := make([]string, 0, len(scope))
-	for _, id := range scope {
-		ids = append(ids, id.String())
-	}
 	// EXPLAIN returns the plan one row per line — read them all, not just the first.
-	rows, err := tx.QueryContext(ctx,
-		`EXPLAIN EXECUTE plan_probe('{`+strings.Join(ids, ",")+`}'::uuid[])`)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`EXPLAIN EXECUTE %s(%s)`, stmt, literal))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,11 +310,8 @@ func TestGetPublishedSeasonIsIndexScoped(t *testing.T) {
 	}
 	plan := explainGenericPlan(ctx, t, db, scopedPublicPerformancesQuery, []uuid.UUID{season.EventIDs[0]})
 
-	for _, index := range []string{"performances_by_event", "events_pkey"} {
-		if !strings.Contains(plan, index) {
-			t.Fatalf("the shipped scoped season read does not use %s under force_generic_plan — it scans.\nplan:\n%s", index, plan)
-		}
-	}
+	assertReachesVia(t, plan, "performances", "performances_by_event")
+	assertReachesVia(t, plan, "events", "events_pkey")
 }
 
 // TestGetPublishedSeasonEmptyScopeDoesNotWidenToCatalog guards the contract that
