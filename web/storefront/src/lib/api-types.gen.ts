@@ -257,6 +257,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/festivals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a localized shared-capacity festival */
+        post: operations["createFestival"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/festivals/{festivalId}/days": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Attach a draft festival day to the shared-capacity festival */
+        post: operations["attachDayToFestival"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/festivals/{festivalId}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically publish the festival and every member day */
+        post: operations["publishFestival"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/festivals/{festivalId}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically archive the festival and every member day */
+        post: operations["archiveFestival"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ticket-types": {
         parameters: {
             query?: never;
@@ -326,6 +394,26 @@ export interface paths {
          * @description One call returns the localized season and its deduplicated public event details, retaining series framing. Program membership changes on the same editorial cadence as event detail, so it uses that five-minute tier: Cache-Control: public, max-age=300, s-maxage=300.
          */
         get: operations["getPublicSeason"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/festivals/{festivalId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Aggregated public festival detail (minutes tier)
+         * @description One call returns the localized festival and all publicly listable festival days drawing on its shared capacity. Festival programming uses the ADR-004 minutes tier: Cache-Control: public, max-age=300, s-maxage=300.
+         */
+        get: operations["getPublicFestival"];
         put?: never;
         post?: never;
         delete?: never;
@@ -482,6 +570,11 @@ export interface components {
             published_at?: string;
             /** Format: date-time */
             archived_at?: string | null;
+            /**
+             * Format: uuid
+             * @description Festival capacity-group id for grouped festival days
+             */
+            capacity_group_id?: string;
             /** Format: date-time */
             created_at: string;
         };
@@ -571,6 +664,36 @@ export interface components {
             /** Format: date-time */
             created_at: string;
         };
+        FestivalCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            name: components["schemas"]["LocalizedString"];
+            /** Format: int32 */
+            shared_capacity: number;
+        };
+        FestivalDayAttach: {
+            /** Format: uuid */
+            performance_id: string;
+        };
+        Festival: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            name: components["schemas"]["LocalizedString"];
+            /** Format: int32 */
+            shared_capacity: number;
+            /** @enum {string} */
+            status: "draft" | "published" | "archived";
+            member_ids: string[];
+            /** Format: date-time */
+            created_at: string;
+        };
+        FestivalLifecycleResult: {
+            /** Format: uuid */
+            festival_id: string;
+            performances: components["schemas"]["Performance"][];
+        };
         PublicEventList: {
             events: components["schemas"]["PublicEventSummary"][];
         };
@@ -623,6 +746,14 @@ export interface components {
             name: string;
             events: components["schemas"]["PublicEventDetail"][];
         };
+        PublicFestivalDetail: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            name: string;
+            days: components["schemas"]["PublicPerformanceDetail"][];
+        };
         PublicVenue: {
             /** Format: uuid */
             id: string;
@@ -662,6 +793,7 @@ export interface components {
         EventId: string;
         SeriesId: string;
         SeasonId: string;
+        FestivalId: string;
     };
     requestBodies: never;
     headers: {
@@ -1107,6 +1239,133 @@ export interface operations {
             };
         };
     };
+    createFestival: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FestivalCreate"];
+            };
+        };
+        responses: {
+            /** @description Festival created in draft */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Festival"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    attachDayToFestival: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                festivalId: components["parameters"]["FestivalId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FestivalDayAttach"];
+            };
+        };
+        responses: {
+            /** @description Updated festival */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Festival"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Wrong slot kind, existing group, frozen day, or launched festival */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    publishFestival: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                festivalId: components["parameters"]["FestivalId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Festival and member days are published */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FestivalLifecycleResult"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Empty festival or a member cannot publish */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesTransitionConflict"];
+                };
+            };
+        };
+    };
+    archiveFestival: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                festivalId: components["parameters"]["FestivalId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Festival and member days are archived */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FestivalLifecycleResult"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Empty festival, draft member, or member with an owed closure event */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesTransitionConflict"];
+                };
+            };
+        };
+    };
     createTicketType: {
         parameters: {
             query?: never;
@@ -1208,6 +1467,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicSeasonDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getPublicFestival: {
+        parameters: {
+            query: {
+                /** @description BCP-47 primary subtag; supported set is data, not schema (TKT-36) */
+                locale: components["parameters"]["Locale"];
+            };
+            header?: never;
+            path: {
+                festivalId: components["parameters"]["FestivalId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Published festival detail, localized */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicFestivalDetail"];
                 };
             };
             400: components["responses"]["BadRequest"];

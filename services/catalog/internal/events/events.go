@@ -39,14 +39,26 @@ type PerformancePublishedData struct {
 	// Kind lets inventory attribute the pool to a slot kind without forking the
 	// claim path (ADR-005). Added additively; Schema stays 2 (backward
 	// compatible — existing consumers ignore it, ADR-009).
-	Kind     string `json:"kind"`
-	Capacity int32  `json:"capacity"`
+	Kind            string     `json:"kind"`
+	Capacity        int32      `json:"capacity"`
+	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
+	SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
 }
 
 type PerformanceArchivedData struct {
-	PerformanceID uuid.UUID `json:"performance_id"`
-	EventID       uuid.UUID `json:"event_id"`
-	OrganizerID   uuid.UUID `json:"organizer_id"`
+	PerformanceID   uuid.UUID  `json:"performance_id"`
+	EventID         uuid.UUID  `json:"event_id"`
+	OrganizerID     uuid.UUID  `json:"organizer_id"`
+	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
+}
+
+// festivalCapacity keeps the additive schema-2 fields atomic: they are only
+// emitted as a valid pair for a grouped festival day.
+func festivalCapacity(perf store.Performance) (*uuid.UUID, *int32) {
+	if perf.Kind != store.KindFestivalDay || perf.CapacityGroupID == nil || perf.SharedCapacity == nil || *perf.SharedCapacity <= 0 {
+		return nil, nil
+	}
+	return perf.CapacityGroupID, perf.SharedCapacity
 }
 
 // SlotClosureData carries a weather-closure transition (spike §Case 3). Version
@@ -111,17 +123,20 @@ func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Perform
 		occurred = *perf.PublishedAt
 	}
 	id := EventID(perf)
+	capacityGroupID, sharedCapacity := festivalCapacity(perf)
 	body, err := json.Marshal(Envelope{
 		ID:         id,
 		Type:       SubjectPerformancePublished,
 		OccurredAt: occurred,
 		Schema:     2,
 		Data: PerformancePublishedData{
-			PerformanceID: perf.ID,
-			EventID:       perf.EventID,
-			OrganizerID:   perf.OrganizerID,
-			Kind:          perf.Kind,
-			Capacity:      perf.Capacity,
+			PerformanceID:   perf.ID,
+			EventID:         perf.EventID,
+			OrganizerID:     perf.OrganizerID,
+			Kind:            perf.Kind,
+			Capacity:        perf.Capacity,
+			CapacityGroupID: capacityGroupID,
+			SharedCapacity:  sharedCapacity,
 		},
 	})
 	if err != nil {
@@ -183,9 +198,10 @@ func (p *JetStream) PerformanceArchived(ctx context.Context, perf store.Performa
 		occurred = *perf.ArchivedAt
 	}
 	id := ArchivedEventID(perf)
+	capacityGroupID, _ := festivalCapacity(perf)
 	body, err := json.Marshal(Envelope{
 		ID: id, Type: SubjectPerformanceArchived, OccurredAt: occurred, Schema: 2,
-		Data: PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID},
+		Data: PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID, CapacityGroupID: capacityGroupID},
 	})
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)

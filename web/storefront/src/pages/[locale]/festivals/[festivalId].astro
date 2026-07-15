@@ -1,0 +1,113 @@
+---
+// Festival detail — one aggregated read presenting the festival and its days
+// as a single grouped offer (US-011). Same single-source, minutes-tier rule as
+// the event detail page: no independently-cached API copy is fetched
+// browser-side.
+import Layout from '../../../layouts/Layout.astro';
+import { getPublicFestival, type PublicFestivalDetail } from '../../../lib/api';
+import { UpstreamError } from '../../../lib/cache';
+import { UI_STRINGS, isLocale } from '../../../lib/locales';
+import PerformanceCard from '../../../components/PerformanceCard.astro';
+
+const { locale, festivalId } = Astro.params;
+if (!locale || !isLocale(locale) || !festivalId) {
+  return new Response(null, { status: 404 });
+}
+const t = UI_STRINGS[locale];
+
+let festival: PublicFestivalDetail;
+try {
+  festival = await getPublicFestival(Astro, locale, festivalId);
+} catch (err) {
+  if (err instanceof UpstreamError && (err.status === 404 || err.status === 400)) {
+    return new Response(null, { status: 404 });
+  }
+  return new Response('Service unavailable', { status: 503 });
+}
+---
+
+<Layout locale={locale} title={festival.name}>
+  <a class="back" href={`/${locale}/events`}>← {t.backToEvents}</a>
+  <h1>{festival.name}</h1>
+  <section class="festival">
+    <h2>{t.festivalDays}</h2>
+    {
+      festival.days.map((day) => (
+        <PerformanceCard
+          performance={day}
+          organizerId={festival.organizer_id}
+          locale={locale}
+          venueLabel={t.venue}
+          ticketsLabel={t.tickets}
+        />
+      ))
+    }
+  </section>
+</Layout>
+
+<style>
+  .back {
+    display: inline-block;
+    margin-bottom: 1rem;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+  }
+  .back:hover {
+    color: var(--accent);
+  }
+  h1 {
+    font-size: 1.6rem;
+    margin: 0 0 0.3rem;
+  }
+  /* The whole festival reads as one grouped offer — a single accent-bordered
+     block, echoing the series grouping on the event detail page. */
+  .festival {
+    border-left: 3px solid var(--accent);
+    padding-left: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .festival > h2 {
+    font-size: 1.15rem;
+    margin: 0 0 0.75rem;
+  }
+</style>
+
+<style is:global>
+  .hold-picker {
+    display: grid;
+    grid-template-columns: auto 5rem auto 1fr;
+    align-items: center;
+    gap: 0.65rem;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+  }
+  .hold-picker label { display: contents; color: var(--muted); font-size: 0.9rem; }
+  .hold-picker input {
+    width: 5rem;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+  }
+  .hold-picker button {
+    padding: 0.5rem 0.9rem;
+    border: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    color: white;
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .hold-picker button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .hold-picker [aria-live] { color: var(--muted); font-size: 0.9rem; }
+  .checkout-form { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: end; }
+  .checkout-form label { display: grid; gap: 0.25rem; }
+  .checkout-form input, .checkout-form select { padding: 0.45rem; border: 1px solid var(--line); border-radius: 6px; }
+  @media (max-width: 36rem) {
+    .hold-picker { grid-template-columns: auto 1fr; }
+    .hold-picker [aria-live] { grid-column: 1 / -1; }
+  }
+</style>

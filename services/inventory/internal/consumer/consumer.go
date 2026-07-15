@@ -33,36 +33,56 @@ type publication struct {
 	ID     uuid.UUID `json:"id"`
 	Schema int       `json:"schema"`
 	Data   struct {
-		PerformanceID uuid.UUID `json:"performance_id"`
-		OrganizerID   uuid.UUID `json:"organizer_id"`
-		Capacity      int32     `json:"capacity"`
+		PerformanceID   uuid.UUID  `json:"performance_id"`
+		OrganizerID     uuid.UUID  `json:"organizer_id"`
+		Capacity        int32      `json:"capacity"`
+		CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
+		SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
 	} `json:"data"`
 }
 
-func (c *Consumer) provisionInput(ctx context.Context, e publication) (uuid.UUID, int32, error) {
+type provisionInput struct {
+	organizerID uuid.UUID
+	poolID      uuid.UUID
+	capacity    int32
+}
+
+func (c *Consumer) provisionInput(ctx context.Context, e publication) (provisionInput, error) {
 	if e.ID == uuid.Nil || e.Data.PerformanceID == uuid.Nil || e.Data.OrganizerID == uuid.Nil {
-		return uuid.Nil, 0, fmt.Errorf("publication is missing required identifiers")
+		return provisionInput{}, fmt.Errorf("publication is missing required identifiers")
 	}
 	switch e.Schema {
 	case 2:
 		if e.Data.Capacity <= 0 {
-			return uuid.Nil, 0, fmt.Errorf("schema-2 publication has invalid capacity")
+			return provisionInput{}, fmt.Errorf("schema-2 publication has invalid capacity")
 		}
-		return e.Data.OrganizerID, e.Data.Capacity, nil
+		if (e.Data.CapacityGroupID == nil) != (e.Data.SharedCapacity == nil) || e.Data.SharedCapacity != nil && *e.Data.SharedCapacity <= 0 {
+			return provisionInput{}, fmt.Errorf("schema-2 publication has invalid festival capacity")
+		}
+		poolID, capacity := e.Data.PerformanceID, e.Data.Capacity
+		if e.Data.CapacityGroupID != nil {
+			poolID, capacity = *e.Data.CapacityGroupID, *e.Data.SharedCapacity
+		}
+		return provisionInput{organizerID: e.Data.OrganizerID, poolID: poolID, capacity: capacity}, nil
 	case 1:
 		if c.resolver == nil {
-			return uuid.Nil, 0, fmt.Errorf("schema-1 publication needs catalog resolver")
+			return provisionInput{}, fmt.Errorf("schema-1 publication needs catalog resolver")
 		}
-		organizerID, capacity, err := c.resolver.PublishedPerformance(ctx, e.Data.PerformanceID)
+		resolved, err := c.resolver.PublishedPerformance(ctx, e.Data.PerformanceID)
 		if err != nil {
-			return uuid.Nil, 0, err
+			return provisionInput{}, err
 		}
-		if organizerID != e.Data.OrganizerID || capacity <= 0 {
-			return uuid.Nil, 0, fmt.Errorf("schema-1 publication conflicts with catalog")
+		if resolved.OrganizerID != e.Data.OrganizerID || resolved.Capacity <= 0 ||
+			(resolved.CapacityGroupID == nil) != (resolved.SharedCapacity == nil) || resolved.SharedCapacity != nil && *resolved.SharedCapacity <= 0 {
+			return provisionInput{}, fmt.Errorf("schema-1 publication conflicts with catalog")
 		}
-		return organizerID, capacity, nil
+		poolID, capacity := e.Data.PerformanceID, resolved.Capacity
+		if resolved.CapacityGroupID != nil {
+			poolID, capacity = *resolved.CapacityGroupID, *resolved.SharedCapacity
+		}
+		return provisionInput{organizerID: resolved.OrganizerID, poolID: poolID, capacity: capacity}, nil
 	default:
-		return uuid.Nil, 0, fmt.Errorf("unsupported publication schema %d", e.Schema)
+		return provisionInput{}, fmt.Errorf("unsupported publication schema %d", e.Schema)
 	}
 }
 
@@ -84,7 +104,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			_ = msg.Term()
 			return
 		}
-		organizerID, capacity, err := c.provisionInput(ctx, e)
+		input, err := c.provisionInput(ctx, e)
 		if err != nil {
 			if e.Schema == 1 {
 				c.log.Error("resolve legacy publication", "event_id", e.ID, "err", err)
@@ -95,7 +115,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 			_ = msg.Term()
 			return
 		}
-		if err := c.st.Provision(ctx, e.ID, e.Data.PerformanceID, organizerID, capacity); err != nil {
+		// Grouped festival days deliberately converge on the festival id. Slot to
+		// group resolution for claims is owned by TKT-14 and remains out of scope.
+		if err := c.st.Provision(ctx, e.ID, input.poolID, input.organizerID, input.capacity); err != nil {
 			c.log.Error("provision inventory", "err", err)
 			_ = msg.Nak()
 			return

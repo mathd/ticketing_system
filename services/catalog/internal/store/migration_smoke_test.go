@@ -62,6 +62,26 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("festival migration installs capacity-group foreign key and index", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var festivalTable, groupIndex, groupFK bool
+		if err := db.QueryRowContext(ctx, `SELECT
+			to_regclass(current_schema() || '.festivals') IS NOT NULL,
+			to_regclass(current_schema() || '.performances_capacity_group_idx') IS NOT NULL,
+			EXISTS (SELECT 1 FROM information_schema.table_constraints
+			 WHERE constraint_schema=current_schema() AND table_name='performances'
+			 AND constraint_name='performances_capacity_group_fk' AND constraint_type='FOREIGN KEY')`).
+			Scan(&festivalTable, &groupIndex, &groupFK); err != nil {
+			t.Fatal(err)
+		}
+		if !festivalTable || !groupIndex || !groupFK {
+			t.Fatalf("festival migration: table=%v index=%v fk=%v", festivalTable, groupIndex, groupFK)
+		}
+	})
+
 	t.Run("series and season rollback guard preserves schema", func(t *testing.T) {
 		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {
@@ -76,6 +96,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if _, err := db.ExecContext(ctx, `INSERT INTO series(organizer_id,event_id,name) VALUES($1,$2,'{"en":"run","fr":"série"}')`, organizerID, eventID); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := provider.Down(ctx); err != nil { // 0006
+			t.Fatalf("0006 down: %v", err)
 		}
 		if _, err := provider.Down(ctx); err == nil {
 			t.Fatal("0005 down unexpectedly accepted series data")
@@ -168,6 +191,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 				if _, err := provider.Up(ctx); err != nil {
 					t.Fatal(err)
 				}
+				if _, err := provider.Down(ctx); err != nil { // 0006
+					t.Fatalf("0006 down: %v", err)
+				}
 				if _, err := provider.Down(ctx); err != nil { // 0005
 					t.Fatalf("0005 down: %v", err)
 				}
@@ -202,6 +228,9 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		db, provider := newDB(t)
 		if _, err := provider.Up(ctx); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := provider.Down(ctx); err != nil { // 0006
+			t.Fatalf("0006 down: %v", err)
 		}
 		if _, err := provider.Down(ctx); err != nil { // 0005
 			t.Fatalf("0005 down: %v", err)
@@ -254,9 +283,12 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// 0005 has no grouping data, so it rolls back cleanly. The row is kind
+		// 0006 and 0005 have no grouping data, so they roll back cleanly. The row is kind
 		// 'performance' (default) with starts_at set, so 0004 also rolls back;
 		// the archived-row guard being asserted lives in 0003.
+		if _, err := provider.Down(ctx); err != nil {
+			t.Fatalf("0006 down should succeed without festival data: %v", err)
+		}
 		if _, err := provider.Down(ctx); err != nil {
 			t.Fatalf("0005 down should succeed without grouping data: %v", err)
 		}

@@ -10,6 +10,7 @@ import type { Locale } from './locales';
 export type PublicEventList = components['schemas']['PublicEventList'];
 export type PublicEventSummary = components['schemas']['PublicEventSummary'];
 export type PublicEventDetail = components['schemas']['PublicEventDetail'];
+export type PublicFestivalDetail = components['schemas']['PublicFestivalDetail'];
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 
@@ -39,5 +40,20 @@ export function getPublicEvent(
   return pageRead<PublicEventDetail>(
     astro,
     `/public/events/${encodeURIComponent(eventId)}?locale=${locale}`,
+  );
+}
+
+/**
+ * The festival page's single aggregated call: a festival and its days as one
+ * grouped offer (US-011). Same minutes tier as the event reads (ADR-004).
+ */
+export function getPublicFestival(
+  astro: AstroGlobal,
+  locale: Locale,
+  festivalId: string,
+): Promise<PublicFestivalDetail> {
+  return pageRead<PublicFestivalDetail>(
+    astro,
+    `/public/festivals/${encodeURIComponent(festivalId)}?locale=${locale}`,
   );
 }

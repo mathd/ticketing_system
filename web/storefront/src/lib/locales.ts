@@ -26,6 +26,7 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     ticketQrAlt: 'Ticket QR code',
     ticketHistory: 'Ticket history',
     ticketDeliveryNotice: 'Your tickets are ready. Keep this page available for entry.',
+    festivalDays: 'Festival days',
   },
   fr: {
     events: 'Événements',
@@ -39,5 +40,6 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     ticketQrAlt: 'Code QR du billet',
     ticketHistory: 'Historique du billet',
     ticketDeliveryNotice: 'Vos billets sont prêts. Conservez cette page pour votre entrée.',
+    festivalDays: 'Jours du festival',
   },
 };
