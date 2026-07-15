@@ -17,16 +17,31 @@ threat model. Read the following claims in this ADR with that scope:
   whole-organizer removal, or a database restore to an older snapshot. Nothing inside the instance
   attests how long a chain should be. Closing that requires an attestation outside the database;
   the anchor is deferred to TKT-11 (see ADR-016 §Decision 7).
-- **"Two append-only trails, one discipline"** (Decision) currently overstates the symmetry. The
-  **money journal** is hash-chained, HMAC-signed and verified (`verify-journal`, in the local gate).
-  The **ticket lifecycle trail** has neither a hash chain, a signature, nor a verifier: its only
-  defence is an append-only trigger (`lifecycle_events_immutable`,
-  `services/access/internal/store/migrations/0001_tickets.sql`), which is DDL and therefore removable
-  by anyone who can alter the schema. The trail is *append-only by policy*, not tamper-evident by
-  construction — strictly weaker than the money journal, since a modified `lifecycle_events` row
-  leaves no cryptographic evidence. The owner's directive puts tickets on equal footing with money,
-  so this asymmetry is a **known gap, not a decision**; it is not TKT-43's scope (TKT-43 hardens the
-  money path) and needs its own ticket.
+- **"Two append-only trails, one discipline"** (Decision) still overstates the symmetry *today*, but
+  the asymmetry is now a **decision, not an open gap**: [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)
+  (TKT-57) settles it. The **money journal** is hash-chained, HMAC-signed and verified
+  (`verify-journal`, in the local gate). The **ticket lifecycle trail** has neither a hash chain, a
+  signature, nor a verifier: its only defence is an append-only trigger
+  (`lifecycle_events_immutable`, `services/access/internal/store/migrations/0001_tickets.sql`),
+  which is DDL and therefore removable by anyone who can alter the schema. Until **TKT-67**
+  implements ADR-021, the trail is *append-only by policy*, not tamper-evident by construction —
+  strictly weaker than the money journal, since a modified `lifecycle_events` row leaves no
+  cryptographic evidence. **Do not cite this ADR, or ADR-021, as evidence that the lifecycle trail
+  is tamper-evident until TKT-67 lands.**
+
+  ADR-021 deliberately does **not** give the lifecycle trail the money journal's treatment
+  unchanged: "one discipline" means *tamper-evident by construction*, not *identical mechanism*.
+  The journal's chain is per-organizer and serialized under a `journal_heads` row lock, which on the
+  redemption path would put every turnstile for an organizer behind one lock. ADR-021 chains **per
+  ticket**, signs with Ed25519 rather than HMAC, signs the **head** rather than every entry, and
+  adds an **asynchronous per-organizer checkpoint** — the last of which is **scaffolding to make
+  TKT-11's external anchor affordable, not a rollback control**. Each divergence is argued there.
+
+  **Scope it precisely when citing it, in ADR-021's own words: tamper-evident against an adversary
+  who cannot re-sign the chain; silent against one who can roll it back wholesale.** Modification
+  and insertion are closed; targeted rollback and current-key compromise are not, and no
+  in-database mechanism reaches them — ADR-016 §D7's deferral stands until TKT-11. ADR-021 §The
+  trust boundary explains why, and exists because three of its own clauses got this wrong.
 - **"A GDPR erasure request … never touches the trails — inalterability and the right to erasure stop
   conflicting by construction"** (Decision 3) holds only while the pseudonym is unlinkable. The buyer
   UUID is an *unsalted* SHA-1 of the reservation ID (`services/commerce/internal/api/server.go:162`),
