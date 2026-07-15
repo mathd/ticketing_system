@@ -215,4 +215,67 @@ describe('App', () => {
     expect(screen.queryByText(/Camera access was unavailable/)).toBeNull()
     expect(active.stop).not.toHaveBeenCalled()
   })
+
+  it('stops the previous stream when the camera is restarted while already active', async () => {
+    const first = fakeStream()
+    const second = fakeStream()
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(first.stream)
+      .mockResolvedValueOnce(second.stream)
+    stubIdleDetector()
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+
+    render(<App />)
+    // First start fully completes and the camera is active.
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+    await waitFor(() => expect(screen.getByText(/Point the camera/)).toBeDefined())
+    expect(first.stop).not.toHaveBeenCalled()
+
+    // Restart via the always-present "Use camera" (Stop is a separate button); the app re-enables the
+    // camera button between generations, so drive a fresh start directly.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Stop camera' }))
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByText(/Point the camera/)).toBeDefined())
+
+    // The first stream must have been stopped; the second is live and untouched.
+    expect(first.stop).toHaveBeenCalled()
+    expect(second.stop).not.toHaveBeenCalled()
+  })
+
+  it('stops the acquired stream when video playback fails', async () => {
+    const { stop, stream } = fakeStream()
+    const getUserMedia = vi.fn().mockResolvedValue(stream)
+    stubIdleDetector()
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    // play() rejecting exercises the post-attach failure path: the acquired stream must be released.
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(new Error('play failed'))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+
+    await waitFor(() => expect(stop).toHaveBeenCalledOnce())
+    expect(await screen.findByText(/Camera access was unavailable/)).toBeDefined()
+  })
+
+  it('stops the acquired stream if BarcodeDetector construction throws', async () => {
+    const { stop, stream } = fakeStream()
+    const getUserMedia = vi.fn().mockResolvedValue(stream)
+    vi.stubGlobal('BarcodeDetector', class {
+      constructor() {
+        throw new Error('detector construction failed')
+      }
+    })
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+
+    await waitFor(() => expect(stop).toHaveBeenCalledOnce())
+    expect(await screen.findByText(/Camera access was unavailable/)).toBeDefined()
+  })
 })
