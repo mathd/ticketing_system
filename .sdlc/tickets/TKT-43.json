@@ -2,9 +2,11 @@
   "key": "TKT-43",
   "type": "Story",
   "summary": "Production-grade checkout recovery and journal fault-injection hardening",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent:claude-code",
   "pr": null,
   "description": "Follow-up from the TKT-28 adversarial review. Before replacing the fake PSP, add scheduled/restart recovery for payment_unknown and confirmation_pending workflows, PSP status plus void/refund compensation, transactional outbox publication, and PostgreSQL integration/fault-injection coverage for concurrent journal appends, conflicting replay, tampering, head consistency, key rotation, PII erasure, service restarts, and crash boundaries. TKT-28 retains retry-driven recovery appropriate to its walking-skeleton COS.",
   "comments": [
@@ -12,6 +14,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFollow-up from PR #7 second review (validated 2026-07-13): before any real-PSP launch, implement a durable reconciler with a bounded finalizing lease/expiry policy; re-drive confirmation_pending and payment_unknown/release_pending orders after restart; repair a payment operation whose canonical capture fact exists but terminal projection write failed; obtain PSP status and issue idempotent void/refund compensation when confirmation is impossible. These are deliberate walking-skeleton limits in ADR-011, not safe branch fixes without the recovery design."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed by agent (Claude Code) — driving the local tracker backend, gates-only style.\n\n**Selection reason:** user requested TKT-43 by key. Entry conditions verified against the state\nbranch rather than conversation memory:\n\n- `links: []` on the ticket and no other ticket declares a `blocks` link toward TKT-43 → **zero open blockers**.\n- TKT-28 (US-004, the walking-skeleton checkout this ticket hardens) is **Done**; ADR-011 records the\n  deliberate limits TKT-43 exists to remove. ADR-012 also names TKT-43 as the owner of scheduled/restart\n  outbox recovery.\n\n**Branch:** `TKT-43-checkout-recovery-journal-hardening` off `origin/main`, in a worktrunk worktree\nat `../ticketing_system.TKT-43-checkout-recovery-journal-hardening`.\n\n**Scope note carried into Planning (user decision):** the description bundles recovery, PSP\ncompensation, transactional outbox, and a broad fault-injection suite. Agreed approach is to plan the\n**full scope**, then propose a decomposition at Gate 2 so the human decides what ships in one PR.\n"
     }
   ],
   "links": []
