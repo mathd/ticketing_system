@@ -4,9 +4,7 @@
   "parent": "TKT-2",
   "summary": "US-010: Series and seasons — grouping events into runs",
   "classification": "complex",
-  "labels": [
-    "agent:ai-review"
-  ],
+  "labels": [],
   "description": "**As** an organizer, **I want** to group performances into a series (a run of one show) and a season (a programmed set), so buyers and reporting see the run, not scattered dates.\n\n**Priority:** P1\n**Depends on:** US-007 (TKT-49 — grouped offers publish/archive as a unit)\n\n**Acceptance Criteria:**\n- [ ] Catalog models a `series` (ordered run of slots for one event) and a `season` (a named set of series/events), both `organizer_id`-scoped, localizable names; API to create them and attach slots/events; a slot belongs to at most one series\n- [ ] Public reads expose the grouping: an event detail shows its series/run; a season read aggregates its events; new read endpoints declare their ADR-004 TTL tier; storefront renders a run as one grouped listing (browser-verified)\n- [ ] Publishing/archiving is expressible at the series level (publish the run) and fans out to its slots idempotently; partial states (some slots archived) render correctly\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; UI stories browser-verified with a screenshot in the PR; entities `organizer_id`-scoped (ADR-002).",
   "context": {
     "binding": [
@@ -93,14 +91,24 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Gate-3 human review changes folded in; exact `make check` green; pushed SHA `89f9a33`.**\n\n- Fixed the contract mismatch by documenting organizer mismatch as 400 on all three attach operations; 409 now describes membership/freeze conflicts only. Generated TypeScript contract updated.\n- Added handler coverage for all-or-nothing series archive, owed closure exact blocking slot, publication-before-archive emission, archive idempotency, empty series publish/archive, non-draft target freeze, and cross-organizer attach responses.\n- Extended the real gateway/PostgreSQL/NATS/storefront smoke flow through series archive, two archive events, idempotent retry, and public disappearance.\n- Added a 20-iteration real PostgreSQL race between two-row `ArchiveSeries` and direct single-row `ArchivePerformance`; both calls complete and both members end archived, exercising ADR-015's no-lock-cycle claim.\n\nNo finding was deferred. Per the one-pass rule, human Gate-3 feedback does not trigger another Codex run. The earlier cross-model stage remains unsuccessful due the tracked unsupported-model defect, so the ticket returns to `agent:ai-review` rather than advancing silently."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\nPR #33 was squash-merged as `76ff9bb`. The owner approved closure. COS evidence: organizer-scoped/localized series and seasons are contract-tested; ordered unique membership and lifecycle fan-out are exercised through handler and real PostgreSQL/NATS smoke tests; public season dedupe and five-minute TTL are asserted; grouped localized storefront rendering is browser-verified in `docs/verification/series-seasons/storefront-series.png`; exact `make check` passed on the reviewed PR SHA."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n# TKT-52 closed — series and seasons shipped\n\nPR **#33 merged** (squash `76ff9bb`). Owner accepted the result.\n\n| stage | duration |\n|---|---:|\n| Backlog | ~13h17m |\n| Ready | ~4h58m |\n| Planning | ~15m |\n| `agent:planning` | ~2m |\n| `agent:plan-review` / Gate 2 exception | ~13m |\n| Building | ~1h02m |\n| `agent:coding` (initial + review fixes) | ~36m |\n| `agent:ai-review` (failed runner + human review) | ~26m |\n| PO Review | ~7m |\n| Done | complete |\n\n**human-wait total:** ~36m observable (Gate 2 ~8m; Gate 3/review+merge ~28m). Exact `needs:human` time is n/a because the pinned-model defect prevented the normal label transition and the owner supplied explicit human reviews.\n\n**diff:** +2668/−81 (16 files).\n\n**learnings:**\n- Technical → **ADR-015:** series lifecycle stays slot-derived; series-first plus UUID-ordered slot locks gives atomic multi-slot transitions without cycles against single-row direct transitions.\n- Technical → **ADR-009/contract tests:** response-status semantics must be asserted for tenancy failures, not inferred from happy-path schema validation.\n- Process → **TKT-55:** eliminate pinned unsupported Codex model ids and bound the review runner; both cross-model stages failed for workflow reasons, disclosed rather than silently bypassed.\n\n**retro:**\n1. What would have made this ticket faster or better? Add a DoD-to-test trace pass to `.claude/skills/sdlc-ticket/references/quality-practices.md` before leaving `agent:coding`; the approved plan named archive and concurrency, but the first PR SHA covered only publish.\n2. What should the humans/process change? Complete TKT-55 before the next complex ticket reaches a Codex stage, selecting a supported model dynamically and retaining the one-retry/stop-honestly rule."
     }
   ],
-  "status": "PO Review",
+  "status": "Done",
   "assignee": "Codex",
   "pr": {
     "number": 33,
     "url": "https://github.com/mathd/ticketing_system/pull/33",
-    "state": "open"
+    "state": "merged"
   },
   "readiness": {
     "objective": {
