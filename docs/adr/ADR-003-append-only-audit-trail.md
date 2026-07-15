@@ -6,6 +6,13 @@ Date: 2026-07-12 (reworked same day: NF525 demoted from v1 goal to later-phase p
 
 Accepted
 
+The two-trail decision stands. Its **"inalterable history"** wording (Option 3) is scoped by
+[ADR-016](./ADR-016-checkout-recovery-state-machine.md) §Decision 7 (TKT-43): the money journal is
+append-only and tamper-*evident* at the application level, but `verify-journal` cannot detect a
+coordinated rollback (suffix truncation with the head rolled back, whole-organizer removal, or a
+database restore to an older snapshot) until an attestation exists outside the database. ADR-016
+carries the threat model.
+
 ## Context
 
 The owner's directive (2026-07-12): **traceability is a must** — the same audit-trail thinking must apply to money flows *and* to tickets. The French market and its anti-VAT-fraud regime (art. 286-I-3° bis CGI, commonly met via NF525 certification, requiring inalterability/security/conservation/archiving of receipts) is **not an immediate goal**, but it is far cheaper to design for from the start than to retrofit: NF525 changes how internal flows are tracked, and bolting inalterability onto a mutable store later is effectively a rewrite. The decision is needed before the first order is stored (US-004). *Note: the ISCA characterization is inferred from how NF525 works, not verified against the standard's text; verification happens when the compliance profile is prioritized (TKT-11).*
