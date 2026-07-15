@@ -333,13 +333,16 @@ func TestGetPublishedFestivalDoesNotScanForeignDays(t *testing.T) {
 // executes — so a scoping regression anywhere in that query text reddens this test, and
 // a copy cannot silently drift away from it.
 //
-// The plan is asserted under force_generic_plan even though production runs auto. That is
-// deliberate and is the whole point: a value-bound custom plan uses the index whether the
-// predicate is `capacity_group_id = $1` or a nullable `(… OR $1 IS NULL)` — TKT-63 measured
-// exactly that on the season read — so a custom-plan assertion cannot catch a predicate
-// widened that way. Planning blind is what distinguishes the shapes. auto also promotes to
-// a generic plan after ~5 executions on a pooled connection, which is what a hot festival
-// on-sale is, so this is production's plan too, not merely a stricter one.
+// The plan is asserted under force_generic_plan even though production runs auto. That is a
+// robustness check on predicate shape, NOT a simulation of production — auto compares the
+// generic plan's cost against the average custom plan's and may go on choosing custom plans
+// forever, so this is not the plan production necessarily runs (ADR-019 Consequences).
+//
+// The reason to force it is that it is the only mode in which this assertion can fail when the
+// predicate is wrong. A value-bound custom plan uses the index whether the predicate is
+// `capacity_group_id = $1` or a nullable `(… OR $1 IS NULL)` — measured, on this very query —
+// so a custom-plan assertion is green either way and proves nothing. Planning blind is what
+// distinguishes the shapes, so planning blind is what this test does.
 func TestGetPublishedFestivalIsIndexScoped(t *testing.T) {
 	ctx, db, st := festivalSmokeStore(t)
 	festival, dayID := seedPublishedFestival(ctx, t, db, st)
