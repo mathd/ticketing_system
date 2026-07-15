@@ -124,8 +124,9 @@ mechanism to order (see §5).
       **A production deployment of this system must close the window before relying on §5a.**
 
    b. **Rollback and consumer recreation — consumer-first does *not* cover this, and the event is
-      dropped with no automated recovery.** Once Schema 3 is retained on the stream, reverting
-      inventory to a binary that predates it (or rebuilding its durable consumer with one) makes
+      dropped with no automated recovery.** Once Schema 3 is on the stream, running an inventory
+      binary that predates it — by rollback, by rebuilding its durable consumer, or simply by
+      restarting it across a window where catalog emitted Schema 3 (see (c)) — makes
       `provisionInput` hit its `default` arm and return `unsupported publication schema N`
       (`consumer.go:91-92`); the caller's `if e.Schema == 1` test (`:114-122`) is what picks `Nak`
       vs `Term`, so an unrecognized schema falls through to **`msg.Term()`** — permanently
@@ -143,9 +144,19 @@ mechanism to order (see §5).
       "recreate the durable consumer" as equivalent to a rollback unless the binary understands
       every retained variant. This is a real gap, not a hypothetical — see Consequences.
 
-   c. **Ordinary restart is not replay.** A durable consumer resumes from its stored position and
-      does **not** re-read acknowledged history, so a normal restart carries no schema risk. Replay
-      risk arises only when the position is reset or the consumer is recreated — i.e. case (b).
+   c. **Ordinary restart is not replay — but "not replay" is not "no schema risk."** A durable
+      consumer resumes from its stored position and does **not** re-read acknowledged history, so
+      restarting cannot resurrect an event it already processed. That is the only guarantee it
+      gives. Events published **while the consumer was stopped are pending, not history**
+      (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go:101`), so if catalog emitted Schema 3
+      during inventory's downtime, restarting the *old* binary against the same durable delivers
+      them — straight to the `default` arm and `Term()`. No reset and no recreation required; the
+      downtime window alone is enough.
+
+      **The general rule, of which (b) is one instance:** a consumer is safe to start only if it
+      understands every variant that is pending or still being produced. Rollback and durable
+      recreation are the loud versions of that; a plain restart across a deploy boundary is the
+      quiet one.
 
    Keep the rollout note at the code that depends on it (`consumer.go`'s Schema 3 arm) rather than
    relying on this ADR alone.
@@ -172,14 +183,15 @@ mechanism to order (see §5).
     - Every bump costs an arm in each consumer of that type and keeps old arms alive as long as the
       stream retains them. There is no retirement policy for old schema arms yet; the first removal
       will need one (how far back can the stream be re-read?).
-    - **§5a's rollout window and §5b's rollback drop are known live hazards, documented but
-      unmitigated.** Both bottom out in the same place: an inventory that meets a schema it doesn't
-      know `Term()`s the event — no retry, no readiness change, no alert — and the only thing
-      standing between the repo and that outcome is that nobody has recreated the services out of
-      step yet. This ADR states the rules ("land both sides together", "don't roll back past a
-      retained schema"); nothing *enforces* either. `Nak`/parking instead of `Term`ing an unknown
-      schema, gating consumer startup on a max-known-schema check, or ordering the swap in Compose
-      would each convert a quiet drop into a signal — **deferred to TKT-61.**
+    - **§5's hazards are live, documented, and unmitigated — and the trigger is more ordinary than
+      it first looks.** Rollout skew (a), rollback/recreation (b), and a plain restart across a
+      deploy boundary (c) all bottom out in the same place: an inventory that meets a schema it
+      doesn't know `Term()`s the event — no retry, no readiness change, no alert. Case (c) is the
+      uncomfortable one: it needs no operator mistake at all, only that inventory was down while
+      catalog emitted. This ADR states the rules; nothing *enforces* any of them. `Nak`/parking
+      instead of `Term`ing an unknown schema, gating consumer startup on a max-known-schema check,
+      or ordering the swap in Compose would each convert a quiet drop into a signal — **deferred
+      to TKT-61.**
     - §5's ordering rests on review, not machinery: no test exercises mixed-version skew, and
       `compose.yaml` expresses no ordering between catalog and inventory to exercise.
 
