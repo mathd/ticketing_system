@@ -93,6 +93,96 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 	}
 }
 
+// maxKnownPublicationSchema is the highest `performance.published` variant this binary can read.
+// Keep it in step with provisionInput's case arms above — TestEveryKnownSchemaHasAnArm is the
+// tripwire if you add an arm and forget, and TestMaxKnownSchemaIsNotAheadOfTheArms if you bump it
+// without adding one.
+const maxKnownPublicationSchema = 3
+
+// envelope is the part of an event that does not change across schema versions (ADR-009 §5).
+// `data` stays raw on purpose: dispatch has to happen on `schema` alone, before anything reads
+// `data`, because a variant this binary does not know may reshape `data` arbitrarily — that is
+// what a bump *means* (ADR-017 §3). Decoding a future variant against today's struct would reject
+// it as malformed and terminate it, dropping precisely what TKT-61 exists to preserve.
+type envelope struct {
+	ID     uuid.UUID       `json:"id"`
+	Schema int             `json:"schema"`
+	Data   json.RawMessage `json:"data"`
+}
+
+// knownPublicationSchema reports whether this binary can read `data` at this schema — i.e. whether
+// the payload is ours to judge at all. Schema numbers start at 1 and only climb (ADR-009 §5), so
+// <= 0 is not a variant from the future; it is a broken envelope.
+func knownPublicationSchema(schema int) bool {
+	return schema >= 1 && schema <= maxKnownPublicationSchema
+}
+
+// handle is the message handler, split out of Run's Consume closure so the disposition it actually
+// ships can be tested against a fake jetstream.Msg (the shape services/access already uses). The
+// disposition is what dropped inventory in TKT-61, so it does not get to go untested.
+//
+// The order of the three questions below is load-bearing, and they are asked from the outside in:
+// is the envelope readable, is the variant ours to judge, and only then is the payload valid. Ask
+// them in any other order and a future variant gets judged by rules that were never written for it.
+func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
+	// Read the envelope only. Dispatch on `schema` before `data` is decoded — see envelope's
+	// doc comment for why the ordering is the whole fix and not a style choice.
+	var env envelope
+	if err := json.Unmarshal(msg.Data(), &env); err != nil {
+		c.log.Error("invalid publication event", "err", err)
+		_ = msg.Term()
+		return
+	}
+	if !knownPublicationSchema(env.Schema) {
+		if env.Schema <= 0 {
+			// Not a variant from the future: an envelope with no usable schema, which ADR-009 §5
+			// requires. No binary will ever provision it — poison, so terminate. Readiness is
+			// deliberately untouched: a broken producer must not be able to take inventory down.
+			c.log.Error("invalid publication event", "event_id", env.ID, "schema", env.Schema,
+				"err", "publication envelope has no usable schema")
+			_ = msg.Term()
+			return
+		}
+		// Version skew: hold the event for a binary that understands it, and stop reporting
+		// ready. Readiness is the only signal wired here, and a drop nobody notices is the whole
+		// of TKT-61 — being loudly unready beats being quietly wrong. It never self-heals:
+		// recovering on the next good message would hide the event still pending behind this one.
+		c.log.Error("unsupported publication schema", "event_id", env.ID, "schema", env.Schema)
+		c.ready.Store(false)
+		_ = msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	// Known variant: now it is ours to judge, so read and validate `data` as this schema defines it.
+	var e publication
+	if err := json.Unmarshal(msg.Data(), &e); err != nil {
+		c.log.Error("invalid publication event", "event_id", env.ID, "err", err)
+		_ = msg.Term()
+		return
+	}
+	input, err := c.provisionInput(ctx, e)
+	if err != nil {
+		if e.Schema == 1 {
+			// Schema 1 resolves against catalog; its failures are transient.
+			c.log.Error("resolve legacy publication", "event_id", e.ID, "err", err)
+			_ = msg.NakWithDelay(5 * time.Second)
+			return
+		}
+		// Bad at a schema we know: poison. No binary can provision it, so it terminates —
+		// this is what stops parking from becoming an infinite retry loop for corrupt data.
+		c.log.Error("invalid publication event", "event_id", e.ID, "err", err)
+		_ = msg.Term()
+		return
+	}
+	// Grouped festival days deliberately converge on the festival id. Slot to
+	// group resolution for claims is owned by TKT-14 and remains out of scope.
+	if err := c.st.Provision(ctx, e.ID, input.poolID, input.organizerID, input.capacity); err != nil {
+		c.log.Error("provision inventory", "err", err)
+		_ = msg.Nak()
+		return
+	}
+	_ = msg.Ack()
+}
+
 func (c *Consumer) Run(ctx context.Context) error {
 	stream, err := c.js.Stream(ctx, "PLATFORM")
 	if err != nil {
@@ -104,33 +194,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 	c.ready.Store(true)
 	defer c.ready.Store(false)
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		var e publication
-		if err := json.Unmarshal(msg.Data(), &e); err != nil {
-			c.log.Error("invalid publication event", "err", err)
-			_ = msg.Term()
-			return
-		}
-		input, err := c.provisionInput(ctx, e)
-		if err != nil {
-			if e.Schema == 1 {
-				c.log.Error("resolve legacy publication", "event_id", e.ID, "err", err)
-				_ = msg.NakWithDelay(5 * time.Second)
-				return
-			}
-			c.log.Error("invalid publication event", "event_id", e.ID, "err", err)
-			_ = msg.Term()
-			return
-		}
-		// Grouped festival days deliberately converge on the festival id. Slot to
-		// group resolution for claims is owned by TKT-14 and remains out of scope.
-		if err := c.st.Provision(ctx, e.ID, input.poolID, input.organizerID, input.capacity); err != nil {
-			c.log.Error("provision inventory", "err", err)
-			_ = msg.Nak()
-			return
-		}
-		_ = msg.Ack()
-	})
+	cc, err := cons.Consume(func(msg jetstream.Msg) { c.handle(ctx, msg) })
 	if err != nil {
 		return err
 	}

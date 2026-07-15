@@ -11,6 +11,10 @@ Date: 2026-07-15
 
 Accepted (TKT-59; promotes a learning proven by TKT-53/PR #37)
 
+Amended by **TKT-61** (§5b, §5c, Consequences): the unknown-variant disposition §5 deferred is now
+decided — park, don't terminate — and the passages describing the drop as live have been rewritten.
+The §5a/§5b *ordering rules are unchanged*; TKT-61 made violating them loud, not safe.
+
 Amends [ADR-009](./ADR-009-contract-first-apis.md) §5 (which defines the envelope's `schema` field
 but not how to evolve it) and refines [ADR-014](./ADR-014-typed-dated-slot-implementation.md) §3
 (which decided "additive optional fields are backward compatible; a bump is reserved for a breaking
@@ -74,7 +78,7 @@ On *ordering* the two sides, given a bump is required:
    (`published` carries `shared_capacity`, `archived` does not) — while
    `performance.closed`/`.reopened` sit at a Schema 1 (`:196`) that has nothing to do with
    `published`'s Schema 1. Only `published` has a consumer today
-   (`inventory-performance-provisioner`, `consumer.go:101`); the others are versioned against
+   (`inventory-performance-provisioner`, `consumer.go`'s `Run`); the others are versioned against
    future readers, which is the point — a number is a promise to whoever subscribes to *that*
    subject. Every rule below is scoped to the consumers of one type. "Bump to N+1" is only ever a
    statement about one subject; there is no global version line, and two types reaching the same
@@ -138,35 +142,110 @@ On *ordering* the two sides, given a bump is required:
       the swap, or a `depends_on`-style ordering constraint. This repo has none of those. **A
       production deployment of this system must close the window before relying on §5a.**
 
-   b. **Rollback and consumer recreation — consumer-first does *not* cover this, and the event is
-      dropped with no automated recovery.** Once Schema 3 is on the stream, running an inventory
-      binary that predates it — by rollback, by rebuilding its durable consumer, or simply by
-      restarting it across a window where catalog emitted Schema 3 (see (c)) — makes
-      `provisionInput` hit its `default` arm and return `unsupported publication schema N`
-      (`consumer.go:91-92`); the caller's `if e.Schema == 1` test (`:114-122`) is what picks `Nak`
-      vs `Term`, so an unrecognized schema falls through to **`msg.Term()`** — permanently
-      advancing past the event with no provisioning and no retry.
+   b. **Rollback and consumer recreation — consumer-first does *not* cover this. The event is held,
+      not lost, and the consumer says so (TKT-61).** Once Schema 3 is on the stream, running an
+      inventory binary that predates it — by rollback, by rebuilding its durable consumer, or simply
+      by restarting it across a window where catalog emitted Schema 3 (see (c)) — makes
+      `provisionInput` hit its `default` arm, which wraps `errUnsupportedPublicationSchema`. The
+      caller routes on that sentinel via `dispositionForProvisionError`, and an unknown variant is
+      **parked**: `NakWithDelay`, plus `c.ready` latched **false** so `/readyz` fails and the
+      container goes unhealthy. The event stays pending for a binary that understands it.
 
-      The failure is **diagnosable but not actionable**. It logs at error level, and the `err`
-      attribute carries `unsupported publication schema N`, which is distinct from the malformed
-      -payload errors — so an operator reading logs *can* tell version skew from a bad producer
-      write. What is missing is everything that would make them look: the headline is the generic
-      `"invalid publication event"` shared with corrupt payloads, `c.ready` stays `true` (`:105`)
-      so the service reports healthy, nothing alerts, and `Term()` means there is no retry to
-      notice. Inventory is simply absent for those performances until someone asks why.
+      **Why parked and not terminated — the rule this ADR now states.** *Poison* means permanently
+      un-processable **by any binary**: malformed JSON, or a payload invalid at a schema the
+      consumer knows. That still terminates, and Schema 2's negative festival-field validation (§4)
+      is exactly such a case. An **unknown variant is not poison** — it is well-formed, and a newer
+      binary can provision it. Terminating it would discard **recoverable inventory** on the
+      authority of the one component that provably cannot read it. The two classes must stay
+      distinguishable, which is why the `default` arm wraps a sentinel instead of returning prose.
+      This also bounds the wedging risk: a genuinely bad event at a *known* schema still terminates,
+      so parking cannot become an infinite retry loop for corrupt data.
 
-      **Therefore: do not roll a consumer back past a schema the stream still retains**, and treat
-      "recreate the durable consumer" as equivalent to a rollback unless the binary understands
-      every retained variant. This is a real gap, not a hypothetical — see Consequences.
+      **The line has a bottom end, and it is part of the rule.** Schema numbers start at 1 and only
+      climb, so a schema **`<= 0` is not a variant from the future** — it is an envelope that omitted
+      `schema` (§ADR-009 §5 requires it) or a producer bug, and no binary will ever provision it.
+      That is poison by the definition above, and it **terminates**, and it must **not** touch
+      readiness. Only schemas *above* the consumer's known set park. Without this the rule
+      contradicts itself, and one malformed message would be enough to latch inventory unready
+      indefinitely — a free denial of service handed to any buggy producer.
+
+   b′. **Dispatch on `schema` before decoding `data` — the ordering is a rule, not a style
+      preference.** A consumer must ask three questions strictly from the outside in: **is the
+      envelope readable → is this variant mine to judge → is the payload valid?** Any other order
+      silently defeats (b), and TKT-61 shipped the bug twice before this was written down:
+
+      A bump exists *because* `data` changed (§3). So a future variant may rename fields, change
+      their types, or restructure `data` entirely. A consumer that decodes the payload into
+      **today's** struct before checking `schema` will therefore reject the very variants (b) exists
+      to preserve — a renamed identifier fails a required-field check and a changed type fails
+      `json.Unmarshal`, and **both land on `Term()`**. The parking arm then only ever protects
+      future variants that happen to be shaped like the present one, which is the subset that needed
+      protecting least. Worse, it **passes a test suite** whose fixtures are built from the current
+      struct, because those fixtures encode the compatibility the test means to prove.
+
+      **Therefore:** decode a minimal stable envelope (`{id, schema, data}` with `data` left raw —
+      §ADR-009 §5's envelope *is* the stable part), decide on `schema` alone, and only unmarshal
+      `data` once the variant is known to be one this binary implements
+      (`consumer.go`'s `envelope` / `knownPublicationSchema` / `handle`). A consumer's known set and
+      its dispatch arms are two statements of one fact and drift silently apart; keep them pinned in
+      both directions (`maxKnownPublicationSchema` + the two tripwire tests).
+
+      **And test the skew path with payloads that are NOT built from the current struct.** A
+      hand-written JSON fixture with renamed keys and changed types is the only kind that can fail.
+      This is the specific test ADR-017 previously noted was missing, and the reason it is worth
+      insisting on the form: the obvious version of it proves nothing.
+
+      **Parking is bounded by the ack window, and that bound is not yet enforced — TKT-68.** The
+      durable sets `MaxDeliver: -1` and does not set `MaxAckPending`, so the server default (1000)
+      applies. A parked event stays outstanding until acked or terminated, so **~1000 distinct
+      unknown events stall delivery for the whole consumer** — including the Schema 2/3 publications
+      behind them, which this binary *could* have provisioned. A long unattended skew window with a
+      large catalog import can reach that. This is accepted for now and is **still strictly better
+      than the behavior it replaces**: the stall is loud (unready since event #1, an error log every
+      5s) where the drop was silent and left the service reporting healthy. It trades an invisible
+      partial loss for a visible full stop. The real fix is a bounded quarantine — persist the raw
+      payload, ack the original to free the window, and let a supporting binary re-process it — which
+      needs its own event contract and re-injection protocol. **TKT-68.**
+
+      **Readiness is borrowed as the alert channel, deliberately and with a known cost.** It is the
+      only signal wired for inventory today (`/readyz` gates on `cons.Ready()`,
+      `cmd/inventory/main.go`). But readiness properly means *can serve traffic*, and a parked event
+      does not stop inventory serving holds, claims, or availability. Under a real orchestrator this
+      pulls a working service out of rotation, and a restart does not clear it — the event is still
+      pending, so the binary goes unready again on redelivery. Under Compose nothing acts on
+      unhealthy (`restart: unless-stopped` does not react to healthcheck state), so it is a visible
+      red dot and no more. **Exit:** when real alerting exists, move the signal to a metric counter —
+      `services/access/internal/consumer` already models the shape (`failureCounter`, reason codes) —
+      and let readiness go back to meaning what it says. Parking never self-heals by design:
+      recovering readiness on the next good message would hide the event still pending behind it.
+
+      **Known amplification: one message from any publisher latches it (TKT-69).** NATS carries no
+      authentication or subject-level publish ACLs today, so any process reaching the stream can
+      emit a schema this binary does not know and hold inventory unready indefinitely. This is
+      **not a reason to weaken the latch**: inventory cannot distinguish a legitimate skew event
+      from a forged one, and going unready is the *correct* response to the legitimate case — which
+      is the whole point of (b). Nor is it a new hole. It is an amplification of an existing gap
+      worth naming, especially against ADR-007's insistence that boundary enforcement be *physical*
+      (per-service credentials) rather than conventional: that holds for Postgres and has no
+      equivalent on NATS. Anyone able to publish here can already provision bogus inventory at a
+      *known* schema, which is worse and needs no unknown variant. **The fix is publisher
+      authority, not a quieter consumer — TKT-69.**
+
+      **The operational rules are unchanged — parking is a smoke alarm, not a sprinkler.** Still:
+      **do not roll a consumer back past a schema the stream still retains**, and treat "recreate the
+      durable consumer" as equivalent to a rollback unless the binary understands every retained
+      variant. Violating them now costs a stalled, loudly-unready consumer and an operator
+      intervention instead of silent absence — which is a better failure, not an absent one.
 
    c. **Ordinary restart is not replay — but "not replay" is not "no schema risk."** A durable
       consumer resumes from its stored position and does **not** re-read acknowledged history, so
       restarting cannot resurrect an event it already processed. That is the only guarantee it
       gives. Events published **while the consumer was stopped are pending, not history**
-      (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go:101`), so if catalog emitted Schema 3
-      during inventory's downtime, restarting the *old* binary against the same durable delivers
-      them — straight to the `default` arm and `Term()`. No reset and no recreation required; the
-      downtime window alone is enough.
+      (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go`'s `CreateOrUpdateConsumer`), so if
+      catalog emitted Schema 3 during inventory's downtime, restarting the *old* binary against the
+      same durable delivers them — straight to the `default` arm. Since TKT-61 that means parked and
+      unready (b), not dropped. No reset and no recreation required; the downtime window alone is
+      enough, which is why this needs **no operator error at all** — only downtime.
 
       **The general rule, of which (b) is one instance:** a consumer is safe to start only if it
       understands every variant that is pending or still being produced. Rollback and durable
@@ -198,21 +277,38 @@ On *ordering* the two sides, given a bump is required:
     - Every bump costs an arm in each consumer of that type and keeps old arms alive as long as the
       stream retains them. There is no retirement policy for old schema arms yet; the first removal
       will need one (how far back can the stream be re-read?).
-    - **§5's hazards are live, documented, and unmitigated — and the trigger is more ordinary than
-      it first looks.** Rollout skew (a), rollback/recreation (b), and a plain restart across a
+    - **§5's hazards are mitigated at delivery, not prevented — and the trigger is more ordinary
+      than it first looks.** Rollout skew (a), rollback/recreation (b), and a plain restart across a
       deploy boundary (c) all bottom out in the same place: an inventory that meets a schema it
-      doesn't know `Term()`s the event — no retry, no readiness change, no alert. Case (c) is the
-      uncomfortable one: it needs no operator mistake at all, only that inventory was down while
-      catalog emitted. This ADR states the rules; nothing *enforces* any of them. `Nak`/parking
-      instead of `Term`ing an unknown schema, gating consumer startup on a max-known-schema check,
-      or ordering the swap in Compose would each convert a quiet drop into a signal — **deferred
-      to TKT-61.**
-    - §5's ordering rests on review, not machinery: no test exercises mixed-version skew, and
-      `compose.yaml` expresses no ordering between catalog and inventory to exercise.
+      doesn't know. Case (c) is the uncomfortable one: it needs no operator mistake at all, only
+      that inventory was down while catalog emitted. **TKT-61 closed the silent half**: such an event
+      is now parked and the consumer latches unready, so all four entry points fail loudly and stay
+      recoverable. What is *not* closed: this ADR still only **states** the ordering rules — nothing
+      enforces them, and a skewed binary is detected when the event arrives, not at boot.
+      TKT-61 considered and **rejected** two alternatives worth recording:
+        - **A max-known-schema startup gate.** Rejected as unimplementable, not merely expensive:
+          JetStream exposes no metadata for the schemas its retained payloads carry (stream/consumer
+          info give sequences, counts, and ack floors), and per §1 there is no global version line to
+          check anyway. `GetLastMsgForSubject` cannot stand in — variants **coexist by design** (§4),
+          so a Schema 2 publication may legitimately follow a Schema 3 one. A real gate would decode
+          a per-type scan of retained *and* pending payloads and still race the next publication.
+          ADR-008's fail-fast-at-startup precedent would have made the *shape* idiomatic; the data to
+          decide on does not exist.
+        - **Ordering the swap in Compose** (`depends_on`/readiness gate). Rejected as capability-blind:
+          it orders *startup* but does not attest that the started binary understands the variants in
+          flight — an already-running old inventory is healthy and satisfies the dependency. It also
+          only ever addressed (a), and inverts the lifecycle coupling between catalog and its consumer.
+    - §5's ordering still rests on review, not machinery, and `compose.yaml` expresses no ordering
+      between catalog and inventory. But mixed-version skew **is** exercised now:
+      `TestUnknownSchemaVersionSkewIsParked` (`services/inventory/internal/consumer/consumer_test.go`)
+      pins unknown-variant ⇒ park, and `TestInvalidKnownSchemaIsTerminated` pins the poison side so
+      the two cannot be collapsed.
 
 ## References
 
 - TKT-59 (this ADR) · TKT-53 / PR #37 (the proving case) · TKT-14 (consumes the shared-capacity pool)
+- TKT-61 (amends §5b/§5c/Consequences: unknown variants park + latch unready; startup gate and
+  Compose ordering rejected, with reasons)
 - [ADR-009](./ADR-009-contract-first-apis.md) §5 (envelope + `schema`) ·
   [ADR-014](./ADR-014-typed-dated-slot-implementation.md) §3 (additive `kind`, bump rejected) ·
   [ADR-005](./ADR-005-unified-dated-slot-admission.md) (inventory does not fork on `kind`) ·
