@@ -53,7 +53,7 @@ func TestOperationalEndpointsRequireInternalCredential(t *testing.T) {
 			return httptest.NewRequest(http.MethodPost, "/internal/operational-holds/"+id+"/release", bytes.NewBufferString(mutBody))
 		},
 		"convert": func() *http.Request {
-			convBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","quantity":1,"ticket_type_id":"00000000-0000-0000-0000-000000000004","unit_amount":1000,"currency":"EUR","actor":"staff:amy","reason":"ops"}`
+			convBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000005","quantity":1,"ticket_type_id":"00000000-0000-0000-0000-000000000004","unit_amount":1000,"currency":"EUR","actor":"staff:amy","reason":"ops"}`
 			return httptest.NewRequest(http.MethodPost, "/internal/operational-holds/"+id+"/convert", bytes.NewBufferString(convBody))
 		},
 		"history": func() *http.Request {

@@ -39,11 +39,16 @@ partial-operation mechanics, what a conversion produces, and where the audit tra
   publicly claimable in between. **An expired converted child returns its capacity to the
   public pool, not to the source hold** — re-carving is a new staff operation, by design.
 - **Commerce orchestrates the staff sale** (`POST /internal/operational-holds/{id}/convert`):
-  it resolves the offer through the existing catalog seam (no price override), rejects a
-  ticket type whose performance is not the hold's slot, calls inventory's conversion, and
+  it resolves the offer through the existing catalog seam (no price override) and calls
+  inventory's conversion **with the offer's slot as an expected-slot precondition** —
+  inventory verifies it against the locked hold's pool before any write, so a wrong ticket
+  type rejects with the operational hold untouched (ai-review finding 1). Commerce then
   persists the standard reservation row with a deterministic, namespaced identity
   (`reservation:op-convert:<org>:<key>`) so a crash between the two writes is repaired by
-  replaying the same request. The existing public checkout completes the sale.
+  replaying the same request; **a replay whose converted child has already expired is
+  rejected (409)** rather than persisted as a reservation no checkout can complete — the
+  expired child's capacity is already public, and re-carving is a new staff operation. The
+  existing public checkout completes the sale.
 - **Idempotency.** Staff mutations register their organizer-scoped key + fingerprint in
   `claim_history` (unique partial index), never in the claims-table key namespace; the
   converted child's claims-row key is namespaced with the source id. Replay returns the
