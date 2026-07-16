@@ -141,7 +141,7 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 // and returns the claim, which must be an operational hold.
 func lockOperational(ctx context.Context, tx *sql.Tx, org, id uuid.UUID) (Claim, error) {
 	var c Claim
-	err := tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,now(),claim_kind,operational_purpose,operational_label FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
+	err := tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,now(),claim_kind,COALESCE(operational_purpose,''),COALESCE(operational_label,'') FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
 		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &c.ServerTime, &c.Kind, &c.Purpose, &c.Label)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Claim{}, ErrNotFound
