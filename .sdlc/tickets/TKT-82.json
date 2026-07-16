@@ -1,0 +1,87 @@
+{
+  "key": "TKT-82",
+  "type": "Story",
+  "summary": "US-019: On-sale load proof — the sustained no-oversell gate",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-019: On-sale load proof — the sustained no-oversell gate\n**As** the owner, **I want** a sustained adversarial load test proving no-oversell and acceptable\nlatency on the claim path, so the festival-scale NFR is measured, not asserted. **Priority:** P1\n**Depends on:** —\n**Acceptance Criteria:**\n- [ ] A load harness (tool chosen at Planning) drives the real gateway→inventory hold/finalize/\n      confirm path against a hot pool with a **sustained** profile derived from the NFR\n      (thousands of checkout attempts/min for minutes, not a burst); asserts zero oversell and\n      records latency percentiles + the per-pool throughput ceiling (ADR-010 deliberately\n      serializes a hot pool — this story publishes the measured number the waiting-room design\n      (TKT-20) must respect).\n- [ ] A scaled **gate profile** runs in `make check` within the existing gate-time budget; the\n      **full NFR profile** is a documented on-demand target (owner decision at Gate 1 confirms\n      this split — the epic COS says \"in the gate\", full-scale locally in every gate run is the\n      open question).\n- [ ] Results land in `docs/` (evidence format per `docs/testing.md`); TKT-31/TKT-37 reuse the\n      harness (read-path and observability profiles are their scope, non-goal here).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Epic COS 1: no-oversell proven under sustained adversarial load, measured against the festival-scale NFR — today only a 40-goroutine correctness test exists."
+    },
+    "scope": {
+      "state": "open",
+      "note": "Proposed split: a scaled sustained profile runs in make check; the full NFR profile is an on-demand documented target. The epic COS says 'sustained load test in the gate' — owner must confirm the split (full NFR in every local gate run is likely impractical).",
+      "owner": "human"
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Tool choice (k6 vs Go harness) and the gate-profile numbers are Planning decisions once the scope split is confirmed."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None hard — runs against the existing GA claim path; re-baselining after US-013/014/015 land is cheap re-runs, not a blocker."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Drive gateway→inventory hold/finalize/confirm on a hot pool, sustained minutes-long profile; assert zero oversell; record p50/p95/p99 + per-pool ceiling; results to docs/ per testing.md evidence format."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The gate profile: sustained thousands-of-attempts/min for minutes against one hot pool inside the gate-time budget, zero oversell."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 3 ACs + quality gates; the published per-pool throughput ceiling is the deliverable TKT-20/31/37 consume."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked — NFR numbers verbatim in references."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "'One hot pool serializes its writes, deliberately trading per-slot throughput for a simple proof' — this ticket measures that ceiling and publishes it; a low number is a finding for TKT-20's design, not a bug."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Availability is the seconds-tier read — the harness must not mistake cached reads for claim-path latency."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Scale NFR (owner, grilling 2026-07-12): 50–100k capacity, 100k+ concurrent buyers queued, thousands of checkout attempts/min sustained",
+        "link": "docs/product/prd-v1.md §Architecture frame"
+      },
+      {
+        "summary": "Evidence conventions for gate results",
+        "link": "docs/testing.md"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. OPEN item awaiting a human decision — see readiness (owner: human)."
+    }
+  ]
+}
