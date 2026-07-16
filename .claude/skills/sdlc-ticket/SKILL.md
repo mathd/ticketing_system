@@ -56,7 +56,9 @@ Read the relevant file **before** executing the step — don't improvise the how
 | `references/exploration.md` | Intake is a raw idea, not a spec — coached brainstorm / brief / PRFAQ → brief in the epic |
 | `references/shaping.md` | Ticket in Backlog needs preparing for Gate 1 — the 8-item DoR (`readiness`, incl. the context-mémo bake), spikes, human decisions |
 | `references/quality-practices.md` | Pre-mortem on plans (Planning), findings triage + review-guide hand-off (Building), correct-course when a human pushes back |
-| `references/codex-runner.md` | **Any stage resolves to a `gpt-*` model** — companion script, prompt files, raw fallback, exit-0 traps, escalation ladder |
+| `references/codex-runner.md` | **Any stage resolves to a bare `gpt-*` model** — companion script, prompt files, raw fallback, exit-0 traps, escalation ladder |
+| `references/claudex-runner.md` | **Any stage resolves to `gpt-*@claudex`** — same model via the Claude Code harness + local proxy: env contract, read-only allowlist, review caveat, fallback to codex |
+| `references/ab-stages.md` | **`plan` or `aiReview` is an array** — parallel arms on the same input: finding-tally scoring (aiReview), anonymized human selection (plan), logging |
 | `references/local-tracker.md` | `config.tracker == "local"`, a demo, or no Jira available — repo-contained backend (JSON per ticket on `sdlc-state` branch + live board). Same labels/markers/gates; only storage changes |
 
 ## Before you start
@@ -97,7 +99,15 @@ Four stages are model-assignable. **The config declares it; the agent never infe
 |---|---|
 | `main-agent` | **You** do it — whichever model drives this Claude Code session. Never hardcode which one that is. |
 | `gpt-5.6-sol` (any `gpt-*`) | Codex, via the plugin's companion script — **read `references/codex-runner.md` first.** Reviews → `adversarial-review`; free-form work (plan drafting, implementation) → `task`. |
+| `gpt-5.6-sol@claudex` (any `gpt-*@claudex`) | Same model, different harness: headless Claude Code through a local proxy — **read `references/claudex-runner.md` first.** Read-only stages only; requires the env contract that doc defines, else stop and report. |
 | `fable-5`, `opus-4.8`, `sonnet-5` (any Claude model) | A subagent: the `Agent` tool with `model:` set to it. Brief it from the ticket + the approved plan — it does **not** inherit this session's context. |
+| **an array of values** (`plan` and `aiReview` only) | An A/B experiment: run every arm on the same input, score, record — **read `references/ab-stages.md` first.** Arrays on `planReview`/`implement` are a config error: stop and report. |
+
+Any `gpt-*` value (single or array arm) may carry an **`:effort` suffix** — `gpt-5.6-sol:low`,
+`gpt-5.6-sol:low@claudex` (order: `model[:effort][@harness]`) — passed to the runner's `--effort`
+flag; omitted = the runner's default. **Exception:** the codex `adversarial-review` command has no
+effort flag, so an effort suffix on a bare `gpt-*` `aiReview` value is a config error — effort-varied
+review arms require `@claudex`.
 
 **You are always the orchestrator.** Whatever `config.models` says, *you* read the ticket, brief the worker, **talk to the human**, revise, post every comment, and own the outcome. These keys assign **who does the thinking for a stage** — never who drives the board or holds the conversation. A delegated worker **cannot ask the human anything**: one brief in, one answer out. Any step needing a human decision (grilling on open decisions, a gate hand-off) is **yours**, in this session.
 
@@ -233,7 +243,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 - **Never merge for the human.** Gate 3 is the human's, in the code repo. Agents stop at `needs:human`.
 - **Model routing is declared, never inferred.** Every model decision comes from `config.models` (§ Config). Never detect which model is driving the session and branch on it, and never silently substitute a model: if the configured one is unreachable, **stop and report**. Who did the work is a thing this pipeline measures — a stage that quietly ran on the wrong model is a corrupted measurement. **This rule is deliberately self-contained:** the skill ships to whoever installs it and must not depend on any individual's personal model preferences or global config.
 - **Delegated ≠ done.** When a stage resolves to anything but `main-agent`, you still own the outcome: verify the output against the real code, re-run the gate yourself (`quality-practices.md` §2.b), and attribute the work in the stage comment. A delegated run reports a *claim*; the evidence is what you check.
-- **`gpt-*` stage mechanics live in `references/codex-runner.md`** — companion script (not raw `codex exec`, not slash commands), prompt-file materialization, the raw fallback, judging output (exit 0 ≠ success), and the fixed escalation ladder. Read it before running any such stage.
+- **`gpt-*` stage mechanics live in `references/codex-runner.md`** — companion script (not raw `codex exec`, not slash commands), prompt-file materialization, the raw fallback, judging output (exit 0 ≠ success), and the fixed escalation ladder. Read it before running any such stage. A `@claudex` suffix on the model swaps the harness, not the model — those mechanics live in `references/claudex-runner.md` instead.
 - **Verify reviewer findings against the revision under review — not the base branch.** The review pass is a *lead generator*, not an oracle. Check each finding with `git grep -n "<sym>" HEAD` (or the working tree); use `origin/main` **only** to ask whether something pre-existed the change — grepping the base for a symbol the PR *introduces* looks like a refuted finding. Make sure your checkout is current first (a stale local `main` is what makes this go wrong). Record a per-finding verdict in the stage comment.
 - **Prime the reviewer for guilt, and give it the diff only.** The reviewer is told to **assume the diff is wrong and find where** — not to "check whether it's ok". Withholding the plan and the reasoning is **deliberate**: a reviewer that has read the justification evaluates the code against the author's intent instead of against reality. Don't "help" it by pasting in the plan.
 - **A second `ai-review` pass when the fixes were non-trivial — otherwise one.** The second pass exists because **the fix diff is code no one has reviewed** — judge the *fix diff*, not the original PR diff. **Non-trivial = any of:** a blocking finding was fixed (correctness/security/AC — fixing one changes logic by construction, so a real review round almost always earns a second pass); aggregate volume, even when each fix is small; new/changed control flow, signature/API/schema/migration, a money/auth/concurrency path, a new or rewritten test, or fixes spilling into files the findings didn't name. A rebase that materially changed the diff also triggers. Pure trivia (typos, comments, formatting, a compiler-verified rename) → one pass. Record the call in the stage comment either way.
