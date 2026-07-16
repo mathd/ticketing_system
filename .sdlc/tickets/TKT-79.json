@@ -1,0 +1,82 @@
+{
+  "key": "TKT-79",
+  "type": "Story",
+  "summary": "US-016: Group and agency long-lived reservations",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-016: Group and agency long-lived reservations\n**As** an organizer, **I want** to grant a group or agency a long-lived reservation they draw down\nover time, so bulk buyers don't fight the public TTL. **Priority:** P2 **Depends on:** US-014\n(typed-claim machinery; soft)\n**Acceptance Criteria:**\n- [ ] A reservation claim type with an explicit expiry date (not the cart TTL), placeable by\n      staff for a named counterparty; counts against capacity like any claim (and against a\n      channel allocation when one applies).\n- [ ] Draw-down: quantity converts to confirmed orders **partially and repeatedly** (10 of 200\n      today, 50 next week) without the unconverted remainder ever passing through a publicly\n      claimable state; unconverted quantity returns to sale at expiry (lazy, DB-time).\n- [ ] The order/payment side of a draw-down uses the existing commerce checkout seam; agency\n      pay-later terms, invoicing and dunning are explicitly TKT-34 (non-goal).\n- [ ] Contention test covers concurrent public holds racing a reservation draw-down.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Epic COS 4 (group/agency): long-lived reservations drawn down over time without fighting the cart TTL."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: reservation claim type with explicit expiry + counterparty, repeated partial conversion to confirmed orders, lazy expiry give-back, race test vs public holds. OUT: pay-later terms, invoicing, dunning (TKT-34)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Partial-quantity claim mechanics (split rows vs decrement) settled in Planning — same fork as US-014's partial convert; reuse its answer."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Soft on US-014 (typed-claim machinery) — not wired as a blocker; Planning reuses its type/partial mechanics if landed."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Reservation type + counterparty + explicit expires_at; draw-down converts quantity to the commerce checkout flow atomically; expiry reuses the lazy sweep."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Reserve 200 for an agency, convert 10 to a confirmed order, let the rest expire → 190 return to sale, never publicly claimable mid-conversion."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 4 ACs + quality gates."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "A group reservation is a claim with an explicit expiry — draw-down must keep the pool→claim lock order and never round-trip capacity through public availability."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Draw-down rides the existing commerce checkout seam — contract changes on both sides are drift-checked."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations out-of-band."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    }
+  ]
+}
