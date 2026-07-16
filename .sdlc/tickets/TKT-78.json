@@ -1,0 +1,82 @@
+{
+  "key": "TKT-78",
+  "type": "Story",
+  "summary": "US-015: Channel allocations — caps and scheduled release",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-015: Channel allocations — caps and scheduled release\n**As** an organizer, **I want** to split a slot's sellable capacity across sales channels with\nper-channel caps and scheduled give-back, so presales and resellers can't starve the public\non-sale. **Priority:** P1 **Depends on:** US-014 (extends the same claim-model surface; soft —\nparallelizable if Planning confirms no schema overlap)\n**Acceptance Criteria:**\n- [ ] A pool can carry channel allocations (opaque channel code + cap + optional release-at\n      time); allocations never sum above pool capacity; unallocated capacity is the default/public\n      channel.\n- [ ] Holds carry a channel; a hold beyond its channel's remaining allocation is rejected even\n      when the pool has capacity (and vice-versa: pool exhaustion rejects regardless of channel\n      headroom). The no-oversell proof extends to per-channel caps under the contention test.\n- [ ] At `release-at`, a channel's unsold allocation returns to the public channel — enforced by\n      DB time like TTL expiry (lazy, correct without a sweeper); the release is observable in\n      availability reads.\n- [ ] Channel codes are opaque strings here; the channel registry, per-channel pricing and\n      windows stay in TKT-17/TKT-5 (non-goal).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Epic COS 3: split sellable capacity across channels with caps and scheduled give-back so presales/resellers can't starve the public."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: allocations (opaque code + cap + release-at) on a pool, channel on holds, dual rejection (channel cap / pool capacity), lazy scheduled release. OUT: channel registry, per-channel pricing/windows (TKT-17/TKT-5)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Sub-pool rows vs cap counters is the main design fork — Planning decides against the lock-order rules."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Soft on US-014 (same claim-model surface); parallelizable if Planning confirms no schema overlap — not wired as a blocker."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Allocation table keyed to pool; channel column on claims joins the availability math under the existing pool lock; contention test extends to per-channel caps."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Allocate 100 of a 1000 pool to 'presale' with release-at T; presale hold 101 rejects; after T the unsold 100 are publicly claimable."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 4 ACs + quality gates; per-channel no-oversell under contention is the load-bearing signal."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "Channel caps are a second accounting dimension inside the same pool lock — lazy DB-time release mirrors hold expiry (sweep before accounting, no sweeper needed for correctness)."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Allocation config + channel on holds change the OpenAPI contract and possibly the hold request fingerprint — idempotency replay semantics must stay exact."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations out-of-band."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    }
+  ]
+}
