@@ -117,6 +117,18 @@ conflicts. Together every physical admission that Access learns about is represe
    to the degraded admit is indistinguishable from a second scan and a retry gets misdenied.
    The implementation must test broken-chain retry, recovered-chain retry, and a distinct
    occurrence, through both paths.
+
+   **The occurrence id is an idempotency key, never admission authorization.** A replay-matched
+   response is returned as an explicitly **distinguishable replay result** (e.g. a `replay`
+   marker or its own decision value), never as a bare `accepted` — a gate device actuates only
+   on a first-time accepted, and keeps durable local actuation state so even a replayed
+   `accepted` cannot reopen it. Otherwise a captured `(qr_payload, occurrence_id)` pair becomes
+   a replay token that turns the idempotency rule into an admission oracle. Binding the
+   occurrence id to an authenticated scanner identity is TKT-85's design space; the
+   non-negotiable floor decided here is: distinguishable replay response + gate actuation
+   gated on first-time results only. Adversarial tests: a copied occurrence id from another
+   scanner/session, and a repeated already-actuated occurrence, must not cause a second
+   actuation — while a genuine lost-response retry still completes exactly once.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at
