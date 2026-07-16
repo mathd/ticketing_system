@@ -2,10 +2,8 @@
   "key": "TKT-77",
   "type": "Story",
   "summary": "US-014: Operational holds — house, artist and kills",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude",
   "pr": {
     "number": 53,
