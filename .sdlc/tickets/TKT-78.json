@@ -2,10 +2,8 @@
   "key": "TKT-78",
   "type": "Story",
   "summary": "US-015: Channel allocations — caps and scheduled release",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/54",
@@ -113,6 +111,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Validation note — COS against observable output** (PR #54 merged as 91c27c4):\n\n1. *Allocations on a pool, never above capacity, public is the default* — `PUT /internal/slots/{id}/channel-allocations` with caps summing over capacity returns 409 and leaves the prior set intact; an empty set returns everything to public. Pinned by `TestAllocationReplacementValidatesAndIsAtomic`.\n2. *Dual rejection + no-oversell under contention* — channel hold over its cap rejects with pool headroom; pool exhaustion rejects with cap headroom; the composed smoke fires 30 concurrent mixed holds at a 10-capacity pool with presale cap 6 and grants exactly 6 presale + 4 public. `TestChannelCapAndPoolCapacityRejectIndependently`, `TestChannelAllocationContention`.\n3. *Scheduled give-back, lazy, observable in reads* — after `release_at` (DB time, no sweeper ran) channel availability reads 0 and public availability grows by exactly the unsold quantity; new channel holds reject even when queued on the pool lock across the cutoff. `TestScheduledReleaseIsLazyAndObservable`, `TestReleaseCutoffHoldsUnderPoolLockContention`.\n4. *Channel codes opaque; registry/pricing/windows out of scope* — codes pass through exactly (case-sensitive, no lookup); commerce plumbing deferred to TKT-17.\n\nQuality gates: `make check` green (mirrors CI); contract regenerated with no drift (ADR-009); claim mutations append `claim_history` (ADR-003); availability read declares the ADR-004 5s tier. To try it by hand: allocate against any published performance via the internal PUT, then hold with `\"channel\":\"presale\"` through the gateway."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n**Closeout — TKT-78** (PO accepted 2026-07-16; PR #54 squash-merged as 91c27c4).\n\n| stage | duration |\n|---|---|\n| Backlog (shaping → Gate 1) | 18m |\n| Ready (queue) | 1h34m |\n| Planning — agent:planning (codex draft) | 13m |\n| Planning — agent:plan-review (critique + finalize) | 3m |\n| Planning — needs:human (Gate 2) | 36m |\n| Building — agent:coding (TDD + gate) | 20m |\n| Building — agent:ai-review (2 passes + fixes) | 17m |\n| Building — needs:human (Gate 3) | 4m |\n| PO Review (Gate 4) | ~4h (async; accepted on return) |\n\nhuman-wait total: ~40m at gates 2+3 (Gate 4 async, not blocking agent time).\ndiff: +1001/−36 (13 files).\n\nlearnings:\n- **DB-time cutoffs decided inside a lock queue must use `clock_timestamp()`, not `now()`** — `now()` freezes at transaction start, so any transaction that waits on a row lock across a time boundary decides with stale time. Found by adversarial review, pinned by a lock-contention test, recorded in ADR-024. → house: `docs/LEARNINGS.md` (generalizes to every future DB-time boundary in this repo).\n- **A time-boundary regression test is vacuous unless it proves the waiter queued *before* the boundary** — a sleep-based setup passes under the broken code too; the fix is a DB-clock cutoff plus a `pg_stat_activity` lock-waiter handshake, then a mutation check. → house: `docs/LEARNINGS.md` (same entry, test half).\n- **`git add -A` in a shared checkout sweeps concurrent human edits into the ticket branch** — happened three times this run (owner was editing skill files in the same worktree); cost a mid-review branch rewrite. → house: this skill (Building step: stage explicitly, never `git add -A`).\n\nretro:\n1. *What would have made this faster/better:* the smoke helpers validate every response against the served contract — undocumented in the mémo, cost one gate round (a GET probe on a PUT-only route fails as a contract violation, not a 404). Concrete change: context-mémo for inventory tickets should name `shared/contract` response validation as a binding behavior of the smoke suite.\n2. *What should the humans change:* concurrent skill edits in the agent's checkout collide with pipeline commits. Concrete change (either works): edit skills from a separate worktree while a ticket is in flight, **or** accept the skill patch below making explicit staging a hard rule. Also recurring: local codex skill hijack on reviews (known, survivable — no action beyond codex-runner.md's existing rule).\n\nOffering now (V0 interactive): patch this skill's Building step with \"stage the ticket's paths explicitly; never `git add -A` in a shared checkout (TKT-78)\" + add the two LEARNINGS.md entries. Say the word and both land on main as internal maintenance."
     }
   ]
 }
