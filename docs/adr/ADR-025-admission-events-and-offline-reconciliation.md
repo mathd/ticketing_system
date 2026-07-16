@@ -85,12 +85,23 @@ conflicts. Together every physical admission that Access learns about is represe
    per additional distinct physical admission. `duplicate_admit` means *"a physical admission
    that conflicted with the authoritative trace at reconciliation"* — not necessarily the
    chronologically second device timestamp. A connected duplicate that was **denied** is not an
-   admission and produces no lifecycle event (today's behaviour, kept).
+   admission and produces no lifecycle event (today's behaviour, kept). One admission class
+   stays outside the lifecycle trace by prior decision: a **degraded admission** under ADR-021
+   §Decision 6 is recorded only in `lifecycle_integrity_quarantine` — appending onto an
+   unverified predecessor would poison the chain — so **authoritative admission history is the
+   union of the lifecycle trace and the quarantine record**, and readers reconstructing
+   admissions must consult both.
 3. **Occurrence identity.** Every physical gate decision gets a gate-generated UUIDv4
    **occurrence id**, durably persisted by the scanner before the gate opens or the request is
    sent. Transport retries reuse it; a distinct physical decision gets a new one. The lifecycle
-   event's existing `id` column stores it. The deterministic `ticketID+":redeemed"` id remains
-   correct for the singleton `redeemed` type and existing rows are untouched.
+   event's existing `id` column stores it — **for every admission event type, including
+   `redeemed`**. One identity model, no exceptions: if the occurrence selected as `redeemed`
+   kept a deterministic id, its own retry could not be matched by event id and would be
+   misrecorded as a `duplicate_admit` — a transport retry forged into evidence of a second
+   physical admission. The deterministic `ticketID+":redeemed"` id is **grandfathered** on
+   existing rows and remains in use only until the implementation ticket lands the occurrence
+   protocol; the implementation must test that a retry of the occurrence that became `redeemed`
+   is idempotent success and can never append `duplicate_admit`.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at
@@ -113,10 +124,14 @@ conflicts. Together every physical admission that Access learns about is represe
    protected from retry duplication by the event primary key (the occurrence id). The migration
    order is binding on the implementation ticket: add the widened CHECK, create the plain partial
    unique index *while the table-wide UNIQUE still protects the table*, then drop the table-wide
-   UNIQUE, then the old CHECK. Plain `CREATE UNIQUE INDEX`, never `CONCURRENTLY` (ADR-020);
-   out-of-band migrate job under the 30-second fail-fast bound (ADR-022/ADR-008) — the index
-   scans existing history, so the implementation ticket must measure the build at representative
-   volume rather than assume it fits.
+   UNIQUE, then the old CHECK. The widened CHECK needs a **distinct constraint name** while the
+   old one still exists (rename or drop-old afterwards), and `ADD CONSTRAINT … CHECK` **validates
+   existing rows with its own full-table scan** — so the migration performs two scans (CHECK
+   validation + index build), not one. Plain `CREATE UNIQUE INDEX`, never `CONCURRENTLY`
+   (ADR-020); out-of-band migrate job under the 30-second fail-fast bound (ADR-022/ADR-008) —
+   the implementation ticket must measure the **complete migration**, not the index alone, at
+   representative volume. `NOT VALID` + `VALIDATE CONSTRAINT` is acceptable only if validation
+   still completes inside the same job's bound; deferring validation past the job is not.
 8. **Integrity sequencing.** New event types use the existing chained append path. No existing
    row, id, hash, signature or checkpoint is rewritten or re-backfilled, and canonical v1 is
    unchanged (see Context) — no gate identity or conflict reason enters the canonical form;
@@ -124,10 +139,14 @@ conflicts. Together every physical admission that Access learns about is represe
    canonical-version design and is out of scope.
 9. **PII.** Occurrence ids and alarm payloads carry bounded identifiers and enums only — no
    buyer, no guest reference, no raw scanner-operator identity (ADR-003 §D3).
-10. **Contracts.** Redemption emits no cross-service domain event today (verified: Access
-    publishes exactly one subject, the ADR-021 integrity alarm, via its outbox). These additions
-    are Access-local. The admission-conflict alarm starts as its own schema-1 contract and
-    follows ADR-017 thereafter.
+10. **Contracts.** The verified inventory at HEAD: redemption emits **no** cross-service domain
+    event; the lifecycle alarm outbox carries exactly one subject
+    (`platform.access.lifecycle-integrity.alarm`); Access separately publishes
+    `platform.access.ticket-issuance.failed` from its order-completed consumer
+    (`services/access/internal/consumer/consumer.go`) — unrelated to admission and untouched
+    here. The new lifecycle event types are Access-local **rows** (no service consumes them);
+    the admission-conflict alarm is the one externally visible addition and starts as its own
+    schema-1 contract, following ADR-017 thereafter.
 
 ## Claims and named adversaries
 
@@ -161,9 +180,10 @@ containment against the database adversary.
 - **Negative:**
     - Two admission vocabularies coexist (`redeemed` vs `entry`/`exit`), plus a third event type
       for conflicts — readers must dispatch on event type.
-    - The trace's completeness claim is now explicitly bounded at reconciliation: a lost or
-      never-synced gate occurrence is invisible, and the ADR says so rather than pretending
-      otherwise.
+    - The trace's completeness claim is now explicitly bounded: a lost or never-synced gate
+      occurrence is invisible, and ADR-021 §D6 degraded admissions live only in the quarantine
+      record — the ADR says so rather than pretending otherwise, and admission readers must
+      consult trace ∪ quarantine.
     - The implementation ticket inherits a measured-migration obligation (partial index build
       under the 30s bound) and a scanner durability contract it cannot silently weaken.
 
