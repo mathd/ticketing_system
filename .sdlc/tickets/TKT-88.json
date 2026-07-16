@@ -1,0 +1,17 @@
+{
+  "key": "TKT-88",
+  "type": "Story",
+  "summary": "Cross-service smoke coverage for multi-event admission flows",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned by TKT-73 / ADR-025 (admission lifecycle events and offline reconciliation). The ADR's decision statements are binding constraints on this ticket."
+    }
+  ],
+  "description": "Extend the gateway smoke suite beyond per-ticket TDD: replayed scans (same occurrence id), concurrent duplicates, offline out-of-order reconciliation, one redeemed + N duplicate_admit, N-event chains passing verify-lifecycle with RequireCoverage. Complements — does not replace — the TDD each implementation ticket owes (ADR-025 follow-up; seams: smoke/checkout_test.go, migration_smoke_test.go)."
+}
