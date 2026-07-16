@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**A time cutoff decided behind a lock queue must use decision time, not transaction time**](./learnings/2026-07-16-lock-queue-time-cutoffs.md) —
+  `now()` freezes at transaction start, so a transaction that waits on a row lock across a time
+  boundary decides it with stale time. And the regression test is vacuous unless it proves the
+  waiter queued *before* the boundary (DB clock + `pg_stat_activity` handshake + mutation check) —
+  the sleep-based version passes under the broken code too. (TKT-78, PR #54)
 - [**Judge idempotent replays by lifecycle state, never by timestamp**](./learnings/2026-07-16-judge-replays-by-lifecycle-state.md) —
   a replay guard keyed on a derived signal (elapsed TTL) was wrong in both directions, and its
   catch-all turned unknown states into "convert again" — a double-carve instruction. Unknown over a
