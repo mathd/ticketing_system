@@ -2,7 +2,7 @@
   "key": "TKT-72",
   "type": "Bug",
   "summary": "make check's smoke stage flakes on a cold volume — postgres healthcheck has no start_period",
-  "status": "PO Review",
+  "status": "Done",
   "labels": [
     "needs:human"
   ],
