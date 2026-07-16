@@ -104,15 +104,35 @@ CREATE TABLE lifecycle_checkpoints (
 -- isn't one: checkpoint N's leaf set is the latest change per ticket among the
 -- rows assigned to N.
 --
+-- key_id and signature are NOT redundant with lifecycle_heads, and leaving them
+-- out was a real hole (PR #51 review, R1). Everything else here is ordinary
+-- mutable-ish operational state, but the checkpoint SIGNS this table's contents:
+-- the worker builds a Merkle root over these rows and the verifier recomputes
+-- from the same rows, so without a signature ON THE SNAPSHOT both would agree on
+-- whatever the table said. Nothing blocks an INSERT here — the trigger below
+-- covers UPDATE and DELETE only, and an append-only queue must accept inserts —
+-- so a database writer could add a fabricated newer snapshot for a real ticket,
+-- watch the dedup select it, and get a signed checkpoint committing to a head
+-- that never existed. That breaks the checkpoint's ONLY purpose: TKT-11 anchors
+-- these roots, and an anchor over invented heads is worse than no anchor.
+--
+-- Carrying the head's own signature makes a leaf unforgeable without the private
+-- key. A REPLAYED older-but-genuine snapshot is still possible, but that is the
+-- rollback class ADR-021 §Threat model already records as undetected — this
+-- closes fabrication, not rollback.
+--
 -- checkpoint_id is the one mutable column (assignment is operational state).
 -- Tampering with it changes the recomputed root, which the checkpoint signature
--- catches — so the snapshot needs no protection the signature does not give it.
+-- catches.
 CREATE TABLE lifecycle_head_changes (
   change_id bigserial PRIMARY KEY,
   ticket_id uuid NOT NULL REFERENCES tickets(id),
   organizer_id uuid NOT NULL,
   sequence bigint NOT NULL CHECK (sequence > 0),
   head_hash bytea NOT NULL CHECK (octet_length(head_hash) = 32),
+  canonical_version smallint NOT NULL CHECK (canonical_version > 0),
+  key_id text NOT NULL,
+  signature bytea NOT NULL CHECK (octet_length(signature) = 64),
   checkpoint_id bigint REFERENCES lifecycle_checkpoints(checkpoint_id),
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -227,6 +247,9 @@ BEGIN
      OR NEW.organizer_id IS DISTINCT FROM OLD.organizer_id
      OR NEW.sequence IS DISTINCT FROM OLD.sequence
      OR NEW.head_hash IS DISTINCT FROM OLD.head_hash
+     OR NEW.canonical_version IS DISTINCT FROM OLD.canonical_version
+     OR NEW.key_id IS DISTINCT FROM OLD.key_id
+     OR NEW.signature IS DISTINCT FROM OLD.signature
      OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
     RAISE EXCEPTION 'lifecycle head change snapshots are immutable; only checkpoint assignment may change';
   END IF;

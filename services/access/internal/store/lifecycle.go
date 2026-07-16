@@ -180,8 +180,11 @@ func (p *Postgres) appendLifecycle(ctx context.Context, tx *sql.Tx, in appendInp
 		in.TicketID, in.OrganizerID, sequence, lifecycle.CanonicalVersion, entryHash, keyID, signature, occurredAt); err != nil {
 		return time.Time{}, fmt.Errorf("advance head: %w", err)
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_head_changes(ticket_id,organizer_id,sequence,head_hash) VALUES($1,$2,$3,$4)`,
-		in.TicketID, in.OrganizerID, sequence, entryHash); err != nil {
+	// The snapshot carries the head's own signature, not just its hash: the
+	// checkpoint signs this table's contents, so an unsigned snapshot would let
+	// anyone who can INSERT here get a forged head into a signed root.
+	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_head_changes(ticket_id,organizer_id,sequence,head_hash,canonical_version,key_id,signature) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+		in.TicketID, in.OrganizerID, sequence, entryHash, lifecycle.CanonicalVersion, keyID, signature); err != nil {
 		return time.Time{}, fmt.Errorf("queue head change: %w", err)
 	}
 	return occurredAt, nil

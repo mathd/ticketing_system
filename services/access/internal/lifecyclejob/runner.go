@@ -96,6 +96,10 @@ func (c *Checkpointer) Run(ctx context.Context) {
 // finds nothing pending still counts as a success: the freshness signal has to
 // distinguish "idle" from "dead", and only a heartbeat on the no-change path
 // does that.
+//
+// A pass in which any organizer failed does NOT count. "Last success" that
+// refreshes on failure reads healthy while checkpointing is broken, which is the
+// one thing this metric exists to rule out (PR #51 review, R4).
 func (c *Checkpointer) Once(ctx context.Context) int {
 	organizers, err := c.st.PendingCheckpointOrganizers(ctx)
 	if err != nil {
@@ -105,12 +109,14 @@ func (c *Checkpointer) Once(ctx context.Context) int {
 		return 0
 	}
 	var committed int
+	var failed bool
 	for _, organizerID := range organizers {
 		if ctx.Err() != nil {
 			return committed
 		}
 		result, err := c.st.CheckpointOrganizer(ctx, organizerID, c.observed[organizerID])
 		if err != nil {
+			failed = true
 			if errors.Is(err, store.ErrCheckpointRegression) {
 				// Refuse to extend a chain that went backwards where we can see
 				// it. This is not detection — the memory is this process's own
@@ -132,7 +138,9 @@ func (c *Checkpointer) Once(ctx context.Context) int {
 		c.observed[organizerID] = store.LastRoot{Sequence: result.Sequence, Root: result.Root}
 		committed++
 	}
-	c.lastSuccess = c.now()
+	if !failed {
+		c.lastSuccess = c.now()
+	}
 	return committed
 }
 
@@ -179,6 +187,7 @@ type AlarmStore interface {
 	ReleaseAlarm(ctx context.Context, eventID, claimID uuid.UUID, cause error) error
 	MarkAlarmPublished(ctx context.Context, eventID, claimID uuid.UUID) (bool, error)
 	OldestUnpublishedAlarm(ctx context.Context) (time.Time, bool, error)
+	DeadLetteredAlarms(ctx context.Context) (int64, error)
 }
 
 // Publisher transmits an already-frozen envelope.
@@ -291,6 +300,16 @@ func (d *AlarmDrainer) ObserveMetrics(meter metric.Meter, now func() time.Time) 
 	if err != nil {
 		return err
 	}
+	// Dead letters leave the backlog gauge (they are unclaimable, and their age
+	// would grow forever and drown the live signal), so they need their own.
+	// Without it the backlog falls to zero exactly when an alarm has permanently
+	// failed to reach anyone — the queue looks empty at the moment a degraded
+	// admission became unreportable. Alert on this being non-zero, ever.
+	deadLettered, err := meter.Int64ObservableGauge("access.lifecycle.alarm.dead_lettered",
+		metric.WithDescription("Integrity alarms that exhausted their retries and will never reach the operator durable. Each one is a degraded admission nobody will hear about; non-zero means this deployment is running fail-open unmonitored (ADR-021 §D6)."))
+	if err != nil {
+		return err
+	}
 	_, err = meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
 		oldest, ok, err := d.st.OldestUnpublishedAlarm(ctx)
 		if err != nil {
@@ -301,7 +320,12 @@ func (d *AlarmDrainer) ObserveMetrics(meter metric.Meter, now func() time.Time) 
 		} else {
 			o.ObserveInt64(backlog, 0)
 		}
+		dead, err := d.st.DeadLetteredAlarms(ctx)
+		if err != nil {
+			return err
+		}
+		o.ObserveInt64(deadLettered, dead)
 		return nil
-	}, backlog)
+	}, backlog, deadLettered)
 	return err
 }

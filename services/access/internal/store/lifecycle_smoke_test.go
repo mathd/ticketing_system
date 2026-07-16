@@ -675,6 +675,182 @@ func TestVerifyLifecycleRejectsEachCorruption(t *testing.T) {
 	}
 }
 
+// PR #51 review, R1. The checkpoint signs whatever lifecycle_head_changes says,
+// and the verifier recomputes the root from those same rows — so if the rows are
+// attacker-supplied, signer and verifier simply agree on the attacker's story.
+// Nothing blocks an INSERT here (the trigger covers UPDATE and DELETE only; an
+// append-only queue must accept inserts), so this needs no DDL privilege at all.
+//
+// It matters because the checkpoint's ONLY purpose is to be anchored by TKT-11.
+// A root over an invented head is worse than no anchor.
+func TestCheckpointRefusesAForgedHeadSnapshot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+
+	organizerID := uuid.New()
+	s := issueTicket(t, ctx, st, organizerID)
+
+	// A fabricated newer snapshot for a real ticket: plausible sequence, invented
+	// head, no valid signature. Dedup takes the highest change_id, so this would
+	// become the leaf.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO lifecycle_head_changes(ticket_id,organizer_id,sequence,head_hash,canonical_version,key_id,signature)
+		VALUES($1,$2,$3,decode(repeat('ab',32),'hex'),1,$4,decode(repeat('cd',64),'hex'))`,
+		s.ticketID, organizerID, 99, testKID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CheckpointOrganizer(ctx, organizerID, LastRoot{}); err == nil {
+		t.Fatal("the worker signed a checkpoint over a head that never existed; TKT-11 would anchor a fabrication")
+	}
+	// And nothing was committed on the way to refusing.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_checkpoints`); n != 0 {
+		t.Fatalf("%d checkpoints written despite a forged leaf", n)
+	}
+}
+
+// The head signature binds ticket, sequence, version and key id — NOT the
+// organizer. So nothing but this check stops a change being filed under another
+// organizer's checkpoint and anchored there.
+func TestCheckpointRefusesAReassignedOrganizer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+
+	victim := uuid.New()
+	attacker := uuid.New()
+	s := issueTicket(t, ctx, st, victim)
+
+	// Move the genuine, correctly-signed change to another organizer's queue.
+	if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_head_changes DISABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_head_changes SET organizer_id=$1 WHERE ticket_id=$2`, attacker, s.ticketID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_head_changes ENABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CheckpointOrganizer(ctx, attacker, LastRoot{}); err == nil {
+		t.Fatal("a ticket's head was checkpointed under an organizer that does not own it")
+	}
+}
+
+// The verifier must catch a forged leaf too, not just the signer: it is the
+// offline audit, and it reads the same attacker-writable table.
+func TestVerifyRejectsAForgedLeafInACommittedCheckpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+
+	organizerID := uuid.New()
+	s := issueTicket(t, ctx, st, organizerID)
+	if _, err := st.CheckpointOrganizer(ctx, organizerID, LastRoot{}); err != nil {
+		t.Fatal(err)
+	}
+	verifier := New(db, verifyOnlyConfig(t, cfg))
+	if err := verifier.VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Swap the committed leaf's head hash for an invented one. The root will no
+	// longer match, but a verifier that recomputed WITHOUT checking signatures
+	// would only catch it via the root — and an attacker who also re-points the
+	// checkpoint would not be caught at all. The signature check is what makes
+	// the leaf itself meaningful.
+	if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_head_changes DISABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_head_changes SET head_hash=decode(repeat('ab',32),'hex') WHERE ticket_id=$1`, s.ticketID); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err == nil {
+		t.Fatal("verify accepted a checkpoint leaf that is not a signed head")
+	}
+}
+
+// PR #51 review, R2. The canonical version travels inside the signed domain
+// prefix, so the hash covers it — but the stored COLUMN is a separate copy that
+// nothing verified, and it is the discriminator a future migration dispatches
+// on. An unverified discriminator can lie (ADR-017 §5b′, same shape).
+func TestVerifyRejectsATamperedCanonicalVersion(t *testing.T) {
+	cases := map[string]string{
+		"integrity row":   `UPDATE lifecycle_event_integrity SET canonical_version=99`,
+		"head":            `UPDATE lifecycle_heads SET canonical_version=99`,
+		"epoch signature": `UPDATE lifecycle_head_epoch_signatures SET canonical_version=99`,
+		"checkpoint":      `UPDATE lifecycle_checkpoints SET canonical_version=99`,
+		"head change":     `UPDATE lifecycle_head_changes SET canonical_version=99`,
+	}
+	for name, corruption := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			db := migratedDB(t, ctx)
+			cfg := testConfig(t)
+			st := New(db, cfg)
+
+			organizerID := uuid.New()
+			issueTicket(t, ctx, st, organizerID)
+			if _, err := st.CheckpointOrganizer(ctx, organizerID, LastRoot{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.SealEpoch(ctx); err != nil {
+				t.Fatal(err)
+			}
+			verifier := New(db, verifyOnlyConfig(t, cfg))
+			if err := verifier.VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+				t.Fatal(err)
+			}
+			for _, table := range []string{"lifecycle_event_integrity", "lifecycle_heads", "lifecycle_head_epoch_signatures", "lifecycle_checkpoints", "lifecycle_head_changes"} {
+				if _, err := db.ExecContext(ctx, `ALTER TABLE `+table+` DISABLE TRIGGER USER`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.ExecContext(ctx, corruption); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifier.VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err == nil {
+				t.Fatalf("verify accepted a tampered canonical version on the %s: the field future migrations dispatch on can lie", name)
+			}
+		})
+	}
+}
+
+// PR #51 review, R3. A dead-lettered alarm leaves the backlog gauge, so without
+// its own signal the queue reads empty at the exact moment a degraded admission
+// became permanently unreportable.
+func TestDeadLetteredAlarmsStayVisible(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+
+	s := issueTicket(t, ctx, st, uuid.New())
+	corruptChain(t, ctx, db, s.ticketID)
+	if _, err := st.Redeem(ctx, s.redeemInput()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_integrity_alarm_outbox SET dead_lettered_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.OldestUnpublishedAlarm(ctx); err != nil || ok {
+		t.Fatalf("dead letters still count as live backlog (ok=%v err=%v)", ok, err)
+	}
+	dead, err := st.DeadLetteredAlarms(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dead != 1 {
+		t.Fatalf("dead-lettered alarms = %d, want 1: an unreportable degraded admission must not vanish from every signal", dead)
+	}
+}
+
 // The limitation, pinned so nobody later mistakes a green verify for proof the
 // trail is intact. A ticket head rolled back together with the checkpoint suffix
 // that committed it leaves a chain that is internally consistent and verifies

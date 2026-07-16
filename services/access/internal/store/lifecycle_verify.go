@@ -64,13 +64,28 @@ type computedHead struct {
 	hash     []byte
 }
 
+// checkVersion rejects a stored canonical version this build does not write.
+//
+// The version travels inside the signed domain prefix ("…/v1"), so the hash and
+// signature already bind it — but the stored COLUMN is a separate copy that
+// nothing covered, and it is the discriminator future migrations dispatch on. An
+// unverified discriminator can lie, which is the whole failure ADR-017 §5b′
+// describes. Only version 1 exists today; a v2 verifier would branch here rather
+// than reject.
+func checkVersion(stored int64, what string) error {
+	if stored != lifecycle.CanonicalVersion {
+		return fmt.Errorf("%s declares canonical version %d, this build writes %d", what, stored, lifecycle.CanonicalVersion)
+	}
+	return nil
+}
+
 // verifyChains walks every ticket's chain in one ordered pass, the same shape
 // the money journal's verifier uses (payments store.Verify), and returns the
 // head each chain actually reaches.
 func (p *Postgres) verifyChains(ctx context.Context, opts VerifyOptions) (map[uuid.UUID]computedHead, error) {
 	rows, err := p.db.QueryContext(ctx, `
 		SELECT t.id, t.order_id, t.organizer_id, t.slot_id,
-		       e.id, e.event_type, e.occurred_at, i.sequence, i.previous_hash, i.entry_hash
+		       e.id, e.event_type, e.occurred_at, i.sequence, i.previous_hash, i.entry_hash, i.canonical_version
 		FROM lifecycle_events e
 		JOIN tickets t ON t.id = e.ticket_id
 		LEFT JOIN lifecycle_event_integrity i ON i.event_id = e.id
@@ -92,8 +107,9 @@ func (p *Postgres) verifyChains(ctx context.Context, opts VerifyOptions) (map[uu
 		var occurredAt time.Time
 		var sequence sql.NullInt64
 		var previousHash, entryHash []byte
+		var version sql.NullInt64
 		if err := rows.Scan(&ticketID, &id.OrderID, &id.OrganizerID, &id.SlotID,
-			&eventID, &eventType, &occurredAt, &sequence, &previousHash, &entryHash); err != nil {
+			&eventID, &eventType, &occurredAt, &sequence, &previousHash, &entryHash, &version); err != nil {
 			return nil, err
 		}
 		if ticketID != current {
@@ -106,6 +122,16 @@ func (p *Postgres) verifyChains(ctx context.Context, opts VerifyOptions) (map[uu
 				continue
 			}
 			return nil, fmt.Errorf("lifecycle event %s on ticket %s has no integrity row", eventID, ticketID)
+		}
+		// Dispatch on the stored version before trusting the bytes, the way
+		// ADR-017 §5b′ requires of any versioned payload: a version exists
+		// precisely because the rules can change, so verifying a future variant
+		// with today's rules would judge it by the wrong ones. Only version 1
+		// exists, so anything else is corruption rather than the future — and
+		// silently recomputing with v1 anyway is how a discriminator rots into a
+		// field nothing enforces.
+		if err := checkVersion(version.Int64, "integrity row for event "+eventID.String()); err != nil {
+			return nil, err
 		}
 		count++
 		if sequence.Int64 != count {
@@ -129,7 +155,7 @@ func (p *Postgres) verifyChains(ctx context.Context, opts VerifyOptions) (map[uu
 }
 
 func (p *Postgres) verifyHeads(ctx context.Context, computed map[uuid.UUID]computedHead) error {
-	rows, err := p.db.QueryContext(ctx, `SELECT ticket_id,last_sequence,last_hash,key_id,signature FROM lifecycle_heads`)
+	rows, err := p.db.QueryContext(ctx, `SELECT ticket_id,last_sequence,last_hash,key_id,signature,canonical_version FROM lifecycle_heads`)
 	if err != nil {
 		return err
 	}
@@ -140,7 +166,11 @@ func (p *Postgres) verifyHeads(ctx context.Context, computed map[uuid.UUID]compu
 		var sequence int64
 		var hash, signature []byte
 		var keyID string
-		if err := rows.Scan(&ticketID, &sequence, &hash, &keyID, &signature); err != nil {
+		var version int64
+		if err := rows.Scan(&ticketID, &sequence, &hash, &keyID, &signature, &version); err != nil {
+			return err
+		}
+		if err := checkVersion(version, "head for ticket "+ticketID.String()); err != nil {
 			return err
 		}
 		seen[ticketID] = true
@@ -190,7 +220,7 @@ func (p *Postgres) verifyOrphanIntegrity(ctx context.Context) error {
 // from a ticket that legitimately has none. Asserting completeness here would
 // invent a guarantee the scheme does not have.
 func (p *Postgres) verifyEpochSignatures(ctx context.Context) error {
-	rows, err := p.db.QueryContext(ctx, `SELECT ticket_id,key_id,ticket_sequence,head_hash,signature FROM lifecycle_head_epoch_signatures`)
+	rows, err := p.db.QueryContext(ctx, `SELECT ticket_id,key_id,ticket_sequence,head_hash,signature,canonical_version FROM lifecycle_head_epoch_signatures`)
 	if err != nil {
 		return err
 	}
@@ -200,7 +230,11 @@ func (p *Postgres) verifyEpochSignatures(ctx context.Context) error {
 		var keyID string
 		var sequence int64
 		var hash, signature []byte
-		if err := rows.Scan(&ticketID, &keyID, &sequence, &hash, &signature); err != nil {
+		var version int64
+		if err := rows.Scan(&ticketID, &keyID, &sequence, &hash, &signature, &version); err != nil {
+			return err
+		}
+		if err := checkVersion(version, "epoch signature for ticket "+ticketID.String()); err != nil {
 			return err
 		}
 		if err := p.cfg.Keyring.VerifyHead(ticketID, sequence, keyID, hash, signature); err != nil {
@@ -218,7 +252,7 @@ func (p *Postgres) verifyEpochSignatures(ctx context.Context) error {
 // it has advanced. A separate leaves table would store that data twice.
 func (p *Postgres) verifyCheckpoints(ctx context.Context) error {
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT checkpoint_id,organizer_id,sequence,previous_root,root,leaf_count,key_id,signature,created_at
+		SELECT checkpoint_id,organizer_id,sequence,previous_root,root,leaf_count,key_id,signature,created_at,canonical_version
 		FROM lifecycle_checkpoints ORDER BY organizer_id,sequence`)
 	if err != nil {
 		return err
@@ -233,8 +267,12 @@ func (p *Postgres) verifyCheckpoints(ctx context.Context) error {
 	var all []checkpointRow
 	for rows.Next() {
 		var r checkpointRow
+		var version int64
 		if err := rows.Scan(&r.id, &r.cp.OrganizerID, &r.cp.Sequence, &r.cp.PreviousRoot, &r.cp.Root,
-			&r.cp.LeafCount, &r.cp.KeyID, &r.signature, &r.cp.CreatedAt); err != nil {
+			&r.cp.LeafCount, &r.cp.KeyID, &r.signature, &r.cp.CreatedAt, &version); err != nil {
+			return err
+		}
+		if err := checkVersion(version, fmt.Sprintf("checkpoint %d for organizer %s", r.cp.Sequence, r.cp.OrganizerID)); err != nil {
 			return err
 		}
 		r.cp.CreatedAt = lifecycle.Normalize(r.cp.CreatedAt)
@@ -257,7 +295,7 @@ func (p *Postgres) verifyCheckpoints(ctx context.Context) error {
 		if !bytes.Equal(r.cp.PreviousRoot, prev.Root) {
 			return fmt.Errorf("broken checkpoint link for organizer %s at sequence %d", r.cp.OrganizerID, r.cp.Sequence)
 		}
-		leaves, err := p.checkpointLeaves(ctx, r.id)
+		leaves, err := p.checkpointLeaves(ctx, r.id, r.cp.OrganizerID)
 		if err != nil {
 			return err
 		}
@@ -282,11 +320,18 @@ func (p *Postgres) verifyCheckpoints(ctx context.Context) error {
 // checkpointLeaves rebuilds a checkpoint's leaf set: the latest head change per
 // ticket among the changes assigned to it. DISTINCT ON with a pinned ordering,
 // backed by lifecycle_head_changes_checkpoint_idx.
-func (p *Postgres) checkpointLeaves(ctx context.Context, checkpointID int64) ([]lifecycle.Leaf, error) {
+//
+// Every leaf is authenticated here, not merely re-hashed. Recomputing a root
+// from the same rows the signer used proves only that the two agree — if the
+// rows are attacker-supplied, they agree on the attacker's story. The head
+// signature is what makes a leaf mean anything, and the ticket join is what
+// binds it to an organizer, which no signature covers.
+func (p *Postgres) checkpointLeaves(ctx context.Context, checkpointID int64, organizerID uuid.UUID) ([]lifecycle.Leaf, error) {
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT DISTINCT ON (ticket_id) ticket_id, sequence, head_hash
-		FROM lifecycle_head_changes WHERE checkpoint_id=$1
-		ORDER BY ticket_id, change_id DESC`, checkpointID)
+		SELECT DISTINCT ON (c.ticket_id) c.ticket_id, c.sequence, c.head_hash, c.canonical_version, c.key_id, c.signature, t.organizer_id
+		FROM lifecycle_head_changes c JOIN tickets t ON t.id = c.ticket_id
+		WHERE c.checkpoint_id=$1
+		ORDER BY c.ticket_id, c.change_id DESC`, checkpointID)
 	if err != nil {
 		return nil, err
 	}
@@ -294,8 +339,22 @@ func (p *Postgres) checkpointLeaves(ctx context.Context, checkpointID int64) ([]
 	var out []lifecycle.Leaf
 	for rows.Next() {
 		var l lifecycle.Leaf
-		if err := rows.Scan(&l.TicketID, &l.Sequence, &l.HeadHash); err != nil {
+		var version int
+		var keyID string
+		var signature []byte
+		var owner uuid.UUID
+		if err := rows.Scan(&l.TicketID, &l.Sequence, &l.HeadHash, &version, &keyID, &signature, &owner); err != nil {
 			return nil, err
+		}
+		if version != lifecycle.CanonicalVersion {
+			return nil, fmt.Errorf("checkpoint %d leaf for ticket %s declares canonical version %d, this build writes %d",
+				checkpointID, l.TicketID, version, lifecycle.CanonicalVersion)
+		}
+		if owner != organizerID {
+			return nil, fmt.Errorf("checkpoint %d covers ticket %s, which belongs to organizer %s", checkpointID, l.TicketID, owner)
+		}
+		if err := p.cfg.Keyring.VerifyHead(l.TicketID, l.Sequence, keyID, l.HeadHash, signature); err != nil {
+			return nil, fmt.Errorf("checkpoint %d leaf for ticket %s is not a signed head: %w", checkpointID, l.TicketID, err)
 		}
 		out = append(out, l)
 	}

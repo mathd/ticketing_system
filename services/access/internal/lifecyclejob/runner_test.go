@@ -84,8 +84,24 @@ func TestCheckpointerSurvivesARegression(t *testing.T) {
 	if n := c.Once(context.Background()); n != 0 {
 		t.Fatalf("a regressed chain produced %d checkpoints", n)
 	}
+}
+
+// "Last success" that refreshes on a failed pass reads healthy while
+// checkpointing is broken — the one thing the metric exists to rule out.
+func TestCheckpointerDoesNotCallAFailedPassASuccess(t *testing.T) {
+	f := &fakeCheckpointStore{pending: []uuid.UUID{uuid.New()}, err: errors.New("database on fire")}
+	c := NewCheckpointer(f, time.Hour, nil, nil)
+	c.Once(context.Background())
+	if !c.LastSuccess().IsZero() {
+		t.Fatal("a pass where every organizer failed refreshed last_success: the freshness gauge would read healthy while nothing is being checkpointed")
+	}
+	// Recovering restores the signal.
+	f.mu.Lock()
+	f.err = nil
+	f.mu.Unlock()
+	c.Once(context.Background())
 	if c.LastSuccess().IsZero() {
-		t.Fatal("the pass did not complete")
+		t.Fatal("a successful pass did not update last_success")
 	}
 }
 
@@ -167,6 +183,8 @@ func (f *fakeAlarmStore) MarkAlarmPublished(_ context.Context, eventID, _ uuid.U
 func (f *fakeAlarmStore) OldestUnpublishedAlarm(context.Context) (time.Time, bool, error) {
 	return time.Time{}, false, nil
 }
+
+func (f *fakeAlarmStore) DeadLetteredAlarms(context.Context) (int64, error) { return 0, nil }
 
 type fakePublisher struct {
 	mu   sync.Mutex

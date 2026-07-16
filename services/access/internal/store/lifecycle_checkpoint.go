@@ -90,22 +90,31 @@ func (p *Postgres) CheckpointOrganizer(ctx context.Context, organizerID uuid.UUI
 	// Lock this organizer's pending queue. Row locks do not block inserts, so
 	// concurrent redemptions keep queueing changes while this runs; a second
 	// worker blocks here, then re-reads and finds nothing pending.
+	//
+	// The join to tickets is load-bearing, not decoration: the head signature
+	// binds ticket, sequence, version and key id but NOT the organizer, so
+	// nothing else would stop a change being filed under the wrong organizer's
+	// checkpoint and anchored there.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT change_id, ticket_id, sequence, head_hash FROM lifecycle_head_changes
-		WHERE organizer_id=$1 AND checkpoint_id IS NULL ORDER BY change_id FOR UPDATE`, organizerID)
+		SELECT c.change_id, c.ticket_id, c.sequence, c.head_hash, c.key_id, c.signature, t.organizer_id
+		FROM lifecycle_head_changes c JOIN tickets t ON t.id = c.ticket_id
+		WHERE c.organizer_id=$1 AND c.checkpoint_id IS NULL ORDER BY c.change_id FOR UPDATE OF c`, organizerID)
 	if err != nil {
 		return CheckpointResult{}, err
 	}
 	type change struct {
-		id       int64
-		ticketID uuid.UUID
-		sequence int64
-		hash     []byte
+		id        int64
+		ticketID  uuid.UUID
+		sequence  int64
+		hash      []byte
+		keyID     string
+		signature []byte
+		owner     uuid.UUID
 	}
 	var changes []change
 	for rows.Next() {
 		var c change
-		if err := rows.Scan(&c.id, &c.ticketID, &c.sequence, &c.hash); err != nil {
+		if err := rows.Scan(&c.id, &c.ticketID, &c.sequence, &c.hash, &c.keyID, &c.signature, &c.owner); err != nil {
 			_ = rows.Close()
 			return CheckpointResult{}, err
 		}
@@ -118,6 +127,23 @@ func (p *Postgres) CheckpointOrganizer(ctx context.Context, organizerID uuid.UUI
 	_ = rows.Close()
 	if len(changes) == 0 {
 		return CheckpointResult{}, tx.Commit()
+	}
+	// Authenticate every snapshot before signing a root over it. Nothing blocks
+	// an INSERT into the queue, so an unverified snapshot is attacker-supplied
+	// input — and the verifier recomputes from these same rows, so it would
+	// cheerfully agree with whatever the worker signed. The checkpoint exists to
+	// be anchored by TKT-11; a root over fabricated heads is worse than none.
+	if p.cfg.Keyring == nil {
+		return CheckpointResult{}, errors.New("no lifecycle keyring configured")
+	}
+	for _, c := range changes {
+		if c.owner != organizerID {
+			return CheckpointResult{}, fmt.Errorf("head change %d claims organizer %s but ticket %s belongs to %s",
+				c.id, organizerID, c.ticketID, c.owner)
+		}
+		if err := p.cfg.Keyring.VerifyHead(c.ticketID, c.sequence, c.keyID, c.hash, c.signature); err != nil {
+			return CheckpointResult{}, fmt.Errorf("head change %d for ticket %s is not a signed head: %w", c.id, c.ticketID, err)
+		}
 	}
 
 	// Read the chain head. O(1) by the (organizer_id, sequence) unique index —
@@ -339,8 +365,8 @@ func (p *Postgres) backfillTicket(ctx context.Context, ticketID uuid.UUID) error
 		ticketID, id.OrganizerID, sequence, lifecycle.CanonicalVersion, entryHash, p.cfg.Signer.KeyID(), signature, p.now()); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_head_changes(ticket_id,organizer_id,sequence,head_hash) VALUES($1,$2,$3,$4)`,
-		ticketID, id.OrganizerID, sequence, entryHash); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_head_changes(ticket_id,organizer_id,sequence,head_hash,canonical_version,key_id,signature) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+		ticketID, id.OrganizerID, sequence, entryHash, lifecycle.CanonicalVersion, p.cfg.Signer.KeyID(), signature); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -436,6 +462,12 @@ func (p *Postgres) MarkAlarmPublished(ctx context.Context, eventID, claimID uuid
 // OldestUnpublishedAlarm reports the age of the oldest owed alarm, for the
 // backlog metric. Like checkpoint freshness this is monitored, not gated: a
 // broker blip must not close a turnstile.
+//
+// Dead letters are excluded because they are no longer claimable and their age
+// would grow forever, drowning the live backlog signal. They are NOT thereby
+// forgiven — DeadLetteredAlarms is the signal for them, and it exists because
+// dropping them from this gauge alone would make a permanently-unreported
+// degraded admission look like an empty queue (PR #51 review, R3).
 func (p *Postgres) OldestUnpublishedAlarm(ctx context.Context) (time.Time, bool, error) {
 	var oldest sql.NullTime
 	if err := p.db.QueryRowContext(ctx, `SELECT min(created_at) FROM lifecycle_integrity_alarm_outbox WHERE published_at IS NULL AND dead_lettered_at IS NULL`).Scan(&oldest); err != nil {
@@ -445,4 +477,19 @@ func (p *Postgres) OldestUnpublishedAlarm(ctx context.Context) (time.Time, bool,
 		return time.Time{}, false, nil
 	}
 	return oldest.Time, true, nil
+}
+
+// DeadLetteredAlarms counts alarms that will never be delivered.
+//
+// This number is never allowed to be invisible. ADR-021 §D6 admits on a chain
+// that does not verify, and that is defensible only while the alarm reaches
+// someone: an alarm that exhausted its retries is a degraded admission nobody
+// will ever hear about, which is precisely the "unmonitored deployment" §D6
+// forbids — arriving silently, one row at a time. It is a counter rather than a
+// gate for the same reason as everything else here: a broken broker must not
+// close a door.
+func (p *Postgres) DeadLetteredAlarms(ctx context.Context) (int64, error) {
+	var n int64
+	err := p.db.QueryRowContext(ctx, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox WHERE dead_lettered_at IS NOT NULL`).Scan(&n)
+	return n, err
 }
