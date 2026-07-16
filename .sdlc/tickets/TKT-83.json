@@ -1,0 +1,23 @@
+{
+  "key": "TKT-83",
+  "type": "Task",
+  "summary": "Remove the checked-in default INTERNAL_SERVICE_TOKEN — fail startup without an explicit credential",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-77"
+    }
+  ],
+  "description": "Found by TKT-77's adversarial review (finding 3, incidental): every service in compose.yaml defaults `INTERNAL_SERVICE_TOKEN` to the checked-in value `local-service-token`. TKT-77 closed the immediate exposure (staff ports now bind 127.0.0.1 only), but the default predates that PR and is repo-wide.\n\n**Scope:** make services refuse to start without an explicitly supplied internal credential outside a clearly-marked local-dev profile; decide how compose/dev ergonomics keep working (env file, generated secret, or dev-profile default). Touches all five services + gateway config + CI.\n\n**COS:**\n- A service started without INTERNAL_SERVICE_TOKEN (or with the known default outside the dev profile) fails fast with a clear error.\n- `docker compose up` from a clean clone still works with one documented step at most.\n- make check green.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "Created from TKT-77 ai-review triage (incidental — pre-existing repo-wide pattern, not this diff's regression)."
+    }
+  ]
+}
