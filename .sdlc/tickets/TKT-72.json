@@ -4,7 +4,7 @@
   "summary": "make check's smoke stage flakes on a cold volume — postgres healthcheck has no start_period",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
