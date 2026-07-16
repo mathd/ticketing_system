@@ -1,6 +1,6 @@
 # A passing test is not evidence it tests anything
 
-Date: 2026-07-15 · From TKT-53, TKT-60, PR #43 · Status: practice, not enforced by the gate
+Date: 2026-07-15 · From TKT-53, TKT-60, PR #43; seen again in TKT-67/PR #51 · Status: practice, not enforced by the gate
 
 ## What happened
 

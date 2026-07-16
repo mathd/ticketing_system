@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**Name what a control reaches, not what it is for**](./learnings/2026-07-15-name-what-a-control-reaches.md) —
+  a check gets named for the job it was meant to do, and the name is then read as a guarantee. Every
+  fact correct, tests green, sentence false — so tests, the author, and consistency are all blind to
+  it. Four instances across two tickets; every one caught by review, none by the gate. (TKT-57,
+  TKT-67, PR #51)
 - [**A passing test is not evidence it tests anything**](./learnings/2026-07-15-prove-tests-fail.md) —
   green is the default state of a test that is misaimed, drifted, or not running. Break it on purpose
   and confirm it goes red. (TKT-53, TKT-60, PR #43)
