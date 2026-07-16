@@ -2,10 +2,8 @@
   "key": "TKT-67",
   "type": "Story",
   "summary": "Implement ADR-021: per-ticket lifecycle chain + async organizer checkpoint + verify-lifecycle",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude",
   "pr": {
     "number": 51,
