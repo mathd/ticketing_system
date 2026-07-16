@@ -2,9 +2,11 @@
   "key": "TKT-67",
   "type": "Story",
   "summary": "Implement ADR-021: per-ticket lifecycle chain + async organizer checkpoint + verify-lifecycle",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude",
   "pr": null,
   "description": "Implement the ticket lifecycle trail integrity scheme decided in ADR-021 (TKT-57). Until this lands, `lifecycle_events` is append-only by policy (the `lifecycle_events_immutable` trigger, which is DDL and removable) and NOT tamper-evident — and ADR-003 §Decision 2 makes redemption decisions from that trace, so it is a fraud surface, not just an audit gap.\n\nADR-021 decides the WHAT; this ticket owns the HOW. Read ADR-021 in full before planning — every clause below is load-bearing and several are deliberate divergences from the money journal that must not be 'fixed' back.\n\nScope:\n- Per-ticket hash chain (ticket-local sequence, previous_hash, entry_hash) in a COMPANION integrity table; `lifecycle_events` is immutable and must not be rewritten. Lifecycle row + integrity row in one transaction; verifiers assert one-to-one coverage.\n- Appends serialize on the ticket row `Redeem` already locks (postgres.go:182). NO organizer-wide lock, ever — that constraint is the whole reason ADR-021 rejected copying the money journal.\n- Asynchronous per-organizer checkpoint: signed Merkle root over per-ticket heads CHANGED since the previous checkpoint (delta, not full scan), chained to it. Default interval 60s.\n- Ed25519 under an `access-lifecycle/` key namespace, distinct key material from `access-qr/` (token.go:61-78 has the keyring idiom).\n- Sign the HEAD, not every entry (ADR-021 §Decision 5).\n- `Redeem` fails OPEN with a high-severity alarm on a chain that does not verify (ADR-021 §Decision 6).\n- `access verify-lifecycle` subcommand, public keys only; wire into `scripts/smoke.sh` against populated AND deliberately corrupted data, mirroring what smoke.sh:78-105 already does for `verify-journal`.\n- Versioned, domain-separated canonical form; no PII, no `guest_order_ref`; pinned by golden tests.\n- Resumable startup backfill, bounded and fail-fast per ADR-008; adopts existing history as baseline.\n- Migrations: plain `CREATE INDEX`, never CONCURRENTLY (ADR-020 — migrations run at startup).\n\nTest seam (verified to exist at HEAD): `services/access/internal/store/migration_smoke_test.go` — already provisions an isolated PostgreSQL schema, upgrades 0001→0002, preserves issued/delivered history, redeems, and asserts the immutability trigger rejects an UPDATE. Extend it; next migration is 0003.",
   "comments": [
@@ -27,6 +29,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Context-mémo refreshed — ADR-022 landed hours after ADR-021 and moved the ground under §Decision 9.**\n\nMigrations no longer run at service startup ([ADR-022](../../docs/adr/ADR-022-out-of-band-service-migrations.md), TKT-66, merged #50). ADR-021 §Decision 9 said the backfill runs *\"at startup, before listening, per ADR-008\"*. **That premise is gone**, and I have amended the ADR rather than leave this ticket to discover it at drafting time.\n\n**The part that is a real design problem, not a word swap:** the backfill now runs in the one-shot `access-migrate` job, and ADR-008's surviving **30-second fail-fast deadline** now bounds *that job* — which the service `depends_on` with `service_completed_successfully`. This backfill is **not DDL**: it Ed25519-signs every existing `lifecycle_events` row, so its cost scales with history. **Blow the deadline and the migrate job fails, so Access never starts.** Deciding whether it fits — or needs its own resumable job outside the migrate deadline — is this ticket's call, and it is now flagged in `readiness.uncertainties`.\n\n**Also worth noticing:** this mémo was baked ~1 hour before it went stale. The mémo exists so the planner does not have to re-derive decision history — but a mémo is a *snapshot*, and a fast-moving registry outruns it. Re-validate `governingAdrs` against `docs/adr/` at claim time; do not trust `capturedAt` alone."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed by the agent (session model orchestrating; plan drafts route to gpt-5.6-sol per config.models).\n\nSelection reason: only ticket in Ready; zero open blockers (links empty). No risk:low label, so the plan gate (Gate 2) applies.\n\nBranch: `TKT-67-lifecycle-chain-integrity` off `origin/main` (47e7689)."
     }
   ],
   "links": [],
