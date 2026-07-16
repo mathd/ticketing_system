@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**Judge idempotent replays by lifecycle state, never by timestamp**](./learnings/2026-07-16-judge-replays-by-lifecycle-state.md) —
+  a replay guard keyed on a derived signal (elapsed TTL) was wrong in both directions, and its
+  catch-all turned unknown states into "convert again" — a double-carve instruction. Unknown over a
+  service boundary is an invalid response, not a terminal state (ADR-017 applied to HTTP). Took
+  three review passes to converge; tests built from the same mental model never objected. (TKT-77, PR #53)
 - [**Name what a control reaches, not what it is for**](./learnings/2026-07-15-name-what-a-control-reaches.md) —
   a check gets named for the job it was meant to do, and the name is then read as a guarantee. Every
   fact correct, tests green, sentence false — so tests, the author, and consistency are all blind to
