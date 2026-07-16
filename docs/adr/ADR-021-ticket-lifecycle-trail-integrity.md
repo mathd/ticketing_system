@@ -293,7 +293,12 @@ checkpoint chain off it**.
    are part of the decision, not implementation detail:
 
    - **Quarantine.** A ticket whose chain fails verification is admitted **once** and quarantined:
-     every subsequent scan of that ticket is denied and escalated.
+     every subsequent scan of that ticket is denied and escalated. *(Qualified by
+     [ADR-025](./ADR-025-admission-events-and-offline-reconciliation.md) §D3 once occurrence
+     identity ships: "every subsequent scan" means every later **distinct occurrence** — a
+     lost-response retry carrying the occurrence id that took the one admission returns its
+     original result, without a second admission or a second alarm. And the denial must hold on
+     the **verified** path too, not only inside the degraded path — TKT-89.)*
    - **Threshold escalation.** Integrity failures above a configured rate stop being "our bug" and
      start being an attack. Crossing the threshold flips the organizer into an
      **operator-controlled** mode — the choice to keep admitting is then a human's, made knowingly,

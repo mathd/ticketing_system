@@ -109,8 +109,14 @@ conflicts. Together every physical admission that Access learns about is represe
    degraded admissions**: the quarantine row (today only `ticket_id, organizer_id, reason,
    admitted_at` — `0003_lifecycle_integrity.sql`) must also persist the occurrence id, and a
    retry of the *same* occurrence that took the one degraded admission returns idempotent
-   success, not the quarantine denial; only a *distinct* occurrence is denied. Without this, a
-   lost response to the degraded admit is indistinguishable from a second scan.
+   success — the original result, no second admission, no second alarm — not the quarantine
+   denial; only a *distinct* (or absent) occurrence id is denied. **Decision order is binding:
+   occurrence identity is checked before the quarantine denial**, on both the degraded and the
+   verified path, so ADR-021 §D6's "every subsequent scan is denied" reads as "every later
+   distinct occurrence" (§D6 carries the matching qualification). Without this, a lost response
+   to the degraded admit is indistinguishable from a second scan and a retry gets misdenied.
+   The implementation must test broken-chain retry, recovered-chain retry, and a distinct
+   occurrence, through both paths.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at
