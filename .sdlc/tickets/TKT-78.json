@@ -4,7 +4,7 @@
   "summary": "US-015: Channel allocations — caps and scheduled release",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
@@ -103,6 +103,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implementation — by main-agent (TDD).** PR: https://github.com/mathd/ticketing_system/pull/54\n\nTests written first (7 store smoke tests + 3 API shape tests + 1 composed contention test), then the implementation per the approved plan-final:\n\n- `0004_channel_allocations.sql` — allocation table, nullable `claims.channel_code`, `claims_kind_shape` extended (operational = unchanneled), composite index (plain CREATE INDEX per ADR-020), guarded down-migration.\n- `store/channel_allocations.go` — `ReplaceChannelAllocations` (atomic full-set under pool lock, int64 sum + per-channel consumption validation), `activeAllocation`/`consumingClaims` predicates built ON the shared `liveClaims` (the plan's hard requirement), staff channel breakdown.\n- `store.go` — channel joins CreateHold (dual headroom checks under the same pool lock), fingerprint extended with byte-exact legacy form, channel-scoped `Availability`.\n- API + OpenAPI — `channel` on HoldCreate/Hold, `?channel=` availability param, internal `PUT .../channel-allocations`, StaffAvailability additions; models regenerated.\n- ADR-024 recorded.\n\nOne deviation while greening: dropped a redundant in-test gateway-404 assertion (route already pinned by `TestGatewayDeniesGenericInternalRoutes`; a GET on the PUT-only route trips the contract helper with 405).\n\nLocal gate `make check` green (exit 0) on the committed tree, run by main-agent."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Adversarial review — gpt-5.6-sol (codex), two passes.** A foreign review skill hijacked the rubric on both runs; findings were concrete and code-cited, so both passes count (codex-runner rules).\n\n**Pass 1** (branch diff vs origin/main) — 2 findings, both verified against the revision and FIXED:\n1. [high, confirmed] `now()` freezes at transaction start → a channel hold queued on the pool lock across `release_at` decided with stale time and could sell a released channel. Fixed: `activeAllocation` judges at `clock_timestamp()`; the global capacity check is independent of the predicate, so the split time bases cannot oversell. Pinned by a lock-contention test.\n2. [medium, confirmed] Down-migration guard only checked claims — configured-but-unsold allocations dropped silently. Fixed: guard also refuses while `channel_allocations` has rows.\n\n**Second pass: required** (blocking finding fixed, predicate change, new test) — run on the fix diff. Verdict: no oversell found in the mixed time bases. 2 findings:\n1. [high] Downgrade guard races concurrent writers — REJECTED as blocking: migrations run out-of-band with services gated on completion (ADR-022); a downgrade under live traffic is not a supported operation, and the guard matches the 0003 pattern. Noted in the review guide.\n2. [medium, confirmed] The cutoff test could pass vacuously (slow goroutine start → old code also rejects). FIXED: DB-time cutoff + pg_stat_activity lock-waiter handshake; verified by mutation (predicate reverted to now() → test fails) — mutation check by main-agent, own verification. Fix was test-only; no third pass (product code unchanged since pass 2 reviewed it — a third would be churn).\n\n**Branch hygiene:** concurrent skill-file edits in this checkout were swept into branch commits by `git add -A`; extracted to main (8e29479) and rebased out with trees verified identical. PR is product-only: 13 files, +1001/−36.\n\n`make check` green after every fix round. Review-guide posted on PR #54. STOPPED — Gate 3 is yours: review + squash-merge, then move the card to PO Review."
     }
   ]
 }
