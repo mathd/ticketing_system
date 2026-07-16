@@ -1,0 +1,95 @@
+{
+  "key": "TKT-75",
+  "type": "Story",
+  "summary": "US-012: React to slot archival and closure — stop offering dead slots",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-012: React to slot archival and closure — stop offering dead slots\n**As** an organizer, **I want** archiving or weather-closing a slot to stop new reservations\nimmediately, so buyers can't hold capacity on an offer that no longer exists. **Priority:** P1\n**Depends on:** —\n**Acceptance Criteria:**\n- [ ] Inventory consumes `platform.catalog.performance.archived`, `.closed` and `.reopened` per\n      the ADR-017 rules (dispatch on `schema` before decoding `data`; unknown future schema →\n      NAK + readiness latch; `schema <= 0` and malformed known payloads → Term; consumed-event\n      dedupe as today).\n- [ ] An archived or closed pool rejects **new** holds (409 with a distinguishable reason);\n      confirmed claims are untouched; live holds keep their TTL and may still finalize/confirm\n      (the buyer already in checkout is a commerce/refund concern, not an inventory revocation).\n- [ ] `reopened` restores claimability (closure is reversible per the US-008 spike); archival is\n      terminal. Availability reads reflect the offering state.\n- [ ] Ordering/skew safety: a `closed` arriving for a pool that was never provisioned does not\n      poison the consumer; the disposition table in the consumer tests covers the new subjects.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Archived/closed slots must stop taking new holds; today inventory only ever consumes performance.published and keeps selling dead slots."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: consume archived/closed/reopened per ADR-017, offering-state on the pool, 409 on new holds, reversible reopen, availability reflects state. OUT: revoking live holds, refunds (commerce), occupancy (ADR-013)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Event-order edge (closed before provisioned) is named in the ACs; exact storage of offering state is engineering, settled in Planning."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None — catalog already emits all three subjects (services/catalog/internal/events/events.go)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend internal/consumer (new subjects, same durable pattern), add offering-state column + guard in CreateHold under the existing pool lock; disposition-table tests like consumer_test.go."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Archive a published slot → next hold 409s with a distinguishable reason while a prior confirmed claim is untouched."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 4 ACs + quality gates; consumer disposition tests cover the new subjects."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked — ADR-017 verbatim + governing set."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-017",
+        "rule": "Bump on consumer semantics, not parse compatibility — the dangerous payload deserializes fine. A consumer must dispatch on `schema` before decoding `data`. The poison/skew line has a bottom end: schema <= 0 is a broken envelope, not the future — terminate it, and don't let it touch readiness. A fixture built from the type under test cannot fail — it encodes the compatibility it claims to prove.",
+        "date": "2026-07-15"
+      },
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-017",
+        "why": "This ticket adds three consumed subjects — the dispatch-before-decode rule and the skew/poison disposition table are its whole risk surface (TKT-61 shipped the ordering bug twice)."
+      },
+      {
+        "id": "ADR-013",
+        "why": "Closure stops NEW claims only — do not confuse it with occupancy: no gauge over who is inside, no revocation of live holds."
+      },
+      {
+        "id": "ADR-005",
+        "why": "Closure is reversible (open ⇄ closed) and orthogonal to draft|published|archived, per the US-008 spike shape."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Any new migration runs out-of-band via the migrate subcommand as a one-shot Compose job — never in the server path."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "TKT-50 dated-slot pressure test — closure/capacity-change semantics the core reacts to",
+        "link": "docs/spikes/TKT-50-dated-slot-pressure-test.md"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    }
+  ]
+}
