@@ -216,6 +216,157 @@ shared festival capacity, so TKT-14 can layer multi-day passes and zones onto a 
       browser-verified). **Non-goals (TKT-14):** multi-day pass products, zones/stages, RFID media,
       camping add-on — this story ships only the catalog skeleton + shared-capacity structure.
 
+## TKT-4 — Inventory & reservation core (user stories)
+
+Decomposed 2026-07-16, proposed as the next M2 epic (the owner confirms by prioritizing at
+Gate 1; the roadmap named TKT-4 first among the candidates by dependency weight). Scope per the
+epic COS + the backlog-grilling amendments: complete the reservation core every later vertical
+claims through — slot lifecycle reactions, capacity adjustment (the behaviour ADR-005's amendment
+decided and left to "the inventory-side capacity-adjustment ticket"), operational holds, channel
+allocations, group/agency reservations, seated claims with best-available, and the on-sale load
+proof. Occupancy capping stays out per ADR-013; shared-festival-capacity *pass products* stay in
+TKT-14; agency payment terms stay in TKT-34; the channel registry stays in TKT-17 (allocations
+here key on opaque channel codes).
+
+Baseline (from M1 + TKT-2): inventory holds GA quantity pools keyed on `slot_id`
+(`inventory_pools` + `claims`), with hold/finalize/confirm/release, lazy TTL expiry,
+organizer-scoped idempotency keys, festival shared-capacity pools (publication schema 3), and the
+≫C no-oversell contention test in the gate. It consumes only
+`platform.catalog.performance.published` (ADR-017 schema dispatch, readiness latch) and emits no
+events. These stories extend that seam; they do not rebuild it. Every claim-model story preserves
+the ADR-010 invariants: pool→claim lock order, `confirmed + held ≤ capacity`, DB-time expiry,
+single-use idempotency keys — and keeps the M1 contention test green.
+
+### US-012: React to slot archival and closure — stop offering dead slots
+**As** an organizer, **I want** archiving or weather-closing a slot to stop new reservations
+immediately, so buyers can't hold capacity on an offer that no longer exists. **Priority:** P1
+**Depends on:** —
+**Acceptance Criteria:**
+- [ ] Inventory consumes `platform.catalog.performance.archived`, `.closed` and `.reopened` per
+      the ADR-017 rules (dispatch on `schema` before decoding `data`; unknown future schema →
+      NAK + readiness latch; `schema <= 0` and malformed known payloads → Term; consumed-event
+      dedupe as today).
+- [ ] An archived or closed pool rejects **new** holds (409 with a distinguishable reason);
+      confirmed claims are untouched; live holds keep their TTL and may still finalize/confirm
+      (the buyer already in checkout is a commerce/refund concern, not an inventory revocation).
+- [ ] `reopened` restores claimability (closure is reversible per the US-008 spike); archival is
+      terminal. Availability reads reflect the offering state.
+- [ ] Ordering/skew safety: a `closed` arriving for a pool that was never provisioned does not
+      poison the consumer; the disposition table in the consumer tests covers the new subjects.
+
+### US-013: Capacity adjustment with the clamp floor
+**As** an organizer, **I want** to raise or cut a slot's capacity after publication, so production
+changes (extra seats released, a stage reconfiguration) don't require republishing. **Priority:** P1
+**Depends on:** —
+**Acceptance Criteria:**
+- [ ] Inventory exposes a staff/internal capacity-adjustment operation per the ADR-005 amendment:
+      raises apply freely; a cut below demand clamps to the invariant floor
+      `max(new, confirmed + held)` and blocks new claims while demand exceeds the target — never
+      force-releasing a confirmed admission (forward-only).
+- [ ] Adjustment is idempotent and audit-visible (who/when/from→to recorded); it takes the pool
+      row lock (ADR-010) so it serializes correctly against concurrent holds; the contention test
+      extended with an adversarial adjust-during-holds interleaving stays oversell-free.
+- [ ] Shared festival pools adjust as one pool (the group is the pool); availability reads
+      reflect the new capacity within their ADR-004 TTL tier.
+- [ ] Catalog's published capacity stays the initial snapshot only — no silent overwrite of a
+      pool with claims (existing `Provision` guard preserved and tested).
+
+### US-014: Operational holds — house, artist and kills
+**As** box-office staff, **I want** to place named operational holds (house seats, artist
+allotment, kills) that sit outside public sale, and release or convert them without racing the
+public. **Priority:** P0 **Depends on:** —
+**Acceptance Criteria:**
+- [ ] Claims gain an operational type with a named purpose (`house | artist | kill | other` +
+      label); operational holds have **no TTL**, count against pool capacity, and are placeable/
+      releasable via staff/internal API only (gateway keeps them off the public edge).
+- [ ] **Convert without a gap:** converting an operational hold (whole or partial quantity) into
+      a buyer-purchasable claim happens atomically under the pool lock — released-to-order
+      capacity is never observable as publicly available in between.
+- [ ] Partial release/convert supported (release 3 of a 10-seat house hold); the remainder stays
+      held; all transitions journal-style auditable (who/when/why on the claim history).
+- [ ] Availability reads distinguish sellable from operationally-held capacity for staff, while
+      the public read keeps a single `available` number.
+
+### US-015: Channel allocations — caps and scheduled release
+**As** an organizer, **I want** to split a slot's sellable capacity across sales channels with
+per-channel caps and scheduled give-back, so presales and resellers can't starve the public
+on-sale. **Priority:** P1 **Depends on:** US-014 (extends the same claim-model surface; soft —
+parallelizable if Planning confirms no schema overlap)
+**Acceptance Criteria:**
+- [ ] A pool can carry channel allocations (opaque channel code + cap + optional release-at
+      time); allocations never sum above pool capacity; unallocated capacity is the default/public
+      channel.
+- [ ] Holds carry a channel; a hold beyond its channel's remaining allocation is rejected even
+      when the pool has capacity (and vice-versa: pool exhaustion rejects regardless of channel
+      headroom). The no-oversell proof extends to per-channel caps under the contention test.
+- [ ] At `release-at`, a channel's unsold allocation returns to the public channel — enforced by
+      DB time like TTL expiry (lazy, correct without a sweeper); the release is observable in
+      availability reads.
+- [ ] Channel codes are opaque strings here; the channel registry, per-channel pricing and
+      windows stay in TKT-17/TKT-5 (non-goal).
+
+### US-016: Group and agency long-lived reservations
+**As** an organizer, **I want** to grant a group or agency a long-lived reservation they draw down
+over time, so bulk buyers don't fight the public TTL. **Priority:** P2 **Depends on:** US-014
+(typed-claim machinery; soft)
+**Acceptance Criteria:**
+- [ ] A reservation claim type with an explicit expiry date (not the cart TTL), placeable by
+      staff for a named counterparty; counts against capacity like any claim (and against a
+      channel allocation when one applies).
+- [ ] Draw-down: quantity converts to confirmed orders **partially and repeatedly** (10 of 200
+      today, 50 next week) without the unconverted remainder ever passing through a publicly
+      claimable state; unconverted quantity returns to sale at expiry (lazy, DB-time).
+- [ ] The order/payment side of a draw-down uses the existing commerce checkout seam; agency
+      pay-later terms, invoicing and dunning are explicitly TKT-34 (non-goal).
+- [ ] Contention test covers concurrent public holds racing a reservation draw-down.
+
+### US-017: Seat-level claims — reserved seating enters the core
+**As** a buyer, **I want** to hold specific seats, not just a quantity, with oversell impossible
+per seat. **Priority:** P2 **Depends on:** TKT-3 (a seat map to claim against — hard blocker)
+**Acceptance Criteria:**
+- [ ] The claim core accepts a seat-set claim against a seated slot: each seat is held/confirmed
+      by at most one live claim (DB-enforced), reusing the ADR-010 lifecycle, lock order,
+      idempotency and TTL machinery — the primitive extends, it does not fork (ADR-005 /
+      ADR-010 "seats reuse the lifecycle and lock ordering but add their own resource
+      constraints").
+- [ ] GA and seated pools coexist; the existing GA path is untouched (M1 tests green).
+- [ ] Seat-map versioning interplay (TKT-3 COS: edits never orphan or duplicate sold/held seats)
+      is honored from the inventory side: a claim pins the seats it named regardless of later map
+      edits.
+- [ ] The contention test gains a seated variant: ≫C claimants targeting overlapping seat sets;
+      no seat is ever double-held.
+
+### US-018: Best-available seat selection
+**As** a buyer, **I want** "best available N" to return contiguous seats honoring the map's
+adjacency, atomically claimed. **Priority:** P2 **Depends on:** US-017
+**Acceptance Criteria:**
+- [ ] A best-available request for N seats returns a contiguous run per the map's adjacency/rank
+      data (TKT-3 provides both), claimed atomically in the same transaction that selected them —
+      selection and claim never race.
+- [ ] Contiguity relaxation rules are explicit and deterministic (e.g. split parties only when no
+      contiguous run exists; never strand a single seat if the map forbids it — exact rules
+      confirmed with the owner at Planning).
+- [ ] Under the contention test, parallel best-available requests never double-assign and
+      degrade fairly (no oversell, no deadlock, bounded retries).
+
+### US-019: On-sale load proof — the sustained no-oversell gate
+**As** the owner, **I want** a sustained adversarial load test proving no-oversell and acceptable
+latency on the claim path, so the festival-scale NFR is measured, not asserted. **Priority:** P1
+**Depends on:** —
+**Acceptance Criteria:**
+- [ ] A load harness (tool chosen at Planning) drives the real gateway→inventory hold/finalize/
+      confirm path against a hot pool with a **sustained** profile derived from the NFR
+      (thousands of checkout attempts/min for minutes, not a burst); asserts zero oversell and
+      records latency percentiles + the per-pool throughput ceiling (ADR-010 deliberately
+      serializes a hot pool — this story publishes the measured number the waiting-room design
+      (TKT-20) must respect).
+- [ ] A scaled **gate profile** runs in `make check` within the existing gate-time budget; the
+      **full NFR profile** is a documented on-demand target (owner decision at Gate 1 confirms
+      this split — the epic COS says "in the gate", full-scale locally in every gate run is the
+      open question).
+- [ ] Results land in `docs/` (evidence format per `docs/testing.md`); TKT-31/TKT-37 reuse the
+      harness (read-path and observability profiles are their scope, non-goal here).
+
 ## Open items deliberately deferred to epic decomposition
 
 Storefront shell framework — Astro 7 vs React SPA (spike TKT-39 → ADR-006, decided before US-002 builds storefront UI) · DSL vs declarative rules (spike in TKT-5) · seat-map versioning against sold seats (TKT-3) · resale marketplace rules (TKT-9) · queue fairness algorithm (TKT-20) · per-currency settlement mechanics (TKT-10) · RFID hardware simulation fidelity (TKT-14) · shared-festival-capacity claim mechanics (spike US-008 decides the catalog/inventory boundary; TKT-4/TKT-14 implement the claim path).
