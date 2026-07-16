@@ -15,8 +15,13 @@ import (
 // shared liveClaims predicate — never a re-derived expiry expression, never a counter.
 
 // activeAllocation mirrors liveClaims for allocation rows: an allocation reserves capacity
-// until its release_at passes, decided by PostgreSQL time.
-const activeAllocation = `(release_at IS NULL OR release_at > now())`
+// until its release_at passes, decided by PostgreSQL time. clock_timestamp(), not now():
+// now() is frozen at transaction start, so a hold transaction queued on the pool lock
+// across the cutoff would decide with stale time and sell a released channel. Judging at
+// decision time keeps the release boundary exact under contention (ai-review finding 1);
+// the global capacity check never depends on this predicate, so the two time bases cannot
+// combine into an oversell.
+const activeAllocation = `(release_at IS NULL OR release_at > clock_timestamp())`
 
 // consumingClaims is what counts against a channel's cap: confirmed consumption is
 // permanent, live holds are temporary. Built on liveClaims so expiry semantics can never
@@ -113,7 +118,7 @@ func channelAvailabilities(ctx context.Context, q interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, pool uuid.UUID, globalRemaining int64) ([]ChannelAvailability, error) {
 	rows, err := q.QueryContext(ctx, `SELECT a.channel_code, a.cap, a.release_at,
-			(a.release_at IS NOT NULL AND a.release_at <= now()),
+			(a.release_at IS NOT NULL AND a.release_at <= clock_timestamp()),
 			COALESCE(h.held,0), COALESCE(cf.confirmed,0)
 		FROM channel_allocations a
 		LEFT JOIN LATERAL (SELECT sum(quantity) AS held FROM claims WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND `+liveClaims+`) h ON true

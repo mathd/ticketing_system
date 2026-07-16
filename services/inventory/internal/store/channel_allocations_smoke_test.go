@@ -254,3 +254,34 @@ func TestExpiredChannelHoldFreesItsCap(t *testing.T) {
 		t.Fatalf("after expiry: %v", err)
 	}
 }
+
+// ai-review finding 1: a channel-hold transaction that begins before release_at but queues
+// on the pool lock across the cutoff must still reject — the release boundary is judged at
+// decision time (clock_timestamp), not transaction start (now).
+func TestReleaseCutoffHoldsUnderPoolLockContention(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	releaseAt := time.Now().UTC().Add(400 * time.Millisecond)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6, ReleaseAt: &releaseAt}})
+
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback() }()
+	if _, err := blocker.ExecContext(ctx, `SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slot); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "cutoff-key")
+		done <- err
+	}()
+	time.Sleep(900 * time.Millisecond) // hold the lock well past release_at
+	if err := blocker.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("queued channel hold crossed the release cutoff: got %v want ErrUnavailable", err)
+	}
+}

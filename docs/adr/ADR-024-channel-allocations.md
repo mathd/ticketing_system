@@ -31,7 +31,11 @@ normalization, no case folding.
   cap, release_at)`; claims carry a nullable `channel_code`; consumption is always a sum over
   claims under the pool lock.
     - Pros: single lock order preserved; zero drift by construction; release is a pure DB-time
-      predicate (`release_at IS NULL OR release_at > now()`), symmetric with hold expiry.
+      predicate (`release_at IS NULL OR release_at > clock_timestamp()`), symmetric with hold
+      expiry. `clock_timestamp()`, not `now()`: `now()` freezes at transaction start, so a hold
+      transaction queued on the pool lock across the cutoff would decide with stale time and
+      sell a released channel. The global capacity check never depends on this predicate, so
+      the two time bases cannot combine into an oversell.
     - Cons: adds indexed claim aggregation to the serialized write path (measured under
       US-019/TKT-82 if it ever matters).
 

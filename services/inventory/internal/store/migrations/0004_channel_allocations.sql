@@ -34,12 +34,13 @@ ALTER TABLE claims ADD CONSTRAINT claims_kind_shape CHECK (
 CREATE INDEX claims_pool_channel_status_expiry ON claims(pool_id, channel_code, status, expires_at);
 
 -- +goose Down
--- Refuse to silently discard channel attribution.
+-- Refuse to silently discard channel attribution or allocation configuration.
 -- +goose StatementBegin
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM claims WHERE channel_code IS NOT NULL) THEN
-    RAISE EXCEPTION 'channel-attributed claims exist; resolve them before downgrading';
+  IF EXISTS (SELECT 1 FROM claims WHERE channel_code IS NOT NULL)
+     OR EXISTS (SELECT 1 FROM channel_allocations) THEN
+    RAISE EXCEPTION 'channel allocations or channel-attributed claims exist; resolve them before downgrading';
   END IF;
 END
 $$;
