@@ -1,0 +1,100 @@
+{
+  "key": "TKT-80",
+  "type": "Story",
+  "summary": "US-017: Seat-level claims — reserved seating enters the core",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-017: Seat-level claims — reserved seating enters the core\n**As** a buyer, **I want** to hold specific seats, not just a quantity, with oversell impossible\nper seat. **Priority:** P2 **Depends on:** TKT-3 (a seat map to claim against — hard blocker)\n**Acceptance Criteria:**\n- [ ] The claim core accepts a seat-set claim against a seated slot: each seat is held/confirmed\n      by at most one live claim (DB-enforced), reusing the ADR-010 lifecycle, lock order,\n      idempotency and TTL machinery — the primitive extends, it does not fork (ADR-005 /\n      ADR-010 \"seats reuse the lifecycle and lock ordering but add their own resource\n      constraints\").\n- [ ] GA and seated pools coexist; the existing GA path is untouched (M1 tests green).\n- [ ] Seat-map versioning interplay (TKT-3 COS: edits never orphan or duplicate sold/held seats)\n      is honored from the inventory side: a claim pins the seats it named regardless of later map\n      edits.\n- [ ] The contention test gains a seated variant: ≫C claimants targeting overlapping seat sets;\n      no seat is ever double-held.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-3"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Reserved seating enters the claim core: hold specific seats with per-seat no-oversell."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: seat-set claims on seated slots, DB-enforced one-live-claim-per-seat, GA path untouched, claims pin seats across map edits, seated contention test. OUT: the seat-map model/designer itself (TKT-3), best-available (US-018), storefront seat picker (TKT-35)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Seat identity/versioning shape is TKT-3's output — this ticket consumes it; claim-side schema settles in Planning once TKT-3's model exists."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "HARD blocker: TKT-3 (wired blocked-by). Not claimable until a seat map exists to claim against."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Seat-claim rows under the same pool→claim lock order with a uniqueness constraint on (seat, live-status); adapter per ADR-010's stated extension path."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Hold seats A1–A4 on a seated slot; a racing claim for A3 rejects; GA slots unaffected."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 4 ACs + quality gates; the overlapping-seat-set contention test is the load-bearing signal."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-005",
+        "rule": "Every admission-granting offer (performance, festival day, park operating day) is a dated slot in one inventory machinery; passes are entitlements to claim slot entries; slot attributes carry domain specifics — the claim primitive does not fork.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "Seats 'reuse the lifecycle and lock ordering but add their own resource constraints' — the seat-uniqueness constraint is DB-enforced inside the same transaction shape, not a new primitive."
+      },
+      {
+        "id": "ADR-005",
+        "why": "The claim primitive does not fork: seated is an adapter over the same core, or the unified-model bet fails."
+      },
+      {
+        "id": "ADR-013",
+        "why": "Seat claims count admissions sold — still no occupancy gauge."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations out-of-band."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "TKT-3 epic — the seat-map model this claims against; its versioning COS is the interplay named in the ACs",
+        "link": ".sdlc board TKT-3"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    }
+  ]
+}
