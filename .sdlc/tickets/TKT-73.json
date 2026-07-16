@@ -2,9 +2,9 @@
   "key": "TKT-73",
   "type": "Story",
   "summary": "Lifecycle trail caps at one redemption per ticket — multi-entry passes and offline double-admits are unrepresentable",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
