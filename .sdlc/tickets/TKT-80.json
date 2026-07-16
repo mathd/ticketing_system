@@ -11,6 +11,10 @@
     {
       "type": "blocked-by",
       "key": "TKT-3"
+    },
+    {
+      "type": "blocks",
+      "key": "TKT-81"
     }
   ],
   "readiness": {
