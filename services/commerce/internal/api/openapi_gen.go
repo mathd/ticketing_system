@@ -44,6 +44,27 @@ type Error struct {
 	Error string `json:"error"`
 }
 
+// OperationalConversion defines model for OperationalConversion.
+type OperationalConversion struct {
+	Amount          int64              `json:"amount"`
+	BuyerId         openapi_types.UUID `json:"buyer_id"`
+	Currency        string             `json:"currency"`
+	ExpiresAt       time.Time          `json:"expires_at"`
+	HoldId          openapi_types.UUID `json:"hold_id"`
+	ReservationId   openapi_types.UUID `json:"reservation_id"`
+	ServerTime      time.Time          `json:"server_time"`
+	SourceRemaining int                `json:"source_remaining"`
+}
+
+// OperationalConversionCreate defines model for OperationalConversionCreate.
+type OperationalConversionCreate struct {
+	Actor        string             `json:"actor"`
+	OrganizerId  openapi_types.UUID `json:"organizer_id"`
+	Quantity     int                `json:"quantity"`
+	Reason       string             `json:"reason"`
+	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
+}
+
 // OrderConflict defines model for OrderConflict.
 type OrderConflict struct {
 	Error   string              `json:"error"`
@@ -105,6 +126,11 @@ type Id = openapi_types.UUID
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
+// ConvertOperationalHoldParams defines parameters for ConvertOperationalHold.
+type ConvertOperationalHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CheckoutParams defines parameters for Checkout.
 type CheckoutParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -114,6 +140,9 @@ type CheckoutParams struct {
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
+
+// ConvertOperationalHoldJSONRequestBody defines body for ConvertOperationalHold for application/json ContentType.
+type ConvertOperationalHoldJSONRequestBody = OperationalConversionCreate
 
 // CheckoutJSONRequestBody defines body for Checkout for application/json ContentType.
 type CheckoutJSONRequestBody = Checkout

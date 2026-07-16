@@ -155,6 +155,10 @@ services:
       inventory-migrate:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/inventory/cmd/inventory } }
+    # The staff/internal surface (operational holds, staff availability) is deliberately
+    # not routed through the gateway (public edge); localhost is the box-office/ops
+    # access path in this testbed, and the smoke suite drives it here.
+    ports: ["${INVENTORY_PORT:-8091}:8080"]
     environment:
       <<: *go-env
       DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
@@ -175,6 +179,8 @@ services:
       commerce-migrate:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/commerce/cmd/commerce } }
+    # Staff conversion entry point (see inventory ports note).
+    ports: ["${COMMERCE_PORT:-8092}:8080"]
     environment:
       <<: *go-env
       DATABASE_URL: postgres://commerce:commerce@postgres:5432/commerce

@@ -105,3 +105,73 @@ func TestCheckoutRejectsUnknownPaymentToken(t *testing.T) {
 		t.Fatal("unknown token accepted")
 	}
 }
+
+func TestConvertOperationalRequiresInternalToken(t *testing.T) {
+	body := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+	for name, s := range map[string]*Server{
+		"wrong token": New(nil, http.DefaultClient, "", "", "", "secret"),
+		// An unconfigured token must fail closed, never open.
+		"empty configured token": New(nil, http.DefaultClient, "", "", "", ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "wrong")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("status=%d want=%d", res.Code, http.StatusNotFound)
+			}
+		})
+	}
+}
+
+func TestConvertOperationalRejectsNonStrictJSON(t *testing.T) {
+	s := New(nil, http.DefaultClient, "", "", "", "secret")
+	valid := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+	for name, body := range map[string]string{
+		"unknown field":  strings.TrimSuffix(valid, "}") + `,"unit_amount":1}`,
+		"trailing value": valid + `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+			}
+		})
+	}
+}
+
+func TestConvertOperationalRejectsTicketTypeFromAnotherSlot(t *testing.T) {
+	org := "00000000-0000-0000-0000-000000000001"
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The offer belongs to performance ...0009.
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
+	}))
+	defer catalog.Close()
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(201)
+		// ...but the converted hold reserves slot ...0008.
+		_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000008","quantity":1,"status":"held","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
+	}))
+	defer inventory.Close()
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+	req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "k")
+	req.Header.Set("X-Internal-Token", "secret")
+	res := httptest.NewRecorder()
+	s.Router().ServeHTTP(res, req)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusConflict, res.Body.String())
+	}
+}

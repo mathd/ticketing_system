@@ -36,6 +36,11 @@ func (s *Server) Router() http.Handler {
 	r.Post("/holds/{id}/finalize", s.transition("finalizing"))
 	r.Post("/holds/{id}/release", s.transition("released"))
 	r.Get("/slots/{id}/availability", s.availability)
+	r.Post("/internal/operational-holds", s.internalOnly(s.opPlace))
+	r.Post("/internal/operational-holds/{id}/release", s.internalOnly(s.opRelease))
+	r.Post("/internal/operational-holds/{id}/convert", s.internalOnly(s.opConvert))
+	r.Get("/internal/operational-holds/{id}/history", s.internalOnly(s.opHistory))
+	r.Get("/internal/slots/{id}/availability", s.internalOnly(s.staffAvailability))
 	validated, err := contract.RequestValidator(apispec.Spec, r)
 	if err != nil {
 		panic(err)

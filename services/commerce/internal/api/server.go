@@ -59,6 +59,7 @@ func (s *Server) Router() http.Handler {
 	r.Post("/orders", s.checkout)
 	r.Get("/orders/{id}", s.getOrder)
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
+	r.Post("/internal/operational-holds/{id}/convert", s.convertOperational)
 	validated, err := contract.RequestValidator(apispec.Spec, r)
 	if err != nil {
 		panic(err)
@@ -514,6 +515,103 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	// committed to "retry checkout", which was both alarming and unnecessary.
 	s.publishOwed(r.Context(), order)
 	write(w, 200, map[string]any{"order_id": order, "guest_order_ref": guestRef, "status": "completed"})
+}
+
+// convertOperational is the staff entry point for selling out of an operational hold
+// (TKT-77 / ADR-023): resolve the offer through the existing catalog seam (no price
+// override), have inventory carve a buyer hold out of the operational hold atomically,
+// then persist the same reservation shape the public reserve path produces so the
+// existing checkout completes it. Deterministic reservation identity + the forwarded
+// idempotency key make a crash between the inventory commit and the reservation insert
+// repairable by replaying the same request.
+func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
+	// Fail closed on an unconfigured token; a bad token reads as 404 like deliveryEmail.
+	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > 200 {
+		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
+		return
+	}
+	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid hold id"})
+		return
+	}
+	var in struct {
+		OrganizerID  uuid.UUID `json:"organizer_id"`
+		TicketTypeID uuid.UUID `json:"ticket_type_id"`
+		Quantity     int32     `json:"quantity"`
+		Actor        string    `json:"actor"`
+		Reason       string    `json:"reason"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.OrganizerID == uuid.Nil || in.TicketTypeID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 {
+		write(w, 400, map[string]string{"error": "invalid conversion request"})
+		return
+	}
+	code, body, err := s.call(r.Context(), http.MethodGet, s.catalogURL+"/internal/ticket-types/"+in.TicketTypeID.String(), "", nil, true)
+	if err != nil || code != 200 {
+		write(w, 409, map[string]string{"error": "unknown ticket type"})
+		return
+	}
+	var o offer
+	if json.Unmarshal(body, &o) != nil || o.OrganizerID != in.OrganizerID || o.Price.Currency != "EUR" || o.Price.Amount < 0 || o.Price.Amount > math.MaxInt64/int64(in.Quantity) {
+		write(w, 409, map[string]string{"error": "offer not sellable in EUR"})
+		return
+	}
+	convBody := map[string]any{"organizer_id": in.OrganizerID, "quantity": in.Quantity, "ticket_type_id": in.TicketTypeID, "unit_amount": o.Price.Amount, "currency": o.Price.Currency, "actor": in.Actor, "reason": in.Reason}
+	code, body, err = s.call(r.Context(), http.MethodPost, s.inventoryURL+"/internal/operational-holds/"+sourceID.String()+"/convert", key, convBody, true)
+	if err != nil {
+		write(w, 409, map[string]string{"error": "inventory unavailable"})
+		return
+	}
+	if code == 404 || code == 409 {
+		write(w, code, map[string]string{"error": "conversion rejected"})
+		return
+	}
+	if code != 200 && code != 201 {
+		write(w, 502, map[string]string{"error": "invalid inventory response"})
+		return
+	}
+	var conv struct {
+		Hold struct {
+			ID         uuid.UUID `json:"hold_id"`
+			SlotID     uuid.UUID `json:"slot_id"`
+			ExpiresAt  time.Time `json:"expires_at"`
+			ServerTime time.Time `json:"server_time"`
+		} `json:"hold"`
+		SourceRemaining int32 `json:"source_remaining"`
+	}
+	if json.Unmarshal(body, &conv) != nil || conv.Hold.ID == uuid.Nil {
+		write(w, 502, map[string]string{"error": "invalid inventory response"})
+		return
+	}
+	// The ticket type must belong to the slot the operational hold reserves; a converted
+	// claim priced off another performance's offer would sell the wrong inventory.
+	if conv.Hold.SlotID != o.PerformanceID {
+		write(w, 409, map[string]string{"error": "ticket type does not match the hold's slot"})
+		return
+	}
+	total := o.Price.Amount * int64(in.Quantity)
+	// Namespaced so a staff key can never collide with a public reserve key.
+	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("reservation:op-convert:"+in.OrganizerID.String()+":"+key))
+	buyer := uuid.NewSHA1(uuid.NameSpaceOID, []byte("buyer:"+id.String()))
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held') ON CONFLICT(id) DO NOTHING`,
+		id, in.OrganizerID, conv.Hold.ID, o.PerformanceID, in.TicketTypeID, buyer, in.Quantity, o.Price.Amount, total, o.Price.Currency)
+	if err != nil {
+		write(w, 500, map[string]string{"error": "persist reservation"})
+		return
+	}
+	status := 201
+	if code == 200 {
+		status = 200
+	}
+	write(w, status, map[string]any{"reservation_id": id, "hold_id": conv.Hold.ID, "buyer_id": buyer, "amount": total, "currency": o.Price.Currency, "expires_at": conv.Hold.ExpiresAt, "server_time": conv.Hold.ServerTime, "source_remaining": conv.SourceRemaining})
 }
 
 func (s *Server) deliveryEmail(w http.ResponseWriter, r *http.Request) {

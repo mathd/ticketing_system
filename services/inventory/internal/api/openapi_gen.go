@@ -9,6 +9,30 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for OperationalHoldCreatePurpose.
+const (
+	Artist OperationalHoldCreatePurpose = "artist"
+	House  OperationalHoldCreatePurpose = "house"
+	Kill   OperationalHoldCreatePurpose = "kill"
+	Other  OperationalHoldCreatePurpose = "other"
+)
+
+// Valid indicates whether the value is a known member of the OperationalHoldCreatePurpose enum.
+func (e OperationalHoldCreatePurpose) Valid() bool {
+	switch e {
+	case Artist:
+		return true
+	case House:
+		return true
+	case Kill:
+		return true
+	case Other:
+		return true
+	default:
+		return false
+	}
+}
+
 // Availability defines model for Availability.
 type Availability struct {
 	Available int                `json:"available"`
@@ -18,9 +42,29 @@ type Availability struct {
 	SlotId    openapi_types.UUID `json:"slot_id"`
 }
 
+// ConvertResult defines model for ConvertResult.
+type ConvertResult struct {
+	Hold            Hold               `json:"hold"`
+	SourceId        openapi_types.UUID `json:"source_id"`
+	SourceRemaining int                `json:"source_remaining"`
+	SourceStatus    string             `json:"source_status"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error string `json:"error"`
+}
+
+// HistoryEntry defines model for HistoryEntry.
+type HistoryEntry struct {
+	Action         string              `json:"action"`
+	Actor          string              `json:"actor"`
+	OccurredAt     time.Time           `json:"occurred_at"`
+	Quantity       int                 `json:"quantity"`
+	QuantityAfter  int                 `json:"quantity_after"`
+	Reason         string              `json:"reason"`
+	RelatedClaimId *openapi_types.UUID `json:"related_claim_id,omitempty"`
+	StatusAfter    string              `json:"status_after"`
 }
 
 // Hold defines model for Hold.
@@ -45,6 +89,61 @@ type HoldCreate struct {
 	SlotId       openapi_types.UUID  `json:"slot_id"`
 	TicketTypeId *openapi_types.UUID `json:"ticket_type_id,omitempty"`
 	UnitAmount   *int64              `json:"unit_amount,omitempty"`
+}
+
+// OperationalConvert defines model for OperationalConvert.
+type OperationalConvert struct {
+	Actor        string             `json:"actor"`
+	Currency     string             `json:"currency"`
+	OrganizerId  openapi_types.UUID `json:"organizer_id"`
+	Quantity     int                `json:"quantity"`
+	Reason       string             `json:"reason"`
+	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
+	UnitAmount   int64              `json:"unit_amount"`
+}
+
+// OperationalHold defines model for OperationalHold.
+type OperationalHold struct {
+	HoldId      openapi_types.UUID `json:"hold_id"`
+	Label       *string            `json:"label,omitempty"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Purpose     *string            `json:"purpose,omitempty"`
+	Quantity    int                `json:"quantity"`
+	ServerTime  time.Time          `json:"server_time"`
+	SlotId      openapi_types.UUID `json:"slot_id"`
+	Status      string             `json:"status"`
+}
+
+// OperationalHoldCreate defines model for OperationalHoldCreate.
+type OperationalHoldCreate struct {
+	Actor       string                       `json:"actor"`
+	Label       string                       `json:"label"`
+	OrganizerId openapi_types.UUID           `json:"organizer_id"`
+	Purpose     OperationalHoldCreatePurpose `json:"purpose"`
+	Quantity    int                          `json:"quantity"`
+	Reason      string                       `json:"reason"`
+	SlotId      openapi_types.UUID           `json:"slot_id"`
+}
+
+// OperationalHoldCreatePurpose defines model for OperationalHoldCreate.Purpose.
+type OperationalHoldCreatePurpose string
+
+// OperationalRelease defines model for OperationalRelease.
+type OperationalRelease struct {
+	Actor       string             `json:"actor"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Quantity    int                `json:"quantity"`
+	Reason      string             `json:"reason"`
+}
+
+// StaffAvailability defines model for StaffAvailability.
+type StaffAvailability struct {
+	Available       int                `json:"available"`
+	BuyerHeld       int                `json:"buyer_held"`
+	Capacity        int                `json:"capacity"`
+	Confirmed       int                `json:"confirmed"`
+	OperationalHeld int                `json:"operational_held"`
+	SlotId          openapi_types.UUID `json:"slot_id"`
 }
 
 // Id defines model for Id.
@@ -76,6 +175,31 @@ type ReleaseHoldParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 
+// PlaceOperationalHoldParams defines parameters for PlaceOperationalHold.
+type PlaceOperationalHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// ConvertOperationalHoldParams defines parameters for ConvertOperationalHold.
+type ConvertOperationalHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetOperationalHoldHistoryParams defines parameters for GetOperationalHoldHistory.
+type GetOperationalHoldHistoryParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// ReleaseOperationalHoldParams defines parameters for ReleaseOperationalHold.
+type ReleaseOperationalHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetStaffAvailabilityParams defines parameters for GetStaffAvailability.
+type GetStaffAvailabilityParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
 // GetAvailabilityParams defines parameters for GetAvailability.
 type GetAvailabilityParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
@@ -83,3 +207,12 @@ type GetAvailabilityParams struct {
 
 // CreateHoldJSONRequestBody defines body for CreateHold for application/json ContentType.
 type CreateHoldJSONRequestBody = HoldCreate
+
+// PlaceOperationalHoldJSONRequestBody defines body for PlaceOperationalHold for application/json ContentType.
+type PlaceOperationalHoldJSONRequestBody = OperationalHoldCreate
+
+// ConvertOperationalHoldJSONRequestBody defines body for ConvertOperationalHold for application/json ContentType.
+type ConvertOperationalHoldJSONRequestBody = OperationalConvert
+
+// ReleaseOperationalHoldJSONRequestBody defines body for ReleaseOperationalHold for application/json ContentType.
+type ReleaseOperationalHoldJSONRequestBody = OperationalRelease

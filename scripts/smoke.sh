@@ -27,6 +27,7 @@ SLOT=$(( $(printf '%s' "$ROOT" | cksum | cut -d' ' -f1) % 40 ))
 PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-smoke-${SLOT}}"
 export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=$((14222 + SLOT)) \
        GRAFANA_PORT=$((13000 + SLOT)) PROM_PORT=$((19090 + SLOT)) OTLP_PORT=$((14318 + SLOT)) \
+       INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) \
        ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s \
        ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
 echo "smoke: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
@@ -87,14 +88,19 @@ CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${PO
 go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/inventory"
+# No -run filter, for the same reason as commerce, catalog and access above: an allowlist
+# means a newly added test silently never runs while the gate still passes green. This
+# block was the last one carrying one (TKT-77 removed it).
 INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 -run TestGroupedDaysConvergeOnOneInventoryPool ./internal/store
+go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/smoke"
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \
 SMOKE_PG=localhost:${POSTGRES_PORT} \
 SMOKE_PROM_URL=http://localhost:${PROM_PORT} \
+SMOKE_INVENTORY_URL=http://localhost:${INVENTORY_PORT} \
+SMOKE_COMMERCE_URL=http://localhost:${COMMERCE_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v ./...
 
