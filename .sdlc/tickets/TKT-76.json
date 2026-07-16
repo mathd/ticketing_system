@@ -1,0 +1,91 @@
+{
+  "key": "TKT-76",
+  "type": "Story",
+  "summary": "US-013: Capacity adjustment with the clamp floor",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-013: Capacity adjustment with the clamp floor\n**As** an organizer, **I want** to raise or cut a slot's capacity after publication, so production\nchanges (extra seats released, a stage reconfiguration) don't require republishing. **Priority:** P1\n**Depends on:** —\n**Acceptance Criteria:**\n- [ ] Inventory exposes a staff/internal capacity-adjustment operation per the ADR-005 amendment:\n      raises apply freely; a cut below demand clamps to the invariant floor\n      `max(new, confirmed + held)` and blocks new claims while demand exceeds the target — never\n      force-releasing a confirmed admission (forward-only).\n- [ ] Adjustment is idempotent and audit-visible (who/when/from→to recorded); it takes the pool\n      row lock (ADR-010) so it serializes correctly against concurrent holds; the contention test\n      extended with an adversarial adjust-during-holds interleaving stays oversell-free.\n- [ ] Shared festival pools adjust as one pool (the group is the pool); availability reads\n      reflect the new capacity within their ADR-004 TTL tier.\n- [ ] Catalog's published capacity stays the initial snapshot only — no silent overwrite of a\n      pool with claims (existing `Provision` guard preserved and tested).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "ADR-005's amendment explicitly deferred capacity-adjustment storage/API to 'the inventory-side capacity-adjustment ticket' — this is that ticket."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: staff/internal adjust op, clamp floor max(new, confirmed+held), blocks-new-claims-while-clamped, audit fields, festival group adjusts as one pool. OUT: catalog-side capacity edits (initial snapshot only), occupancy."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether clamp state needs its own column vs derived comparison — engineering, Planning."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None hard. Touches the same pool surface as US-012's offering state — Planning should read US-012's plan if it landed first."
+    },
+    "approach": {
+      "state": "met",
+      "note": "New internal endpoint + pool columns; adjust under SELECT ... FOR UPDATE; extend the smoke contention test with adjust-during-holds interleaving."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Cut a capacity-100 pool with 60 sold to 50 → capacity clamps to 60, new holds 409, no confirmed claim released."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 4 ACs + quality gates; the adversarial interleaving test is the load-bearing signal."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked — amendment verbatim."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-005 (amendment)",
+        "rule": "No mutable count lives on the slot. Capacity authority stays in the inventory pool (ADR-010): Catalog emits the initial resolved capacity; Inventory owns adjustments (raise freely; a cut below demand clamps to the invariant floor max(new, confirmed + held) and blocks new claims, never force-releasing a confirmed admission — forward-only).",
+        "date": "2026-07-14"
+      },
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-005",
+        "why": "The amendment decided the adjustment behaviour verbatim and left only storage to this ticket — do not re-litigate the clamp floor."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Adjustment must take the pool row lock and respect confirmed + held ≤ capacity; expiry sweep precedes capacity accounting."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations out-of-band, one-shot Compose job."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "TKT-50 dated-slot pressure test — closure/capacity-change semantics the core reacts to",
+        "link": "docs/spikes/TKT-50-dated-slot-pressure-test.md"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    }
+  ]
+}
