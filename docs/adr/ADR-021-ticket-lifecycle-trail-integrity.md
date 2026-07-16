@@ -4,14 +4,35 @@ Date: 2026-07-15
 
 ## Status
 
-Accepted (approved at the TKT-57 plan gate, 2026-07-15)
+Accepted (approved at the TKT-57 plan gate, 2026-07-15) · **Implemented by TKT-67, 2026-07-15**
 
-**Decision only — the trail is not tamper-evident until the implementation follow-up (TKT-67)
-lands.** This ADR closes the open question recorded in [ADR-003](./ADR-003-append-only-audit-trail.md)
-§Status; it does not close the gap. Until TKT-67 ships, `lifecycle_events` remains append-only by
-policy (a trigger) and nothing in this ADR may be cited as evidence that it is tamper-evident.
-No further lifecycle event types should be added ahead of TKT-67 — each one added first is one more
-to backfill.
+**Implemented.** `lifecycle_events` is now chained per ticket in a companion integrity table with
+signed heads, checkpointed per organizer, and verified by `access verify-lifecycle` in the local
+gate against populated *and* deliberately corrupted data. This ADR closed the open question
+recorded in [ADR-003](./ADR-003-append-only-audit-trail.md) §Status; TKT-67 closed the gap — **the
+part of it that is closable inside this database.**
+
+Implementation: `services/access/internal/lifecycle/` (canonical forms, keyring),
+`services/access/internal/store/lifecycle*.go` (append, verify, checkpoint, backfill),
+`services/access/internal/lifecyclejob/` (workers), migration `0003_lifecycle_integrity.sql`.
+
+**What shipped is exactly what §The trust boundary scopes, and no more:** tamper-evident against
+modification, insertion and reordering, for an adversary who cannot re-sign the chain. **Targeted
+rollback and current-key compromise remain open**, and no in-database mechanism reaches them; they
+are TKT-11's. The rollback gap is pinned by a test that fails if it ever silently changes
+(`TestVerifyLifecycleAcceptsACoordinatedRollback`) — it asserts that a coordinated rollback
+verifies *clean*, so the limitation cannot rot into a false claim unnoticed.
+
+Two TKT-67 decisions this ADR left open, now settled:
+- **§Decision 2's signer memory:** no durable attacker-independent location exists in this repo, so
+  **no freshness tripwire exists until TKT-11**. The worker keeps its last observed root in process
+  memory and refuses to extend a regression it can see, which stops it laundering one under a fresh
+  signature while it is watching. It dies with the process and is not detection.
+- **§Decision 9's backfill:** it does **not** fit the migrate job. It runs as its own resumable
+  one-shot job (`access-lifecycle-backfill`) outside ADR-008's 30-second deadline.
+
+New lifecycle event types are no longer blocked, but each one added is one more the chain covers
+from its first write — add them through the append path, never straight into `lifecycle_events`.
 
 **And when TKT-67 does land, it closes *modification and insertion* — not targeted rollback.**
 Rollback needs an attestation outside the database (TKT-11); no in-database mechanism reaches it,
