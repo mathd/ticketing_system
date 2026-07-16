@@ -3,7 +3,9 @@
   "type": "Story",
   "summary": "US-014: Operational holds — house, artist and kills",
   "status": "Planning",
-  "labels": [],
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "claude",
   "pr": null,
   "description": "### US-014: Operational holds — house, artist and kills\n**As** box-office staff, **I want** to place named operational holds (house seats, artist\nallotment, kills) that sit outside public sale, and release or convert them without racing the\npublic. **Priority:** P0 **Depends on:** —\n**Acceptance Criteria:**\n- [ ] Claims gain an operational type with a named purpose (`house | artist | kill | other` +\n      label); operational holds have **no TTL**, count against pool capacity, and are placeable/\n      releasable via staff/internal API only (gateway keeps them off the public edge).\n- [ ] **Convert without a gap:** converting an operational hold (whole or partial quantity) into\n      a buyer-purchasable claim happens atomically under the pool lock — released-to-order\n      capacity is never observable as publicly available in between.\n- [ ] Partial release/convert supported (release 3 of a 10-seat house hold); the remainder stays\n      held; all transitions journal-style auditable (who/when/why on the claim history).\n- [ ] Availability reads distinguish sellable from operationally-held capacity for staff, while\n      the public read keeps a single `available` number.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
