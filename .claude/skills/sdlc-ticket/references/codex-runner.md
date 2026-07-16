@@ -14,6 +14,7 @@ the fallback of last resort (§ below).
 CODEX=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
 # free-form work (plan draft / plan critique / implementation) — `task` takes a model.
 # Read-only stages: NO --write. Implementation: --write.
+# (The raw-fallback equivalent of "no --write" is `-s read-only` — see § Raw codex exec (b).)
 node "$CODEX" task --prompt-file .brief.$$.md --model gpt-5.6-sol --effort high --background
 node "$CODEX" status <job-id> ; node "$CODEX" result <job-id>
 # ai-review — the PR diff vs the base branch
@@ -44,15 +45,27 @@ code actually under discussion) — a huge file risks being dropped from context
 ## Raw `codex exec` — fallback only, when the plugin is absent
 
 - **(a)** Pass `-m gpt-5.6-sol` explicitly — the CLI default errors `requires a newer Codex`.
-- **(b)** Feed the prompt via **stdin redirect** (`< prompt.txt`), never as a positional arg — a
+- **(b)** Pass **`-s read-only`** on every read-only stage — which is every stage this fallback
+  serves: plan drafting and all reviews. The companion enforces read-only by *omitting* `--write`;
+  raw `codex exec` enforces nothing and takes the sandbox from `~/.codex/config.toml`. So a
+  fallback that drops this flag hands the substitute MORE privilege than the command it stands in
+  for, and a reviewer that can edit the tree it is reviewing is not a reviewer. (Restored after
+  TKT-67: the flag was in the pre-`codex-runner.md` SKILL.md and was lost when these mechanics were
+  extracted. Nothing caught it, because the stage it protects had already failed for an unrelated
+  reason.)
+- **(c)** Feed the prompt via **stdin redirect** (`< prompt.txt`), never as a positional arg — a
   large arg hangs at `Reading additional input from stdin…`.
-- **(c)** **Inline the plan/diff in the prompt file** rather than telling codex to `git diff`
+- **(d)** **Inline the plan/diff in the prompt file** rather than telling codex to `git diff`
   itself.
-- **(d)** Run it **backgrounded + poll**.
-- **(e)** **A local skill will hijack the prompt and cannot be stopped** — "review"/"critique"
+- **(e)** Run it **backgrounded + poll**.
+- **(f)** **A local skill will hijack the prompt and cannot be stopped** — "review"/"critique"
   loads the machine's skills (possibly an *unrelated client's*); neither `--disable plugins` nor
   `-c features.skills=false` prevents it (`--disable skills` isn't a valid flag). The hijack also
   happens *through the plugin*. Survivable, not preventable — judge the output (§ below).
+  **Believe "survivable" literally**: on TKT-67 the two runs that *completed* were hijacked exactly
+  as hard as the two that died, and produced 1 critical + 4 important findings through the foreign
+  rubric. A hijacked run is not a failed run, and blaming the hijack for an unrelated hang is the
+  easy mistake — it is the loudest thing in the log.
 
 ## Judging the output — exit 0 ≠ success
 
