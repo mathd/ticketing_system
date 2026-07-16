@@ -4,10 +4,14 @@
   "summary": "Implement ADR-021: per-ticket lifecycle chain + async organizer checkpoint + verify-lifecycle",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "claude",
-  "pr": null,
+  "pr": {
+    "number": 51,
+    "url": "https://github.com/mathd/ticketing_system/pull/51",
+    "state": "open"
+  },
   "description": "Implement the ticket lifecycle trail integrity scheme decided in ADR-021 (TKT-57). Until this lands, `lifecycle_events` is append-only by policy (the `lifecycle_events_immutable` trigger, which is DDL and removable) and NOT tamper-evident — and ADR-003 §Decision 2 makes redemption decisions from that trace, so it is a fraud surface, not just an audit gap.\n\nADR-021 decides the WHAT; this ticket owns the HOW. Read ADR-021 in full before planning — every clause below is load-bearing and several are deliberate divergences from the money journal that must not be 'fixed' back.\n\nScope:\n- Per-ticket hash chain (ticket-local sequence, previous_hash, entry_hash) in a COMPANION integrity table; `lifecycle_events` is immutable and must not be rewritten. Lifecycle row + integrity row in one transaction; verifiers assert one-to-one coverage.\n- Appends serialize on the ticket row `Redeem` already locks (postgres.go:182). NO organizer-wide lock, ever — that constraint is the whole reason ADR-021 rejected copying the money journal.\n- Asynchronous per-organizer checkpoint: signed Merkle root over per-ticket heads CHANGED since the previous checkpoint (delta, not full scan), chained to it. Default interval 60s.\n- Ed25519 under an `access-lifecycle/` key namespace, distinct key material from `access-qr/` (token.go:61-78 has the keyring idiom).\n- Sign the HEAD, not every entry (ADR-021 §Decision 5).\n- `Redeem` fails OPEN with a high-severity alarm on a chain that does not verify (ADR-021 §Decision 6).\n- `access verify-lifecycle` subcommand, public keys only; wire into `scripts/smoke.sh` against populated AND deliberately corrupted data, mirroring what smoke.sh:78-105 already does for `verify-journal`.\n- Versioned, domain-separated canonical form; no PII, no `guest_order_ref`; pinned by golden tests.\n- Resumable startup backfill, bounded and fail-fast per ADR-008; adopts existing history as baseline.\n- Migrations: plain `CREATE INDEX`, never CONCURRENTLY (ADR-020 — migrations run at startup).\n\nTest seam (verified to exist at HEAD): `services/access/internal/store/migration_smoke_test.go` — already provisions an isolated PostgreSQL schema, upgrades 0001→0002, preserves issued/delivered history, redeems, and asserts the immutability trigger rejects an UPDATE. Extend it; next migration is 0003.",
   "comments": [
     {
@@ -49,6 +53,11 @@
       "stage": "planning",
       "kind": "summary",
       "body": "<!-- sdlc:stage=planning kind=summary -->\n**Gate 2 cleared — human decision, recorded by the agent.** The human chose **option (a): ship as planned, one single PR**, approving the final plan including the six plan-review amendments (A1 readiness→startup validation, A2 append-only-on-real-insert, A3 two tables dropped, A4 O(1) regression check, A5 Merkle dedup pinning, A6 append-only quarantine admissions).\n\nThe split recommendation is declined; nothing is dropped. Implementation proceeds on the full plan: `implement` = main-agent (Opus 4.8), `aiReview` = gpt-5.6-sol — distinct, invariant holds.\n\nPlanning → Building; `needs:human` → `agent:coding`."
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implemented by `main-agent` (Opus 4.8, this session)** per config.models.implement. TDD in the plan's order: canonical goldens → key/signature binding → migration+backfill seam → append path → fail-open policy → checkpoint worker → offline verifier → live smoke.\n\n**PR #51** — 26 files, +4795/−60. **Local gate `make check` green, verified by exit code (0)**, not by reading output: it includes the live `verify-lifecycle` against populated data plus five real PostgreSQL corruption cases.\n\nDelivered the full plan including all six plan-review amendments (A1–A6). Two extra cuts made while implementing, same reasoning as A3 (don't store what's derivable): the degraded-mode failure counter is derivable from the append-only quarantine rows (one per first-time corrupt ticket, timestamped — counting them *is* the rolling window), and `SealEpoch` turned out to be a pure `INSERT ... SELECT` copy rather than a re-signing, because a head's stored signature already binds ticket/sequence/version/kid and therefore *is* the epoch signature for its key. Sealing needs no private key at all.\n\nOne design change I found while implementing, beyond A1's scope: `maxPendingAge` gained a 30s floor. 2× a sub-second interval would make the audit check ask \"is the worker quick\" instead of \"is the worker dead\", and smoke runs at a 1s interval.\n\nNext: `agent:ai-review` — adversarial review by `gpt-5.6-sol` (≠ implementer; invariant holds), given the diff only and primed to assume it is wrong."
     }
   ],
   "links": [],
