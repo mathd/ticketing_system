@@ -1,0 +1,81 @@
+# Codex runner — mechanics for stages that resolve to a `gpt-*` model
+
+Read this when `config.models` resolves a stage to a `gpt-*` model. *Which* stage that is
+is the config's call (`SKILL.md` § config.models); this file is only *how* to run it.
+
+## The companion script — not `codex exec`, not slash commands
+
+Where `codex@openai-codex` is installed, call the plugin's **companion script** directly — it is
+agent-invocable and works every time. The `/codex:*` slash commands are
+`disable-model-invocation: true` (human-only) and trigger inconsistently; raw `codex exec` is
+the fallback of last resort (§ below).
+
+```bash
+CODEX=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
+# free-form work (plan draft / plan critique / implementation) — `task` takes a model.
+# Read-only stages: NO --write. Implementation: --write.
+node "$CODEX" task --prompt-file .brief.$$.md --model gpt-5.6-sol --effort high --background
+node "$CODEX" status <job-id> ; node "$CODEX" result <job-id>
+# ai-review — the PR diff vs the base branch
+node "$CODEX" adversarial-review --base origin/main --scope branch "<focus: what to attack>"
+```
+
+- **`adversarial-review`** is the review command: it takes focus text and challenges the
+  approach. Plain `review` is native-review only and **rejects focus text entirely**. Both map
+  to Codex's built-in reviewer — no `-m` flag to get wrong; args `--base <ref>`,
+  `--scope auto|working-tree|branch`.
+- **`task` is the only command that takes a model** — pass `--model gpt-5.6-sol` explicitly.
+  **The literal is `gpt-5.6-sol`; plain `gpt-5.6` does not work.** Don't "correct" it.
+- ⚠ **`--background` is a lie for reviews** — parsed and then ignored (verified in the script:
+  `review`/`adversarial-review` unconditionally call `runForegroundCommand`; only `task` honours
+  it). `status`/`result` polling does **not** work for review jobs, and a stalled review blocks
+  the caller. Instead: background the review through the harness
+  (`Bash(..., run_in_background: true)`) or wrap it in `timeout` so a hang is caught. `--wait`
+  is equally redundant — foreground is the only mode.
+
+## Prompt files — materialized, never interpolated
+
+Write the brief with a **file-writing tool or a quoted heredoc**, never by interpolating
+ticket/plan text into a shell command — ticket text and inlined code routinely contain backticks
+and `$(…)`, which a double-quoted `printf`/`echo` will **execute**. Use a collision-resistant
+name (`.plan-brief.$$.md`), delete only what this run created, and keep the file lean (plan + the
+code actually under discussion) — a huge file risks being dropped from context.
+
+## Raw `codex exec` — fallback only, when the plugin is absent
+
+- **(a)** Pass `-m gpt-5.6-sol` explicitly — the CLI default errors `requires a newer Codex`.
+- **(b)** Feed the prompt via **stdin redirect** (`< prompt.txt`), never as a positional arg — a
+  large arg hangs at `Reading additional input from stdin…`.
+- **(c)** **Inline the plan/diff in the prompt file** rather than telling codex to `git diff`
+  itself.
+- **(d)** Run it **backgrounded + poll**.
+- **(e)** **A local skill will hijack the prompt and cannot be stopped** — "review"/"critique"
+  loads the machine's skills (possibly an *unrelated client's*); neither `--disable plugins` nor
+  `-c features.skills=false` prevents it (`--disable skills` isn't a valid flag). The hijack also
+  happens *through the plugin*. Survivable, not preventable — judge the output (§ below).
+
+## Judging the output — exit 0 ≠ success
+
+**Read the output; never judge by exit status** (raw `exec` exits 0 on both a zero-findings
+hijack and a bad flag that never reached the model). Pass = **the reviewer actually ran against
+the intended scope and returned a conclusive verdict** — *not* whether it found defects. A
+conclusive "no findings" on a genuinely clean diff is a PASS; a run that reviewed the wrong
+scope, or returned only a rubric template, is a failure however many sections it printed. A run
+that announces a foreign skill but returns concrete, code-cited findings is likewise a pass — the
+rubric is irrelevant. A hang counts as a failure: kill it fast. Never substitute a self-review; a
+skipped review that looks done is worse than a stalled ticket.
+
+## Escalation ladder when a delegated stage fails — fixed, not improvised
+
+One attempt per rung, in order:
+
+1. The plugin command (`adversarial-review` / `task`).
+2. On empty, truncated, or hung output → the documented raw fallback above.
+3. Still no conclusive verdict → **stop on the current `agent:*` label and report to the human**.
+
+No rung twice, no fourth rung — improvised retries cost wall-clock (TKT-62: ~1h, three attempts).
+Known failure shapes, all exiting 0: the plugin returning **zero bytes**; the companion
+**truncating** the captured assistant message mid-sentence (the verdict survives, the findings
+don't); `codex exec` **dying mid-investigation** with no final answer. If a partial run left
+legible reasoning, salvage it — quote it in the stage comment and verify its open threads
+**yourself, labelled as your own work** (that's authorship, not a substituted review).
