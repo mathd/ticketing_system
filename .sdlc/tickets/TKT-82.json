@@ -14,9 +14,8 @@
       "note": "Epic COS 1: no-oversell proven under sustained adversarial load, measured against the festival-scale NFR — today only a 40-goroutine correctness test exists."
     },
     "scope": {
-      "state": "open",
-      "note": "Proposed split: a scaled sustained profile runs in make check; the full NFR profile is an on-demand documented target. The epic COS says 'sustained load test in the gate' — owner must confirm the split (full NFR in every local gate run is likely impractical).",
-      "owner": "human"
+      "state": "met",
+      "note": "Owner decision (Gate 1, 2026-07-16): scaled sustained profile runs in make check; full festival-NFR profile is a documented on-demand target. Decision recorded in the thread."
     },
     "uncertainties": {
       "state": "deferred",
@@ -82,6 +81,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. OPEN item awaiting a human decision — see readiness (owner: human)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nOwner decision at Gate 1 (2026-07-16): the load-proof split is accepted — a scaled **sustained** profile runs inside `make check` (gate-time budget respected); the **full festival-NFR profile** (thousands of checkout attempts/min sustained, 50–100k capacity pool) is a documented on-demand target, not part of every gate run. This satisfies the epic COS reading of 'sustained load test in the gate'. Readiness `scope` flipped open → met."
     }
   ]
 }
