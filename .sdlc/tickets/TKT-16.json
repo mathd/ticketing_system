@@ -13,5 +13,19 @@
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
     }
-  ]
+  ],
+  "context": {
+    "reference": [
+      {
+        "summary": "ADR-025 (TKT-73): admission event model decided — redeemed stays unique, entry/exit for passes, duplicate_admit for reconciled offline conflicts; scanner durability contract (occurrence id committed before gate-open) is a binding constraint on this ticket",
+        "link": "docs/adr/ADR-025-admission-events-and-offline-reconciliation.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-025",
+        "rule": "Admission vocabulary + offline reconciliation semantics; occurrence-id durability contract binds gate-side design; trace claim begins at reconciliation."
+      }
+    ]
+  }
 }
