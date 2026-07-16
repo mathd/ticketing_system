@@ -4,7 +4,7 @@
   "summary": "US-014: Operational holds — house, artist and kills",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "claude",
   "pr": null,
