@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,68 @@ func TestOperationalPlaceRejectsBadShapes(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+			}
+		})
+	}
+}
+
+func TestChannelAllocationEndpointRequiresInternalCredential(t *testing.T) {
+	s := New(nil, "secret")
+	id := "00000000-0000-0000-0000-000000000001"
+	body := `{"organizer_id":"00000000-0000-0000-0000-000000000002","allocations":[{"channel":"presale","cap":10}]}`
+	for _, token := range []string{"", "wrong"} {
+		req := httptest.NewRequest(http.MethodPut, "/internal/slots/"+id+"/channel-allocations", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("X-Internal-Token", token)
+		}
+		res := httptest.NewRecorder()
+		s.Router().ServeHTTP(res, req)
+		if res.Code != http.StatusUnauthorized {
+			t.Fatalf("token %q: status=%d want=%d", token, res.Code, http.StatusUnauthorized)
+		}
+	}
+}
+
+func TestChannelAllocationRejectsBadShapes(t *testing.T) {
+	s := New(nil, "secret")
+	id := "00000000-0000-0000-0000-000000000001"
+	org := `"organizer_id":"00000000-0000-0000-0000-000000000002"`
+	for name, body := range map[string]string{
+		"missing allocations": `{` + org + `}`,
+		"empty channel":       `{` + org + `,"allocations":[{"channel":"","cap":10}]}`,
+		"zero cap":            `{` + org + `,"allocations":[{"channel":"presale","cap":0}]}`,
+		"duplicate channel":   `{` + org + `,"allocations":[{"channel":"presale","cap":1},{"channel":"presale","cap":2}]}`,
+		"unknown field":       `{` + org + `,"allocations":[{"channel":"presale","cap":1,"bogus":true}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/internal/slots/"+id+"/channel-allocations", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+			}
+		})
+	}
+}
+
+func TestCreateHoldRejectsBadChannel(t *testing.T) {
+	s := New(nil, "")
+	base := `"organizer_id":"00000000-0000-0000-0000-000000000001","slot_id":"00000000-0000-0000-0000-000000000002","quantity":1`
+	for name, body := range map[string]string{
+		"empty channel": `{` + base + `,"channel":""}`,
+		"overlong channel": `{` + base + `,"channel":"` + strings.Repeat("x", 101) + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/holds", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "bad-channel")
 			res := httptest.NewRecorder()
 			s.Router().ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {

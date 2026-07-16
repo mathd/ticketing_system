@@ -46,6 +46,7 @@ type Claim struct {
 	UnitAmount   int64      `json:"unit_amount,omitempty"`
 	Currency     string     `json:"currency,omitempty"`
 	Status       string     `json:"status"`
+	Channel      string     `json:"channel,omitempty"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	ServerTime   time.Time  `json:"server_time"`
 	Kind         string     `json:"-"`
@@ -123,11 +124,17 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 	return tx.Commit()
 }
 
-func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency string) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency))))
+// fingerprint stays byte-identical to the pre-channel format when channel is empty, so
+// idempotency records created before the channel migration keep replaying (ADR-009).
+func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel string) string {
+	s := fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency)
+	if channel != "" {
+		s += ":" + channel
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
 }
 
-func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, key string) (Claim, bool, error) {
+func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string) (Claim, bool, error) {
 	if qty <= 0 {
 		return Claim{}, false, fmt.Errorf("quantity must be positive")
 	}
@@ -146,10 +153,10 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	}
 	var existing Claim
 	var fp string
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency) {
+		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel) {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {
@@ -180,9 +187,36 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	if int64(confirmed)+int64(held)+int64(qty) > int64(capacity) {
 		return Claim{}, false, ErrUnavailable
 	}
-	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer') RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency)).Scan(&c.ExpiresAt, &c.ServerTime)
+	if channel != "" {
+		// A channel hold needs an active allocation with headroom, on top of pool capacity.
+		var chCap int32
+		err = tx.QueryRowContext(ctx, `SELECT cap FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Claim{}, false, ErrUnavailable
+		}
+		if err != nil {
+			return Claim{}, false, err
+		}
+		var consumed int64
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
+			return Claim{}, false, err
+		}
+		if consumed+int64(qty) > int64(chCap) {
+			return Claim{}, false, ErrUnavailable
+		}
+	} else {
+		// A public hold may not eat capacity still reserved for active allocations.
+		var reserved int64
+		if err = tx.QueryRowContext(ctx, reservedForChannelsSQL, slot).Scan(&reserved); err != nil {
+			return Claim{}, false, err
+		}
+		if int64(confirmed)+int64(held)+int64(qty)+reserved > int64(capacity) {
+			return Claim{}, false, ErrUnavailable
+		}
+	}
+	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,'')) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel), channel).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}
@@ -210,8 +244,8 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 		return Claim{}, err
 	}
 	var c Claim
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,''),claim_kind FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
-		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &c.ExpiresAt, &c.ServerTime, &c.TicketTypeID, &c.UnitAmount, &c.Currency, &c.Kind)
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,''),claim_kind FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
+		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &c.Channel, &c.ExpiresAt, &c.ServerTime, &c.TicketTypeID, &c.UnitAmount, &c.Currency, &c.Kind)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -270,7 +304,11 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	return c, tx.Commit()
 }
 
-func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID) (Availability, error) {
+// Availability reports pool aggregates (capacity/held/confirmed) plus a channel-scoped
+// `available`: with channel empty it is the public/default claimable quantity (net of
+// capacity still reserved for active allocations); with a channel it is that channel's
+// claimable quantity (zero when no active allocation exists). ADR-004: 5s cache tier.
+func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID, channel string) (Availability, error) {
 	var a Availability
 	a.SlotID = slot
 	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims+`) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).Scan(&a.Capacity, &a.Confirmed, &a.Held)
@@ -280,6 +318,28 @@ func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID) (Avail
 	if err != nil {
 		return a, err
 	}
-	a.Available = a.Capacity - a.Confirmed - a.Held
+	remaining := int64(a.Capacity) - int64(a.Confirmed) - int64(a.Held)
+	if channel != "" {
+		var chCap int32
+		err = p.db.QueryRowContext(ctx, `SELECT cap FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap)
+		if errors.Is(err, sql.ErrNoRows) {
+			a.Available = 0
+			return a, nil
+		}
+		if err != nil {
+			return a, err
+		}
+		var consumed int64
+		if err = p.db.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
+			return a, err
+		}
+		a.Available = clampAvailable(min(remaining, int64(chCap)-consumed))
+		return a, nil
+	}
+	var reserved int64
+	if err = p.db.QueryRowContext(ctx, reservedForChannelsSQL, slot).Scan(&reserved); err != nil {
+		return a, err
+	}
+	a.Available = clampAvailable(remaining - reserved)
 	return a, nil
 }
