@@ -90,6 +90,31 @@ func TestKeyringRejectsForeignNamespace(t *testing.T) {
 	}
 }
 
+// A key id is signed INSIDE the canonical head and checkpoint forms, which are
+// newline-separated. A kid carrying a newline shifts every field after it, so
+// "kid\n<hash>" with one head hash and "kid" with another canonicalize to the
+// same bytes — one signature verifying as two different heads. '=' and ',' would
+// separately misparse the keyring. Reaching this needs operator-controlled
+// config, not the database adversary; it is closed anyway because an ambiguous
+// canonical form is worth none of the argument.
+func TestKeyIDsCannotSmuggleACanonicalDelimiter(t *testing.T) {
+	seed, pub := newKeyMaterial(t)
+	hostile := map[string]string{
+		"newline":         "access-lifecycle/a\n0000000000000000000000000000000000000000000000000000000000000000",
+		"carriage return": "access-lifecycle/a\rb",
+		"equals":          "access-lifecycle/a=b",
+		"comma":           "access-lifecycle/a,b",
+	}
+	for name, kid := range hostile {
+		if _, err := NewSigner(seed, kid); err == nil {
+			t.Fatalf("%s: signer accepted a kid that can shift fields in the bytes it signs", name)
+		}
+		if _, err := NewKeyring(kid + "=" + pub); err == nil {
+			t.Fatalf("%s: keyring accepted a kid that can shift fields in the bytes it verifies", name)
+		}
+	}
+}
+
 func TestSignerRejectsMalformedSeed(t *testing.T) {
 	for _, seed := range []string{"", "not-base64!!", base64.RawStdEncoding.EncodeToString([]byte("short"))} {
 		if _, err := NewSigner(seed, "access-lifecycle/2026-07"); err == nil {

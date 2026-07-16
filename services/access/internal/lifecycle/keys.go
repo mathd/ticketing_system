@@ -31,12 +31,32 @@ type Signer struct {
 // (ADR-021 §D5).
 type Keyring struct{ keys map[string]ed25519.PublicKey }
 
+// validKID checks a key id is namespaced and cannot smuggle a delimiter.
+//
+// The delimiter check is not tidiness. Key ids are signed INSIDE the canonical
+// head and checkpoint forms, which are newline-separated, so a kid containing a
+// newline shifts every field after it: "kid\n<hash>" and "kid" + a different
+// hash can canonicalize to the same bytes, and a signature over one verifies as
+// the other. `=` and `,` would separately misparse the keyring, which splits on
+// exactly those. Reaching this needs operator-controlled configuration rather
+// than the database-write adversary, so it is robustness rather than a live
+// hole — but an ambiguous canonical form is worth none of the argument.
+func validKID(kid string) error {
+	if !strings.HasPrefix(kid, KeyNamespace) || kid == KeyNamespace {
+		return fmt.Errorf("lifecycle key id %q must use the %s namespace", kid, KeyNamespace)
+	}
+	if strings.ContainsAny(kid, "\n\r=,") {
+		return fmt.Errorf("lifecycle key id %q may not contain a newline, '=' or ',': it is signed inside the canonical form", kid)
+	}
+	return nil
+}
+
 // NewSigner loads the active lifecycle seed. Mirrors the injected seed + kid
 // idiom already established for QR credentials (token.go:32-44) rather than
 // inventing a second configuration shape.
 func NewSigner(seedBase64, kid string) (*Signer, error) {
-	if !strings.HasPrefix(kid, KeyNamespace) || kid == KeyNamespace {
-		return nil, fmt.Errorf("ACCESS_LIFECYCLE_KID must use the %s namespace", KeyNamespace)
+	if err := validKID(kid); err != nil {
+		return nil, fmt.Errorf("ACCESS_LIFECYCLE_KID: %w", err)
 	}
 	seed, err := base64.RawStdEncoding.DecodeString(seedBase64)
 	if err != nil {
@@ -81,8 +101,11 @@ func NewKeyring(raw string) (*Keyring, error) {
 			continue
 		}
 		kid, encoded, ok := strings.Cut(item, "=")
-		if !ok || !strings.HasPrefix(kid, KeyNamespace) || kid == KeyNamespace || encoded == "" {
+		if !ok || encoded == "" {
 			return nil, fmt.Errorf("invalid ACCESS_LIFECYCLE_PUBLIC_KEYS entry %q", item)
+		}
+		if err := validKID(kid); err != nil {
+			return nil, fmt.Errorf("ACCESS_LIFECYCLE_PUBLIC_KEYS: %w", err)
 		}
 		key, err := base64.RawStdEncoding.DecodeString(encoded)
 		if err != nil || len(key) != ed25519.PublicKeySize {
