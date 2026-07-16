@@ -15,7 +15,7 @@ paths:
         # reason: already_redeemed | integrity_quarantined (a ticket that already
         # took its one degraded admission) | integrity_operator_controlled (an
         # organizer a human has flipped to deny).
-        '409': {description: Rejected — already redeemed, or refused by the integrity degraded mode, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
+        '409': {description: 'Rejected: already redeemed, or refused by the integrity degraded mode', content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
         '422': {description: Invalid credential, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
