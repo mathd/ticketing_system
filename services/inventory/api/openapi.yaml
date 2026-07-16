@@ -41,6 +41,66 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/operational-holds:
+    post:
+      operationId: placeOperationalHold
+      summary: Place a named operational hold (house/artist/kill) outside public sale
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalHoldCreate'}}}}
+      responses:
+        '200': {$ref: '#/components/responses/OperationalHold'}
+        '201': {$ref: '#/components/responses/OperationalHold'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /internal/operational-holds/{id}/release:
+    post:
+      operationId: releaseOperationalHold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalRelease'}}}}
+      responses:
+        '200': {$ref: '#/components/responses/OperationalHold'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /internal/operational-holds/{id}/convert:
+    post:
+      operationId: convertOperationalHold
+      summary: Atomically carve quantity out of an operational hold into a buyer hold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConvert'}}}}
+      responses:
+        '200': {description: Replayed conversion, content: {application/json: {schema: {$ref: '#/components/schemas/ConvertResult'}}}}
+        '201': {description: Converted, content: {application/json: {schema: {$ref: '#/components/schemas/ConvertResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /internal/operational-holds/{id}/history:
+    get:
+      operationId: getOperationalHoldHistory
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses:
+        '200': {description: Claim history, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/HistoryEntry'}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /internal/slots/{id}/availability:
+    get:
+      operationId: getStaffAvailability
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses:
+        '200': {description: Staff availability breakdown, content: {application/json: {schema: {$ref: '#/components/schemas/StaffAvailability'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
 components:
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
@@ -48,6 +108,7 @@ components:
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
   responses:
     Hold: {description: Hold state, content: {application/json: {schema: {$ref: '#/components/schemas/Hold'}}}}
+    OperationalHold: {description: Operational hold state, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalHold'}}}}
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
     Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
@@ -87,3 +148,83 @@ components:
         held: {type: integer}
         confirmed: {type: integer}
         available: {type: integer}
+    OperationalHoldCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, slot_id, quantity, purpose, label, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 10000}
+        purpose: {type: string, enum: [house, artist, kill, other]}
+        label: {type: string, minLength: 1, maxLength: 200}
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    OperationalRelease:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, quantity, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 10000}
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    OperationalConvert:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, slot_id, quantity, ticket_type_id, unit_amount, currency, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid, description: 'The slot the caller priced against; verified against the hold''s pool before any write'}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+        ticket_type_id: {type: string, format: uuid}
+        unit_amount: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    OperationalHold:
+      type: object
+      additionalProperties: false
+      required: [hold_id, organizer_id, slot_id, quantity, status, server_time]
+      properties:
+        hold_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        purpose: {type: string}
+        label: {type: string}
+        status: {type: string}
+        server_time: {type: string, format: date-time}
+    ConvertResult:
+      type: object
+      additionalProperties: false
+      required: [hold, source_id, source_remaining, source_status]
+      properties:
+        hold: {$ref: '#/components/schemas/Hold'}
+        source_id: {type: string, format: uuid}
+        source_remaining: {type: integer}
+        source_status: {type: string}
+    StaffAvailability:
+      type: object
+      additionalProperties: false
+      required: [slot_id, capacity, buyer_held, operational_held, confirmed, available]
+      properties:
+        slot_id: {type: string, format: uuid}
+        capacity: {type: integer}
+        buyer_held: {type: integer}
+        operational_held: {type: integer}
+        confirmed: {type: integer}
+        available: {type: integer}
+    HistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [action, actor, reason, quantity, quantity_after, status_after, occurred_at]
+      properties:
+        action: {type: string}
+        actor: {type: string}
+        reason: {type: string}
+        quantity: {type: integer}
+        quantity_after: {type: integer}
+        status_after: {type: string}
+        related_claim_id: {type: string, format: uuid}
+        occurred_at: {type: string, format: date-time}

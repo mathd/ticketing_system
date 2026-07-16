@@ -35,6 +35,20 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/operational-holds/{id}/convert:
+    post:
+      operationId: convertOperationalHold
+      summary: Staff conversion of an operational hold into a purchasable reservation
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConversionCreate'}}}}
+      responses:
+        '200': {description: Replayed conversion, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConversion'}}}}
+        '201': {description: Converted, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConversion'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail
@@ -72,6 +86,29 @@ components:
         currency: {type: string}
         expires_at: {type: string, format: date-time}
         server_time: {type: string, format: date-time}
+    OperationalConversionCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, ticket_type_id, quantity, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        ticket_type_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    OperationalConversion:
+      type: object
+      additionalProperties: false
+      required: [reservation_id, hold_id, buyer_id, amount, currency, expires_at, server_time, source_remaining]
+      properties:
+        reservation_id: {type: string, format: uuid}
+        hold_id: {type: string, format: uuid}
+        buyer_id: {type: string, format: uuid}
+        amount: {type: integer, format: int64}
+        currency: {type: string}
+        expires_at: {type: string, format: date-time}
+        server_time: {type: string, format: date-time}
+        source_remaining: {type: integer}
     Checkout:
       type: object
       additionalProperties: false

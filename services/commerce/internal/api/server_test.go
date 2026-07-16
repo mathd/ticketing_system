@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -103,5 +104,136 @@ func TestPersistenceReadProblem(t *testing.T) {
 func TestCheckoutRejectsUnknownPaymentToken(t *testing.T) {
 	if fakepsp.ValidToken("not-a-token") {
 		t.Fatal("unknown token accepted")
+	}
+}
+
+func TestConvertOperationalRequiresInternalToken(t *testing.T) {
+	body := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+	for name, s := range map[string]*Server{
+		"wrong token": New(nil, http.DefaultClient, "", "", "", "secret"),
+		// An unconfigured token must fail closed, never open.
+		"empty configured token": New(nil, http.DefaultClient, "", "", "", ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "wrong")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("status=%d want=%d", res.Code, http.StatusNotFound)
+			}
+		})
+	}
+}
+
+func TestConvertOperationalRejectsNonStrictJSON(t *testing.T) {
+	s := New(nil, http.DefaultClient, "", "", "", "secret")
+	valid := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+	for name, body := range map[string]string{
+		"unknown field":  strings.TrimSuffix(valid, "}") + `,"unit_amount":1}`,
+		"trailing value": valid + `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+			}
+		})
+	}
+}
+
+func TestConvertOperationalForwardsSlotPreconditionToInventory(t *testing.T) {
+	org := "00000000-0000-0000-0000-000000000001"
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The offer belongs to performance ...0009.
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
+	}))
+	defer catalog.Close()
+	var forwardedSlot string
+	// Behaves like real inventory: the hold's pool is ...0008, so any other expected
+	// slot rejects BEFORE mutating — commerce must surface that as 409.
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			SlotID string `json:"slot_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		forwardedSlot = body.SlotID
+		w.Header().Set("Content-Type", "application/json")
+		if body.SlotID != "00000000-0000-0000-0000-000000000008" {
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"error":"conflicting terminal state"}`))
+			return
+		}
+		w.WriteHeader(201)
+	}))
+	defer inventory.Close()
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+	req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "k")
+	req.Header.Set("X-Internal-Token", "secret")
+	res := httptest.NewRecorder()
+	s.Router().ServeHTTP(res, req)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusConflict, res.Body.String())
+	}
+	if forwardedSlot != "00000000-0000-0000-0000-000000000009" {
+		t.Fatalf("forwarded slot_id = %q, want the offer's performance id", forwardedSlot)
+	}
+}
+
+func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
+	// The guard must key on the child's status, not its timestamp: a confirmed claim
+	// keeps its elapsed expires_at forever (409 would instruct a double carve), and a
+	// released child with a future timestamp must not become a dead reservation.
+	// The accept path for a confirmed child is exercised end-to-end in the smoke suite
+	// (replay after checkout), where a real database exists.
+	org := "00000000-0000-0000-0000-000000000001"
+	cases := map[string]struct {
+		hold string
+		want int
+	}{
+		"held past deadline": {hold: `"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"released, future deadline": {hold: `"status":"released","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"expired": {hold: `"status":"expired","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		// Unknown is not terminal: a version-skew status must not advise re-conversion
+		// (it could double-carve a still-live child) — it is an invalid response.
+		"empty status":   {hold: `"status":"","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusBadGateway},
+		"unknown status": {hold: `"status":"parked","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusBadGateway},
+	}
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
+	}))
+	defer catalog.Close()
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200) // replay
+				_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000009","quantity":1,` + tc.hold + `},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
+			}))
+			defer inventory.Close()
+			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, tc.want, res.Body.String())
+			}
+		})
 	}
 }
