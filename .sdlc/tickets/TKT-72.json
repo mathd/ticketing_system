@@ -4,7 +4,7 @@
   "summary": "make check's smoke stage flakes on a cold volume — postgres healthcheck has no start_period",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent",
   "pr": null,
@@ -19,6 +19,11 @@
       "stage": "ready",
       "kind": "claim",
       "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed off `origin/main` @ `e983f5a`; branch `TKT-72-postgres-healthcheck-start-period`.\n\n**Selection reason.** Top of `Ready` with all 8 DoR items `met` and zero blockers (`links: []`). The\ndiagnosis is already done and evidenced in the description (pristine `main` @ `edafcec` reproduces\nwith zero changes; warm volume passes), so `Planning` is about validating the *fix*, not re-finding\nthe bug.\n\n**`risk:low` deliberately NOT applied.** The change is one line, which is the whole temptation — but\nthe label's own invariant drops it for work touching **CI/deploy config**, and `compose.yaml` is\nexactly that. The ticket's `readiness.approach` makes the same call in its own words: this is\nticketed rather than direct-committed *because* `compose.yaml` defines the deployed stack, not just\nthe test rig. Widening the startup health grace means dependents wait longer before failing on a\ngenuinely broken postgres — small, real, and shared. **The plan gate (Gate 2) applies.**\n\n**Cross-model invariant checked:** `plan: gpt-5.6-sol` ≠ `planReview: main-agent`, and\n`implement: main-agent` ≠ `aiReview: gpt-5.6-sol`. Both pairs distinct — no degraded flow.\n\n**Drive style for this run:** gates only.\n"
+    },
+    {
+      "stage": "planning",
+      "kind": "plan",
+      "body": "<!-- sdlc:stage=planning kind=plan -->\n**Drafted by `gpt-5.6-sol`** (`config.models.plan`), read-only, briefed from the ticket + the\ncontext-mémo + the real code at HEAD. Verbatim substance, condensed.\n\n**Root cause confirmed — the proposed one-line fix is incomplete.** Two changes, not one:\n\n```yaml\nhealthcheck:\n  test: [\"CMD-SHELL\", \"pg_isready -U postgres -h 127.0.0.1\"]\n  interval: 5s\n  timeout: 3s\n  retries: 10\n  start_period: 30s\n```\n\n1. **`start_period: 30s`.** Without it, 10 probes at 5s give cold init ~50s before `unhealthy`.\n   30s grace raises the budget to ~80s — it does *not* cap startup at 30s. Failures during the\n   grace leave the container `starting` and consume no retries; a success still marks it healthy\n   immediately.\n2. **`-h 127.0.0.1` (force TCP).** The official entrypoint starts a temporary server with\n   `listen_addresses=''`, runs the init scripts, stops it, and only then starts the final server.\n   A socket probe can go green before the five service databases exist. A TCP probe cannot reach\n   the temporary server, so health comes to mean what the dependents actually need.\n\n**Scope:** postgres-only. Do *not* add `start_period` to `nats`/`storefront`/`scanner` — they lack\nit, but there is no cold-start failure evidence for them; that would mix unrelated timeout\npolicies. No ADR required: this corrects the existing ADR-007/022 topology, it does not decide\nanything new.\n\n**Test seam — option (b), no new static assertion test.** The regression test is the existing\ncompose smoke startup. A test asserting `start_period == 30s` would prove only that the patch text\nis still present; it would not prove 80s is sufficient, that Docker applies the intended\nsemantics, or that dependents start after real readiness. TDD still holds at the right boundary:\nthe failing test is the cold orchestration path, and the fix is verified through that same path.\n\n**Risks named by the drafter:** a genuinely broken postgres that stays up but never accepts TCP\nnow takes ~80s instead of ~50s to be declared unhealthy — devs, per-PR CI and hermetic smoke pay\nthat diagnostic delay. Warm starts are *not* delayed 30s (first success wins). Extreme I/O\ncontention can still blow ~80s. TCP readiness proves the server accepts connections, not that\nmigrations succeeded — ADR-022's job-completion gates remain the guarantee for that.\n"
     }
   ],
   "links": [],
