@@ -99,7 +99,10 @@ services:
       - >-
         nats --server nats://nats:4222 stream info PLATFORM >/dev/null 2>&1 ||
         nats --server nats://nats:4222 stream add PLATFORM
-        --subjects "platform.>" --storage file --retention limits --defaults
+        --subjects "platform.>" --storage file --retention limits --defaults;
+        nats --server nats://nats:4222 consumer info PLATFORM access-lifecycle-integrity-operator >/dev/null 2>&1 ||
+        nats --server nats://nats:4222 consumer add PLATFORM access-lifecycle-integrity-operator
+        --filter "platform.access.lifecycle-integrity.alarm" --pull --deliver all --ack explicit --defaults
 
   lgtm:
     image: grafana/otel-lgtm:0.29.0@sha256:6e14b923e0130b8b294ca5bcc7c94d54e899d150817e6c3ed82d9b665afe5499
@@ -198,13 +201,43 @@ services:
     <<: *migrate-job
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
     environment:
+      # DDL only, so no lifecycle key material here: migrate cannot sign, and
+      # giving it the seed would imply it could.
       DATABASE_URL: postgres://access:access@postgres:5432/access
+
+  # Adopts pre-0003 lifecycle history into the signed chain (ADR-021 §D9).
+  #
+  # A second one-shot job rather than part of access-migrate, deliberately.
+  # ADR-022 moved migrations out of the startup path but kept ADR-008's 30-second
+  # fail-fast deadline, and that deadline now bounds a job the service waits on
+  # with service_completed_successfully. This work Ed25519-signs a head per
+  # ticket, so its cost scales with history rather than with schema size — held
+  # to 30 seconds it would eventually fail the job and stop Access booting at
+  # all. It is resumable instead: interrupt it and the next run continues.
+  access-lifecycle-backfill:
+    build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
+    restart: "no"
+    command: ["lifecycle-backfill"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      access-migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://access:access@postgres:5432/access
+      ACCESS_LIFECYCLE_PRIVATE_KEY: ${ACCESS_LIFECYCLE_PRIVATE_KEY:-AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA}
+      ACCESS_LIFECYCLE_KID: ${ACCESS_LIFECYCLE_KID:-access-lifecycle/local-v1}
+      ACCESS_LIFECYCLE_PUBLIC_KEYS: ${ACCESS_LIFECYCLE_PUBLIC_KEYS:-access-lifecycle/local-v1=ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ}
 
   access:
     <<: *go-service
     depends_on:
       <<: *go-deps
       access-migrate:
+        condition: service_completed_successfully
+      # Serving from a half-adopted trail would mean verifying chains that do not
+      # exist yet, so the gate waits for the baseline.
+      access-lifecycle-backfill:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
     environment:
@@ -220,6 +253,27 @@ services:
       # Comma-separated access-qr/<kid>=raw-base64-public-key entries. This
       # development public key corresponds only to the all-zero local seed.
       ACCESS_QR_PUBLIC_KEYS: ${ACCESS_QR_PUBLIC_KEYS:-access-qr/local-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik}
+      # Lifecycle trail signing (ADR-021 §D4). Distinct key MATERIAL from the QR
+      # keys above, not merely a distinct name: the point is that leaking the
+      # credential-signing key must not also authorize rewriting history. The
+      # access-lifecycle/ namespace is enforced in code, so these can never be
+      # crossed by configuration alone. Development-only seed; deployments inject
+      # their own.
+      ACCESS_LIFECYCLE_PRIVATE_KEY: ${ACCESS_LIFECYCLE_PRIVATE_KEY:-AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA}
+      ACCESS_LIFECYCLE_KID: ${ACCESS_LIFECYCLE_KID:-access-lifecycle/local-v1}
+      ACCESS_LIFECYCLE_PUBLIC_KEYS: ${ACCESS_LIFECYCLE_PUBLIC_KEYS:-access-lifecycle/local-v1=ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ}
+      ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL: ${ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL:-60s}
+      ACCESS_LIFECYCLE_FAILURE_THRESHOLD: ${ACCESS_LIFECYCLE_FAILURE_THRESHOLD:-3}
+      ACCESS_LIFECYCLE_FAILURE_WINDOW: ${ACCESS_LIFECYCLE_FAILURE_WINDOW:-60s}
+      # Access refuses to BOOT without this durable (ADR-021 §D6: "an unmonitored
+      # deployment must not run this scheme in fail-open"). Boot-time, not
+      # readiness: /readyz is what the container healthcheck probes, so gating it
+      # on NATS would let a broker blip close every turnstile — the
+      # customer-denying failure §D6 chose fail-open to avoid. Attaching this
+      # durable to a pager is the deployment's job; this only guarantees an
+      # operator inbox exists to attach.
+      ACCESS_LIFECYCLE_ALARM_STREAM: ${ACCESS_LIFECYCLE_ALARM_STREAM:-PLATFORM}
+      ACCESS_LIFECYCLE_ALARM_DURABLE: ${ACCESS_LIFECYCLE_ALARM_DURABLE:-access-lifecycle-integrity-operator}
       ACCESS_EVENT_RETRY_BACKOFF: ${ACCESS_EVENT_RETRY_BACKOFF:-}
 
   storefront:

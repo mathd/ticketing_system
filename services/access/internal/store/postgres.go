@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"time"
@@ -54,13 +55,27 @@ type RedeemInput struct {
 }
 
 type RedeemResult struct {
-	Accepted   bool
+	// Accepted means the holder went through the door. It stays true for
+	// ADR-021 §D6's degraded admission: the gate opened, and a caller asking
+	// "did they get in" must not have to know why.
+	Accepted bool
+	// Decision says which of the five outcomes this was. Accepted alone cannot
+	// tell a clean redemption from a fail-open admission, and that difference is
+	// the whole point of the alarm.
+	Decision   Decision
 	OccurredAt time.Time
 }
 
-type Postgres struct{ db *sql.DB }
+type Postgres struct {
+	db  *sql.DB
+	cfg Config
+}
 
-func New(db *sql.DB) *Postgres { return &Postgres{db: db} }
+// New builds the store. Config carries the lifecycle signer and keyring: every
+// append writes a signed integrity row (ADR-021 §D1), so there is no valid
+// configuration in which a writer has no signer. Pass a Config with a nil Signer
+// only for the verify-only paths, which hold public keys and cannot append.
+func New(db *sql.DB, cfg Config) *Postgres { return &Postgres{db: db, cfg: cfg} }
 
 func (p *Postgres) Issue(ctx context.Context, in IssueInput) error {
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -83,8 +98,13 @@ func (p *Postgres) Issue(ctx context.Context, in IssueInput) error {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, t.ID, t.OrderID, t.GuestOrderRef, t.OrganizerID, t.BuyerID, t.SlotID, t.TicketTypeID, t.Payload, t.IssuedAt); err != nil {
 			return err
 		}
+		// The ticket row was created in this transaction, so nothing else can see
+		// it yet: the append needs no FOR UPDATE to serialize against.
 		issued := uuid.NewSHA1(uuid.NameSpaceOID, []byte(t.ID.String()+":issued"))
-		if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_events(id,ticket_id,event_type,occurred_at) VALUES($1,$2,'issued',$3)`, issued, t.ID, t.IssuedAt); err != nil {
+		if _, err = p.appendLifecycle(ctx, tx, appendInput{
+			TicketID: t.ID, OrderID: t.OrderID, OrganizerID: t.OrganizerID, SlotID: t.SlotID,
+			EventID: issued, Type: "issued", OccurredAt: t.IssuedAt,
+		}); err != nil {
 			return err
 		}
 	}
@@ -117,17 +137,46 @@ func (p *Postgres) DeliveryID(ctx context.Context, ticketID uuid.UUID) (uuid.UUI
 	return id, nil
 }
 
+// MarkDelivered records delivery, at most once per ticket.
+//
+// The redelivery case is why this locks and re-checks rather than leaning on
+// ON CONFLICT DO NOTHING as it used to: a no-op insert must not reach the append
+// path, or it would chain an event that was never written and collide on the
+// integrity row's primary key — turning a silently-successful redelivery into a
+// hard error. Idempotency is settled before the append, not by it.
 func (p *Postgres) MarkDelivered(ctx context.Context, ticketID, messageID uuid.UUID) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Same ticket row Redeem locks: the chain serializes per ticket and never
+	// per organizer (ADR-021 §D1, ADR-010).
+	var id TicketIdentity
+	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, ticketID).
+		Scan(&id.OrderID, &id.OrganizerID, &id.SlotID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTicketCredential
+		}
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE delivery_attempts SET accepted_at=now() WHERE ticket_id=$1 AND message_id=$2`, ticketID, messageID); err != nil {
 		return err
 	}
+	var exists bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE ticket_id=$1 AND event_type='delivered')`, ticketID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return tx.Commit()
+	}
 	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(ticketID.String()+":delivered"))
-	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_events(id,ticket_id,event_type) VALUES($1,$2,'delivered') ON CONFLICT(ticket_id,event_type) DO NOTHING`, eventID, ticketID); err != nil {
+	if _, err = p.appendLifecycle(ctx, tx, appendInput{
+		TicketID: ticketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
+		EventID: eventID, Type: "delivered",
+	}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -179,6 +228,12 @@ func (p *Postgres) TicketForQR(ctx context.Context, ref, ticket uuid.UUID) (stri
 // Redeem appends exactly one redemption event. Locking the canonical ticket
 // before reading the trace makes a concurrent loser observe the winner's
 // timestamp instead of leaking a unique-constraint error to the scanner.
+//
+// The chain is verified under that same lock, before the duplicate check, since
+// ADR-003 §Decision 2 decides admission FROM the trace: a tampered trace is a
+// tampered answer, and there is deliberately no independent read model to
+// contradict it. A chain that does not verify still admits, once
+// (ADR-021 §Decision 6) — see degradedScan for why that is the safer error.
 func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -186,16 +241,23 @@ func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, er
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var orderID, organizerID, slotID uuid.UUID
-	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, in.TicketID).Scan(&orderID, &organizerID, &slotID)
+	var id TicketIdentity
+	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, in.TicketID).
+		Scan(&id.OrderID, &id.OrganizerID, &id.SlotID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return RedeemResult{}, ErrTicketCredential
 		}
 		return RedeemResult{}, err
 	}
-	if orderID != in.OrderID || organizerID != in.OrganizerID || slotID != in.SlotID {
+	if id.OrderID != in.OrderID || id.OrganizerID != in.OrganizerID || id.SlotID != in.SlotID {
 		return RedeemResult{}, ErrTicketCredential
+	}
+
+	if chainErr := p.verifyTicketChain(ctx, tx, in.TicketID, id); chainErr != nil {
+		// degradedScan commits the transaction itself: the quarantine record and
+		// the owed alarm must land whatever this scan decides.
+		return p.degradedScan(ctx, tx, in.TicketID, id, chainErr)
 	}
 
 	var redeemedAt time.Time
@@ -204,19 +266,22 @@ func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, er
 		if err = tx.Commit(); err != nil {
 			return RedeemResult{}, err
 		}
-		return RedeemResult{OccurredAt: redeemedAt}, nil
+		return RedeemResult{Decision: DecisionAlreadyRedeemed, OccurredAt: redeemedAt}, nil
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return RedeemResult{}, err
 	}
 
 	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.TicketID.String()+":redeemed"))
-	err = tx.QueryRowContext(ctx, `INSERT INTO lifecycle_events(id,ticket_id,event_type) VALUES($1,$2,'redeemed') RETURNING occurred_at`, eventID, in.TicketID).Scan(&redeemedAt)
+	redeemedAt, err = p.appendLifecycle(ctx, tx, appendInput{
+		TicketID: in.TicketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
+		EventID: eventID, Type: "redeemed",
+	})
 	if err != nil {
 		return RedeemResult{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return RedeemResult{}, err
 	}
-	return RedeemResult{Accepted: true, OccurredAt: redeemedAt}, nil
+	return RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: redeemedAt}, nil
 }

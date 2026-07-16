@@ -69,6 +69,17 @@ experiment stays valid.
   closed and rollback is not. Say which adversary you mean before writing "tamper-evident". Three
   clauses of ADR-021 broke this rule across two adversarial review passes — it is easy to get
   wrong while every individual fact is correct.
+  **Shipped in TKT-67** (chain, checkpoint, `access verify-lifecycle` in the gate). That changed
+  what is true, not what is claimable: modification and insertion are now evident; **targeted
+  rollback and current-key compromise are still open and still TKT-11's**. A test pins the rollback
+  gap by asserting it verifies clean — if it ever fails, update the ADR, don't delete the test.
+
+- **Touching the ticket lifecycle trail — new event type, canonical form, or a claim about it?**
+  Every lifecycle event goes through the append path (`store.appendLifecycle`), never straight into
+  `lifecycle_events`: the verifier asserts one-to-one coverage, so a direct insert reads as tampering.
+  The canonical forms are pinned by golden literals — changing a byte is a canonical-version
+  migration, not a test update. `docs/development.md` §Access ticket lifecycle trail operations has
+  the operator surface and the exact wording to reuse for any claim.
 - **Touching how or where migrations run? Read [ADR-022](docs/adr/ADR-022-out-of-band-service-migrations.md) first.**
   Migrations run **out-of-band**: each binary's `migrate` subcommand, as a one-shot Compose job the
   service waits on (`service_completed_successfully`). The server path never migrates. ADR-008 still

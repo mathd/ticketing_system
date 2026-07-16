@@ -4,14 +4,42 @@ Date: 2026-07-15
 
 ## Status
 
-Accepted (approved at the TKT-57 plan gate, 2026-07-15)
+Accepted (approved at the TKT-57 plan gate, 2026-07-15) · **Implemented by TKT-67, 2026-07-15**
 
-**Decision only — the trail is not tamper-evident until the implementation follow-up (TKT-67)
-lands.** This ADR closes the open question recorded in [ADR-003](./ADR-003-append-only-audit-trail.md)
-§Status; it does not close the gap. Until TKT-67 ships, `lifecycle_events` remains append-only by
-policy (a trigger) and nothing in this ADR may be cited as evidence that it is tamper-evident.
-No further lifecycle event types should be added ahead of TKT-67 — each one added first is one more
-to backfill.
+**Implemented.** `lifecycle_events` is now chained per ticket in a companion integrity table with
+signed heads, checkpointed per organizer, and verified by `access verify-lifecycle` in the local
+gate against populated *and* deliberately corrupted data. This ADR closed the open question
+recorded in [ADR-003](./ADR-003-append-only-audit-trail.md) §Status; TKT-67 closed the gap — **the
+part of it that is closable inside this database.**
+
+Implementation: `services/access/internal/lifecycle/` (canonical forms, keyring),
+`services/access/internal/store/lifecycle*.go` (append, verify, checkpoint, backfill),
+`services/access/internal/lifecyclejob/` (workers), migration `0003_lifecycle_integrity.sql`.
+
+**What shipped is exactly what §The trust boundary scopes, and no more:** tamper-evident against
+modification, insertion and reordering, for an adversary who cannot re-sign the chain. **Targeted
+rollback and current-key compromise remain open**, and no in-database mechanism reaches them; they
+are TKT-11's. The rollback gap is pinned by a test that fails if it ever silently changes
+(`TestVerifyLifecycleAcceptsACoordinatedRollback`) — it asserts that a coordinated rollback
+verifies *clean*, so the limitation cannot rot into a false claim unnoticed.
+
+**One clause needed correcting during implementation, and it is the fourth time this document has
+described a control by its intent rather than its reach:** §Decision 6's alarm-routing requirement
+is amended below — TKT-67 delivered routing and retention, but **monitoring is a deployment
+obligation no boot check can discharge**, and the repository ships no consumer for the alarm
+durable. §The trust boundary catalogues three earlier instances; this is the fourth, and it was
+caught by review rather than by the author.
+
+Two TKT-67 decisions this ADR left open, now settled:
+- **§Decision 2's signer memory:** no durable attacker-independent location exists in this repo, so
+  **no freshness tripwire exists until TKT-11**. The worker keeps its last observed root in process
+  memory and refuses to extend a regression it can see, which stops it laundering one under a fresh
+  signature while it is watching. It dies with the process and is not detection.
+- **§Decision 9's backfill:** it does **not** fit the migrate job. It runs as its own resumable
+  one-shot job (`access-lifecycle-backfill`) outside ADR-008's 30-second deadline.
+
+New lifecycle event types are no longer blocked, but each one added is one more the chain covers
+from its first write — add them through the append path, never straight into `lifecycle_events`.
 
 **And when TKT-67 does land, it closes *modification and insertion* — not targeted rollback.**
 Rollback needs an attestation outside the database (TKT-11); no in-database mechanism reaches it,
@@ -273,6 +301,26 @@ checkpoint chain off it**.
    - **Alarm and response SLOs.** Fail-open is safe only while the alarm reaches someone who acts.
      Unrouted, this clause is a silent bypass with extra steps. TKT-67 owns routing; an unmonitored
      deployment must not run this scheme in fail-open.
+
+     **Amended 2026-07-15 (TKT-67, PR #51 review): TKT-67 delivered routing and retention. It did
+     NOT deliver monitoring, and this clause was written as though the two were the same thing.**
+     Alarms are committed to an outbox with the decision and published to a durable the service
+     refuses to boot without — so an alarm is never dropped, and an operator inbox provably exists.
+     But **the repository ships no consumer for that durable**, so the default deployment satisfies
+     every check here and is still unmonitored. That is not an implementation gap to be closed
+     later: **no in-process check can prove a human will act on a page.** "An unmonitored deployment
+     must not run this scheme in fail-open" is therefore a **deployment obligation**, enforceable by
+     whoever operates the system, not by this code — and it must be written that way rather than
+     asserted as though the service enforced it.
+
+     The one thing the system *can* say: a durable nobody drains accumulates. TKT-67 exposes
+     `access.lifecycle.alarm.durable_pending`, and sustained non-zero is the closest observable proxy
+     for "nobody is reading". Alert on it, along with `…alarm.dead_lettered` — every dead letter is a
+     degraded admission that will never be reported.
+
+     This correction is the same failure mode §The trust boundary catalogues, in a new place: a
+     control described by the job it was *meant* to do rather than the one it *does*. That makes
+     four.
 
    **These bound our bugs. They do not bound the adversary — do not confuse the two.** Quarantine
    records and failure counters are rows in Access, so the database-write adversary who caused the
