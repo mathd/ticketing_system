@@ -172,9 +172,10 @@ components:
     OperationalConvert:
       type: object
       additionalProperties: false
-      required: [organizer_id, quantity, ticket_type_id, unit_amount, currency, actor, reason]
+      required: [organizer_id, slot_id, quantity, ticket_type_id, unit_amount, currency, actor, reason]
       properties:
         organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid, description: 'The slot the caller priced against; verified against the hold''s pool before any write'}
         quantity: {type: integer, minimum: 1, maximum: 50}
         ticket_type_id: {type: string, format: uuid}
         unit_amount: {type: integer, format: int64, minimum: 0}

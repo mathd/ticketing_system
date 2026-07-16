@@ -100,6 +100,7 @@ func (s *Server) opConvert(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		OrganizerID  uuid.UUID `json:"organizer_id"`
+		SlotID       uuid.UUID `json:"slot_id"`
 		Quantity     int32     `json:"quantity"`
 		TicketTypeID uuid.UUID `json:"ticket_type_id"`
 		UnitAmount   int64     `json:"unit_amount"`
@@ -107,7 +108,7 @@ func (s *Server) opConvert(w http.ResponseWriter, r *http.Request) {
 		Actor        string    `json:"actor"`
 		Reason       string    `json:"reason"`
 	}
-	if err := httpx.DecodeJSON(w, r, &in, 1<<20); err != nil || in.OrganizerID == uuid.Nil || in.TicketTypeID == uuid.Nil || in.UnitAmount < 0 || in.Currency != "EUR" {
+	if err := httpx.DecodeJSON(w, r, &in, 1<<20); err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.TicketTypeID == uuid.Nil || in.UnitAmount < 0 || in.Currency != "EUR" {
 		write(w, 400, map[string]string{"error": "invalid convert request"})
 		return
 	}
@@ -115,7 +116,7 @@ func (s *Server) opConvert(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	res, replay, err := s.st.ConvertOperational(r.Context(), in.OrganizerID, id, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Actor, in.Reason, key)
+	res, replay, err := s.st.ConvertOperational(r.Context(), in.OrganizerID, id, in.TicketTypeID, in.SlotID, in.Quantity, in.UnitAmount, in.Currency, in.Actor, in.Reason, key)
 	if err != nil {
 		problem(w, err)
 		return

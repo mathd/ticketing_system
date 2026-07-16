@@ -121,7 +121,8 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims, slot).Scan(&held); err != nil {
 		return OperationalHold{}, false, err
 	}
-	if confirmed+held+qty > capacity {
+	// int64 math: three valid int32 counters can wrap a 32-bit sum (ai-review finding 4).
+	if int64(confirmed)+int64(held)+int64(qty) > int64(capacity) {
 		return OperationalHold{}, false, ErrUnavailable
 	}
 	h := OperationalHold{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Purpose: purpose, Label: label, Status: "held"}
@@ -221,11 +222,16 @@ func (p *Postgres) ReleaseOperational(ctx context.Context, org, id uuid.UUID, qt
 // never observable as publicly available in between (AC2). The child's claims-table
 // idempotency key is namespaced with the source id: a raw forward of the staff key could
 // collide with an unrelated buyer hold's key.
-func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType uuid.UUID, qty int32, unitAmount int64, currency, actor, reason, key string) (ConvertResult, bool, error) {
+//
+// expectedSlot is the slot the caller priced the ticket type against. It is verified
+// against the hold's pool BEFORE any write: a mismatch discovered after commit would have
+// already carved operational quantity into a child destined to expire into the public
+// pool (ai-review finding 1).
+func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType, expectedSlot uuid.UUID, qty int32, unitAmount int64, currency, actor, reason, key string) (ConvertResult, bool, error) {
 	if qty <= 0 {
 		return ConvertResult{}, false, fmt.Errorf("quantity must be positive")
 	}
-	fp := opFingerprint("op-convert", org, id, qty, ticketType, unitAmount, currency)
+	fp := opFingerprint("op-convert", org, id, qty, ticketType, expectedSlot, unitAmount, currency)
 	pool, err := p.poolOf(ctx, org, id)
 	if err != nil {
 		return ConvertResult{}, false, err
@@ -255,6 +261,11 @@ func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType u
 	c, err := lockOperational(ctx, tx, org, id)
 	if err != nil {
 		return ConvertResult{}, false, err
+	}
+	// Precondition, not post-check: nothing has been written yet, so a wrong ticket type
+	// rejects with the source hold fully intact.
+	if c.PoolID != expectedSlot {
+		return ConvertResult{}, false, ErrConflict
 	}
 	if c.Status != "held" || qty > c.Quantity {
 		return ConvertResult{}, false, ErrConflict

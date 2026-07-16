@@ -176,7 +176,8 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims, slot).Scan(&held); err != nil {
 		return Claim{}, false, err
 	}
-	if confirmed+held+qty > capacity {
+	// int64 math: three valid int32 counters can wrap a 32-bit sum (ai-review finding 4).
+	if int64(confirmed)+int64(held)+int64(qty) > int64(capacity) {
 		return Claim{}, false, ErrUnavailable
 	}
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}

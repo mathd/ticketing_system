@@ -564,7 +564,10 @@ func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
 		write(w, 409, map[string]string{"error": "offer not sellable in EUR"})
 		return
 	}
-	convBody := map[string]any{"organizer_id": in.OrganizerID, "quantity": in.Quantity, "ticket_type_id": in.TicketTypeID, "unit_amount": o.Price.Amount, "currency": o.Price.Currency, "actor": in.Actor, "reason": in.Reason}
+	// slot_id makes ticket-type/slot agreement a precondition inside inventory's locked
+	// transaction: a mismatch rejects with the operational hold untouched, instead of
+	// discovering it after the carve has committed.
+	convBody := map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID, "quantity": in.Quantity, "ticket_type_id": in.TicketTypeID, "unit_amount": o.Price.Amount, "currency": o.Price.Currency, "actor": in.Actor, "reason": in.Reason}
 	code, body, err = s.call(r.Context(), http.MethodPost, s.inventoryURL+"/internal/operational-holds/"+sourceID.String()+"/convert", key, convBody, true)
 	if err != nil {
 		write(w, 409, map[string]string{"error": "inventory unavailable"})
@@ -591,10 +594,12 @@ func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "invalid inventory response"})
 		return
 	}
-	// The ticket type must belong to the slot the operational hold reserves; a converted
-	// claim priced off another performance's offer would sell the wrong inventory.
-	if conv.Hold.SlotID != o.PerformanceID {
-		write(w, 409, map[string]string{"error": "ticket type does not match the hold's slot"})
+	// A replay can return a child whose TTL has already lapsed (crash window + slow
+	// retry). Persisting it would mint a reservation no checkout can complete; the
+	// expired child's capacity is already back in the public pool (ADR-023), so the
+	// honest answer is 409: re-convert with a new key.
+	if code == 200 && !conv.Hold.ExpiresAt.After(conv.Hold.ServerTime) {
+		write(w, 409, map[string]string{"error": "converted hold expired; place a new conversion"})
 		return
 	}
 	total := o.Price.Amount * int64(in.Quantity)

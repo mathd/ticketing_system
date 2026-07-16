@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -148,7 +149,7 @@ func TestConvertOperationalRejectsNonStrictJSON(t *testing.T) {
 	}
 }
 
-func TestConvertOperationalRejectsTicketTypeFromAnotherSlot(t *testing.T) {
+func TestConvertOperationalForwardsSlotPreconditionToInventory(t *testing.T) {
 	org := "00000000-0000-0000-0000-000000000001"
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -156,11 +157,52 @@ func TestConvertOperationalRejectsTicketTypeFromAnotherSlot(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
 	}))
 	defer catalog.Close()
+	var forwardedSlot string
+	// Behaves like real inventory: the hold's pool is ...0008, so any other expected
+	// slot rejects BEFORE mutating — commerce must surface that as 409.
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			SlotID string `json:"slot_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		forwardedSlot = body.SlotID
+		w.Header().Set("Content-Type", "application/json")
+		if body.SlotID != "00000000-0000-0000-0000-000000000008" {
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"error":"conflicting terminal state"}`))
+			return
+		}
+		w.WriteHeader(201)
+	}))
+	defer inventory.Close()
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+	req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "k")
+	req.Header.Set("X-Internal-Token", "secret")
+	res := httptest.NewRecorder()
+	s.Router().ServeHTTP(res, req)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusConflict, res.Body.String())
+	}
+	if forwardedSlot != "00000000-0000-0000-0000-000000000009" {
+		t.Fatalf("forwarded slot_id = %q, want the offer's performance id", forwardedSlot)
+	}
+}
+
+func TestConvertOperationalRejectsExpiredReplayedChild(t *testing.T) {
+	org := "00000000-0000-0000-0000-000000000001"
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
+	}))
+	defer catalog.Close()
 	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(201)
-		// ...but the converted hold reserves slot ...0008.
-		_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000008","quantity":1,"status":"held","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
+		w.WriteHeader(200) // replay
+		// The replayed child expired before the retry arrived.
+		_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000009","quantity":1,"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
 	}))
 	defer inventory.Close()
 	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")

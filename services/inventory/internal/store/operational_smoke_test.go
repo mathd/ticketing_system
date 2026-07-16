@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -139,7 +140,7 @@ func TestOperationalConvertIsQuantityNeutralAndAudited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, replay, err := st.ConvertOperational(ctx, org, op.ID, tt, 2, 2500, "EUR", "staff:amy", "walk-up sale", "k-conv")
+	res, replay, err := st.ConvertOperational(ctx, org, op.ID, tt, slot, 2, 2500, "EUR", "staff:amy", "walk-up sale", "k-conv")
 	if err != nil || replay {
 		t.Fatalf("convert: %v replay=%v", err, replay)
 	}
@@ -170,7 +171,7 @@ func TestOperationalConvertIsQuantityNeutralAndAudited(t *testing.T) {
 	if _, _, err = st.ReleaseOperational(ctx, org, op.ID, 8, "staff:amy", "done", "k-rel"); err != nil {
 		t.Fatal(err)
 	}
-	res2, replay, err := st.ConvertOperational(ctx, org, op.ID, tt, 2, 2500, "EUR", "staff:amy", "walk-up sale", "k-conv")
+	res2, replay, err := st.ConvertOperational(ctx, org, op.ID, tt, slot, 2, 2500, "EUR", "staff:amy", "walk-up sale", "k-conv")
 	if err != nil || !replay {
 		t.Fatalf("convert replay: %v replay=%v", err, replay)
 	}
@@ -178,7 +179,7 @@ func TestOperationalConvertIsQuantityNeutralAndAudited(t *testing.T) {
 		t.Fatalf("replay outcome = %+v, want original remaining 8 and same child", res2)
 	}
 	// Same key, different input: conflict.
-	if _, _, err = st.ConvertOperational(ctx, org, op.ID, tt, 3, 2500, "EUR", "staff:amy", "walk-up sale", "k-conv"); !errors.Is(err, ErrIdempotency) {
+	if _, _, err = st.ConvertOperational(ctx, org, op.ID, tt, slot, 3, 2500, "EUR", "staff:amy", "walk-up sale", "k-conv"); !errors.Is(err, ErrIdempotency) {
 		t.Fatalf("changed-fingerprint convert = %v, want ErrIdempotency", err)
 	}
 	// History is complete and append-only.
@@ -235,5 +236,42 @@ func TestOperationalWrongOrganizerAndBuyerClaimAreNotFound(t *testing.T) {
 	// Same key, different shape: conflict.
 	if _, _, err = st.PlaceOperationalHold(ctx, org, slot, 3, "other", "promoter picks", "staff:amy", "ops", "k-place"); !errors.Is(err, ErrIdempotency) {
 		t.Fatalf("changed-fingerprint place = %v, want ErrIdempotency", err)
+	}
+}
+
+func TestConvertSlotMismatchLeavesSourceIntact(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	op, _, err := st.PlaceOperationalHold(ctx, org, slot, 6, "house", "front-of-house", "staff:amy", "ops", "k-place")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The expected slot is the precondition: a ticket type priced against another
+	// performance must reject before any write, not after the carve committed.
+	if _, _, err = st.ConvertOperational(ctx, org, op.ID, uuid.New(), uuid.New(), 2, 2500, "EUR", "staff:amy", "wrong slot", "k-conv"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("mismatched-slot convert = %v, want ErrConflict", err)
+	}
+	var qty, claims, history int32
+	if err = db.QueryRowContext(ctx, `SELECT quantity,(SELECT count(*) FROM claims),(SELECT count(*) FROM claim_history WHERE action='convert') FROM claims WHERE id=$1`, op.ID).Scan(&qty, &claims, &history); err != nil {
+		t.Fatal(err)
+	}
+	if qty != 6 || claims != 1 || history != 0 {
+		t.Fatalf("after rejected convert: quantity=%d claims=%d convert-history=%d, want 6/1/0", qty, claims, history)
+	}
+}
+
+func TestCapacityMathDoesNotWrapAtInt32Boundary(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	org, slot := provisioned(t, ctx, st, math.MaxInt32)
+	// Nearly fill the pool with one operational hold (no API cap at store level).
+	if _, _, err := st.PlaceOperationalHold(ctx, org, slot, math.MaxInt32-2, "kill", "capacity boundary", "staff:amy", "ops", "k-big"); err != nil {
+		t.Fatal(err)
+	}
+	// 32-bit math would wrap (MaxInt32-2 + 5) negative and admit this oversell.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 5, 0, "", "buyer-overflow"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("boundary hold = %v, want ErrUnavailable", err)
+	}
+	if _, _, err := st.PlaceOperationalHold(ctx, org, slot, 5, "house", "boundary", "staff:amy", "ops", "k-over"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("boundary operational place = %v, want ErrUnavailable", err)
 	}
 }

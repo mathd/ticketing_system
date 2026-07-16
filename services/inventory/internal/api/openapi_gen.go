@@ -93,11 +93,14 @@ type HoldCreate struct {
 
 // OperationalConvert defines model for OperationalConvert.
 type OperationalConvert struct {
-	Actor        string             `json:"actor"`
-	Currency     string             `json:"currency"`
-	OrganizerId  openapi_types.UUID `json:"organizer_id"`
-	Quantity     int                `json:"quantity"`
-	Reason       string             `json:"reason"`
+	Actor       string             `json:"actor"`
+	Currency    string             `json:"currency"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Quantity    int                `json:"quantity"`
+	Reason      string             `json:"reason"`
+
+	// SlotId The slot the caller priced against; verified against the hold's pool before any write
+	SlotId       openapi_types.UUID `json:"slot_id"`
 	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
 	UnitAmount   int64              `json:"unit_amount"`
 }
