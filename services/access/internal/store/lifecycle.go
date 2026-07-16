@@ -200,9 +200,15 @@ type TicketIdentity struct{ OrderID, OrganizerID, SlotID uuid.UUID }
 // §Threat model under "detected cryptographically" surfaces here: coverage in
 // both directions, sequence gaps, broken links, unknown key ids, head mismatch.
 func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, id TicketIdentity) error {
+	// The join binds i.ticket_id = e.ticket_id, it does not merely match on
+	// event_id. Without that, an integrity row reassigned to another ticket still
+	// joined here and this ticket's scan read clean, while the mismatch was only
+	// ever caught by the offline verifier — the gate and the audit disagreeing
+	// about the same row (PR #51 review, R2).
 	rows, err := tx.QueryContext(ctx, `
-		SELECT e.id, e.event_type, e.occurred_at, i.sequence, i.previous_hash, i.entry_hash
-		FROM lifecycle_events e LEFT JOIN lifecycle_event_integrity i ON i.event_id = e.id
+		SELECT e.id, e.event_type, e.occurred_at, i.sequence, i.previous_hash, i.entry_hash, i.canonical_version
+		FROM lifecycle_events e LEFT JOIN lifecycle_event_integrity i
+		  ON i.event_id = e.id AND i.ticket_id = e.ticket_id
 		WHERE e.ticket_id=$1 ORDER BY i.sequence`, ticketID)
 	if err != nil {
 		return err
@@ -218,13 +224,21 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 		var occurredAt time.Time
 		var sequence sql.NullInt64
 		var previousHash, entryHash []byte
-		if err := rows.Scan(&eventID, &eventType, &occurredAt, &sequence, &previousHash, &entryHash); err != nil {
+		var version sql.NullInt64
+		if err := rows.Scan(&eventID, &eventType, &occurredAt, &sequence, &previousHash, &entryHash, &version); err != nil {
 			return err
 		}
 		// A lifecycle row with no integrity row means the append path was
 		// bypassed — an event inserted straight into the table.
 		if !sequence.Valid {
 			return fmt.Errorf("lifecycle event %s has no integrity row", eventID)
+		}
+		// Dispatch on the stored version at the gate too, not only in the audit.
+		// A version exists because the rules can change; verifying an unknown
+		// variant with today's rules judges it by the wrong ones (ADR-017 §5b′).
+		if version.Int64 != lifecycle.CanonicalVersion {
+			return fmt.Errorf("integrity row for event %s declares canonical version %d, this build writes %d",
+				eventID, version.Int64, lifecycle.CanonicalVersion)
 		}
 		count++
 		if sequence.Int64 != count {
@@ -264,8 +278,9 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 	var headSeq int64
 	var headHash, signature []byte
 	var keyID string
-	err = tx.QueryRowContext(ctx, `SELECT last_sequence,last_hash,key_id,signature FROM lifecycle_heads WHERE ticket_id=$1`, ticketID).
-		Scan(&headSeq, &headHash, &keyID, &signature)
+	var headVersion int64
+	err = tx.QueryRowContext(ctx, `SELECT last_sequence,last_hash,key_id,signature,canonical_version FROM lifecycle_heads WHERE ticket_id=$1`, ticketID).
+		Scan(&headSeq, &headHash, &keyID, &signature, &headVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		if count == 0 {
 			return nil // No events, no head: a ticket that has not been chained yet.
@@ -277,6 +292,9 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 	}
 	if count == 0 {
 		return fmt.Errorf("ticket %s has a head and no events", ticketID)
+	}
+	if headVersion != lifecycle.CanonicalVersion {
+		return fmt.Errorf("head for ticket %s declares canonical version %d, this build writes %d", ticketID, headVersion, lifecycle.CanonicalVersion)
 	}
 	if headSeq != count || !bytes.Equal(headHash, last) {
 		return fmt.Errorf("head mismatch on ticket %s: head is sequence %d, chain reaches %d", ticketID, headSeq, count)
@@ -396,22 +414,49 @@ func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.U
 
 	// The window is counted from the quarantine rows themselves — one per
 	// first-time corrupt ticket — so there is no counter to drift.
+	//
+	// Under READ COMMITTED this count sees only COMMITTED siblings, so N
+	// simultaneous first-time failures can each see just their own row and none
+	// crosses the threshold; the flip then happens on the next scan, once they
+	// have committed. The escalation is therefore DELAYED by roughly the
+	// in-flight width, not bypassed (PR #51 review, R3).
+	//
+	// That is deliberate, and the alternative is worse. Making the count exact
+	// means serializing this path on an organizer row — and the scenario this
+	// protection exists for is a canonicalization bug corrupting every chain at
+	// doors-open, where EVERY scan takes the degraded path and would then queue
+	// behind that one row. That is precisely the organizer-wide contention
+	// ADR-021 §Option 1 rejected the money journal for, reintroduced at the worst
+	// possible moment. §D6's purpose is to escalate to a human, not to cap
+	// admissions precisely — it already concedes fail-open is unbounded against
+	// an adversary — so an approximate rate that converges is the right trade.
 	var recent int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE organizer_id=$1 AND admitted_at > $2`,
 		id.OrganizerID, now.Add(-p.policy().Window)).Scan(&recent); err != nil {
 		return RedeemResult{}, err
 	}
-	if mode == ModeNormal && recent >= p.policy().FailureThreshold {
+	if recent >= p.policy().FailureThreshold {
 		// Above this rate "our bug" stops being the likely story. Flip to
 		// operator-controlled deny: the choice to keep admitting becomes a
 		// human's, made knowingly. This scan still takes its admission.
+		//
+		// The WHERE makes this flip conditional and atomic, and it is load-bearing:
+		// the mode was read before this statement, so an unconditional upsert
+		// would let an in-flight degraded scan silently revert a human who chose
+		// operator_admit in the meantime. The system may only move an organizer
+		// OUT of normal; once a human has touched the mode, it is theirs.
 		if _, err = tx.ExecContext(ctx, `
 			INSERT INTO lifecycle_integrity_organizer_state(organizer_id,mode,mode_set_at,mode_set_by) VALUES($1,$2,$3,'system')
-			ON CONFLICT(organizer_id) DO UPDATE SET mode=EXCLUDED.mode,mode_set_at=EXCLUDED.mode_set_at,mode_set_by=EXCLUDED.mode_set_by`,
-			id.OrganizerID, string(ModeOperatorDeny), now); err != nil {
+			ON CONFLICT(organizer_id) DO UPDATE SET mode=EXCLUDED.mode,mode_set_at=EXCLUDED.mode_set_at,mode_set_by=EXCLUDED.mode_set_by
+			WHERE lifecycle_integrity_organizer_state.mode=$4`,
+			id.OrganizerID, string(ModeOperatorDeny), now, string(ModeNormal)); err != nil {
 			return RedeemResult{}, err
 		}
-		mode = ModeOperatorDeny
+		// Re-read rather than assume: the flip is conditional, so the authority
+		// on the resulting mode is the database, not this goroutine's earlier read.
+		if mode, err = organizerMode(ctx, tx, id.OrganizerID); err != nil {
+			return RedeemResult{}, err
+		}
 	}
 	if err = p.oweAlarm(ctx, tx, id.OrganizerID, ticketID, reason, DecisionAdmittedDegraded, mode); err != nil {
 		return RedeemResult{}, err

@@ -103,13 +103,25 @@ will anchor. Freshness is deliberately **not** wired into `/readyz`: that is the
 probe, and closing every turnstile because scaffolding stalled is the customer-denying failure §D6
 exists to avoid.
 
-**Alarms.** Degraded admissions and integrity denials publish to
-`platform.access.lifecycle-integrity.alarm` via a transactional outbox, committed with the decision
-itself. Access **refuses to boot** unless `ACCESS_LIFECYCLE_ALARM_DURABLE` exists and filters that
-subject: §D6 admits on a chain that does not verify, which is only defensible while the alarm
-reaches someone. **Attaching that durable to a pager is the deployment's job** — this guarantees an
-inbox exists, not that a human read it. Watch
-`access.lifecycle.alarm.oldest_unpublished_age_seconds`.
+**Alarms — and the gap you must close yourself.** Degraded admissions and integrity denials publish
+to `platform.access.lifecycle-integrity.alarm` via a transactional outbox committed with the
+decision itself, so an admission cannot happen without an owed alarm. Access **refuses to boot**
+unless `ACCESS_LIFECYCLE_ALARM_DURABLE` exists and filters that subject.
+
+**Be precise about what that check buys: an alarm is RETAINED, not read.** This repository ships
+**no consumer** for that durable — `nats-init` creates it and nothing drains it. So the default
+stack passes the boot check and is *still unmonitored*. ADR-021 §D6's "an unmonitored deployment
+must not run this scheme in fail-open" is a **deployment obligation TKT-67 cannot discharge**: no
+boot-time check can prove a human will act on a page. **Attach the durable to your on-call adapter
+before running fail-open in production.**
+
+Three signals, none of them gates:
+- `access.lifecycle.alarm.durable_pending` — alarms sitting unread. Sustained non-zero means nobody
+  is collecting: this is the closest thing to detecting the forbidden unmonitored deployment.
+  **Alert on it.**
+- `access.lifecycle.alarm.oldest_unpublished_age_seconds` — alarms we have not managed to publish.
+- `access.lifecycle.alarm.dead_lettered` — alarms that will never be delivered. Every one is a
+  degraded admission nobody will hear about. **Non-zero is always wrong.**
 
 **Degraded mode** (`access set-lifecycle-mode <organizer> <normal|operator_deny|operator_admit>
 <operator>`). A ticket whose chain fails verification is admitted **once**, alarmed and

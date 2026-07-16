@@ -23,6 +23,13 @@ are TKT-11's. The rollback gap is pinned by a test that fails if it ever silentl
 (`TestVerifyLifecycleAcceptsACoordinatedRollback`) — it asserts that a coordinated rollback
 verifies *clean*, so the limitation cannot rot into a false claim unnoticed.
 
+**One clause needed correcting during implementation, and it is the fourth time this document has
+described a control by its intent rather than its reach:** §Decision 6's alarm-routing requirement
+is amended below — TKT-67 delivered routing and retention, but **monitoring is a deployment
+obligation no boot check can discharge**, and the repository ships no consumer for the alarm
+durable. §The trust boundary catalogues three earlier instances; this is the fourth, and it was
+caught by review rather than by the author.
+
 Two TKT-67 decisions this ADR left open, now settled:
 - **§Decision 2's signer memory:** no durable attacker-independent location exists in this repo, so
   **no freshness tripwire exists until TKT-11**. The worker keeps its last observed root in process
@@ -294,6 +301,26 @@ checkpoint chain off it**.
    - **Alarm and response SLOs.** Fail-open is safe only while the alarm reaches someone who acts.
      Unrouted, this clause is a silent bypass with extra steps. TKT-67 owns routing; an unmonitored
      deployment must not run this scheme in fail-open.
+
+     **Amended 2026-07-15 (TKT-67, PR #51 review): TKT-67 delivered routing and retention. It did
+     NOT deliver monitoring, and this clause was written as though the two were the same thing.**
+     Alarms are committed to an outbox with the decision and published to a durable the service
+     refuses to boot without — so an alarm is never dropped, and an operator inbox provably exists.
+     But **the repository ships no consumer for that durable**, so the default deployment satisfies
+     every check here and is still unmonitored. That is not an implementation gap to be closed
+     later: **no in-process check can prove a human will act on a page.** "An unmonitored deployment
+     must not run this scheme in fail-open" is therefore a **deployment obligation**, enforceable by
+     whoever operates the system, not by this code — and it must be written that way rather than
+     asserted as though the service enforced it.
+
+     The one thing the system *can* say: a durable nobody drains accumulates. TKT-67 exposes
+     `access.lifecycle.alarm.durable_pending`, and sustained non-zero is the closest observable proxy
+     for "nobody is reading". Alert on it, along with `…alarm.dead_lettered` — every dead letter is a
+     degraded admission that will never be reported.
+
+     This correction is the same failure mode §The trust boundary catalogues, in a new place: a
+     control described by the job it was *meant* to do rather than the one it *does*. That makes
+     four.
 
    **These bound our bugs. They do not bound the adversary — do not confuse the two.** Quarantine
    records and failure counters are rows in Access, so the database-write adversary who caused the

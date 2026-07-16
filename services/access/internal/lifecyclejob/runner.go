@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,7 +48,12 @@ type Checkpointer struct {
 	// it can see; it cannot see one that happened before this process started.
 	observed map[uuid.UUID]store.LastRoot
 
-	lastSuccess time.Time
+	// lastSuccess is Unix seconds, atomic because the OTel callback observes it
+	// from the collector's goroutine while Run writes it from the worker's. A
+	// plain time.Time here was a real data race — it is multiword, so a reader
+	// can see a torn value — and the tests missed it only because none of them
+	// ran a callback concurrently with Once (PR #51 review, R5).
+	lastSuccess atomic.Int64
 }
 
 // DefaultInterval is ADR-021 §D3's 60 seconds.
@@ -139,13 +145,20 @@ func (c *Checkpointer) Once(ctx context.Context) int {
 		committed++
 	}
 	if !failed {
-		c.lastSuccess = c.now()
+		c.lastSuccess.Store(c.now().Unix())
 	}
 	return committed
 }
 
-// LastSuccess is when the last pass completed, no-change passes included.
-func (c *Checkpointer) LastSuccess() time.Time { return c.lastSuccess }
+// LastSuccess is when the last pass completed, no-change passes included. The
+// zero time means no pass has succeeded yet.
+func (c *Checkpointer) LastSuccess() time.Time {
+	sec := c.lastSuccess.Load()
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0).UTC()
+}
 
 // ObserveMetrics registers the freshness gauges. These are the concrete
 // staleness signal ADR-021 §Consequences asks for ("checkpoint freshness must be

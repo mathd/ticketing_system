@@ -168,10 +168,18 @@ func run() error {
 		return err
 	}
 
-	// Refuse to boot unmonitored. ADR-021 §D6 admits on a chain that does not
-	// verify, which is only defensible because the alarm is load-bearing: "an
-	// unmonitored deployment must not run this scheme in fail-open". Checking at
-	// boot rather than in /readyz is deliberate — /readyz is what the container
+	// Refuse to boot without somewhere for integrity alarms to land. ADR-021 §D6
+	// admits on a chain that does not verify, which is only defensible while the
+	// alarm is load-bearing.
+	//
+	// Read RequireAlarmRoute's contract before quoting this: it proves an alarm
+	// is RETAINED, not that anyone reads it — this repo ships no consumer for the
+	// durable, so a default deployment passes and is still unmonitored. §D6's "an
+	// unmonitored deployment must not run fail-open" is a deployment obligation
+	// no boot check can discharge. The pending-depth gauge below is the runtime
+	// signal that nobody is collecting.
+	//
+	// Boot-time rather than /readyz is deliberate — /readyz is what the container
 	// healthcheck probes, so a continuous check would let a broker hiccup close
 	// every turnstile, which is the customer-denying failure §D6 exists to avoid.
 	alarmStream := os.Getenv(envAlarmStream)
@@ -192,6 +200,9 @@ func run() error {
 	}
 	if err := drainer.ObserveMetrics(otel.Meter("ticketing/access/lifecycle"), nil); err != nil {
 		return fmt.Errorf("alarm metrics: %w", err)
+	}
+	if err := lifecyclejob.ObserveAlarmRoute(otel.Meter("ticketing/access/lifecycle"), js, alarmStream, os.Getenv(envAlarmDurable)); err != nil {
+		return fmt.Errorf("alarm route metrics: %w", err)
 	}
 	workers, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()

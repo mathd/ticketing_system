@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 	"time"
 
@@ -333,6 +334,193 @@ func TestThresholdFlipsOrganizerToOperatorControlled(t *testing.T) {
 	}
 	if !r.Accepted || r.Decision != DecisionAccepted {
 		t.Fatalf("a valid ticket was refused while its organizer was operator-controlled: %+v", r)
+	}
+}
+
+// PR #51 review, R2. The gate and the audit must not disagree about the same
+// row. These tamper with metadata the chain's hashes do not cover — the row's
+// claimed owner and its version discriminator — and assert the SCAN notices,
+// not just the offline verifier. A gate that reports a clean accept while the
+// audit later screams is the worst of both: the person is already inside.
+func TestScanRejectsAnIntegrityRowReassignedToAnotherTicket(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+
+	victim := issueTicket(t, ctx, st, uuid.New())
+
+	// An unchained ticket to reassign to: UNIQUE(ticket_id, sequence) means the
+	// target must have no row at this sequence, so a freshly inserted ticket that
+	// never went through Issue is the reachable target.
+	stranger := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'signed-credential',now())`,
+		stranger, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity DISABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_event_integrity SET ticket_id=$1 WHERE ticket_id=$2`, stranger, victim.ticketID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+
+	// The victim's chain is cryptographically untouched — only the row's claimed
+	// owner changed. Matching on event_id alone would still find it and report a
+	// clean accept.
+	r, err := st.Redeem(ctx, victim.redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Decision != DecisionAdmittedDegraded {
+		t.Fatalf("scan = %+v; an integrity row reassigned to another ticket passed the gate as clean", r)
+	}
+}
+
+func TestScanRejectsATamperedCanonicalVersion(t *testing.T) {
+	for name, corruption := range map[string]string{
+		"integrity row": `UPDATE lifecycle_event_integrity SET canonical_version=99 WHERE ticket_id=$1`,
+		"head":          `UPDATE lifecycle_heads SET canonical_version=99 WHERE ticket_id=$1`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			db := migratedDB(t, ctx)
+			st := New(db, testConfig(t))
+			s := issueTicket(t, ctx, st, uuid.New())
+
+			for _, table := range []string{"lifecycle_event_integrity", "lifecycle_heads"} {
+				if _, err := db.ExecContext(ctx, `ALTER TABLE `+table+` DISABLE TRIGGER USER`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.ExecContext(ctx, corruption, s.ticketID); err != nil {
+				t.Fatal(err)
+			}
+			r, err := st.Redeem(ctx, s.redeemInput())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Decision != DecisionAdmittedDegraded {
+				t.Fatalf("scan = %+v; the gate verified a %s under v1 rules while it declared version 99", r, name)
+			}
+		})
+	}
+}
+
+// PR #51 review, R3. The threshold is meant to bound a canonicalization bug at
+// doors-open, which means SIMULTANEOUS corrupt scans — the workload the
+// sequential test never exercised.
+//
+// Under READ COMMITTED a batch of concurrent first-time failures each sees only
+// its own committed row, so none crosses the threshold and the flip is delayed
+// rather than bypassed. This test pins that honestly: the batch may not flip,
+// and the state converges on the next scan. Making it exact would mean
+// serializing this path on an organizer row, which under total corruption
+// (every scan degraded) is the organizer-wide contention ADR-021 §Option 1
+// rejected, arriving exactly when it hurts most.
+func TestConcurrentCorruptScansConvergeOnOperatorControl(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	cfg.Policy = Policy{FailureThreshold: 3, Window: time.Minute}
+	st := New(db, cfg)
+
+	organizerID := uuid.New()
+	var tickets []seeded
+	for i := 0; i < 6; i++ {
+		s := issueTicket(t, ctx, st, organizerID)
+		corruptChain(t, ctx, db, s.ticketID)
+		tickets = append(tickets, s)
+	}
+
+	// Doors open: every corrupt ticket scanned at once.
+	var wg sync.WaitGroup
+	results := make([]RedeemResult, len(tickets))
+	errs := make([]error, len(tickets))
+	for i, s := range tickets {
+		wg.Add(1)
+		go func(i int, s seeded) {
+			defer wg.Done()
+			results[i], errs[i] = st.Redeem(ctx, s.redeemInput())
+		}(i, s)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent corrupt scan %d: %v", i, err)
+		}
+	}
+	// Every ticket took exactly its one admission — no ticket was admitted twice,
+	// which is the invariant that must hold regardless of concurrency.
+	for i, r := range results {
+		if r.Decision != DecisionAdmittedDegraded && r.Decision != DecisionIntegrityOperatorControlled {
+			t.Fatalf("scan %d = %+v", i, r)
+		}
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE organizer_id=$1`, organizerID); n > len(tickets) {
+		t.Fatalf("%d quarantine rows for %d tickets: a ticket was admitted more than once", n, len(tickets))
+	}
+
+	// Convergence: with the batch committed, the next corrupt scan sees the rate
+	// and escalates. This is the delay being bounded, not the threshold failing.
+	extra := issueTicket(t, ctx, st, organizerID)
+	corruptChain(t, ctx, db, extra.ticketID)
+	if _, err := st.Redeem(ctx, extra.redeemInput()); err != nil {
+		t.Fatal(err)
+	}
+	mode, err := st.Mode(ctx, organizerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != ModeOperatorDeny {
+		t.Fatalf("organizer mode = %q after %d corrupt tickets; the threshold never converged", mode, len(tickets)+1)
+	}
+}
+
+// The second race in R3: mode is read before the flip is written, so an
+// unconditional upsert would let an in-flight degraded scan silently revert a
+// human who chose operator_admit. §D6 gives the human that choice knowingly —
+// the system must not take it back.
+func TestSystemFlipNeverOverwritesAnOperatorDecision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	cfg.Policy = Policy{FailureThreshold: 2, Window: time.Minute}
+	st := New(db, cfg)
+
+	organizerID := uuid.New()
+	if err := st.SetMode(ctx, organizerID, ModeOperatorAdmit, "ops@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	// Enough corrupt tickets to cross the threshold several times over.
+	for i := 0; i < 4; i++ {
+		s := issueTicket(t, ctx, st, organizerID)
+		corruptChain(t, ctx, db, s.ticketID)
+		if _, err := st.Redeem(ctx, s.redeemInput()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mode, err := st.Mode(ctx, organizerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != ModeOperatorAdmit {
+		t.Fatalf("the system reverted a human's %q decision to %q; §D6 makes that choice the operator's", ModeOperatorAdmit, mode)
+	}
+	var by string
+	if err := db.QueryRowContext(ctx, `SELECT mode_set_by FROM lifecycle_integrity_organizer_state WHERE organizer_id=$1`, organizerID).Scan(&by); err != nil {
+		t.Fatal(err)
+	}
+	if by != "ops@example.test" {
+		t.Fatalf("mode_set_by = %q: the operator's attribution was overwritten", by)
 	}
 }
 
@@ -865,6 +1053,20 @@ func TestVerifyLifecycleAcceptsACoordinatedRollback(t *testing.T) {
 
 	organizerID := uuid.New()
 	s := issueTicket(t, ctx, st, organizerID)
+
+	// Capture the genuine sequence-1 head BEFORE the redemption advances it.
+	// These are the exact bytes an attacker who merely reads the database keeps —
+	// no signing happens anywhere in this test, because the adversary ADR-021
+	// scopes to holds no private key. Re-deriving them through cfg.Signer would
+	// hand the attacker the key and prove nothing about the stated threat model
+	// (PR #51 review, R4).
+	var retainedHash, retainedSignature []byte
+	var retainedKeyID string
+	if err := db.QueryRowContext(ctx, `SELECT last_hash,signature,key_id FROM lifecycle_heads WHERE ticket_id=$1`, s.ticketID).
+		Scan(&retainedHash, &retainedSignature, &retainedKeyID); err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := st.Redeem(ctx, s.redeemInput()); err != nil {
 		t.Fatal(err)
 	}
@@ -883,23 +1085,18 @@ func TestVerifyLifecycleAcceptsACoordinatedRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var previousHash []byte
-	if err := db.QueryRowContext(ctx, `SELECT previous_hash FROM lifecycle_event_integrity WHERE ticket_id=$1 AND sequence=2`, s.ticketID).Scan(&previousHash); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_event_integrity WHERE ticket_id=$1 AND sequence=2`, s.ticketID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, s.ticketID); err != nil {
 		t.Fatal(err)
 	}
-	// Roll the head back to sequence 1. The attacker cannot re-sign it — that is
-	// exactly what the chain closes — so they restore the head row that legitimately
-	// existed at sequence 1, whose signature they kept. Re-deriving it through the
-	// signer here stands in for that retained copy.
-	head1Signature := cfg.Signer.SignHead(s.ticketID, 1, previousHash)
-	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_heads SET last_sequence=1,last_hash=$2,signature=$3 WHERE ticket_id=$1`,
-		s.ticketID, previousHash, head1Signature); err != nil {
+	// Roll the head back to sequence 1 by restoring the bytes captured before the
+	// redemption. The attacker cannot re-sign — that is exactly what the chain
+	// closes — so they replay a signature that genuinely existed. Nothing here
+	// touches cfg.Signer.
+	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_heads SET last_sequence=1,last_hash=$2,signature=$3,key_id=$4 WHERE ticket_id=$1`,
+		s.ticketID, retainedHash, retainedSignature, retainedKeyID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_head_changes WHERE ticket_id=$1 AND sequence=2`, s.ticketID); err != nil {
