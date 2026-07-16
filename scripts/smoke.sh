@@ -27,7 +27,8 @@ SLOT=$(( $(printf '%s' "$ROOT" | cksum | cut -d' ' -f1) % 40 ))
 PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-smoke-${SLOT}}"
 export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=$((14222 + SLOT)) \
        GRAFANA_PORT=$((13000 + SLOT)) PROM_PORT=$((19090 + SLOT)) OTLP_PORT=$((14318 + SLOT)) \
-       ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s
+       ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s \
+       ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
 echo "smoke: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
 
 COMPOSE_FILES=(-f "$ROOT/compose.yaml")
@@ -69,8 +70,12 @@ COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PO
 go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/access"
+# No -run filter, for the same reason as commerce and catalog above: an allowlist
+# means a newly added test silently never runs while the gate still passes green.
+# This block carried one until TKT-67, and it was the last one left — lines 48
+# and 59 above had already recorded the defect twice.
 ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 -run TestRedeemedLifecycleMigrationPreservesHistory ./internal/store
+go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/catalog"
 # No -run filter, for the same reason as commerce above: an allowlist means a newly
@@ -120,3 +125,62 @@ psql_payments "UPDATE journal_heads SET last_hash=decode(repeat('00',32),'hex');
 expect_verify_failure "chain head"
 psql_payments "TRUNCATE journal_heads; INSERT INTO journal_heads SELECT * FROM journal_heads_smoke_backup; ALTER TABLE journal_entries ENABLE TRIGGER USER; DROP TABLE journal_entries_smoke_backup; DROP TABLE journal_heads_smoke_backup;"
 compose exec -T payments /app verify-journal
+
+# ADR-021: the ticket lifecycle trail gets the same treatment as the money
+# journal — verify the populated trail, then prove the verifier actually rejects
+# real PostgreSQL corruption rather than merely running.
+#
+# The scope this proves, stated the way ADR-021 §The trust boundary requires:
+# modification and insertion are evident against an adversary who cannot re-sign
+# the chain. A coordinated rollback (a head reverted with the checkpoint suffix
+# that committed it) verifies CLEAN and is not tested here as a failure — it is a
+# known, accepted gap until TKT-11, pinned by
+# TestVerifyLifecycleAcceptsACoordinatedRollback in the store suite.
+compose exec -T access /app verify-lifecycle
+
+psql_access() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d access -c "$1" >/dev/null; }
+expect_lifecycle_failure() {
+  if compose exec -T access /app verify-lifecycle >/dev/null 2>&1; then
+    echo "smoke: verify-lifecycle accepted $1 corruption" >&2
+    exit 1
+  fi
+}
+# Production triggers are DDL and removable — which is the entire premise of
+# ADR-021 §Context — so disabling them here is not cheating, it is the adversary.
+psql_access "CREATE TABLE lifecycle_event_integrity_smoke_backup AS TABLE lifecycle_event_integrity;
+            CREATE TABLE lifecycle_heads_smoke_backup AS TABLE lifecycle_heads;
+            CREATE TABLE lifecycle_checkpoints_smoke_backup AS TABLE lifecycle_checkpoints;
+            ALTER TABLE lifecycle_event_integrity DISABLE TRIGGER USER;
+            ALTER TABLE lifecycle_heads DISABLE TRIGGER USER;
+            ALTER TABLE lifecycle_checkpoints DISABLE TRIGGER USER;"
+
+psql_access "UPDATE lifecycle_event_integrity SET entry_hash=decode(repeat('00',32),'hex') WHERE sequence=1;"
+expect_lifecycle_failure "entry hash"
+psql_access "TRUNCATE lifecycle_event_integrity; INSERT INTO lifecycle_event_integrity SELECT * FROM lifecycle_event_integrity_smoke_backup;"
+
+psql_access "DELETE FROM lifecycle_event_integrity WHERE sequence=1;"
+expect_lifecycle_failure "missing integrity row"
+psql_access "TRUNCATE lifecycle_event_integrity; INSERT INTO lifecycle_event_integrity SELECT * FROM lifecycle_event_integrity_smoke_backup;"
+
+psql_access "UPDATE lifecycle_heads SET last_hash=decode(repeat('11',32),'hex');"
+expect_lifecycle_failure "chain head"
+psql_access "TRUNCATE lifecycle_heads; INSERT INTO lifecycle_heads SELECT * FROM lifecycle_heads_smoke_backup;"
+
+psql_access "UPDATE lifecycle_heads SET key_id='access-lifecycle/attacker';"
+expect_lifecycle_failure "unknown signing key"
+psql_access "TRUNCATE lifecycle_heads; INSERT INTO lifecycle_heads SELECT * FROM lifecycle_heads_smoke_backup;"
+
+# Restored by UPDATE, not TRUNCATE: lifecycle_head_changes carries a foreign key
+# to this table, so TRUNCATE ... CASCADE would take the checkpoint's own leaves
+# with it and "restore" into an empty trail that verifies for the wrong reason.
+psql_access "UPDATE lifecycle_checkpoints SET root=decode(repeat('22',32),'hex');"
+expect_lifecycle_failure "checkpoint root"
+psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
+
+psql_access "ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER;
+            ALTER TABLE lifecycle_heads ENABLE TRIGGER USER;
+            ALTER TABLE lifecycle_checkpoints ENABLE TRIGGER USER;
+            DROP TABLE lifecycle_event_integrity_smoke_backup;
+            DROP TABLE lifecycle_heads_smoke_backup;
+            DROP TABLE lifecycle_checkpoints_smoke_backup;"
+compose exec -T access /app verify-lifecycle

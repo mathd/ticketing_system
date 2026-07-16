@@ -112,7 +112,16 @@ func checkpointInterval() (time.Duration, error) {
 // finding but a stopped worker is. It bounds the audit tool only — nothing here
 // touches readiness, because the checkpoint is TKT-11 scaffolding (§D2) and a
 // stalled scaffold must not close a turnstile.
-func maxPendingAge(interval time.Duration) time.Duration { return 2 * interval }
+//
+// The floor matters. This check asks "is the worker dead", not "is the worker
+// quick", and 2x a sub-second interval would answer the second question — a
+// smoke run or a loaded box would fail an audit over a scheduling hiccup.
+func maxPendingAge(interval time.Duration) time.Duration {
+	if bound := 2 * interval; bound > 30*time.Second {
+		return bound
+	}
+	return 30 * time.Second
+}
 
 // writableStore builds a store that can append to the trail.
 func writableStore(db *sql.DB) (*accessstore.Postgres, error) {

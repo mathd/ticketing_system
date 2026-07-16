@@ -26,6 +26,9 @@ services:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: payments } }
   access-migrate:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: access } }
+  # The lifecycle backfill (ADR-021 §D9) is a one-shot job on the same binary.
+  access-lifecycle-backfill:
+    build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: access } }
   gateway:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: gateway } }
   scanner:
