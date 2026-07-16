@@ -4,7 +4,7 @@
   "summary": "US-014: Operational holds — house, artist and kills",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "claude",
   "pr": {
@@ -103,6 +103,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implementation complete** — by main-agent (config.models.implement), per the approved plan + amendments. PR #53 open.\n\nstage:\n  implementer: main-agent\n  diff: 19 files, ~1780 insertions (migration 0003, store operational core, internal API both services, ADR-023, tests)\n  gate: make check green on the committed tree (two runs — first run caught 2 NULL-scan bugs via the store smoke tests that the removed -run allowlist let run for the first time; fixed with COALESCE, re-run green)\n  plan deviations: none — amendments 1–3 from plan-final implemented as specified (namespaced child key, no baseline history rows, expired-child behavior documented in ADR-023)\n\nNext: adversarial review by gpt-5.6-sol (config.models.aiReview)."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Adversarial review complete** — reviewer: gpt-5.6-sol (codex adversarial-review, diff-only, primed for guilt). Three passes; every finding verified against the revision under review before acting.\n\n### Pass 1 (full branch diff) — 4 findings\n| # | Severity | Verdict | Disposition |\n|---|---|---|---|\n| 1 | critical — ticket-type/slot check ran AFTER inventory committed the carve | CONFIRMED | **Fixed**: expected slot is now a precondition inside inventory's locked transaction; mismatch rejects with the hold untouched. Store test pins that a rejected convert leaves quantity/claims/history unchanged. |\n| 2 | high — crash replay not durable (saga recommended) | PARTIAL | **Fixed the real slice** (replay of a dead child no longer persists a dead reservation), **rejected the saga** — the plan chose deterministic-ID replay; an expired child fails checkout with a clean 409 and its capacity-to-public behavior is documented in ADR-023. |\n| 3 | high — staff ports bound on all interfaces + default token | CONFIRMED (bind) / INCIDENTAL (token) | **Fixed** the bind (127.0.0.1 only). The checked-in default `INTERNAL_SERVICE_TOKEN` predates this diff and is repo-wide → **TKT-83** created. |\n| 4 | medium — int32 capacity math can wrap | CONFIRMED | **Fixed**: int64 admission math in both paths + an int32-boundary oversell test. |\n\n### Pass 2 (fix diff) — 1 finding, CONFIRMED, invalidated pass 1's finding-2 fix at the root\nThe expired-replay guard keyed on timestamp, not lifecycle: a confirmed child keeps its elapsed expires_at forever, so a legitimate post-checkout replay would 409 and instruct a double carve; a released child with a future timestamp slipped through. **Fixed**: replays judged by child status (confirmed/finalizing accepted; expired/released 409; held 409 only past deadline). Counter reset per the convergence rule → pass 3.\n\n### Pass 3 (guard rewrite) — 1 finding, CONFIRMED\nThe switch default treated unknown/version-skew statuses as terminal and advised re-conversion (double-carve risk on a still-live child). **Fixed**: expired/released enumerated; anything else is 502 invalid-response (ADR-017's never-judge-the-future rule).\n\n### Stopping call\nThree passes, findings narrowing each round (critical → high → one switch branch). The final fix (6-line case enumeration + 2 unit cases) is **unreviewed by codex** — stopping per the churn rule at the cap. My own verification of it: unit table covers held-elapsed/released-future/expired/empty/unknown; the smoke checkout test replays after completion and pins the confirmed-accept path against the real stack; full gate green. That verification is mine, labeled as such.\n\nNo finding silently dropped: 6 fixed, 1 rejected with reason (saga), 1 deferred to TKT-83.\nGate: `make check` green on every fix commit (committed tree, run by the orchestrator, not delegated)."
     }
   ]
 }
