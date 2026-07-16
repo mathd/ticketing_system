@@ -48,6 +48,12 @@ threat model. Read the following claims in this ADR with that scope:
   TKT-67 made the trace tamper-evident **against modification** — so editing the answer now leaves
   evidence. Rolling it back still does not. "The lifecycle trail is tamper-evident", with no
   adversary named, remains an overstatement of what shipped.
+
+  §Decision 2 was **amended by [ADR-025](./ADR-025-admission-events-and-offline-reconciliation.md)**
+  (TKT-73): the one-redemption-per-ticket cap made multi-entry passes and offline double-admits
+  unrepresentable, so "duplicate detection from the trace" was aspirational. The amended wording
+  bounds the trace claim at reconciliation and names the event vocabulary (`redeemed` unique,
+  `entry`/`exit` per ADR-005, `duplicate_admit` for reconciled conflicts).
 - **"A GDPR erasure request … never touches the trails — inalterability and the right to erasure stop
   conflicting by construction"** (Decision 3) holds only while the pseudonym is unlinkable. The buyer
   UUID is an *unsalted* SHA-1 of the reservation ID (`services/commerce/internal/api/server.go:162`),
@@ -75,7 +81,7 @@ The owner's directive (2026-07-12): **traceability is a must** — the same audi
 Two append-only trails, one discipline:
 
 1. **Money journal** — every money-relevant record (orders, payments, refunds, exchanges, POS receipts, cashless top-ups/spends) is immutable, sequence-numbered, hash-chained (each record embeds the previous record's hash) and signed. Corrections are compensating entries, never updates. Read models are projections. A `verify-journal` tool checks chain integrity end-to-end and runs in the local gate from US-004 onward.
-2. **Ticket lifecycle trace** — every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated, pass entry) is an append-only lifecycle event linked to its order/journal entries. Any ticket's full history is reconstructible from its trace alone; redemption and reissue decisions are made *from* that trace (e.g. duplicate detection), not from a mutable flag.
+2. **Ticket lifecycle trace** *(amended by [ADR-025](./ADR-025-admission-events-and-offline-reconciliation.md), TKT-73)* — every ticket/entitlement state change — including pass `entry`/`exit` and a physical offline admission that conflicts at reconciliation (`duplicate_admit`) — is an append-only lifecycle event linked to its ticket and order/journal entries. Any ticket's **authoritative reconciled history** is reconstructible from its trace; redemption, reissue and admission-policy decisions are made *from* that trace (e.g. duplicate detection), not from a mutable flag. A single-entry ticket's first authoritative admission produces a unique `redeemed`; each distinct admission already granted offline that later conflicts produces a repeatable `duplicate_admit`. A connected duplicate denied at the gate, and a transport retry, produce no new lifecycle event. Multi/count-limited admission uses repeatable `entry`/`exit` (ADR-005). **This claim begins at reconciliation**: an occurrence a gate never synchronized is not represented, and ADR-021's rollback and key-compromise limits continue to apply.
 3. **Trails are pseudonymous; PII is erasable** — journal records and lifecycle events reference customers by pseudonymous ID only; PII (names, emails, addresses) lives in a separate, erasable store. A GDPR erasure request destroys the PII record (or its key) and never touches the trails — inalterability and the right to erasure stop conflicting by construction. "No raw PII in any append-only store" is an enforced invariant from US-004; the erasure/retention machinery itself is a later epic (TKT-33).
 4. **NF525 is a later-phase profile, not a v1 requirement** — period closures (Z/daily/monthly/fiscal-year), fiscal archives and audit export (TKT-11) must layer on the money journal **without schema or flow changes** when the French market is prioritized. That constraint is what the journal design is validated against; certification itself is out of scope.
 
