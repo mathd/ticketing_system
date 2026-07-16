@@ -1,0 +1,17 @@
+{
+  "key": "TKT-86",
+  "type": "Story",
+  "summary": "Admission-conflict alarm: durable, versioned, PII-free",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned by TKT-73 / ADR-025 (admission lifecycle events and offline reconciliation). The ADR's decision statements are binding constraints on this ticket."
+    }
+  ],
+  "description": "Implement ADR-025 §D6/9/10: every duplicate_admit owes a durable admission-conflict alarm — a NEW operational alarm class, transactionally committed with the append (outbox pattern per access's lifecycle_integrity_alarm_outbox), deliberately separate from ADR-021 integrity alarms (the chain is valid; the world disagreed). Own schema-1 contract, ADR-017 governs evolution. Bounded identifiers and enums only — no PII (ADR-003 §D3)."
+}
