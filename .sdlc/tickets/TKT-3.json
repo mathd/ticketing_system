@@ -13,5 +13,11 @@
       "kind": "readiness",
       "body": "COS defined at epic level. Not yet decomposed — US-stories are created when the owner prioritizes this epic (Gate 1), per PRD 'Capability map'."
     }
+  ],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-80"
+    }
   ]
 }
