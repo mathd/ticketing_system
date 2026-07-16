@@ -4,7 +4,7 @@
   "summary": "Lifecycle trail caps at one redemption per ticket — multi-entry passes and offline double-admits are unrepresentable",
   "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": {
