@@ -89,8 +89,12 @@ conflicts. Together every physical admission that Access learns about is represe
    stays outside the lifecycle trace by prior decision: a **degraded admission** under ADR-021
    §Decision 6 is recorded only in `lifecycle_integrity_quarantine` — appending onto an
    unverified predecessor would poison the chain — so **authoritative admission history is the
-   union of the lifecycle trace and the quarantine record**, and readers reconstructing
-   admissions must consult both.
+   union of the lifecycle trace and the quarantine record**, and both readers *and admission
+   decisions* must consult the union. The trace alone cannot express ADR-021 §D6's admit-once:
+   today's verified redemption path checks only `lifecycle_events`
+   (`services/access/internal/store/postgres.go`), so a ticket quarantine-admitted under a
+   verifier bug would be admitted a *second* time once the chain verifies clean again — a
+   pre-existing gap this ADR names and hands to a follow-up ticket, not new scope here.
 3. **Occurrence identity.** Every physical gate decision gets a gate-generated UUIDv4
    **occurrence id**, durably persisted by the scanner before the gate opens or the request is
    sent. Transport retries reuse it; a distinct physical decision gets a new one. The lifecycle
@@ -101,7 +105,12 @@ conflicts. Together every physical admission that Access learns about is represe
    physical admission. The deterministic `ticketID+":redeemed"` id is **grandfathered** on
    existing rows and remains in use only until the implementation ticket lands the occurrence
    protocol; the implementation must test that a retry of the occurrence that became `redeemed`
-   is idempotent success and can never append `duplicate_admit`.
+   is idempotent success and can never append `duplicate_admit`. **The identity rule extends to
+   degraded admissions**: the quarantine row (today only `ticket_id, organizer_id, reason,
+   admitted_at` — `0003_lifecycle_integrity.sql`) must also persist the occurrence id, and a
+   retry of the *same* occurrence that took the one degraded admission returns idempotent
+   success, not the quarantine denial; only a *distinct* occurrence is denied. Without this, a
+   lost response to the degraded admit is indistinguishable from a second scan.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at
@@ -139,14 +148,28 @@ conflicts. Together every physical admission that Access learns about is represe
    canonical-version design and is out of scope.
 9. **PII.** Occurrence ids and alarm payloads carry bounded identifiers and enums only — no
    buyer, no guest reference, no raw scanner-operator identity (ADR-003 §D3).
-10. **Contracts.** The verified inventory at HEAD: redemption emits **no** cross-service domain
-    event; the lifecycle alarm outbox carries exactly one subject
+10. **Contracts.** The verified inventory at HEAD, NATS side: redemption emits **no**
+    cross-service domain event; the lifecycle alarm outbox carries exactly one subject
     (`platform.access.lifecycle-integrity.alarm`); Access separately publishes
     `platform.access.ticket-issuance.failed` from its order-completed consumer
     (`services/access/internal/consumer/consumer.go`) — unrelated to admission and untouched
-    here. The new lifecycle event types are Access-local **rows** (no service consumes them);
-    the admission-conflict alarm is the one externally visible addition and starts as its own
+    here. The admission-conflict alarm is the one new NATS contract and starts as its own
     schema-1 contract, following ADR-017 thereafter.
+
+    **HTTP side — the new event types are *not* merely Access-local rows.** Two public contracts
+    move (`services/access/api/openapi.yaml`), and the follow-up tickets own an explicit
+    rollout for each:
+    - `GET /orders/{ref}/tickets` exposes each ticket's lifecycle history; `entry`, `exit` and
+      `duplicate_admit` will appear in it (the `LifecycleEvent.type` field is a free string, so
+      this is additive), and the follow-up must state whether quarantine admissions surface
+      there or remain operator-only.
+    - `POST /scans` accepts only `qr_payload` with `additionalProperties: false` — a scanner
+      sending `occurrence_id` today is **rejected**. The occurrence protocol is therefore an
+      expand/contract rollout: the server accepts the field first (optional), scanners adopt it,
+      and only then may it become required. Old-scanner/new-server (no occurrence id: server
+      falls back to today's semantics) and new-scanner/old-server (field rejected: scanner must
+      tolerate and retry without it, losing occurrence idempotency, never admission safety) are
+      both named states, not accidents.
 
 ## Claims and named adversaries
 
