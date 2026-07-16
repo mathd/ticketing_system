@@ -261,7 +261,12 @@ func TestExpiredChannelHoldFreesItsCap(t *testing.T) {
 func TestReleaseCutoffHoldsUnderPoolLockContention(t *testing.T) {
 	ctx, st, db := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 10)
-	releaseAt := time.Now().UTC().Add(400 * time.Millisecond)
+	// The cutoff is established and crossed by DATABASE time — host/DB clock skew must
+	// not decide the test.
+	var releaseAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT clock_timestamp() + interval '3 seconds'`).Scan(&releaseAt); err != nil {
+		t.Fatal(err)
+	}
 	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6, ReleaseAt: &releaseAt}})
 
 	blocker, err := db.BeginTx(ctx, nil)
@@ -277,7 +282,45 @@ func TestReleaseCutoffHoldsUnderPoolLockContention(t *testing.T) {
 		_, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "cutoff-key")
 		done <- err
 	}()
-	time.Sleep(900 * time.Millisecond) // hold the lock well past release_at
+	// Handshake, not a sleep: the test is only meaningful if the hold's transaction is
+	// observed WAITING on the pool lock while DB time is still before release_at —
+	// otherwise a late transaction start would reject under the old broken predicate too.
+	for {
+		var waiting, before bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(
+				SELECT 1 FROM pg_stat_activity
+				WHERE wait_event_type='Lock' AND state='active'
+				  AND query LIKE '%FROM inventory_pools%FOR UPDATE%' AND pid <> pg_backend_pid()
+			), clock_timestamp() < $1`, releaseAt).Scan(&waiting, &before); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			if !before {
+				t.Fatal("lock waiter observed only after release_at; widen the margin")
+			}
+			break
+		}
+		if !before {
+			t.Fatal("hold transaction never blocked on the pool lock before release_at")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Cross the cutoff by DB time while the waiter stays queued, then let it through.
+	for {
+		var past bool
+		if err := db.QueryRowContext(ctx, `SELECT clock_timestamp() > $1`, releaseAt).Scan(&past); err != nil {
+			t.Fatal(err)
+		}
+		if past {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("hold completed while the pool lock was held: %v", err)
+	default:
+	}
 	if err := blocker.Rollback(); err != nil {
 		t.Fatal(err)
 	}
