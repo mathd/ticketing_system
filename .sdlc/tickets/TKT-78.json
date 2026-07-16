@@ -2,9 +2,11 @@
   "key": "TKT-78",
   "type": "Story",
   "summary": "US-015: Channel allocations — caps and scheduled release",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "description": "### US-015: Channel allocations — caps and scheduled release\n**As** an organizer, **I want** to split a slot's sellable capacity across sales channels with\nper-channel caps and scheduled give-back, so presales and resellers can't starve the public\non-sale. **Priority:** P1 **Depends on:** US-014 (extends the same claim-model surface; soft —\nparallelizable if Planning confirms no schema overlap)\n**Acceptance Criteria:**\n- [ ] A pool can carry channel allocations (opaque channel code + cap + optional release-at\n      time); allocations never sum above pool capacity; unallocated capacity is the default/public\n      channel.\n- [ ] Holds carry a channel; a hold beyond its channel's remaining allocation is rejected even\n      when the pool has capacity (and vice-versa: pool exhaustion rejects regardless of channel\n      headroom). The no-oversell proof extends to per-channel caps under the contention test.\n- [ ] At `release-at`, a channel's unsold allocation returns to the public channel — enforced by\n      DB time like TTL expiry (lazy, correct without a sweeper); the release is observable in\n      availability reads.\n- [ ] Channel codes are opaque strings here; the channel registry, per-channel pricing and\n      windows stay in TKT-17/TKT-5 (non-goal).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
   "links": [],
@@ -77,6 +79,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed TKT-78. Selection: only Ready ticket taken on user command; soft dependency US-014 (TKT-77) is Done, so the claim-model surface it extends is merged. No open blockers, no risk:low — full plan gate applies. Branch: TKT-78-channel-allocations off origin/main."
     }
   ]
 }
