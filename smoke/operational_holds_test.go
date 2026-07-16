@@ -204,6 +204,14 @@ func TestConvertedHoldCompletesPublicCheckout(t *testing.T) {
 		t.Fatalf("accounting after checkout: buyer=%d operational=%d confirmed=%d available=%d, want 0/3/2/0", buyerHeld, opHeld, confirmed, available)
 	}
 
+	// Replaying the conversion after checkout must succeed: the child is confirmed, and
+	// a guard that rejects replays by anything but lifecycle status would 409 here and
+	// instruct a second carve of already-sold seats (second-review-pass regression).
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/operational-holds/%s/convert", commerceURL, op.ID), "op-convert-co-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 2, "actor": "staff:smoke", "reason": "artist guest purchase"}); code != 200 {
+		t.Fatalf("convert replay after checkout: %d %s", code, body)
+	}
+
 	code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/operational-holds/%s/history?organizer_id=%s", inventoryURL, op.ID, organizerID), "", nil)
 	if code != 200 {
 		t.Fatalf("history: %d %s", code, body)

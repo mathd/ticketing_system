@@ -585,6 +585,7 @@ func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
 		Hold struct {
 			ID         uuid.UUID `json:"hold_id"`
 			SlotID     uuid.UUID `json:"slot_id"`
+			Status     string    `json:"status"`
 			ExpiresAt  time.Time `json:"expires_at"`
 			ServerTime time.Time `json:"server_time"`
 		} `json:"hold"`
@@ -594,13 +595,24 @@ func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "invalid inventory response"})
 		return
 	}
-	// A replay can return a child whose TTL has already lapsed (crash window + slow
-	// retry). Persisting it would mint a reservation no checkout can complete; the
-	// expired child's capacity is already back in the public pool (ADR-023), so the
-	// honest answer is 409: re-convert with a new key.
-	if code == 200 && !conv.Hold.ExpiresAt.After(conv.Hold.ServerTime) {
-		write(w, 409, map[string]string{"error": "converted hold expired; place a new conversion"})
-		return
+	// A replay must be judged by the child's lifecycle status, not its timestamp: a
+	// confirmed claim keeps its elapsed expires_at forever (a 409 here would instruct
+	// staff to carve the same seats twice), finalizing is live regardless of deadline,
+	// and a terminal expired/released child must not become a reservation no checkout
+	// can complete — that capacity is already back in the public pool (ADR-023).
+	if code == 200 {
+		switch conv.Hold.Status {
+		case "confirmed", "finalizing":
+			// live or already sold — the replay is legitimate; persist/return below
+		case "held":
+			if !conv.Hold.ExpiresAt.After(conv.Hold.ServerTime) {
+				write(w, 409, map[string]string{"error": "converted hold expired; place a new conversion"})
+				return
+			}
+		default: // expired, released
+			write(w, 409, map[string]string{"error": "converted hold is no longer usable; place a new conversion"})
+			return
+		}
 	}
 	total := o.Price.Amount * int64(in.Quantity)
 	// Namespaced so a staff key can never collide with a public reserve key.

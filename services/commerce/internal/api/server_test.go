@@ -191,29 +191,45 @@ func TestConvertOperationalForwardsSlotPreconditionToInventory(t *testing.T) {
 	}
 }
 
-func TestConvertOperationalRejectsExpiredReplayedChild(t *testing.T) {
+func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
+	// The guard must key on the child's status, not its timestamp: a confirmed claim
+	// keeps its elapsed expires_at forever (409 would instruct a double carve), and a
+	// released child with a future timestamp must not become a dead reservation.
+	// The accept path for a confirmed child is exercised end-to-end in the smoke suite
+	// (replay after checkout), where a real database exists.
 	org := "00000000-0000-0000-0000-000000000001"
+	cases := map[string]struct {
+		hold string
+		want int
+	}{
+		"held past deadline": {hold: `"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"released, future deadline": {hold: `"status":"released","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"expired": {hold: `"status":"expired","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+	}
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
 	}))
 	defer catalog.Close()
-	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200) // replay
-		// The replayed child expired before the retry arrived.
-		_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000009","quantity":1,"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
-	}))
-	defer inventory.Close()
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
-	body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
-	req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", "k")
-	req.Header.Set("X-Internal-Token", "secret")
-	res := httptest.NewRecorder()
-	s.Router().ServeHTTP(res, req)
-	if res.Code != http.StatusConflict {
-		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusConflict, res.Body.String())
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200) // replay
+				_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000009","quantity":1,` + tc.hold + `},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
+			}))
+			defer inventory.Close()
+			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
+			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, tc.want, res.Body.String())
+			}
+		})
 	}
 }
