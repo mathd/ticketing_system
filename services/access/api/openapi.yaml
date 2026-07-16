@@ -6,8 +6,16 @@ paths:
       operationId: scanTicket
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRequest'}}}}
       responses:
+        # A 200 may also be ADR-021 §D6's degraded admission: a ticket whose
+        # integrity chain did not verify is admitted once and alarmed, because a
+        # verification failure is likelier our own bug than an attacker and
+        # denying a real customer at a live turnstile is the worse failure. The
+        # scanner cannot tell the two apart, deliberately.
         '200': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/ScanAccepted'}}}}
-        '409': {description: Already redeemed, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
+        # reason: already_redeemed | integrity_quarantined (a ticket that already
+        # took its one degraded admission) | integrity_operator_controlled (an
+        # organizer a human has flipped to deny).
+        '409': {description: Rejected — already redeemed, or refused by the integrity degraded mode, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
         '422': {description: Invalid credential, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}

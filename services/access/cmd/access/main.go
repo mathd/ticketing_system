@@ -18,10 +18,12 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
 
 	apispec "ticketing/services/access/api"
 	accessapi "ticketing/services/access/internal/api"
 	"ticketing/services/access/internal/consumer"
+	"ticketing/services/access/internal/lifecyclejob"
 	accessstore "ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
 	"ticketing/shared/httpx"
@@ -32,20 +34,42 @@ import (
 const serviceName = "access"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		if err := migrate(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s migrate: %v\n", serviceName, err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
+	}
+	if len(os.Args) > 1 {
+		if sub, ok := subcommands()[os.Args[1]]; ok {
+			if err := sub(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
+				os.Exit(1)
+			}
+			return
+		}
 	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
 		os.Exit(1)
 	}
+}
+
+// subcommands are the one-shot modes. migrate and lifecycle-backfill are
+// separate jobs on purpose (ADR-021 §D9 as amended for ADR-022): migrate is DDL
+// under ADR-008's surviving 30-second deadline, while the backfill signs a head
+// per ticket and cannot be held to it.
+func subcommands() map[string]func([]string) error {
+	return map[string]func([]string) error{
+		"migrate":              func([]string) error { return migrate() },
+		"lifecycle-backfill":   func([]string) error { return backfillLifecycle() },
+		"verify-lifecycle":     func([]string) error { return verifyLifecycle() },
+		"seal-lifecycle-epoch": func([]string) error { return sealLifecycleEpoch() },
+		"set-lifecycle-mode":   setLifecycleMode,
+	}
+}
+
+// signalContext cancels on interrupt, so a long backfill stops cleanly and
+// resumes where it left off rather than being killed mid-ticket.
+func signalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // migrate applies this service's embedded migrations and exits (ADR-022).
@@ -139,7 +163,40 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	st := accessstore.New(db)
+	st, err := writableStore(db)
+	if err != nil {
+		return err
+	}
+
+	// Refuse to boot unmonitored. ADR-021 §D6 admits on a chain that does not
+	// verify, which is only defensible because the alarm is load-bearing: "an
+	// unmonitored deployment must not run this scheme in fail-open". Checking at
+	// boot rather than in /readyz is deliberate — /readyz is what the container
+	// healthcheck probes, so a continuous check would let a broker hiccup close
+	// every turnstile, which is the customer-denying failure §D6 exists to avoid.
+	alarmStream := os.Getenv(envAlarmStream)
+	if alarmStream == "" {
+		alarmStream = defaultAlarmStreamValue
+	}
+	if err := lifecyclejob.RequireAlarmRoute(ctx, js, alarmStream, os.Getenv(envAlarmDurable), accessstore.SubjectIntegrityAlarm); err != nil {
+		return fmt.Errorf("integrity alarm route: %w", err)
+	}
+	interval, err := checkpointInterval()
+	if err != nil {
+		return err
+	}
+	checkpointer := lifecyclejob.NewCheckpointer(st, interval, log, nil)
+	drainer := lifecyclejob.NewAlarmDrainer(st, lifecyclejob.NewJetStreamPublisher(js), 5*time.Second, 32, log)
+	if err := checkpointer.ObserveMetrics(otel.Meter("ticketing/access/lifecycle")); err != nil {
+		return fmt.Errorf("checkpoint metrics: %w", err)
+	}
+	if err := drainer.ObserveMetrics(otel.Meter("ticketing/access/lifecycle"), nil); err != nil {
+		return fmt.Errorf("alarm metrics: %w", err)
+	}
+	workers, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	go checkpointer.Run(workers)
+	go drainer.Run(workers)
 	consumerOptions, err := consumer.ParseOptions(os.Getenv("ACCESS_EVENT_RETRY_BACKOFF"))
 	if err != nil {
 		return err

@@ -139,8 +139,21 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, map[string]string{"error": "redeem ticket"})
 		return
 	}
+	// A degraded admission (ADR-021 §D6) is indistinguishable from a clean one to
+	// the scanner, deliberately: the door opened either way, and the person at
+	// the turnstile is not who the alarm is for. The operator learns about it
+	// through the alarm route, not through the gate's screen.
 	if !result.Accepted {
-		write(w, http.StatusConflict, map[string]any{"decision": "rejected", "reason": "already_redeemed", "original_scan_at": result.OccurredAt})
+		reason := "already_redeemed"
+		switch result.Decision {
+		case store.DecisionIntegrityQuarantined:
+			reason = "integrity_quarantined"
+		case store.DecisionIntegrityOperatorControlled:
+			reason = "integrity_operator_controlled"
+		}
+		// No cryptographic detail leaves the gate: which field failed to verify
+		// is exactly what an attacker probing the trail would want back.
+		write(w, http.StatusConflict, map[string]any{"decision": "rejected", "reason": reason, "original_scan_at": result.OccurredAt})
 		return
 	}
 	write(w, http.StatusOK, map[string]any{"decision": "accepted", "scanned_at": result.OccurredAt})
