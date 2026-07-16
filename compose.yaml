@@ -64,11 +64,17 @@ services:
     volumes:
       - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql
+    # -h forces TCP: the entrypoint runs a temporary socket-only server
+    # (listen_addresses='') while executing docker-entrypoint-initdb.d, so a
+    # socket probe reports healthy before the service databases exist — and the
+    # migrate jobs (ADR-022) that gate on this are fail-fast with no retry.
+    # start_period covers cold initdb: failures during it don't spend retries.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 30s
 
   nats:
     image: nats:2.14.3-alpine3.22@sha256:c11af972c99ae542de8925e6a7d9c533aa1eb039660420d2074beed6089b3bf0
