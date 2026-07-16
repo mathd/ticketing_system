@@ -1,0 +1,17 @@
+{
+  "key": "TKT-89",
+  "type": "Story",
+  "summary": "Redeem's verified path ignores quarantine — a recovered chain re-admits a quarantine-admitted ticket",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Pre-existing gap found by TKT-73's adversarial review (R2), verified at HEAD: Redeem checks quarantine only inside degradedScan; the verified path (postgres.go:263-282) checks lifecycle_events alone. A ticket that took its one degraded admission under a verifier bug (ADR-021 §D6) gets admitted a SECOND time once the chain verifies clean again (e.g. the bad verifier build is reverted) — violating §D6's admit-once. Fix: the verified redemption path must consult the quarantine table under the ticket lock and deny (DecisionIntegrityQuarantined, original admitted_at). ADR-025 §D2 names this: admission decisions consult trace ∪ quarantine, not the trace alone. Test: degraded admission → restore verification → distinct subsequent scan is denied. Seams: lifecycle_smoke_test.go.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nIncidental finding from TKT-73 ai-review pass 2 (gpt-5.6-sol adversarial review), triaged out of the docs-only PR as pre-existing code scope. ADR-025 §D2 and amended ADR-003 §D2 carry the decision rule this must implement."
+    }
+  ]
+}
