@@ -126,10 +126,7 @@ func TestChannelAllocationContention(t *testing.T) {
 	}); code != 200 {
 		t.Fatalf("allocate %d %s", code, body)
 	}
-	if code, _, _ := getWithHeaders(t, fmt.Sprintf("%s/api/inventory/internal/slots/%s/channel-allocations", gatewayURL, slot)); code != 404 {
-		t.Fatalf("gateway must 404 the internal allocation route, got %d", code)
-	}
-
+	// Gateway blocking of /internal/ is pinned by TestGatewayDeniesGenericInternalRoutes.
 	var presale, public atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 30; i++ {
