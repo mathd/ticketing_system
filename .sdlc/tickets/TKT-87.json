@@ -1,0 +1,17 @@
+{
+  "key": "TKT-87",
+  "type": "Story",
+  "summary": "Pass admission policy: entry/exit semantics over occurrence ids",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned by TKT-73 / ADR-025 (admission lifecycle events and offline reconciliation). The ADR's decision statements are binding constraints on this ticket."
+    }
+  ],
+  "description": "Implement ADR-005's re_entry_policy (multi / count_limited, max_entries, requires_exit) in access using the repeatable entry/exit event types and the occurrence-id protocol from ADR-025. redeemed stays absent for passes (ADR-025 §D1). Depends on TKT-84 (event types + uniqueness) and informs TKT-19."
+}
