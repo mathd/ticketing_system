@@ -298,9 +298,10 @@ checkpoint chain off it**.
      identity ships: "every subsequent scan" means every later **distinct occurrence** — a
      lost-response retry carrying the occurrence id that took the one admission returns a
      **distinguishable replay result** — the occurrence id is an idempotency key, never
-     admission authorization, and a gate never actuates on a replay — without a second
-     admission or a second alarm. And the denial must hold on the **verified** path too, not
-     only inside the degraded path — TKT-89.)*
+     admission authorization; actuation is keyed on the originating scanner's durable pending
+     record, so that retry completes exactly once while a copied occurrence id from another
+     device never actuates — without a second admission or a second alarm. And the denial must
+     hold on the **verified** path too, not only inside the degraded path — TKT-89.)*
    - **Threshold escalation.** Integrity failures above a configured rate stop being "our bug" and
      start being an attack. Crossing the threshold flips the organizer into an
      **operator-controlled** mode — the choice to keep admitting is then a human's, made knowingly,

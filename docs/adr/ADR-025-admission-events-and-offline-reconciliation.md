@@ -84,13 +84,31 @@ conflicts. Together every physical admission that Access learns about is represe
 2. **Representability.** A reconciled double-admit is one `redeemed` plus one `duplicate_admit`
    per additional distinct physical admission. `duplicate_admit` means *"a physical admission
    that conflicted with the authoritative trace at reconciliation"* — not necessarily the
-   chronologically second device timestamp. A connected duplicate that was **denied** is not an
+   chronologically second device timestamp. **`duplicate_admit` is scoped to single-entry
+   tickets**, where the classification is arrival-order-independent: a single-entry ticket has
+   no legitimate second admission, so any occurrence beyond the one `redeemed` is a conflict no
+   matter which device syncs first. **Pass (multi/count-limited) reconciliation never mints
+   conflict events**: it records the factual `entry`/`exit` events only, and policy conflicts —
+   e.g. ADR-005's `requires_exit` re-entry without a prior exit — are **derived projections**
+   that re-evaluate as late events arrive. Sequence order is append order, and cross-device
+   sync order is not physical order: an exit at gate A syncing after a re-entry at gate B would
+   otherwise be baked into the immutable signed trail as a false `duplicate_admit` that no
+   later event could retract. Derived conflicts are alarmed conservatively and marked
+   revisable; an alarm can be withdrawn, an appended event cannot. A connected duplicate that was **denied** is not an
    admission and produces no lifecycle event (today's behaviour, kept). One admission class
    stays outside the lifecycle trace by prior decision: a **degraded admission** under ADR-021
-   §Decision 6 is recorded only in `lifecycle_integrity_quarantine` — appending onto an
-   unverified predecessor would poison the chain — so **authoritative admission history is the
-   union of the lifecycle trace and the quarantine record**, and both readers *and admission
-   decisions* must consult the union. The trace alone cannot express ADR-021 §D6's admit-once:
+   §Decision 6 is recorded only on the quarantine side — appending onto an unverified
+   predecessor would poison the chain — so **authoritative admission history is the union of
+   the lifecycle trace and the quarantine record**, and both readers *and admission decisions*
+   must consult the union. For that union to actually be complete, **the quarantine-side
+   admission record must be per-occurrence (repeatable)**: today's
+   `lifecycle_integrity_quarantine` is one row per ticket, and a broken chain refuses appends —
+   so two distinct offline admissions reconciled while the chain is invalid would leave the
+   second recorded nowhere. Reconciliation of admissions that already physically happened is
+   **recording, not deciding**: ADR-021 §D6's one-admission rule governs *live* scans, and it
+   cannot retroactively deny an offline admission — every such occurrence Access learns about
+   lands an occurrence-keyed quarantine-side record. The schema shape (extra table vs widened
+   key) is the follow-up's; the per-occurrence requirement is decided here. The trace alone cannot express ADR-021 §D6's admit-once:
    today's verified redemption path checks only `lifecycle_events`
    (`services/access/internal/store/postgres.go`), so a ticket quarantine-admitted under a
    verifier bug would be admitted a *second* time once the chain verifies clean again — a
@@ -120,14 +138,21 @@ conflicts. Together every physical admission that Access learns about is represe
 
    **The occurrence id is an idempotency key, never admission authorization.** A replay-matched
    response is returned as an explicitly **distinguishable replay result** (e.g. a `replay`
-   marker or its own decision value), never as a bare `accepted` — a gate device actuates only
-   on a first-time accepted, and keeps durable local actuation state so even a replayed
-   `accepted` cannot reopen it. Otherwise a captured `(qr_payload, occurrence_id)` pair becomes
-   a replay token that turns the idempotency rule into an admission oracle. Binding the
-   occurrence id to an authenticated scanner identity is TKT-85's design space; the
-   non-negotiable floor decided here is: distinguishable replay response + gate actuation
-   gated on first-time results only. Adversarial tests: a copied occurrence id from another
-   scanner/session, and a repeated already-actuated occurrence, must not cause a second
+   marker or its own decision value), never as a bare `accepted`. **Actuation is keyed on the
+   originating scanner's own durable state, not on the response type alone**: the scanner
+   persists a *pending* record for the occurrence before sending, and a response — first-time
+   or replay — may actuate the gate **iff this device holds a durably pending, never-actuated
+   record for that occurrence id**. That is what lets a genuine lost-response retry complete
+   exactly once (the pending record is still un-actuated when the replay result arrives), while
+   a captured `(qr_payload, occurrence_id)` pair replayed from any other device — which holds
+   no pending record — never actuates: the admission-oracle hole stays closed without
+   sacrificing the retry. The record is marked actuated **before** the gate opens
+   (fail-closed): the irreducible hardware window is a crash *between marking and opening*,
+   which strands one admission a person at the gate resolves with an operator — never a double
+   actuation. Binding the occurrence id to an authenticated scanner identity is TKT-85's design
+   space; the floor decided here is: distinguishable replay response + actuation gated on the
+   local pending record + mark-before-open. Adversarial tests: a copied occurrence id from
+   another scanner/session, and a repeated already-actuated occurrence, must not cause a second
    actuation — while a genuine lost-response retry still completes exactly once.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
@@ -139,7 +164,8 @@ conflicts. Together every physical admission that Access learns about is represe
    device-clock order. Offline `occurred_at` is the device's persisted admission time; skew is
    validated at reconciliation, and device time is never claimed to be attested.
 6. **Offline outcome and durability.** When reconciliation finds an offline admit the
-   authoritative trace would have rejected, Access appends `duplicate_admit`, returns an explicit
+   authoritative trace would have rejected (single-entry tickets only — §D2 scopes
+   `duplicate_admit`; pass conflicts are derived projections), Access appends `duplicate_admit`, returns an explicit
    conflict result to the gate, and owes a durable **admission-conflict alarm** — a new
    operational alarm class, deliberately separate from ADR-021's integrity alarms because the
    chain is valid; the world disagreed with it. The scanner-side durability contract (occurrence
