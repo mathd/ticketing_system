@@ -35,12 +35,14 @@ type ConvertResult struct {
 }
 
 type StaffAvailability struct {
-	SlotID          uuid.UUID `json:"slot_id"`
-	Capacity        int32     `json:"capacity"`
-	BuyerHeld       int32     `json:"buyer_held"`
-	OperationalHeld int32     `json:"operational_held"`
-	Confirmed       int32     `json:"confirmed"`
-	Available       int32     `json:"available"`
+	SlotID          uuid.UUID             `json:"slot_id"`
+	Capacity        int32                 `json:"capacity"`
+	BuyerHeld       int32                 `json:"buyer_held"`
+	OperationalHeld int32                 `json:"operational_held"`
+	Confirmed       int32                 `json:"confirmed"`
+	Available       int32                 `json:"available"`
+	PublicAvailable int32                 `json:"public_available"`
+	Channels        []ChannelAvailability `json:"channels"`
 }
 
 type HistoryEntry struct {
@@ -329,5 +331,14 @@ func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (
 		return a, err
 	}
 	a.Available = a.Capacity - a.Confirmed - a.BuyerHeld - a.OperationalHeld
+	remaining := int64(a.Available)
+	if a.Channels, err = channelAvailabilities(ctx, p.db, slot, remaining); err != nil {
+		return a, err
+	}
+	var reserved int64
+	if err = p.db.QueryRowContext(ctx, reservedForChannelsSQL, slot).Scan(&reserved); err != nil {
+		return a, err
+	}
+	a.PublicAvailable = clampAvailable(remaining - reserved)
 	return a, nil
 }

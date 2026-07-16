@@ -68,13 +68,13 @@ func TestOperationalHoldsNeverExpireAndCountAgainstCapacity(t *testing.T) {
 		t.Fatalf("place returned %+v", op)
 	}
 	// A buyer hold born expired, then a second buyer hold to trigger the sweep.
-	if _, _, err = st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "buyer-1"); err != nil {
+	if _, _, err = st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "", "buyer-1"); err != nil {
 		t.Fatalf("buyer hold: %v", err)
 	}
-	if _, _, err = st.CreateHold(ctx, org, slot, uuid.Nil, 3, 0, "", "buyer-2"); err != nil {
+	if _, _, err = st.CreateHold(ctx, org, slot, uuid.Nil, 3, 0, "", "", "buyer-2"); err != nil {
 		t.Fatalf("buyer hold 2: %v", err)
 	}
-	a, err := st.Availability(ctx, org, slot)
+	a, err := st.Availability(ctx, org, slot, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestOperationalPartialAndWholeRelease(t *testing.T) {
 	if rel.Status != "held" || rel.Quantity != 7 {
 		t.Fatalf("partial release => %+v, want held/7", rel)
 	}
-	a, _ := st.Availability(ctx, org, slot)
+	a, _ := st.Availability(ctx, org, slot, "")
 	if a.Held != 7 || a.Available != 3 {
 		t.Fatalf("availability after partial release = %+v", a)
 	}
@@ -117,7 +117,7 @@ func TestOperationalPartialAndWholeRelease(t *testing.T) {
 	if err != nil || rel.Status != "released" || rel.Quantity != 0 {
 		t.Fatalf("whole release => %+v err=%v", rel, err)
 	}
-	a, _ = st.Availability(ctx, org, slot)
+	a, _ = st.Availability(ctx, org, slot, "")
 	if a.Held != 0 || a.Available != 10 {
 		t.Fatalf("availability after whole release = %+v", a)
 	}
@@ -221,7 +221,7 @@ func TestOperationalWrongOrganizerAndBuyerClaimAreNotFound(t *testing.T) {
 	if _, _, err = st.ReleaseOperational(ctx, uuid.New(), op.ID, 1, "staff:amy", "wrong org", "k-x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong organizer = %v, want ErrNotFound", err)
 	}
-	buyer, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "buyer-1")
+	buyer, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", "buyer-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestCapacityMathDoesNotWrapAtInt32Boundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 32-bit math would wrap (MaxInt32-2 + 5) negative and admit this oversell.
-	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 5, 0, "", "buyer-overflow"); !errors.Is(err, ErrUnavailable) {
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 5, 0, "", "", "buyer-overflow"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("boundary hold = %v, want ErrUnavailable", err)
 	}
 	if _, _, err := st.PlaceOperationalHold(ctx, org, slot, 5, "house", "boundary", "staff:amy", "ops", "k-over"); !errors.Is(err, ErrUnavailable) {

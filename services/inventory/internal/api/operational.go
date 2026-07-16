@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ticketing/services/inventory/internal/store"
 	"ticketing/shared/httpx"
 )
 
@@ -141,6 +142,39 @@ func (s *Server) opHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, entries)
+}
+
+// replaceAllocations atomically replaces the pool's channel allocation set (TKT-78 /
+// ADR-024). PUT of the complete desired state — repeating the request is a no-op, so no
+// idempotency key is needed.
+func (s *Server) replaceAllocations(w http.ResponseWriter, r *http.Request) {
+	slot, err := parseUUID(chi.URLParam(r, "id"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid slot id"})
+		return
+	}
+	var in struct {
+		OrganizerID uuid.UUID                 `json:"organizer_id"`
+		Allocations []store.ChannelAllocation `json:"allocations"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in, 1<<20); err != nil || in.OrganizerID == uuid.Nil || in.Allocations == nil {
+		write(w, 400, map[string]string{"error": "invalid allocation request"})
+		return
+	}
+	seen := map[string]bool{}
+	for _, a := range in.Allocations {
+		if seen[a.Channel] {
+			write(w, 400, map[string]string{"error": "duplicate channel " + a.Channel})
+			return
+		}
+		seen[a.Channel] = true
+	}
+	out, err := s.st.ReplaceChannelAllocations(r.Context(), in.OrganizerID, slot, in.Allocations)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"slot_id": slot, "allocations": out})
 }
 
 func (s *Server) staffAvailability(w http.ResponseWriter, r *http.Request) {

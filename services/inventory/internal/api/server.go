@@ -41,6 +41,7 @@ func (s *Server) Router() http.Handler {
 	r.Post("/internal/operational-holds/{id}/convert", s.internalOnly(s.opConvert))
 	r.Get("/internal/operational-holds/{id}/history", s.internalOnly(s.opHistory))
 	r.Get("/internal/slots/{id}/availability", s.internalOnly(s.staffAvailability))
+	r.Put("/internal/slots/{id}/channel-allocations", s.internalOnly(s.replaceAllocations))
 	validated, err := contract.RequestValidator(apispec.Spec, r)
 	if err != nil {
 		panic(err)
@@ -74,10 +75,11 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		TicketTypeID uuid.UUID `json:"ticket_type_id"`
 		UnitAmount   int64     `json:"unit_amount"`
 		Currency     string    `json:"currency"`
+		Channel      string    `json:"channel"`
 	}
 	err := httpx.DecodeJSON(w, r, &in, 1<<20)
 	legacy := in.TicketTypeID == uuid.Nil && in.Currency == ""
-	if err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 || in.UnitAmount < 0 || (!legacy && (in.TicketTypeID == uuid.Nil || in.Currency != "EUR")) {
+	if err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 || in.UnitAmount < 0 || len(in.Channel) > 100 || (!legacy && (in.TicketTypeID == uuid.Nil || in.Currency != "EUR")) {
 		write(w, 400, map[string]string{"error": "invalid hold request"})
 		return
 	}
@@ -86,7 +88,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
 		return
 	}
-	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, key)
+	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Channel, key)
 	if err != nil {
 		problem(w, err)
 		return
@@ -128,7 +130,7 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "valid slot and organizer required"})
 		return
 	}
-	a, err := s.st.Availability(r.Context(), org, slot)
+	a, err := s.st.Availability(r.Context(), org, slot, r.URL.Query().Get("channel"))
 	if err != nil {
 		problem(w, err)
 		return

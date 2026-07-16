@@ -42,6 +42,38 @@ type Availability struct {
 	SlotId    openapi_types.UUID `json:"slot_id"`
 }
 
+// ChannelAllocation defines model for ChannelAllocation.
+type ChannelAllocation struct {
+	Cap     int    `json:"cap"`
+	Channel string `json:"channel"`
+
+	// ReleaseAt When the unsold allocation returns to the public channel; omitted means never
+	ReleaseAt *time.Time `json:"release_at,omitempty"`
+}
+
+// ChannelAllocationSet defines model for ChannelAllocationSet.
+type ChannelAllocationSet struct {
+	Allocations []ChannelAllocation `json:"allocations"`
+	OrganizerId openapi_types.UUID  `json:"organizer_id"`
+}
+
+// ChannelAllocations defines model for ChannelAllocations.
+type ChannelAllocations struct {
+	Allocations []ChannelAllocation `json:"allocations"`
+	SlotId      openapi_types.UUID  `json:"slot_id"`
+}
+
+// ChannelAvailability defines model for ChannelAvailability.
+type ChannelAvailability struct {
+	Available int        `json:"available"`
+	Cap       int        `json:"cap"`
+	Channel   string     `json:"channel"`
+	Confirmed int        `json:"confirmed"`
+	Held      int        `json:"held"`
+	ReleaseAt *time.Time `json:"release_at,omitempty"`
+	Released  bool       `json:"released"`
+}
+
 // ConvertResult defines model for ConvertResult.
 type ConvertResult struct {
 	Hold            Hold               `json:"hold"`
@@ -69,6 +101,7 @@ type HistoryEntry struct {
 
 // Hold defines model for Hold.
 type Hold struct {
+	Channel      *string             `json:"channel,omitempty"`
 	Currency     *string             `json:"currency,omitempty"`
 	ExpiresAt    time.Time           `json:"expires_at"`
 	HoldId       openapi_types.UUID  `json:"hold_id"`
@@ -83,6 +116,8 @@ type Hold struct {
 
 // HoldCreate defines model for HoldCreate.
 type HoldCreate struct {
+	// Channel Opaque sales channel code; omitted means the default/public channel
+	Channel      *string             `json:"channel,omitempty"`
 	Currency     *string             `json:"currency,omitempty"`
 	OrganizerId  openapi_types.UUID  `json:"organizer_id"`
 	Quantity     int                 `json:"quantity"`
@@ -141,12 +176,14 @@ type OperationalRelease struct {
 
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {
-	Available       int                `json:"available"`
-	BuyerHeld       int                `json:"buyer_held"`
-	Capacity        int                `json:"capacity"`
-	Confirmed       int                `json:"confirmed"`
-	OperationalHeld int                `json:"operational_held"`
-	SlotId          openapi_types.UUID `json:"slot_id"`
+	Available       int                   `json:"available"`
+	BuyerHeld       int                   `json:"buyer_held"`
+	Capacity        int                   `json:"capacity"`
+	Channels        []ChannelAvailability `json:"channels"`
+	Confirmed       int                   `json:"confirmed"`
+	OperationalHeld int                   `json:"operational_held"`
+	PublicAvailable int                   `json:"public_available"`
+	SlotId          openapi_types.UUID    `json:"slot_id"`
 }
 
 // Id defines model for Id.
@@ -206,6 +243,9 @@ type GetStaffAvailabilityParams struct {
 // GetAvailabilityParams defines parameters for GetAvailability.
 type GetAvailabilityParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+
+	// Channel Scope `available` to this sales channel; omitted means the default/public channel
+	Channel *string `form:"channel,omitempty" json:"channel,omitempty"`
 }
 
 // CreateHoldJSONRequestBody defines body for CreateHold for application/json ContentType.
@@ -219,3 +259,6 @@ type ConvertOperationalHoldJSONRequestBody = OperationalConvert
 
 // ReleaseOperationalHoldJSONRequestBody defines body for ReleaseOperationalHold for application/json ContentType.
 type ReleaseOperationalHoldJSONRequestBody = OperationalRelease
+
+// ReplaceChannelAllocationsJSONRequestBody defines body for ReplaceChannelAllocations for application/json ContentType.
+type ReplaceChannelAllocationsJSONRequestBody = ChannelAllocationSet

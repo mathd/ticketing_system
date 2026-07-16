@@ -95,3 +95,74 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 		t.Fatalf("bad accounting %+v", a)
 	}
 }
+
+// TKT-78: the no-oversell proof extends to per-channel caps. With capacity 10 and a
+// presale cap of 6, public claimable is exactly 4 whatever the interleaving — channel
+// sales shrink the reservation one-for-one — so the grant counts are deterministic.
+func TestChannelAllocationContention(t *testing.T) {
+	catalog := gatewayURL + "/api/catalog"
+	inventory := gatewayURL + "/api/inventory"
+	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Channel Hall", "ga_capacity": 10})
+	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": "Test canaux", "en": "Channel test"}})
+	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-11-01T20:00:00Z", "timezone": "UTC"})
+	created(t, catalog+"/ticket-types", map[string]any{"organizer_id": organizerID, "performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1000, "currency": "EUR"}})
+	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
+		t.Fatalf("publish %d %s", code, body)
+	}
+	slot := fmt.Sprint(perf["id"])
+	retry(t, 20*time.Second, func() error {
+		code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/slots/%s/availability?organizer_id=%s", inventory, slot, organizerID))
+		if code != 200 {
+			return fmt.Errorf("not provisioned: %d %s", code, body)
+		}
+		return nil
+	})
+
+	// The allocation endpoint is staff/internal: off the gateway, direct to the service.
+	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
+	if code, body := internalJSON(t, http.MethodPut, allocURL, "", map[string]any{
+		"organizer_id": organizerID,
+		"allocations":  []map[string]any{{"channel": "presale", "cap": 6}},
+	}); code != 200 {
+		t.Fatalf("allocate %d %s", code, body)
+	}
+	if code, _, _ := getWithHeaders(t, fmt.Sprintf("%s/api/inventory/internal/slots/%s/channel-allocations", gatewayURL, slot)); code != 404 {
+		t.Fatalf("gateway must 404 the internal allocation route, got %d", code)
+	}
+
+	var presale, public atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1}
+			counter := &public
+			if i%2 == 0 {
+				body["channel"] = "presale"
+				counter = &presale
+			}
+			code, _ := holdRequest(inventory+"/holds", fmt.Sprintf("chan-%s-%d", slot, i), body)
+			if code == 201 {
+				counter.Add(1)
+			} else if code != 409 {
+				t.Errorf("hold %d unexpected status %d", i, code)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if presale.Load() != 6 || public.Load() != 4 {
+		t.Fatalf("granted presale=%d public=%d, want exactly 6/4", presale.Load(), public.Load())
+	}
+	code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/slots/%s/availability?organizer_id=%s&channel=presale", inventory, slot, organizerID))
+	if code != 200 {
+		t.Fatalf("channel availability %d %s", code, body)
+	}
+	var a struct{ Available, Held int32 }
+	if err := json.Unmarshal(body, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Available != 0 || a.Held != 10 {
+		t.Fatalf("channel availability %+v want available 0, pool held 10", a)
+	}
+}
