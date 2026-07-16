@@ -205,6 +205,10 @@ func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
 		"held past deadline": {hold: `"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
 		"released, future deadline": {hold: `"status":"released","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
 		"expired": {hold: `"status":"expired","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		// Unknown is not terminal: a version-skew status must not advise re-conversion
+		// (it could double-carve a still-live child) — it is an invalid response.
+		"empty status":   {hold: `"status":"","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusBadGateway},
+		"unknown status": {hold: `"status":"parked","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusBadGateway},
 	}
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

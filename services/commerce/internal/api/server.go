@@ -609,8 +609,16 @@ func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
 				write(w, 409, map[string]string{"error": "converted hold expired; place a new conversion"})
 				return
 			}
-		default: // expired, released
+		case "expired", "released":
+			// Terminal: that capacity is public again; a reservation here could never
+			// check out, and re-carving is an explicit new staff operation.
 			write(w, 409, map[string]string{"error": "converted hold is no longer usable; place a new conversion"})
+			return
+		default:
+			// Empty or future status (version skew): unknown is not terminal — advising
+			// a re-conversion here could double-carve a still-live child (ADR-017's
+			// rule: never judge a future variant with today's semantics).
+			write(w, 502, map[string]string{"error": "invalid inventory response"})
 			return
 		}
 	}
