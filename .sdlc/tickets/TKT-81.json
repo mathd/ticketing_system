@@ -1,0 +1,87 @@
+{
+  "key": "TKT-81",
+  "type": "Story",
+  "summary": "US-018: Best-available seat selection",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-018: Best-available seat selection\n**As** a buyer, **I want** \"best available N\" to return contiguous seats honoring the map's\nadjacency, atomically claimed. **Priority:** P2 **Depends on:** US-017\n**Acceptance Criteria:**\n- [ ] A best-available request for N seats returns a contiguous run per the map's adjacency/rank\n      data (TKT-3 provides both), claimed atomically in the same transaction that selected them —\n      selection and claim never race.\n- [ ] Contiguity relaxation rules are explicit and deterministic (e.g. split parties only when no\n      contiguous run exists; never strand a single seat if the map forbids it — exact rules\n      confirmed with the owner at Planning).\n- [ ] Under the contention test, parallel best-available requests never double-assign and\n      degrade fairly (no oversell, no deadlock, bounded retries).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-80"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Epic COS: best-available returns contiguous seats honoring map adjacency, claimed atomically."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: best-available-N selection using TKT-3 adjacency/rank data, atomic select+claim, deterministic relaxation rules, parallel-request contention test. OUT: buyer-facing seat picker UI (TKT-35), pricing tiers in selection (TKT-5)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Relaxation rules (split parties, no stranded singles) confirmed with the owner at Planning — named in the ACs; algorithm choice is engineering."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "HARD blocker: US-017/TKT-80 (wired blocked-by) — needs seat claims to exist."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Selection query over live seat availability + adjacency data inside the claim transaction; bounded retry on contention; determinism tested."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Request best-available 4 on a half-sold row-ranked map → a contiguous run of 4, atomically held; parallel identical requests never overlap."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 3 ACs + quality gates."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "Selection and claim happen in one transaction under the pool lock — a select-then-claim race is the failure mode this ADR exists to prevent."
+      },
+      {
+        "id": "ADR-005",
+        "why": "Best-available is a selection policy over seat claims, not a new claim kind."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations out-of-band."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    }
+  ]
+}
