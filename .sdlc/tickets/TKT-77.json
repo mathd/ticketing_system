@@ -1,0 +1,82 @@
+{
+  "key": "TKT-77",
+  "type": "Story",
+  "summary": "US-014: Operational holds — house, artist and kills",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### US-014: Operational holds — house, artist and kills\n**As** box-office staff, **I want** to place named operational holds (house seats, artist\nallotment, kills) that sit outside public sale, and release or convert them without racing the\npublic. **Priority:** P0 **Depends on:** —\n**Acceptance Criteria:**\n- [ ] Claims gain an operational type with a named purpose (`house | artist | kill | other` +\n      label); operational holds have **no TTL**, count against pool capacity, and are placeable/\n      releasable via staff/internal API only (gateway keeps them off the public edge).\n- [ ] **Convert without a gap:** converting an operational hold (whole or partial quantity) into\n      a buyer-purchasable claim happens atomically under the pool lock — released-to-order\n      capacity is never observable as publicly available in between.\n- [ ] Partial release/convert supported (release 3 of a 10-seat house hold); the remainder stays\n      held; all transitions journal-style auditable (who/when/why on the claim history).\n- [ ] Availability reads distinguish sellable from operationally-held capacity for staff, while\n      the public read keeps a single `available` number.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Epic COS 2: staff place/release/convert named house/artist/kill holds outside public sale; today every claim is a buyer hold."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: typed claims with purpose+label, no TTL, staff/internal API, atomic partial convert under the pool lock, staff vs public availability split. OUT: box-office UI (TKT-16/22), pricing of converted seats (TKT-5)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether convert lands as buyer-hold or direct-confirm is settled in Planning against the commerce checkout seam — the no-gap property is the requirement either way."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Claim type + purpose columns; convert = single transaction re-typing quantity under the pool FOR UPDATE; extend availability SQL; contention test gains a convert-vs-public race."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Place a 10-seat house hold, release 3, convert 2 to a buyer claim — public availability never shows the converted 2 in between."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 4 ACs + quality gates; the no-gap convert race test is the load-bearing signal."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-010",
+        "rule": "The inventory database is the sole write-side correctness boundary. Each mutation locks the inventory pool row first, then its claim rows; operations addressed by hold ID discover the pool with a non-locking read, then re-read the claim after locking the pool — every path has the same pool-to-claim lock order. A claim is held, confirmed, released, or expired; the last three are terminal. PostgreSQL time decides expiry: a transaction expires due holds before capacity accounting, so cleanup jobs are optional optimizations. Confirmed plus unexpired-held quantity may never exceed pool capacity. Hold creation requires an organizer-scoped idempotency key, single-use across the claim's full lifecycle. Reserved seats, date ranges, and entitlements reuse the lifecycle and lock ordering but add their own resource constraints.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "Operational holds are claims: same lifecycle, same pool→claim lock order; no TTL means they are exempt from the expiry sweep, not from the invariant."
+      },
+      {
+        "id": "ADR-009",
+        "why": "New staff endpoints are contract-first; the gateway must keep them off the public edge like the existing transition routes."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations out-of-band."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §TKT-4 decomposition — the story text is the source of truth",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "capturedAt": "2026-07-16"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    }
+  ]
+}
