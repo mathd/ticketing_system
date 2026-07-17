@@ -6,13 +6,14 @@ Harness: `smoke/onsale_load_test.go` + `smoke/internal/loadtest`; profiles and a
 
 ## What TKT-20 consumes
 
-> **Per-pool ceiling (2026-07-17, owner workstation / local compose):**
+> **Per-pool ceiling (2026-07-17, owner workstation / local compose, git 4c6f2ec):**
 > highest stable **300 completed checkout attempts/s** (= 18,000/min, **900 pool
 > mutations/s**) for one hot pool under the hold→finalize→confirm mix; first unstable
-> offered rate **600 attempts/s** (32% dropped arrivals, lifecycle p99 3.7s). The NFR window
-> (3,000 attempts/min × 3 min) ran clean: 9,000/9,000 delivered, lifecycle p99 9ms.
-> `claim_history` INSERT inside the pool-locked transaction: **0.044 ms/mutation mean**
-> (min 0.020, max 0.839, stddev 0.017; 27,000 calls, 1,175 ms total) — pg_stat_statements
+> offered rate **600 attempts/s** (33% dropped arrivals, hold p50 183ms, lifecycle p99
+> 2.9s — the pool lock queue, not the client, is where the latency lives). The NFR window
+> (3,000 attempts/min × 3 min) ran clean: 9,000/9,000 lifecycles, lifecycle p99 8.6ms.
+> `claim_history` INSERT inside the pool-locked transaction: **0.047 ms/mutation mean**
+> (min 0.021, max 0.325, stddev 0.014; 27,000 calls, 1,261 ms total) — pg_stat_statements
 > during the NFR window. Raw run: `docs/evidence/TKT-82/full-profile.json`.
 
 The waiting-room design (TKT-20) chooses its own safety margin against this bracket — this
