@@ -10,6 +10,13 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**Per-entity version counters do not survive convergence onto a shared resource**](./learnings/2026-07-16-version-scope-vs-convergence-scope.md) —
+  a version orders events only within the scope that issues it. Grouped days each carry their own
+  monotonic `closure_version` but share one pool; a pool-level comparison judged day B's first
+  closure "stale" against day A's counter and kept selling a weather-closed day. Order per source
+  entity, derive the shared state under the lock — and the regression test needs *two* entities
+  with overlapping sequences. Drafter, critic and implementer all missed it; adversarial review
+  caught it. (TKT-75, PR #56)
 - [**An anti-replay rule must be re-checked against the retry it exists to serve**](./learnings/2026-07-16-protocol-rules-safety-and-liveness.md) —
   three review rounds each fixed one side of the same idempotency rule (retry forged into a
   conflict → replay oracle → lost-retry never admits). Protocol rules have a safety side and a
