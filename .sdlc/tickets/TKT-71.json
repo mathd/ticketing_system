@@ -4,7 +4,7 @@
   "classification": "complex",
   "parent": "TKT-2",
   "summary": "Commerce's completion-outbox backfill is an unbounded startup-coupled scan",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
