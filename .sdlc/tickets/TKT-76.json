@@ -2,10 +2,8 @@
   "key": "TKT-76",
   "type": "Story",
   "summary": "US-013: Capacity adjustment with the clamp floor",
-  "status": "Building",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 57,
