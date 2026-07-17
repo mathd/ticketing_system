@@ -117,12 +117,14 @@ onsale-load-full: build-gate-linux build-ts
 # never prints the value. Compose reads .env natively, so bare
 # `docker compose up` keeps working after the first `make up`.
 env-bootstrap:
-	@umask 077; \
-	token=$$(grep -E '^INTERNAL_SERVICE_TOKEN=' .env 2>/dev/null | tail -n1 | cut -d= -f2- \
-		| tr -d '\r' | sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//"); \
+	@set -e; umask 077; \
+	token=$$(grep -E '^INTERNAL_SERVICE_TOKEN[[:space:]]*=' .env 2>/dev/null | tail -n1 \
+		| sed -e 's/^[^=]*=[[:space:]]*//' | tr -d '\r' \
+		| sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//"); \
 	if [ -z "$$token" ] || [ "$$token" = "local-service-token" ]; then \
 		new=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n'); \
-		{ grep -vE '^INTERNAL_SERVICE_TOKEN=' .env 2>/dev/null || true; printf 'INTERNAL_SERVICE_TOKEN=%s\n' "$$new"; } > .env.tmp; \
+		rm -f .env.tmp; \
+		{ grep -vE '^INTERNAL_SERVICE_TOKEN[[:space:]]*=' .env 2>/dev/null || true; printf 'INTERNAL_SERVICE_TOKEN=%s\n' "$$new"; } > .env.tmp; \
 		mv .env.tmp .env; \
 		echo "generated INTERNAL_SERVICE_TOKEN in .env"; \
 	fi; \
