@@ -4,7 +4,7 @@
   "summary": "Redeem's verified path ignores quarantine — a recovered chain re-admits a quarantine-admitted ticket",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "needs:human"
   ],
   "assignee": "claude-fable-5",
   "pr": null,
@@ -19,6 +19,21 @@
       "stage": "ready",
       "kind": "claim",
       "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Selection reason: highest-severity Ready ticket — a verified §D6 admit-once violation on the admission path (a quarantine-admitted ticket re-admits once the chain recovers). No open blockers; branch TKT-89-redeem-verified-quarantine off origin/main. Not risk:low (security/admission path) — plan gate applies. Note: ticket skipped formal shaping (no readiness/context-mémo); governing ADRs are named inline (ADR-021 §D6, ADR-025 §D2/D3, ADR-003 §D2) and will be re-resolved at plan time."
+    },
+    {
+      "stage": "planning",
+      "kind": "plan",
+      "body": "<!-- sdlc:stage=planning kind=plan -->\nPlan drafted by gpt-5.6-sol (codex task 019f6fec, read-only). Full draft summary:\n\n**Objective:** verified Redeem path consults lifecycle_events ∪ lifecycle_integrity_quarantine under the existing ticket FOR UPDATE lock (postgres.go:237). Quarantine checked after verifyTicketChain succeeds, BEFORE the redeemed-event lookup.\n\n**Behavior on quarantine hit:** Accepted=false, DecisionIntegrityQuarantined, OccurredAt=quarantine admitted_at, one alarm via existing oweAlarm (mirrors degradedScan lifecycle.go:385-394), commit before return. Only sql.ErrNoRows continues to the trace lookup; any other error aborts — never falls through to appendLifecycle.\n\n**Precedence:** quarantine row wins over an existing redeemed event (AlreadyRedeemed would hide the degraded admission and suppress §D6 escalation).\n\n**Files:** postgres.go (Redeem + comment), lifecycle_smoke_test.go (3 tests). No migration, no schema change, no canonical-form change.\n\n**Tests:** (1) extend TestCorruptChainAdmitsOnceThenQuarantines — retry OccurredAt = original, no redeemed event; (2) TestQuarantineDenialConvergesAcrossBrokenAndRecoveredChains — capture entry_hash, corrupt, degraded admit, deny while broken, restore exact bytes, VerifyLifecycle green as positive control, verified-path deny with original timestamp, 3 alarms total; (3) TestQuarantineWinsOverGrandfatheredRedeemedEvent — clean redeemed + inserted quarantine row → quarantined decision, quarantine timestamp, redeemed count stays 1.\n\n**Non-goals:** occurrence-id protocol (TKT-84/85), quarantine schema widening, same-occurrence replay success, deterministic redeemed-id change."
+    },
+    {
+      "stage": "plan-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=plan-review kind=summary -->\nAdversarial critique by main-agent (claude-fable-5) — planReview per config; drafter was gpt-5.6-sol (pair distinct).\n\nVerified against HEAD 987ee5f: every named file/symbol/seam exists (Redeem postgres.go:237, degradedScan+oweAlarm+organizerMode lifecycle.go, corruptChain/VerifyLifecycle/countRows in lifecycle_smoke_test.go, TestCorruptChainAdmitsOnceThenQuarantines already asserting the 2-alarm sequence, quarantine columns ticket_id/organizer_id/reason/admitted_at). No hallucinated seams.\n\nVerdicts: ACCEPT objective, DoD, file list, precedence rule (quarantine > AlreadyRedeemed — grounded in ADR-025 §D2 union + §D6 escalation), alarm-per-denial (matches existing degraded-path behavior; the no-second-alarm replay exception is explicitly occurrence-id-gated, TKT-84/85), error discipline (only ErrNoRows = absence), test plan incl. exact-bytes restore + VerifyLifecycle positive control.\n\nAMEND (minor): (a) test 2 must capture entry_hash at sequence=1 BEFORE corruptChain and restore with the same trigger-disable/enable discipline — pin the mechanics; (b) accepted cost: +1 PK-indexed quarantine lookup on every verified scan — negligible, note it in the PR; (c) precedence test's inserted quarantine row must respect the append-only trigger (INSERT is allowed; never UPDATE).\n\nREJECT: nothing. Pre-mortem lens: the risk register already covers the failure modes I'd have raised (fall-through after alarm error, commit-before-return, reason drift, false-recovery test)."
+    },
+    {
+      "stage": "planning",
+      "kind": "plan-final",
+      "body": "<!-- sdlc:stage=planning kind=plan-final -->\nFinal plan = draft + amendments (a)-(c) above. No structural changes from the draft.\n\nTwo judgment calls baked in, for Gate 2 attention: (1) every verified-path quarantine denial owes a FRESH alarm (consistent with today's degraded path; replay dedup arrives with occurrence ids in TKT-84/85); (2) quarantine precedence over DecisionAlreadyRedeemed.\n\nIntroduced at plan-review, reviewed by no second model: none."
     }
   ]
 }
