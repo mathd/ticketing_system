@@ -2,9 +2,11 @@
   "key": "TKT-75",
   "type": "Story",
   "summary": "US-012: React to slot archival and closure — stop offering dead slots",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "description": "### US-012: React to slot archival and closure — stop offering dead slots\n**As** an organizer, **I want** archiving or weather-closing a slot to stop new reservations\nimmediately, so buyers can't hold capacity on an offer that no longer exists. **Priority:** P1\n**Depends on:** —\n**Acceptance Criteria:**\n- [ ] Inventory consumes `platform.catalog.performance.archived`, `.closed` and `.reopened` per\n      the ADR-017 rules (dispatch on `schema` before decoding `data`; unknown future schema →\n      NAK + readiness latch; `schema <= 0` and malformed known payloads → Term; consumed-event\n      dedupe as today).\n- [ ] An archived or closed pool rejects **new** holds (409 with a distinguishable reason);\n      confirmed claims are untouched; live holds keep their TTL and may still finalize/confirm\n      (the buyer already in checkout is a commerce/refund concern, not an inventory revocation).\n- [ ] `reopened` restores claimability (closure is reversible per the US-008 spike); archival is\n      terminal. Availability reads reflect the offering state.\n- [ ] Ordering/skew safety: a `closed` arriving for a pool that was never provisioned does not\n      poison the consumer; the disposition table in the consumer tests covers the new subjects.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
   "links": [],
@@ -90,6 +92,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Selection: lowest-numbered P1 in Ready with zero blockers; closes the remaining catalog→inventory lifecycle gap after US-014/015 shipped. Branch: TKT-75-slot-archival-closure off origin/main. Drive style: gates only."
     }
   ]
 }
