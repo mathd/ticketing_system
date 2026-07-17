@@ -146,6 +146,28 @@ func New(js jetstream.JetStream, st *store.Postgres, signer *ticket.Signer, clie
 }
 func (c *Consumer) Ready() bool { return c.ready.Load() }
 
+// envelope is the part of an order.completed event that does not change
+// across schema versions (ADR-009 §5). Data stays raw on purpose: dispatch
+// happens on schema alone, before anything reads data, because a variant this
+// binary does not know may reshape data arbitrarily — that is what a bump
+// means (ADR-017 §3, §5b′). Decoding a future variant against today's struct
+// would reject it as malformed and terminate it, never issuing tickets for an
+// order that was paid for.
+type envelope struct {
+	ID     uuid.UUID       `json:"id"`
+	Type   string          `json:"type"`
+	Schema int             `json:"schema"`
+	Data   json.RawMessage `json:"data"`
+}
+
+// maxKnownCompletedSchema is the highest order.completed variant this binary
+// can read. Above it is the future (park + latch unready); at or below zero
+// is a broken envelope — poison (ADR-017 §5b). Bumping it means adding a
+// decode arm for the new variant: the hand-written schema-2 fixtures in
+// TestUnknownSchemaVersionSkewIsParkedAndLatchesUnready are the tripwire —
+// they fail the moment a bump puts them under this binary's judgment.
+const maxKnownCompletedSchema = 1
+
 type completed struct {
 	ID     uuid.UUID `json:"id"`
 	Type   string    `json:"type"`
@@ -175,8 +197,12 @@ func (c *Consumer) issue(ctx context.Context, e completed) error {
 	return c.st.Issue(ctx, in)
 }
 
+// validateCompleted judges data-level contract only: the envelope-level
+// judgments (id, type, schema) belong to handle's dispatch, which runs before
+// data is ever decoded (ADR-017 §5b′). Duplicating them here would let the
+// two judgments drift apart silently.
 func validateCompleted(e completed) error {
-	if e.ID == uuid.Nil || e.Type != SubjectOrderCompleted || e.Schema != 1 || e.Data.OrderID == uuid.Nil || e.Data.GuestOrderRef == uuid.Nil || e.Data.OrganizerID == uuid.Nil || e.Data.BuyerID == uuid.Nil || e.Data.SlotID == uuid.Nil || e.Data.TicketTypeID == uuid.Nil || e.Data.Quantity < 1 || e.Data.Quantity > 50 {
+	if e.Data.OrderID == uuid.Nil || e.Data.GuestOrderRef == uuid.Nil || e.Data.OrganizerID == uuid.Nil || e.Data.BuyerID == uuid.Nil || e.Data.SlotID == uuid.Nil || e.Data.TicketTypeID == uuid.Nil || e.Data.Quantity < 1 || e.Data.Quantity > 50 {
 		return errors.New("invalid completed order event")
 	}
 	return nil
@@ -312,12 +338,45 @@ func (c *Consumer) reject(ctx context.Context, msg jetstream.Msg, event FailureE
 	_ = msg.TermWithReason(event.Data.Reason)
 }
 
+// handle asks three questions strictly from the outside in: is the envelope
+// readable, is the variant ours to judge, and only then is the payload valid
+// (ADR-017 §5b′). Any other order judges a future variant by rules that were
+// never written for it — the TKT-61 bug, present here as TKT-74.
 func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	attempts := c.deliveryCount(msg)
-	var event completed
-	if err := json.Unmarshal(msg.Data(), &event); err != nil {
+	var env envelope
+	if err := json.Unmarshal(msg.Data(), &env); err != nil {
 		c.log.Error("invalid completed order event", "reason", ReasonInvalidJSON)
 		c.reject(ctx, msg, failureRecord(msg.Data(), uuid.Nil, StageContract, ReasonInvalidJSON, attempts))
+		return
+	}
+	if env.Type != SubjectOrderCompleted || env.ID == uuid.Nil || env.Schema <= 0 {
+		// Broken envelope: id, type and schema are stable across every variant
+		// (ADR-009 §5), so their absence is poison even when schema claims to
+		// be from the future — parking it would NAK forever and latch
+		// readiness for an event no binary will ever apply. Readiness is
+		// deliberately untouched: a broken producer must not take access down.
+		c.log.Error("invalid completed order event", "event_id", env.ID, "schema", env.Schema, "reason", ReasonInvalidContract)
+		c.reject(ctx, msg, failureRecord(msg.Data(), env.ID, StageContract, ReasonInvalidContract, attempts))
+		return
+	}
+	if env.Schema > maxKnownCompletedSchema {
+		// Version skew, not a failure: the variant is well-formed and a newer
+		// binary can issue from it. Park it on the stream and go loudly
+		// unready — terminating would drop tickets for a paid order with only
+		// a fingerprint surviving. No failure record: publishing one would
+		// let reject() terminate the event when the publish succeeds.
+		c.log.Error("unsupported completed order schema; parking", "event_id", env.ID, "schema", env.Schema)
+		c.ready.Store(false)
+		_ = msg.NakWithDelay(c.retryDelay(attempts))
+		return
+	}
+	var event completed
+	if err := json.Unmarshal(msg.Data(), &event); err != nil {
+		// Known variant: now it is ours to judge, so decode data as this
+		// schema defines it.
+		c.log.Error("invalid completed order event", "event_id", env.ID, "reason", ReasonInvalidJSON)
+		c.reject(ctx, msg, failureRecord(msg.Data(), env.ID, StageContract, ReasonInvalidJSON, attempts))
 		return
 	}
 	if err := validateCompleted(event); err != nil {

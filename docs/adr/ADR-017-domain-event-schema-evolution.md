@@ -15,6 +15,9 @@ Amended by **TKT-61** (§5b, §5c, Consequences): the unknown-variant dispositio
 decided — park, don't terminate — and the passages describing the drop as live have been rewritten.
 The §5a/§5b *ordering rules are unchanged*; TKT-61 made violating them loud, not safe.
 
+Amended by **TKT-74** (§5b′): the dispatch-before-decode rule now binds **both** consumers — access's
+`order.completed` consumer had the same decode-before-dispatch bug and terminated unknown variants.
+
 Amends [ADR-009](./ADR-009-contract-first-apis.md) §5 (which defines the envelope's `schema` field
 but not how to evolve it) and refines [ADR-014](./ADR-014-typed-dated-slot-implementation.md) §3
 (which decided "additive optional fields are backward compatible; a bump is reserved for a breaking
@@ -211,6 +214,20 @@ On *ordering* the two sides, given a bump is required:
       never touch quarantine or readiness. Operator surface: `docs/development.md`
       §Inventory catalog-event quarantine operations.
 
+      **§5b′ binds both consumers (TKT-74).** Access's `order.completed` consumer
+      (`services/access/internal/consumer/consumer.go` — `envelope` / `maxKnownCompletedSchema` /
+      `handle`) dispatches on `schema` before decoding `data`, exactly as inventory does; this is
+      the precondition for ever bumping `order.completed` past schema 1. One deliberate difference:
+      access has **no quarantine store** — a future variant parks outstanding on the stream
+      (`NakWithDelay` + readiness latch, cleared only by a restart and re-latched on redelivery)
+      rather than being persisted and acked, so the TKT-68 ack-window bound above applies to
+      inventory only; access gains it when TKT-68's pattern is extended. The cost of that gap is
+      head-of-line pressure, not an immediate stall: the durable is AckExplicit with the server's
+      default `MaxAckPending`, so schema-1 orders behind a parked variant keep issuing until parked
+      events fill the ack window — accepted for TKT-74 because no bump exists yet. The poison rules are
+      identical: `schema <= 0`, missing `id`, wrong `type`, and invalid payloads at a known schema
+      terminate with access's fingerprint-only failure record and never touch readiness.
+
       **Readiness is borrowed as the alert channel, deliberately and with a known cost.** It is the
       only signal wired for inventory today (`/readyz` gates on `cons.Ready()`,
       `cmd/inventory/main.go`). But readiness properly means *can serve traffic*, and a parked event
@@ -314,6 +331,7 @@ On *ordering* the two sides, given a bump is required:
 - TKT-59 (this ADR) · TKT-53 / PR #37 (the proving case) · TKT-14 (consumes the shared-capacity pool)
 - TKT-61 (amends §5b/§5c/Consequences: unknown variants park + latch unready; startup gate and
   Compose ordering rejected, with reasons)
+- TKT-74 (amends §5b′: binds the access `order.completed` consumer; park without quarantine)
 - [ADR-009](./ADR-009-contract-first-apis.md) §5 (envelope + `schema`) ·
   [ADR-014](./ADR-014-typed-dated-slot-implementation.md) §3 (additive `kind`, bump rejected) ·
   [ADR-005](./ADR-005-unified-dated-slot-admission.md) (inventory does not fork on `kind`) ·
