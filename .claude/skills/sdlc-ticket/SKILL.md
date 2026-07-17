@@ -172,8 +172,10 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #      pick the test seam, produce DoD / files / test plan / risks. Delegated drafts are
 #      READ-ONLY — the drafter never touches the tree. Brief file rules: codex-runner.md.
 #      REQUIRED brief SECTION — "governing ADRs": the decisions constraining the touched area and
-#      what each constrains *for this ticket* (from the mémo's governingAdrs; if absent, resolve
-#      from registry.bindingPath yourself — do not skip). The drafter reads code, not decision
+#      what each constrains *for this ticket* (seed from the mémo's governingAdrs, then re-resolve
+#      against registry.bindingPath at claim time — the mémo's list is a shaping-time snapshot and
+#      goes stale when ADRs land between shaping and claim (TKT-73, TKT-79) — do not skip). The
+#      drafter reads code, not decision
 #      history: an ADR that makes the obvious solution wrong is invisible to it (TKT-62).
 #      Post the draft attributed to the model that wrote it.
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=planning kind=plan -->

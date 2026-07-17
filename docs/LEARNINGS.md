@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**A finding's mechanics being true does not make its trigger reachable**](./learnings/2026-07-16-refute-the-trigger-not-the-mechanics.md) —
+  triage reviewer findings in two steps: verify the causal chain in the code, then grep for the
+  event that starts it. A true mechanism with an absent trigger is not a PR fix — it's a backlog
+  ticket gated on whatever would ship the trigger. The review-side dual of premise rot (TKT-73).
+  (TKT-79, PR #58)
 - [**Upsert guards are snapshot-stale under lock contention**](./learnings/2026-07-16-upsert-guards-are-snapshot-stale.md) —
   `ON CONFLICT DO UPDATE ... WHERE NOT EXISTS(...)` waits on the row lock but evaluates its
   subqueries against the pre-wait snapshot: state committed while it queued is invisible and the
