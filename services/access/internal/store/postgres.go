@@ -343,6 +343,14 @@ const (
 	AdmissionDuplicateAdmit AdmissionEventType = "duplicate_admit"
 )
 
+// isUniqueViolation reports a Postgres unique violation (SQLSTATE 23505)
+// without importing driver-specific error types (same shape as catalog's).
+func isUniqueViolation(err error) bool {
+	type coder interface{ SQLState() string }
+	var c coder
+	return errors.As(err, &c) && c.SQLState() == "23505"
+}
+
 // ErrOccurrenceCollision is an occurrence id reused across tickets or event
 // types. That is never a transport retry — treating it as one would hand back
 // another admission's result — so it is an error, not a replay.
@@ -436,6 +444,13 @@ func (p *Postgres) RecordAdmission(ctx context.Context, in RecordAdmissionInput)
 		EventID: in.OccurrenceID, Type: string(in.Type), OccurredAt: in.OccurredAt,
 	})
 	if err != nil {
+		// The ticket lock serializes same-ticket callers, so a primary-key
+		// collision surfacing here can only be the same occurrence id landing
+		// on ANOTHER ticket concurrently — its replay check and ours both ran
+		// before either insert committed. Same answer as the visible case.
+		if isUniqueViolation(err) {
+			return RecordAdmissionResult{}, fmt.Errorf("occurrence %s: %w", in.OccurrenceID, ErrOccurrenceCollision)
+		}
 		return RecordAdmissionResult{}, err
 	}
 	var sequence int64

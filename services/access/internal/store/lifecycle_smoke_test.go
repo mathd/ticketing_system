@@ -1516,3 +1516,97 @@ func TestHistoryUsesIntegritySequenceNotClaimedTime(t *testing.T) {
 		t.Fatalf("claimed time rewritten: %v", history[2].OccurredAt)
 	}
 }
+
+// Concurrent cross-ticket reuse of one occurrence id: each ticket's lock only
+// serializes its own ticket, so both replay checks can pass and the collision
+// is only caught by the event primary key inside the append. The caller must
+// still see ErrOccurrenceCollision — never a raw unique-violation error
+// (rung-1 ai-review finding, PR #62).
+func TestConcurrentCrossTicketOccurrenceReuseIsACollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	organizerID := uuid.New()
+	a, b := issueTicket(t, ctx, st, organizerID), issueTicket(t, ctx, st, organizerID)
+
+	shared := uuid.New()
+	inputs := []RecordAdmissionInput{}
+	for _, s := range []seeded{a, b} {
+		in := admissionInput(s, AdmissionEntry)
+		in.OccurrenceID = shared
+		inputs = append(inputs, in)
+	}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range inputs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = st.RecordAdmission(ctx, inputs[i])
+		}(i)
+	}
+	wg.Wait()
+	var ok, collided int
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrOccurrenceCollision):
+			collided++
+		default:
+			t.Fatalf("racer %d leaked a non-collision error: %v", i, err)
+		}
+	}
+	if ok != 1 || collided != 1 {
+		t.Fatalf("want exactly one append and one collision, got ok=%d collided=%d", ok, collided)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE id=$1`, shared); n != 1 {
+		t.Fatalf("occurrence stored %d times", n)
+	}
+	if err := New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("verify after cross-ticket race: %v", err)
+	}
+}
+
+// The deterministic version of the window above: a competing writer holds the
+// shared occurrence id uncommitted while RecordAdmission runs. The replay check
+// (READ COMMITTED) sees nothing, the append blocks on the in-flight primary
+// key, and the commit turns it into a unique violation — which the caller must
+// receive as ErrOccurrenceCollision, not as a raw SQLSTATE error. The direct
+// insert stands in for the competing transaction's in-flight append; it is
+// never verified as a trail.
+func TestOccurrenceCollisionInsideTheAppendWindowIsACollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	organizerID := uuid.New()
+	a, b := issueTicket(t, ctx, st, organizerID), issueTicket(t, ctx, st, organizerID)
+
+	shared := uuid.New()
+	competing, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = competing.Rollback() }()
+	if _, err = competing.ExecContext(ctx, `INSERT INTO lifecycle_events(id,ticket_id,event_type) VALUES($1,$2,'entry')`, shared, b.ticketID); err != nil {
+		t.Fatal(err)
+	}
+
+	in := admissionInput(a, AdmissionEntry)
+	in.OccurrenceID = shared
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.RecordAdmission(ctx, in)
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond) // let it reach the blocked insert
+	if err = competing.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("append-window collision surfaced as %v, want ErrOccurrenceCollision", err)
+	}
+}
