@@ -9,8 +9,9 @@ Harness: `smoke/onsale_load_test.go` + `smoke/internal/loadtest`; profiles and a
 > **Per-pool ceiling (2026-07-17, owner workstation / local compose, git 4c6f2ec):**
 > highest stable **300 completed checkout attempts/s** (= 18,000/min, **900 pool
 > mutations/s**) for one hot pool under the hold→finalize→confirm mix; first unstable
-> offered rate **600 attempts/s** (33% dropped arrivals, hold p50 183ms, lifecycle p99
-> 2.9s — the pool lock queue, not the client, is where the latency lives). The NFR window
+> offered rate **600 attempts/s** — unstable by the latency SLO: lifecycle p50 4.6s /
+> p99 13.0s with achieved throughput plateaued at ~398 ok/s (the pool lock queue, not the
+> client generator, is the knee; sweep cap = rate × 4s). The NFR window
 > (3,000 attempts/min × 3 min) ran clean: 9,000/9,000 lifecycles, lifecycle p99 8.6ms.
 > `claim_history` INSERT inside the pool-locked transaction: **0.047 ms/mutation mean**
 > (min 0.021, max 0.325, stddev 0.014; 27,000 calls, 1,261 ms total) — pg_stat_statements
