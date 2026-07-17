@@ -117,13 +117,16 @@ onsale-load-full: build-gate-linux build-ts
 # never prints the value. Compose reads .env natively, so bare
 # `docker compose up` keeps working after the first `make up`.
 env-bootstrap:
-	@token=$$(grep -E '^INTERNAL_SERVICE_TOKEN=' .env 2>/dev/null | cut -d= -f2-); \
+	@umask 077; \
+	token=$$(grep -E '^INTERNAL_SERVICE_TOKEN=' .env 2>/dev/null | tail -n1 | cut -d= -f2- \
+		| tr -d '\r' | sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//"); \
 	if [ -z "$$token" ] || [ "$$token" = "local-service-token" ]; then \
 		new=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n'); \
 		{ grep -vE '^INTERNAL_SERVICE_TOKEN=' .env 2>/dev/null || true; printf 'INTERNAL_SERVICE_TOKEN=%s\n' "$$new"; } > .env.tmp; \
-		mv .env.tmp .env; chmod 600 .env; \
+		mv .env.tmp .env; \
 		echo "generated INTERNAL_SERVICE_TOKEN in .env"; \
-	fi
+	fi; \
+	[ ! -f .env ] || chmod 600 .env
 
 up: env-bootstrap
 	docker compose up -d --build --wait
