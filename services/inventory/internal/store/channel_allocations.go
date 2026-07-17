@@ -78,8 +78,10 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// During a draining cut (TKT-76) a new allocation set must fit the requested
+	// target, not the materialized clamp floor.
 	var capacity int32
-	err = tx.QueryRowContext(ctx, `SELECT capacity FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(target_capacity, capacity) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

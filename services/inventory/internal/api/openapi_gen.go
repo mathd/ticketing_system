@@ -30,6 +30,24 @@ func (e AvailabilityOfferingStatus) Valid() bool {
 	}
 }
 
+// Defines values for CapacityAdjustmentStatus.
+const (
+	Applied CapacityAdjustmentStatus = "applied"
+	Clamped CapacityAdjustmentStatus = "clamped"
+)
+
+// Valid indicates whether the value is a known member of the CapacityAdjustmentStatus enum.
+func (e CapacityAdjustmentStatus) Valid() bool {
+	switch e {
+	case Applied:
+		return true
+	case Clamped:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ErrorCode.
 const (
 	SlotArchived ErrorCode = "slot_archived"
@@ -108,6 +126,30 @@ type Availability struct {
 // AvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open
 type AvailabilityOfferingStatus string
 
+// CapacityAdjust defines model for CapacityAdjust.
+type CapacityAdjust struct {
+	Actor       string             `json:"actor"`
+	Capacity    int                `json:"capacity"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Reason      string             `json:"reason"`
+}
+
+// CapacityAdjustment defines model for CapacityAdjustment.
+type CapacityAdjustment struct {
+	// Capacity Applied ceiling after the adjustment; equals live demand while a cut is clamped
+	Capacity       int                      `json:"capacity"`
+	CapacityBefore int                      `json:"capacity_before"`
+	ServerTime     time.Time                `json:"server_time"`
+	SlotId         openapi_types.UUID       `json:"slot_id"`
+	Status         CapacityAdjustmentStatus `json:"status"`
+
+	// TargetCapacity Requested target while a clamped cut drains; absent when the adjustment applied fully
+	TargetCapacity *int `json:"target_capacity,omitempty"`
+}
+
+// CapacityAdjustmentStatus defines model for CapacityAdjustment.Status.
+type CapacityAdjustmentStatus string
+
 // ChannelAllocation defines model for ChannelAllocation.
 type ChannelAllocation struct {
 	Cap     int    `json:"cap"`
@@ -168,6 +210,9 @@ type HistoryEntry struct {
 	Reason         string              `json:"reason"`
 	RelatedClaimId *openapi_types.UUID `json:"related_claim_id,omitempty"`
 	StatusAfter    string              `json:"status_after"`
+
+	// TargetCapacity Capacity-adjustment records only (TKT-76): the requested target while a clamped cut drains
+	TargetCapacity *int `json:"target_capacity,omitempty"`
 }
 
 // Hold defines model for Hold.
@@ -247,8 +292,10 @@ type OperationalRelease struct {
 
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {
-	Available int                   `json:"available"`
-	BuyerHeld int                   `json:"buyer_held"`
+	Available int `json:"available"`
+	BuyerHeld int `json:"buyer_held"`
+
+	// Capacity Effective capacity: the clamp floor while a cut drains (TKT-76)
 	Capacity  int                   `json:"capacity"`
 	Channels  []ChannelAvailability `json:"channels"`
 	Confirmed int                   `json:"confirmed"`
@@ -258,6 +305,9 @@ type StaffAvailability struct {
 	OperationalHeld int                             `json:"operational_held"`
 	PublicAvailable int                             `json:"public_available"`
 	SlotId          openapi_types.UUID              `json:"slot_id"`
+
+	// TargetCapacity Requested target while a clamped cut drains; absent otherwise
+	TargetCapacity *int `json:"target_capacity,omitempty"`
 }
 
 // StaffAvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open
@@ -317,6 +367,16 @@ type GetStaffAvailabilityParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 
+// GetCapacityAdjustmentsParams defines parameters for GetCapacityAdjustments.
+type GetCapacityAdjustmentsParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// AdjustCapacityParams defines parameters for AdjustCapacity.
+type AdjustCapacityParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // GetAvailabilityParams defines parameters for GetAvailability.
 type GetAvailabilityParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
@@ -336,6 +396,9 @@ type ConvertOperationalHoldJSONRequestBody = OperationalConvert
 
 // ReleaseOperationalHoldJSONRequestBody defines body for ReleaseOperationalHold for application/json ContentType.
 type ReleaseOperationalHoldJSONRequestBody = OperationalRelease
+
+// AdjustCapacityJSONRequestBody defines body for AdjustCapacity for application/json ContentType.
+type AdjustCapacityJSONRequestBody = CapacityAdjust
 
 // ReplaceChannelAllocationsJSONRequestBody defines body for ReplaceChannelAllocations for application/json ContentType.
 type ReplaceChannelAllocationsJSONRequestBody = ChannelAllocationSet

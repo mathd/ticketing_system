@@ -177,6 +177,56 @@ func (s *Server) replaceAllocations(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"slot_id": slot, "allocations": out})
 }
 
+// adjustCapacity is the staff capacity-adjustment operation (TKT-76 / ADR-026): raises
+// apply freely; a cut below demand clamps to the invariant floor and blocks new claims
+// until demand drains to the target — forward-only, never releasing anything.
+func (s *Server) adjustCapacity(w http.ResponseWriter, r *http.Request) {
+	slot, err := parseUUID(chi.URLParam(r, "id"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid slot id"})
+		return
+	}
+	var in struct {
+		OrganizerID uuid.UUID `json:"organizer_id"`
+		Capacity    int32     `json:"capacity"`
+		Actor       string    `json:"actor"`
+		Reason      string    `json:"reason"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in, 1<<20); err != nil || in.OrganizerID == uuid.Nil {
+		write(w, 400, map[string]string{"error": "invalid capacity adjustment request"})
+		return
+	}
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	adj, replay, err := s.st.AdjustCapacity(r.Context(), in.OrganizerID, slot, in.Capacity, in.Actor, in.Reason, key)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	code := 201
+	if replay {
+		code = 200
+	}
+	write(w, code, adj)
+}
+
+func (s *Server) capacityHistory(w http.ResponseWriter, r *http.Request) {
+	slot, e1 := parseUUID(chi.URLParam(r, "id"))
+	org, e2 := parseUUID(r.URL.Query().Get("organizer_id"))
+	if e1 != nil || e2 != nil {
+		write(w, 400, map[string]string{"error": "valid slot and organizer required"})
+		return
+	}
+	entries, err := s.st.CapacityHistory(r.Context(), org, slot)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	write(w, 200, entries)
+}
+
 func (s *Server) staffAvailability(w http.ResponseWriter, r *http.Request) {
 	slot, e1 := parseUUID(chi.URLParam(r, "id"))
 	org, e2 := parseUUID(r.URL.Query().Get("organizer_id"))

@@ -127,6 +127,7 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001"},
 		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email"},
 		{http.MethodPost, "/api/payments/internal/facts"},
+		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

@@ -74,7 +74,12 @@ func sweepExpired(ctx context.Context, tx *sql.Tx, pool uuid.UUID) error {
 			RETURNING id, organizer_id, quantity)
 		INSERT INTO claim_history(id, organizer_id, claim_id, action, actor, reason, quantity, quantity_after, status_after)
 		SELECT gen_random_uuid(), organizer_id, id, 'expire', 'system', 'ttl_elapsed', quantity, 0, 'expired' FROM swept`, pool)
-	return err
+	if err != nil {
+		return err
+	}
+	// Expiry lowers demand: settle a draining capacity cut (TKT-76), same lock, no-op
+	// without a pending target.
+	return reconcileCapacity(ctx, tx, pool)
 }
 
 func appendHistory(ctx context.Context, tx *sql.Tx, org, claim uuid.UUID, related *uuid.UUID, action, actor, reason string, qty, qtyAfter int32, statusAfter string, key, fp *string) error {
@@ -147,13 +152,20 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	}
 	defer func() { _ = tx.Rollback() }()
 	var capacity, confirmed int32
+	var target sql.NullInt32
 	var lifecycle, closure string
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &lifecycle, &closure)
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Claim{}, false, ErrNotFound
 	}
 	if err != nil {
 		return Claim{}, false, err
+	}
+	// A draining cut (TKT-76) admits against the requested target, not the clamped
+	// ceiling — new demand may never grow past what the organizer asked for.
+	limit := capacity
+	if target.Valid {
+		limit = target.Int32
 	}
 	var existing Claim
 	var fp string
@@ -193,7 +205,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		return Claim{}, false, err
 	}
 	// int64 math: three valid int32 counters can wrap a 32-bit sum (ai-review finding 4).
-	if int64(confirmed)+int64(held)+int64(qty) > int64(capacity) {
+	if int64(confirmed)+int64(held)+int64(qty) > int64(limit) {
 		return Claim{}, false, ErrUnavailable
 	}
 	if channel != "" {
@@ -219,7 +231,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		if err = tx.QueryRowContext(ctx, reservedForChannelsSQL, slot).Scan(&reserved); err != nil {
 			return Claim{}, false, err
 		}
-		if int64(confirmed)+int64(held)+int64(qty)+reserved > int64(capacity) {
+		if int64(confirmed)+int64(held)+int64(qty)+reserved > int64(limit) {
 			return Claim{}, false, ErrUnavailable
 		}
 	}
@@ -271,6 +283,9 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 		if err = appendHistory(ctx, tx, org, id, nil, "expire", "system", "ttl_elapsed", c.Quantity, 0, "expired", nil, nil); err != nil {
 			return Claim{}, err
 		}
+		if err = reconcileCapacity(ctx, tx, pool); err != nil {
+			return Claim{}, err
+		}
 	}
 	if c.Status == target {
 		return c, tx.Commit()
@@ -306,6 +321,10 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	action, after := "confirm", c.Quantity
 	if target == "released" {
 		action, after = "release", 0
+		// Release lowers demand: settle a draining capacity cut (TKT-76).
+		if err = reconcileCapacity(ctx, tx, pool); err != nil {
+			return Claim{}, err
+		}
 	}
 	if err = appendHistory(ctx, tx, org, id, nil, action, "commerce", "checkout", c.Quantity, after, target, nil, nil); err != nil {
 		return Claim{}, err
@@ -320,8 +339,9 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID, channel string) (Availability, error) {
 	var a Availability
 	a.SlotID = slot
+	var target sql.NullInt32
 	var lifecycle, closure string
-	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status,(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims+`) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).Scan(&a.Capacity, &a.Confirmed, &lifecycle, &closure, &a.Held)
+	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status,(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims+`) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.Held)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -329,6 +349,9 @@ func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID, channe
 		return a, err
 	}
 	a.OfferingStatus = offeringStatus(lifecycle, closure)
+	// Effective capacity re-derives the clamp floor from live claims (TKT-76): during a
+	// draining cut it follows demand down and settles at the target, sweeper or not.
+	a.Capacity = effectiveCapacity(a.Capacity, target, a.Confirmed, a.Held)
 	remaining := int64(a.Capacity) - int64(a.Confirmed) - int64(a.Held)
 	if a.OfferingStatus != "open" {
 		remaining = 0

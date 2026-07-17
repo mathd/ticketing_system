@@ -105,6 +105,30 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/slots/{id}/capacity-adjustments:
+    post:
+      operationId: adjustCapacity
+      summary: Staff capacity adjustment (TKT-76) — raises apply freely; a cut below demand clamps to the invariant floor and blocks new claims until demand drains to the target
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CapacityAdjust'}}}}
+      responses:
+        '200': {description: Replayed adjustment, content: {application/json: {schema: {$ref: '#/components/schemas/CapacityAdjustment'}}}}
+        '201': {description: Adjustment applied (or clamped), content: {application/json: {schema: {$ref: '#/components/schemas/CapacityAdjustment'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+    get:
+      operationId: getCapacityAdjustments
+      summary: Pool capacity-adjustment audit trail (who/when/from→to)
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses:
+        '200': {description: Adjustment history, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/HistoryEntry'}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/slots/{id}/availability:
     get:
       operationId: getStaffAvailability
@@ -227,6 +251,26 @@ components:
         source_id: {type: string, format: uuid}
         source_remaining: {type: integer}
         source_status: {type: string}
+    CapacityAdjust:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, capacity, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        capacity: {type: integer, minimum: 1, maximum: 1000000}
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    CapacityAdjustment:
+      type: object
+      additionalProperties: false
+      required: [slot_id, capacity_before, capacity, status, server_time]
+      properties:
+        slot_id: {type: string, format: uuid}
+        capacity_before: {type: integer}
+        capacity: {type: integer, description: 'Applied ceiling after the adjustment; equals live demand while a cut is clamped'}
+        target_capacity: {type: integer, description: 'Requested target while a clamped cut drains; absent when the adjustment applied fully'}
+        status: {type: string, enum: [applied, clamped]}
+        server_time: {type: string, format: date-time}
     ChannelAllocation:
       type: object
       additionalProperties: false
@@ -267,7 +311,8 @@ components:
       required: [slot_id, capacity, buyer_held, operational_held, confirmed, available, public_available, offering_status, channels]
       properties:
         slot_id: {type: string, format: uuid}
-        capacity: {type: integer}
+        capacity: {type: integer, description: 'Effective capacity: the clamp floor while a cut drains (TKT-76)'}
+        target_capacity: {type: integer, description: 'Requested target while a clamped cut drains; absent otherwise'}
         buyer_held: {type: integer}
         operational_held: {type: integer}
         confirmed: {type: integer}
@@ -287,4 +332,5 @@ components:
         quantity_after: {type: integer}
         status_after: {type: string}
         related_claim_id: {type: string, format: uuid}
+        target_capacity: {type: integer, description: 'Capacity-adjustment records only (TKT-76): the requested target while a clamped cut drains'}
         occurred_at: {type: string, format: date-time}
