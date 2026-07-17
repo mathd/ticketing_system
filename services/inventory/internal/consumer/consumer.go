@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,15 @@ type Consumer struct {
 	st       catalogStore
 	resolver PerformanceResolver
 	ready    atomic.Bool
-	log      *slog.Logger
+	// readinessMu serializes the two writers that can decide readiness once
+	// consumption is running (TKT-90 reorder): handle's skew latch and
+	// refreshStartupReadiness. Without it, the startup check can read the
+	// quarantine table before a concurrent skew insert commits and then
+	// Store(true) AFTER that event latched false — silently ready with a
+	// pending quarantine, which is the exact state the latch exists to shout
+	// about. Serialized, either order converges on unready.
+	readinessMu sync.Mutex
+	log         *slog.Logger
 	// retryBackoff paces startupConverge's reconciliation retries; the zero
 	// value (used by tests) retries immediately.
 	retryBackoff time.Duration
@@ -200,7 +209,9 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 			_ = msg.Term()
 			return
 		}
+		c.readinessMu.Lock()
 		c.ready.Store(false)
+		c.readinessMu.Unlock()
 		if err != nil {
 			// Includes ErrCatalogQuarantineFull: without a committed copy the event must
 			// stay outstanding — at the quarantine cap the stall is deliberate, explicit,
@@ -402,6 +413,11 @@ func (c *Consumer) consumerConfig() jetstream.ConsumerConfig {
 // the source of truth. Pending rows keep readiness latched false (known variants still flow);
 // recovery is reprocess-quarantine + restart, never silent.
 func (c *Consumer) refreshStartupReadiness(ctx context.Context) error {
+	// The check-then-latch must be atomic against handle's skew latch (see
+	// readinessMu): a skew event quarantined between the read and the Store
+	// would otherwise be overwritten into silent readiness.
+	c.readinessMu.Lock()
+	defer c.readinessMu.Unlock()
 	pending, err := c.st.HasPendingCatalogQuarantine(ctx)
 	if err != nil {
 		return fmt.Errorf("check pending catalog quarantine: %w", err)
@@ -437,8 +453,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// dead-beyond-retention pools converge here; the quarantine latch still wins.
 	// Consumption is already running: the durable's backlog drains in parallel
 	// with the pass (ai-review finding 4 — the pass gates readiness, never
-	// delivery), and interleaved writes are safe by the same per-slot version
-	// guard and archive idempotence that make the pass itself safe.
+	// delivery). Interleaved writes are safe per pair: closure vs closure by the
+	// per-slot version guard, and anything vs archive because archival is
+	// terminal and offeringStatus collapses archived over closed — a post-archive
+	// closure row changes nothing the read path can see.
 	if err := c.startupConverge(ctx); err != nil {
 		return err
 	}
