@@ -4,7 +4,7 @@
   "summary": "US-013: Capacity adjustment with the clamp floor",
   "status": "Ready",
   "labels": [],
-  "assignee": null,
+  "assignee": "agent",
   "pr": null,
   "description": "### US-013: Capacity adjustment with the clamp floor\n**As** an organizer, **I want** to raise or cut a slot's capacity after publication, so production\nchanges (extra seats released, a stage reconfiguration) don't require republishing. **Priority:** P1\n**Depends on:** —\n**Acceptance Criteria:**\n- [ ] Inventory exposes a staff/internal capacity-adjustment operation per the ADR-005 amendment:\n      raises apply freely; a cut below demand clamps to the invariant floor\n      `max(new, confirmed + held)` and blocks new claims while demand exceeds the target — never\n      force-releasing a confirmed admission (forward-only).\n- [ ] Adjustment is idempotent and audit-visible (who/when/from→to recorded); it takes the pool\n      row lock (ADR-010) so it serializes correctly against concurrent holds; the contention test\n      extended with an adversarial adjust-during-holds interleaving stays oversell-free.\n- [ ] Shared festival pools adjust as one pool (the group is the pool); availability reads\n      reflect the new capacity within their ADR-004 TTL tier.\n- [ ] Catalog's published capacity stays the initial snapshot only — no silent overwrite of a\n      pool with claims (existing `Provision` guard preserved and tested).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
   "links": [],
@@ -86,6 +86,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed by agent (Claude Code session, 2026-07-16). Selection: user command \"take TKT-76\". Blockers: none (links empty). Branch: TKT-76-capacity-adjustment off origin/main. Drive style: gates only."
     }
   ]
 }
