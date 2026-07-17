@@ -66,7 +66,12 @@ func timedPost(url string, headers map[string]string, body any) (int, []byte, ti
 		return 0, nil, d, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	out, _ := io.ReadAll(resp.Body)
+	out, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		// A truncated/reset body is a transport failure, not a delivered
+		// response — surfacing it as err classifies it client-side (TKT-92).
+		return resp.StatusCode, out, d, fmt.Errorf("read body: %w", rerr)
+	}
 	return resp.StatusCode, out, d, nil
 }
 
@@ -86,7 +91,10 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
 		case code == http.StatusConflict:
 			return loadtest.Outcome{Kind: loadtest.KindRejected}
-		case code != http.StatusCreated:
+		// 200 is an idempotent replay. Keys are unique per attempt, so it only
+		// arises when Go transparently retried after losing the first response
+		// on a reused connection — the hold is real, not instability.
+		case code != http.StatusCreated && code != http.StatusOK:
 			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("hold: %d %.200s", code, body)}
 		}
 		var claim struct {
@@ -285,6 +293,13 @@ func onsaleGate(t *testing.T) {
 	sustained := loadtest.RunStage(loadtest.Stage{Name: "sustained", Rate: 25, Duration: 10 * time.Second, Quantity: 1}, 64, attempt)
 	report.Stages = append(report.Stages, logStage(t, sustained))
 
+	// A client-side failure invalidates the fill arithmetic below (a committed
+	// confirm whose response was lost undercounts OK, so the fill over-requests
+	// and dies on a confusing 409) — diagnose inconclusive before filling.
+	if n := warm.ClientErrors + sustained.ClientErrors; n != 0 {
+		t.Fatalf("%d attempts hit client-side transport errors before the fill — run inconclusive, rerun on a healthy generator", n)
+	}
+
 	// Fill exactly to capacity, sized from what actually landed so a dropped
 	// arrival on a slow runner cannot desynchronize the rejection tail.
 	grantedUnits := warm.OK + sustained.OK
@@ -386,6 +401,11 @@ func onsaleFull(t *testing.T) {
 
 	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 10, Duration: 30 * time.Second, Quantity: 1}, 512, attempt)
 	generatorHealthy(warm)
+	// Warm-up is not published evidence, but a delivered server failure (or a
+	// rejection with a 100k pool ample) already invalidates the run.
+	if warm.ServerErrors != 0 || warm.Rejected != 0 {
+		t.Fatalf("warm-up: %d server errors, %d rejections with capacity ample", warm.ServerErrors, warm.Rejected)
+	}
 	report.Stages = append(report.Stages, logStage(t, warm))
 	statStatementsReset(t, conn)
 

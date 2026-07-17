@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -71,6 +72,7 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 	interval := time.Second / time.Duration(stage.Rate)
 
 	slots := make(chan struct{}, maxInFlight)
+	var inFlight atomic.Int64
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	start := time.Now()
@@ -87,16 +89,17 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 			continue
 		}
 		res.Started++
-		// Occupancy only decreases between acquisitions, so the max over
-		// acquisition instants is the true peak; only this goroutine writes it.
-		if n := len(slots); n > res.PeakInFlight {
+		// The peak occurs at an acquisition instant, and the counter is bumped
+		// atomically with this goroutine's acquisition — exact, race-free (only
+		// this goroutine writes PeakInFlight).
+		if n := int(inFlight.Add(1)); n > res.PeakInFlight {
 			res.PeakInFlight = n
 		}
 		lag := time.Since(scheduled)
 		wg.Add(1)
 		go func(seq int) {
 			defer wg.Done()
-			defer func() { <-slots }()
+			defer func() { inFlight.Add(-1); <-slots }()
 			out := attempt(stage, seq)
 			mu.Lock()
 			defer mu.Unlock()
