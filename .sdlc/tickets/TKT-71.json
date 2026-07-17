@@ -4,10 +4,18 @@
   "classification": "complex",
   "parent": "TKT-2",
   "summary": "Commerce's completion-outbox backfill is an unbounded startup-coupled scan",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude-fable-5",
   "pr": null,
-  "comments": [],
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed** by the session agent (implement/planReview = main-agent per config; plan + aiReview = kimi-k3:medium@claudex).\n\n**Selection reason:** TKT-71 is in Ready with zero open blockers (no `links` on the ticket). It closes a known startup-scaling ceiling in commerce (`BackfillCompletionOutbox`) recorded by ADR-021/TKT-66, with a crisp COS and a pinned regression test.\n\n**⚠️ Process waiver — gateless run.** The repo owner (Mathieu Dupuis) has explicitly waived all four human gates for this ticket as a process experiment; the run is fully autonomous Ready→Done in one session. Replacements: Gate 1 = ticket already in Ready; Gate 2 = agent resolves open decisions per the cross-model critique (recorded in kind=plan-final); Gate 3 = agent squash-merges after the adversarial ai-review converges (review-guide posted first as audit record); Gate 4 = agent self-validates COS against test evidence on merged code. Everything else in the skill (config.models routing, cross-model review, TDD red-first, local gate green, marker comments, no AI attribution) applies unchanged. Stop conditions for escalation to the owner were specified and are in effect.\n\nBranch: `TKT-71-bounded-completion-outbox-backfill` off `origin/main`."
+    }
+  ],
   "description": "**Found by the Codex adversarial review on TKT-66 (PR #50)**, which called it\n\"a startup-critical data migration with worse scaling characteristics than the ADR admits\". It was\nright, and [ADR-021](docs/adr/ADR-021-out-of-band-service-migrations.md) now names it as the known\nexception rather than claiming the startup path is clean.\n\n[ADR-021](docs/adr/ADR-021-out-of-band-service-migrations.md) moved migrations off the server path\ninto one-shot jobs. `BackfillCompletionOutbox`\n(`services/commerce/internal/store/store.go:193`, called `services/commerce/cmd/commerce/main.go`)\ndeliberately stayed — it is data repair, not schema, it is idempotent, and the migrate job has\nalready applied the schema it reads. That call was taken at the TKT-66 plan gate and is not\nre-litigated here.\n\n**But it retains exactly the pathology TKT-66 existed to remove**, for commerce only:\n\n- it **scans on every boot** — `orders o JOIN reservations r LEFT JOIN completion_outbox x\n  WHERE o.status='completed' AND o.guest_order_ref IS NOT NULL AND x.order_id IS NULL`. Once drained\n  it *matches* nothing, but it still scans;\n- it **buffers every match in memory** (the `todo` slice) — unbounded in the number of orders owed;\n- it runs under `main.go`'s **30-second deadline**, and any error **fails the service before it\n  listens**. A slow backfill is therefore commerce downtime, which is the sentence ADR-008's\n  Consequences and ADR-021's Context both call the problem.\n\nBounded today: the predicate is narrow and the table is small. It is a real ceiling on a populated\norders table — the same \"correct today, fatal later\" shape ADR-020 recorded for index builds.\n\n**Not urgent** — no deployment exists and no table is populated (the same reasons TKT-66 bought only\na future option). File it so the ceiling is written down rather than re-derived a third time.\n\n**Options to weigh:** an index backing the predicate so the boot-time scan is cheap; a\n`completion_outbox_backfilled` marker so it runs once instead of scanning every boot; moving it\nbehind the drainer (it already polls the same table) so startup does no data work at all; or a\nbounded/batched pass that cannot exceed the deadline. Note moving it into the migrate job does\n**not** help — the service waits on that job anyway.\n\n**COS:** commerce startup does no unbounded data work, or the bound is explicit and cannot fail the\nservice; the paid-but-no-ticket guarantee the backfill protects is preserved, with\n`TestBackfillOwesEventsForPreExistingCompletedOrders`\n(`services/commerce/internal/store/outbox_smoke_test.go:344`) still green."
 }
