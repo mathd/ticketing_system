@@ -1602,11 +1602,54 @@ func TestOccurrenceCollisionInsideTheAppendWindowIsACollision(t *testing.T) {
 		_, err := st.RecordAdmission(ctx, in)
 		done <- err
 	}()
-	time.Sleep(200 * time.Millisecond) // let it reach the blocked insert
+	// Not a sleep: assert the backend is actually lock-blocked on the
+	// conflicting insert before committing, or this test could pass through
+	// the visible-row path without ever exercising the append-window mapping.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var blocked int
+		if err = db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type='Lock' AND query ILIKE '%INSERT INTO lifecycle_events%'`).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RecordAdmission never blocked on the conflicting insert; the append-window path was not exercised")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err = competing.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	if err = <-done; !errors.Is(err, ErrOccurrenceCollision) {
 		t.Fatalf("append-window collision surfaced as %v, want ErrOccurrenceCollision", err)
+	}
+}
+
+// A unique violation from INSIDE the chain — a stale or missing head deriving
+// an already-used integrity sequence — is corruption, not occurrence reuse.
+// Mapping it to ErrOccurrenceCollision would report a database-adversary state
+// as a scanner mistake (second-pass ai-review finding, PR #62).
+func TestStaleHeadUniqueViolationIsNotACollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	// The rollback shape: integrity rows survive, the head vanishes. loadHead
+	// falls back to genesis and re-derives sequence 1, which the integrity
+	// UNIQUE(ticket_id,sequence) refuses.
+	if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_heads WHERE ticket_id=$1`, s.ticketID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.RecordAdmission(ctx, admissionInput(s, AdmissionEntry))
+	if err == nil {
+		t.Fatal("append onto a corrupted head succeeded")
+	}
+	if errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("chain corruption misreported as occurrence collision: %v", err)
 	}
 }

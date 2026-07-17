@@ -91,6 +91,10 @@ func (p *Postgres) now() time.Time {
 	return lifecycle.Normalize(time.Now())
 }
 
+// errEventIDTaken is the lifecycle_events primary key refusing an event id
+// that already exists — the append-window shape of occurrence reuse.
+var errEventIDTaken = errors.New("lifecycle event id already recorded")
+
 // chainState is a ticket's head as the append path found it.
 type chainState struct {
 	sequence int64
@@ -154,6 +158,13 @@ func (p *Postgres) appendLifecycle(ctx context.Context, tx *sql.Tx, in appendInp
 			in.EventID, in.TicketID, in.Type, in.OccurredAt).Scan(&occurredAt)
 	}
 	if err != nil {
+		// Only THIS statement's unique violation means the event id itself is
+		// taken. Later 23505s in the chain (an integrity sequence re-derived
+		// from a stale or missing head) are corruption states and must keep
+		// their own diagnostics.
+		if isUniqueViolation(err) {
+			return time.Time{}, fmt.Errorf("insert lifecycle event: %w", errEventIDTaken)
+		}
 		return time.Time{}, fmt.Errorf("insert lifecycle event: %w", err)
 	}
 	occurredAt = lifecycle.Normalize(occurredAt)

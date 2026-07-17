@@ -444,11 +444,12 @@ func (p *Postgres) RecordAdmission(ctx context.Context, in RecordAdmissionInput)
 		EventID: in.OccurrenceID, Type: string(in.Type), OccurredAt: in.OccurredAt,
 	})
 	if err != nil {
-		// The ticket lock serializes same-ticket callers, so a primary-key
-		// collision surfacing here can only be the same occurrence id landing
-		// on ANOTHER ticket concurrently — its replay check and ours both ran
-		// before either insert committed. Same answer as the visible case.
-		if isUniqueViolation(err) {
+		// The ticket lock serializes same-ticket callers, so the event id
+		// being taken can only be the same occurrence id landing on ANOTHER
+		// ticket concurrently — its replay check and ours both ran before
+		// either insert committed. Same answer as the visible case. Any other
+		// unique violation from the chain is corruption and passes through.
+		if errors.Is(err, errEventIDTaken) {
 			return RecordAdmissionResult{}, fmt.Errorf("occurrence %s: %w", in.OccurrenceID, ErrOccurrenceCollision)
 		}
 		return RecordAdmissionResult{}, err
