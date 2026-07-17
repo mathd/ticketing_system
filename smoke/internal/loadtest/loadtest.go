@@ -29,6 +29,7 @@ type Stage struct {
 // (successful attempts only; ADR-004: no cached read appears in any sample).
 type Outcome struct {
 	Kind                               string
+	Note                               string // error diagnostic (status + body snippet)
 	Hold, Finalize, Confirm, Lifecycle time.Duration
 }
 
@@ -43,6 +44,7 @@ type StageResult struct {
 	Rejected                           int
 	Errors                             int
 	Elapsed                            time.Duration
+	ErrorNotes                         []string        // first few error diagnostics
 	Lag                                []time.Duration // scheduled-start lag of started attempts
 	Hold, Finalize, Confirm, Lifecycle []time.Duration
 }
@@ -94,6 +96,9 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 				res.Rejected++
 			default:
 				res.Errors++
+				if len(res.ErrorNotes) < 3 {
+					res.ErrorNotes = append(res.ErrorNotes, out.Note)
+				}
 			}
 		}(i)
 	}

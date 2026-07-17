@@ -74,17 +74,17 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": quantity})
 		switch {
 		case err != nil:
-			return loadtest.Outcome{Kind: loadtest.KindError}
+			return loadtest.Outcome{Kind: loadtest.KindError, Note: "hold: " + err.Error()}
 		case code == http.StatusConflict:
 			return loadtest.Outcome{Kind: loadtest.KindRejected}
 		case code != http.StatusCreated:
-			return loadtest.Outcome{Kind: loadtest.KindError}
+			return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("hold: %d %.200s", code, body)}
 		}
 		var claim struct {
 			ID string `json:"id"`
 		}
 		if json.Unmarshal(body, &claim) != nil || claim.ID == "" {
-			return loadtest.Outcome{Kind: loadtest.KindError}
+			return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("hold body unparseable: %.200s", body)}
 		}
 		out := loadtest.Outcome{Hold: holdD}
 		hdr := map[string]string{"X-Internal-Token": internalToken}
@@ -93,9 +93,12 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			dst  *time.Duration
 		}{{"finalize", &out.Finalize}, {"confirm", &out.Confirm}} {
 			url := fmt.Sprintf("%s/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
-			code, _, d, err := timedPost(url, hdr, nil)
-			if err != nil || code != http.StatusOK {
-				return loadtest.Outcome{Kind: loadtest.KindError}
+			code, rbody, d, err := timedPost(url, hdr, nil)
+			if err != nil {
+				return loadtest.Outcome{Kind: loadtest.KindError, Note: step.name + ": " + err.Error()}
+			}
+			if code != http.StatusOK {
+				return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("%s: %d %.200s", step.name, code, rbody)}
 			}
 			*step.dst = d
 		}
@@ -203,6 +206,9 @@ func historyInsertStats(t *testing.T, conn *pgx.Conn) loadtest.HistoryStats {
 
 func logStage(t *testing.T, r loadtest.StageResult) loadtest.StageReport {
 	sr := r.Report()
+	for _, n := range r.ErrorNotes {
+		t.Logf("stage %s error sample: %s", sr.Name, n)
+	}
 	t.Logf("stage %-10s offered=%d started=%d dropped=%d ok=%d rejected=%d errors=%d hold p50/p95/p99=%.1f/%.1f/%.1fms lifecycle p50/p95/p99=%.1f/%.1f/%.1fms lag p99=%.1fms achieved=%.1f ok/s",
 		sr.Name, sr.Offered, sr.Started, sr.Dropped, sr.OK, sr.Rejected, sr.Errors,
 		sr.HoldP50Ms, sr.HoldP95Ms, sr.HoldP99Ms, sr.LifeP50Ms, sr.LifeP95Ms, sr.LifeP99Ms, sr.LagP99Ms, sr.AchievedRate)
