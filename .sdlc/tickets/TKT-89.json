@@ -2,10 +2,8 @@
   "key": "TKT-89",
   "type": "Story",
   "summary": "Redeem's verified path ignores quarantine — a recovered chain re-admits a quarantine-admitted ticket",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude-fable-5",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/60",
@@ -53,6 +51,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\nValidation note — COS from the ticket, each proven by a real-Postgres test on the merged code (PR #60, merged 2026-07-17 12:12Z):\n- Verified path consults quarantine under the ticket lock, denies with DecisionIntegrityQuarantined + original admitted_at: TestQuarantineDenialConvergesAcrossBrokenAndRecoveredChains (corrupt -> degraded admit -> restore exact bytes -> VerifyLifecycle green -> verified-path denial, no redeemed event, 3 alarms).\n- Broken-chain retry returns the original result: extended TestCorruptChainAdmitsOnceThenQuarantines (original timestamp, no redeemed event).\n- Both paths covered; quarantine wins over a grandfathered redeemed event: TestQuarantineWinsOverGrandfatheredRedeemedEvent (head does not advance).\nNot user-demonstrable at a gate without a corrupted chain; code-level proof per pipeline rules. Occurrence-id retry dedup deliberately deferred to TKT-84/85 (ADR-025 §D3)."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n| stage | duration |\n|---|---|\n| Ready | 3m13s |\n| Planning | 8m53s |\n| — agent:planning (incl. codex draft) | 8m24s |\n| — agent:plan-review + finalize | in above (single session) |\n| — needs:human (Gate 2) | 29s |\n| Building | 12m12s |\n| — agent:coding | 4m28s |\n| — agent:ai-review | 2m05s |\n| — needs:human (Gate 3) | ~5m39s |\n| PO Review | ~1m |\n\nhuman-wait total: ~7m\ndiff: +161/−0 (2 files), PR #60\n\nlearnings:\n- The trace ∪ quarantine admission rule is already carried by ADR-025 §D2 and now enforced by tests — cite, don't restate; no promotion needed.\n- Process learning (target: sdlc-ticket references/codex-runner.md): (a) macOS has no `timeout` — wrap codex reviews via the harness background+kill instead; one review attempt died to exit 127. (b) When polling companion `status`, match the `Phase:` line only — progress lines contain the word \"failed\" for benign subcommand exits and a loose grep fires early.\n\nretro:\n1. What would have made this faster/better: nothing material — the ticket was pre-baked by TKT-73's review (exact fix, tests, seams, ADR bindings in the description), so Planning was mostly verification. That pre-baking is the pattern to keep for review-found tickets.\n2. What the humans should change: consider allowing review-found tickets whose description already carries fix+tests+ADRs to skip the codex plan draft (critique-only planning) — the draft added ~8m and near-zero information here. Concrete edit: a `plan:lite` label honored in sdlc-ticket SKILL.md step 3a. Not applied (skill change needs owner call).\n   The two codex-runner.md gotchas above are appliable now — offer stands."
     }
   ]
 }
