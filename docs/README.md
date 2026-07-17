@@ -6,6 +6,7 @@
 - [ADRs](./adr/) — architecture decision log
 - [Technical delivery standards](./technical-delivery-standards.md) — actual repository gate and engineering rules
 - [Development](./development.md), [testing](./testing.md), and [Docker](./docker.md) — local workflow and runtime
+- [On-sale load proof](./verification/on-sale-load/README.md) — the per-pool throughput ceiling and how it was measured (TKT-82)
 - [Conventions](./conventions/) — commits, PRs, CI, dependencies, and security
 - [Learnings](./LEARNINGS.md) — known pitfalls and workarounds
 - [Roadmap](./ROADMAP.md) — upcoming milestones

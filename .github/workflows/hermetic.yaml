@@ -12,6 +12,7 @@ on:
       - build/go.Dockerfile
       - compose.yaml
       - compose.smoke.yaml
+      - compose.onsale-load.yaml
       - .dockerignore
       - go.work
       - go.work.sum

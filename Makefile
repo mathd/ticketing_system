@@ -12,7 +12,7 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: check lint test build smoke smoke-hermetic lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate up down clean
+.PHONY: check lint test build smoke smoke-hermetic onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate up down clean
 
 check: deps check-generate lint test build smoke
 
@@ -101,6 +101,15 @@ smoke: build-gate-linux build-ts
 
 smoke-hermetic:
 	SMOKE_HERMETIC=1 ./scripts/smoke.sh
+
+# Full festival-NFR load profile (TKT-82) — on-demand, not part of `make check`.
+# Runs the whole smoke suite with the on-sale profile switched to full and
+# writes the machine-readable evidence to docs/evidence/TKT-82/.
+onsale-load-full: build-gate-linux build-ts
+	ONSALE_PROFILE=full \
+	ONSALE_REPORT=$(CURDIR)/docs/evidence/TKT-82/full-profile.json \
+	SMOKE_TEST_TIMEOUT=40m \
+	./scripts/smoke.sh
 
 ## ---- dev conveniences ----
 up:

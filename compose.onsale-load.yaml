@@ -1,0 +1,7 @@
+# Smoke/load-only override: preload pg_stat_statements so the on-sale load
+# proof (TKT-82, smoke/onsale_load_test.go) can report the claim_history INSERT
+# overhead inside the pool-locked transaction (ADR-023 amendment). Applied by
+# scripts/smoke.sh to the isolated smoke stack only — never to a dev stack.
+services:
+  postgres:
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]

@@ -32,7 +32,10 @@ export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=
        ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
 echo "smoke: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
 
-COMPOSE_FILES=(-f "$ROOT/compose.yaml")
+# The load-proof override (pg_stat_statements preload, TKT-82) applies to every
+# smoke stack — hermetic or fast path — so the gate's on-sale profile can always
+# report the claim_history INSERT overhead.
+COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.onsale-load.yaml")
 if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
   for b in catalog inventory commerce payments access gateway; do
     [ -x "$ROOT/bin/gate/$b" ] || { echo "smoke: missing bin/gate/$b — run 'make smoke' (or 'make build-gate-linux')" >&2; exit 1; }
@@ -102,7 +105,7 @@ SMOKE_PROM_URL=http://localhost:${PROM_PORT} \
 SMOKE_INVENTORY_URL=http://localhost:${INVENTORY_PORT} \
 SMOKE_COMMERCE_URL=http://localhost:${COMMERCE_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
-go test -tags smoke -count=1 -v ./...
+go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 
 # ADR-003: verify the populated canonical journal before Compose teardown.
 compose exec -T payments /app verify-concurrent-append

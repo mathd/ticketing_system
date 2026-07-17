@@ -67,7 +67,36 @@ disposable git worktree (never your tree, trap-cleaned), a Go lint violation, a 
 test, a Go compile error, a TS lint violation, a failing vitest test and a TS type error —
 and requires the corresponding `make` stage to exit non-zero.
 
-## Concurrency proofs (coming)
+## Concurrency proofs
 
-From US-003 the inventory no-oversell property gets an automated contention test inside
-`make check`; load tests at the festival-scale NFR live in TKT-4/TKT-20/TKT-31/TKT-37.
+From US-003 the inventory no-oversell property has automated contention tests inside
+`make check` (`smoke/inventory_contention_test.go`). From TKT-82 the **on-sale load proof**
+(`smoke/onsale_load_test.go` + `smoke/internal/loadtest`) adds a sustained open-loop profile
+against the real gateway→inventory hold/finalize/confirm path; read-path and observability
+load profiles remain TKT-31/TKT-37.
+
+**Two profiles, one harness** (parameters only, `ONSALE_PROFILE`):
+
+- **Gate** (in `make check`): one capacity-500 pool; 5/s warm-up, a 25 attempts/s × 10s
+  sustained window (1,500 attempts/min), an exact fill to capacity, a 25-attempt rejection
+  tail. Budget: hard 30s deadline on the load portion (adds ~15–30s to smoke).
+  **Correctness-fatal, throughput-advisory**: it fails on oversell, DB accounting mismatch,
+  missing `claim_history` rows, unexpected statuses or transport/5xx errors — but records
+  (never asserts) latency percentiles and dropped arrivals, so a slow runner can't turn the
+  pool's deliberate ADR-010 serialization into a flake.
+- **Full NFR** (on-demand): `make onsale-load-full`. 3,000 attempts/min sustained for 3
+  minutes against a 100k pool (SLO: per-mutation p99 ≤ 1s, lifecycle p99 ≤ 3s), a per-pool
+  ceiling sweep (75→3,000 attempts/s, fresh pool per rate, stop at first unstable — unstable
+  = drops, errors, rejections, <99% delivery **or** lifecycle p99 over the 3s SLO; published
+  as a highest-stable/first-unstable bracket, or a lower bound if no knee is observed), and a
+  quantity-50 oversell tail on a 50k pool. Evidence is written to
+  `docs/evidence/TKT-82/full-profile.json`; the published per-pool ceiling (the number
+  TKT-20's waiting room must respect) lives in `docs/verification/on-sale-load/README.md`.
+
+The zero-oversell verdict is **database-side**: post-drain accounting over
+`inventory_pools`/`claims`/`claim_history` with ADR-010's live-claims predicate — the client
+only offers load. The `claim_history` INSERT overhead inside the pool-locked transaction
+(ADR-023 amendment) is reported per-mutation from `pg_stat_statements`, preloaded in smoke
+stacks via `compose.onsale-load.yaml` (aggregate DB execution time, not a causal
+with/without delta). Latency samples cover mutations only — availability is a cached read
+(ADR-004) and never appears in them.
