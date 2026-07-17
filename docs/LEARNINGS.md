@@ -10,6 +10,12 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**A load test's published number is a claim about the server only if the generator's health is part of the verdict**](./learnings/2026-07-17-load-test-generator-health-is-part-of-the-claim.md) —
+  the first accepted per-pool ceiling was defined by the client's in-flight cap, not the pool;
+  three review passes closed the vacuous routes (all-409 windows passing on empty percentile
+  sets, cap-defined knees, missed schedules). Rules now in the harness: per-stage outcome
+  expectations, Little's-law cap sizing above `rate × SLO`, and inconclusive-≠-unstable as
+  distinct outcomes. (TKT-82, PR #59)
 - [**A finding's mechanics being true does not make its trigger reachable**](./learnings/2026-07-16-refute-the-trigger-not-the-mechanics.md) —
   triage reviewer findings in two steps: verify the causal chain in the code, then grep for the
   event that starts it. A true mechanism with an absent trigger is not a PR fix — it's a backlog
