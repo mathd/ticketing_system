@@ -113,7 +113,7 @@ func TestReprocessRepublishesSupportedRowsPastUnsupportedOnes(t *testing.T) {
 		t.Fatalf("published %+v, want exactly the supported row's original subject and byte-identical envelope", f.published)
 	}
 	wantID := quarantineMsgID(supported.Subject, supported.EventID, supported.Schema)
-	if f.published[0].msgID != wantID || wantID != quarantineMsgID(supported.Subject, supported.EventID, supported.Schema) {
+	if f.published[0].msgID != wantID {
 		t.Fatalf("msgID = %q, want the deterministic %q", f.published[0].msgID, wantID)
 	}
 	if len(f.marked) != 1 || f.marked[0] != supported.EventID {

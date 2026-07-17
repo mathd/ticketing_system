@@ -8,7 +8,10 @@
 CREATE TABLE catalog_event_quarantine (
     subject text NOT NULL,
     event_id uuid NOT NULL,
-    schema integer NOT NULL CHECK (schema > 0),
+    -- bigint, not integer: the consumer forwards any envelope schema above its known max here,
+    -- and an int32-overflowing value must quarantine like any other future variant — an INSERT
+    -- range error would send one malformed event into a permanent NAK loop (ai-review finding 1).
+    schema bigint NOT NULL CHECK (schema > 0),
     envelope bytea NOT NULL,
     first_seen_at timestamptz NOT NULL DEFAULT now(),
     last_seen_at timestamptz NOT NULL DEFAULT now(),

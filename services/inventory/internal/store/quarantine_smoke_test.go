@@ -102,6 +102,21 @@ func TestQuarantineCapacityBoundsUnresolvedRows(t *testing.T) {
 	}
 }
 
+// The schema column is bigint on purpose: the consumer forwards ANY schema above its known max,
+// and a value past int32 must quarantine like any other future variant — an INSERT range error
+// would loop one malformed event as a permanent delayed NAK (ai-review finding 1).
+func TestQuarantineAcceptsSchemaBeyondInt32(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	id := uuid.New()
+	if err := st.QuarantineCatalogEvent(ctx, quarantineSubject, id, 4_000_000_000, []byte(`{}`)); err != nil {
+		t.Fatalf("schema beyond int32: %v, want quarantined like any future variant", err)
+	}
+	rows, err := st.ListCatalogQuarantine(ctx, nil, 1)
+	if err != nil || len(rows) != 1 || rows[0].Schema != 4_000_000_000 {
+		t.Fatalf("rows=%v err=%v, want the huge schema stored intact", rows, err)
+	}
+}
+
 func TestQuarantinePendingStateAndReinjection(t *testing.T) {
 	ctx, st, _ := storeForTest(t, 10*time.Minute)
 	if pending, err := st.HasPendingCatalogQuarantine(ctx); err != nil || pending {
