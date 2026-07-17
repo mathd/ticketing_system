@@ -124,21 +124,6 @@ func run() error {
 	}
 	defer func() { _ = db.Close() }()
 	dbConfig.Apply(db)
-	// Migrations ran out-of-band before this process started (ADR-022); the
-	// backfill below is data repair, not schema, so it stays on the server path
-	// and keeps its own bound.
-	mctx, mcancel := context.WithTimeout(ctx, 30*time.Second)
-	defer mcancel()
-	// Orders completed before the outbox existed owe an event no code path will ever
-	// insert, because CompleteOrder short-circuits on an already-completed order. Left
-	// alone they keep the paid-but-no-ticket window open forever — the exact bug the
-	// outbox closes. Idempotent, and a no-op on every boot after the first.
-	if owed, err := commercestore.BackfillCompletionOutbox(mctx, db); err != nil {
-		return fmt.Errorf("backfill completion outbox: %w", err)
-	} else if owed > 0 {
-		log.InfoContext(ctx, "backfilled owed completion events", "count", owed)
-	}
-
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
 	if err != nil {
@@ -181,7 +166,22 @@ func run() error {
 	// Commerce's first background worker (ADR-016 §Decision 6). It drains once on
 	// start, which is what recovers events owed by a process that died before
 	// publishing — the paid-but-no-ticket window.
-	drainer := outbox.New(db, publisher, drainInterval(), drainBatch(), log)
+	// The backfill rides the drainer, not the startup path (TKT-71): orders
+	// completed before the outbox existed owe an event no code path will ever
+	// insert, because CompleteOrder short-circuits on an already-completed order.
+	// Idempotent, and a no-op on every boot after the first — but on a populated
+	// table the scan is real work, and behind the drainer neither its duration
+	// nor its failure can keep commerce from listening.
+	// The 30s bound survives the move: the drainer runs the backfill before its
+	// first drain pass, so an unbounded pass (lock wait, huge scan) would stall
+	// owed-event recovery — the window this worker exists to close — not just
+	// delay repair. Timing out cancels this pass only; the next boot retries.
+	drainer := outbox.New(db, publisher, drainInterval(), drainBatch(),
+		func(bctx context.Context) (int, error) {
+			bctx, cancel := context.WithTimeout(bctx, 30*time.Second)
+			defer cancel()
+			return commercestore.BackfillCompletionOutbox(bctx, db)
+		}, log)
 	stopDrainer := start(log, "outbox drainer", drainer.Run)
 
 	// The second background worker (ADR-016 §Decision 1): recovery is driven, not
