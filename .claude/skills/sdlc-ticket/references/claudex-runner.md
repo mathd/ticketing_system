@@ -42,6 +42,12 @@ tool or quoted heredoc, never shell interpolation; collision-resistant name; del
 `--effort` takes `low|medium|high|xhigh|max`. When the config value carries an `:effort`
 suffix (`gpt-5.6-sol:low@claudex`), pass it through; otherwise use `high`.
 
+**Fix-diff re-review passes may run one notch lower** (e.g. `medium` when the first pass ran
+`high`): the second-plus passes judge a small fix diff, not the whole change, and at `high`
+each pass costs ~10–20 min of wall clock regardless of diff size (TKT-92: four passes on
+diffs down to 30 lines). Keep the *first* full-diff pass at the configured effort — only
+re-reviews of fix commits get the discount, and say in the stage comment which effort ran.
+
 - **The allowlist IS the sandbox.** Headless `claude -p` denies tools that aren't pre-approved,
   so `--allowedTools "Read,Grep,Glob"` is what makes the stage read-only. Omitting the flag is
   the claudex equivalent of the codex runner's dropped `-s read-only` — the substitute gets more

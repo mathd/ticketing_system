@@ -7,10 +7,10 @@
     "localGate": "make check"
   },
   "models": {
-    "plan": "gpt-5.6-sol@claudex",
+    "plan": "gpt-5.6-sol:medium@claudex",
     "planReview": "main-agent",
     "implement": "main-agent",
-    "aiReview": "gpt-5.6-sol@claudex"
+    "aiReview": "gpt-5.6-sol:medium@claudex"
   },
   "registry": {
     "bindingPath": "docs/adr/",
