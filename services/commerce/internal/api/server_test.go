@@ -149,6 +149,108 @@ func TestConvertOperationalRejectsNonStrictJSON(t *testing.T) {
 	}
 }
 
+func TestDrawDownGroupReservationRequiresInternalToken(t *testing.T) {
+	body := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"batch"}`
+	for name, s := range map[string]*Server{
+		"wrong token":            New(nil, http.DefaultClient, "", "", "", "secret"),
+		"empty configured token": New(nil, http.DefaultClient, "", "", "", ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations/00000000-0000-0000-0000-000000000003/draw-down", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "wrong")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("status=%d want=%d", res.Code, http.StatusNotFound)
+			}
+		})
+	}
+}
+
+// The draw-down rides the same orchestration as the operational convert: catalog decides
+// slot and price (the client cannot supply them), and the offer's slot is forwarded as
+// inventory's locked precondition.
+func TestDrawDownForwardsSlotPreconditionToInventory(t *testing.T) {
+	org := "00000000-0000-0000-0000-000000000001"
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
+	}))
+	defer catalog.Close()
+	var forwardedSlot, calledPath string
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calledPath = r.URL.Path
+		var body struct {
+			SlotID string `json:"slot_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		forwardedSlot = body.SlotID
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"conflicting terminal state"}`))
+	}))
+	defer inventory.Close()
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"batch"}`
+	req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations/00000000-0000-0000-0000-000000000003/draw-down", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "k")
+	req.Header.Set("X-Internal-Token", "secret")
+	res := httptest.NewRecorder()
+	s.Router().ServeHTTP(res, req)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusConflict, res.Body.String())
+	}
+	if calledPath != "/internal/group-reservations/00000000-0000-0000-0000-000000000003/draw-down" {
+		t.Fatalf("inventory path = %q, want the draw-down operation", calledPath)
+	}
+	if forwardedSlot != "00000000-0000-0000-0000-000000000009" {
+		t.Fatalf("forwarded slot_id = %q, want the offer's performance id", forwardedSlot)
+	}
+}
+
+// Same lifecycle-not-timestamp replay rule as the operational convert (ADR-023); the
+// shared helper must keep it for draw-downs.
+func TestDrawDownReplayJudgedByChildLifecycle(t *testing.T) {
+	org := "00000000-0000-0000-0000-000000000001"
+	cases := map[string]struct {
+		hold string
+		want int
+	}{
+		"held past deadline": {hold: `"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"expired":            {hold: `"status":"expired","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"unknown status":     {hold: `"status":"parked","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusBadGateway},
+	}
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000002","organizer_id":"` + org + `","performance_id":"00000000-0000-0000-0000-000000000009","price":{"amount":2500,"currency":"EUR"}}`))
+	}))
+	defer catalog.Close()
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200) // replay
+				_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000009","quantity":1,` + tc.hold + `},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
+			}))
+			defer inventory.Close()
+			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"batch"}`
+			req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations/00000000-0000-0000-0000-000000000003/draw-down", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, tc.want, res.Body.String())
+			}
+		})
+	}
+}
+
 func TestConvertOperationalForwardsSlotPreconditionToInventory(t *testing.T) {
 	org := "00000000-0000-0000-0000-000000000001"
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -49,6 +49,20 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
+  /internal/group-reservations/{id}/draw-down:
+    post:
+      operationId: drawDownGroupReservation
+      summary: Staff draw-down of a group/agency reservation into a purchasable reservation
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConversionCreate'}}}}
+      responses:
+        '200': {description: Replayed draw-down, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConversion'}}}}
+        '201': {description: Drawn down, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConversion'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail

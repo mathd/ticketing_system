@@ -114,6 +114,76 @@ func TestOperationalPlaceRejectsBadShapes(t *testing.T) {
 	}
 }
 
+func TestGroupReservationEndpointsRequireInternalCredential(t *testing.T) {
+	s := New(nil, "secret")
+	id := "00000000-0000-0000-0000-000000000001"
+	placeBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000003","quantity":5,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops"}`
+	drawBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000005","quantity":1,"ticket_type_id":"00000000-0000-0000-0000-000000000004","unit_amount":1000,"currency":"EUR","actor":"staff:amy","reason":"ops"}`
+	requests := map[string]func() *http.Request{
+		"place": func() *http.Request {
+			return httptest.NewRequest(http.MethodPost, "/internal/group-reservations", bytes.NewBufferString(placeBody))
+		},
+		"draw-down": func() *http.Request {
+			return httptest.NewRequest(http.MethodPost, "/internal/group-reservations/"+id+"/draw-down", bytes.NewBufferString(drawBody))
+		},
+		"history": func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "/internal/group-reservations/"+id+"/history?organizer_id="+id, nil)
+		},
+	}
+	for name, make := range requests {
+		for _, token := range []string{"", "wrong"} {
+			r := make()
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Idempotency-Key", "k")
+			if token != "" {
+				r.Header.Set("X-Internal-Token", token)
+			}
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, r)
+			if res.Code != http.StatusUnauthorized {
+				t.Fatalf("%s token %q: status=%d want=%d", name, token, res.Code, http.StatusUnauthorized)
+			}
+		}
+	}
+}
+
+func TestGroupReservationPlaceRejectsBadShapes(t *testing.T) {
+	s := New(nil, "secret")
+	base := `"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000003"`
+	for name, body := range map[string]string{
+		"blank counterparty": `{` + base + `,"quantity":5,"counterparty":"","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops"}`,
+		"no counterparty":    `{` + base + `,"quantity":5,"expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops"}`,
+		"no expiry":          `{` + base + `,"quantity":5,"counterparty":"Acme","actor":"staff:amy","reason":"ops"}`,
+		"bad expiry":         `{` + base + `,"quantity":5,"counterparty":"Acme","expires_at":"soon","actor":"staff:amy","reason":"ops"}`,
+		"zero quantity":      `{` + base + `,"quantity":0,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops"}`,
+		"no reason":          `{` + base + `,"quantity":5,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy"}`,
+		"empty channel":      `{` + base + `,"quantity":5,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","channel":"","actor":"staff:amy","reason":"ops"}`,
+		"overlong channel":   `{` + base + `,"quantity":5,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","channel":"` + strings.Repeat("x", 101) + `","actor":"staff:amy","reason":"ops"}`,
+		"unknown field":      `{` + base + `,"quantity":5,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops","extra":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+			}
+		})
+	}
+	// A missing Idempotency-Key rejects before any store work.
+	req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations", bytes.NewBufferString(`{`+base+`,"quantity":5,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", "secret")
+	res := httptest.NewRecorder()
+	s.Router().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("missing key: status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+	}
+}
+
 func TestChannelAllocationEndpointRequiresInternalCredential(t *testing.T) {
 	s := New(nil, "secret")
 	id := "00000000-0000-0000-0000-000000000001"

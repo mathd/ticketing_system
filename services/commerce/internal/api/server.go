@@ -60,6 +60,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/orders/{id}", s.getOrder)
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
 	r.Post("/internal/operational-holds/{id}/convert", s.convertOperational)
+	r.Post("/internal/group-reservations/{id}/draw-down", s.drawDownGroupReservation)
 	validated, err := contract.RequestValidator(apispec.Spec, r)
 	if err != nil {
 		panic(err)
@@ -525,6 +526,17 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 // idempotency key make a crash between the inventory commit and the reservation insert
 // repairable by replaying the same request.
 func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
+	s.staffSale(w, r, "/internal/operational-holds/", "/convert", "reservation:op-convert:")
+}
+
+// drawDownGroupReservation is the staff entry point for selling out of a group/agency
+// reservation (TKT-79 / ADR-027) — the same orchestration as convertOperational against
+// inventory's draw-down operation, with its own reservation identity namespace.
+func (s *Server) drawDownGroupReservation(w http.ResponseWriter, r *http.Request) {
+	s.staffSale(w, r, "/internal/group-reservations/", "/draw-down", "reservation:group-draw-down:")
+}
+
+func (s *Server) staffSale(w http.ResponseWriter, r *http.Request, invPrefix, invAction, ns string) {
 	// Fail closed on an unconfigured token; a bad token reads as 404 like deliveryEmail.
 	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -568,7 +580,7 @@ func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
 	// transaction: a mismatch rejects with the operational hold untouched, instead of
 	// discovering it after the carve has committed.
 	convBody := map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID, "quantity": in.Quantity, "ticket_type_id": in.TicketTypeID, "unit_amount": o.Price.Amount, "currency": o.Price.Currency, "actor": in.Actor, "reason": in.Reason}
-	code, body, err = s.call(r.Context(), http.MethodPost, s.inventoryURL+"/internal/operational-holds/"+sourceID.String()+"/convert", key, convBody, true)
+	code, body, err = s.call(r.Context(), http.MethodPost, s.inventoryURL+invPrefix+sourceID.String()+invAction, key, convBody, true)
 	if err != nil {
 		write(w, 409, map[string]string{"error": "inventory unavailable"})
 		return
@@ -623,8 +635,9 @@ func (s *Server) convertOperational(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	total := o.Price.Amount * int64(in.Quantity)
-	// Namespaced so a staff key can never collide with a public reserve key.
-	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("reservation:op-convert:"+in.OrganizerID.String()+":"+key))
+	// Namespaced so a staff key can never collide with a public reserve key — and the
+	// two staff families can never collide with each other.
+	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(ns+in.OrganizerID.String()+":"+key))
 	buyer := uuid.NewSHA1(uuid.NameSpaceOID, []byte("buyer:"+id.String()))
 	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held') ON CONFLICT(id) DO NOTHING`,
 		id, in.OrganizerID, conv.Hold.ID, o.PerformanceID, in.TicketTypeID, buyer, in.Quantity, o.Price.Amount, total, o.Price.Currency)
