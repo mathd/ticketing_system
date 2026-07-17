@@ -107,13 +107,23 @@ func TestCeilingBracket(t *testing.T) {
 		}
 		return r
 	}
-	hi, first, lower := CeilingBracket([]StageResult{mk(75, true), mk(150, true), mk(300, false)}, 0.99)
+	pred := func(r StageResult) bool { return r.Stable(0.99) }
+	hi, first, lower := CeilingBracket([]StageResult{mk(75, true), mk(150, true), mk(300, false)}, pred)
 	if hi != 150 || first != 300 || lower {
 		t.Fatalf("bracket = (%v,%v,%v), want (150,300,false)", hi, first, lower)
 	}
-	hi, first, lower = CeilingBracket([]StageResult{mk(75, true), mk(150, true)}, 0.99)
+	hi, first, lower = CeilingBracket([]StageResult{mk(75, true), mk(150, true)}, pred)
 	if hi != 150 || first != 0 || !lower {
 		t.Fatalf("all-stable bracket = (%v,%v,%v), want (150,0,true) lower bound only", hi, first, lower)
+	}
+	// A latency-aware predicate must be able to reject a stage that delivered
+	// everything but too slowly — the knee is not only about drops.
+	slow := mk(300, true)
+	slow.Lifecycle = []time.Duration{5 * time.Second}
+	slowAware := func(r StageResult) bool { return r.Stable(0.99) && Percentile(r.Lifecycle, 99) <= 3*time.Second }
+	hi, first, lower = CeilingBracket([]StageResult{mk(150, true), slow}, slowAware)
+	if hi != 150 || first != 300 || lower {
+		t.Fatalf("latency-aware bracket = (%v,%v,%v), want (150,300,false)", hi, first, lower)
 	}
 }
 

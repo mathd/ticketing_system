@@ -300,9 +300,17 @@ func onsaleGate(t *testing.T) {
 	if loadElapsed > 30*time.Second {
 		t.Fatalf("load portion took %v, budget is 30s", loadElapsed)
 	}
-	// Correctness-fatal: errors anywhere, or a grant after the pool filled.
+	// Correctness-fatal: errors anywhere, a rejected hold while capacity was
+	// ample (the sustained window must produce real lifecycles — an all-409
+	// window would otherwise pass with empty latency sets), or a grant after
+	// the pool filled.
 	if n := warm.Errors + sustained.Errors + reject.Errors; n != 0 {
 		t.Fatalf("%d attempts errored (timeout/transport/unexpected status)", n)
+	}
+	for _, r := range []loadtest.StageResult{warm, sustained} {
+		if r.Rejected != 0 || r.OK != r.Started || r.OK == 0 {
+			t.Fatalf("stage %s: %d/%d started attempts succeeded, %d rejected — capacity was ample, every started attempt must complete a lifecycle", r.Stage.Name, r.OK, r.Started, r.Rejected)
+		}
 	}
 	if reject.OK != 0 {
 		t.Fatalf("%d holds granted on a full pool", reject.OK)
@@ -364,6 +372,11 @@ func onsaleFull(t *testing.T) {
 	if !nfr.Stable(0.99) {
 		t.Errorf("NFR window unstable: %+v", nfr.Report())
 	}
+	// SLO percentiles are only meaningful over real lifecycles: a wholesale-409
+	// window would satisfy them vacuously with empty sample sets.
+	if nfr.Rejected != 0 || nfr.OK != nfr.Started || nfr.OK == 0 {
+		t.Fatalf("NFR window: %d/%d started attempts succeeded, %d rejected — capacity was ample, every started attempt must complete a lifecycle", nfr.OK, nfr.Started, nfr.Rejected)
+	}
 	for name, p99 := range map[string]float64{"hold": nfrReport.HoldP99Ms, "finalize": nfrReport.FinalizeP99Ms, "confirm": nfrReport.ConfirmP99Ms} {
 		if p99 > 1000 {
 			t.Errorf("NFR %s p99 %.1fms exceeds 1s SLO", name, p99)
@@ -375,6 +388,13 @@ func onsaleFull(t *testing.T) {
 
 	// Ceiling sweep: fresh pool per rate so earlier confirmed inventory can't
 	// turn later stages into sold-out tests; stop at the first unstable stage.
+	// Stability is delivery AND the lifecycle SLO: a stage that answers slowly
+	// forever (or rejects with capacity ample) is past the knee even before the
+	// client's in-flight cap starts dropping arrivals.
+	sweepStable := func(r loadtest.StageResult) bool {
+		return r.Stable(0.99) && r.Rejected == 0 && r.OK == r.Started &&
+			loadtest.Percentile(r.Lifecycle, 99) <= 3*time.Second
+	}
 	var sweep []loadtest.StageResult
 	for _, rate := range []int{75, 150, 300, 600, 1200, 2400, 3000} {
 		s, _ := publishedSlot(t, fmt.Sprintf("Onsale Sweep %s %d", runID, rate), 100000)
@@ -382,11 +402,11 @@ func onsaleFull(t *testing.T) {
 		report.Stages = append(report.Stages, logStage(t, r))
 		report.Accounting = append(report.Accounting, assertAccounting(t, conn, s, r.OK, r.OK))
 		sweep = append(sweep, r)
-		if !r.Stable(0.99) {
+		if !sweepStable(r) {
 			break
 		}
 	}
-	hi, first, lower := loadtest.CeilingBracket(sweep, 0.99)
+	hi, first, lower := loadtest.CeilingBracket(sweep, sweepStable)
 	report.CeilingHighestStable, report.CeilingFirstUnstable, report.CeilingLowerBoundOnly = hi, first, lower
 	if lower {
 		t.Logf("ceiling: every stage stable — publish as a lower bound ≥%.0f attempts/s (knee not observed)", hi)
@@ -405,21 +425,19 @@ func onsaleFull(t *testing.T) {
 	if tail.Errors != 0 {
 		t.Errorf("oversell tail: %d errors", tail.Errors)
 	}
-	if tail.OK*50 > 50000 {
-		t.Errorf("oversell: %d units granted on a 50k pool", tail.OK*50)
+	// A dropped arrival means the generator never brought the pool to its
+	// capacity boundary — that is an invalid proof, not a weaker one.
+	if tail.Dropped != 0 {
+		t.Fatalf("oversell tail dropped %d arrivals: the boundary was never contested — rerun on a generator that can offer the full tail", tail.Dropped)
 	}
-	if tail.Dropped == 0 {
-		if tail.OK != 1000 {
-			t.Errorf("oversell tail granted %d lifecycles, want exactly 1000", tail.OK)
-		}
-		if tail.Rejected < 100 {
-			t.Errorf("oversell tail rejected %d, want ≥100", tail.Rejected)
-		}
-	} else {
-		t.Logf("advisory: tail dropped %d arrivals; exact-grant assertion skipped (granted %d ≤ 1000 still enforced)", tail.Dropped, tail.OK)
-		if tail.OK > 1000 {
-			t.Errorf("oversell tail granted %d lifecycles, cap is 1000", tail.OK)
-		}
+	if tail.OK != 1000 {
+		t.Errorf("oversell tail granted %d lifecycles, want exactly 1000 (50,000 units)", tail.OK)
+	}
+	if tail.Rejected < 100 {
+		t.Errorf("oversell tail rejected %d, want ≥100 post-capacity rejections", tail.Rejected)
+	}
+	if ta.PoolConfirmed != 50000 {
+		t.Errorf("oversell tail pool confirmed %d, want exactly 50000 — the boundary must be reached", ta.PoolConfirmed)
 	}
 	writeReport(t, report)
 }

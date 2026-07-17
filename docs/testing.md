@@ -86,7 +86,8 @@ load profiles remain TKT-31/TKT-37.
   pool's deliberate ADR-010 serialization into a flake.
 - **Full NFR** (on-demand): `make onsale-load-full`. 3,000 attempts/min sustained for 3
   minutes against a 100k pool (SLO: per-mutation p99 ≤ 1s, lifecycle p99 ≤ 3s), a per-pool
-  ceiling sweep (75→3,000 attempts/s, fresh pool per rate, stop at first unstable; published
+  ceiling sweep (75→3,000 attempts/s, fresh pool per rate, stop at first unstable — unstable
+  = drops, errors, rejections, <99% delivery **or** lifecycle p99 over the 3s SLO; published
   as a highest-stable/first-unstable bracket, or a lower bound if no knee is observed), and a
   quantity-50 oversell tail on a 50k pool. Evidence is written to
   `docs/evidence/TKT-82/full-profile.json`; the published per-pool ceiling (the number

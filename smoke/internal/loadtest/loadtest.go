@@ -134,12 +134,14 @@ func (r StageResult) Stable(minRatio float64) bool {
 		float64(delivered) >= minRatio*float64(r.Offered)
 }
 
-// CeilingBracket returns the highest stable offered rate and the first unstable
-// one. When every stage was stable the true knee was not observed: the result
-// is a lower bound, and firstUnstable is 0.
-func CeilingBracket(stages []StageResult, minRatio float64) (highestStable, firstUnstable float64, lowerBoundOnly bool) {
+// CeilingBracket returns the highest stable offered rate and the first
+// unstable one, judged by the caller's stability predicate (delivery + any
+// latency SLO — a stage that answers slowly forever is not a ceiling). When
+// every stage was stable the true knee was not observed: the result is a lower
+// bound, and firstUnstable is 0.
+func CeilingBracket(stages []StageResult, stable func(StageResult) bool) (highestStable, firstUnstable float64, lowerBoundOnly bool) {
 	for _, s := range stages {
-		if s.Stable(minRatio) {
+		if stable(s) {
 			highestStable = float64(s.Stage.Rate)
 			continue
 		}

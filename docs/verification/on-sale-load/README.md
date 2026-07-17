@@ -27,8 +27,9 @@ evidence deliberately bakes in no policy.
 - ADR-010 **deliberately serializes a hot pool** — a low ceiling is a finding for TKT-20's
   design, not a bug in inventory.
 - Scheduler lag and the client in-flight cap are reported so client CPU exhaustion is not
-  mistaken for the pool ceiling; a stage is only "stable" with zero drops/errors and ≥99%
-  delivery.
+  mistaken for the pool ceiling; a sweep stage is only "stable" with zero drops, errors and
+  rejections, ≥99% delivery, **and** lifecycle p99 within the 3s SLO — a stage that answers
+  slowly forever is past the knee even before the client cap drops arrivals.
 - The `claim_history` INSERT line (ADR-023 amendment) is aggregate DB execution time from
   `pg_stat_statements` — overhead attribution, not a causal with/without comparison.
 
