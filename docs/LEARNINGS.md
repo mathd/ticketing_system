@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**An anti-replay rule must be re-checked against the retry it exists to serve**](./learnings/2026-07-16-protocol-rules-safety-and-liveness.md) —
+  three review rounds each fixed one side of the same idempotency rule (retry forged into a
+  conflict → replay oracle → lost-retry never admits). Protocol rules have a safety side and a
+  liveness side; every one-sided fix is locally correct, so state both together and re-run the
+  opposite side's motivating scenario after each fix. (TKT-73, PR #55)
 - [**A time cutoff decided behind a lock queue must use decision time, not transaction time**](./learnings/2026-07-16-lock-queue-time-cutoffs.md) —
   `now()` freezes at transaction start, so a transaction that waits on a row lock across a time
   boundary decides it with stale time. And the regression test is vacuous unless it proves the
