@@ -2,9 +2,11 @@
   "key": "TKT-92",
   "type": "Task",
   "summary": "Load-harness generator health: client/server error taxonomy + connection bounding",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [],
   "description": "From TKT-82 ai-review pass 3 (incidental): the on-sale load harness (smoke/internal/loadtest) classifies all attempt errors identically, so client-side transport/resource exhaustion is indistinguishable from server instability in the ceiling bracket; the shared HTTP transport also has unbounded active connections at high sweep rates (cap rate*4 permits 12k concurrent at 3,000/s). Harden before TKT-31/TKT-37 reuse the harness: (1) classify transport-level errors (err != nil) separately from HTTP-status errors and treat client-side classes as inconclusive, not unstable; (2) bound and report client connections/goroutines; (3) unit tests for late-scheduling-without-drops and drops-with-client-errors. The lag-p99 schedule guard and the cap-drops-with-SLO-met inconclusive rule shipped in TKT-82.",
@@ -13,6 +15,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated from TKT-82 ai-review pass 3 finding (triaged incidental): generator-health taxonomy is harness hardening beyond what TKT-82's published claim needs — its accepted evidence run is clean (lag p99 0.4ms, zero errors). Natural home: whichever of TKT-31/TKT-37 first reuses the harness."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed: zero open blockers (no links on the ticket), branch `TKT-92-load-harness-generator-health` off origin/main (9ba2aaf).\n\n**Selection reason:** only ticket in Ready; hardens the on-sale load harness before TKT-31/TKT-37 reuse it.\n\n**⚠️ Gate waiver — process experiment (recorded per repo owner's instruction):** the repo owner has explicitly waived all four human gates for this run. Gate 1 was given by Ready placement; Gate 2 (plan approval), Gate 3 (review + merge), and Gate 4 (PO acceptance) will be self-executed by the agent: open plan decisions resolved per the cross-model critique's recommendation (most-reversible option as tiebreak), squash-merge after converged adversarial ai-review, COS self-validated against test evidence on merged code. Everything else in the skill applies unchanged — config.models routing, cross-model plan and code review, TDD with tests observed red, local gate green before every push and after merge, all marker comments. This ticket's board history is therefore a GATELESS run — weigh it accordingly when comparing flows.\n\n**Note:** ticket has no context-mémo and no readiness object (created as an incidental from TKT-82's ai-review, moved to Ready without the shaping pass). Proceeding under the waiver; the plan brief will re-derive governing ADRs from docs/adr/ at claim time."
     }
   ]
 }
