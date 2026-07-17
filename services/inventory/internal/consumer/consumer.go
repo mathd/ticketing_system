@@ -427,17 +427,21 @@ func (c *Consumer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// TKT-90: reconcile pool offering state against catalog before readiness —
-	// dead-beyond-retention pools converge here; the quarantine latch still wins.
-	if err := c.startupConverge(ctx); err != nil {
-		return err
-	}
 	defer c.ready.Store(false)
 	cc, err := cons.Consume(func(msg jetstream.Msg) { c.handle(ctx, msg) })
 	if err != nil {
 		return err
 	}
 	defer cc.Stop()
+	// TKT-90: reconcile pool offering state against catalog before readiness —
+	// dead-beyond-retention pools converge here; the quarantine latch still wins.
+	// Consumption is already running: the durable's backlog drains in parallel
+	// with the pass (ai-review finding 4 — the pass gates readiness, never
+	// delivery), and interleaved writes are safe by the same per-slot version
+	// guard and archive idempotence that make the pass itself safe.
+	if err := c.startupConverge(ctx); err != nil {
+		return err
+	}
 	<-ctx.Done()
 	return fmt.Errorf("consumer stopped: %w", ctx.Err())
 }

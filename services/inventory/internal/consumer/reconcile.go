@@ -78,9 +78,14 @@ func (c *Consumer) reconcilePool(ctx context.Context, p store.PoolOffering, stat
 		c.log.Error("reconcile: non-published lifecycle; leaving untouched", "pool", p.SlotID, "lifecycle", state.Lifecycle)
 		return nil
 	case state.ClosureVersion >= 1 && state.ClosureStatus != p.ClosureStatus:
-		// Both directions: a missed closed OR a missed reopened. ApplyClosure's
-		// per-slot version guard makes a racing in-flight event with a newer
-		// version win regardless of the order they land in.
+		// Both directions: a missed closed OR a missed reopened. The comparison is
+		// a drift FILTER, not a safety mechanism: it matches catalog's per-slot
+		// status against the pool's derived column, which coincide for the solo
+		// pools that reach here (grouped pools were skipped above). If a future
+		// axis split (TKT-14) makes it false-trigger, the write is still safe —
+		// it lands catalog's true per-slot state at catalog's version, and
+		// ApplyClosure's per-slot version guard makes a racing in-flight event
+		// with a newer version win regardless of the order they land in.
 		c.log.Info("reconcile: converging closure drift", "pool", p.SlotID, "to", state.ClosureStatus, "version", state.ClosureVersion)
 		return c.st.ApplyClosure(ctx, uuid.New(), p.SlotID, p.SlotID, state.ClosureStatus == "closed", state.ClosureVersion)
 	}
