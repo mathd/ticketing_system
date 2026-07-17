@@ -2,10 +2,8 @@
   "key": "TKT-83",
   "type": "Task",
   "summary": "Remove the checked-in default INTERNAL_SERVICE_TOKEN — fail startup without an explicit credential",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude-fable-5",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/61",
@@ -59,6 +57,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\nValidation note — COS from the ticket, proven on merged main (a1a7648, PR #61):\n- \"Service without the token (or with the known default) fails fast with a clear error\": TestServerRefusesToStartWithoutARealCredential black-boxes all five built images x {absent, retired} — non-zero exit within 15s, credential error text; runtimecfg unit tests pin both messages. Reproducible locally: `docker run --rm ticketing-smoke-<slot>-catalog` (no env) exits with the credential error.\n- \"docker compose up from a clean clone works with at most one documented step\": `make up` bootstraps .env once (verified idempotent, chmod 600, quoted/CRLF/duplicate/spaced retired values rotate); compose reads .env natively afterwards; README/development.md document it.\n- \"make check green\": green after every commit, including the merged tree.\nPost-merge operator note (also in the PR review-guide): existing clones prompt for the one-time `make up` on their next compose up."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n| stage | duration |\n|---|---|\n| Ready | 27m29s (queued behind TKT-89) |\n| Planning | 13m53s |\n| — agent:planning (incl. codex draft) | 9m11s |\n| — needs:human (Gate 2) | 4m42s |\n| Building | 1h25m57s |\n| — agent:coding | 6m11s |\n| — agent:ai-review (2 passes + fallback + fixes + 2 gate re-runs) | 36m54s |\n| — needs:human (Gate 3) | 42m52s |\n| PO Review | ~2m |\n\nhuman-wait total: ~47m34s\ndiff: +172/−27 (16 files), PR #61\n\nlearnings:\n- codex-runner.md's escalation ladder carried a real failure: the pass-2 plugin review died mid-stream on network errors and the raw-exec fallback (read-only, diff inlined, stdin redirect) produced the conclusive verdict. Working as documented — cite, no new rule.\n- Incident, this session's close-out attempt: on a mistaken \"merged\" report, branch deletion ran chained behind the state check instead of gated on it — deleting the head branch of the still-open PR auto-closed it unmerged. Recovered fully (branch re-pushed at the same SHA, PR reopened, later merged for real; zero loss). The rule already exists (Done step: \"verify PR merged\"); the failure was chaining verification and destruction in one command.\n\nretro:\n1. What would have made this faster/better: the ai-review stage dominated agent time (~37m) — mostly the plugin's network failure and full-gate re-runs after Makefile-only fixes. A scoped re-green (lint + the bootstrap matrix) would have been defensible for recipe-only commits; kept the full gate for honesty. No mémo/COS gap.\n2. What the humans should change: one concrete edit offered — SKILL.md step 6 (or local-tracker close-out): \"verify merge state as its own command and read it BEFORE deleting the branch; deleting the head branch of an open PR closes it unmerged.\" One line, cites this ticket. Not applied — skill edits are held for owner sign-off per the high-bar rule; say the word and I'll commit it."
     }
   ]
 }
