@@ -81,7 +81,7 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("hold: %d %.200s", code, body)}
 		}
 		var claim struct {
-			ID string `json:"id"`
+			ID string `json:"hold_id"`
 		}
 		if json.Unmarshal(body, &claim) != nil || claim.ID == "" {
 			return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("hold body unparseable: %.200s", body)}
