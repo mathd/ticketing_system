@@ -2,7 +2,7 @@
   "key": "TKT-90",
   "type": "Task",
   "summary": "Inventory offering-state reconciliation beyond stream retention and readiness catch-up gating",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
