@@ -81,13 +81,18 @@ load profiles remain TKT-31/TKT-37.
   sustained window (1,500 attempts/min), an exact fill to capacity, a 25-attempt rejection
   tail. Budget: hard 30s deadline on the load portion (adds ~15–30s to smoke).
   **Correctness-fatal, throughput-advisory**: it fails on oversell, DB accounting mismatch,
-  missing `claim_history` rows, unexpected statuses or transport/5xx errors — but records
-  (never asserts) latency percentiles and dropped arrivals, so a slow runner can't turn the
-  pool's deliberate ADR-010 serialization into a flake.
+  missing `claim_history` rows, and errors of either class — but records (never asserts)
+  latency percentiles and dropped arrivals, so a slow runner can't turn the pool's
+  deliberate ADR-010 serialization into a flake. Errors are split (TKT-92): transport-level
+  failures with no delivered status (or a truncated success body) are **client-side** and
+  fail the run as *inconclusive* (generator health, rerun); delivered unexpected
+  statuses/5xx/malformed bodies are **server-side** and fail it as a correctness finding —
+  a forbidden status decides on its own, truncated body or not.
 - **Full NFR** (on-demand): `make onsale-load-full`. 3,000 attempts/min sustained for 3
   minutes against a 100k pool (SLO: per-mutation p99 ≤ 1s, lifecycle p99 ≤ 3s), a per-pool
   ceiling sweep (75→3,000 attempts/s, fresh pool per rate, stop at first unstable — unstable
-  = drops, errors, rejections, <99% delivery **or** lifecycle p99 over the 3s SLO; published
+  = drops, server errors, rejections, <99% delivery **or** lifecycle p99 over the 3s SLO;
+  client-side errors instead abort the stage as inconclusive; published
   as a highest-stable/first-unstable bracket, or a lower bound if no knee is observed), and a
   quantity-50 oversell tail on a 50k pool. Evidence is written to
   `docs/evidence/TKT-82/full-profile.json`; the published per-pool ceiling (the number
