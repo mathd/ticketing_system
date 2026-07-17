@@ -87,6 +87,10 @@ func port() string {
 }
 
 func run() error {
+	internalToken, err := runtimecfg.InternalTokenFromEnv()
+	if err != nil {
+		return err
+	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
@@ -130,7 +134,7 @@ func run() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
-	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, os.Getenv("INTERNAL_SERVICE_TOKEN")))
+	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken))
 	if err != nil {
 		return fmt.Errorf("api router: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,9 @@ import (
 var (
 	inventoryURL  = env("SMOKE_INVENTORY_URL", "http://localhost:8091")
 	commerceURL   = env("SMOKE_COMMERCE_URL", "http://localhost:8092")
-	internalToken = env("SMOKE_INTERNAL_TOKEN", "local-service-token")
+	// No fallback: the harness (scripts/smoke.sh) generates and exports the
+	// credential per invocation (TKT-83).
+	internalToken = os.Getenv("SMOKE_INTERNAL_TOKEN")
 )
 
 func internalJSON(t *testing.T, method, url, key string, body any) (int, []byte) {

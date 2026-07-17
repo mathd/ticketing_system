@@ -390,7 +390,7 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 		"-e", fmt.Sprintf("DATABASE_URL=postgres://catalog:catalog@postgres:5432/%s", probeDB),
 		"-e", "NATS_URL=nats://nats:4222",
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
-		"-e", "INTERNAL_SERVICE_TOKEN=local-service-token",
+		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
 		project+"-catalog").CombinedOutput()
 	if err != nil {
 		t.Fatalf("start probe: %v: %s", err, out)
@@ -447,4 +447,41 @@ func TestMetricsIngested(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// TestServerRefusesToStartWithoutARealCredential: every service image fails
+// fast — before any dependency init — when INTERNAL_SERVICE_TOKEN is absent or
+// is the retired checked-in default (TKT-83). Black-box on the built images so
+// a service whose entrypoint stops calling the shared validator fails here, not
+// in a code-review comment. No DB/NATS env is provided on purpose: an error
+// mentioning anything but the credential means validation ran too late.
+func TestServerRefusesToStartWithoutARealCredential(t *testing.T) {
+	cases := []struct{ name, tokenEnv string }{
+		{"absent", ""},
+		{"retired-default", "INTERNAL_SERVICE_TOKEN=local-service-token"},
+	}
+	for _, service := range migratedServices {
+		for _, tc := range cases {
+			t.Run(service+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				args := []string{"run", "--rm"}
+				if tc.tokenEnv != "" {
+					args = append(args, "-e", tc.tokenEnv)
+				}
+				args = append(args, project+"-"+service)
+				out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+				if ctx.Err() != nil {
+					t.Fatalf("did not exit within 15s — credential validation is not first in run(): %s", out)
+				}
+				if err == nil {
+					t.Fatalf("started without a real credential: %s", out)
+				}
+				if !strings.Contains(string(out), "INTERNAL_SERVICE_TOKEN") {
+					t.Fatalf("exit was not the credential error (validation ran too late?): %v: %s", err, out)
+				}
+			})
+		}
+	}
 }

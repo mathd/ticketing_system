@@ -7,8 +7,12 @@ built spec-first with AI-assisted development. See `docs/product/` for the brief
 ## Quickstart
 
 ```bash
-docker compose up          # postgres + NATS + otel-lgtm + 5 services + gateway + web apps
+make up      # first run generates a local credential (.env), then compose up --build --wait
 ```
+
+`make up` is needed once per clone: no service credential is checked in, so it generates a
+random `INTERNAL_SERVICE_TOKEN` into a gitignored `.env`. After that, plain
+`docker compose up` works as usual.
 
 Then:
 

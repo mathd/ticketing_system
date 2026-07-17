@@ -170,6 +170,10 @@ func port() string {
 }
 
 func run() error {
+	internalToken, err := runtimecfg.InternalTokenFromEnv()
+	if err != nil {
+		return err
+	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
@@ -201,10 +205,6 @@ func run() error {
 	keyID, key, err := signingConfig()
 	if err != nil {
 		return err
-	}
-	internalToken := os.Getenv("INTERNAL_SERVICE_TOKEN")
-	if internalToken == "" {
-		return errors.New("INTERNAL_SERVICE_TOKEN required")
 	}
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),

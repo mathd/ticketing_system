@@ -28,6 +28,8 @@ x-go-deps: &go-deps
 x-go-service: &go-service
   restart: unless-stopped
   environment: &go-env
+    # No default credential ships in the repo (TKT-83): `make up` generates one.
+    INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
     NATS_URL: nats://nats:4222
     OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
     # fast export cadence so telemetry is queryable within seconds (smoke)
@@ -140,7 +142,6 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
   inventory-migrate:
     <<: *migrate-job
@@ -164,7 +165,6 @@ services:
       DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
       HOLD_TTL: ${HOLD_TTL:-10m}
       CATALOG_URL: http://catalog:8080
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
   commerce-migrate:
     <<: *migrate-job
@@ -187,7 +187,6 @@ services:
       CATALOG_URL: http://catalog:8080
       INVENTORY_URL: http://inventory:8080
       PAYMENTS_URL: http://payments:8080
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
 
   payments-migrate:
     <<: *migrate-job
@@ -205,7 +204,6 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
       JOURNAL_KEY_ID: local-v1
       JOURNAL_SIGNING_KEY: ${JOURNAL_SIGNING_KEY:-local-development-journal-key}
 
@@ -256,7 +254,6 @@ services:
       <<: *go-env
       DATABASE_URL: postgres://access:access@postgres:5432/access
       COMMERCE_URL: http://commerce:8080
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-service-token}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       # Development-only deterministic seed. Deployments must inject a distinct
       # 32-byte Ed25519 seed through secret configuration.

@@ -5,7 +5,10 @@ The system is a local Docker Compose testbed, not a production deployment.
 
 ## Enforced today
 
-- Secrets and local environment files are ignored; credentials in Compose are development-only.
+- Secrets and local environment files are ignored. No service credential is checked in:
+  `INTERNAL_SERVICE_TOKEN` has no default, `make up` generates a local one into `.env`, and
+  server mode refuses the retired historical value `local-service-token` everywhere, dev
+  included (TKT-83).
 - Each Go service has a separate PostgreSQL database and role. CONNECT is revoked across service
   databases and the smoke suite verifies credential isolation (ADR-007).
 - Only the gateway publishes the application port. Infrastructure ports bind to `127.0.0.1`.

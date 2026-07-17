@@ -11,12 +11,23 @@ golangci-lint release binary into `./bin` (sha256-verified against the release c
 ## Everyday loop
 
 ```bash
-docker compose up -d --build --wait   # or: make up
+make up                               # bootstraps .env once, then compose up -d --build --wait
 make check                            # full local gate: lint + test + build + smoke
 make lint / test / build / smoke      # individual stages
 docker compose exec payments /app verify-journal    # verify the live money journal
 docker compose exec access /app verify-lifecycle   # verify the live ticket lifecycle trail
 ```
+
+### Internal service credential (TKT-83)
+
+No default `INTERNAL_SERVICE_TOKEN` ships in the repo. `make up` generates a random one into a
+gitignored `.env` (chmod 600, other entries preserved); compose reads `.env` natively, so every
+later `docker compose` command works unchanged. To supply your own, set the variable in `.env`
+or the shell. Services refuse to start — before touching any dependency — when the token is
+absent, empty, or the retired historical value `local-service-token`; that literal survives in
+the code only as a denylist entry and in tests proving its rejection. Deleted or broken `.env`?
+Run `make up` again. The smoke harness is independent: `scripts/smoke.sh` generates its own
+credential per invocation, so CI needs no secret.
 
 Go code is a `go.work` workspace: one module per service + `gateway`, `shared/go`, `smoke`.
 TS code is a pnpm workspace: the Astro 7 SSR/React storefront in `web/storefront` and the

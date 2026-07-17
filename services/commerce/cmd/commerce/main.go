@@ -93,6 +93,10 @@ func port() string {
 }
 
 func run() error {
+	token, err := runtimecfg.InternalTokenFromEnv()
+	if err != nil {
+		return err
+	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
@@ -162,9 +166,9 @@ func run() error {
 	)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
-	catalogURL, inventoryURL, paymentsURL, token := os.Getenv("CATALOG_URL"), os.Getenv("INVENTORY_URL"), os.Getenv("PAYMENTS_URL"), os.Getenv("INTERNAL_SERVICE_TOKEN")
-	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" || token == "" {
-		return errors.New("CATALOG_URL, INVENTORY_URL, PAYMENTS_URL and INTERNAL_SERVICE_TOKEN required")
+	catalogURL, inventoryURL, paymentsURL := os.Getenv("CATALOG_URL"), os.Getenv("INVENTORY_URL"), os.Getenv("PAYMENTS_URL")
+	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" {
+		return errors.New("CATALOG_URL, INVENTORY_URL and PAYMENTS_URL required")
 	}
 	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).Router())
 
