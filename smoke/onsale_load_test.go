@@ -86,22 +86,23 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 		key := fmt.Sprintf("onsale:%s:%s:%d", runID, stage.Name, seq)
 		code, body, holdD, err := timedPost(holds, map[string]string{"Idempotency-Key": key},
 			map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": quantity})
+		// Classification precedence (TKT-92): a delivered status decides on its
+		// own wherever it can — a forbidden status is server evidence even if
+		// the body was then truncated/reset. err is client-side only when no
+		// status arrived, or when a success body the harness needs was cut off
+		// (the conservative, inconclusive direction).
 		switch {
-		// A delivered 5xx status is server evidence even if the body was then
-		// truncated/reset — don't let the read error downgrade it to
-		// client-inconclusive. Anything else with err (no status, or a
-		// truncated non-5xx body) stays client-side: conservative direction.
-		case err != nil && code >= http.StatusInternalServerError:
-			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("hold: %d %s", code, err)}
-		case err != nil:
+		case err != nil && code == 0:
 			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
 		case code == http.StatusConflict:
-			return loadtest.Outcome{Kind: loadtest.KindRejected}
+			return loadtest.Outcome{Kind: loadtest.KindRejected} // body unused; a read error changes nothing
 		// 200 is an idempotent replay. Keys are unique per attempt, so it only
 		// arises when Go transparently retried after losing the first response
 		// on a reused connection — the hold is real, not instability.
 		case code != http.StatusCreated && code != http.StatusOK:
-			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("hold: %d %.200s", code, body)}
+			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("hold: %d %.200s (%v)", code, body, err)}
+		case err != nil: // truncated success body — the hold may exist, but the proof is gone
+			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
 		}
 		var claim struct {
 			ID string `json:"hold_id"`
@@ -117,14 +118,13 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 		}{{"finalize", &out.Finalize}, {"confirm", &out.Confirm}} {
 			url := fmt.Sprintf("%s/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
 			code, rbody, d, err := timedPost(url, hdr, nil)
-			if err != nil {
-				if code >= http.StatusInternalServerError {
-					return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("%s: %d %s", step.name, code, err)}
-				}
+			switch {
+			case err != nil && code == 0:
 				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
-			}
-			if code != http.StatusOK {
-				return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("%s: %d %.200s", step.name, code, rbody)}
+			case code != http.StatusOK: // delivered forbidden status decides alone, truncated body or not
+				return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("%s: %d %.200s (%v)", step.name, code, rbody, err)}
+			case err != nil: // 200 delivered, body then cut off — transport health, inconclusive
+				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
 			}
 			*step.dst = d
 		}

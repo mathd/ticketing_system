@@ -84,9 +84,10 @@ load profiles remain TKT-31/TKT-37.
   missing `claim_history` rows, and errors of either class — but records (never asserts)
   latency percentiles and dropped arrivals, so a slow runner can't turn the pool's
   deliberate ADR-010 serialization into a flake. Errors are split (TKT-92): transport-level
-  failures (`err != nil`) are **client-side** and fail the run as *inconclusive* (generator
-  health, rerun); unexpected statuses/5xx/malformed bodies are **server-side** and fail it
-  as a correctness finding.
+  failures with no delivered status (or a truncated success body) are **client-side** and
+  fail the run as *inconclusive* (generator health, rerun); delivered unexpected
+  statuses/5xx/malformed bodies are **server-side** and fail it as a correctness finding —
+  a forbidden status decides on its own, truncated body or not.
 - **Full NFR** (on-demand): `make onsale-load-full`. 3,000 attempts/min sustained for 3
   minutes against a 100k pool (SLO: per-mutation p99 ≤ 1s, lifecycle p99 ≤ 3s), a per-pool
   ceiling sweep (75→3,000 attempts/s, fresh pool per rate, stop at first unstable — unstable

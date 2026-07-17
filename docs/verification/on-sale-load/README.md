@@ -35,11 +35,13 @@ evidence deliberately bakes in no policy.
   is sized by Little's law above rate × SLO (rate × 4s), bounded by the transport's
   4,096-connections-per-host limit (TKT-92), and cap drops while the SLO holds abort the
   run as **inconclusive** — a generator limit is never published as a ceiling.
-- Since TKT-92 the harness splits error classes: transport-level failures (`err != nil`,
-  reported as `client_errors`) always abort a run as **inconclusive** — client exhaustion
-  or connection loss is indistinguishable from a server reset at the client, so it is never
-  published as a server verdict; delivered protocol violations (`server_errors`: 5xx,
-  unexpected status, malformed body) are instability evidence and bracket the ceiling.
+- Since TKT-92 the harness splits error classes: transport-level failures with no delivered
+  status, or a truncated success body (reported as `client_errors`), always abort a run as
+  **inconclusive** — client exhaustion or connection loss is indistinguishable from a server
+  reset at the client, so it is never published as a server verdict; delivered protocol
+  violations (`server_errors`: 5xx, unexpected status, malformed body — a forbidden status
+  counts even if its body was then truncated) are instability evidence and bracket the
+  ceiling.
   Per-stage evidence JSON carries the split plus `max_in_flight`/`peak_in_flight` and the
   root `client_max_conns_per_host`; the aggregate `errors` field remains as their sum for
   schema compatibility. Evidence produced before TKT-92 cannot be retroactively split.
