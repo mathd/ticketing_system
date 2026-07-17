@@ -206,6 +206,9 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   One implementer, no worktree — WIP is one ticket, and a TDD loop doesn't parallelize.
 #   Local gate (mirrors CI): run config.code.localGate. If you delegated, VERIFY don't trust —
 #   re-run the gate yourself on the committed tree (quality-practices.md §2.b).
+#   READ the gate's exit code before pushing — never chain commit/push onto the same shell
+#   command as the gate: `gate; echo exit=$?` then push in a later call. Chained, a gate that
+#   failed to even start (mis-cwd'd, missing target) ships the push anyway (TKT-71).
 #   Code: verify `git branch --show-current` is the ticket branch FIRST (a session's branch can
 #   be switched under it — TKT-84 briefly committed to local main), then commit (no AI
 #   attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"
