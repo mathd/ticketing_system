@@ -115,3 +115,64 @@ func TestProvisionDoesNotOverwriteAdjustedEmptyPool(t *testing.T) {
 		t.Fatalf("republish overwrote adjusted empty pool: capacity=%d", capacity)
 	}
 }
+
+// TKT-76 ai-review round 2: an adjustment committed while Provision waits on the pool
+// row must survive. A single upsert's WHERE subqueries evaluate against the pre-wait
+// snapshot and miss it — Provision must lock first, then decide in a fresh statement.
+// Deterministic: a manual transaction holds the adjustment uncommitted, a pg_stat_activity
+// handshake proves Provision queued behind it, then the adjustment commits first.
+func TestProvisionQueuedBehindAdjustmentDoesNotOverwrite(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+
+	// Uncommitted capacity adjustment, exactly the statements AdjustCapacity runs.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET capacity=80, updated_at=now() WHERE slot_id=$1`, slot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO claim_history(id,organizer_id,pool_id,action,actor,reason,quantity,quantity_after,status_after,idempotency_key,request_fingerprint)
+			VALUES($1,$2,$3,'adjust_capacity','staff','resize',100,80,'applied','race-adjust','fp')`, uuid.New(), org, slot); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- st.Provision(ctx, uuid.New(), slot, org, 500) }()
+	// Handshake: Provision observed waiting on the pool lock while the adjustment is
+	// still uncommitted — the interleaving under test, not a lucky schedule.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var waiting bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+				WHERE wait_event_type='Lock' AND state='active'
+				  AND query LIKE '%inventory_pools%' AND pid <> pg_backend_pid())`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Provision never queued on the pool lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var capacity int32
+	if err := db.QueryRowContext(ctx, `SELECT capacity FROM inventory_pools WHERE slot_id=$1`, slot).Scan(&capacity); err != nil {
+		t.Fatal(err)
+	}
+	if capacity != 80 {
+		t.Fatalf("queued Provision overwrote the committed adjustment: capacity=%d", capacity)
+	}
+}

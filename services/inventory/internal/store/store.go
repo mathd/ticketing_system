@@ -122,15 +122,28 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 	if n, _ := res.RowsAffected(); n == 0 {
 		return tx.Commit()
 	}
-	// The overwrite guard also covers adjustment history (TKT-76 ai-review finding 1):
-	// inventory owns capacity after any staff adjustment (ADR-005 amendment), and an
-	// APPLIED adjustment on a claim-free pool is otherwise indistinguishable from an
-	// untouched one. claim_history.pool_id is non-NULL only on adjustment records.
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id) VALUES($1,$2,$3,$4)
-		ON CONFLICT(slot_id) DO UPDATE SET capacity=EXCLUDED.capacity, updated_at=now()
-		WHERE inventory_pools.organizer_id=EXCLUDED.organizer_id AND inventory_pools.confirmed_quantity=0
-		AND NOT EXISTS(SELECT 1 FROM claims WHERE pool_id=EXCLUDED.slot_id)
-		AND NOT EXISTS(SELECT 1 FROM claim_history WHERE pool_id=EXCLUDED.slot_id)`, slotID, organizerID, capacity, eventID)
+	res, err = tx.ExecContext(ctx, `INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id) VALUES($1,$2,$3,$4)
+		ON CONFLICT(slot_id) DO NOTHING`, slotID, organizerID, capacity, eventID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return tx.Commit()
+	}
+	// Existing pool: take the ADR-010 pool lock FIRST, then decide in a fresh statement
+	// snapshot. A single upsert cannot do this safely — its WHERE subqueries evaluate
+	// against the pre-wait snapshot, so an adjustment committed while the upsert queued
+	// on the row lock stays invisible and gets overwritten (TKT-76 ai-review round 2).
+	// The overwrite guard covers claims, confirmed quantity, AND adjustment history
+	// (claim_history.pool_id is non-NULL only on adjustment records): inventory owns
+	// capacity after any staff adjustment (ADR-005 amendment).
+	if _, err = tx.ExecContext(ctx, `SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slotID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET capacity=$1, updated_at=now()
+		WHERE slot_id=$2 AND organizer_id=$3 AND confirmed_quantity=0
+		AND NOT EXISTS(SELECT 1 FROM claims WHERE pool_id=$2)
+		AND NOT EXISTS(SELECT 1 FROM claim_history WHERE pool_id=$2)`, capacity, slotID, organizerID)
 	if err != nil {
 		return err
 	}
