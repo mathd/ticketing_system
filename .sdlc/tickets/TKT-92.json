@@ -2,7 +2,7 @@
   "key": "TKT-92",
   "type": "Task",
   "summary": "Load-harness generator health: client/server error taxonomy + connection bounding",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
