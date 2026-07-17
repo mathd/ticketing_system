@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -14,17 +15,30 @@ import (
 	"ticketing/services/inventory/internal/store"
 )
 
-const subject = "platform.catalog.performance.published"
+const (
+	subjectPublished = "platform.catalog.performance.published"
+	subjectArchived  = "platform.catalog.performance.archived"
+	subjectClosed    = "platform.catalog.performance.closed"
+	subjectReopened  = "platform.catalog.performance.reopened"
+)
+
+// catalogStore is what the consumer needs from the store; *store.Postgres implements it,
+// and the disposition tests substitute a recorder.
+type catalogStore interface {
+	Provision(ctx context.Context, eventID, slotID, organizerID uuid.UUID, capacity int32) error
+	ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) error
+	ApplyClosure(ctx context.Context, eventID, pool uuid.UUID, closed bool, version int32) error
+}
 
 type Consumer struct {
 	js       jetstream.JetStream
-	st       *store.Postgres
+	st       catalogStore
 	resolver PerformanceResolver
 	ready    atomic.Bool
 	log      *slog.Logger
 }
 
-func New(js jetstream.JetStream, st *store.Postgres, resolver PerformanceResolver, log *slog.Logger) *Consumer {
+func New(js jetstream.JetStream, st catalogStore, resolver PerformanceResolver, log *slog.Logger) *Consumer {
 	return &Consumer{js: js, st: st, resolver: resolver, log: log}
 }
 func (c *Consumer) Ready() bool { return c.ready.Load() }
@@ -95,9 +109,19 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 
 // maxKnownPublicationSchema is the highest `performance.published` variant this binary can read.
 // Keep it in step with provisionInput's case arms above — TestEveryKnownSchemaHasAnArm is the
-// tripwire if you add an arm and forget, and TestMaxKnownSchemaIsNotAheadOfTheArms if you bump it
+// tripwire if you add an arm and forget, and TestMaxKnownSchemaIsNotBehindTheArms if you bump it
 // without adding one.
 const maxKnownPublicationSchema = 3
+
+// knownSchemas is the per-subject registry of variants this binary can read (ADR-017 §5b′).
+// Above max is the future (park + latch unready); at or below zero is a broken envelope; a gap
+// below min was never emitted by any catalog (archived started at 2) — both are poison.
+var knownSchemas = map[string]struct{ min, max int }{
+	subjectPublished: {1, maxKnownPublicationSchema},
+	subjectArchived:  {2, 3},
+	subjectClosed:    {1, 1},
+	subjectReopened:  {1, 1},
+}
 
 // envelope is the part of an event that does not change across schema versions (ADR-009 §5).
 // `data` stays raw on purpose: dispatch has to happen on `schema` alone, before anything reads
@@ -110,13 +134,6 @@ type envelope struct {
 	Data   json.RawMessage `json:"data"`
 }
 
-// knownPublicationSchema reports whether this binary can read `data` at this schema — i.e. whether
-// the payload is ours to judge at all. Schema numbers start at 1 and only climb (ADR-009 §5), so
-// <= 0 is not a variant from the future; it is a broken envelope.
-func knownPublicationSchema(schema int) bool {
-	return schema >= 1 && schema <= maxKnownPublicationSchema
-}
-
 // handle is the message handler, split out of Run's Consume closure so the disposition it actually
 // ships can be tested against a fake jetstream.Msg (the shape services/access already uses). The
 // disposition is what dropped inventory in TKT-61, so it does not get to go untested.
@@ -125,33 +142,60 @@ func knownPublicationSchema(schema int) bool {
 // is the envelope readable, is the variant ours to judge, and only then is the payload valid. Ask
 // them in any other order and a future variant gets judged by rules that were never written for it.
 func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
-	// Read the envelope only. Dispatch on `schema` before `data` is decoded — see envelope's
-	// doc comment for why the ordering is the whole fix and not a style choice.
+	// Read the envelope only. Dispatch on (subject, `schema`) before `data` is decoded — see
+	// envelope's doc comment for why the ordering is the whole fix and not a style choice.
 	var env envelope
 	if err := json.Unmarshal(msg.Data(), &env); err != nil {
-		c.log.Error("invalid publication event", "err", err)
+		c.log.Error("invalid catalog event", "subject", msg.Subject(), "err", err)
 		_ = msg.Term()
 		return
 	}
-	if !knownPublicationSchema(env.Schema) {
-		if env.Schema <= 0 {
-			// Not a variant from the future: an envelope with no usable schema, which ADR-009 §5
-			// requires. No binary will ever provision it — poison, so terminate. Readiness is
-			// deliberately untouched: a broken producer must not be able to take inventory down.
-			c.log.Error("invalid publication event", "event_id", env.ID, "schema", env.Schema,
-				"err", "publication envelope has no usable schema")
-			_ = msg.Term()
-			return
-		}
+	spec, ok := knownSchemas[msg.Subject()]
+	if !ok {
+		// The durable filter should make this unreachable; if it happens it is a wiring bug,
+		// not the future — parking it would stall the stream behind a subject nobody owns.
+		c.log.Error("unexpected subject", "subject", msg.Subject(), "event_id", env.ID)
+		_ = msg.Term()
+		return
+	}
+	if env.Schema <= 0 {
+		// Not a variant from the future: an envelope with no usable schema, which ADR-009 §5
+		// requires. No binary will ever apply it — poison, so terminate. Readiness is
+		// deliberately untouched: a broken producer must not be able to take inventory down.
+		c.log.Error("invalid catalog event", "subject", msg.Subject(), "event_id", env.ID,
+			"schema", env.Schema, "err", "envelope has no usable schema")
+		_ = msg.Term()
+		return
+	}
+	if env.Schema > spec.max {
 		// Version skew: hold the event for a binary that understands it, and stop reporting
 		// ready. Readiness is the only signal wired here, and a drop nobody notices is the whole
 		// of TKT-61 — being loudly unready beats being quietly wrong. It never self-heals:
 		// recovering on the next good message would hide the event still pending behind this one.
-		c.log.Error("unsupported publication schema", "event_id", env.ID, "schema", env.Schema)
+		c.log.Error("unsupported catalog event schema", "subject", msg.Subject(), "event_id", env.ID, "schema", env.Schema)
 		c.ready.Store(false)
 		_ = msg.NakWithDelay(5 * time.Second)
 		return
 	}
+	if env.Schema < spec.min {
+		// Below the subject's first variant: no catalog ever emitted it, so no binary — present
+		// or future — will apply it. Poison, same as the broken envelope above.
+		c.log.Error("invalid catalog event", "subject", msg.Subject(), "event_id", env.ID,
+			"schema", env.Schema, "err", "schema below the subject's first variant")
+		_ = msg.Term()
+		return
+	}
+	switch msg.Subject() {
+	case subjectArchived:
+		c.handleArchived(ctx, msg, env)
+	case subjectClosed, subjectReopened:
+		c.handleClosure(ctx, msg, env, msg.Subject() == subjectClosed)
+	default:
+		c.handlePublication(ctx, msg, env)
+	}
+}
+
+func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env envelope) {
 	// Known variant: now it is ours to judge, so read and validate `data` as this schema defines it.
 	var e publication
 	if err := json.Unmarshal(msg.Data(), &e); err != nil {
@@ -183,12 +227,130 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	_ = msg.Ack()
 }
 
+type archivedData struct {
+	PerformanceID   uuid.UUID  `json:"performance_id"`
+	OrganizerID     uuid.UUID  `json:"organizer_id"`
+	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
+}
+
+// handleArchived marks the pool terminally archived (TKT-75). Schema 2 is a solo slot,
+// schema 3 a grouped one whose pool is the festival's capacity group — the same pool
+// convergence the publication path uses.
+func (c *Consumer) handleArchived(ctx context.Context, msg jetstream.Msg, env envelope) {
+	var d archivedData
+	if err := json.Unmarshal(env.Data, &d); err != nil {
+		c.log.Error("invalid archived event", "event_id", env.ID, "err", err)
+		_ = msg.Term()
+		return
+	}
+	pool := d.PerformanceID
+	switch {
+	case env.ID == uuid.Nil || d.PerformanceID == uuid.Nil || d.OrganizerID == uuid.Nil:
+		c.log.Error("invalid archived event", "event_id", env.ID, "err", "missing required identifiers")
+		_ = msg.Term()
+		return
+	case env.Schema == 2 && d.CapacityGroupID != nil:
+		c.log.Error("invalid archived event", "event_id", env.ID, "err", "schema-2 archive must not carry a capacity group")
+		_ = msg.Term()
+		return
+	case env.Schema == 3:
+		if d.CapacityGroupID == nil || *d.CapacityGroupID == uuid.Nil {
+			c.log.Error("invalid archived event", "event_id", env.ID, "err", "schema-3 archive has no capacity group")
+			_ = msg.Term()
+			return
+		}
+		pool = *d.CapacityGroupID
+	}
+	c.applyOffering(msg, env.ID, func() error { return c.st.ApplyArchive(ctx, env.ID, pool) })
+}
+
+type closureData struct {
+	PerformanceID uuid.UUID `json:"performance_id"`
+	OrganizerID   uuid.UUID `json:"organizer_id"`
+	Version       int32     `json:"closure_version"`
+}
+
+// handleClosure applies a closed/reopened toggle at the catalog's monotonic closure version
+// (TKT-75). The payload carries no capacity group, so the pool is resolved against catalog —
+// a grouped day converges on the shared festival pool, closing it whole (owner decision at
+// Gate 2; day-level offer state is TKT-14's).
+func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env envelope, closed bool) {
+	var d closureData
+	if err := json.Unmarshal(env.Data, &d); err != nil {
+		c.log.Error("invalid closure event", "event_id", env.ID, "err", err)
+		_ = msg.Term()
+		return
+	}
+	if env.ID == uuid.Nil || d.PerformanceID == uuid.Nil || d.OrganizerID == uuid.Nil || d.Version < 1 {
+		c.log.Error("invalid closure event", "event_id", env.ID, "err", "missing identifiers or closure version")
+		_ = msg.Term()
+		return
+	}
+	if c.resolver == nil {
+		c.log.Error("closure event needs catalog resolver", "event_id", env.ID)
+		_ = msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	resolved, err := c.resolver.PublishedPerformance(ctx, d.PerformanceID)
+	if errors.Is(err, ErrPerformanceNotFound) {
+		// Not transient and not skew: closure transitions only exist while published (spike
+		// TKT-50 §Case 3), so a 404 means the slot has been archived since. The archived event
+		// later in the stream owns the pool's terminal state — this toggle is moot. Parking it
+		// instead would be poison: the slot never comes back.
+		c.log.Info("closure event for a no-longer-published slot; skipping as moot", "event_id", env.ID, "performance_id", d.PerformanceID)
+		_ = msg.Ack()
+		return
+	}
+	if err != nil {
+		c.log.Error("resolve closure event", "event_id", env.ID, "err", err)
+		_ = msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	if resolved.OrganizerID != d.OrganizerID {
+		c.log.Error("invalid closure event", "event_id", env.ID, "err", "closure event conflicts with catalog")
+		_ = msg.Term()
+		return
+	}
+	pool := d.PerformanceID
+	if resolved.CapacityGroupID != nil && *resolved.CapacityGroupID != uuid.Nil {
+		pool = *resolved.CapacityGroupID
+	}
+	c.applyOffering(msg, env.ID, func() error { return c.st.ApplyClosure(ctx, env.ID, pool, closed, d.Version) })
+}
+
+// applyOffering shares the store-outcome disposition for archive/closure mutations:
+// a missing pool parks the event until publication provisions it (the publication is
+// earlier in the stream; only a NAK-induced reorder gets us here), other store errors
+// retry, success acks. Readiness is never touched — none of these are version skew.
+func (c *Consumer) applyOffering(msg jetstream.Msg, eventID uuid.UUID, apply func() error) {
+	switch err := apply(); {
+	case errors.Is(err, store.ErrNotFound):
+		c.log.Warn("offering event precedes its pool; parking for redelivery", "event_id", eventID)
+		_ = msg.NakWithDelay(5 * time.Second)
+	case err != nil:
+		c.log.Error("apply offering event", "event_id", eventID, "err", err)
+		_ = msg.Nak()
+	default:
+		_ = msg.Ack()
+	}
+}
+
 func (c *Consumer) Run(ctx context.Context) error {
 	stream, err := c.js.Stream(ctx, "PLATFORM")
 	if err != nil {
 		return err
 	}
-	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "inventory-performance-provisioner", FilterSubject: subject, DeliverPolicy: jetstream.DeliverAllPolicy, AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: -1})
+	// TKT-75 replaced the publish-only durable with the multi-subject one below; a new
+	// durable replays retained archive/closure events the old filter skipped (safe through
+	// consumed_events). Delete the orphan so it does not linger in stream reports.
+	_ = stream.DeleteConsumer(ctx, "inventory-performance-provisioner")
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:        "inventory-catalog-offering",
+		FilterSubjects: []string{subjectPublished, subjectArchived, subjectClosed, subjectReopened},
+		DeliverPolicy:  jetstream.DeliverAllPolicy,
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		MaxDeliver:     -1,
+	})
 	if err != nil {
 		return err
 	}

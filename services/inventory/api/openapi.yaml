@@ -125,7 +125,13 @@ components:
     OperationalHold: {description: Operational hold state, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalHold'}}}}
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
-    Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: {type: string}
+        code: {type: string, enum: [slot_archived, slot_closed], description: 'Machine-readable conflict reason; present when a dead slot (not contention) rejected the request'}
     HoldCreate:
       type: object
       additionalProperties: false
@@ -157,13 +163,14 @@ components:
     Availability:
       type: object
       additionalProperties: false
-      required: [slot_id, capacity, held, confirmed, available]
+      required: [slot_id, capacity, held, confirmed, available, offering_status]
       properties:
         slot_id: {type: string, format: uuid}
         capacity: {type: integer}
         held: {type: integer}
         confirmed: {type: integer}
         available: {type: integer}
+        offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open'}
     OperationalHoldCreate:
       type: object
       additionalProperties: false
@@ -257,7 +264,7 @@ components:
     StaffAvailability:
       type: object
       additionalProperties: false
-      required: [slot_id, capacity, buyer_held, operational_held, confirmed, available, public_available, channels]
+      required: [slot_id, capacity, buyer_held, operational_held, confirmed, available, public_available, offering_status, channels]
       properties:
         slot_id: {type: string, format: uuid}
         capacity: {type: integer}
@@ -266,6 +273,7 @@ components:
         confirmed: {type: integer}
         available: {type: integer}
         public_available: {type: integer}
+        offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open'}
         channels: {type: array, items: {$ref: '#/components/schemas/ChannelAvailability'}}
     HistoryEntry:
       type: object

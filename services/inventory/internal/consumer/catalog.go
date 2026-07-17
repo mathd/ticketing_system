@@ -3,12 +3,18 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
 )
+
+// ErrPerformanceNotFound is the resolver's 404: the slot is not published right now.
+// Callers must not treat it as transient — for closure events it means the slot has
+// been archived since the event was emitted (TKT-75), and retrying never resolves it.
+var ErrPerformanceNotFound = errors.New("performance not published")
 
 // PerformanceResolver supplies the capacity omitted from the schema-1
 // publication event. Schema-2 events remain self-contained.
@@ -44,6 +50,9 @@ func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID
 		return PublishedPerformance{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return PublishedPerformance{}, fmt.Errorf("catalog performance lookup %s: %w", id, ErrPerformanceNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return PublishedPerformance{}, fmt.Errorf("catalog performance lookup: status %d", resp.StatusCode)
 	}
