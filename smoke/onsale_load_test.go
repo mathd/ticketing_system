@@ -87,6 +87,12 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 		code, body, holdD, err := timedPost(holds, map[string]string{"Idempotency-Key": key},
 			map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": quantity})
 		switch {
+		// A delivered 5xx status is server evidence even if the body was then
+		// truncated/reset — don't let the read error downgrade it to
+		// client-inconclusive. Anything else with err (no status, or a
+		// truncated non-5xx body) stays client-side: conservative direction.
+		case err != nil && code >= http.StatusInternalServerError:
+			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("hold: %d %s", code, err)}
 		case err != nil:
 			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
 		case code == http.StatusConflict:
@@ -112,6 +118,9 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			url := fmt.Sprintf("%s/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
 			code, rbody, d, err := timedPost(url, hdr, nil)
 			if err != nil {
+				if code >= http.StatusInternalServerError {
+					return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("%s: %d %s", step.name, code, err)}
+				}
 				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
 			}
 			if code != http.StatusOK {
@@ -293,11 +302,15 @@ func onsaleGate(t *testing.T) {
 	sustained := loadtest.RunStage(loadtest.Stage{Name: "sustained", Rate: 25, Duration: 10 * time.Second, Quantity: 1}, 64, attempt)
 	report.Stages = append(report.Stages, logStage(t, sustained))
 
-	// A client-side failure invalidates the fill arithmetic below (a committed
-	// confirm whose response was lost undercounts OK, so the fill over-requests
-	// and dies on a confusing 409) — diagnose inconclusive before filling.
+	// Any error invalidates the fill arithmetic below (a hold that committed
+	// but whose response was lost or malformed undercounts OK, so the fill
+	// over-requests and dies on a confusing 409) — diagnose the real class
+	// before filling.
 	if n := warm.ClientErrors + sustained.ClientErrors; n != 0 {
 		t.Fatalf("%d attempts hit client-side transport errors before the fill — run inconclusive, rerun on a healthy generator", n)
+	}
+	if n := warm.ServerErrors + sustained.ServerErrors; n != 0 {
+		t.Fatalf("%d attempts hit server-side errors before the fill (5xx/unexpected status/malformed body)", n)
 	}
 
 	// Fill exactly to capacity, sized from what actually landed so a dropped

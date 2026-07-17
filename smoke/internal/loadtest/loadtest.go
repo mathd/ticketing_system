@@ -71,7 +71,9 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 	res.Offered = int(int64(stage.Rate) * int64(stage.Duration) / int64(time.Second))
 	interval := time.Second / time.Duration(stage.Rate)
 
-	slots := make(chan struct{}, maxInFlight)
+	// The counter IS the semaphore: admission and the occupancy sample are one
+	// atomic Add, so PeakInFlight is exact — the peak can only occur at an
+	// admission instant, and that instant's occupancy is the Add's return value.
 	var inFlight atomic.Int64
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -82,24 +84,21 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 		if d := time.Until(scheduled); d > 0 {
 			time.Sleep(d)
 		}
-		select {
-		case slots <- struct{}{}:
-		default:
+		n := int(inFlight.Add(1))
+		if n > maxInFlight {
+			inFlight.Add(-1)
 			res.Dropped++
 			continue
 		}
 		res.Started++
-		// The peak occurs at an acquisition instant, and the counter is bumped
-		// atomically with this goroutine's acquisition — exact, race-free (only
-		// this goroutine writes PeakInFlight).
-		if n := int(inFlight.Add(1)); n > res.PeakInFlight {
+		if n > res.PeakInFlight { // only this goroutine writes PeakInFlight
 			res.PeakInFlight = n
 		}
 		lag := time.Since(scheduled)
 		wg.Add(1)
 		go func(seq int) {
 			defer wg.Done()
-			defer func() { inFlight.Add(-1); <-slots }()
+			defer inFlight.Add(-1)
 			out := attempt(stage, seq)
 			mu.Lock()
 			defer mu.Unlock()
