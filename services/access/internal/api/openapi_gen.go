@@ -48,6 +48,7 @@ type Error struct {
 type LifecycleEvent struct {
 	Id         openapi_types.UUID `json:"id"`
 	OccurredAt time.Time          `json:"occurred_at"`
+	Sequence   *int64             `json:"sequence,omitempty"`
 	Type       string             `json:"type"`
 }
 

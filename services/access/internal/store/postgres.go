@@ -37,9 +37,15 @@ type Ticket struct {
 	IssuedAt                                                               time.Time
 }
 
+// LifecycleEvent is one trail entry as readers see it. Sequence is the
+// integrity chain's authoritative order (ADR-025 §D5); it is nil only for
+// legacy rows the backfill job has not adopted yet, so after normal startup
+// every served event carries it. OccurredAt is the claimed physical time and
+// never reorders chained events.
 type LifecycleEvent struct {
 	ID         uuid.UUID `json:"id"`
 	Type       string    `json:"type"`
+	Sequence   *int64    `json:"sequence,omitempty"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
@@ -199,8 +205,16 @@ func (p *Postgres) Tickets(ctx context.Context, ref uuid.UUID) ([]Ticket, error)
 	return out, rows.Err()
 }
 
+// History reads a ticket's trail in the integrity chain's order (ADR-025 §D5).
+// The (occurred_at,id) tail of the ORDER BY only ever decides among unchained
+// legacy rows before the backfill job runs — the historical read order, kept so
+// pre-backfill reads stay stable.
 func (p *Postgres) History(ctx context.Context, ticketID uuid.UUID) ([]LifecycleEvent, error) {
-	rows, err := p.db.QueryContext(ctx, `SELECT id,event_type,occurred_at FROM lifecycle_events WHERE ticket_id=$1 ORDER BY occurred_at,id`, ticketID)
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT e.id, e.event_type, i.sequence, e.occurred_at
+		FROM lifecycle_events e LEFT JOIN lifecycle_event_integrity i
+		  ON i.event_id = e.id AND i.ticket_id = e.ticket_id
+		WHERE e.ticket_id=$1 ORDER BY i.sequence NULLS LAST, e.occurred_at, e.id`, ticketID)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +222,7 @@ func (p *Postgres) History(ctx context.Context, ticketID uuid.UUID) ([]Lifecycle
 	var out []LifecycleEvent
 	for rows.Next() {
 		var e LifecycleEvent
-		if err := rows.Scan(&e.ID, &e.Type, &e.OccurredAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.Sequence, &e.OccurredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -316,4 +330,122 @@ func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, er
 		return RedeemResult{}, err
 	}
 	return RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: redeemedAt}, nil
+}
+
+// AdmissionEventType is a repeatable admission event (ADR-025 §D1). The
+// singleton types (issued, delivered, redeemed) are deliberately not values of
+// this type: they have their own write paths and their own uniqueness.
+type AdmissionEventType string
+
+const (
+	AdmissionEntry          AdmissionEventType = "entry"
+	AdmissionExit           AdmissionEventType = "exit"
+	AdmissionDuplicateAdmit AdmissionEventType = "duplicate_admit"
+)
+
+// ErrOccurrenceCollision is an occurrence id reused across tickets or event
+// types. That is never a transport retry — treating it as one would hand back
+// another admission's result — so it is an error, not a replay.
+var ErrOccurrenceCollision = errors.New("occurrence id already recorded for a different ticket or event type")
+
+// RecordAdmissionInput is one physical gate occurrence (ADR-025 §D3): the
+// occurrence id is minted by the scanner, persisted before the gate opens, and
+// reused verbatim on transport retries. OccurredAt is the device's claimed
+// admission time — recorded, never attested (§D5).
+type RecordAdmissionInput struct {
+	TicketID, OrderID, OrganizerID, SlotID uuid.UUID
+	OccurrenceID                           uuid.UUID
+	Type                                   AdmissionEventType
+	OccurredAt                             time.Time
+}
+
+// RecordAdmissionResult reports what was stored. Replayed distinguishes a
+// retry from a first write — ADR-025 §D3 forbids returning a replay as a bare
+// success, because actuation must be able to tell them apart.
+type RecordAdmissionResult struct {
+	Event    LifecycleEvent
+	Replayed bool
+}
+
+// RecordAdmission appends one repeatable admission event, idempotently by
+// occurrence id. Replay is resolved under the ticket lock BEFORE
+// appendLifecycle (ADR-025 §D4): the append path is never invoked for an
+// already-recorded occurrence.
+//
+// Unlike Redeem, this does not verify the chain first: Redeem decides admission
+// FROM the trace (ADR-003 §D2), while this records an admission that already
+// physically happened — the same posture as Issue and MarkDelivered. What a
+// reconciliation caller should do when a ticket's chain is broken (quarantine
+// widening, §D6 alarms) is deferred scope and lives with those tickets.
+func (p *Postgres) RecordAdmission(ctx context.Context, in RecordAdmissionInput) (RecordAdmissionResult, error) {
+	switch in.Type {
+	case AdmissionEntry, AdmissionExit, AdmissionDuplicateAdmit:
+	default:
+		return RecordAdmissionResult{}, fmt.Errorf("event type %q is not a repeatable admission type", in.Type)
+	}
+	if in.OccurrenceID == uuid.Nil || in.OccurrenceID.Version() != 4 || in.OccurrenceID.Variant() != uuid.RFC4122 {
+		return RecordAdmissionResult{}, fmt.Errorf("occurrence id %s is not a UUIDv4 (ADR-025 §D3)", in.OccurrenceID)
+	}
+	if in.OccurredAt.IsZero() {
+		return RecordAdmissionResult{}, errors.New("a gate occurrence carries its claimed admission time")
+	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RecordAdmissionResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var id TicketIdentity
+	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, in.TicketID).
+		Scan(&id.OrderID, &id.OrganizerID, &id.SlotID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RecordAdmissionResult{}, ErrTicketCredential
+		}
+		return RecordAdmissionResult{}, err
+	}
+	if id.OrderID != in.OrderID || id.OrganizerID != in.OrganizerID || id.SlotID != in.SlotID {
+		return RecordAdmissionResult{}, ErrTicketCredential
+	}
+
+	// Replay check, under the lock: the event id IS the occurrence id.
+	var stored LifecycleEvent
+	var storedTicket uuid.UUID
+	err = tx.QueryRowContext(ctx, `
+		SELECT e.id, e.ticket_id, e.event_type, i.sequence, e.occurred_at
+		FROM lifecycle_events e LEFT JOIN lifecycle_event_integrity i
+		  ON i.event_id = e.id AND i.ticket_id = e.ticket_id
+		WHERE e.id=$1`, in.OccurrenceID).
+		Scan(&stored.ID, &storedTicket, &stored.Type, &stored.Sequence, &stored.OccurredAt)
+	if err == nil {
+		if storedTicket != in.TicketID || stored.Type != string(in.Type) {
+			return RecordAdmissionResult{}, fmt.Errorf("occurrence %s: %w", in.OccurrenceID, ErrOccurrenceCollision)
+		}
+		if err = tx.Commit(); err != nil {
+			return RecordAdmissionResult{}, err
+		}
+		return RecordAdmissionResult{Event: stored, Replayed: true}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return RecordAdmissionResult{}, err
+	}
+
+	occurredAt, err := p.appendLifecycle(ctx, tx, appendInput{
+		TicketID: in.TicketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
+		EventID: in.OccurrenceID, Type: string(in.Type), OccurredAt: in.OccurredAt,
+	})
+	if err != nil {
+		return RecordAdmissionResult{}, err
+	}
+	var sequence int64
+	if err = tx.QueryRowContext(ctx, `SELECT sequence FROM lifecycle_event_integrity WHERE event_id=$1`, in.OccurrenceID).Scan(&sequence); err != nil {
+		return RecordAdmissionResult{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return RecordAdmissionResult{}, err
+	}
+	return RecordAdmissionResult{
+		Event: LifecycleEvent{ID: in.OccurrenceID, Type: string(in.Type), Sequence: &sequence, OccurredAt: occurredAt},
+	}, nil
 }

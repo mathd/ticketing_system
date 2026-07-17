@@ -64,7 +64,9 @@ components:
       type: object
       additionalProperties: false
       required: [id, type, occurred_at]
-      properties: {id: {type: string, format: uuid}, type: {type: string}, occurred_at: {type: string, format: date-time}}
+      # sequence is the integrity chain's authoritative order (ADR-025 §D5);
+      # optional only for legacy rows the backfill has not adopted yet.
+      properties: {id: {type: string, format: uuid}, type: {type: string}, sequence: {type: integer, format: int64, minimum: 1}, occurred_at: {type: string, format: date-time}}
     Ticket:
       type: object
       additionalProperties: false
