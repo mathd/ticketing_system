@@ -125,7 +125,13 @@ func TestProvisionQueuedBehindAdjustmentDoesNotOverwrite(t *testing.T) {
 	ctx, st, db := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 100)
 
-	// Uncommitted capacity adjustment, exactly the statements AdjustCapacity runs.
+	// The adjustment transaction takes ONLY the pool row lock first. Against a merely
+	// locked (unmodified) committed tuple, Provision's INSERT ... ON CONFLICT DO NOTHING
+	// resolves without waiting, so the statement that queues is exactly the one under
+	// test: the lock-before-decide SELECT ... FOR UPDATE. (With the row already updated
+	// uncommitted, the INSERT absorbs the wait instead and the handshake proves nothing —
+	// ai-review round 3.) The adjustment's writes land only after the handshake, so the
+	// guarded UPDATE's snapshot must be taken after the lock wait to see them.
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -134,24 +140,20 @@ func TestProvisionQueuedBehindAdjustmentDoesNotOverwrite(t *testing.T) {
 	if _, err = tx.ExecContext(ctx, `SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slot); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET capacity=80, updated_at=now() WHERE slot_id=$1`, slot); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO claim_history(id,organizer_id,pool_id,action,actor,reason,quantity,quantity_after,status_after,idempotency_key,request_fingerprint)
-			VALUES($1,$2,$3,'adjust_capacity','staff','resize',100,80,'applied','race-adjust','fp')`, uuid.New(), org, slot); err != nil {
-		t.Fatal(err)
-	}
 
 	done := make(chan error, 1)
 	go func() { done <- st.Provision(ctx, uuid.New(), slot, org, 500) }()
-	// Handshake: Provision observed waiting on the pool lock while the adjustment is
-	// still uncommitted — the interleaving under test, not a lucky schedule.
+	// Handshake: Provision's SELECT ... FOR UPDATE — that exact statement, not any
+	// inventory_pools waiter — observed queued while the adjustment is still
+	// uncommitted. If the lock-before-decide statement is ever removed, no waiter
+	// matches and this handshake times out: the test fails rather than passing
+	// vacuously (ai-review round 3).
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		var waiting bool
 		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
 				WHERE wait_event_type='Lock' AND state='active'
-				  AND query LIKE '%inventory_pools%' AND pid <> pg_backend_pid())`).Scan(&waiting); err != nil {
+				  AND query LIKE '%FROM inventory_pools WHERE slot_id=$1 FOR UPDATE%' AND pid <> pg_backend_pid())`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {
@@ -161,6 +163,14 @@ func TestProvisionQueuedBehindAdjustmentDoesNotOverwrite(t *testing.T) {
 			t.Fatal("Provision never queued on the pool lock")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// Provision is queued: commit the adjustment it must not overwrite.
+	if _, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET capacity=80, updated_at=now() WHERE slot_id=$1`, slot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO claim_history(id,organizer_id,pool_id,action,actor,reason,quantity,quantity_after,status_after,idempotency_key,request_fingerprint)
+			VALUES($1,$2,$3,'adjust_capacity','staff','resize',100,80,'applied','race-adjust','fp')`, uuid.New(), org, slot); err != nil {
+		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
