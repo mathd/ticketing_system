@@ -39,9 +39,10 @@ func (c *callLog) ExecContext(context.Context, string, ...any) (sql.Result, erro
 
 // The backfill must run exactly once per process, inside the drainer's lifecycle,
 // and before the first drain pass — so its rows are published by the immediate
-// initial drain instead of waiting a full interval. If a refactor drops the call,
-// orders completed before the outbox existed stay paid-but-no-ticket forever;
-// this is the test that fails.
+// initial drain instead of waiting a full interval. This pins Run's contract for
+// a non-nil backfill; it cannot see main.go's wiring, so passing nil at the
+// injection site is out of its reach (reviewed and accepted on TKT-71 — the
+// end-to-end pin is filed separately).
 func TestBackfillRunsOnceBeforeFirstDrain(t *testing.T) {
 	log := &callLog{}
 	backfilled := make(chan struct{})

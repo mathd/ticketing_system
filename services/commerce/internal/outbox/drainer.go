@@ -63,7 +63,11 @@ func New(db store.OutboxDB, publisher Publisher, interval time.Duration, batch i
 func (d *Drainer) Run(ctx context.Context) {
 	if d.backfill != nil {
 		if owed, err := d.backfill(ctx); err != nil {
-			d.log.ErrorContext(ctx, "backfill completion outbox", "err", err)
+			// Same convention as the claim path below: a shutdown that lands
+			// mid-backfill is a normal stop, not a failure worth an ERROR line.
+			if !errors.Is(err, context.Canceled) {
+				d.log.ErrorContext(ctx, "backfill completion outbox", "err", err)
+			}
 		} else if owed > 0 {
 			d.log.InfoContext(ctx, "backfilled owed completion events", "count", owed)
 		}

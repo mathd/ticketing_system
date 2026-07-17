@@ -172,8 +172,16 @@ func run() error {
 	// Idempotent, and a no-op on every boot after the first — but on a populated
 	// table the scan is real work, and behind the drainer neither its duration
 	// nor its failure can keep commerce from listening.
+	// The 30s bound survives the move: the drainer runs the backfill before its
+	// first drain pass, so an unbounded pass (lock wait, huge scan) would stall
+	// owed-event recovery — the window this worker exists to close — not just
+	// delay repair. Timing out cancels this pass only; the next boot retries.
 	drainer := outbox.New(db, publisher, drainInterval(), drainBatch(),
-		func(bctx context.Context) (int, error) { return commercestore.BackfillCompletionOutbox(bctx, db) }, log)
+		func(bctx context.Context) (int, error) {
+			bctx, cancel := context.WithTimeout(bctx, 30*time.Second)
+			defer cancel()
+			return commercestore.BackfillCompletionOutbox(bctx, db)
+		}, log)
 	stopDrainer := start(log, "outbox drainer", drainer.Run)
 
 	// The second background worker (ADR-016 §Decision 1): recovery is driven, not

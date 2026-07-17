@@ -146,7 +146,7 @@ never before; this is not that change.
     - **Buys no availability today**, and local startup still waits for migrations. This ADR spends
       real diff on a future option, and `AGENTS.md`'s testbed framing is the whole justification.
     - **The startup path is not actually clean — commerce is a named exception.**
-      `BackfillCompletionOutbox` (`services/commerce/internal/store/store.go:193`) stays on the
+      `BackfillCompletionOutbox` (`services/commerce/internal/store/store.go:197`) stays on the
       server path: it is data repair rather than schema, it is idempotent, and the migrate job has
       already applied the schema it reads. But it **sequentially scans** `orders` on every boot —
       nothing indexes `status` or `guest_order_ref`; the only index on the table is
