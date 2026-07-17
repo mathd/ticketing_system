@@ -1,0 +1,18 @@
+{
+  "key": "TKT-93",
+  "type": "Task",
+  "summary": "Load-harness measurement fidelity follow-ups (from TKT-92 ai-review)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "Four incidental findings from TKT-92's adversarial ai-review (gpt-5.6-sol@claudex), real but out of scope for the taxonomy/bounding PR (#63): (1) attempt lag is measured at goroutine spawn, not at attempt start — under scheduler pressure CeilingInconclusive can accept a rate that was not delivered on schedule; (2) loadClient follows redirects and forwards X-Internal-Token on same-host redirects — pin CheckRedirect to fail closed; (3) every hold 409 counts as an expected capacity rejection — archived/closed-slot/idempotency 409s are indistinguishable from sellout; consider discriminating on the error body; (4) finalize/confirm validate status only — an empty/malformed 200 body counts as KindOK despite the taxonomy classifying malformed success bodies as server errors. Natural home: whichever of TKT-31/TKT-37 next touches the harness.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated from TKT-92 ai-review triage (incidental): pre-existing harness measurement-fidelity gaps, none introduced by PR #63."
+    }
+  ]
+}
