@@ -250,8 +250,137 @@ func TestCorruptChainAdmitsOnceThenQuarantines(t *testing.T) {
 	if second.Accepted || second.Decision != DecisionIntegrityQuarantined {
 		t.Fatalf("second corrupt-chain scan = %+v, want a quarantine denial", second)
 	}
+	if !second.OccurredAt.Equal(first.OccurredAt) {
+		t.Fatalf("quarantine denial reports %v, want the original degraded admission time %v", second.OccurredAt, first.OccurredAt)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, s.ticketID); n != 0 {
+		t.Fatal("the quarantined repeat appended a chained redemption")
+	}
 	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox`); n != 2 {
 		t.Fatalf("the quarantined repeat did not escalate: %d alarms owed, want 2", n)
+	}
+}
+
+// The gap TKT-89 closes: a degraded admission is recorded only in the
+// quarantine table (appending onto an unverified predecessor would poison the
+// chain), so once the chain verifies clean again — e.g. the verifier bug that
+// broke it is reverted — the verified path finds no redeemed event and would
+// admit a second time. ADR-025 §D2: admission decisions consult
+// trace ∪ quarantine, not the trace alone.
+func TestQuarantineDenialConvergesAcrossBrokenAndRecoveredChains(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	var genuine []byte
+	if err := db.QueryRowContext(ctx, `SELECT entry_hash FROM lifecycle_event_integrity WHERE ticket_id=$1 AND sequence=1`, s.ticketID).Scan(&genuine); err != nil {
+		t.Fatal(err)
+	}
+	corruptChain(t, ctx, db, s.ticketID)
+
+	first, err := st.Redeem(ctx, s.redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Accepted || first.Decision != DecisionAdmittedDegraded {
+		t.Fatalf("first corrupt-chain scan = %+v, want a degraded admission", first)
+	}
+	broken, err := st.Redeem(ctx, s.redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if broken.Accepted || broken.Decision != DecisionIntegrityQuarantined || !broken.OccurredAt.Equal(first.OccurredAt) {
+		t.Fatalf("broken-chain repeat = %+v, want a quarantine denial at %v", broken, first.OccurredAt)
+	}
+
+	// The bad build is reverted: put the genuine bytes back the same way the
+	// corruption went in, and prove recovery with the real verifier before
+	// trusting the scan below to exercise the verified path.
+	if _, err = db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity DISABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, `UPDATE lifecycle_event_integrity SET entry_hash=$1 WHERE ticket_id=$2 AND sequence=1`, genuine, s.ticketID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if err = New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("chain did not recover, the scan below would not take the verified path: %v", err)
+	}
+
+	recovered, err := st.Redeem(ctx, s.redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Accepted || recovered.Decision != DecisionIntegrityQuarantined {
+		t.Fatalf("recovered-chain scan = %+v: the verified path re-admitted a quarantine-admitted ticket (§D6 admit-once)", recovered)
+	}
+	if !recovered.OccurredAt.Equal(first.OccurredAt) {
+		t.Fatalf("verified-path denial reports %v, want the original degraded admission time %v", recovered.OccurredAt, first.OccurredAt)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, s.ticketID); n != 0 {
+		t.Fatal("the verified-path denial appended a redeemed event")
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox`); n != 3 {
+		t.Fatalf("%d alarms owed, want 3 (degraded admission, broken-chain denial, verified-path denial)", n)
+	}
+}
+
+// Precedence: a quarantine row wins over an existing redeemed event.
+// DecisionAlreadyRedeemed would hide the degraded admission and skip §D6's
+// escalation — the quarantine row is the only record that an extra person
+// walked in.
+func TestQuarantineWinsOverGrandfatheredRedeemedEvent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+
+	s := issueTicket(t, ctx, st, uuid.New())
+	clean, err := st.Redeem(ctx, s.redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clean.Accepted || clean.Decision != DecisionAccepted {
+		t.Fatalf("clean redemption = %+v", clean)
+	}
+
+	// A degraded admission recorded before the chain later verified clean —
+	// inserted directly (append-only trigger allows INSERT) with a distinct
+	// earlier timestamp so the returned time is attributable.
+	quarantinedAt := clean.OccurredAt.Add(-time.Hour).UTC()
+	if _, err = db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,admitted_at) VALUES($1,$2,$3,$4)`,
+		s.ticketID, s.id.OrganizerID, "grandfathered degraded admission", quarantinedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := st.Redeem(ctx, s.redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Accepted || r.Decision != DecisionIntegrityQuarantined {
+		t.Fatalf("scan = %+v, want the quarantine denial to win over already_redeemed", r)
+	}
+	if !r.OccurredAt.Equal(quarantinedAt) {
+		t.Fatalf("denial reports %v, want the quarantine admission time %v", r.OccurredAt, quarantinedAt)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, s.ticketID); n != 1 {
+		t.Fatalf("redeemed count = %d after the denial, want the original 1", n)
+	}
+	var head int64
+	if err = db.QueryRowContext(ctx, `SELECT last_sequence FROM lifecycle_heads WHERE ticket_id=$1`, s.ticketID).Scan(&head); err != nil {
+		t.Fatal(err)
+	}
+	if head != 2 {
+		t.Fatalf("head = %d after the denial, want 2 (issued, redeemed) — the chain must not advance", head)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox`); n != 1 {
+		t.Fatalf("%d alarms owed, want 1: the verified-path denial must escalate", n)
 	}
 }
 
