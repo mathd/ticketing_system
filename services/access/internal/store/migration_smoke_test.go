@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,19 +115,55 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 
 	cfg := testConfig(t)
 	st := New(db, cfg)
-	before, err := st.History(ctx, ticketID)
-	if err != nil {
-		t.Fatal(err)
+	// Snapshot with direct SQL in History's historical (occurred_at,id) order:
+	// History itself now joins the integrity table, which does not exist at
+	// schema version 1 — production never reads a half-migrated schema (the
+	// out-of-band job finishes first, ADR-022), so the pre-upgrade read has no
+	// production analogue to preserve.
+	type immutable struct {
+		ID         uuid.UUID
+		Type       string
+		OccurredAt time.Time
 	}
+	readRaw := func() []immutable {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, `SELECT id,event_type,occurred_at FROM lifecycle_events WHERE ticket_id=$1 ORDER BY occurred_at,id`, ticketID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = rows.Close() }()
+		var out []immutable
+		for rows.Next() {
+			var e immutable
+			if err := rows.Scan(&e.ID, &e.Type, &e.OccurredAt); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+	immutables := func(events []LifecycleEvent) []immutable {
+		out := make([]immutable, len(events))
+		for i, e := range events {
+			out[i] = immutable{ID: e.ID, Type: e.Type, OccurredAt: e.OccurredAt}
+		}
+		return out
+	}
+	before := readRaw()
 	if _, err = provider.Up(ctx); err != nil {
-		t.Fatalf("apply migrations 0002 and 0003: %v", err)
+		t.Fatalf("apply migrations 0002 through 0004: %v", err)
 	}
 	after, err := st.History(ctx, ticketID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(after, before) {
+	if !reflect.DeepEqual(immutables(after), before) {
 		t.Fatalf("history changed during upgrade: before=%+v after=%+v", before, after)
+	}
+	for _, e := range after {
+		if e.Sequence != nil {
+			t.Fatalf("event %s has a sequence before the backfill adopted it", e.ID)
+		}
 	}
 
 	// Migration 0003 is DDL only: it must not have adopted anything. The backfill
@@ -169,8 +207,13 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(adopted, before) {
+	if !reflect.DeepEqual(immutables(adopted), before) {
 		t.Fatalf("backfill rewrote history: before=%+v after=%+v", before, adopted)
+	}
+	for i, e := range adopted {
+		if e.Sequence == nil || *e.Sequence != int64(i+1) {
+			t.Fatalf("adopted event %s at position %d has sequence %v, want %d", e.ID, i, e.Sequence, i+1)
+		}
 	}
 
 	// One integrity row per legacy event, in History's order.
@@ -247,11 +290,11 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	if err != nil || current != 3 || target != 3 {
+	if err != nil || current != 4 || target != 4 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 
-	t.Logf("migration 0001 -> 0003 preserved %d events, adopted them as a signed baseline, and chained a redemption", len(before))
+	t.Logf("migration 0001 -> 0004 preserved %d events, adopted them as a signed baseline, and chained a redemption", len(before))
 }
 
 // The backfill adopts (occurred_at, id) — the exact order History has always
@@ -318,5 +361,241 @@ func TestBackfillChainsInHistoryOrderOnTimestampTies(t *testing.T) {
 	}
 	if err := New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
 		t.Fatalf("verify after tie-ordered backfill: %v", err)
+	}
+}
+
+// ADR-025 §D7's migration order is binding: widened CHECK (distinct name), then
+// the partial unique index while the table-wide UNIQUE still protects the
+// table, then the drops. The order lives in the SQL source, so pin it there —
+// the functional tests below prove the destination, this one proves the path.
+func TestRepeatableAdmissionMigrationStatementOrder(t *testing.T) {
+	raw, err := fs.ReadFile(migrationsFS, "migrations/0004_repeatable_admission_events.sql")
+	if err != nil {
+		t.Fatalf("migration 0004 is missing: %v", err)
+	}
+	sql := string(raw)
+	steps := []string{
+		"ADD CONSTRAINT lifecycle_events_event_type_admission_check",
+		"CREATE UNIQUE INDEX lifecycle_events_singleton_type_uidx",
+		"CREATE INDEX lifecycle_events_ticket_idx",
+		"DROP CONSTRAINT lifecycle_events_ticket_id_event_type_key",
+		"DROP CONSTRAINT lifecycle_events_event_type_check",
+	}
+	last := -1
+	for _, s := range steps {
+		i := strings.Index(sql, s)
+		if i < 0 {
+			t.Fatalf("migration 0004 lacks %q", s)
+		}
+		if i < last {
+			t.Fatalf("migration 0004 runs %q out of ADR-025 §D7 order", s)
+		}
+		last = i
+	}
+	for _, banned := range []string{"CONCURRENTLY", "NOT VALID", "NO TRANSACTION"} {
+		if strings.Contains(sql, banned) {
+			t.Fatalf("migration 0004 contains %q (ADR-020/ADR-025 §D7 forbid it here)", banned)
+		}
+	}
+}
+
+// The destination schema: singletons stay unique per ticket via the partial
+// index, repeatable types accept multiple rows, unknown types stay rejected.
+func TestRepeatableAdmissionMigrationEnforcesPartialSingletonUniqueness(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ticketID := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'signed-credential',now())`,
+		ticketID, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(eventType string) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO lifecycle_events(id,ticket_id,event_type) VALUES($1,$2,$3)`,
+			uuid.New(), ticketID, eventType)
+		return err
+	}
+	for _, singleton := range []string{"issued", "delivered", "redeemed"} {
+		if err := insert(singleton); err != nil {
+			t.Fatalf("first %s: %v", singleton, err)
+		}
+		if err := insert(singleton); err == nil {
+			t.Fatalf("second %s row was accepted; singleton uniqueness is gone", singleton)
+		}
+	}
+	for _, repeatable := range []string{"entry", "exit", "duplicate_admit"} {
+		if err := insert(repeatable); err != nil {
+			t.Fatalf("first %s: %v", repeatable, err)
+		}
+		if err := insert(repeatable); err != nil {
+			t.Fatalf("second %s row rejected; %s is a repeatable type (ADR-025 §D1): %v", repeatable, repeatable, err)
+		}
+	}
+	if err := insert("refunded"); err == nil {
+		t.Fatal("unknown event type accepted; the widened CHECK is missing or too wide")
+	}
+
+	// Pin the final schema objects by name: the partial predicate, the plain
+	// replacement index for repeatable-row reads (plan A1), and exactly one
+	// CHECK on event_type.
+	var predicate string
+	if err := db.QueryRowContext(ctx, `SELECT pg_get_expr(ix.indpred, ix.indrelid) FROM pg_index ix
+		JOIN pg_class c ON c.oid=ix.indexrelid WHERE c.relname='lifecycle_events_singleton_type_uidx'`).
+		Scan(&predicate); err != nil {
+		t.Fatalf("partial unique index missing: %v", err)
+	}
+	for _, want := range []string{"issued", "delivered", "redeemed"} {
+		if !strings.Contains(predicate, want) {
+			t.Fatalf("partial index predicate %q lacks %q", predicate, want)
+		}
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_events_ticket_idx'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("lifecycle_events_ticket_idx missing (n=%d err=%v): repeatable-row reads would seq-scan", n, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid='lifecycle_events'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%event_type%'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("want exactly one event_type CHECK after 0004, got %d (err=%v)", n, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname='lifecycle_events_ticket_id_event_type_key'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("table-wide UNIQUE still present after 0004 (n=%d err=%v)", n, err)
+	}
+}
+
+// 0004 is DDL over existing rows: a signed chain written at version 3 must come
+// through byte-for-byte, and the verifier must still pass.
+func TestRepeatableAdmissionMigrationPreservesSignedHistory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.UpTo(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	s := issueTicket(t, ctx, st, uuid.New())
+	messageID, err := st.DeliveryID(ctx, s.ticketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.MarkDelivered(ctx, s.ticketID, messageID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Redeem(ctx, s.redeemInput()); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := func(query string) string {
+		t.Helper()
+		var out string
+		if err := db.QueryRowContext(ctx, query).Scan(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	const eventsQ = `SELECT coalesce(string_agg(id::text||':'||event_type||':'||occurred_at::text, ',' ORDER BY id),'') FROM lifecycle_events`
+	const integrityQ = `SELECT coalesce(string_agg(event_id::text||':'||sequence||':'||encode(entry_hash,'hex')||':'||encode(previous_hash,'hex'), ',' ORDER BY event_id),'') FROM lifecycle_event_integrity`
+	const headQ = `SELECT string_agg(ticket_id::text||':'||last_sequence||':'||encode(last_hash,'hex')||':'||key_id||':'||encode(signature,'hex'), ',' ORDER BY ticket_id) FROM lifecycle_heads`
+	events, integrity, heads := snapshot(eventsQ), snapshot(integrityQ), snapshot(headQ)
+
+	if _, err = provider.Up(ctx); err != nil {
+		t.Fatalf("apply migration 0004: %v", err)
+	}
+	if got := snapshot(eventsQ); got != events {
+		t.Fatalf("0004 changed lifecycle_events:\nbefore %s\nafter  %s", events, got)
+	}
+	if got := snapshot(integrityQ); got != integrity {
+		t.Fatalf("0004 changed integrity rows:\nbefore %s\nafter  %s", integrity, got)
+	}
+	if got := snapshot(headQ); got != heads {
+		t.Fatalf("0004 changed heads:\nbefore %s\nafter  %s", heads, got)
+	}
+	if err = New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("verify-lifecycle after 0004: %v", err)
+	}
+}
+
+func TestRepeatableAdmissionMigrationIsIrreversible(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(ctx); err == nil {
+		t.Fatal("migration 0004 rolled back; immutable ticket history is not protected")
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_events_singleton_type_uidx'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("failed down attempt altered the schema (n=%d err=%v)", n, err)
+	}
+}
+
+// The measured-migration obligation (ADR-025 §D7): the COMPLETE 0004 — CHECK
+// validation scan, two index builds, both drops — at representative volume,
+// against ADR-008/ADR-022's 30-second bound. Opt-in: seeding ~3×N rows takes
+// minutes, which does not belong in every make check. Run with e.g.
+// ACCESS_MIGRATION_MEASUREMENT_TICKETS=3333334; the result is recorded in
+// docs/learnings/TKT-84-lifecycle-migration-measurement.md.
+func TestRepeatableAdmissionMigrationRepresentativeVolume(t *testing.T) {
+	nStr := os.Getenv("ACCESS_MIGRATION_MEASUREMENT_TICKETS")
+	if nStr == "" {
+		t.Skip("ACCESS_MIGRATION_MEASUREMENT_TICKETS is not set")
+	}
+	n, err := strconv.Atoi(nStr)
+	if err != nil || n <= 0 {
+		t.Fatalf("ACCESS_MIGRATION_MEASUREMENT_TICKETS=%q is not a positive integer", nStr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.UpTo(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set-based seed at version 3: every row matches the partial-index
+	// predicate, the worst case for the new index builds. Seeding time is
+	// excluded from the measurement.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at)
+		SELECT gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),'signed-credential',now()
+		FROM generate_series(1,$1)`, n); err != nil {
+		t.Fatalf("seed tickets: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO lifecycle_events(id,ticket_id,event_type,occurred_at)
+		SELECT gen_random_uuid(), t.id, e.event_type, now()
+		FROM tickets t CROSS JOIN (VALUES ('issued'),('delivered'),('redeemed')) AS e(event_type)`); err != nil {
+		t.Fatalf("seed lifecycle events: %v", err)
+	}
+	var rows int64
+	var tableSize string
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM lifecycle_events`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT pg_size_pretty(pg_total_relation_size('lifecycle_events'))`).Scan(&tableSize); err != nil {
+		t.Fatal(err)
+	}
+
+	// The production bound: ADR-008's 30-second migrate context, fresh.
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer migrateCancel()
+	start := time.Now()
+	if _, err := provider.UpTo(migrateCtx, 4); err != nil {
+		t.Fatalf("migration 0004 breached the 30s bound at %d lifecycle rows (%s): %v", rows, tableSize, err)
+	}
+	elapsed := time.Since(start)
+
+	var version string
+	_ = db.QueryRowContext(ctx, `SELECT version()`).Scan(&version)
+	t.Logf("migration 0004: %v for %d lifecycle rows (%s) on %s", elapsed, rows, tableSize, version)
+	if elapsed > 15*time.Second {
+		t.Logf("WARNING: above the 15s engineering target — ship only with the reduced margin explicitly accepted")
 	}
 }

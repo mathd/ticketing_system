@@ -150,6 +150,7 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 			QRURL     string `json:"qr_url"`
 			History   []struct {
 				Type       string    `json:"type"`
+				Sequence   *int64    `json:"sequence"`
 				OccurredAt time.Time `json:"occurred_at"`
 			} `json:"history"`
 		} `json:"tickets"`
@@ -171,6 +172,12 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		for _, ticket := range issuedBundle.Tickets {
 			if len(ticket.History) != 2 || ticket.History[0].Type != "issued" || ticket.History[1].Type != "delivered" {
 				return fmt.Errorf("ticket lifecycle = %#v", ticket.History)
+			}
+			// The integrity sequence is the API's authoritative order (ADR-025 §D5).
+			for i, e := range ticket.History {
+				if e.Sequence == nil || *e.Sequence != int64(i+1) {
+					return fmt.Errorf("history[%d].sequence = %v, want %d", i, e.Sequence, i+1)
+				}
 			}
 			qrCode, _, qrHeaders := getWithHeaders(t, gatewayURL+ticket.QRURL)
 			if qrCode != http.StatusOK || qrHeaders.Get("Content-Type") != "image/png" {
@@ -295,7 +302,8 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		var bundle struct {
 			Tickets []struct {
 				History []struct {
-					Type string `json:"type"`
+					Type     string `json:"type"`
+					Sequence *int64 `json:"sequence"`
 				} `json:"history"`
 			} `json:"tickets"`
 		}
@@ -304,6 +312,13 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		}
 		if len(bundle.Tickets) != 2 || len(bundle.Tickets[0].History) != 3 || len(bundle.Tickets[1].History) != 3 {
 			return fmt.Errorf("redemption lifecycle = %#v", bundle.Tickets)
+		}
+		for _, ticket := range bundle.Tickets {
+			for i, e := range ticket.History {
+				if e.Sequence == nil || *e.Sequence != int64(i+1) {
+					return fmt.Errorf("post-redemption history[%d].sequence = %v, want %d", i, e.Sequence, i+1)
+				}
+			}
 		}
 		return nil
 	})

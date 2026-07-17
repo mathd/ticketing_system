@@ -5,12 +5,15 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"ticketing/services/access/internal/lifecycle"
 )
 
 type seeded struct {
@@ -1257,5 +1260,396 @@ func TestVerifyLifecycleAcceptsACoordinatedRollback(t *testing.T) {
 	}
 	if !r.Accepted || r.Decision != DecisionAccepted {
 		t.Fatalf("re-redemption after a coordinated rollback = %+v", r)
+	}
+}
+
+// --- TKT-84: repeatable admission events (ADR-025 §D1/§D3/§D4) ---
+
+func admissionInput(s seeded, eventType AdmissionEventType) RecordAdmissionInput {
+	return RecordAdmissionInput{
+		TicketID: s.ticketID, OrderID: s.id.OrderID, OrganizerID: s.id.OrganizerID, SlotID: s.id.SlotID,
+		OccurrenceID: uuid.New(), Type: eventType, OccurredAt: time.Now().UTC(),
+	}
+}
+
+func TestRecordAdmissionAcceptsEveryRepeatableType(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	for i, eventType := range []AdmissionEventType{AdmissionEntry, AdmissionExit, AdmissionDuplicateAdmit} {
+		in := admissionInput(s, eventType)
+		res, err := st.RecordAdmission(ctx, in)
+		if err != nil {
+			t.Fatalf("%s: %v", eventType, err)
+		}
+		if res.Replayed {
+			t.Fatalf("%s: fresh occurrence reported as replay", eventType)
+		}
+		if res.Event.ID != in.OccurrenceID || res.Event.Type != string(eventType) {
+			t.Fatalf("%s: stored event = %+v", eventType, res.Event)
+		}
+		// issued is sequence 1; each admission chains contiguously after it.
+		if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_event_integrity WHERE ticket_id=$1 AND sequence=$2`, s.ticketID, i+2); n != 1 {
+			t.Fatalf("%s: no integrity row at sequence %d", eventType, i+2)
+		}
+	}
+	// The same type again: repeatable means a second occurrence appends.
+	if _, err := st.RecordAdmission(ctx, admissionInput(s, AdmissionEntry)); err != nil {
+		t.Fatalf("second entry occurrence rejected: %v", err)
+	}
+	if err := New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("verify after repeatable appends: %v", err)
+	}
+}
+
+func TestRecordAdmissionRejectsNonRepeatableTypes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	before := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events`)
+	for _, eventType := range []AdmissionEventType{"issued", "delivered", "redeemed", "", "refunded"} {
+		if _, err := st.RecordAdmission(ctx, admissionInput(s, eventType)); err == nil {
+			t.Fatalf("%q accepted through the repeatable path", eventType)
+		}
+	}
+	if after := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events`); after != before {
+		t.Fatalf("rejected types changed lifecycle_events: %d -> %d", before, after)
+	}
+}
+
+func TestRecordAdmissionRequiresUUIDv4Occurrence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	deterministic := uuid.NewSHA1(uuid.NameSpaceOID, []byte("gate:entry")) // v5-style, not v4
+	for name, id := range map[string]uuid.UUID{"nil": uuid.Nil, "sha1": deterministic} {
+		in := admissionInput(s, AdmissionEntry)
+		in.OccurrenceID = id
+		if _, err := st.RecordAdmission(ctx, in); err == nil {
+			t.Fatalf("%s occurrence id accepted; ADR-025 §D3 requires UUIDv4", name)
+		}
+	}
+	in := admissionInput(s, AdmissionEntry)
+	in.OccurredAt = time.Time{}
+	if _, err := st.RecordAdmission(ctx, in); err == nil {
+		t.Fatal("zero OccurredAt accepted; the gate's claimed time is required")
+	}
+}
+
+func TestRecordAdmissionRejectsMismatchedTicketIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	in := admissionInput(s, AdmissionEntry)
+	in.OrganizerID = uuid.New()
+	if _, err := st.RecordAdmission(ctx, in); !errors.Is(err, ErrTicketCredential) {
+		t.Fatalf("mismatched identity: err = %v, want ErrTicketCredential", err)
+	}
+	in = admissionInput(s, AdmissionEntry)
+	in.TicketID = uuid.New()
+	if _, err := st.RecordAdmission(ctx, in); !errors.Is(err, ErrTicketCredential) {
+		t.Fatalf("unknown ticket: err = %v, want ErrTicketCredential", err)
+	}
+}
+
+// A transport retry reuses its occurrence id and must get the original result
+// back without touching the chain (ADR-025 §D3/§D4). Running the replay through
+// a store that CANNOT sign proves structurally that the append path was never
+// reached: reaching it would fail with ErrLifecycleUnsigned.
+func TestRecordAdmissionReplayReturnsOriginalWithoutAppending(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	in := admissionInput(s, AdmissionEntry)
+	first, err := st.RecordAdmission(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events`)
+	integrity := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_event_integrity`)
+	changes := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_head_changes`)
+
+	retry := in
+	retry.OccurredAt = in.OccurredAt.Add(45 * time.Second) // retries carry a later clock
+	unsigned := New(db, Config{Keyring: cfg.Keyring})
+	replay, err := unsigned.RecordAdmission(ctx, retry)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if !replay.Replayed {
+		t.Fatal("retry of a recorded occurrence not marked Replayed")
+	}
+	if !replay.Event.OccurredAt.Equal(first.Event.OccurredAt) {
+		t.Fatalf("replay rewrote the recorded time: %v -> %v", first.Event.OccurredAt, replay.Event.OccurredAt)
+	}
+	if countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events`) != events ||
+		countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_event_integrity`) != integrity ||
+		countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_head_changes`) != changes {
+		t.Fatal("replay appended rows")
+	}
+}
+
+// The same UUID on a different ticket or type is not a retry — it is either a
+// generator bug or a copied id, and silently treating it as a replay would hand
+// back another admission's result.
+func TestRecordAdmissionRejectsOccurrenceCollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	organizerID := uuid.New()
+	a, b := issueTicket(t, ctx, st, organizerID), issueTicket(t, ctx, st, organizerID)
+
+	in := admissionInput(a, AdmissionEntry)
+	if _, err := st.RecordAdmission(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	crossTicket := admissionInput(b, AdmissionEntry)
+	crossTicket.OccurrenceID = in.OccurrenceID
+	if _, err := st.RecordAdmission(ctx, crossTicket); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("cross-ticket occurrence reuse: err = %v, want ErrOccurrenceCollision", err)
+	}
+	crossType := admissionInput(a, AdmissionExit)
+	crossType.OccurrenceID = in.OccurrenceID
+	if _, err := st.RecordAdmission(ctx, crossType); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("cross-type occurrence reuse: err = %v, want ErrOccurrenceCollision", err)
+	}
+}
+
+// Two racing calls with one occurrence id: exactly one append, the loser sees
+// the winner's event as a replay, and nobody leaks a constraint error.
+func TestConcurrentRecordAdmissionSerializesPerTicket(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	in := admissionInput(s, AdmissionEntry)
+	results := make([]RecordAdmissionResult, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = st.RecordAdmission(ctx, in)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("racer %d: %v", i, err)
+		}
+	}
+	if results[0].Replayed == results[1].Replayed {
+		t.Fatalf("want one fresh append and one replay, got %v/%v", results[0].Replayed, results[1].Replayed)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE id=$1`, in.OccurrenceID); n != 1 {
+		t.Fatalf("occurrence stored %d times", n)
+	}
+	if err := New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("verify after race: %v", err)
+	}
+}
+
+// §D5: the integrity sequence is the authoritative order; occurred_at is the
+// gate's claimed time. Cross-device offline events reconcile out of timestamp
+// order, and History must not reorder them to impose device-clock order.
+func TestHistoryUsesIntegritySequenceNotClaimedTime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	// Two admissions appended in one order, timestamped in the other.
+	late := admissionInput(s, AdmissionEntry)
+	late.OccurredAt = time.Now().UTC().Add(time.Hour)
+	early := admissionInput(s, AdmissionEntry)
+	early.OccurredAt = time.Now().UTC().Add(-time.Hour)
+	if _, err := st.RecordAdmission(ctx, late); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RecordAdmission(ctx, early); err != nil {
+		t.Fatal(err)
+	}
+
+	history, err := st.History(ctx, s.ticketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("history has %d events, want 3", len(history))
+	}
+	for i, e := range history {
+		if e.Sequence == nil {
+			t.Fatalf("chained event %s has no sequence in History", e.ID)
+		}
+		if *e.Sequence != int64(i+1) {
+			t.Fatalf("history position %d has sequence %d: not ordered by integrity sequence", i, *e.Sequence)
+		}
+	}
+	if history[1].ID != late.OccurrenceID || history[2].ID != early.OccurrenceID {
+		t.Fatalf("history reordered by claimed time: %v then %v, want append order", history[1].ID, history[2].ID)
+	}
+	if !history[2].OccurredAt.Equal(lifecycle.Normalize(early.OccurredAt)) {
+		t.Fatalf("claimed time rewritten: %v", history[2].OccurredAt)
+	}
+}
+
+// Concurrent cross-ticket reuse of one occurrence id: each ticket's lock only
+// serializes its own ticket, so both replay checks can pass and the collision
+// is only caught by the event primary key inside the append. The caller must
+// still see ErrOccurrenceCollision — never a raw unique-violation error
+// (rung-1 ai-review finding, PR #62).
+func TestConcurrentCrossTicketOccurrenceReuseIsACollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	organizerID := uuid.New()
+	a, b := issueTicket(t, ctx, st, organizerID), issueTicket(t, ctx, st, organizerID)
+
+	shared := uuid.New()
+	inputs := []RecordAdmissionInput{}
+	for _, s := range []seeded{a, b} {
+		in := admissionInput(s, AdmissionEntry)
+		in.OccurrenceID = shared
+		inputs = append(inputs, in)
+	}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range inputs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = st.RecordAdmission(ctx, inputs[i])
+		}(i)
+	}
+	wg.Wait()
+	var ok, collided int
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrOccurrenceCollision):
+			collided++
+		default:
+			t.Fatalf("racer %d leaked a non-collision error: %v", i, err)
+		}
+	}
+	if ok != 1 || collided != 1 {
+		t.Fatalf("want exactly one append and one collision, got ok=%d collided=%d", ok, collided)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE id=$1`, shared); n != 1 {
+		t.Fatalf("occurrence stored %d times", n)
+	}
+	if err := New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("verify after cross-ticket race: %v", err)
+	}
+}
+
+// The deterministic version of the window above: a competing writer holds the
+// shared occurrence id uncommitted while RecordAdmission runs. The replay check
+// (READ COMMITTED) sees nothing, the append blocks on the in-flight primary
+// key, and the commit turns it into a unique violation — which the caller must
+// receive as ErrOccurrenceCollision, not as a raw SQLSTATE error. The direct
+// insert stands in for the competing transaction's in-flight append; it is
+// never verified as a trail.
+func TestOccurrenceCollisionInsideTheAppendWindowIsACollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	organizerID := uuid.New()
+	a, b := issueTicket(t, ctx, st, organizerID), issueTicket(t, ctx, st, organizerID)
+
+	shared := uuid.New()
+	competing, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = competing.Rollback() }()
+	if _, err = competing.ExecContext(ctx, `INSERT INTO lifecycle_events(id,ticket_id,event_type) VALUES($1,$2,'entry')`, shared, b.ticketID); err != nil {
+		t.Fatal(err)
+	}
+
+	in := admissionInput(a, AdmissionEntry)
+	in.OccurrenceID = shared
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.RecordAdmission(ctx, in)
+		done <- err
+	}()
+	// Not a sleep: assert the backend is actually lock-blocked on the
+	// conflicting insert before committing, or this test could pass through
+	// the visible-row path without ever exercising the append-window mapping.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var blocked int
+		if err = db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type='Lock' AND query ILIKE '%INSERT INTO lifecycle_events%'`).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RecordAdmission never blocked on the conflicting insert; the append-window path was not exercised")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err = competing.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("append-window collision surfaced as %v, want ErrOccurrenceCollision", err)
+	}
+}
+
+// A unique violation from INSIDE the chain — a stale or missing head deriving
+// an already-used integrity sequence — is corruption, not occurrence reuse.
+// Mapping it to ErrOccurrenceCollision would report a database-adversary state
+// as a scanner mistake (second-pass ai-review finding, PR #62).
+func TestStaleHeadUniqueViolationIsNotACollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	// The rollback shape: integrity rows survive, the head vanishes. loadHead
+	// falls back to genesis and re-derives sequence 1, which the integrity
+	// UNIQUE(ticket_id,sequence) refuses.
+	if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_heads WHERE ticket_id=$1`, s.ticketID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.RecordAdmission(ctx, admissionInput(s, AdmissionEntry))
+	if err == nil {
+		t.Fatal("append onto a corrupted head succeeded")
+	}
+	if errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("chain corruption misreported as occurrence collision: %v", err)
 	}
 }
