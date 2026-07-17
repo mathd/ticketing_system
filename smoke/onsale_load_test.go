@@ -68,8 +68,9 @@ func timedPost(url string, headers map[string]string, body any) (int, []byte, ti
 	defer func() { _ = resp.Body.Close() }()
 	out, rerr := io.ReadAll(resp.Body)
 	if rerr != nil {
-		// A truncated/reset body is a transport failure, not a delivered
-		// response — surfacing it as err classifies it client-side (TKT-92).
+		// Surface a truncated/reset body as err with the delivered status:
+		// callers classify — a forbidden status is server evidence on its own;
+		// a cut-off success body is client-side/inconclusive (TKT-92).
 		return resp.StatusCode, out, d, fmt.Errorf("read body: %w", rerr)
 	}
 	return resp.StatusCode, out, d, nil

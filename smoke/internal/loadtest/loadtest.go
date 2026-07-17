@@ -16,10 +16,12 @@ import (
 const (
 	KindOK       = "ok"       // full hold→finalize→confirm lifecycle succeeded
 	KindRejected = "rejected" // expected 409 (pool or tail sellout)
-	// KindClientError is a transport-level failure (err != nil: timeout, dial,
-	// connection acquisition/loss). It may be client resource exhaustion or a
-	// server-caused reset — indistinguishable from here, so it is never
-	// publishable as a server verdict: it makes a run inconclusive (TKT-92).
+	// KindClientError is a transport-level failure with no delivered status
+	// (timeout, dial, connection loss), or a truncated success body. It may be
+	// client resource exhaustion or a server-caused reset — indistinguishable
+	// from here, so it is never publishable as a server verdict: it makes a
+	// run inconclusive (TKT-92). A delivered forbidden status classifies
+	// server-side even when its body was then cut off.
 	KindClientError = "client-error"
 	// KindServerError is a delivered response the protocol forbids: unexpected
 	// HTTP status or a malformed body on a success status. Server-side by
