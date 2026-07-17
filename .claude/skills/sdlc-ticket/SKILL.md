@@ -187,7 +187,9 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #      Accept / amend / reject each part of the draft with a stated reason.
 #   3c FINALIZE — YOU, always (a delegated worker cannot talk to the human): grill the human on
 #      the open decisions (complex tickets, one question at a time), revise, post kind=plan-final
-#      (final plan + what changed from the draft and why).
+#      as a DELTA, not a restatement: amendments + decisions + the required sections, with "the
+#      kind=plan draft as amended above is the plan". Restating the full plan doubles the thread
+#      for zero audit value (TKT-84 retro); resume already reads draft + delta together.
 #      REQUIRED SECTION — "introduced at plan-review, reviewed by no second model": every design
 #      element 3b *added* rather than accepted/amended/rejected from the draft. Those reach Gate 2
 #      reviewed by nobody but their author — the cross-model guarantee covers the draft and the
