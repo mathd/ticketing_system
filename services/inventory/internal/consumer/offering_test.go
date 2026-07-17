@@ -31,15 +31,45 @@ type closureCall struct {
 	version int32
 }
 
-// fakeCatalogStore records mutations; err is returned by every mutation.
-type fakeCatalogStore struct {
-	archived []uuid.UUID
-	closures []closureCall
-	err      error
+type quarantineCall struct {
+	subject  string
+	eventID  uuid.UUID
+	schema   int
+	envelope []byte
 }
 
-func (s *fakeCatalogStore) Provision(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int32) error {
-	return s.err
+// fakeCatalogStore records mutations; err is returned by every mutation.
+// quarantineErr is separate: quarantining a future variant must be testable
+// independently of the known-variant apply paths.
+type fakeCatalogStore struct {
+	archived      []uuid.UUID
+	closures      []closureCall
+	provisioned   []uuid.UUID
+	quarantined   []quarantineCall
+	err           error
+	quarantineErr error
+	pending       bool
+	pendingErr    error
+}
+
+func (s *fakeCatalogStore) Provision(_ context.Context, eventID, _, _ uuid.UUID, _ int32) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.provisioned = append(s.provisioned, eventID)
+	return nil
+}
+
+func (s *fakeCatalogStore) QuarantineCatalogEvent(_ context.Context, subject string, eventID uuid.UUID, schema int, envelope []byte) error {
+	if s.quarantineErr != nil {
+		return s.quarantineErr
+	}
+	s.quarantined = append(s.quarantined, quarantineCall{subject, eventID, schema, envelope})
+	return nil
+}
+
+func (s *fakeCatalogStore) HasPendingCatalogQuarantine(context.Context) (bool, error) {
+	return s.pending, s.pendingErr
 }
 func (s *fakeCatalogStore) ApplyArchive(_ context.Context, _ uuid.UUID, pool uuid.UUID) error {
 	if s.err != nil {
@@ -67,25 +97,26 @@ func TestArchivedEventDispositions(t *testing.T) {
 	grouped := `{` + evtID + `,"schema":3,"data":{"performance_id":"` + perfID + `","event_id":"` + perfID + `","organizer_id":"` + orgID + `","capacity_group_id":"` + grpID + `"}}`
 
 	for _, tt := range []struct {
-		name       string
-		body       string
-		storeErr   error
-		want       string // final disposition action
-		wantsReady bool
-		wantPool   string // non-empty: ApplyArchive must have been called with this pool
+		name            string
+		body            string
+		storeErr        error
+		want            string // final disposition action
+		wantsReady      bool
+		wantPool        string // non-empty: ApplyArchive must have been called with this pool
+		wantQuarantined bool
 	}{
-		{"solo archive applies to the slot pool", solo, nil, "ack", true, perfID},
-		{"grouped archive applies to the festival pool", grouped, nil, "ack", true, grpID},
-		{"future schema is parked and latches unready", `{` + evtID + `,"schema":4,"data":{"slot_ref":"a"}}`, nil, "nak-delay", false, ""},
-		{"schema zero is poison", `{` + evtID + `,"schema":0,"data":{}}`, nil, "term", true, ""},
-		{"future schema without an id is poison, not skew", `{"schema":9,"data":{"slot_ref":"a"}}`, nil, "term", true, ""},
-		{"schema below the first archived variant is poison", `{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`, nil, "term", true, ""},
-		{"missing identifiers are poison", `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `"}}`, nil, "term", true, ""},
-		{"schema 2 carrying a group is poison", `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","capacity_group_id":"` + grpID + `"}}`, nil, "term", true, ""},
-		{"schema 3 without a group is poison", `{` + evtID + `,"schema":3,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`, nil, "term", true, ""},
-		{"unreadable known data is poison", `{` + evtID + `,"schema":2,"data":{"performance_id":42}}`, nil, "term", true, ""},
-		{"missing pool parks for redelivery", solo, store.ErrNotFound, "nak-delay", true, ""},
-		{"store failure retries", solo, errors.New("db down"), "nak", true, ""},
+		{"solo archive applies to the slot pool", solo, nil, "ack", true, perfID, false},
+		{"grouped archive applies to the festival pool", grouped, nil, "ack", true, grpID, false},
+		{"future schema is quarantined, acked, and latches unready", `{` + evtID + `,"schema":4,"data":{"slot_ref":"a"}}`, nil, "ack", false, "", true},
+		{"schema zero is poison", `{` + evtID + `,"schema":0,"data":{}}`, nil, "term", true, "", false},
+		{"future schema without an id is poison, not skew", `{"schema":9,"data":{"slot_ref":"a"}}`, nil, "term", true, "", false},
+		{"schema below the first archived variant is poison", `{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`, nil, "term", true, "", false},
+		{"missing identifiers are poison", `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `"}}`, nil, "term", true, "", false},
+		{"schema 2 carrying a group is poison", `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","capacity_group_id":"` + grpID + `"}}`, nil, "term", true, "", false},
+		{"schema 3 without a group is poison", `{` + evtID + `,"schema":3,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`, nil, "term", true, "", false},
+		{"unreadable known data is poison", `{` + evtID + `,"schema":2,"data":{"performance_id":42}}`, nil, "term", true, "", false},
+		{"missing pool parks for redelivery", solo, store.ErrNotFound, "nak-delay", true, "", false},
+		{"store failure retries", solo, errors.New("db down"), "nak", true, "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			st := &fakeCatalogStore{err: tt.storeErr}
@@ -103,9 +134,12 @@ func TestArchivedEventDispositions(t *testing.T) {
 			if tt.wantPool != "" && (len(st.archived) != 1 || st.archived[0] != uuid.MustParse(tt.wantPool)) {
 				t.Fatalf("archived pools = %v, want exactly [%s]", st.archived, tt.wantPool)
 			}
-			if tt.want == "term" || tt.want == "nak-delay" {
+			if got := len(st.quarantined); got != map[bool]int{true: 1}[tt.wantQuarantined] {
+				t.Fatalf("quarantined %d events, wantQuarantined=%v — only a valid future variant may reach quarantine", got, tt.wantQuarantined)
+			}
+			if tt.want == "term" || tt.want == "nak-delay" || tt.wantQuarantined {
 				if len(st.archived) != 0 {
-					t.Fatalf("archived pools = %v — a parked or poisoned event must not mutate", st.archived)
+					t.Fatalf("archived pools = %v — a quarantined, parked or poisoned event must not mutate", st.archived)
 				}
 			}
 		})
@@ -134,8 +168,8 @@ func TestClosureEventDispositions(t *testing.T) {
 			fakeResolver{organizerID: org, capacity: 10}, nil, "ack", true, &closureCall{uuid.MustParse(perfID), uuid.MustParse(perfID), false, 2}},
 		{"grouped day converges on the festival pool", subjectClosed, closedV1,
 			fakeResolver{organizerID: org, capacityGroupID: &grp, sharedCapacity: ptr(int32(100))}, nil, "ack", true, &closureCall{grp, uuid.MustParse(perfID), true, 1}},
-		{"future schema is parked and latches unready", subjectClosed,
-			`{` + evtID + `,"schema":2,"data":{"slot_ref":"a","state":"shut"}}`, nil, nil, "nak-delay", false, nil},
+		{"future schema is quarantined, acked, and latches unready", subjectClosed,
+			`{` + evtID + `,"schema":2,"data":{"slot_ref":"a","state":"shut"}}`, nil, nil, "ack", false, nil},
 		{"schema zero is poison", subjectClosed, `{` + evtID + `,"schema":0,"data":{}}`, nil, nil, "term", true, nil},
 		{"future schema without an id is poison, not skew", subjectClosed,
 			`{"schema":7,"data":{"state":"shut"}}`, nil, nil, "term", true, nil},
@@ -169,6 +203,9 @@ func TestClosureEventDispositions(t *testing.T) {
 				}
 			} else if len(st.closures) != 0 {
 				t.Fatalf("closures = %v — this disposition must not mutate", st.closures)
+			}
+			if wantQ := !tt.wantsReady && tt.want == "ack"; (len(st.quarantined) == 1) != wantQ {
+				t.Fatalf("quarantined = %d events — exactly the future variant, and only it, is quarantined", len(st.quarantined))
 			}
 		})
 	}

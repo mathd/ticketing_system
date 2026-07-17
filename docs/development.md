@@ -70,6 +70,26 @@ it deliberately does not retain attacker-controlled event data. If the failure s
 unavailable through all six deliveries, JetStream's max-deliver advisory is the operator signal
 to restore the stream and replay the original message.
 
+## Inventory catalog-event quarantine operations
+
+Future-schema catalog events (version skew, ADR-017 §5b) are no longer parked against the
+durable's ack window: inventory persists the raw envelope to the bounded
+`catalog_event_quarantine` table (cap 10 000 unresolved rows) and acks the original, so variants
+this binary *does* understand keep flowing (TKT-68). Readiness still latches false on the first
+quarantined event and stays down across restarts while unresolved rows exist — the alarm is
+Postgres-backed, not ack-window-backed.
+
+To recover: deploy an inventory binary whose schema registry covers the quarantined variants,
+run `inventory reprocess-quarantine` (one-shot subcommand; republishes the stored envelopes
+byte-identically to their original subjects with deterministic `Nats-Msg-Id`s, marks rows only
+after the broker accepts), then restart inventory — startup confirms no unresolved rows remain
+and readiness returns. Rows the running binary still cannot read stay unresolved and keep
+readiness down; `reinjected_at` means broker republication succeeded, never that inventory
+business processing completed (that is `consumed_events`' job). Reinjected rows are pruned
+7 days after reinjection; unresolved rows never age out. If the quarantine itself fills, new
+future-schema events fall back to delayed NAKs — a deliberate, loud stall at an
+inventory-owned bound, not a drop.
+
 ## Access ticket lifecycle trail operations
 
 The trail is chained per ticket and checkpointed per organizer

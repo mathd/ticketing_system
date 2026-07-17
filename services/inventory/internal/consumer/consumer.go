@@ -28,6 +28,8 @@ type catalogStore interface {
 	Provision(ctx context.Context, eventID, slotID, organizerID uuid.UUID, capacity int32) error
 	ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) error
 	ApplyClosure(ctx context.Context, eventID, pool, performance uuid.UUID, closed bool, version int32) error
+	QuarantineCatalogEvent(ctx context.Context, subject string, eventID uuid.UUID, schema int, envelope []byte) error
+	HasPendingCatalogQuarantine(ctx context.Context) (bool, error)
 }
 
 type Consumer struct {
@@ -177,13 +179,33 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 	if env.Schema > spec.max {
-		// Version skew: hold the event for a binary that understands it, and stop reporting
-		// ready. Readiness is the only signal wired here, and a drop nobody notices is the whole
-		// of TKT-61 — being loudly unready beats being quietly wrong. It never self-heals:
-		// recovering on the next good message would hide the event still pending behind this one.
-		c.log.Error("unsupported catalog event schema", "subject", msg.Subject(), "event_id", env.ID, "schema", env.Schema)
+		// Version skew: persist the raw envelope to the bounded quarantine and ack the
+		// original — a parked event occupies the durable's ack window, and ~1000 of them
+		// stall every variant behind them, including ones this binary understands (TKT-68).
+		// Readiness still latches false and never self-heals: recovery is a supporting
+		// binary + reprocess-quarantine + restart, because a drop nobody notices is the
+		// whole of TKT-61 — being loudly unready beats being quietly wrong.
+		c.log.Error("unsupported catalog event schema; quarantining", "subject", msg.Subject(), "event_id", env.ID, "schema", env.Schema)
+		raw := append([]byte(nil), msg.Data()...)
+		err := c.st.QuarantineCatalogEvent(ctx, msg.Subject(), env.ID, env.Schema, raw)
+		if errors.Is(err, store.ErrCatalogQuarantineCollision) {
+			// Two payloads under one id is a producer invariant break (ADR-009 §5), not
+			// skew: the row will never be overwritten, so a NAK would re-park it forever.
+			// Poison — terminate, readiness untouched; the first copy stays quarantined.
+			c.log.Error("catalog event id collision; terminating", "subject", msg.Subject(), "event_id", env.ID, "schema", env.Schema)
+			_ = msg.Term()
+			return
+		}
 		c.ready.Store(false)
-		_ = msg.NakWithDelay(5 * time.Second)
+		if err != nil {
+			// Includes ErrCatalogQuarantineFull: without a committed copy the event must
+			// stay outstanding — at the quarantine cap the stall is deliberate, explicit,
+			// inventory-owned backpressure, never a drop.
+			c.log.Error("quarantine catalog event", "subject", msg.Subject(), "event_id", env.ID, "err", err)
+			_ = msg.NakWithDelay(5 * time.Second)
+			return
+		}
+		_ = msg.Ack()
 		return
 	}
 	if env.Schema < spec.min {
@@ -344,6 +366,50 @@ func (c *Consumer) applyOffering(msg jetstream.Msg, eventID uuid.UUID, apply fun
 	}
 }
 
+// maxAckPending bounds the durable's outstanding deliveries. With future variants quarantined
+// and acked (TKT-68), outstanding messages are just processing concurrency plus the rare
+// quarantine-full NAKs — 64 is generous for both while keeping the stall bound explicit.
+const maxAckPending = 64
+
+// SupportsCatalogSchema reports whether this binary can read the given (subject, schema)
+// variant. It is the reprocess-quarantine gate and derives from the same knownSchemas registry
+// as live dispatch — two sources would let a binary re-inject variants it then cannot apply.
+func SupportsCatalogSchema(subject string, schema int) bool {
+	spec, ok := knownSchemas[subject]
+	return ok && schema >= spec.min && schema <= spec.max
+}
+
+// consumerConfig is the durable's full configuration, extracted so a test can pin every field —
+// most importantly the explicit MaxAckPending (TKT-68): the consumer's backpressure bound must
+// be visible in code, not inherited from the nats-server default.
+func (c *Consumer) consumerConfig() jetstream.ConsumerConfig {
+	return jetstream.ConsumerConfig{
+		Durable:        "inventory-catalog-offering",
+		FilterSubjects: []string{subjectPublished, subjectArchived, subjectClosed, subjectReopened},
+		DeliverPolicy:  jetstream.DeliverAllPolicy,
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		MaxDeliver:     -1,
+		MaxAckPending:  maxAckPending,
+	}
+}
+
+// refreshStartupReadiness decides initial readiness from quarantine state: quarantined originals
+// were acked, so a restart can no longer rediscover unresolved skew from JetStream — Postgres is
+// the source of truth. Pending rows keep readiness latched false (known variants still flow);
+// recovery is reprocess-quarantine + restart, never silent.
+func (c *Consumer) refreshStartupReadiness(ctx context.Context) error {
+	pending, err := c.st.HasPendingCatalogQuarantine(ctx)
+	if err != nil {
+		return fmt.Errorf("check pending catalog quarantine: %w", err)
+	}
+	if pending {
+		c.log.Error("unresolved quarantined catalog events; staying unready until reprocess-quarantine + restart")
+		return nil
+	}
+	c.ready.Store(true)
+	return nil
+}
+
 func (c *Consumer) Run(ctx context.Context) error {
 	stream, err := c.js.Stream(ctx, "PLATFORM")
 	if err != nil {
@@ -353,17 +419,13 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// durable replays retained archive/closure events the old filter skipped (safe through
 	// consumed_events). Delete the orphan so it does not linger in stream reports.
 	_ = stream.DeleteConsumer(ctx, "inventory-performance-provisioner")
-	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		Durable:        "inventory-catalog-offering",
-		FilterSubjects: []string{subjectPublished, subjectArchived, subjectClosed, subjectReopened},
-		DeliverPolicy:  jetstream.DeliverAllPolicy,
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		MaxDeliver:     -1,
-	})
+	cons, err := stream.CreateOrUpdateConsumer(ctx, c.consumerConfig())
 	if err != nil {
 		return err
 	}
-	c.ready.Store(true)
+	if err := c.refreshStartupReadiness(ctx); err != nil {
+		return err
+	}
 	defer c.ready.Store(false)
 	cc, err := cons.Consume(func(msg jetstream.Msg) { c.handle(ctx, msg) })
 	if err != nil {

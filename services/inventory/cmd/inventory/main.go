@@ -31,19 +31,31 @@ import (
 const serviceName = "inventory"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		if err := migrate(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s migrate: %v\n", serviceName, err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
+	}
+	if len(os.Args) > 1 {
+		if sub, ok := subcommands()[os.Args[1]]; ok {
+			if err := sub(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
+				os.Exit(1)
+			}
+			return
+		}
 	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
 		os.Exit(1)
+	}
+}
+
+// subcommands are the one-shot modes (the registry shape services/access uses). migrate is the
+// out-of-band migration job (ADR-022); reprocess-quarantine republishes future-schema events a
+// newer binary now understands (TKT-68) — deploy that binary first, run this, then restart.
+func subcommands() map[string]func([]string) error {
+	return map[string]func([]string) error{
+		"migrate":              func([]string) error { return migrate() },
+		"reprocess-quarantine": reprocessQuarantine,
 	}
 }
 

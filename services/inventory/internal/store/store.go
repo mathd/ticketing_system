@@ -102,6 +102,8 @@ type Availability struct {
 type Postgres struct {
 	db  *sql.DB
 	ttl time.Duration
+	// quarantineCap overrides MaxCatalogQuarantinePending in tests; 0 = the constant.
+	quarantineCap int
 }
 
 func New(db *sql.DB, ttl time.Duration) *Postgres { return &Postgres{db: db, ttl: ttl} }
