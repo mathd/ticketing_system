@@ -4,10 +4,14 @@
   "summary": "Remove the checked-in default INTERNAL_SERVICE_TOKEN — fail startup without an explicit credential",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "claude-fable-5",
-  "pr": null,
+  "pr": {
+    "url": "https://github.com/mathd/ticketing_system/pull/61",
+    "number": 61,
+    "state": "open"
+  },
   "links": [
     {
       "type": "found-in",
@@ -40,6 +44,11 @@
       "stage": "planning",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=planning kind=plan-final -->\nFinal plan = draft + amendments (1)-(3). Two decisions for Gate 2: (A) ergonomics shape — recommendation (a) generated .env via `make up`; (B) reject `local-service-token` permanently, even in dev (recommended).\n\nIntroduced at plan-review, reviewed by no second model: none."
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\nImplemented by main-agent (claude-fable-5) per approved plan-final. TDD: runtimecfg unit tests written first (observed red: undefined InternalTokenFromEnv), then validator + five run() wirings + compose anchor move + make up .env bootstrap (verified idempotent, chmod 600, compose picks up .env with no shell var) + smoke.sh per-invocation token + smoke test fallback removal + new black-box startup table (verified green in the gate against real images) + README/development/security docs. Diff +167/−27, 16 files. make check green. PR #61."
     }
   ]
 }
