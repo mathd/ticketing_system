@@ -2,9 +2,11 @@
   "key": "TKT-79",
   "type": "Story",
   "summary": "US-016: Group and agency long-lived reservations",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "description": "### US-016: Group and agency long-lived reservations\n**As** an organizer, **I want** to grant a group or agency a long-lived reservation they draw down\nover time, so bulk buyers don't fight the public TTL. **Priority:** P2 **Depends on:** US-014\n(typed-claim machinery; soft)\n**Acceptance Criteria:**\n- [ ] A reservation claim type with an explicit expiry date (not the cart TTL), placeable by\n      staff for a named counterparty; counts against capacity like any claim (and against a\n      channel allocation when one applies).\n- [ ] Draw-down: quantity converts to confirmed orders **partially and repeatedly** (10 of 200\n      today, 50 next week) without the unconverted remainder ever passing through a publicly\n      claimable state; unconverted quantity returns to sale at expiry (lazy, DB-time).\n- [ ] The order/payment side of a draw-down uses the existing commerce checkout seam; agency\n      pay-later terms, invoicing and dunning are explicitly TKT-34 (non-goal).\n- [ ] Contention test covers concurrent public holds racing a reservation draw-down.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
   "links": [],
@@ -77,6 +79,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed 2026-07-16. Zero open blockers (no links wired; US-014 dependency was soft). Selection reason: prioritized to Ready by human; next P2 story on the TKT-4 epic. Branch: `TKT-79-group-agency-reservations` off origin/main. Drive style: gates only.\nModel routing (config): plan=gpt-5.6-sol, planReview=main-agent, implement=main-agent, aiReview=gpt-5.6-sol — both reviewer≠author pairs hold."
     }
   ]
 }
