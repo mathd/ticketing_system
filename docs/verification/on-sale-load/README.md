@@ -30,7 +30,9 @@ evidence deliberately bakes in no policy.
 - Scheduler lag and the client in-flight cap are reported so client CPU exhaustion is not
   mistaken for the pool ceiling; a sweep stage is only "stable" with zero drops, errors and
   rejections, ≥99% delivery, **and** lifecycle p99 within the 3s SLO — a stage that answers
-  slowly forever is past the knee even before the client cap drops arrivals.
+  slowly forever is past the knee even before the client cap drops arrivals. The sweep cap
+  is sized by Little's law above rate × SLO (rate × 4s), and cap drops while the SLO holds
+  abort the run as **inconclusive** — a generator limit is never published as a ceiling.
 - The `claim_history` INSERT line (ADR-023 amendment) is aggregate DB execution time from
   `pg_stat_statements` — overhead attribution, not a causal with/without comparison.
 

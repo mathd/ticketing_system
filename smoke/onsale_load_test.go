@@ -390,17 +390,24 @@ func onsaleFull(t *testing.T) {
 	// turn later stages into sold-out tests; stop at the first unstable stage.
 	// Stability is delivery AND the lifecycle SLO: a stage that answers slowly
 	// forever (or rejects with capacity ample) is past the knee even before the
-	// client's in-flight cap starts dropping arrivals.
+	// client's in-flight cap starts dropping arrivals. The cap is sized by
+	// Little's law above rate × SLO (rate × 4s of headroom for the 3s SLO), so
+	// the generator cannot define the knee: at the cap, mean latency already
+	// exceeds the SLO. If drops still occur while the SLO holds, the run is
+	// INCONCLUSIVE — a generator limit, never publishable as a ceiling.
 	sweepStable := func(r loadtest.StageResult) bool {
-		return r.Stable(0.99) && r.Rejected == 0 && r.OK == r.Started &&
+		return r.Stable(0.99) && r.Rejected == 0 && r.OK == r.Started && r.OK > 0 &&
 			loadtest.Percentile(r.Lifecycle, 99) <= 3*time.Second
 	}
 	var sweep []loadtest.StageResult
 	for _, rate := range []int{75, 150, 300, 600, 1200, 2400, 3000} {
 		s, _ := publishedSlot(t, fmt.Sprintf("Onsale Sweep %s %d", runID, rate), 100000)
-		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, 512, checkoutAttempt(runID, s, 1))
+		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, max(512, rate*4), checkoutAttempt(runID, s, 1))
 		report.Stages = append(report.Stages, logStage(t, r))
 		report.Accounting = append(report.Accounting, assertAccounting(t, conn, s, r.OK, r.OK))
+		if r.Dropped > 0 && r.Errors == 0 && r.Rejected == 0 && loadtest.Percentile(r.Lifecycle, 99) <= 3*time.Second {
+			t.Fatalf("sweep-%d: %d arrivals dropped at the in-flight cap while the SLO held — generator-limited, ceiling inconclusive; raise the cap and rerun", rate, r.Dropped)
+		}
 		sweep = append(sweep, r)
 		if !sweepStable(r) {
 			break
