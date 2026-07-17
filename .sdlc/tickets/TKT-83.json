@@ -4,7 +4,7 @@
   "summary": "Remove the checked-in default INTERNAL_SERVICE_TOKEN — fail startup without an explicit credential",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "needs:human"
   ],
   "assignee": "claude-fable-5",
   "pr": null,
@@ -25,6 +25,21 @@
       "stage": "ready",
       "kind": "claim",
       "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed (user-selected, gates-only drive). No open blockers (found-in TKT-77 is Done, informational). Branch TKT-83-no-default-internal-token off origin/main. Not risk:low: auth-adjacent credential handling touching all five services + compose + smoke harness — plan gate applies."
+    },
+    {
+      "stage": "planning",
+      "kind": "plan",
+      "body": "<!-- sdlc:stage=planning kind=plan -->\nPlan drafted by gpt-5.6-sol (codex task 019f7002, read-only). Core:\n\n**Compose:** move INTERNAL_SERVICE_TOKEN into the existing go-env anchor as `${INTERNAL_SERVICE_TOKEN:?<message pointing to make up>}`; delete the five per-service defaults. Migrate jobs + access-lifecycle-backfill stay token-free (verified: they don't inherit go-env).\n\n**Services:** shared validator in shared/go/runtimecfg — rejects empty AND the retired literal `local-service-token` (denylisted forever, incl. dev); called first thing in each of the five run()s (catalog gains the startup check it lacks today); server subcommand only, migrate/verify dispatch untouched.\n\n**Ergonomics (OPEN, recommended (a)):** `make up` bootstraps a gitignored .env with a random token once (preserves unrelated entries, restrictive perms, never prints it); bare `docker compose up` works from then on. Cost: bare compose commands fail before first bootstrap with a clear message.\n\n**Smoke/CI:** scripts/smoke.sh generates a fresh token per invocation, exports INTERNAL_SERVICE_TOKEN + SMOKE_INTERNAL_TOKEN (shell env beats any developer .env); operational_holds_test.go loses its fallback; smoke_test.go placement probe uses the harness token; new table-driven black-box test: each of the five built images started without the var and with the retired value must exit non-zero fast with the credential error. No workflow changes needed (both CI paths go through smoke.sh).\n\n**Tests:** runtimecfg unit tests (empty/retired/valid) + the black-box startup table + TestServerModeDoesNotMigrate keeps working as positive control. Docs: README quickstart, docs/development.md, docs/conventions/security.md.\n\n**Non-goals:** per-service credentials, rotation, mTLS, RBAC, secret storage, TKT-77 port bindings, other checked-in dev passwords."
+    },
+    {
+      "stage": "plan-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=plan-review kind=summary -->\nAdversarial critique by main-agent (claude-fable-5); drafter gpt-5.6-sol (pair distinct).\n\nVerified at HEAD 38059c7: go-env anchor (compose.yaml:30) and the five per-service defaults; migrate jobs carry only DATABASE_URL (no go-env inheritance) so the anchor move cannot leak the token into them; shared/go/runtimecfg exists with tests; Makefile `up` target exists; smoke.sh owns both CI smoke paths (check.yaml fast path + hermetic `make smoke-hermetic`), so 'no workflow changes' holds; smoke_test.go probe at :393 and operational_holds_test.go:22 fallback both real; docs files exist; .gitignore has no .env entry yet (draft adds it — required, verified missing).\n\nACCEPT: validator shape + permanent retired-literal denylist; validation before any dependency init; ergonomics option (a); smoke.sh per-invocation token with shell-env precedence; black-box startup table as the load-bearing proof that every real entrypoint validates early.\n\nAMEND: (1) keep the black-box table cheap — reuse the already-built smoke images, no health-wait, bounded per-container timeout (~10s), so the gate stays near its TKT-42 budget; (2) the compose `:?` message must name `make up` verbatim — it is the documented one step, and it also fires on `compose down/config` on a clean clone (draft names the cost; the message is the mitigation); (3) runtimecfg error text must not echo the supplied value (draft says so — pin it in the unit test).\n\nREJECT: nothing. Pre-mortem: draft's risk list already covers split-token drift, .env leakage into smoke, and validation leaking into migrate subcommands."
+    },
+    {
+      "stage": "planning",
+      "kind": "plan-final",
+      "body": "<!-- sdlc:stage=planning kind=plan-final -->\nFinal plan = draft + amendments (1)-(3). Two decisions for Gate 2: (A) ergonomics shape — recommendation (a) generated .env via `make up`; (B) reject `local-service-token` permanently, even in dev (recommended).\n\nIntroduced at plan-review, reviewed by no second model: none."
     }
   ]
 }
