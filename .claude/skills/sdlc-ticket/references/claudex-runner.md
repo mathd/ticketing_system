@@ -1,9 +1,9 @@
-# Claudex runner — mechanics for stages that resolve to `<gpt-*>@claudex`
+# Claudex runner — mechanics for stages that resolve to `<model>@claudex`
 
 Read this when `config.models` resolves a stage to a model carrying the `@claudex` suffix
-(e.g. `gpt-5.6-sol@claudex`). Same model as the codex runner — **only the harness differs**:
-the stage runs headless Claude Code (`claude -p`) pointed at a local proxy that holds
-**OpenAI credentials only**. Bare `gpt-*` values keep meaning the codex runner
+(e.g. `gpt-5.6-sol@claudex`, `kimi-k3@claudex`). The stage runs headless Claude Code
+(`claude -p`) pointed at a local proxy that holds **OpenAI and OpenCode Go credentials —
+never Anthropic**. Bare `gpt-*` values keep meaning the codex runner
 (`codex-runner.md`); `@claudex` is opt-in, per stage, per repo. The point of the suffix is a
 one-line A/B between harnesses on the same model — treat *which harness ran* as part of the
 measurement and record it in the stage comment.
@@ -26,14 +26,15 @@ measurement and the wrong bill.
 
 ## Invocation — headless, allowlisted
 
-The model literal is **`gpt-5.6-sol`** (plain `gpt-5.6` does not resolve — don't "correct" it).
+The model literal is whatever the config value carries left of `:`/`@` — pass it verbatim
+(`gpt-5.6-sol`, `kimi-k3`; plain `gpt-5.6` does not resolve — don't "correct" any of them).
 Write the brief to a file (same materialization rules as codex-runner § Prompt files: file-writing
 tool or quoted heredoc, never shell interpolation; collision-resistant name; delete what you created).
 
 ```bash
 # read-only stages: plan drafting, plan review, ai-review
 ( set -a; source ~/.config/claudex/env; set +a
-  claude -p --model gpt-5.6-sol \
+  claude -p --model "$MODEL" \
     --effort high \
     --allowedTools "Read,Grep,Glob" \
     < .brief.$$.md )
@@ -60,7 +61,7 @@ re-reviews of fix commits get the discount, and say in the stage comment which e
 ## Reviews under @claudex
 
 There is no claudex equivalent of Codex's built-in `adversarial-review`: a review here is
-5.6 + your review brief in the Claude Code harness. All SKILL.md review rules apply unchanged —
+the configured model + your review brief in the Claude Code harness. All SKILL.md review rules apply unchanged —
 prime for guilt, diff only, no plan, verify findings against the revision under review. Flag in
 the stage comment that the reviewer ran `@claudex`: swapping the built-in reviewer for a
 prompt-driven one is a semantic change to the experiment, not just plumbing.
@@ -71,6 +72,8 @@ prompt-driven one is a semantic change to the experiment, not just plumbing.
   is undefined — don't improvise a writable allowlist; extend this doc first.
 - On failure or hang, fall back to the **codex runner** for the same stage and say so in the
   stage comment. A substituted harness is a measurement note, never a silent detail.
+  Non-`gpt-*` models (e.g. `kimi-k3`) have no codex equivalent — their fallback is
+  `gpt-5.6-sol` via the codex runner, which substitutes *both* model and harness: record both.
 - **Provider-level failure ≠ harness failure.** If the *credentials or quota* are what died
   (OpenAI tokens exhausted, key revoked), the codex fallback hits the same wall — don't burn a
   retry proving it. Escalate to the owner for a directed substitute model; run it preserving the
