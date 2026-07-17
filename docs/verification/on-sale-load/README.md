@@ -32,8 +32,17 @@ evidence deliberately bakes in no policy.
   mistaken for the pool ceiling; a sweep stage is only "stable" with zero drops, errors and
   rejections, ≥99% delivery, **and** lifecycle p99 within the 3s SLO — a stage that answers
   slowly forever is past the knee even before the client cap drops arrivals. The sweep cap
-  is sized by Little's law above rate × SLO (rate × 4s), and cap drops while the SLO holds
-  abort the run as **inconclusive** — a generator limit is never published as a ceiling.
+  is sized by Little's law above rate × SLO (rate × 4s), bounded by the transport's
+  4,096-connections-per-host limit (TKT-92), and cap drops while the SLO holds abort the
+  run as **inconclusive** — a generator limit is never published as a ceiling.
+- Since TKT-92 the harness splits error classes: transport-level failures (`err != nil`,
+  reported as `client_errors`) always abort a run as **inconclusive** — client exhaustion
+  or connection loss is indistinguishable from a server reset at the client, so it is never
+  published as a server verdict; delivered protocol violations (`server_errors`: 5xx,
+  unexpected status, malformed body) are instability evidence and bracket the ceiling.
+  Per-stage evidence JSON carries the split plus `max_in_flight`/`peak_in_flight` and the
+  root `client_max_conns_per_host`; the aggregate `errors` field remains as their sum for
+  schema compatibility. Evidence produced before TKT-92 cannot be retroactively split.
 - The `claim_history` INSERT line (ADR-023 amendment) is aggregate DB execution time from
   `pg_stat_statements` — overhead attribution, not a causal with/without comparison.
 

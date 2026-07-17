@@ -30,10 +30,18 @@ import (
 // serialization ceiling without anything being wrong (plan-final, TKT-82).
 // ONSALE_PROFILE=full runs the festival-NFR profile (make onsale-load-full).
 
+// maxClientConnsPerHost bounds the shared transport (TKT-92): without it the
+// 3,000/s sweep stage could open 12k concurrent connections (rate×4 in-flight
+// cap). 4096 preserves the rate×4 Little's-law headroom through the observed
+// 600/s knee; above ~1024/s a saturated bound surfaces as client errors or
+// drops, which CeilingInconclusive turns into a generator verdict — never a
+// published server ceiling.
+const maxClientConnsPerHost = 4096
+
 // loadClient reuses connections aggressively: at thousands of attempts/min the
 // default 2 idle conns per host turns the client into the bottleneck.
 var loadClient = &http.Client{
-	Transport: &http.Transport{MaxIdleConns: 1024, MaxIdleConnsPerHost: 1024},
+	Transport: &http.Transport{MaxIdleConns: 1024, MaxIdleConnsPerHost: 1024, MaxConnsPerHost: maxClientConnsPerHost},
 	Timeout:   15 * time.Second,
 }
 
@@ -75,17 +83,17 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": quantity})
 		switch {
 		case err != nil:
-			return loadtest.Outcome{Kind: loadtest.KindError, Note: "hold: " + err.Error()}
+			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
 		case code == http.StatusConflict:
 			return loadtest.Outcome{Kind: loadtest.KindRejected}
 		case code != http.StatusCreated:
-			return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("hold: %d %.200s", code, body)}
+			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("hold: %d %.200s", code, body)}
 		}
 		var claim struct {
 			ID string `json:"hold_id"`
 		}
 		if json.Unmarshal(body, &claim) != nil || claim.ID == "" {
-			return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("hold body unparseable: %.200s", body)}
+			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("hold body unparseable: %.200s", body)}
 		}
 		out := loadtest.Outcome{Hold: holdD}
 		hdr := map[string]string{"X-Internal-Token": internalToken}
@@ -96,10 +104,10 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			url := fmt.Sprintf("%s/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
 			code, rbody, d, err := timedPost(url, hdr, nil)
 			if err != nil {
-				return loadtest.Outcome{Kind: loadtest.KindError, Note: step.name + ": " + err.Error()}
+				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
 			}
 			if code != http.StatusOK {
-				return loadtest.Outcome{Kind: loadtest.KindError, Note: fmt.Sprintf("%s: %d %.200s", step.name, code, rbody)}
+				return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("%s: %d %.200s", step.name, code, rbody)}
 			}
 			*step.dst = d
 		}
@@ -210,8 +218,9 @@ func logStage(t *testing.T, r loadtest.StageResult) loadtest.StageReport {
 	for _, n := range r.ErrorNotes {
 		t.Logf("stage %s error sample: %s", sr.Name, n)
 	}
-	t.Logf("stage %-10s offered=%d started=%d dropped=%d ok=%d rejected=%d errors=%d hold p50/p95/p99=%.1f/%.1f/%.1fms lifecycle p50/p95/p99=%.1f/%.1f/%.1fms lag p99=%.1fms achieved=%.1f ok/s",
-		sr.Name, sr.Offered, sr.Started, sr.Dropped, sr.OK, sr.Rejected, sr.Errors,
+	t.Logf("stage %-10s offered=%d started=%d dropped=%d ok=%d rejected=%d client-err=%d server-err=%d inflight max/peak=%d/%d hold p50/p95/p99=%.1f/%.1f/%.1fms lifecycle p50/p95/p99=%.1f/%.1f/%.1fms lag p99=%.1fms achieved=%.1f ok/s",
+		sr.Name, sr.Offered, sr.Started, sr.Dropped, sr.OK, sr.Rejected, sr.ClientErrors, sr.ServerErrors,
+		sr.MaxInFlight, sr.PeakInFlight,
 		sr.HoldP50Ms, sr.HoldP95Ms, sr.HoldP99Ms, sr.LifeP50Ms, sr.LifeP95Ms, sr.LifeP99Ms, sr.LagP99Ms, sr.AchievedRate)
 	return sr
 }
@@ -266,6 +275,7 @@ func onsaleGate(t *testing.T) {
 	attempt := checkoutAttempt(runID, slot, 1)
 
 	report := loadtest.NewReport("TKT-82", "gate", gitSHA())
+	report.ClientMaxConnsPerHost = maxClientConnsPerHost
 	loadStart := time.Now()
 
 	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 5, Duration: 2 * time.Second, Quantity: 1}, 64, attempt)
@@ -283,6 +293,9 @@ func onsaleGate(t *testing.T) {
 	for remaining := capacity - grantedUnits; remaining > 0; {
 		q := min(remaining, 50)
 		out := checkoutAttempt(runID+"-fill", slot, q)(loadtest.Stage{Name: fmt.Sprintf("fill-%d", remaining)}, remaining)
+		if out.Kind == loadtest.KindClientError {
+			t.Fatalf("fill attempt (qty %d) hit a client-side transport error — run inconclusive, not server instability: %s", q, out.Note)
+		}
 		if out.Kind != loadtest.KindOK {
 			t.Fatalf("fill attempt (qty %d) failed: %s", q, out.Kind)
 		}
@@ -300,12 +313,18 @@ func onsaleGate(t *testing.T) {
 	if loadElapsed > 30*time.Second {
 		t.Fatalf("load portion took %v, budget is 30s", loadElapsed)
 	}
-	// Correctness-fatal: errors anywhere, a rejected hold while capacity was
-	// ample (the sustained window must produce real lifecycles — an all-409
+	// Both error classes still fail the gate — the correctness proof did not
+	// complete either way — but a client-side class means the run is
+	// inconclusive (generator/transport health), not evidence of instability.
+	if n := warm.ClientErrors + sustained.ClientErrors + reject.ClientErrors; n != 0 {
+		t.Fatalf("%d attempts hit client-side transport errors — run inconclusive, rerun on a healthy generator", n)
+	}
+	// Correctness-fatal: server errors anywhere, a rejected hold while capacity
+	// was ample (the sustained window must produce real lifecycles — an all-409
 	// window would otherwise pass with empty latency sets), or a grant after
 	// the pool filled.
-	if n := warm.Errors + sustained.Errors + reject.Errors; n != 0 {
-		t.Fatalf("%d attempts errored (timeout/transport/unexpected status)", n)
+	if n := warm.ServerErrors + sustained.ServerErrors + reject.ServerErrors; n != 0 {
+		t.Fatalf("%d attempts hit server-side errors (5xx/unexpected status/malformed body)", n)
 	}
 	for _, r := range []loadtest.StageResult{warm, sustained} {
 		if r.Rejected != 0 || r.OK != r.Started || r.OK == 0 {
@@ -348,27 +367,30 @@ func onsaleFull(t *testing.T) {
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
 	report := loadtest.NewReport("TKT-82", "full", gitSHA())
+	report.ClientMaxConnsPerHost = maxClientConnsPerHost
 	report.Notes = "local compose topology; DB_MAX_OPEN_CONNS=25; single-host client+server — see docs/verification/on-sale-load/README.md"
 
 	slot, _ := publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
 	attempt := checkoutAttempt(runID, slot, 1)
 
-	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 10, Duration: 30 * time.Second, Quantity: 1}, 512, attempt)
-	report.Stages = append(report.Stages, logStage(t, warm))
-	statStatementsReset(t, conn)
-
-	// A stage's claims are only meaningful if the generator held its schedule:
-	// arrivals starting late (lag) without drops would publish a rate that was
-	// never actually offered. Nominal lag p99 is ~2ms; 1s means the schedule
-	// was not sustained — inconclusive, never publishable.
-	generatorHeldSchedule := func(r loadtest.StageResult) {
-		if lag := loadtest.Percentile(r.Lag, 99); lag > time.Second {
-			t.Fatalf("stage %s: scheduler lag p99 %v — the generator did not sustain the offered rate; run inconclusive", r.Stage.Name, lag)
+	// A stage's claims are only meaningful if the generator itself was healthy:
+	// a sustained schedule (nominal lag p99 is ~2ms; 1s means the offered rate
+	// was never real), no client-side transport errors, and no drops while the
+	// SLO held. Any of those is inconclusive — a generator verdict, never
+	// publishable as server evidence (loadtest.CeilingInconclusive).
+	generatorHealthy := func(r loadtest.StageResult) {
+		if reason, inconclusive := loadtest.CeilingInconclusive(r, time.Second, 3*time.Second); inconclusive {
+			t.Fatalf("stage %s inconclusive: %s; rerun", r.Stage.Name, reason)
 		}
 	}
 
+	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 10, Duration: 30 * time.Second, Quantity: 1}, 512, attempt)
+	generatorHealthy(warm)
+	report.Stages = append(report.Stages, logStage(t, warm))
+	statStatementsReset(t, conn)
+
 	nfr := loadtest.RunStage(loadtest.Stage{Name: "nfr-3000pm", Rate: 50, Duration: 180 * time.Second, Quantity: 1}, 512, attempt)
-	generatorHeldSchedule(nfr)
+	generatorHealthy(nfr)
 	nfrReport := logStage(t, nfr)
 	report.Stages = append(report.Stages, nfrReport)
 	stats := historyInsertStats(t, conn)
@@ -402,10 +424,10 @@ func onsaleFull(t *testing.T) {
 	// Stability is delivery AND the lifecycle SLO: a stage that answers slowly
 	// forever (or rejects with capacity ample) is past the knee even before the
 	// client's in-flight cap starts dropping arrivals. The cap is sized by
-	// Little's law above rate × SLO (rate × 4s of headroom for the 3s SLO), so
-	// the generator cannot define the knee: at the cap, mean latency already
-	// exceeds the SLO. If drops still occur while the SLO holds, the run is
-	// INCONCLUSIVE — a generator limit, never publishable as a ceiling.
+	// Little's law above rate × SLO (rate × 4s of headroom for the 3s SLO),
+	// bounded by the shared transport's connection limit — above ~1024/s a
+	// saturated generator resolves as inconclusive (client errors or
+	// drops-with-SLO-met via generatorHealthy), never as a published ceiling.
 	sweepStable := func(r loadtest.StageResult) bool {
 		return r.Stable(0.99) && r.Rejected == 0 && r.OK == r.Started && r.OK > 0 &&
 			loadtest.Percentile(r.Lifecycle, 99) <= 3*time.Second
@@ -413,13 +435,10 @@ func onsaleFull(t *testing.T) {
 	var sweep []loadtest.StageResult
 	for _, rate := range []int{75, 150, 300, 600, 1200, 2400, 3000} {
 		s, _ := publishedSlot(t, fmt.Sprintf("Onsale Sweep %s %d", runID, rate), 100000)
-		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, max(512, rate*4), checkoutAttempt(runID, s, 1))
-		generatorHeldSchedule(r)
+		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, min(max(512, rate*4), maxClientConnsPerHost), checkoutAttempt(runID, s, 1))
+		generatorHealthy(r)
 		report.Stages = append(report.Stages, logStage(t, r))
 		report.Accounting = append(report.Accounting, assertAccounting(t, conn, s, r.OK, r.OK))
-		if r.Dropped > 0 && r.Errors == 0 && r.Rejected == 0 && loadtest.Percentile(r.Lifecycle, 99) <= 3*time.Second {
-			t.Fatalf("sweep-%d: %d arrivals dropped at the in-flight cap while the SLO held — generator-limited, ceiling inconclusive; raise the cap and rerun", rate, r.Dropped)
-		}
 		sweep = append(sweep, r)
 		if !sweepStable(r) {
 			break
@@ -438,11 +457,12 @@ func onsaleFull(t *testing.T) {
 	// excluded from the ceiling.
 	tailSlot, _ := publishedSlot(t, "Onsale Tail "+runID, 50000)
 	tail := loadtest.RunStage(loadtest.Stage{Name: "oversell-tail", Rate: 275, Duration: 4 * time.Second, Quantity: 50}, 512, checkoutAttempt(runID, tailSlot, 50))
+	generatorHealthy(tail)
 	report.Stages = append(report.Stages, logStage(t, tail))
 	ta := assertAccounting(t, conn, tailSlot, tail.OK*50, tail.OK)
 	report.Accounting = append(report.Accounting, ta)
-	if tail.Errors != 0 {
-		t.Errorf("oversell tail: %d errors", tail.Errors)
+	if tail.ServerErrors != 0 {
+		t.Errorf("oversell tail: %d server errors", tail.ServerErrors)
 	}
 	// A dropped arrival means the generator never brought the pool to its
 	// capacity boundary — that is an invalid proof, not a weaker one.

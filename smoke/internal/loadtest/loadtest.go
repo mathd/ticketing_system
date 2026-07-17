@@ -15,7 +15,15 @@ import (
 const (
 	KindOK       = "ok"       // full hold→finalize→confirm lifecycle succeeded
 	KindRejected = "rejected" // expected 409 (pool or tail sellout)
-	KindError    = "error"    // timeout, transport error, 5xx, unexpected status
+	// KindClientError is a transport-level failure (err != nil: timeout, dial,
+	// connection acquisition/loss). It may be client resource exhaustion or a
+	// server-caused reset — indistinguishable from here, so it is never
+	// publishable as a server verdict: it makes a run inconclusive (TKT-92).
+	KindClientError = "client-error"
+	// KindServerError is a delivered response the protocol forbids: unexpected
+	// HTTP status or a malformed body on a success status. Server-side by
+	// construction — evidence of instability.
+	KindServerError = "server-error"
 )
 
 type Stage struct {
@@ -42,7 +50,10 @@ type StageResult struct {
 	Dropped                            int // arrivals refused because the in-flight cap was saturated
 	OK                                 int
 	Rejected                           int
-	Errors                             int
+	ClientErrors                       int // transport-level (err != nil) — generator health, not a server verdict
+	ServerErrors                       int // delivered but protocol-forbidden responses
+	MaxInFlight                        int // configured concurrency bound
+	PeakInFlight                       int // highest observed semaphore occupancy
 	Elapsed                            time.Duration
 	ErrorNotes                         []string        // first few error diagnostics
 	Lag                                []time.Duration // scheduled-start lag of started attempts
@@ -55,7 +66,7 @@ type StageResult struct {
 // omission). maxInFlight bounds concurrency; an arrival that cannot acquire a
 // slot at its scheduled instant is recorded as dropped, not delayed.
 func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
-	res := StageResult{Stage: stage}
+	res := StageResult{Stage: stage, MaxInFlight: maxInFlight}
 	res.Offered = int(int64(stage.Rate) * int64(stage.Duration) / int64(time.Second))
 	interval := time.Second / time.Duration(stage.Rate)
 
@@ -76,6 +87,11 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 			continue
 		}
 		res.Started++
+		// Occupancy only decreases between acquisitions, so the max over
+		// acquisition instants is the true peak; only this goroutine writes it.
+		if n := len(slots); n > res.PeakInFlight {
+			res.PeakInFlight = n
+		}
 		lag := time.Since(scheduled)
 		wg.Add(1)
 		go func(seq int) {
@@ -94,8 +110,13 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 				res.Lifecycle = append(res.Lifecycle, out.Lifecycle)
 			case KindRejected:
 				res.Rejected++
-			default:
-				res.Errors++
+			case KindClientError:
+				res.ClientErrors++
+				if len(res.ErrorNotes) < 3 {
+					res.ErrorNotes = append(res.ErrorNotes, out.Note)
+				}
+			default: // KindServerError and anything unrecognized fail closed as server-side
+				res.ServerErrors++
 				if len(res.ErrorNotes) < 3 {
 					res.ErrorNotes = append(res.ErrorNotes, out.Note)
 				}
@@ -125,13 +146,35 @@ func Percentile(samples []time.Duration, p float64) time.Duration {
 }
 
 // Stable: every offered arrival was started (zero drops), every started attempt
-// came back as a delivered outcome with no errors, and delivery met minRatio.
-// Expected rejections are delivered outcomes — a sold-out pool answering 409 is
-// the system working.
+// came back as a delivered outcome with no errors of either class, and delivery
+// met minRatio. Expected rejections are delivered outcomes — a sold-out pool
+// answering 409 is the system working. Requiring ClientErrors == 0 here is
+// fail-closed belt-and-suspenders: CeilingInconclusive normally aborts the run
+// first, but a caller that skips that guard must still never see a client-error
+// stage reported stable.
 func (r StageResult) Stable(minRatio float64) bool {
 	delivered := r.OK + r.Rejected
-	return r.Dropped == 0 && r.Errors == 0 && r.Offered > 0 &&
+	return r.Dropped == 0 && r.ClientErrors == 0 && r.ServerErrors == 0 && r.Offered > 0 &&
 		float64(delivered) >= minRatio*float64(r.Offered)
+}
+
+// CeilingInconclusive reports whether a stage's evidence is unusable for any
+// server verdict — a generator-health problem, not instability. Three rules:
+// the schedule was not sustained (lag p99 over lagLimit), any client-side
+// transport failure, or drops at the in-flight cap while the lifecycle SLO
+// still held (a generator limit, not a knee). Returns a diagnostic reason for
+// the caller's fatal message.
+func CeilingInconclusive(r StageResult, lagLimit, lifecycleSLO time.Duration) (reason string, inconclusive bool) {
+	if lag := Percentile(r.Lag, 99); lag > lagLimit {
+		return fmt.Sprintf("scheduler lag p99 %v exceeds %v — the generator did not sustain the offered rate", lag, lagLimit), true
+	}
+	if r.ClientErrors > 0 {
+		return fmt.Sprintf("%d client-side transport errors — client exhaustion or connection loss, not a server verdict", r.ClientErrors), true
+	}
+	if r.Dropped > 0 && r.ServerErrors == 0 && r.Rejected == 0 && Percentile(r.Lifecycle, 99) <= lifecycleSLO {
+		return fmt.Sprintf("%d arrivals dropped at the in-flight cap while the SLO held — generator-limited", r.Dropped), true
+	}
+	return "", false
 }
 
 // CeilingBracket returns the highest stable offered rate and the first
@@ -206,7 +249,11 @@ type StageReport struct {
 	Dropped       int     `json:"dropped"`
 	OK            int     `json:"ok"`
 	Rejected      int     `json:"rejected"`
-	Errors        int     `json:"errors"`
+	Errors        int     `json:"errors"` // derived: client_errors + server_errors (schema compatibility)
+	ClientErrors  int     `json:"client_errors"`
+	ServerErrors  int     `json:"server_errors"`
+	MaxInFlight   int     `json:"max_in_flight"`
+	PeakInFlight  int     `json:"peak_in_flight"`
 	HoldP50Ms     float64 `json:"hold_p50_ms"`
 	HoldP95Ms     float64 `json:"hold_p95_ms"`
 	HoldP99Ms     float64 `json:"hold_p99_ms"`
@@ -223,7 +270,9 @@ func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond)
 func (r StageResult) Report() StageReport {
 	sr := StageReport{
 		Name: r.Stage.Name, Offered: r.Offered, Started: r.Started, Dropped: r.Dropped,
-		OK: r.OK, Rejected: r.Rejected, Errors: r.Errors,
+		OK: r.OK, Rejected: r.Rejected, Errors: r.ClientErrors + r.ServerErrors,
+		ClientErrors: r.ClientErrors, ServerErrors: r.ServerErrors,
+		MaxInFlight: r.MaxInFlight, PeakInFlight: r.PeakInFlight,
 		OfferedRate:   float64(r.Stage.Rate),
 		HoldP50Ms:     ms(Percentile(r.Hold, 50)),
 		HoldP95Ms:     ms(Percentile(r.Hold, 95)),
@@ -251,6 +300,7 @@ type Report struct {
 		CPUs int    `json:"cpus"`
 	} `json:"host"`
 	Notes                 string        `json:"notes,omitempty"`
+	ClientMaxConnsPerHost int           `json:"client_max_conns_per_host,omitempty"`
 	Stages                []StageReport `json:"stages"`
 	Accounting            []Accounting  `json:"accounting"`
 	History               *HistoryStats `json:"claim_history_insert,omitempty"`

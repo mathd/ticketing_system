@@ -52,28 +52,43 @@ func TestOpenLoopSchedulerDerivesArrivalsFromTheClock(t *testing.T) {
 	if res.OK != res.Started {
 		t.Fatalf("ok %d, want %d", res.OK, res.Started)
 	}
+	if res.MaxInFlight != 1 || res.PeakInFlight != 1 {
+		t.Fatalf("in-flight bounds max=%d peak=%d, want 1/1", res.MaxInFlight, res.PeakInFlight)
+	}
 }
 
 func TestSchedulerClassifiesOutcomes(t *testing.T) {
 	stage := Stage{Name: "s", Rate: 50, Duration: 100 * time.Millisecond, Quantity: 1}
 	res := RunStage(stage, 16, func(_ Stage, seq int) Outcome {
-		switch seq % 3 {
+		switch seq % 4 {
 		case 0:
 			return Outcome{Kind: KindOK, Hold: time.Millisecond, Finalize: time.Millisecond, Confirm: time.Millisecond, Lifecycle: 3 * time.Millisecond}
 		case 1:
 			return Outcome{Kind: KindRejected}
+		case 2:
+			return Outcome{Kind: KindClientError}
 		default:
-			return Outcome{Kind: KindError}
+			return Outcome{Kind: KindServerError}
 		}
 	})
-	if res.OK == 0 || res.Rejected == 0 || res.Errors == 0 {
+	if res.OK == 0 || res.Rejected == 0 || res.ClientErrors == 0 || res.ServerErrors == 0 {
 		t.Fatalf("classification missing: %+v", res)
 	}
-	if res.OK+res.Rejected+res.Errors != res.Started {
-		t.Fatalf("outcomes %d+%d+%d != started %d", res.OK, res.Rejected, res.Errors, res.Started)
+	if res.OK+res.Rejected+res.ClientErrors+res.ServerErrors != res.Started {
+		t.Fatalf("outcomes %d+%d+%d+%d != started %d", res.OK, res.Rejected, res.ClientErrors, res.ServerErrors, res.Started)
 	}
 	if len(res.Lifecycle) != res.OK {
 		t.Fatalf("lifecycle samples %d, want one per OK %d", len(res.Lifecycle), res.OK)
+	}
+}
+
+// An unrecognized outcome kind must fail closed into the server-side count —
+// never silently vanish from accounting.
+func TestSchedulerFailsClosedOnUnknownKind(t *testing.T) {
+	stage := Stage{Name: "s", Rate: 20, Duration: 100 * time.Millisecond, Quantity: 1}
+	res := RunStage(stage, 16, func(Stage, int) Outcome { return Outcome{Kind: "bogus"} })
+	if res.ServerErrors != res.Started || res.ClientErrors != 0 {
+		t.Fatalf("unknown kind must count as server error: %+v", res)
 	}
 }
 
@@ -83,9 +98,10 @@ func TestStableRequiresCleanDelivery(t *testing.T) {
 		t.Fatal("clean full delivery must be stable")
 	}
 	for name, r := range map[string]StageResult{
-		"drops":  {Offered: 10, Started: 9, Dropped: 1, OK: 9},
-		"errors": {Offered: 10, Started: 10, OK: 9, Errors: 1},
-		"short":  {Offered: 100, Started: 100, OK: 90, Rejected: 0},
+		"drops":         {Offered: 10, Started: 9, Dropped: 1, OK: 9},
+		"client errors": {Offered: 10, Started: 10, OK: 9, ClientErrors: 1},
+		"server errors": {Offered: 10, Started: 10, OK: 9, ServerErrors: 1},
+		"short":         {Offered: 100, Started: 100, OK: 90, Rejected: 0},
 	} {
 		if r.Stable(0.99) {
 			t.Errorf("%s must be unstable: %+v", name, r)
@@ -98,11 +114,58 @@ func TestStableRequiresCleanDelivery(t *testing.T) {
 	}
 }
 
+// COS 3(a): a stage that started every arrival (zero drops) but scheduled them
+// late must be inconclusive — lag without drops is a generator that silently
+// stretched the offered rate.
+func TestCeilingInconclusiveOnLateScheduleWithoutDrops(t *testing.T) {
+	r := StageResult{Stage: Stage{Name: "s", Rate: 10, Duration: time.Second}, Offered: 10, Started: 10, OK: 10}
+	for i := 0; i < 10; i++ {
+		r.Lag = append(r.Lag, 2*time.Second)
+		r.Lifecycle = append(r.Lifecycle, 10*time.Millisecond)
+	}
+	reason, inconclusive := CeilingInconclusive(r, time.Second, 3*time.Second)
+	if !inconclusive || reason == "" {
+		t.Fatalf("late schedule without drops must be inconclusive, got (%q, %v)", reason, inconclusive)
+	}
+}
+
+// COS 3(b): drops accompanied by client-side errors are the generator failing,
+// not the server — inconclusive even when the lifecycle SLO is already blown
+// (the over-SLO sample pins that the old drops-with-SLO-met branch is not what
+// makes this pass).
+func TestCeilingInconclusiveOnDropsWithClientErrors(t *testing.T) {
+	r := StageResult{Stage: Stage{Name: "s", Rate: 10, Duration: time.Second},
+		Offered: 10, Started: 8, Dropped: 2, OK: 7, ClientErrors: 1,
+		Lag:       []time.Duration{time.Millisecond},
+		Lifecycle: []time.Duration{5 * time.Second}}
+	reason, inconclusive := CeilingInconclusive(r, time.Second, 3*time.Second)
+	if !inconclusive || reason == "" {
+		t.Fatalf("drops with client errors must be inconclusive, got (%q, %v)", reason, inconclusive)
+	}
+
+	// The pre-existing rule still holds: drops with the SLO met and no errors
+	// of either class are generator-limited.
+	gen := StageResult{Stage: Stage{Name: "s", Rate: 10, Duration: time.Second},
+		Offered: 10, Started: 9, Dropped: 1, OK: 9,
+		Lag: []time.Duration{time.Millisecond}, Lifecycle: []time.Duration{10 * time.Millisecond}}
+	if reason, inc := CeilingInconclusive(gen, time.Second, 3*time.Second); !inc || reason == "" {
+		t.Fatalf("drops with SLO met must stay inconclusive, got (%q, %v)", reason, inc)
+	}
+
+	// A server-side failure is a verdict, not a generator problem: conclusive.
+	srv := StageResult{Stage: Stage{Name: "s", Rate: 10, Duration: time.Second},
+		Offered: 10, Started: 10, OK: 9, ServerErrors: 1,
+		Lag: []time.Duration{time.Millisecond}, Lifecycle: []time.Duration{10 * time.Millisecond}}
+	if reason, inc := CeilingInconclusive(srv, time.Second, 3*time.Second); inc {
+		t.Fatalf("server errors must stay conclusive (unstable), got (%q, %v)", reason, inc)
+	}
+}
+
 func TestCeilingBracket(t *testing.T) {
 	mk := func(rate int, stable bool) StageResult {
 		r := StageResult{Stage: Stage{Rate: rate, Duration: time.Second}, Offered: rate, Started: rate, OK: rate}
 		if !stable {
-			r.Errors = 1
+			r.ServerErrors = 1
 			r.OK--
 		}
 		return r
@@ -145,9 +208,25 @@ func TestAccountingViolations(t *testing.T) {
 	}
 }
 
+// The report must expose the split error counts, the aggregate for report
+// compatibility, and the client concurrency bounds.
+func TestReportCarriesSplitErrorsAndBounds(t *testing.T) {
+	r := StageResult{Stage: Stage{Name: "s", Rate: 10, Duration: time.Second},
+		Offered: 10, Started: 10, OK: 7, ClientErrors: 1, ServerErrors: 2,
+		MaxInFlight: 16, PeakInFlight: 5}
+	sr := r.Report()
+	if sr.ClientErrors != 1 || sr.ServerErrors != 2 || sr.Errors != 3 {
+		t.Fatalf("split errors client=%d server=%d aggregate=%d, want 1/2/3", sr.ClientErrors, sr.ServerErrors, sr.Errors)
+	}
+	if sr.MaxInFlight != 16 || sr.PeakInFlight != 5 {
+		t.Fatalf("in-flight bounds max=%d peak=%d, want 16/5", sr.MaxInFlight, sr.PeakInFlight)
+	}
+}
+
 func TestReportJSONCarriesRequiredMetadata(t *testing.T) {
 	r := NewReport("TKT-82", "full", "abc123")
-	r.Stages = []StageReport{{Name: "nfr", OfferedRate: 50, AchievedRate: 49.9}}
+	r.ClientMaxConnsPerHost = 4096
+	r.Stages = []StageReport{{Name: "nfr", OfferedRate: 50, AchievedRate: 49.9, ClientErrors: 1, ServerErrors: 2, Errors: 3, MaxInFlight: 512, PeakInFlight: 40}}
 	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -161,5 +240,12 @@ func TestReportJSONCarriesRequiredMetadata(t *testing.T) {
 	}
 	if back.Host.CPUs == 0 || back.Host.OS == "" || back.Host.Arch == "" {
 		t.Fatalf("host metadata missing: %+v", back.Host)
+	}
+	if back.ClientMaxConnsPerHost != 4096 {
+		t.Fatalf("client conn bound lost: %+v", back)
+	}
+	s := back.Stages[0]
+	if s.ClientErrors != 1 || s.ServerErrors != 2 || s.Errors != 3 || s.MaxInFlight != 512 || s.PeakInFlight != 40 {
+		t.Fatalf("stage bounds/split lost in JSON round-trip: %+v", s)
 	}
 }
