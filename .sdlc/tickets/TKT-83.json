@@ -2,9 +2,9 @@
   "key": "TKT-83",
   "type": "Task",
   "summary": "Remove the checked-in default INTERNAL_SERVICE_TOKEN — fail startup without an explicit credential",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "claude-fable-5",
   "pr": null,
