@@ -10,6 +10,18 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**Upsert guards are snapshot-stale under lock contention**](./learnings/2026-07-16-upsert-guards-are-snapshot-stale.md) —
+  `ON CONFLICT DO UPDATE ... WHERE NOT EXISTS(...)` waits on the row lock but evaluates its
+  subqueries against the pre-wait snapshot: state committed while it queued is invisible and the
+  guard silently passes. A guard that must see concurrent commits cannot live in the statement
+  that waits for them — lock first (own statement), decide in the next. Shipped *as a fix* past a
+  sequential regression test; caught by ai-review pass 2. (TKT-76, PR #57)
+- [**A lock-queue handshake must pin the exact statement under test**](./learnings/2026-07-16-lock-handshakes-pin-the-exact-statement.md) —
+  a `pg_stat_activity` predicate matching any table waiter observed the *wrong* statement (the
+  ON CONFLICT insert absorbed the wait) and the concurrency regression passed with the guarded
+  statement deleted. Pin the statement's exact text, stage so it is the one that must wait, and
+  mutation-check by deleting it. Corollary of TKT-78's "prove the waiter queued first": prove
+  *which* waiter. (TKT-76, PR #57)
 - [**Per-entity version counters do not survive convergence onto a shared resource**](./learnings/2026-07-16-version-scope-vs-convergence-scope.md) —
   a version orders events only within the scope that issues it. Grouped days each carry their own
   monotonic `closure_version` but share one pool; a pool-level comparison judged day B's first
