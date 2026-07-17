@@ -2,7 +2,7 @@
   "key": "TKT-83",
   "type": "Task",
   "summary": "Remove the checked-in default INTERNAL_SERVICE_TOKEN — fail startup without an explicit credential",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
