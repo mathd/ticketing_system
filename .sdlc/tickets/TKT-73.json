@@ -2,10 +2,8 @@
   "key": "TKT-73",
   "type": "Story",
   "summary": "Lifecycle trail caps at one redemption per ticket — multi-entry passes and offline double-admits are unrepresentable",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/55",
@@ -58,6 +56,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Validation note — COS check (docs deliverable, verified from the merged files):**\n1. ✅ Event model decided and recorded: `docs/adr/ADR-025-admission-events-and-offline-reconciliation.md` (Accepted), options A–D weighed, B+C chosen.\n2. ✅ Double-admit representability stated explicitly: one `redeemed` + per-occurrence `duplicate_admit` (single-entry); per-occurrence quarantine-side records cover broken-chain reconciliation; the two bounds (reconciliation start, §D6 carve-out) are named rather than hidden.\n3. ✅ ADR-003 §D2's duplicate-detection claim amended to match reality (trace ∪ quarantine, occurrence-qualified admit-once).\n4. ✅ TKT-67 interaction sequenced deliberately: stale \"decide before TKT-67\" premise corrected in the ADR — new event types chain live, no backfill, canonical v1 untouched.\nTo check: read ADR-025 §Decision + §Claims and named adversaries (the two sections that bind follow-ups). Merged in PR #55; no runtime surface to demo (docs only)."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n| stage | duration |\n|---|---|\n| Backlog | ~2m (shaped at creation, prior session) |\n| Ready (Gate-1 queue) | ~22h51m |\n| Planning | ~54m total |\n| — agent:planning (draft, gpt-5.6-sol) | ~11m |\n| — agent:plan-review (critique, main-agent) | ~2m |\n| — needs:human (Gate 2) | ~41m |\n| Building | ~35m total |\n| — agent:coding (initial) | ~5m |\n| — agent:ai-review (4 codex passes + fixes) | ~17m |\n| — needs:human (Gate 3, incl. change-request cycle) | ~13m |\n| PO Review | ~2m |\n\n**human-wait total:** ~23h45m (dominated by the overnight Ready queue; in-flight gates were fast: 41m + 13m + 2m)\n**diff:** +282/−2 (3 files), PR #55, squash-merged\n\n**learnings:** (house: repo learnings, docs/LEARNINGS.md — committed direct to main)\n1. Resolve governing ADRs by grepping the registry for the ticket's *domain nouns*, not by topic association — shaping missed ADR-005's accepted entry/exit amendment (the exact vocabulary this ticket was deciding); the fresh-context drafter found it and it reshaped the whole decision space.\n2. Anti-replay rules must be re-checked against the retry they exist to serve: three consecutive review rounds each fixed one side of the same protocol rule (retry-forged conflict → replay oracle → lost-retry liveness). Protocol-shaped decisions need safety AND liveness stated together.\n3. Ticket premises rot between shaping and claim: TKT-67 shipped in the interval and inverted the ticket's sequencing argument. Re-verify sequencing claims at claim time.\n\n**retro:**\n1. *What would have made this faster/better:* the context-mémo (refreshed 2026-07-15) still carried the stale \"must precede TKT-67\" premise and lacked ADR-005 in governingAdrs. Concrete edit: `references/shaping.md` §context-mémo bake — add two checklist lines: \"grep `registry.bindingPath` for the ticket's domain nouns\" and \"re-verify the ticket's sequencing claims against work merged since drafting\". Offered for application now.\n2. *What should the humans change:* nothing structural — Gate-3 human review found 3 real criticals after 4 adversarial codex passes, which is the pipeline working as designed on a decision ADR, not a gap. Keep human review deep on decision tickets.\n"
     }
   ],
   "links": [],
