@@ -30,6 +30,7 @@ type catalogStore interface {
 	ApplyClosure(ctx context.Context, eventID, pool, performance uuid.UUID, closed bool, version int32) error
 	QuarantineCatalogEvent(ctx context.Context, subject string, eventID uuid.UUID, schema int, envelope []byte) error
 	HasPendingCatalogQuarantine(ctx context.Context) (bool, error)
+	ListPublishedPoolOfferings(ctx context.Context) ([]store.PoolOffering, error)
 }
 
 type Consumer struct {
@@ -38,10 +39,13 @@ type Consumer struct {
 	resolver PerformanceResolver
 	ready    atomic.Bool
 	log      *slog.Logger
+	// retryBackoff paces startupConverge's reconciliation retries; the zero
+	// value (used by tests) retries immediately.
+	retryBackoff time.Duration
 }
 
 func New(js jetstream.JetStream, st catalogStore, resolver PerformanceResolver, log *slog.Logger) *Consumer {
-	return &Consumer{js: js, st: st, resolver: resolver, log: log}
+	return &Consumer{js: js, st: st, resolver: resolver, log: log, retryBackoff: 5 * time.Second}
 }
 func (c *Consumer) Ready() bool { return c.ready.Load() }
 
@@ -423,7 +427,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := c.refreshStartupReadiness(ctx); err != nil {
+	// TKT-90: reconcile pool offering state against catalog before readiness —
+	// dead-beyond-retention pools converge here; the quarantine latch still wins.
+	if err := c.startupConverge(ctx); err != nil {
 		return err
 	}
 	defer c.ready.Store(false)

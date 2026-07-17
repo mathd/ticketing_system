@@ -19,6 +19,32 @@ var (
 	ErrSlotClosed   = errors.New("slot closed")
 )
 
+// PoolOffering is one reconciliation candidate (TKT-90): a live pool and its
+// current closure axis, so the startup pass can detect drift without re-reading.
+type PoolOffering struct {
+	SlotID        uuid.UUID
+	ClosureStatus string
+}
+
+// ListPublishedPoolOfferings returns the reconciliation candidates: every
+// non-archived pool. Archival is terminal, so archived pools can never drift.
+func (p *Postgres) ListPublishedPoolOfferings(ctx context.Context) ([]PoolOffering, error) {
+	rows, err := p.db.QueryContext(ctx, `SELECT slot_id, closure_status FROM inventory_pools WHERE lifecycle_status='published'`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []PoolOffering
+	for rows.Next() {
+		var po PoolOffering
+		if err := rows.Scan(&po.SlotID, &po.ClosureStatus); err != nil {
+			return nil, err
+		}
+		out = append(out, po)
+	}
+	return out, rows.Err()
+}
+
 // offeringStatus collapses the two axes for read models: archived wins over closed.
 func offeringStatus(lifecycle, closure string) string {
 	if lifecycle == "archived" {

@@ -288,3 +288,34 @@ func TestGroupedPoolOrdersClosuresPerSlot(t *testing.T) {
 		t.Fatalf("offering status = %q err=%v — a stale per-slot closed re-closed the pool", a.OfferingStatus, err)
 	}
 }
+
+// TestListPublishedPoolOfferingsScopesToLivePools pins the reconciliation candidate
+// query (TKT-90): archived pools are terminal and never candidates; closure status
+// rides along so the pass can detect drift without a second read.
+func TestListPublishedPoolOfferingsScopesToLivePools(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	_, open := provisioned(t, ctx, st, 10)
+	_, closed := provisioned(t, ctx, st, 10)
+	_, archived := provisioned(t, ctx, st, 10)
+
+	if err := st.ApplyClosure(ctx, uuid.New(), closed, closed, true, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyArchive(ctx, uuid.New(), archived); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ListPublishedPoolOfferings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[uuid.UUID]string{}
+	for _, p := range got {
+		byID[p.SlotID] = p.ClosureStatus
+	}
+	if _, ok := byID[archived]; ok {
+		t.Fatal("archived pool listed as a reconciliation candidate")
+	}
+	if byID[open] != "open" || byID[closed] != "closed" {
+		t.Fatalf("candidates = %v, want open=%s open and closed=%s closed", byID, open, closed)
+	}
+}

@@ -42,14 +42,22 @@ type quarantineCall struct {
 // quarantineErr is separate: quarantining a future variant must be testable
 // independently of the known-variant apply paths.
 type fakeCatalogStore struct {
-	archived      []uuid.UUID
-	closures      []closureCall
-	provisioned   []uuid.UUID
-	quarantined   []quarantineCall
-	err           error
-	quarantineErr error
-	pending       bool
-	pendingErr    error
+	archived        []uuid.UUID
+	archiveEventIDs []uuid.UUID
+	closures        []closureCall
+	closureEventIDs []uuid.UUID
+	provisioned     []uuid.UUID
+	quarantined     []quarantineCall
+	pools           []store.PoolOffering
+	err             error
+	listErr         error
+	quarantineErr   error
+	pending         bool
+	pendingErr      error
+}
+
+func (s *fakeCatalogStore) ListPublishedPoolOfferings(context.Context) ([]store.PoolOffering, error) {
+	return s.pools, s.listErr
 }
 
 func (s *fakeCatalogStore) Provision(_ context.Context, eventID, _, _ uuid.UUID, _ int32) error {
@@ -71,18 +79,20 @@ func (s *fakeCatalogStore) QuarantineCatalogEvent(_ context.Context, subject str
 func (s *fakeCatalogStore) HasPendingCatalogQuarantine(context.Context) (bool, error) {
 	return s.pending, s.pendingErr
 }
-func (s *fakeCatalogStore) ApplyArchive(_ context.Context, _ uuid.UUID, pool uuid.UUID) error {
+func (s *fakeCatalogStore) ApplyArchive(_ context.Context, eventID, pool uuid.UUID) error {
 	if s.err != nil {
 		return s.err
 	}
 	s.archived = append(s.archived, pool)
+	s.archiveEventIDs = append(s.archiveEventIDs, eventID)
 	return nil
 }
-func (s *fakeCatalogStore) ApplyClosure(_ context.Context, _ uuid.UUID, pool, perf uuid.UUID, closed bool, version int32) error {
+func (s *fakeCatalogStore) ApplyClosure(_ context.Context, eventID uuid.UUID, pool, perf uuid.UUID, closed bool, version int32) error {
 	if s.err != nil {
 		return s.err
 	}
 	s.closures = append(s.closures, closureCall{pool, perf, closed, version})
+	s.closureEventIDs = append(s.closureEventIDs, eventID)
 	return nil
 }
 
