@@ -45,6 +45,13 @@ if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
   COMPOSE_FILES+=(-f "$ROOT/compose.smoke.yaml")
 fi
 
+# One credential per smoke invocation (TKT-83): generated here so the isolated
+# stack never depends on a developer's .env or shell (the export takes
+# precedence over compose's .env lookup) and CI needs no secret.
+SMOKE_INTERNAL_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_INTERNAL_TOKEN
+export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
+
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM

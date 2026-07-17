@@ -82,6 +82,26 @@ func (c Database) Apply(db *sql.DB) {
 	db.SetConnMaxIdleTime(c.ConnMaxIdleTime)
 }
 
+// retiredInternalToken is the checked-in default this repo shipped before
+// TKT-83. It is a public fingerprint, not an active secret: server mode
+// refuses it forever so stale automation cannot keep authenticating with it.
+const retiredInternalToken = "local-service-token"
+
+// InternalTokenFromEnv validates the internal service credential at startup.
+// Server entrypoints call it before touching any dependency so a
+// misconfigured deployment fails fast instead of timing out. Errors never
+// echo the supplied value.
+func InternalTokenFromEnv() (string, error) {
+	token := os.Getenv("INTERNAL_SERVICE_TOKEN")
+	switch token {
+	case "":
+		return "", fmt.Errorf("INTERNAL_SERVICE_TOKEN required: no default is shipped, run `make up` once to generate a local credential")
+	case retiredInternalToken:
+		return "", fmt.Errorf("INTERNAL_SERVICE_TOKEN is the retired checked-in default: generate a real credential (`make up`)")
+	}
+	return token, nil
+}
+
 func duration(name string, fallback time.Duration) (time.Duration, error) {
 	raw, ok := os.LookupEnv(name)
 	if !ok {

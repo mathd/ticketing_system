@@ -87,6 +87,10 @@ func port() string {
 }
 
 func run() error {
+	credential, err := runtimecfg.InternalTokenFromEnv()
+	if err != nil {
+		return err
+	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
@@ -115,10 +119,6 @@ func run() error {
 	defer func() { _ = db.Close() }()
 	dbConfig.Apply(db)
 	// Migrations ran out-of-band before this process started (ADR-022).
-	credential := os.Getenv("INTERNAL_SERVICE_TOKEN")
-	if credential == "" {
-		return errors.New("INTERNAL_SERVICE_TOKEN required")
-	}
 	catalogURL := strings.TrimRight(os.Getenv("CATALOG_URL"), "/")
 	if catalogURL == "" {
 		return errors.New("CATALOG_URL required")

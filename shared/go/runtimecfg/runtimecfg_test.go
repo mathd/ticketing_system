@@ -66,3 +66,35 @@ func TestInvalidConfiguration(t *testing.T) {
 		}
 	})
 }
+
+func TestInternalTokenRequiresAnExplicitCredential(t *testing.T) {
+	// t.Setenv registers a cleanup; set-then-unset leaves the var absent.
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "")
+	if _, err := InternalTokenFromEnv(); err == nil {
+		t.Fatal("empty INTERNAL_SERVICE_TOKEN must fail startup")
+	} else if got := err.Error(); got != "INTERNAL_SERVICE_TOKEN required: no default is shipped, run `make up` once to generate a local credential" {
+		t.Fatalf("error text drifted (and must never echo a supplied value): %q", got)
+	}
+}
+
+func TestInternalTokenRejectsTheRetiredDefaultForever(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "local-service-token")
+	_, err := InternalTokenFromEnv()
+	if err == nil {
+		t.Fatal("the retired checked-in default must be refused, dev included (TKT-83)")
+	}
+	if got := err.Error(); got != "INTERNAL_SERVICE_TOKEN is the retired checked-in default: generate a real credential (`make up`)" {
+		t.Fatalf("error text drifted: %q", got)
+	}
+}
+
+func TestInternalTokenReturnsAValidValueUnchanged(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
+	token, err := InternalTokenFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5" {
+		t.Fatalf("token altered: %q", token)
+	}
+}

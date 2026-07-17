@@ -12,7 +12,7 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: check lint test build smoke smoke-hermetic onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate up down clean
 
 check: deps check-generate lint test build smoke
 
@@ -112,7 +112,20 @@ onsale-load-full: build-gate-linux build-ts
 	./scripts/smoke.sh
 
 ## ---- dev conveniences ----
-up:
+# One-time local credential bootstrap (TKT-83): no default ships in the repo.
+# Preserves unrelated .env entries, replaces only a missing/retired token,
+# never prints the value. Compose reads .env natively, so bare
+# `docker compose up` keeps working after the first `make up`.
+env-bootstrap:
+	@token=$$(grep -E '^INTERNAL_SERVICE_TOKEN=' .env 2>/dev/null | cut -d= -f2-); \
+	if [ -z "$$token" ] || [ "$$token" = "local-service-token" ]; then \
+		new=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n'); \
+		{ grep -vE '^INTERNAL_SERVICE_TOKEN=' .env 2>/dev/null || true; printf 'INTERNAL_SERVICE_TOKEN=%s\n' "$$new"; } > .env.tmp; \
+		mv .env.tmp .env; chmod 600 .env; \
+		echo "generated INTERNAL_SERVICE_TOKEN in .env"; \
+	fi
+
+up: env-bootstrap
 	docker compose up -d --build --wait
 
 down:

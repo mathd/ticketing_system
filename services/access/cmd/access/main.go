@@ -112,6 +112,10 @@ func port() string {
 }
 
 func run() error {
+	token, err := runtimecfg.InternalTokenFromEnv()
+	if err != nil {
+		return err
+	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
@@ -151,9 +155,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
-	commerceURL, token := os.Getenv("COMMERCE_URL"), os.Getenv("INTERNAL_SERVICE_TOKEN")
-	if commerceURL == "" || token == "" {
-		return errors.New("COMMERCE_URL and INTERNAL_SERVICE_TOKEN required")
+	commerceURL := os.Getenv("COMMERCE_URL")
+	if commerceURL == "" {
+		return errors.New("COMMERCE_URL required")
 	}
 	signer, err := ticket.New(os.Getenv("ACCESS_QR_PRIVATE_KEY"), os.Getenv("ACCESS_QR_KID"))
 	if err != nil {
