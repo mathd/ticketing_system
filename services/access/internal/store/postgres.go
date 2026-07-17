@@ -234,6 +234,12 @@ func (p *Postgres) TicketForQR(ctx context.Context, ref, ticket uuid.UUID) (stri
 // tampered answer, and there is deliberately no independent read model to
 // contradict it. A chain that does not verify still admits, once
 // (ADR-021 §Decision 6) — see degradedScan for why that is the safer error.
+//
+// Admission history is the union of the trace and the quarantine record
+// (ADR-025 §Decision 2): a degraded admission lives only on the quarantine
+// side, so the verified path must consult it too — checked before the
+// redeemed-event lookup, because already_redeemed would hide the degraded
+// admission and skip §D6's escalation.
 func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -258,6 +264,32 @@ func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, er
 		// degradedScan commits the transaction itself: the quarantine record and
 		// the owed alarm must land whatever this scan decides.
 		return p.degradedScan(ctx, tx, in.TicketID, id, chainErr)
+	}
+
+	var quarantineReason string
+	var quarantinedAt time.Time
+	err = tx.QueryRowContext(ctx, `SELECT reason,admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1`, in.TicketID).
+		Scan(&quarantineReason, &quarantinedAt)
+	if err == nil {
+		// Already took its one degraded admission (ADR-021 §D6): deny and
+		// escalate, exactly as the degraded path does. Under today's identity
+		// model a transport retry is indistinguishable from a second scan;
+		// occurrence ids (ADR-025 §D3) will let a retry return its original
+		// result without a second alarm.
+		mode, modeErr := organizerMode(ctx, tx, id.OrganizerID)
+		if modeErr != nil {
+			return RedeemResult{}, modeErr
+		}
+		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, quarantineReason, DecisionIntegrityQuarantined, mode); alarmErr != nil {
+			return RedeemResult{}, alarmErr
+		}
+		if err = tx.Commit(); err != nil {
+			return RedeemResult{}, err
+		}
+		return RedeemResult{Decision: DecisionIntegrityQuarantined, OccurredAt: quarantinedAt}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return RedeemResult{}, err
 	}
 
 	var redeemedAt time.Time
