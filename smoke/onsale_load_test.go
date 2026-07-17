@@ -357,7 +357,18 @@ func onsaleFull(t *testing.T) {
 	report.Stages = append(report.Stages, logStage(t, warm))
 	statStatementsReset(t, conn)
 
+	// A stage's claims are only meaningful if the generator held its schedule:
+	// arrivals starting late (lag) without drops would publish a rate that was
+	// never actually offered. Nominal lag p99 is ~2ms; 1s means the schedule
+	// was not sustained — inconclusive, never publishable.
+	generatorHeldSchedule := func(r loadtest.StageResult) {
+		if lag := loadtest.Percentile(r.Lag, 99); lag > time.Second {
+			t.Fatalf("stage %s: scheduler lag p99 %v — the generator did not sustain the offered rate; run inconclusive", r.Stage.Name, lag)
+		}
+	}
+
 	nfr := loadtest.RunStage(loadtest.Stage{Name: "nfr-3000pm", Rate: 50, Duration: 180 * time.Second, Quantity: 1}, 512, attempt)
+	generatorHeldSchedule(nfr)
 	nfrReport := logStage(t, nfr)
 	report.Stages = append(report.Stages, nfrReport)
 	stats := historyInsertStats(t, conn)
@@ -403,6 +414,7 @@ func onsaleFull(t *testing.T) {
 	for _, rate := range []int{75, 150, 300, 600, 1200, 2400, 3000} {
 		s, _ := publishedSlot(t, fmt.Sprintf("Onsale Sweep %s %d", runID, rate), 100000)
 		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, max(512, rate*4), checkoutAttempt(runID, s, 1))
+		generatorHeldSchedule(r)
 		report.Stages = append(report.Stages, logStage(t, r))
 		report.Accounting = append(report.Accounting, assertAccounting(t, conn, s, r.OK, r.OK))
 		if r.Dropped > 0 && r.Errors == 0 && r.Rejected == 0 && loadtest.Percentile(r.Lifecycle, 99) <= 3*time.Second {
