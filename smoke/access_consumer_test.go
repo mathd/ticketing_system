@@ -69,10 +69,14 @@ func TestAccessPoisonEventPolicy(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stream.DeleteConsumer(context.Background(), consumerName) })
 
+	// Genuine poison at a schema access knows: quantity 0 fails the schema-1
+	// contract. An unknown schema is not poison — since TKT-74 it parks and
+	// publishes no failure record (ADR-017 §5b′), so it cannot be the vehicle
+	// to the reject path here.
 	invalidID := uuid.New()
 	invalidBody, _ := json.Marshal(map[string]any{
-		"id": invalidID, "type": orderCompletedSubject, "schema": 99, "attacker_marker": "must-not-be-copied",
-		"data": map[string]any{"quantity": 1},
+		"id": invalidID, "type": orderCompletedSubject, "schema": 1, "attacker_marker": "must-not-be-copied",
+		"data": map[string]any{"quantity": 0},
 	})
 	if _, err := js.Publish(ctx, orderCompletedSubject, invalidBody, jetstream.WithMsgID(invalidID.String())); err != nil {
 		t.Fatal(err)
