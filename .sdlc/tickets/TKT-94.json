@@ -1,0 +1,18 @@
+{
+  "key": "TKT-94",
+  "type": "Task",
+  "classification": "simple",
+  "parent": "TKT-2",
+  "summary": "Nothing pins commerce's backfill wiring end-to-end",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nIncidental finding from the TKT-71 ai-review (kimi-k3:medium@claudex, finding 2, triaged incidental): the drainer unit tests pin `Run`'s contract for a non-nil backfill, and the smoke probe pins that startup does not *depend* on the backfill — but no test fails if `main.go` passes `nil` to `outbox.New` instead of the `BackfillCompletionOutbox` closure. A refactor that silently drops the wiring re-opens the paid-but-no-ticket window for pre-outbox orders.\n\n**COS:** some automated check fails when commerce's drainer is constructed without the real backfill — e.g. a smoke test that seeds a completed order with no outbox row in the live commerce DB before (re)starting commerce and asserts the row appears; or a cheaper seam if one exists. Weigh cost against the smoke suite's runtime budget.\n\nContext: `services/commerce/cmd/commerce/main.go` (outbox.New call), `services/commerce/internal/outbox/drainer_test.go` (the comment that records this gap), TKT-71 PR #66."
+    }
+  ]
+}
