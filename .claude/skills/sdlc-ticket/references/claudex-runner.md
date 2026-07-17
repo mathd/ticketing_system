@@ -71,6 +71,12 @@ prompt-driven one is a semantic change to the experiment, not just plumbing.
   is undefined — don't improvise a writable allowlist; extend this doc first.
 - On failure or hang, fall back to the **codex runner** for the same stage and say so in the
   stage comment. A substituted harness is a measurement note, never a silent detail.
+- **Provider-level failure ≠ harness failure.** If the *credentials or quota* are what died
+  (OpenAI tokens exhausted, key revoked), the codex fallback hits the same wall — don't burn a
+  retry proving it. Escalate to the owner for a directed substitute model; run it preserving the
+  reviewer ≠ author invariant, and record the substitution in the stage comment *and* the
+  review-guide as part of the measurement. Note the env check above proves the proxy answers,
+  not that quota remains — a mid-stage credit exhaustion passes the pre-flight (TKT-68).
 
 ## Known gotchas (observed July 2026)
 

@@ -55,6 +55,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   boundary decides it with stale time. And the regression test is vacuous unless it proves the
   waiter queued *before* the boundary (DB clock + `pg_stat_activity` handshake + mutation check) —
   the sleep-based version passes under the broken code too. (TKT-78, PR #54)
+- [**A column narrower than the value the code accepts turns storage into a validator**](./learnings/2026-07-17-column-range-narrower-than-code-accepts.md) —
+  an int32 column behind a Go `int` range check meant a huge-but-"valid" wire value passed every
+  explicit check and died in the INSERT — landing in the generic retry arm as a permanent NAK loop.
+  Match the column to the full range the code accepts, or classify overflow explicitly before the
+  write; and ask which disposition arm catches a DB range error. (TKT-68, PR #64)
 - [**Judge idempotent replays by lifecycle state, never by timestamp**](./learnings/2026-07-16-judge-replays-by-lifecycle-state.md) —
   a replay guard keyed on a derived signal (elapsed TTL) was wrong in both directions, and its
   catch-all turned unknown states into "convert again" — a double-carve instruction. Unknown over a
