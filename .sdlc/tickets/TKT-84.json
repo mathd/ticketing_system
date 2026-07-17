@@ -2,7 +2,7 @@
   "key": "TKT-84",
   "type": "Story",
   "summary": "Access lifecycle: repeatable admission event types and partial singleton uniqueness",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
