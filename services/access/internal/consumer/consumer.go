@@ -162,7 +162,10 @@ type envelope struct {
 
 // maxKnownCompletedSchema is the highest order.completed variant this binary
 // can read. Above it is the future (park + latch unready); at or below zero
-// is a broken envelope — poison (ADR-017 §5b).
+// is a broken envelope — poison (ADR-017 §5b). Bumping it means adding a
+// decode arm for the new variant: the hand-written schema-2 fixtures in
+// TestUnknownSchemaVersionSkewIsParkedAndLatchesUnready are the tripwire —
+// they fail the moment a bump puts them under this binary's judgment.
 const maxKnownCompletedSchema = 1
 
 type completed struct {

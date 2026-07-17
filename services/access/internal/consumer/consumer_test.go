@@ -72,7 +72,7 @@ func TestUnknownSchemaVersionSkewIsParkedAndLatchesUnready(t *testing.T) {
 		"renamed keys, changed types": `{"id":"10000000-0000-0000-0000-000000000001","type":"platform.commerce.order.completed","schema":2,"data":{"order_ref":"ref-1","qty":"2"}}`,
 		"empty data":                  `{"id":"10000000-0000-0000-0000-000000000001","type":"platform.commerce.order.completed","schema":2,"data":{}}`,
 		"data not an object":          `{"id":"10000000-0000-0000-0000-000000000001","type":"platform.commerce.order.completed","schema":9,"data":[1,2,3]}`,
-		"same shape as schema 1":      string(regexpReplaceSchema(t, 2)),
+		"same shape as schema 1":      string(bumpSchema(t, 2)),
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -93,7 +93,7 @@ func TestUnknownSchemaVersionSkewIsParkedAndLatchesUnready(t *testing.T) {
 	}
 }
 
-func regexpReplaceSchema(t *testing.T, schema int) []byte {
+func bumpSchema(t *testing.T, schema int) []byte {
 	t.Helper()
 	var decoded map[string]any
 	if err := json.Unmarshal(validCompletedJSON(t), &decoded); err != nil {

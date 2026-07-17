@@ -221,7 +221,10 @@ On *ordering* the two sides, given a bump is required:
       access has **no quarantine store** — a future variant parks outstanding on the stream
       (`NakWithDelay` + readiness latch, cleared only by a restart and re-latched on redelivery)
       rather than being persisted and acked, so the TKT-68 ack-window bound above applies to
-      inventory only; access gains it when TKT-68's pattern is extended. The poison rules are
+      inventory only; access gains it when TKT-68's pattern is extended. The cost of that gap is
+      head-of-line pressure, not an immediate stall: the durable is AckExplicit with the server's
+      default `MaxAckPending`, so schema-1 orders behind a parked variant keep issuing until parked
+      events fill the ack window — accepted for TKT-74 because no bump exists yet. The poison rules are
       identical: `schema <= 0`, missing `id`, wrong `type`, and invalid payloads at a known schema
       terminate with access's fingerprint-only failure record and never touch readiness.
 
