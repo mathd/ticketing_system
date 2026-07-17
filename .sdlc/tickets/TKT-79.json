@@ -2,9 +2,9 @@
   "key": "TKT-79",
   "type": "Story",
   "summary": "US-016: Group and agency long-lived reservations",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
