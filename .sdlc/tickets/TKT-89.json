@@ -2,9 +2,11 @@
   "key": "TKT-89",
   "type": "Story",
   "summary": "Redeem's verified path ignores quarantine — a recovered chain re-admits a quarantine-admitted ticket",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude-fable-5",
   "pr": null,
   "description": "Pre-existing gap found by TKT-73's adversarial review (R2), verified at HEAD: Redeem checks quarantine only inside degradedScan; the verified path (postgres.go:263-282) checks lifecycle_events alone. A ticket that took its one degraded admission under a verifier bug (ADR-021 §D6) gets admitted a SECOND time once the chain verifies clean again (e.g. the bad verifier build is reverted) — violating §D6's admit-once. Fix: the verified redemption path must consult the quarantine table under the ticket lock and deny every later DISTINCT occurrence (DecisionIntegrityQuarantined, original admitted_at); occurrence identity is checked BEFORE the quarantine denial (ADR-025 §D3) — a retry carrying the occurrence id that took the one degraded admission returns its original result, no second admission, no second alarm. ADR-025 §D2 names this: admission decisions consult trace ∪ quarantine, not the trace alone. Tests: broken-chain retry (same occurrence → original result), recovered-chain retry (same occurrence → original result), and degraded admission → restore verification → DISTINCT occurrence is denied — through both paths. Seams: lifecycle_smoke_test.go.",
   "comments": [
@@ -12,6 +14,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nIncidental finding from TKT-73 ai-review pass 2 (gpt-5.6-sol adversarial review), triaged out of the docs-only PR as pre-existing code scope. ADR-025 §D2 and amended ADR-003 §D2 carry the decision rule this must implement."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Selection reason: highest-severity Ready ticket — a verified §D6 admit-once violation on the admission path (a quarantine-admitted ticket re-admits once the chain recovers). No open blockers; branch TKT-89-redeem-verified-quarantine off origin/main. Not risk:low (security/admission path) — plan gate applies. Note: ticket skipped formal shaping (no readiness/context-mémo); governing ADRs are named inline (ADR-021 §D6, ADR-025 §D2/D3, ADR-003 §D2) and will be re-resolved at plan time."
     }
   ]
 }
