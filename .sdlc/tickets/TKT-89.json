@@ -4,7 +4,7 @@
   "summary": "Redeem's verified path ignores quarantine — a recovered chain re-admits a quarantine-admitted ticket",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "claude-fable-5",
   "pr": {
@@ -43,6 +43,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nImplemented by main-agent (claude-fable-5) per approved plan-final. TDD: 3 tests written first and observed red (recovered-chain scan Accepted:true/accepted; already_redeemed hiding the quarantine), then the union check added to Redeem (postgres.go): quarantine consulted after verifyTicketChain, before the redeemed lookup, under the existing ticket FOR UPDATE; deny = DecisionIntegrityQuarantined + original admitted_at + one oweAlarm + commit; only ErrNoRows falls through. Diff: +161/-0, 2 files. Full store smoke suite green standalone; full `make check` green. PR #60."
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\nAdversarial review by gpt-5.6-sol (codex adversarial-review, branch diff vs origin/main, session 019f6ff7). Verdict: APPROVE, no material findings. It verified: same-ticket serialization via the ticket FOR UPDATE; no cross-ticket lock conflicts; every quarantine/mode/alarm/append/commit error returns immediately (no fall-through to appendLifecycle); deferred-rollback-after-commit harmless; precedence and repeated alarms match documented policy; the recovery test restores genuine persisted hash bytes and independently verifies the chain before exercising the verified path.\n\nCaveat noted per codex-runner.md: the run loaded a local unrelated review skill (known hijack); findings are concrete and code-cited, so the run counts as conclusive.\n\nSecond-pass call: NOT run — zero findings, zero fixes, the diff is unchanged since the reviewed SHA (6e65aa0). Ball to the human: review + merge PR #60 (Gate 3)."
     }
   ]
 }
