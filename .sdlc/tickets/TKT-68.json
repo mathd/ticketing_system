@@ -3,11 +3,13 @@
   "type": "Task",
   "summary": "Parked unknown-schema events exhaust the ack window and stall the inventory consumer (~1000)",
   "classification": "simple",
-  "labels": [],
+  "labels": [
+    "agent:planning"
+  ],
   "parent": "TKT-2",
   "description": "**Parked unknown-schema events are bounded by the ack window, and ~1000 of them stall the consumer.**\n\nFound by TKT-61's `ai-review` (gpt-5.6-sol) and verified against the code. Incidental to TKT-61's\nscope — that ticket fixed the *silent drop*; this is the bound on the *fix*.\n\n**The mechanism.** TKT-61 made inventory park unknown `(type, schema)` variants\n(`NakWithDelay`, `services/inventory/internal/consumer/consumer.go`'s `handle`) instead of\n`Term`ing them, so a newer binary can still provision them. But the durable sets `MaxDeliver: -1`\nand **does not set `MaxAckPending`** (verified: the string appears nowhere in `services/`), so the\nnats-server default of **1000** applies. A parked event stays *outstanding* until acked or\nterminated, so once ~1000 distinct unknown events accumulate, JetStream **suspends delivery for the\nwhole consumer** — including the Schema 2/3 publications behind them, which this binary *could*\nhave provisioned.\n\n**Reachable without an attacker.** A long unattended skew window plus a large catalog import gets\nthere. No malicious producer required.\n\n**Why TKT-61 accepted it rather than fixing it.** The stall is strictly better than what it\nreplaced: it is *loud* (unready since event #1, an error log every 5s) where the old `Term()` was\nsilent and left the service reporting healthy. It trades an invisible partial loss for a visible\nfull stop. But \"better than a silent drop\" is not \"correct\".\n\n**The real fix — needs its own design, which is why it is not TKT-61:**\npersist the raw payload to a bounded quarantine, **ack the original to free the ack window**, and\nlet a supporting binary re-process from quarantine. That needs a storage shape, a re-injection\nprotocol, and a retention/backpressure policy — a new contract, not a disposition tweak.\n`services/access/internal/consumer` (`FailureEvent`, `reject()`, reason codes, metric counters) and\n`services/commerce/internal/{outbox,store}` (dead-lettering after `MaxOutboxAttempts` with backoff)\nare the two in-repo precedents to reconcile with — note access *terminates* after recording, which\nis exactly what TKT-61 argues is wrong for a variant a newer binary could read. Reconciling those is\nthe design question.\n\n**Also in scope to decide:** whether `MaxAckPending` should be set explicitly rather than inherited\nfrom the server default. Today the consumer's most important backpressure bound is invisible in the\ncode.\n\n**COS:** a sustained version-skew window cannot stop inventory provisioning variants it *does*\nunderstand; the bound is explicit in code rather than inherited; a test proves later supported\nmessages still flow while unknown ones are held.\n\n**Not risk:low** — touches the durable consumer's ack/disposition path.\n\n**Governing:** [ADR-017](docs/adr/ADR-017-domain-event-schema-evolution.md) §5b (records this gap and\npoints here) · ADR-007 (JetStream).\n",
-  "status": "Ready",
-  "assignee": null,
+  "status": "Planning",
+  "assignee": "claude-fable-5",
   "pr": null,
   "links": [
     {
@@ -15,5 +17,11 @@
       "key": "TKT-61"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed** by the main agent (fable-5 session). Branch `TKT-68-quarantine-unknown-schema` off `origin/main` (77fe5ee).\n\n**Selection reason:** in Ready, zero open blockers (only link is `found-in TKT-61`, informational).\n\n**⚠️ GATE WAIVER — this ticket runs gateless, by explicit owner instruction (process experiment).**\nThe repo owner waived all four human gates for this run, in one continuous Ready→Done pass:\n- Gate 1 (priority): given — ticket was in Ready.\n- Gate 2 (plan approval): after cross-model critique, open decisions are self-resolved — prefer the critique's recommendation, else the most reversible option; every self-made decision recorded in plan-final.\n- Gate 3 (review+merge): after adversarial ai-review converges (normal triage/second-pass/churn-cap rules), the agent squash-merges and deletes the branch; review-guide posted first as the audit record.\n- Gate 4 (PO acceptance): agent self-validates each COS against test evidence on merged code, posts validation note, closes with full metrics.\n\nStop-and-report conditions remain: gate/CI fails twice same cause; unanticipated auth/money/migration/CI-config surface; blocking finding surviving churn cap; configured model unreachable after escalation; ambiguous destructive action.\n\n**Note:** ticket predates the TKT-92 minimal context-mémo rule and carries none — the plan brief will be built from the ticket body + ADRs re-resolved at claim time (ADR-017 §5b, ADR-007, ADR-022 for the migration placement).\n\nModel routing (config): plan=gpt-5.6-sol:medium@claudex · planReview=main-agent · implement=main-agent · aiReview=gpt-5.6-sol:medium@claudex. Cross-model pairs verified distinct. Claudex env checked: up."
+    }
+  ]
 }
