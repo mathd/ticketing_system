@@ -195,17 +195,21 @@ On *ordering* the two sides, given a bump is required:
       This is the specific test ADR-017 previously noted was missing, and the reason it is worth
       insisting on the form: the obvious version of it proves nothing.
 
-      **Parking is bounded by the ack window, and that bound is not yet enforced — TKT-68.** The
-      durable sets `MaxDeliver: -1` and does not set `MaxAckPending`, so the server default (1000)
-      applies. A parked event stays outstanding until acked or terminated, so **~1000 distinct
-      unknown events stall delivery for the whole consumer** — including the Schema 2/3 publications
-      behind them, which this binary *could* have provisioned. A long unattended skew window with a
-      large catalog import can reach that. This is accepted for now and is **still strictly better
-      than the behavior it replaces**: the stall is loud (unready since event #1, an error log every
-      5s) where the drop was silent and left the service reporting healthy. It trades an invisible
-      partial loss for a visible full stop. The real fix is a bounded quarantine — persist the raw
-      payload, ack the original to free the window, and let a supporting binary re-process it — which
-      needs its own event contract and re-injection protocol. **TKT-68.**
+      **The ack-window bound on parking is closed — TKT-68 shipped the bounded quarantine.** A
+      future variant no longer stays outstanding: inventory persists the raw envelope to
+      `catalog_event_quarantine` (cap 10 000 unresolved rows, inventory-owned and explicit in code)
+      and **acks the original**, so unknown events cannot stall the Schema 2/3 publications behind
+      them. The durable also sets `MaxAckPending: 64` explicitly — the consumer's backpressure
+      bound is no longer an invisible server default. Recovery is deliberate, not automatic:
+      readiness still latches false on the first quarantined event (now Postgres-backed, so a
+      restart cannot clear it while unresolved rows exist), and the exit is deploy-newer-binary →
+      `inventory reprocess-quarantine` (republishes the stored bytes verbatim, deterministic
+      `Nats-Msg-Id`, marks only after broker accept) → restart. Only if the quarantine itself
+      fills do new future variants fall back to delayed NAKs — a loud stall at the explicit
+      inventory-owned bound, still never a drop. Poison stays poison: `schema <= 0`, missing id,
+      below-min variants and id collisions (two payloads under one id, ADR-009 §5) terminate and
+      never touch quarantine or readiness. Operator surface: `docs/development.md`
+      §Inventory catalog-event quarantine operations.
 
       **Readiness is borrowed as the alert channel, deliberately and with a known cost.** It is the
       only signal wired for inventory today (`/readyz` gates on `cons.Ready()`,
@@ -243,7 +247,8 @@ On *ordering* the two sides, given a bump is required:
       gives. Events published **while the consumer was stopped are pending, not history**
       (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go`'s `CreateOrUpdateConsumer`), so if
       catalog emitted Schema 3 during inventory's downtime, restarting the *old* binary against the
-      same durable delivers them — straight to the `default` arm. Since TKT-61 that means parked and
+      same durable delivers them — straight to the `default` arm. Since TKT-61 that means held (now
+      quarantined + acked, TKT-68) and
       unready (b), not dropped. No reset and no recreation required; the downtime window alone is
       enough, which is why this needs **no operator error at all** — only downtime.
 
@@ -282,8 +287,8 @@ On *ordering* the two sides, given a bump is required:
       deploy boundary (c) all bottom out in the same place: an inventory that meets a schema it
       doesn't know. Case (c) is the uncomfortable one: it needs no operator mistake at all, only
       that inventory was down while catalog emitted. **TKT-61 closed the silent half**: such an event
-      is now parked and the consumer latches unready, so all four entry points fail loudly and stay
-      recoverable. What is *not* closed: this ADR still only **states** the ordering rules — nothing
+      is now held — quarantined and acked since TKT-68 — and the consumer latches unready, so all
+      four entry points fail loudly and stay recoverable. What is *not* closed: this ADR still only **states** the ordering rules — nothing
       enforces them, and a skewed binary is detected when the event arrives, not at boot.
       TKT-61 considered and **rejected** two alternatives worth recording:
         - **A max-known-schema startup gate.** Rejected as unimplementable, not merely expensive:
@@ -300,9 +305,9 @@ On *ordering* the two sides, given a bump is required:
           only ever addressed (a), and inverts the lifecycle coupling between catalog and its consumer.
     - §5's ordering still rests on review, not machinery, and `compose.yaml` expresses no ordering
       between catalog and inventory. But mixed-version skew **is** exercised now:
-      `TestUnknownSchemaVersionSkewIsParked` (`services/inventory/internal/consumer/consumer_test.go`)
-      pins unknown-variant ⇒ park, and `TestInvalidKnownSchemaIsTerminated` pins the poison side so
-      the two cannot be collapsed.
+      `TestUnknownSchemaVersionSkewIsQuarantinedAndAcked`
+      (`services/inventory/internal/consumer/consumer_test.go`) pins unknown-variant ⇒ quarantine,
+      and `TestInvalidKnownSchemaIsTerminated` pins the poison side so the two cannot be collapsed.
 
 ## References
 

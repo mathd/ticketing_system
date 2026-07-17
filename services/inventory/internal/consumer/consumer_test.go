@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"ticketing/services/inventory/internal/store"
 )
 
 // fakeMsg records what the handler did to the message, mirroring the shape
@@ -49,9 +51,15 @@ func (m *fakeMsg) Term() error                 { m.actions = append(m.actions, "
 func (m *fakeMsg) TermWithReason(string) error { return m.Term() }
 
 func testConsumer() *Consumer {
-	c := &Consumer{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	c.ready.Store(true)
+	c, _ := testConsumerWithStore()
 	return c
+}
+
+func testConsumerWithStore() (*Consumer, *fakeCatalogStore) {
+	st := &fakeCatalogStore{}
+	c := &Consumer{st: st, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c.ready.Store(true)
+	return c, st
 }
 
 type fakeResolver struct {
@@ -200,17 +208,20 @@ func TestProvisionInputRejectsSchema1CatalogMismatch(t *testing.T) {
 // keys, new required fields, changed types. An earlier version of this fix decoded the payload
 // before dispatching on schema and terminated every one of these — passing a test that built
 // schema 4 from today's struct and so guaranteed the compatibility it meant to prove.
-func TestUnknownSchemaVersionSkewIsParked(t *testing.T) {
+func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
-	for _, tt := range []struct{ name, body string }{
-		{"reshaped data", `{` + id + `,"schema":4,"data":{"slot_ref":"a","org_ref":"b"}}`},
-		{"changed field type", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`},
-		{"empty data", `{` + id + `,"schema":5,"data":{}}`},
-		{"data is not an object", `{` + id + `,"schema":9,"data":[1,2,3]}`},
-		{"shaped like today", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`},
+	for _, tt := range []struct {
+		name, body string
+		schema     int
+	}{
+		{"reshaped data", `{` + id + `,"schema":4,"data":{"slot_ref":"a","org_ref":"b"}}`, 4},
+		{"changed field type", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`, 4},
+		{"empty data", `{` + id + `,"schema":5,"data":{}}`, 5},
+		{"data is not an object", `{` + id + `,"schema":9,"data":[1,2,3]}`, 9},
+		{"shaped like today", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`, 4},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			c := testConsumer()
+			c, st := testConsumerWithStore()
 			msg := &fakeMsg{data: []byte(tt.body)}
 
 			c.handle(context.Background(), msg)
@@ -218,13 +229,97 @@ func TestUnknownSchemaVersionSkewIsParked(t *testing.T) {
 			if slices.Contains(msg.actions, "term") {
 				t.Fatalf("actions = %v — a future variant must never be terminated; a newer binary can provision it", msg.actions)
 			}
-			if !slices.Contains(msg.actions, "nak-delay") {
-				t.Fatalf("actions = %v, want a delayed nak parking the event", msg.actions)
+			if !slices.Contains(msg.actions, "ack") {
+				t.Fatalf("actions = %v, want ack — the quarantined copy frees the ack window (TKT-68)", msg.actions)
+			}
+			if len(st.quarantined) != 1 {
+				t.Fatalf("quarantined = %d events, want exactly 1", len(st.quarantined))
+			}
+			q := st.quarantined[0]
+			if q.subject != subjectPublished || q.eventID != uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") || q.schema != tt.schema {
+				t.Fatalf("quarantined (%s, %s, %d), want (%s, 6ba7b810…, %d)", q.subject, q.eventID, q.schema, subjectPublished, tt.schema)
+			}
+			if string(q.envelope) != tt.body {
+				t.Fatalf("quarantined envelope %q, want the exact raw bytes %q — reprocessing republishes them verbatim", q.envelope, tt.body)
 			}
 			if c.Ready() {
 				t.Fatal("consumer must latch unready on version skew — reporting healthy is what made TKT-61 invisible")
 			}
 		})
+	}
+}
+
+// The ack must be the consequence of a committed quarantine write, never unconditional. These
+// failure cases are what pin the ordering: if handle acked before asking the store, every one of
+// them would still show an ack.
+func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
+	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	body := `{` + id + `,"schema":4,"data":{"slot_ref":"a"}}`
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"store failure", errors.New("db down")},
+		{"quarantine full", store.ErrCatalogQuarantineFull},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, st := testConsumerWithStore()
+			st.quarantineErr = tt.err
+			msg := &fakeMsg{data: []byte(body)}
+
+			c.handle(context.Background(), msg)
+
+			if slices.Contains(msg.actions, "ack") || slices.Contains(msg.actions, "term") {
+				t.Fatalf("actions = %v — without a committed quarantine copy the event must stay outstanding", msg.actions)
+			}
+			if !slices.Contains(msg.actions, "nak-delay") {
+				t.Fatalf("actions = %v, want a delayed nak", msg.actions)
+			}
+			if c.Ready() {
+				t.Fatal("readiness must latch false while a future variant cannot be quarantined")
+			}
+		})
+	}
+}
+
+// Two different payloads under one (subject, event_id) is a broken producer invariant
+// (ADR-009 §5 — the id is the stable part), not skew: the row will never be overwritten, so a
+// delayed NAK would re-park it forever — recreating the exact ack-window occupation this ticket
+// removes. Poison rules apply: terminate, readiness untouched. The first copy stays quarantined.
+func TestQuarantineCollisionIsPoison(t *testing.T) {
+	c, st := testConsumerWithStore()
+	st.quarantineErr = store.ErrCatalogQuarantineCollision
+	msg := &fakeMsg{data: []byte(`{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":4,"data":{"x":1}}`)}
+
+	c.handle(context.Background(), msg)
+
+	if !slices.Contains(msg.actions, "term") || slices.Contains(msg.actions, "ack") {
+		t.Fatalf("actions = %v, want term — an id collision is a producer bug no binary will ever apply", msg.actions)
+	}
+	if !c.Ready() {
+		t.Fatal("a producer invariant break must not latch inventory unready — poison rule")
+	}
+}
+
+// The COS regression: a variant this binary DOES understand keeps flowing while an unknown one is
+// held in quarantine — the stall TKT-68 exists to remove.
+func TestKnownEventFlowsWhileUnknownIsHeld(t *testing.T) {
+	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	c, st := testConsumerWithStore()
+
+	future := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":4,"data":{"slot_ref":"a"}}`)}
+	c.handle(context.Background(), future)
+	if !slices.Contains(future.actions, "ack") || len(st.quarantined) != 1 {
+		t.Fatalf("future: actions = %v quarantined = %d, want quarantine + ack", future.actions, len(st.quarantined))
+	}
+
+	known := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":2,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `,"capacity":500}}`)}
+	c.handle(context.Background(), known)
+	if !slices.Contains(known.actions, "ack") || len(st.provisioned) != 1 {
+		t.Fatalf("known: actions = %v provisioned = %d — a supported variant must still provision and ack", known.actions, len(st.provisioned))
+	}
+	if c.Ready() {
+		t.Fatal("readiness stays latched until quarantine is reprocessed and the binary restarts — recovery on the next good message would hide the held event")
 	}
 }
 
@@ -240,7 +335,7 @@ func TestEnvelopeWithoutUsableSchemaIsTerminatedAndStaysReady(t *testing.T) {
 		{"malformed json", `{not json`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			c := testConsumer()
+			c, st := testConsumerWithStore()
 			msg := &fakeMsg{data: []byte(tt.body)}
 
 			c.handle(context.Background(), msg)
@@ -250,6 +345,9 @@ func TestEnvelopeWithoutUsableSchemaIsTerminatedAndStaysReady(t *testing.T) {
 			}
 			if !c.Ready() {
 				t.Fatal("a broken envelope must not latch inventory unready — that hands any buggy producer an outage")
+			}
+			if len(st.quarantined) != 0 {
+				t.Fatalf("quarantined = %v — poison must never reach quarantine", st.quarantined)
 			}
 		})
 	}
@@ -267,7 +365,7 @@ func TestInvalidKnownSchemaIsTerminatedAndStaysReady(t *testing.T) {
 		{"known schema, unreadable data", `{` + id + `,"schema":2,"data":{"capacity":"not-a-number"}}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			c := testConsumer()
+			c, st := testConsumerWithStore()
 			msg := &fakeMsg{data: []byte(tt.body)}
 
 			c.handle(context.Background(), msg)
@@ -277,6 +375,9 @@ func TestInvalidKnownSchemaIsTerminatedAndStaysReady(t *testing.T) {
 			}
 			if !c.Ready() {
 				t.Fatal("a corrupt known variant must not latch inventory unready")
+			}
+			if len(st.quarantined) != 0 {
+				t.Fatalf("quarantined = %v — a corrupt known variant is poison, not a future variant", st.quarantined)
 			}
 		})
 	}
@@ -324,6 +425,79 @@ func TestEveryKnownSchemaHasAnArm(t *testing.T) {
 // Tripwire, half two: the const must not lag BEHIND the arms. Add a case arm and forget the const
 // and the opposite happens — a variant this binary fully implements is parked as "from the future"
 // forever, and inventory sits unready waiting for a binary that is already running.
+// The durable's backpressure bound must be explicit in code, not inherited from the nats-server
+// default of 1000 (TKT-68 COS 2). This fails if the field is dropped and the default sneaks back.
+func TestConsumerConfigSetsExplicitMaxAckPending(t *testing.T) {
+	cfg := (&Consumer{}).consumerConfig()
+	if cfg.Durable != "inventory-catalog-offering" {
+		t.Fatalf("durable = %q, want inventory-catalog-offering", cfg.Durable)
+	}
+	want := []string{subjectPublished, subjectArchived, subjectClosed, subjectReopened}
+	if !slices.Equal(cfg.FilterSubjects, want) {
+		t.Fatalf("filter subjects = %v, want %v", cfg.FilterSubjects, want)
+	}
+	if cfg.AckPolicy != jetstream.AckExplicitPolicy || cfg.DeliverPolicy != jetstream.DeliverAllPolicy {
+		t.Fatalf("policies = (%v, %v), want (explicit ack, deliver all)", cfg.AckPolicy, cfg.DeliverPolicy)
+	}
+	if cfg.MaxDeliver != -1 {
+		t.Fatalf("MaxDeliver = %d, want -1", cfg.MaxDeliver)
+	}
+	if cfg.MaxAckPending != 64 {
+		t.Fatalf("MaxAckPending = %d, want the explicit bound 64 (= maxAckPending const %d)", cfg.MaxAckPending, maxAckPending)
+	}
+}
+
+// Acking quarantined originals means a restart can no longer rediscover unresolved skew from
+// JetStream — startup has to ask Postgres instead. Pending rows keep readiness false (while known
+// variants still flow); a failed query is an error, not a silent claim of health.
+func TestStartupReadinessReflectsPendingQuarantine(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		pending   bool
+		err       error
+		wantReady bool
+		wantErr   bool
+	}{
+		{"no pending quarantine", false, nil, true, false},
+		{"pending quarantine", true, nil, false, false},
+		{"query failure", false, errors.New("db down"), false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, st := testConsumerWithStore()
+			c.ready.Store(false)
+			st.pending, st.pendingErr = tt.pending, tt.err
+
+			err := c.refreshStartupReadiness(context.Background())
+
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if c.Ready() != tt.wantReady {
+				t.Fatalf("ready = %v, want %v", c.Ready(), tt.wantReady)
+			}
+		})
+	}
+}
+
+// SupportsCatalogSchema is the reprocessor's gate: it must derive from the same knownSchemas
+// registry as live dispatch, or a deployed binary could re-inject variants it then terminates.
+func TestSupportsCatalogSchemaMatchesTheRegistry(t *testing.T) {
+	for subject, spec := range knownSchemas {
+		if SupportsCatalogSchema(subject, spec.min-1) {
+			t.Fatalf("%s: schema %d below min must be unsupported", subject, spec.min-1)
+		}
+		if !SupportsCatalogSchema(subject, spec.min) || !SupportsCatalogSchema(subject, spec.max) {
+			t.Fatalf("%s: min %d and max %d must be supported", subject, spec.min, spec.max)
+		}
+		if SupportsCatalogSchema(subject, spec.max+1) {
+			t.Fatalf("%s: schema %d above max must be unsupported", subject, spec.max+1)
+		}
+	}
+	if SupportsCatalogSchema("platform.unknown.subject", 1) {
+		t.Fatal("an unknown subject must be unsupported")
+	}
+}
+
 func TestMaxKnownSchemaIsNotBehindTheArms(t *testing.T) {
 	next := maxKnownPublicationSchema + 1
 	e := publication{ID: uuid.New(), Schema: next}
