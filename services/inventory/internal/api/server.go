@@ -61,6 +61,15 @@ func problem(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		code = 404
+	// A dead slot is not a full slot: clients need to tell "sold out, retry later /
+	// join waitlist" from "stop offering this slot" (TKT-75 AC2), so these two carry
+	// a machine-readable code alongside the message.
+	case errors.Is(err, store.ErrSlotArchived):
+		write(w, 409, map[string]string{"error": err.Error(), "code": "slot_archived"})
+		return
+	case errors.Is(err, store.ErrSlotClosed):
+		write(w, 409, map[string]string{"error": err.Error(), "code": "slot_closed"})
+		return
 	case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrIdempotency):
 		code = 409
 	}

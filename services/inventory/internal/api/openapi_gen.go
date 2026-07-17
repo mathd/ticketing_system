@@ -9,6 +9,45 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AvailabilityOfferingStatus.
+const (
+	AvailabilityOfferingStatusArchived AvailabilityOfferingStatus = "archived"
+	AvailabilityOfferingStatusClosed   AvailabilityOfferingStatus = "closed"
+	AvailabilityOfferingStatusOpen     AvailabilityOfferingStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the AvailabilityOfferingStatus enum.
+func (e AvailabilityOfferingStatus) Valid() bool {
+	switch e {
+	case AvailabilityOfferingStatusArchived:
+		return true
+	case AvailabilityOfferingStatusClosed:
+		return true
+	case AvailabilityOfferingStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ErrorCode.
+const (
+	SlotArchived ErrorCode = "slot_archived"
+	SlotClosed   ErrorCode = "slot_closed"
+)
+
+// Valid indicates whether the value is a known member of the ErrorCode enum.
+func (e ErrorCode) Valid() bool {
+	switch e {
+	case SlotArchived:
+		return true
+	case SlotClosed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for OperationalHoldCreatePurpose.
 const (
 	Artist OperationalHoldCreatePurpose = "artist"
@@ -33,14 +72,41 @@ func (e OperationalHoldCreatePurpose) Valid() bool {
 	}
 }
 
+// Defines values for StaffAvailabilityOfferingStatus.
+const (
+	StaffAvailabilityOfferingStatusArchived StaffAvailabilityOfferingStatus = "archived"
+	StaffAvailabilityOfferingStatusClosed   StaffAvailabilityOfferingStatus = "closed"
+	StaffAvailabilityOfferingStatusOpen     StaffAvailabilityOfferingStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the StaffAvailabilityOfferingStatus enum.
+func (e StaffAvailabilityOfferingStatus) Valid() bool {
+	switch e {
+	case StaffAvailabilityOfferingStatusArchived:
+		return true
+	case StaffAvailabilityOfferingStatusClosed:
+		return true
+	case StaffAvailabilityOfferingStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
 // Availability defines model for Availability.
 type Availability struct {
-	Available int                `json:"available"`
-	Capacity  int                `json:"capacity"`
-	Confirmed int                `json:"confirmed"`
-	Held      int                `json:"held"`
-	SlotId    openapi_types.UUID `json:"slot_id"`
+	Available int `json:"available"`
+	Capacity  int `json:"capacity"`
+	Confirmed int `json:"confirmed"`
+	Held      int `json:"held"`
+
+	// OfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open
+	OfferingStatus AvailabilityOfferingStatus `json:"offering_status"`
+	SlotId         openapi_types.UUID         `json:"slot_id"`
 }
+
+// AvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open
+type AvailabilityOfferingStatus string
 
 // ChannelAllocation defines model for ChannelAllocation.
 type ChannelAllocation struct {
@@ -84,8 +150,13 @@ type ConvertResult struct {
 
 // Error defines model for Error.
 type Error struct {
-	Error string `json:"error"`
+	// Code Machine-readable conflict reason; present when a dead slot (not contention) rejected the request
+	Code  *ErrorCode `json:"code,omitempty"`
+	Error string     `json:"error"`
 }
+
+// ErrorCode Machine-readable conflict reason; present when a dead slot (not contention) rejected the request
+type ErrorCode string
 
 // HistoryEntry defines model for HistoryEntry.
 type HistoryEntry struct {
@@ -176,15 +247,21 @@ type OperationalRelease struct {
 
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {
-	Available       int                   `json:"available"`
-	BuyerHeld       int                   `json:"buyer_held"`
-	Capacity        int                   `json:"capacity"`
-	Channels        []ChannelAvailability `json:"channels"`
-	Confirmed       int                   `json:"confirmed"`
-	OperationalHeld int                   `json:"operational_held"`
-	PublicAvailable int                   `json:"public_available"`
-	SlotId          openapi_types.UUID    `json:"slot_id"`
+	Available int                   `json:"available"`
+	BuyerHeld int                   `json:"buyer_held"`
+	Capacity  int                   `json:"capacity"`
+	Channels  []ChannelAvailability `json:"channels"`
+	Confirmed int                   `json:"confirmed"`
+
+	// OfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open
+	OfferingStatus  StaffAvailabilityOfferingStatus `json:"offering_status"`
+	OperationalHeld int                             `json:"operational_held"`
+	PublicAvailable int                             `json:"public_available"`
+	SlotId          openapi_types.UUID              `json:"slot_id"`
 }
+
+// StaffAvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open
+type StaffAvailabilityOfferingStatus string
 
 // Id defines model for Id.
 type Id = openapi_types.UUID

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ticketing/services/inventory/internal/store"
 )
 
 func TestCreateHoldRejectsNonStrictJSON(t *testing.T) {
@@ -171,5 +173,30 @@ func TestCreateHoldRejectsBadChannel(t *testing.T) {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 			}
 		})
+	}
+}
+
+// A dead slot must be distinguishable from contention: same 409, different code
+// (TKT-75 AC2). Other conflicts keep the code-less shape they always had.
+func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
+	for _, tt := range []struct {
+		err      error
+		wantCode int
+		wantBody string
+	}{
+		{store.ErrSlotArchived, 409, `{"code":"slot_archived","error":"slot archived"}`},
+		{store.ErrSlotClosed, 409, `{"code":"slot_closed","error":"slot closed"}`},
+		{store.ErrUnavailable, 409, `{"error":"insufficient capacity"}`},
+		{store.ErrIdempotency, 409, `{"error":"idempotency key reused with different request"}`},
+		{store.ErrNotFound, 404, `{"error":"not found"}`},
+	} {
+		res := httptest.NewRecorder()
+		problem(res, tt.err)
+		if res.Code != tt.wantCode {
+			t.Fatalf("%v: status=%d want=%d", tt.err, res.Code, tt.wantCode)
+		}
+		if got := strings.TrimSpace(res.Body.String()); got != tt.wantBody {
+			t.Fatalf("%v: body=%s want=%s", tt.err, got, tt.wantBody)
+		}
 	}
 }

@@ -89,6 +89,9 @@ type Availability struct {
 	Held      int32     `json:"held"`
 	Confirmed int32     `json:"confirmed"`
 	Available int32     `json:"available"`
+	// OfferingStatus is open|closed|archived (archived wins). Counters stay factual
+	// while not open; only claimable availability is zeroed (TKT-75 AC3).
+	OfferingStatus string `json:"offering_status"`
 }
 
 type Postgres struct {
@@ -144,7 +147,8 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	}
 	defer func() { _ = tx.Rollback() }()
 	var capacity, confirmed int32
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed)
+	var lifecycle, closure string
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &lifecycle, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Claim{}, false, ErrNotFound
 	}
@@ -174,6 +178,11 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		return existing, true, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return Claim{}, false, err
+	}
+	// Offering guard sits AFTER idempotency replay: replaying a pre-closure hold
+	// returns its original outcome — a replay is not a new hold (TKT-75 AC2).
+	if err = guardOffering(lifecycle, closure); err != nil {
 		return Claim{}, false, err
 	}
 	if err = sweepExpired(ctx, tx, slot); err != nil {
@@ -311,14 +320,19 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID, channel string) (Availability, error) {
 	var a Availability
 	a.SlotID = slot
-	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims+`) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).Scan(&a.Capacity, &a.Confirmed, &a.Held)
+	var lifecycle, closure string
+	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status,(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims+`) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).Scan(&a.Capacity, &a.Confirmed, &lifecycle, &closure, &a.Held)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
 	if err != nil {
 		return a, err
 	}
+	a.OfferingStatus = offeringStatus(lifecycle, closure)
 	remaining := int64(a.Capacity) - int64(a.Confirmed) - int64(a.Held)
+	if a.OfferingStatus != "open" {
+		remaining = 0
+	}
 	if channel != "" {
 		var chCap int32
 		err = p.db.QueryRowContext(ctx, `SELECT cap FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap)

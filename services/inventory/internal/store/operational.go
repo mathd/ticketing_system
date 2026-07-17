@@ -42,6 +42,7 @@ type StaffAvailability struct {
 	Confirmed       int32                 `json:"confirmed"`
 	Available       int32                 `json:"available"`
 	PublicAvailable int32                 `json:"public_available"`
+	OfferingStatus  string                `json:"offering_status"`
 	Channels        []ChannelAvailability `json:"channels"`
 }
 
@@ -101,7 +102,8 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	}
 	defer func() { _ = tx.Rollback() }()
 	var capacity, confirmed int32
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed)
+	var lifecycle, closure string
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &lifecycle, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OperationalHold{}, false, ErrNotFound
 	}
@@ -115,6 +117,10 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	if found {
 		h := OperationalHold{ID: prior.claimID, OrganizerID: org, PoolID: slot, Quantity: prior.quantity, Purpose: purpose, Label: label, Status: prior.statusAfter, ServerTime: time.Now().UTC()}
 		return h, true, tx.Commit()
+	}
+	// Same replay-then-guard order as CreateHold: a staff hold is a new hold too (TKT-75 AC2).
+	if err = guardOffering(lifecycle, closure); err != nil {
+		return OperationalHold{}, false, err
 	}
 	if err = sweepExpired(ctx, tx, slot); err != nil {
 		return OperationalHold{}, false, err
@@ -319,19 +325,24 @@ func (p *Postgres) History(ctx context.Context, org, id uuid.UUID) ([]HistoryEnt
 
 func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (StaffAvailability, error) {
 	a := StaffAvailability{SlotID: slot}
-	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,
+	var lifecycle, closure string
+	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status,
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='buyer' AND `+liveClaims+`),
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='operational' AND `+liveClaims+`)
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).
-		Scan(&a.Capacity, &a.Confirmed, &a.BuyerHeld, &a.OperationalHeld)
+		Scan(&a.Capacity, &a.Confirmed, &lifecycle, &closure, &a.BuyerHeld, &a.OperationalHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
 	if err != nil {
 		return a, err
 	}
+	a.OfferingStatus = offeringStatus(lifecycle, closure)
 	a.Available = a.Capacity - a.Confirmed - a.BuyerHeld - a.OperationalHeld
 	remaining := int64(a.Available)
+	if a.OfferingStatus != "open" {
+		a.Available, remaining = 0, 0
+	}
 	if a.Channels, err = channelAvailabilities(ctx, p.db, slot, remaining); err != nil {
 		return a, err
 	}

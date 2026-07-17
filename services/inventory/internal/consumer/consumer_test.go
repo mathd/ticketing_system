@@ -20,6 +20,7 @@ import (
 // shipped rather than in effigy: the pure helper agreeing with the closure is not the same fact as
 // the closure obeying it.
 type fakeMsg struct {
+	subject string
 	data    []byte
 	actions []string
 }
@@ -27,9 +28,14 @@ type fakeMsg struct {
 func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	return &jetstream.MsgMetadata{NumDelivered: 1}, nil
 }
-func (m *fakeMsg) Data() []byte                    { return m.data }
-func (m *fakeMsg) Headers() nats.Header            { return nil }
-func (m *fakeMsg) Subject() string                 { return subject }
+func (m *fakeMsg) Data() []byte         { return m.data }
+func (m *fakeMsg) Headers() nats.Header { return nil }
+func (m *fakeMsg) Subject() string {
+	if m.subject == "" {
+		return subjectPublished
+	}
+	return m.subject
+}
 func (m *fakeMsg) Reply() string                   { return "" }
 func (m *fakeMsg) Ack() error                      { m.actions = append(m.actions, "ack"); return nil }
 func (m *fakeMsg) DoubleAck(context.Context) error { return m.Ack() }
