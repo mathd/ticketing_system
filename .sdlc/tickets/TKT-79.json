@@ -2,10 +2,8 @@
   "key": "TKT-79",
   "type": "Story",
   "summary": "US-016: Group and agency long-lived reservations",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/58",
