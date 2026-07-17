@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- **Dropping a table-wide UNIQUE drops its backing index** — audit every query that used the
+  index prefix before an ADR-025-§D7-style constraint swap; the partial replacement cannot serve
+  rows outside its predicate, so per-scan reads (chain verification, History) silently become
+  sequential scans. Caught at plan review on TKT-84 only because a crashed drafter run's log was
+  salvaged. (TKT-84, PR #62)
 - [**A load test's published number is a claim about the server only if the generator's health is part of the verdict**](./learnings/2026-07-17-load-test-generator-health-is-part-of-the-claim.md) —
   the first accepted per-pool ceiling was defined by the client's in-flight cap, not the pool;
   three review passes closed the vacuous routes (all-409 windows passing on empty percentile

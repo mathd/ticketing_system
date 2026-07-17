@@ -204,7 +204,9 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   One implementer, no worktree — WIP is one ticket, and a TDD loop doesn't parallelize.
 #   Local gate (mirrors CI): run config.code.localGate. If you delegated, VERIFY don't trust —
 #   re-run the gate yourself on the committed tree (quality-practices.md §2.b).
-#   Code: commit (no AI attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"
+#   Code: verify `git branch --show-current` is the ticket branch FIRST (a session's branch can
+#   be switched under it — TKT-84 briefly committed to local main), then commit (no AI
+#   attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=coding kind=summary --> (+ stage YAML; name the implementer)
 #   MCP editJiraIssue: -agent:coding +agent:ai-review
 #   REVIEW — by config.models.aiReview, on the branch diff vs base, primed for guilt (Hard rules).

@@ -87,6 +87,11 @@ One attempt per rung, in order:
 3. Still no conclusive verdict → **stop on the current `agent:*` label and report to the human**.
 
 No rung twice, no fourth rung — improvised retries cost wall-clock (TKT-62: ~1h, three attempts).
+Two more shapes (TKT-84): the companion's `status`/`result` can report **"No job found"
+while the job's JSON state file still says `running`** — trust the file
+(`…/state/<repo-hash>/jobs/<id>.json`) plus the log's mtime, not the status command; and raw
+`codex exec` can fail with **"Selected model is at capacity"** — the model was never reached,
+which is a rung failure, not a reason to substitute a model.
 Known failure shapes, all exiting 0: the plugin returning **zero bytes**; the companion
 **truncating** the captured assistant message mid-sentence (the verdict survives, the findings
 don't); `codex exec` **dying mid-investigation** with no final answer. If a partial run left
