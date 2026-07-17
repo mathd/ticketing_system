@@ -122,10 +122,15 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 	if n, _ := res.RowsAffected(); n == 0 {
 		return tx.Commit()
 	}
+	// The overwrite guard also covers adjustment history (TKT-76 ai-review finding 1):
+	// inventory owns capacity after any staff adjustment (ADR-005 amendment), and an
+	// APPLIED adjustment on a claim-free pool is otherwise indistinguishable from an
+	// untouched one. claim_history.pool_id is non-NULL only on adjustment records.
 	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id) VALUES($1,$2,$3,$4)
 		ON CONFLICT(slot_id) DO UPDATE SET capacity=EXCLUDED.capacity, updated_at=now()
 		WHERE inventory_pools.organizer_id=EXCLUDED.organizer_id AND inventory_pools.confirmed_quantity=0
-		AND NOT EXISTS(SELECT 1 FROM claims WHERE pool_id=EXCLUDED.slot_id)`, slotID, organizerID, capacity, eventID)
+		AND NOT EXISTS(SELECT 1 FROM claims WHERE pool_id=EXCLUDED.slot_id)
+		AND NOT EXISTS(SELECT 1 FROM claim_history WHERE pool_id=EXCLUDED.slot_id)`, slotID, organizerID, capacity, eventID)
 	if err != nil {
 		return err
 	}

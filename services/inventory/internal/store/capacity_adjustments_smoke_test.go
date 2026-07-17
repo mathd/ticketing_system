@@ -210,3 +210,36 @@ func TestCapacityAdjustmentIdempotencyAndAudit(t *testing.T) {
 		t.Fatalf("adjust archived: %v", err)
 	}
 }
+
+// TKT-76 ai-review finding 2: the in-op expiry sweep reconciles a draining cut, so the
+// recorded capacity_before must be the settled value, not the pre-sweep clamp.
+func TestAdjustmentAfterExpirySettlesBeforeRecording(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 10, 0, "", "", "settle-hold"); err != nil {
+		t.Fatal(err)
+	}
+	adj, _, err := st.AdjustCapacity(ctx, org, slot, 5, "staff", "cut", "settle-cut")
+	if err != nil || adj.Status != "clamped" || adj.Capacity != 10 {
+		t.Fatalf("cut: %v %+v", err, adj)
+	}
+	if _, err = db.ExecContext(ctx, `UPDATE claims SET expires_at=now()-interval '1 second' WHERE pool_id=$1 AND status='held'`, slot); err != nil {
+		t.Fatal(err)
+	}
+	// The next adjustment sweeps, settles the cut at its target (5), and must record
+	// THAT as capacity_before.
+	adj, _, err = st.AdjustCapacity(ctx, org, slot, 200, "staff", "expand", "settle-raise")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adj.CapacityBefore != 5 || adj.Capacity != 200 || adj.Status != "applied" || adj.TargetCapacity != nil {
+		t.Fatalf("post-expiry adjustment %+v", adj)
+	}
+	entries, err := st.CapacityHistory(ctx, org, slot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := entries[len(entries)-1]; last.Quantity != 5 || last.QuantityAfter != 200 {
+		t.Fatalf("audit from→to %+v", last)
+	}
+}

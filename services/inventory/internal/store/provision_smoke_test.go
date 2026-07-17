@@ -94,3 +94,24 @@ func TestProvisionDoesNotOverwriteAdjustedPoolWithClaims(t *testing.T) {
 		t.Fatalf("republish overwrote adjusted pool: capacity=%d target=%v", capacity, target)
 	}
 }
+
+// TKT-76 ai-review finding 1: an APPLIED adjustment on a claim-free pool looks exactly
+// like an untouched pool to the old guard — a later publication event must not restore
+// catalog's snapshot over it. Inventory owns capacity after any adjustment.
+func TestProvisionDoesNotOverwriteAdjustedEmptyPool(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	if _, _, err := st.AdjustCapacity(ctx, org, slot, 80, "staff", "resize", "empty-adjust"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Provision(ctx, uuid.New(), slot, org, 500); err != nil {
+		t.Fatal(err)
+	}
+	var capacity int32
+	if err := db.QueryRowContext(ctx, `SELECT capacity FROM inventory_pools WHERE slot_id=$1`, slot).Scan(&capacity); err != nil {
+		t.Fatal(err)
+	}
+	if capacity != 80 {
+		t.Fatalf("republish overwrote adjusted empty pool: capacity=%d", capacity)
+	}
+}

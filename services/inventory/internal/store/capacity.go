@@ -60,6 +60,12 @@ func (p *Postgres) AdjustCapacity(ctx context.Context, org, slot uuid.UUID, newC
 	if err = sweepExpired(ctx, tx, slot); err != nil {
 		return CapacityAdjustment{}, false, err
 	}
+	// The sweep reconciles a draining cut, so the pre-sweep read is stale: re-read under
+	// the same lock so capacity_before records the settled, operator-visible value
+	// (ai-review finding 2).
+	if err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity FROM inventory_pools WHERE slot_id=$1`, slot).Scan(&capacity, &confirmed); err != nil {
+		return CapacityAdjustment{}, false, err
+	}
 	var held int32
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims, slot).Scan(&held); err != nil {
 		return CapacityAdjustment{}, false, err
