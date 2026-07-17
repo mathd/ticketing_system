@@ -1,0 +1,12 @@
+{
+  "key": "TKT-90",
+  "type": "Task",
+  "summary": "Inventory offering-state reconciliation beyond stream retention and readiness catch-up gating",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "TKT-75's ai-review (finding 2) named two gaps in how inventory converges on catalog offering state.\n\n1. **Beyond retention**: the multi-subject durable backfills pre-existing dead pools by replaying retained archive/closure events (PLATFORM is currently `--retention limits --defaults`, i.e. unbounded locally). If the stream ever drops those events (retention policy change, disaster recovery), a pool that died before the replay window stays open forever. An authoritative catalog reconciliation (bulk read of slot offer state) would close it.\n\n2. **Ready-before-catch-up**: Consumer.Run reports ready before the durable's backlog drains, so a freshly deployed/restarted inventory can grant holds on a pool whose closure event is still in the backlog. Pre-existing behavior (symmetric with publications, where the failure mode is fail-closed 404); for offering state the asymmetry is fail-open. Consider gating readiness on consumer lag or an initial reconciliation pass.\n\nNeither is reachable in the current single-compose testbed (full retention, fresh stacks); both matter the day there is a long-lived environment.\n\nOrigin: PR #56 review, triaged partially-valid; replay covers the testbed.",
+  "comments": []
+}
