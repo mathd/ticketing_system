@@ -2,11 +2,19 @@
   "key": "TKT-90",
   "type": "Task",
   "summary": "Inventory offering-state reconciliation beyond stream retention and readiness catch-up gating",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [],
   "description": "TKT-75's ai-review (finding 2) named two gaps in how inventory converges on catalog offering state.\n\n1. **Beyond retention**: the multi-subject durable backfills pre-existing dead pools by replaying retained archive/closure events (PLATFORM is currently `--retention limits --defaults`, i.e. unbounded locally). If the stream ever drops those events (retention policy change, disaster recovery), a pool that died before the replay window stays open forever. An authoritative catalog reconciliation (bulk read of slot offer state) would close it.\n\n2. **Ready-before-catch-up**: Consumer.Run reports ready before the durable's backlog drains, so a freshly deployed/restarted inventory can grant holds on a pool whose closure event is still in the backlog. Pre-existing behavior (symmetric with publications, where the failure mode is fail-closed 404); for offering state the asymmetry is fail-open. Consider gating readiness on consumer lag or an initial reconciliation pass.\n\nNeither is reachable in the current single-compose testbed (full retention, fresh stacks); both matter the day there is a long-lived environment.\n\nOrigin: PR #56 review, triaged partially-valid; replay covers the testbed.",
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed by agent** — fully autonomous run, Ready→Done in one pass.\n\n**Gate waiver (recorded per owner instruction):** the repo owner has explicitly waived all four human gates for this ticket as a process experiment. Gate 1 was given by the ticket sitting in Ready; Gates 2–4 are replaced by agent self-decisions per the owner's directive: plan decisions resolved by the agent (preferring the critique's recommendation, else the most reversible option), agent squash-merges after converged ai-review, agent self-validates COS against test evidence. All other skill rules unchanged: config.models routing (plan/aiReview = kimi-k3:medium@claudex, planReview/implement = main-agent), cross-model review both directions, TDD red-first, `make check` green before every push and after merge, no AI attribution.\n\n**Selection reason:** ticket is in Ready with zero open blockers, zero links. Branch: `TKT-90-inventory-offering-reconciliation` off origin/main (affb0cb).\n\n**Note:** ticket carries no context-mémo (`context` object absent) and no `readiness` block — it entered Ready without the shaping bake. Proceeding; governing ADRs will be resolved fresh from docs/adr/ at plan time, which is the required re-resolution step anyway."
+    }
+  ]
 }
