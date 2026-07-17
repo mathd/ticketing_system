@@ -30,10 +30,17 @@ type Drainer struct {
 	interval  time.Duration
 	batch     int
 	lease     time.Duration
+	backfill  func(context.Context) (int, error)
 	log       *slog.Logger
 }
 
-func New(db store.OutboxDB, publisher Publisher, interval time.Duration, batch int, log *slog.Logger) *Drainer {
+// New's backfill, when non-nil, is one-shot data repair run at the top of Run —
+// before the initial drain, so repaired rows publish immediately instead of
+// waiting a full interval. It lives here rather than on the startup path so its
+// cost and its failures belong to a background worker, never to readiness
+// (TKT-71): an error is logged and the drainer keeps draining; the next boot
+// retries by construction.
+func New(db store.OutboxDB, publisher Publisher, interval time.Duration, batch int, backfill func(context.Context) (int, error), log *slog.Logger) *Drainer {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -47,13 +54,20 @@ func New(db store.OutboxDB, publisher Publisher, interval time.Duration, batch i
 	// cover the slowest plausible batch, not a single publish. Sized from the batch
 	// with a floor; too short and a drainer's own later rows get stolen mid-pass.
 	lease := time.Duration(batch)*2*time.Second + 30*time.Second
-	return &Drainer{db: db, publisher: publisher, interval: interval, batch: batch, lease: lease, log: log}
+	return &Drainer{db: db, publisher: publisher, interval: interval, batch: batch, lease: lease, backfill: backfill, log: log}
 }
 
 // Run drains until ctx is cancelled. It drains once immediately: on restart, rows
 // owed by the process that died are the whole point, and waiting a full interval to
 // notice them would leave tickets unissued for no reason.
 func (d *Drainer) Run(ctx context.Context) {
+	if d.backfill != nil {
+		if owed, err := d.backfill(ctx); err != nil {
+			d.log.ErrorContext(ctx, "backfill completion outbox", "err", err)
+		} else if owed > 0 {
+			d.log.InfoContext(ctx, "backfilled owed completion events", "count", owed)
+		}
+	}
 	d.DrainOnce(ctx)
 	t := time.NewTicker(d.interval)
 	defer t.Stop()

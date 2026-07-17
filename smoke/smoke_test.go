@@ -423,6 +423,61 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 	}
 }
 
+// TestCommerceStartsWithoutRunningBackfill: commerce startup does no data work
+// that can fail the service (TKT-71). The completion-outbox backfill lives behind
+// the drainer, so a commerce process pointed at an *unmigrated* database — where
+// the backfill's query can only error — must still become healthy. Before TKT-71
+// that process exited on the failed backfill before ever listening; the passing
+// healthcheck is what proves the coupling is gone. Same probe method as
+// TestServerModeDoesNotMigrate, and the healthcheck doubles as the positive
+// control against a vacuous pass.
+func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	const probeDB = "backfill_probe"
+	pg := project + "-postgres-1"
+	psql := func(sql string) {
+		t.Helper()
+		if out, err := exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-v", "ON_ERROR_STOP=1", "-c", sql).CombinedOutput(); err != nil {
+			t.Fatalf("psql %q: %v: %s", sql, err, out)
+		}
+	}
+	psql("DROP DATABASE IF EXISTS " + probeDB)
+	psql("CREATE DATABASE " + probeDB + " OWNER commerce")
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-c", "DROP DATABASE IF EXISTS "+probeDB).Run()
+	})
+
+	probe := project + "-backfill-probe"
+	_ = exec.Command("docker", "rm", "-f", probe).Run()
+	out, err := exec.Command("docker", "run", "-d", "--name", probe,
+		"--network", project+"_default",
+		"-e", fmt.Sprintf("DATABASE_URL=postgres://commerce:commerce@postgres:5432/%s", probeDB),
+		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
+		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		"-e", "CATALOG_URL=http://catalog:8080",
+		"-e", "INVENTORY_URL=http://inventory:8080",
+		"-e", "PAYMENTS_URL=http://payments:8080",
+		project+"-commerce").CombinedOutput()
+	if err != nil {
+		t.Fatalf("start probe: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", probe).Run() })
+
+	for exec.Command("docker", "exec", probe, "/app", "healthcheck").Run() != nil {
+		if ctx.Err() != nil {
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", probe).CombinedOutput()
+			t.Fatalf("commerce never became healthy against an unmigrated database — startup "+
+				"still depends on data work (TKT-71); logs:\n%s", logs)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 // TestMetricsIngested asserts application metrics flow to the otel-lgtm
 // Prometheus after real traffic.
 func TestMetricsIngested(t *testing.T) {

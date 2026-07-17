@@ -162,6 +162,10 @@ never before; this is not that change.
       It stays on the server path by the TKT-66 gate's decision, with the ceiling filed as TKT-71 —
       recorded rather than hidden: this decision removed migrations from startup, **not** all
       startup-coupled data work.
+      *Update (TKT-71, 2026-07-17):* the backfill now runs behind the outbox drainer — once per
+      process, before the first drain pass, error logged rather than fatal — so commerce's startup
+      path no longer does data work that can delay or fail readiness. The exception this paragraph
+      records is closed; `smoke/smoke_test.go` `TestCommerceStartsWithoutRunningBackfill` pins it.
     - Correct ordering is now an orchestration invariant. A missing `service_completed_successfully`
       edge starts a service against an old schema — invisible to `/healthz`, which only pings the
       connection. The version assertion in `smoke/smoke_test.go` exists for exactly this.
