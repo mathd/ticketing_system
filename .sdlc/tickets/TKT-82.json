@@ -2,9 +2,11 @@
   "key": "TKT-82",
   "type": "Story",
   "summary": "US-019: On-sale load proof — the sustained no-oversell gate",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "description": "### US-019: On-sale load proof — the sustained no-oversell gate\n**As** the owner, **I want** a sustained adversarial load test proving no-oversell and acceptable\nlatency on the claim path, so the festival-scale NFR is measured, not asserted. **Priority:** P1\n**Depends on:** —\n**Acceptance Criteria:**\n- [ ] A load harness (tool chosen at Planning) drives the real gateway→inventory hold/finalize/\n      confirm path against a hot pool with a **sustained** profile derived from the NFR\n      (thousands of checkout attempts/min for minutes, not a burst); asserts zero oversell and\n      records latency percentiles + the per-pool throughput ceiling (ADR-010 deliberately\n      serializes a hot pool — this story publishes the measured number the waiting-room design\n      (TKT-20) must respect).\n- [ ] A scaled **gate profile** runs in `make check` within the existing gate-time budget; the\n      **full NFR profile** is a documented on-demand target (owner decision at Gate 1 confirms\n      this split — the epic COS says \"in the gate\", full-scale locally in every gate run is the\n      open question).\n- [ ] Results land in `docs/` (evidence format per `docs/testing.md`); TKT-31/TKT-37 reuse the\n      harness (read-path and observability profiles are their scope, non-goal here).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.\n\n**Amended at TKT-77 closeout (2026-07-16):** the load profile must also measure the per-mutation `claim_history` INSERT overhead TKT-77 added inside the pool-locked transaction (ADR-023 §Consequences) — report it as its own line beside the per-pool throughput ceiling.",
   "links": [],
@@ -86,6 +88,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nOwner decision at Gate 1 (2026-07-16): the load-proof split is accepted — a scaled **sustained** profile runs inside `make check` (gate-time budget respected); the **full festival-NFR profile** (thousands of checkout attempts/min sustained, 50–100k capacity pool) is a documented on-demand target, not part of every gate run. This satisfies the epic COS reading of 'sustained load test in the gate'. Readiness `scope` flipped open → met."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed TKT-82. Zero open blockers (no links on the ticket). Selection reason: only ticket in Ready; readiness 8/8 (uncertainties deferred to Planning by design — tool choice + gate-profile numbers). Branch: TKT-82-onsale-load-proof off origin/main."
     }
   ]
 }
