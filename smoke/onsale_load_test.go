@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,10 +232,18 @@ func writeReport(t *testing.T, r *loadtest.Report) {
 }
 
 func gitSHA() string {
-	if b, err := os.ReadFile(filepath.Join("..", ".git", "HEAD")); err == nil {
-		return string(bytes.TrimSpace(b))
+	b, err := os.ReadFile(filepath.Join("..", ".git", "HEAD"))
+	if err != nil {
+		return "unknown"
 	}
-	return "unknown"
+	head := string(bytes.TrimSpace(b))
+	if ref, ok := strings.CutPrefix(head, "ref: "); ok {
+		if b, err := os.ReadFile(filepath.Join("..", ".git", filepath.FromSlash(ref))); err == nil {
+			return string(bytes.TrimSpace(b))
+		}
+		return head
+	}
+	return head
 }
 
 func TestOnsaleLoadProof(t *testing.T) {

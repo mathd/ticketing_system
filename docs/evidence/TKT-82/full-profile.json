@@ -1,13 +1,13 @@
 {
   "ticket": "TKT-82",
   "profile": "full",
-  "git_sha": "ref: refs/heads/TKT-82-onsale-load-proof",
+  "git_sha": "850413e951bfe1474956d72d9d4fe10bc72ed694 (amended: harness recorded the ref; SHA resolved post-run, same tree)",
   "host": {
     "os": "darwin",
     "arch": "arm64",
     "cpus": 12
   },
-  "notes": "local compose topology; DB_MAX_OPEN_CONNS=25; single-host client+server — see docs/verification/on-sale-load/README.md",
+  "notes": "local compose topology; DB_MAX_OPEN_CONNS=25; single-host client+server \u2014 see docs/verification/on-sale-load/README.md",
   "stages": [
     {
       "name": "warmup",
