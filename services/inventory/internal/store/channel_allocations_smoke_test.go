@@ -328,3 +328,51 @@ func TestReleaseCutoffHoldsUnderPoolLockContention(t *testing.T) {
 		t.Fatalf("queued channel hold crossed the release cutoff: got %v want ErrUnavailable", err)
 	}
 }
+
+// TKT-76: a capacity cut does not resize channel allocations — caps are upper bounds,
+// not guaranteed inventory. The target bounds every claim path; replacement sets are
+// validated against the requested target, not the materialized clamp floor.
+func TestCapacityCutWithOversizedChannelAllocations(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 60}})
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 20, 0, "", "presale", "cut-pre"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cut above demand (20) but below the allocation cap sum (60): applies fully.
+	adj, _, err := st.AdjustCapacity(ctx, org, slot, 30, "staff", "reconfig", "cut-30")
+	if err != nil || adj.Status != "applied" || adj.Capacity != 30 {
+		t.Fatalf("cut: %v %+v", err, adj)
+	}
+	// The oversized allocation row is untouched.
+	var cap32 int32
+	if err = db.QueryRowContext(ctx, `SELECT cap FROM channel_allocations WHERE pool_id=$1 AND channel_code='presale'`, slot).Scan(&cap32); err != nil {
+		t.Fatal(err)
+	}
+	if cap32 != 60 {
+		t.Fatalf("allocation resized to %d", cap32)
+	}
+	// Channel headroom (60) no longer decides alone: the pool target (30) does.
+	if _, _, err = st.CreateHold(ctx, org, slot, uuid.Nil, 15, 0, "", "presale", "cut-over"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("hold past target: %v", err)
+	}
+	if _, _, err = st.CreateHold(ctx, org, slot, uuid.Nil, 10, 0, "", "presale", "cut-fits"); err != nil {
+		t.Fatalf("hold within target: %v", err)
+	}
+	// A replacement set exceeding the requested capacity rejects.
+	if _, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 40}}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("oversized replacement: %v", err)
+	}
+	if _, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 30}}); err != nil {
+		t.Fatalf("fitting replacement: %v", err)
+	}
+	// Availability stays clamped, never negative.
+	a, err := st.Availability(ctx, org, slot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Capacity != 30 || a.Available < 0 {
+		t.Fatalf("availability %+v", a)
+	}
+}

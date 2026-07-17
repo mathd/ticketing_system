@@ -200,3 +200,66 @@ func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
 		}
 	}
 }
+
+func TestCapacityAdjustmentEndpointsRequireInternalCredential(t *testing.T) {
+	s := New(nil, "secret")
+	id := "00000000-0000-0000-0000-000000000001"
+	body := `{"organizer_id":"00000000-0000-0000-0000-000000000002","capacity":50,"actor":"staff:amy","reason":"reconfig"}`
+	requests := map[string]func() *http.Request{
+		"adjust": func() *http.Request {
+			return httptest.NewRequest(http.MethodPost, "/internal/slots/"+id+"/capacity-adjustments", bytes.NewBufferString(body))
+		},
+		"history": func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "/internal/slots/"+id+"/capacity-adjustments?organizer_id="+id, nil)
+		},
+	}
+	for name, make := range requests {
+		for _, token := range []string{"", "wrong"} {
+			r := make()
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Idempotency-Key", "k")
+			if token != "" {
+				r.Header.Set("X-Internal-Token", token)
+			}
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, r)
+			if res.Code != http.StatusUnauthorized {
+				t.Fatalf("%s token %q: status=%d want=%d", name, token, res.Code, http.StatusUnauthorized)
+			}
+		}
+	}
+}
+
+func TestCapacityAdjustmentRejectsBadShapes(t *testing.T) {
+	s := New(nil, "secret")
+	id := "00000000-0000-0000-0000-000000000001"
+	org := `"organizer_id":"00000000-0000-0000-0000-000000000002"`
+	for name, body := range map[string]string{
+		"zero capacity":     `{` + org + `,"capacity":0,"actor":"staff:amy","reason":"r"}`,
+		"negative capacity": `{` + org + `,"capacity":-5,"actor":"staff:amy","reason":"r"}`,
+		"missing actor":     `{` + org + `,"capacity":50,"reason":"r"}`,
+		"missing reason":    `{` + org + `,"capacity":50,"actor":"staff:amy"}`,
+		"unknown field":     `{` + org + `,"capacity":50,"actor":"staff:amy","reason":"r","extra":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/internal/slots/"+id+"/capacity-adjustments", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "k")
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			s.Router().ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+			}
+		})
+	}
+	// A missing Idempotency-Key rejects before any store work.
+	req := httptest.NewRequest(http.MethodPost, "/internal/slots/"+id+"/capacity-adjustments", bytes.NewBufferString(`{`+org+`,"capacity":50,"actor":"staff:amy","reason":"r"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", "secret")
+	res := httptest.NewRecorder()
+	s.Router().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("missing key: status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
+	}
+}

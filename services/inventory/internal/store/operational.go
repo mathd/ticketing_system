@@ -37,6 +37,7 @@ type ConvertResult struct {
 type StaffAvailability struct {
 	SlotID          uuid.UUID             `json:"slot_id"`
 	Capacity        int32                 `json:"capacity"`
+	TargetCapacity  *int32                `json:"target_capacity,omitempty"`
 	BuyerHeld       int32                 `json:"buyer_held"`
 	OperationalHeld int32                 `json:"operational_held"`
 	Confirmed       int32                 `json:"confirmed"`
@@ -54,7 +55,10 @@ type HistoryEntry struct {
 	QuantityAfter  int32      `json:"quantity_after"`
 	StatusAfter    string     `json:"status_after"`
 	RelatedClaimID *uuid.UUID `json:"related_claim_id,omitempty"`
-	OccurredAt     time.Time  `json:"occurred_at"`
+	// TargetCapacity is set only on capacity-adjustment records (TKT-76): the requested
+	// target while a clamped cut drains.
+	TargetCapacity *int32    `json:"target_capacity,omitempty"`
+	OccurredAt     time.Time `json:"occurred_at"`
 }
 
 func opFingerprint(parts ...any) string {
@@ -65,20 +69,23 @@ func opFingerprint(parts ...any) string {
 // pool-locked transaction. found=true means the operation already happened: the returned
 // row is its immutable outcome. A fingerprint mismatch is a key reuse.
 type registryRow struct {
-	claimID       uuid.UUID
-	relatedID     *uuid.UUID
-	action        string
-	quantity      int32
-	quantityAfter int32
-	statusAfter   string
+	claimID        uuid.UUID
+	relatedID      *uuid.UUID
+	action         string
+	quantity       int32
+	quantityAfter  int32
+	statusAfter    string
+	targetCapacity *int32
 }
 
 func registryLookup(ctx context.Context, tx *sql.Tx, org uuid.UUID, key, fp string) (registryRow, bool, error) {
 	var row registryRow
 	var storedFP string
-	err := tx.QueryRowContext(ctx, `SELECT claim_id,related_claim_id,action,quantity,quantity_after,status_after,COALESCE(request_fingerprint,'')
+	// Pool-level capacity records carry a NULL claim_id (TKT-76): coalesce so the scan
+	// stays shape-agnostic; capacity callers read targetCapacity instead.
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(claim_id,'00000000-0000-0000-0000-000000000000'::uuid),related_claim_id,action,quantity,quantity_after,status_after,target_capacity,COALESCE(request_fingerprint,'')
 		FROM claim_history WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&row.claimID, &row.relatedID, &row.action, &row.quantity, &row.quantityAfter, &row.statusAfter, &storedFP)
+		Scan(&row.claimID, &row.relatedID, &row.action, &row.quantity, &row.quantityAfter, &row.statusAfter, &row.targetCapacity, &storedFP)
 	if errors.Is(err, sql.ErrNoRows) {
 		return registryRow{}, false, nil
 	}
@@ -102,13 +109,19 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	}
 	defer func() { _ = tx.Rollback() }()
 	var capacity, confirmed int32
+	var target sql.NullInt32
 	var lifecycle, closure string
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &lifecycle, &closure)
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OperationalHold{}, false, ErrNotFound
 	}
 	if err != nil {
 		return OperationalHold{}, false, err
+	}
+	// Staff holds are new demand too: a draining cut (TKT-76) bounds them by the target.
+	limit := capacity
+	if target.Valid {
+		limit = target.Int32
 	}
 	prior, found, err := registryLookup(ctx, tx, org, key, fp)
 	if err != nil {
@@ -130,7 +143,7 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 		return OperationalHold{}, false, err
 	}
 	// int64 math: three valid int32 counters can wrap a 32-bit sum (ai-review finding 4).
-	if int64(confirmed)+int64(held)+int64(qty) > int64(capacity) {
+	if int64(confirmed)+int64(held)+int64(qty) > int64(limit) {
 		return OperationalHold{}, false, ErrUnavailable
 	}
 	h := OperationalHold{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Purpose: purpose, Label: label, Status: "held"}
@@ -218,6 +231,10 @@ func (p *Postgres) ReleaseOperational(ctx context.Context, org, id uuid.UUID, qt
 		return OperationalHold{}, false, err
 	}
 	if err = appendHistory(ctx, tx, org, id, nil, "release", actor, reason, qty, remaining, status, &key, &fp); err != nil {
+		return OperationalHold{}, false, err
+	}
+	// Release lowers demand: settle a draining capacity cut (TKT-76).
+	if err = reconcileCapacity(ctx, tx, pool); err != nil {
 		return OperationalHold{}, false, err
 	}
 	h := OperationalHold{ID: id, OrganizerID: org, PoolID: pool, Quantity: remaining, Purpose: c.Purpose, Label: c.Label, Status: status, ServerTime: c.ServerTime}
@@ -325,12 +342,13 @@ func (p *Postgres) History(ctx context.Context, org, id uuid.UUID) ([]HistoryEnt
 
 func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (StaffAvailability, error) {
 	a := StaffAvailability{SlotID: slot}
+	var target sql.NullInt32
 	var lifecycle, closure string
-	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,lifecycle_status,closure_status,
+	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status,
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='buyer' AND `+liveClaims+`),
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='operational' AND `+liveClaims+`)
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).
-		Scan(&a.Capacity, &a.Confirmed, &lifecycle, &closure, &a.BuyerHeld, &a.OperationalHeld)
+		Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.BuyerHeld, &a.OperationalHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -338,6 +356,12 @@ func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (
 		return a, err
 	}
 	a.OfferingStatus = offeringStatus(lifecycle, closure)
+	// Staff see both sides of a draining cut (TKT-76): the effective clamp floor as
+	// capacity, the eventual target separately.
+	a.Capacity = effectiveCapacity(a.Capacity, target, a.Confirmed, a.BuyerHeld+a.OperationalHeld)
+	if target.Valid {
+		a.TargetCapacity = &target.Int32
+	}
 	a.Available = a.Capacity - a.Confirmed - a.BuyerHeld - a.OperationalHeld
 	remaining := int64(a.Available)
 	if a.OfferingStatus != "open" {

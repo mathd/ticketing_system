@@ -693,6 +693,26 @@ func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
 			t.Fatalf("public festival missing day %s: %s", dayID, body)
 		}
 	}
+	// TKT-76 AC3: the group is the pool — one internal adjustment moves the shared
+	// capacity, and public availability reflects it within its ADR-004 5s tier.
+	adjustURL := fmt.Sprintf("%s/internal/slots/%v/capacity-adjustments", inventoryURL, festival["id"])
+	if code, body := internalJSON(t, http.MethodPost, adjustURL, "fest-adjust-"+suffix, map[string]any{
+		"organizer_id": organizerID, "capacity": 800, "actor": "staff:amy", "reason": "festival resize",
+	}); code != http.StatusCreated {
+		t.Fatalf("festival adjust: %d %s", code, body)
+	}
+	code, body, headers = getWithHeaders(t, fmt.Sprintf("%s/api/inventory/slots/%v/availability?organizer_id=%s", gatewayURL, festival["id"], organizerID))
+	if code != http.StatusOK || headers.Get("Cache-Control") != "public, max-age=5, s-maxage=5" {
+		t.Fatalf("festival availability after adjust: %d cache=%q %s", code, headers.Get("Cache-Control"), body)
+	}
+	var avail struct{ Capacity, Available int32 }
+	if err := json.Unmarshal(body, &avail); err != nil {
+		t.Fatal(err)
+	}
+	if avail.Capacity != 800 || avail.Available != 800 {
+		t.Fatalf("festival group adjustment not reflected: %+v", avail)
+	}
+
 	archiveURL := fmt.Sprintf("%s/festivals/%v/archive", catalog, festival["id"])
 	if code, body := postJSON(t, archiveURL, nil); code != http.StatusOK {
 		t.Fatalf("festival archive: %d %s", code, body)
