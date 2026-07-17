@@ -1,0 +1,18 @@
+{
+  "key": "TKT-92",
+  "type": "Task",
+  "summary": "Load-harness generator health: client/server error taxonomy + connection bounding",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "From TKT-82 ai-review pass 3 (incidental): the on-sale load harness (smoke/internal/loadtest) classifies all attempt errors identically, so client-side transport/resource exhaustion is indistinguishable from server instability in the ceiling bracket; the shared HTTP transport also has unbounded active connections at high sweep rates (cap rate*4 permits 12k concurrent at 3,000/s). Harden before TKT-31/TKT-37 reuse the harness: (1) classify transport-level errors (err != nil) separately from HTTP-status errors and treat client-side classes as inconclusive, not unstable; (2) bound and report client connections/goroutines; (3) unit tests for late-scheduling-without-drops and drops-with-client-errors. The lag-p99 schedule guard and the cap-drops-with-SLO-met inconclusive rule shipped in TKT-82.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated from TKT-82 ai-review pass 3 finding (triaged incidental): generator-health taxonomy is harness hardening beyond what TKT-82's published claim needs — its accepted evidence run is clean (lag p99 0.4ms, zero errors). Natural home: whichever of TKT-31/TKT-37 first reuses the harness."
+    }
+  ]
+}
