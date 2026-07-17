@@ -27,7 +27,7 @@ const (
 type catalogStore interface {
 	Provision(ctx context.Context, eventID, slotID, organizerID uuid.UUID, capacity int32) error
 	ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) error
-	ApplyClosure(ctx context.Context, eventID, pool uuid.UUID, closed bool, version int32) error
+	ApplyClosure(ctx context.Context, eventID, pool, performance uuid.UUID, closed bool, version int32) error
 }
 
 type Consumer struct {
@@ -164,6 +164,15 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		// deliberately untouched: a broken producer must not be able to take inventory down.
 		c.log.Error("invalid catalog event", "subject", msg.Subject(), "event_id", env.ID,
 			"schema", env.Schema, "err", "envelope has no usable schema")
+		_ = msg.Term()
+		return
+	}
+	if env.ID == uuid.Nil {
+		// `id` is stable across every schema variant (ADR-009 §5), so its absence is a broken
+		// envelope even when the schema claims to be from the future — parking it would NAK
+		// forever and latch readiness for an event no binary will ever apply (ai-review finding 3).
+		c.log.Error("invalid catalog event", "subject", msg.Subject(), "schema", env.Schema,
+			"err", "envelope has no usable id")
 		_ = msg.Term()
 		return
 	}
@@ -315,7 +324,7 @@ func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env env
 	if resolved.CapacityGroupID != nil && *resolved.CapacityGroupID != uuid.Nil {
 		pool = *resolved.CapacityGroupID
 	}
-	c.applyOffering(msg, env.ID, func() error { return c.st.ApplyClosure(ctx, env.ID, pool, closed, d.Version) })
+	c.applyOffering(msg, env.ID, func() error { return c.st.ApplyClosure(ctx, env.ID, pool, d.PerformanceID, closed, d.Version) })
 }
 
 // applyOffering shares the store-outcome disposition for archive/closure mutations:

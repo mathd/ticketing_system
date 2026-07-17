@@ -44,9 +44,9 @@ func guardOffering(lifecycle, closure string) error {
 // lockPoolOffering locks the pool row (ADR-010) and returns its offering axes.
 // ErrNotFound is returned BEFORE any consumed_events write so the caller's event
 // stays unconsumed and can be redelivered once the pool is provisioned.
-func lockPoolOffering(ctx context.Context, tx *sql.Tx, pool uuid.UUID) (lifecycle, closure string, version int32, err error) {
-	err = tx.QueryRowContext(ctx, `SELECT lifecycle_status,closure_status,closure_version FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, pool).
-		Scan(&lifecycle, &closure, &version)
+func lockPoolOffering(ctx context.Context, tx *sql.Tx, pool uuid.UUID) (lifecycle, closure string, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, pool).
+		Scan(&lifecycle, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -73,7 +73,7 @@ func (p *Postgres) ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) er
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, _, _, err = lockPoolOffering(ctx, tx, pool); err != nil {
+	if _, _, err = lockPoolOffering(ctx, tx, pool); err != nil {
 		return err
 	}
 	fresh, err := consumeEvent(ctx, tx, eventID)
@@ -89,31 +89,43 @@ func (p *Postgres) ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) er
 	return tx.Commit()
 }
 
-// ApplyClosure applies a closed/reopened transition at the given catalog closure
-// version. Stale versions (a delayed closed(v1) after reopened(v2)) consume their
-// event but change nothing — the version counter is the ordering authority.
-func (p *Postgres) ApplyClosure(ctx context.Context, eventID, pool uuid.UUID, closed bool, version int32) error {
+// ApplyClosure applies a closed/reopened transition for one performance at that
+// performance's monotonic catalog closure version. Versions are ordered PER SLOT —
+// grouped festival days share a pool but never a counter — and the pool's
+// closure_status is derived under the lock: any closed member closes the pool
+// (owner decision at Gate 2; day-level offer state is TKT-14's). A stale version
+// (a delayed closed(v1) after that slot's reopened(v2)) consumes its event but
+// changes nothing.
+func (p *Postgres) ApplyClosure(ctx context.Context, eventID, pool, performance uuid.UUID, closed bool, version int32) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, _, current, err := lockPoolOffering(ctx, tx, pool)
-	if err != nil {
+	if _, _, err = lockPoolOffering(ctx, tx, pool); err != nil {
 		return err
 	}
 	fresh, err := consumeEvent(ctx, tx, eventID)
 	if err != nil {
 		return err
 	}
-	if !fresh || version <= current {
+	if !fresh {
 		return tx.Commit()
 	}
 	status := "open"
 	if closed {
 		status = "closed"
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET closure_status=$1,closure_version=$2,updated_at=now() WHERE slot_id=$3`, status, version, pool); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO pool_slot_closures(pool_id,performance_id,closure_status,closure_version)
+		VALUES($1,$2,$3,$4)
+		ON CONFLICT(pool_id,performance_id) DO UPDATE SET closure_status=EXCLUDED.closure_status,closure_version=EXCLUDED.closure_version,updated_at=now()
+		WHERE pool_slot_closures.closure_version < EXCLUDED.closure_version`, pool, performance, status, version); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET closure_status=CASE
+			WHEN EXISTS(SELECT 1 FROM pool_slot_closures WHERE pool_id=$1 AND closure_status='closed') THEN 'closed'
+			ELSE 'open' END, updated_at=now()
+		WHERE slot_id=$1`, pool); err != nil {
 		return err
 	}
 	return tx.Commit()

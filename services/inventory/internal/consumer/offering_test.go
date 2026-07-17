@@ -26,6 +26,7 @@ const (
 
 type closureCall struct {
 	pool    uuid.UUID
+	perf    uuid.UUID
 	closed  bool
 	version int32
 }
@@ -47,11 +48,11 @@ func (s *fakeCatalogStore) ApplyArchive(_ context.Context, _ uuid.UUID, pool uui
 	s.archived = append(s.archived, pool)
 	return nil
 }
-func (s *fakeCatalogStore) ApplyClosure(_ context.Context, _ uuid.UUID, pool uuid.UUID, closed bool, version int32) error {
+func (s *fakeCatalogStore) ApplyClosure(_ context.Context, _ uuid.UUID, pool, perf uuid.UUID, closed bool, version int32) error {
 	if s.err != nil {
 		return s.err
 	}
-	s.closures = append(s.closures, closureCall{pool, closed, version})
+	s.closures = append(s.closures, closureCall{pool, perf, closed, version})
 	return nil
 }
 
@@ -77,6 +78,7 @@ func TestArchivedEventDispositions(t *testing.T) {
 		{"grouped archive applies to the festival pool", grouped, nil, "ack", true, grpID},
 		{"future schema is parked and latches unready", `{` + evtID + `,"schema":4,"data":{"slot_ref":"a"}}`, nil, "nak-delay", false, ""},
 		{"schema zero is poison", `{` + evtID + `,"schema":0,"data":{}}`, nil, "term", true, ""},
+		{"future schema without an id is poison, not skew", `{"schema":9,"data":{"slot_ref":"a"}}`, nil, "term", true, ""},
 		{"schema below the first archived variant is poison", `{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`, nil, "term", true, ""},
 		{"missing identifiers are poison", `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `"}}`, nil, "term", true, ""},
 		{"schema 2 carrying a group is poison", `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","capacity_group_id":"` + grpID + `"}}`, nil, "term", true, ""},
@@ -126,15 +128,17 @@ func TestClosureEventDispositions(t *testing.T) {
 		wantCall   *closureCall
 	}{
 		{"closed applies at the slot pool", subjectClosed, closedV1,
-			fakeResolver{organizerID: org, capacity: 10}, nil, "ack", true, &closureCall{uuid.MustParse(perfID), true, 1}},
+			fakeResolver{organizerID: org, capacity: 10}, nil, "ack", true, &closureCall{uuid.MustParse(perfID), uuid.MustParse(perfID), true, 1}},
 		{"reopened applies at the slot pool", subjectReopened,
 			`{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","closure_version":2}}`,
-			fakeResolver{organizerID: org, capacity: 10}, nil, "ack", true, &closureCall{uuid.MustParse(perfID), false, 2}},
+			fakeResolver{organizerID: org, capacity: 10}, nil, "ack", true, &closureCall{uuid.MustParse(perfID), uuid.MustParse(perfID), false, 2}},
 		{"grouped day converges on the festival pool", subjectClosed, closedV1,
-			fakeResolver{organizerID: org, capacityGroupID: &grp, sharedCapacity: ptr(int32(100))}, nil, "ack", true, &closureCall{grp, true, 1}},
+			fakeResolver{organizerID: org, capacityGroupID: &grp, sharedCapacity: ptr(int32(100))}, nil, "ack", true, &closureCall{grp, uuid.MustParse(perfID), true, 1}},
 		{"future schema is parked and latches unready", subjectClosed,
 			`{` + evtID + `,"schema":2,"data":{"slot_ref":"a","state":"shut"}}`, nil, nil, "nak-delay", false, nil},
 		{"schema zero is poison", subjectClosed, `{` + evtID + `,"schema":0,"data":{}}`, nil, nil, "term", true, nil},
+		{"future schema without an id is poison, not skew", subjectClosed,
+			`{"schema":7,"data":{"state":"shut"}}`, nil, nil, "term", true, nil},
 		{"missing closure version is poison", subjectClosed,
 			`{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`, nil, nil, "term", true, nil},
 		{"no-longer-published slot is moot, not parked", subjectClosed, closedV1,
