@@ -2,10 +2,8 @@
   "key": "TKT-82",
   "type": "Story",
   "summary": "US-019: On-sale load proof — the sustained no-oversell gate",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/59",
