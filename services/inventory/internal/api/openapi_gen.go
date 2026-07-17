@@ -200,6 +200,35 @@ type Error struct {
 // ErrorCode Machine-readable conflict reason; present when a dead slot (not contention) rejected the request
 type ErrorCode string
 
+// GroupReservation defines model for GroupReservation.
+type GroupReservation struct {
+	Channel      *string            `json:"channel,omitempty"`
+	Counterparty string             `json:"counterparty"`
+	ExpiresAt    time.Time          `json:"expires_at"`
+	HoldId       openapi_types.UUID `json:"hold_id"`
+	OrganizerId  openapi_types.UUID `json:"organizer_id"`
+	Quantity     int                `json:"quantity"`
+	ServerTime   time.Time          `json:"server_time"`
+	SlotId       openapi_types.UUID `json:"slot_id"`
+	Status       string             `json:"status"`
+}
+
+// GroupReservationCreate defines model for GroupReservationCreate.
+type GroupReservationCreate struct {
+	Actor string `json:"actor"`
+
+	// Channel Optional sales channel; the reservation consumes that allocation and draw-down children inherit it
+	Channel      *string `json:"channel,omitempty"`
+	Counterparty string  `json:"counterparty"`
+
+	// ExpiresAt Explicit reservation expiry — must be in the future by DB time; never derived from the cart TTL
+	ExpiresAt   time.Time          `json:"expires_at"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Quantity    int                `json:"quantity"`
+	Reason      string             `json:"reason"`
+	SlotId      openapi_types.UUID `json:"slot_id"`
+}
+
 // HistoryEntry defines model for HistoryEntry.
 type HistoryEntry struct {
 	Action         string              `json:"action"`
@@ -304,7 +333,10 @@ type StaffAvailability struct {
 	OfferingStatus  StaffAvailabilityOfferingStatus `json:"offering_status"`
 	OperationalHeld int                             `json:"operational_held"`
 	PublicAvailable int                             `json:"public_available"`
-	SlotId          openapi_types.UUID              `json:"slot_id"`
+
+	// ReservationHeld Live group/agency reservation quantity (TKT-79)
+	ReservationHeld int                `json:"reservation_held"`
+	SlotId          openapi_types.UUID `json:"slot_id"`
 
 	// TargetCapacity Requested target while a clamped cut drains; absent otherwise
 	TargetCapacity *int `json:"target_capacity,omitempty"`
@@ -339,6 +371,21 @@ type FinalizeHoldParams struct {
 
 // ReleaseHoldParams defines parameters for ReleaseHold.
 type ReleaseHoldParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// PlaceGroupReservationParams defines parameters for PlaceGroupReservation.
+type PlaceGroupReservationParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// DrawDownGroupReservationParams defines parameters for DrawDownGroupReservation.
+type DrawDownGroupReservationParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetGroupReservationHistoryParams defines parameters for GetGroupReservationHistory.
+type GetGroupReservationHistoryParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 
@@ -387,6 +434,12 @@ type GetAvailabilityParams struct {
 
 // CreateHoldJSONRequestBody defines body for CreateHold for application/json ContentType.
 type CreateHoldJSONRequestBody = HoldCreate
+
+// PlaceGroupReservationJSONRequestBody defines body for PlaceGroupReservation for application/json ContentType.
+type PlaceGroupReservationJSONRequestBody = GroupReservationCreate
+
+// DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
+type DrawDownGroupReservationJSONRequestBody = OperationalConvert
 
 // PlaceOperationalHoldJSONRequestBody defines body for PlaceOperationalHold for application/json ContentType.
 type PlaceOperationalHoldJSONRequestBody = OperationalHoldCreate

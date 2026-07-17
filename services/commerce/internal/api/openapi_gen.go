@@ -126,6 +126,11 @@ type Id = openapi_types.UUID
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
+// DrawDownGroupReservationParams defines parameters for DrawDownGroupReservation.
+type DrawDownGroupReservationParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // ConvertOperationalHoldParams defines parameters for ConvertOperationalHold.
 type ConvertOperationalHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -140,6 +145,9 @@ type CheckoutParams struct {
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
+
+// DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
+type DrawDownGroupReservationJSONRequestBody = OperationalConversionCreate
 
 // ConvertOperationalHoldJSONRequestBody defines body for ConvertOperationalHold for application/json ContentType.
 type ConvertOperationalHoldJSONRequestBody = OperationalConversionCreate

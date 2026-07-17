@@ -92,6 +92,44 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/group-reservations:
+    post:
+      operationId: placeGroupReservation
+      summary: Place a long-lived group/agency reservation with an explicit expiry (not the cart TTL)
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GroupReservationCreate'}}}}
+      responses:
+        '200': {description: Replayed reservation, content: {application/json: {schema: {$ref: '#/components/schemas/GroupReservation'}}}}
+        '201': {description: Reservation placed, content: {application/json: {schema: {$ref: '#/components/schemas/GroupReservation'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /internal/group-reservations/{id}/draw-down:
+    post:
+      operationId: drawDownGroupReservation
+      summary: Atomically carve quantity out of a group reservation into a buyer hold (repeatable partial draw-down)
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalConvert'}}}}
+      responses:
+        '200': {description: Replayed draw-down, content: {application/json: {schema: {$ref: '#/components/schemas/ConvertResult'}}}}
+        '201': {description: Drawn down, content: {application/json: {schema: {$ref: '#/components/schemas/ConvertResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /internal/group-reservations/{id}/history:
+    get:
+      operationId: getGroupReservationHistory
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses:
+        '200': {description: Claim history, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/HistoryEntry'}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/slots/{id}/channel-allocations:
     put:
       operationId: replaceChannelAllocations
@@ -251,6 +289,33 @@ components:
         source_id: {type: string, format: uuid}
         source_remaining: {type: integer}
         source_status: {type: string}
+    GroupReservationCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, slot_id, quantity, counterparty, expires_at, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 10000}
+        counterparty: {type: string, minLength: 1, maxLength: 200}
+        expires_at: {type: string, format: date-time, description: 'Explicit reservation expiry — must be in the future by DB time; never derived from the cart TTL'}
+        channel: {type: string, minLength: 1, maxLength: 100, description: 'Optional sales channel; the reservation consumes that allocation and draw-down children inherit it'}
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    GroupReservation:
+      type: object
+      additionalProperties: false
+      required: [hold_id, organizer_id, slot_id, quantity, counterparty, status, expires_at, server_time]
+      properties:
+        hold_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        counterparty: {type: string}
+        channel: {type: string}
+        status: {type: string}
+        expires_at: {type: string, format: date-time}
+        server_time: {type: string, format: date-time}
     CapacityAdjust:
       type: object
       additionalProperties: false
@@ -308,13 +373,14 @@ components:
     StaffAvailability:
       type: object
       additionalProperties: false
-      required: [slot_id, capacity, buyer_held, operational_held, confirmed, available, public_available, offering_status, channels]
+      required: [slot_id, capacity, buyer_held, operational_held, reservation_held, confirmed, available, public_available, offering_status, channels]
       properties:
         slot_id: {type: string, format: uuid}
         capacity: {type: integer, description: 'Effective capacity: the clamp floor while a cut drains (TKT-76)'}
         target_capacity: {type: integer, description: 'Requested target while a clamped cut drains; absent otherwise'}
         buyer_held: {type: integer}
         operational_held: {type: integer}
+        reservation_held: {type: integer, description: 'Live group/agency reservation quantity (TKT-79)'}
         confirmed: {type: integer}
         available: {type: integer}
         public_available: {type: integer}

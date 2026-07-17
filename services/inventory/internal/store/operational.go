@@ -40,6 +40,7 @@ type StaffAvailability struct {
 	TargetCapacity  *int32                `json:"target_capacity,omitempty"`
 	BuyerHeld       int32                 `json:"buyer_held"`
 	OperationalHeld int32                 `json:"operational_held"`
+	ReservationHeld int32                 `json:"reservation_held"`
 	Confirmed       int32                 `json:"confirmed"`
 	Available       int32                 `json:"available"`
 	PublicAvailable int32                 `json:"public_available"`
@@ -346,9 +347,10 @@ func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (
 	var lifecycle, closure string
 	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status,
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='buyer' AND `+liveClaims+`),
-			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='operational' AND `+liveClaims+`)
+			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='operational' AND `+liveClaims+`),
+			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='reservation' AND `+liveClaims+`)
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).
-		Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.BuyerHeld, &a.OperationalHeld)
+		Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.BuyerHeld, &a.OperationalHeld, &a.ReservationHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -358,11 +360,11 @@ func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (
 	a.OfferingStatus = offeringStatus(lifecycle, closure)
 	// Staff see both sides of a draining cut (TKT-76): the effective clamp floor as
 	// capacity, the eventual target separately.
-	a.Capacity = effectiveCapacity(a.Capacity, target, a.Confirmed, a.BuyerHeld+a.OperationalHeld)
+	a.Capacity = effectiveCapacity(a.Capacity, target, a.Confirmed, a.BuyerHeld+a.OperationalHeld+a.ReservationHeld)
 	if target.Valid {
 		a.TargetCapacity = &target.Int32
 	}
-	a.Available = a.Capacity - a.Confirmed - a.BuyerHeld - a.OperationalHeld
+	a.Available = a.Capacity - a.Confirmed - a.BuyerHeld - a.OperationalHeld - a.ReservationHeld
 	remaining := int64(a.Available)
 	if a.OfferingStatus != "open" {
 		a.Available, remaining = 0, 0

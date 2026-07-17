@@ -90,6 +90,30 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	}
 }
 
+// validateDirectServiceResponse validates a response obtained by calling a service
+// directly (not through the gateway): internal routes are deliberately 404 at the edge,
+// so validateServiceResponse's gateway-path parsing never sees them.
+func validateDirectServiceResponse(t *testing.T, service string, request *http.Request, status int, header http.Header, body []byte) {
+	t.Helper()
+	contract := loadContract(service)
+	if contract.err != nil {
+		t.Fatalf("load %s contract: %v", service, contract.err)
+	}
+	route, params, err := contract.router.FindRoute(request)
+	if err != nil {
+		t.Fatalf("%s %s is not committed in the %s contract: %v", request.Method, request.URL.Path, service, err)
+	}
+	input := &openapi3filter.ResponseValidationInput{
+		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: request, PathParams: params, Route: route},
+		Status:                 status,
+		Header:                 header,
+		Body:                   io.NopCloser(bytes.NewReader(body)),
+	}
+	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
+		t.Fatalf("%s %s response %d violates the %s contract: %v; body=%s", request.Method, request.URL.Path, status, service, err, body)
+	}
+}
+
 func TestCommittedServiceContractsAreComplete(t *testing.T) {
 	for _, service := range []string{"inventory", "commerce", "payments", "access"} {
 		t.Run(service, func(t *testing.T) {
