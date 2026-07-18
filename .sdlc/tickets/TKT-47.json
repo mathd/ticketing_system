@@ -2,7 +2,7 @@
   "key": "TKT-47",
   "type": "Task",
   "summary": "Add happy-path contract coverage and choose response-drift policy",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
