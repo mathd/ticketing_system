@@ -23,8 +23,15 @@ import (
 // replay below asserts Replayed explicitly, and every denial asserts nothing
 // was appended.
 
+// Pinned once, relative to now: a fixed calendar date sails past
+// AdmissionSkewBound 24h after it is written and turns the suite into a time
+// bomb (it did — TKT-93 gate run). Truncated to microseconds so equality
+// survives the timestamptz round-trip; called repeatedly, so it must be a
+// constant within a run.
+var deviceTimeBase = time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+
 func deviceTime() time.Time {
-	return time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC)
+	return deviceTimeBase
 }
 
 func repairChain(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID, genuine []byte) {
