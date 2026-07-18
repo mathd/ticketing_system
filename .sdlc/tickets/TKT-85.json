@@ -2,10 +2,8 @@
   "key": "TKT-85",
   "type": "Story",
   "summary": "Scanner offline occurrence queue and reconciliation conflict path",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 69,
