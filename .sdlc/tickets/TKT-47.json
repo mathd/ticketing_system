@@ -2,15 +2,15 @@
   "key": "TKT-47",
   "type": "Task",
   "summary": "Add happy-path contract coverage and choose response-drift policy",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "claude-fable-5",
   "pr": {
     "number": 70,
     "url": "https://github.com/mathd/ticketing_system/pull/70",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "standard",
   "description": "Follow-up from PR #10 review. Runtime OpenAPI response validation is the only coupling between strict response schemas and hand-built handler payloads. Add representative 2xx contract tests for every endpoint and explicitly decide whether production response drift should fail closed with 500 or log and pass through.\n\nConditions of Success:\n- Every documented endpoint has a happy-path test that drives the real handler response through contract middleware\n- Tests fail when a handler response drifts from its committed schema\n- The production response-drift policy is explicitly chosen and documented\n- If the current fail-closed policy remains, operational logging/metrics make contract-generated 500s diagnosable\n- make check passes",
@@ -90,6 +90,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Adversarial review — `kimi-k3:medium@claudex` (aiReview per config; harness: claudex, prompt-driven review, not Codex's built-in — measurement note). Diff only, primed for guilt. Two passes.**\n\n### Pass 1 (full branch diff, effort medium) — 7 findings, verdicts verified against the branch HEAD\n1. Coverage gate blind to non-validating helpers (`holdRequest`/`postScan`) — **accepted as scope-documentation**: failure direction is a loud red gate, not silent pass; scope note added naming the four chokepoint helpers.\n2. Checkout driver rejects documented 202 — **rejected**: the smoke PSP (`fake-ok`) is deterministic-captured; a 202 there would signal a real regression, and failing loud is the intent. Recorded in triage.\n3. Undocumented response statuses bypass validation (kin-openapi default) — **confirmed blocking, fixed**: verified against vendored kin-openapi v0.142.0 source; red test first (`TestUndocumentedResponseStatusIsRejected`), then `IncludeResponseStatus: true` in the runtime middleware (commit f8f83c0). Full gate proved no exercised path returns an undocumented status.\n4. Nil-logger fallback — **rejected**: documented API contract; unit tests rely on it; production wiring goes through each `main`.\n5. `directService` prefix-match fragility — **rejected**: a misclassified URL surfaces as a red coverage gate (op unrecorded), not a silent pass.\n6. `default:`-response exemption + per-operation granularity — **accepted as scope-documentation** in both coverage gates.\n7. ADR-028 overstates \"by construction\" — **accepted, fixed**: ADR scope note.\n\n### Pass 2 (fix diff only, effort low per runner doc's re-review discount) — 2 findings\nBoth documentation nits (2XX-wildcard exemption unnamed; request-rejection short-circuit statuses outside the response wrap). **Both applied** as one-line comment/ADR clarifications (commit 8489074). Pass 2 explicitly verified no legitimate error path breaks under `IncludeResponseStatus` (traced every documented error status across the five specs).\n\n**Second-pass call:** required — pass 1 produced a blocking fix that changes middleware control flow. Pass 3 not warranted: pass 2 found no code defects and its fixes are comment-only. Churn cap not reached; diff stable.\n\nGate: `make check` exit 0 on every push (3 runs). Review-guide posted on PR #70."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Merged under the Gate 3 waiver** (squash `7952cc6`, branch deleted, CI: check / gate-selftest / hermetic-smoke all pass). Review-guide on PR #70 is the audit record.\n\n### Validation note — what to check (PO validation itself follows in the next comment under the Gate 4 waiver)\n- **COS 1 (every documented endpoint happy-path-tested through middleware):** catalog — unit gate lists any unexercised op (prove by `go test ./internal/api/ -run TestCreateVenue` inside services/catalog: TestMain reports the other 23 ops missing on a filtered run only by design; the unfiltered suite enforces all). DB-backed services — smoke gate (`smoke/coverage_test.go`) fails the suite listing any unexercised op.\n- **COS 2 (tests fail on drift):** `TestRuntimeResponseDriftFailsClosed` (rigged −1 minor units through catalog's real router → 500), `TestResponseDriftEmitsStructuredLog`, `TestUndocumentedResponseStatusIsRejected`.\n- **COS 3 (policy chosen + documented):** ADR-028 (fail-closed 500 + structured drift log; undocumented statuses included).\n- **COS 4 (500s diagnosable):** drift log fields asserted in unit tests (method, path, status, error; trace ids via request context through obs.traceHandler).\n- **COS 5:** `make check` green locally 3× and in CI on the merged revision; post-merge re-run below."
     }
   ]
 }
