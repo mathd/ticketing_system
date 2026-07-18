@@ -82,6 +82,9 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 				Status:                 recorder.Code,
 				Header:                 recorder.Header(),
 				Body:                   io.NopCloser(bytes.NewReader(recorder.Body.Bytes())),
+				// An undocumented status is drift too (ADR-028); kin-openapi
+				// allows it unless told otherwise.
+				Options: &openapi3filter.Options{IncludeResponseStatus: true},
 			}
 			if validationErr := openapi3filter.ValidateResponse(context.Background(), input); validationErr != nil {
 				logger := log

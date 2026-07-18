@@ -134,6 +134,26 @@ func TestValidResponseEmitsNoLog(t *testing.T) {
 	}
 }
 
+// An undocumented status is drift too (ADR-028): kin-openapi allows it by
+// default, so the middleware must opt in to rejecting it.
+func TestUndocumentedResponseStatusIsRejected(t *testing.T) {
+	handler, err := RequestValidator(testSpec, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted) // spec documents only 200
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/things", strings.NewReader(`{"name":"valid"}`))
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+}
+
 // ResponseValidator is the response-only wrap used by routers that already run
 // their own request validation (catalog). Undocumented routes pass through.
 func TestResponseValidatorRejectsDriftAndLogs(t *testing.T) {

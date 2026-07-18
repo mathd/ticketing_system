@@ -4,7 +4,9 @@ package api
 // test whose real handler response passes through runtime response validation.
 // Coverage is recorded in env.validateResponse (the chokepoint every test
 // response flows through) and enforced after the run in TestMain — a new
-// spec operation without a driving test fails the suite by construction.
+// spec operation without a driving test fails the suite. Scope: requests must
+// go through env.do to be seen; coverage is per-operation (any 2xx counts),
+// and an operation documented only via `default:` is exempt.
 
 import (
 	"flag"

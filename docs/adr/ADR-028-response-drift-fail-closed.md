@@ -57,8 +57,14 @@ five services enforce the same policy.
       trace correlation.
     - Every documented 2xx operation is pinned by a happy-path test that drives the real
       handler through this middleware (unit-level for catalog, smoke-level for the DB-backed
-      services), with coverage enforced by construction — drift shows up in the gate, not in
-      production.
+      services), with coverage enforced by a post-run gate — drift shows up in the gate, not
+      in production. Scope of that gate: it sees only traffic routed through the validating
+      test helpers, counts an operation covered by any one of its documented 2xx statuses,
+      and exempts operations documented solely via `default:` (none exist today) — see the
+      scope notes in the two coverage_test.go files.
+    - An undocumented response *status* is treated as drift as well
+      (`IncludeResponseStatus`): a handler returning a status its spec does not commit is
+      failed closed like a body mismatch.
 - **Negative:**
     - A schema mistake (over-strict spec) is a production outage for that operation until
       corrected; the tests above are the mitigation, not a guarantee.

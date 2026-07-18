@@ -7,8 +7,16 @@ package smoke_test
 // response-validation middleware. Coverage is recorded at the two validation
 // chokepoints (validateServiceResponse / validateDirectServiceResponse) and
 // enforced after the run in TestMain; a new spec operation without a driving
-// smoke test fails the suite by construction. Catalog's coverage gate lives in
-// its unit suite (services/catalog/internal/api), where a fake store exists.
+// smoke test fails the suite. Catalog's coverage gate lives in its unit suite
+// (services/catalog/internal/api), where a fake store exists.
+//
+// Scope, precisely: only traffic through the validating helpers (postJSON,
+// getWithHeaders, get, internalJSON) reaches the chokepoints — raw helpers
+// like holdRequest/postScan are invisible to the gate, which is why
+// happy_path_coverage_test.go drives some heavily-exercised endpoints again.
+// Coverage is per-operation, not per-documented-2xx-status (checkout counts
+// covered via 200 even though 202 is also documented), and an operation
+// documented only via `default:` has no explicit 2xx and is exempt.
 
 import (
 	"flag"
