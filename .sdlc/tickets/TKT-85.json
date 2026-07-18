@@ -2,15 +2,22 @@
   "key": "TKT-85",
   "type": "Story",
   "summary": "Scanner offline occurrence queue and reconciliation conflict path",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "comments": [
     {
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned by TKT-73 / ADR-025 (admission lifecycle events and offline reconciliation). The ADR's decision statements are binding constraints on this ticket."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed for a fully autonomous Ready→Done run.\n\n**GATE WAIVER (owner directive, this run only):** the repo owner has explicitly waived all four human gates for TKT-85 as a process experiment. Gate 1 was given by the Ready status; Gate 2 (plan approval) will be self-resolved after the cross-model critique, preferring the critique's recommendation, else the most reversible option; Gate 3 (review+merge) — the agent squash-merges after the adversarial ai-review converges, review-guide posted first as the audit record; Gate 4 — self-validation of each COS against test evidence on merged code. All other skill rules (model routing, cross-model review, TDD red-first, gate green before push, markers, no AI attribution) unchanged.\n\n**Selection reason:** ticket is in Ready with zero open blockers (TKT-16/TKT-19 are related epics still in Backlog, not links; TKT-73/ADR-025 parent work is Done). ADR-025 is merged and binding, so the constraints this ticket implements are stable.\n\n**Noted gap:** the ticket carries no readiness object and no baked context-mémo (predates the bake being gate-enforced, and shaping-time scope coordination with TKT-16/19 never happened). Compensation: the plan brief will be grounded directly in ADR-025 + the real access-service code, and scope vs the epics is resolved in the plan (gate-side hardware is out of scope for this repo — the ticket lands the service-side contract + reconciliation path)."
     }
   ],
   "description": "Implement ADR-025 §D3/5/6 gate-side and in reconciliation: occurrence id generated and committed to the scanner's local durable queue BEFORE gate-open (binding constraint from ADR-025 — if the hardware cannot guarantee it, the lost-admission window must be named explicitly, per §D6); retries reuse the id, distinct decisions get a new one; reconciliation appends duplicate_admit on conflict and returns an explicit conflict result to the gate; device occurred_at preserved, skew validated. Interacts with TKT-19/TKT-16 offline work — coordinate scope at shaping. NON-NEGOTIABLE FLOOR from ADR-025 §D3 (R4 review): the occurrence id is an idempotency key, NEVER admission authorization — replay-matched responses are a distinguishable replay result (never bare accepted), gates actuate only on first-time results and keep durable local actuation state; adversarial tests for copied occurrence ids and already-actuated replays. GATE-3 REVIEW ADDITIONS (ADR-025 updated): actuation keyed on the scanner's durable PENDING record (mark-actuated-before-open, fail-closed — lost-response retry completes exactly once, copied ids never actuate); quarantine-side admission records are PER-OCCURRENCE (repeatable — reconciliation of already-happened admissions is recording, not deciding); duplicate_admit is single-entry-only, pass conflicts are derived projections."
