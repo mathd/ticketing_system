@@ -378,12 +378,31 @@ func organizerMode(ctx context.Context, tx *sql.Tx, organizerID uuid.UUID) (Mode
 // the degraded admission is recorded only in the quarantine table, which is
 // append-only for exactly this reason and is explicitly not cryptographic
 // evidence.
-func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, id TicketIdentity, cause error) (RedeemResult, error) {
+func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, id TicketIdentity, occurrenceID uuid.UUID, cause error) (RedeemResult, error) {
 	reason := cause.Error()
 	now := p.now()
 
+	// Occurrence identity resolves before the quarantine denial on this path
+	// too (ADR-025 §D3 binding order) — and before anything else: an occurrence
+	// already in the record (trail or quarantine side) replays its original
+	// result, whatever state the chain is in now. Without the trail half, a
+	// retry of a redemption recorded while the chain was healthy would take a
+	// fresh degraded admission here and double-record one physical occurrence.
+	if occurrenceID != uuid.Nil {
+		replayed, result, replayErr := p.replayByOccurrence(ctx, tx, ticketID, occurrenceID)
+		if replayErr != nil {
+			return RedeemResult{}, replayErr
+		}
+		if replayed {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return RedeemResult{}, commitErr
+			}
+			return result, nil
+		}
+	}
+
 	var quarantinedAt time.Time
-	err := tx.QueryRowContext(ctx, `SELECT admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1`, ticketID).Scan(&quarantinedAt)
+	err := tx.QueryRowContext(ctx, `SELECT admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, ticketID).Scan(&quarantinedAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return RedeemResult{}, err
 	}
@@ -417,9 +436,11 @@ func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.U
 		return RedeemResult{Decision: DecisionIntegrityOperatorControlled, OccurredAt: now}, nil
 	}
 
-	// First failure for this ticket: admit once, and record that we did.
-	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,admitted_at) VALUES($1,$2,$3,$4)`,
-		ticketID, id.OrganizerID, reason, now); err != nil {
+	// First failure for this ticket: admit once, and record that we did — with
+	// the occurrence id when the scanner sent one, so its retry can be matched
+	// (ADR-025 §D3: the identity rule extends to degraded admissions).
+	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,admitted_at,occurrence_id) VALUES($1,$2,$3,$4,$5)`,
+		ticketID, id.OrganizerID, reason, now, uuid.NullUUID{UUID: occurrenceID, Valid: occurrenceID != uuid.Nil}); err != nil {
 		return RedeemResult{}, err
 	}
 

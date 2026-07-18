@@ -27,6 +27,7 @@ const (
 	envFailureWindow        = "ACCESS_LIFECYCLE_FAILURE_WINDOW"
 	envAlarmStream          = "ACCESS_LIFECYCLE_ALARM_STREAM"
 	envAlarmDurable         = "ACCESS_LIFECYCLE_ALARM_DURABLE"
+	envConflictDurable      = "ACCESS_ADMISSION_CONFLICT_DURABLE"
 	defaultAlarmStreamValue = "PLATFORM"
 )
 

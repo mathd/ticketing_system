@@ -9,6 +9,30 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for ReconcileResultResult.
+const (
+	ReconcileResultResultConflict ReconcileResultResult = "conflict"
+	ReconcileResultResultRecorded ReconcileResultResult = "recorded"
+	ReconcileResultResultRejected ReconcileResultResult = "rejected"
+	ReconcileResultResultSynced   ReconcileResultResult = "synced"
+)
+
+// Valid indicates whether the value is a known member of the ReconcileResultResult enum.
+func (e ReconcileResultResult) Valid() bool {
+	switch e {
+	case ReconcileResultResultConflict:
+		return true
+	case ReconcileResultResultRecorded:
+		return true
+	case ReconcileResultResultRejected:
+		return true
+	case ReconcileResultResultSynced:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScanAcceptedDecision.
 const (
 	Accepted ScanAcceptedDecision = "accepted"
@@ -26,13 +50,13 @@ func (e ScanAcceptedDecision) Valid() bool {
 
 // Defines values for ScanRejectedDecision.
 const (
-	Rejected ScanRejectedDecision = "rejected"
+	ScanRejectedDecisionRejected ScanRejectedDecision = "rejected"
 )
 
 // Valid indicates whether the value is a known member of the ScanRejectedDecision enum.
 func (e ScanRejectedDecision) Valid() bool {
 	switch e {
-	case Rejected:
+	case ScanRejectedDecisionRejected:
 		return true
 	default:
 		return false
@@ -52,9 +76,38 @@ type LifecycleEvent struct {
 	Type       string             `json:"type"`
 }
 
+// ReconcileOccurrence defines model for ReconcileOccurrence.
+type ReconcileOccurrence struct {
+	OccurredAt   time.Time          `json:"occurred_at"`
+	OccurrenceId openapi_types.UUID `json:"occurrence_id"`
+	QrPayload    string             `json:"qr_payload"`
+}
+
+// ReconcileRequest defines model for ReconcileRequest.
+type ReconcileRequest struct {
+	Occurrences []ReconcileOccurrence `json:"occurrences"`
+}
+
+// ReconcileResponse defines model for ReconcileResponse.
+type ReconcileResponse struct {
+	Results []ReconcileResult `json:"results"`
+}
+
+// ReconcileResult defines model for ReconcileResult.
+type ReconcileResult struct {
+	OccurredAt   *time.Time            `json:"occurred_at,omitempty"`
+	OccurrenceId openapi_types.UUID    `json:"occurrence_id"`
+	Result       ReconcileResultResult `json:"result"`
+	SkewFlagged  *bool                 `json:"skew_flagged,omitempty"`
+}
+
+// ReconcileResultResult defines model for ReconcileResult.Result.
+type ReconcileResultResult string
+
 // ScanAccepted defines model for ScanAccepted.
 type ScanAccepted struct {
 	Decision  ScanAcceptedDecision `json:"decision"`
+	Replay    *bool                `json:"replay,omitempty"`
 	ScannedAt time.Time            `json:"scanned_at"`
 }
 
@@ -73,7 +126,9 @@ type ScanRejectedDecision string
 
 // ScanRequest defines model for ScanRequest.
 type ScanRequest struct {
-	QrPayload string `json:"qr_payload"`
+	OccurredAt   *time.Time          `json:"occurred_at,omitempty"`
+	OccurrenceId *openapi_types.UUID `json:"occurrence_id,omitempty"`
+	QrPayload    string              `json:"qr_payload"`
 }
 
 // Ticket defines model for Ticket.
@@ -96,3 +151,6 @@ type Ref = openapi_types.UUID
 
 // ScanTicketJSONRequestBody defines body for ScanTicket for application/json ContentType.
 type ScanTicketJSONRequestBody = ScanRequest
+
+// ReconcileScansJSONRequestBody defines body for ReconcileScans for application/json ContentType.
+type ReconcileScansJSONRequestBody = ReconcileRequest

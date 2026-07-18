@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"ticketing/services/access/internal/ticket"
 )
 
@@ -35,6 +37,96 @@ func TestScanRejectsNonStrictJSONBeforeRedeeming(t *testing.T) {
 				t.Fatalf("response = %v, want committed ScanRejected representation", response)
 			}
 		})
+	}
+}
+
+// The expand phase of ADR-025 §D10: the contract must accept the occurrence
+// fields (today it rejects them), and the server must enforce the pairing rule
+// the schema cannot express — occurred_at is required iff occurrence_id is
+// present.
+func TestScanContractAcceptsOccurrenceFields(t *testing.T) {
+	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(nil, verifier).Router()
+
+	// Full pair: passes the contract validator, fails on the (bad) credential —
+	// proof the fields got past additionalProperties:false.
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(
+		`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	var response map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusUnprocessableEntity || response["reason"] != "invalid_credential" {
+		t.Fatalf("scan with occurrence fields = %d %v, want the credential rejection (not a contract one)", recorder.Code, response)
+	}
+
+	// Occurrence without its claimed time: the server-side pairing rule, with
+	// its own reason so a scanner can tell it from a bad credential.
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(
+		`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusUnprocessableEntity || response["reason"] != "invalid_occurrence" {
+		t.Fatalf("occurrence without occurred_at = %d %v, want invalid_occurrence", recorder.Code, response)
+	}
+}
+
+// One bad occurrence never fails the batch: each entry gets its own result,
+// order-preserving (ADR-025 §D6 — reconciliation is recording; a gate syncing
+// N occurrences must learn the fate of each).
+func TestReconcileRejectsBadCredentialsPerOccurrence(t *testing.T) {
+	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	occA, occB := uuid.NewString(), uuid.NewString()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/scans/reconciliations", bytes.NewBufferString(
+		`{"occurrences":[`+
+			`{"qr_payload":"not-a-ticket","occurrence_id":"`+occA+`","occurred_at":"2026-07-17T09:00:00Z"},`+
+			`{"qr_payload":"also-not-a-ticket","occurrence_id":"`+occB+`","occurred_at":"2026-07-17T09:01:00Z"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	New(nil, verifier).Router().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (a bad credential is a per-occurrence result, not a batch failure)", recorder.Code)
+	}
+	var response struct {
+		Results []struct {
+			OccurrenceID string `json:"occurrence_id"`
+			Result       string `json:"result"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 2 || response.Results[0].OccurrenceID != occA || response.Results[1].OccurrenceID != occB {
+		t.Fatalf("results = %+v, want both occurrences in request order", response.Results)
+	}
+	for _, r := range response.Results {
+		if r.Result != "rejected" {
+			t.Fatalf("result = %+v, want rejected", r)
+		}
+	}
+}
+
+func TestReconcileUnavailableWithoutVerifier(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/scans/reconciliations", bytes.NewBufferString(
+		`{"occurrences":[{"qr_payload":"x","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	New(nil, nil).Router().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
 }
 
