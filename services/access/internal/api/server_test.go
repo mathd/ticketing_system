@@ -25,7 +25,7 @@ func TestScanRejectsNonStrictJSONBeforeRedeeming(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(body))
 			request.Header.Set("Content-Type", "application/json")
-			New(nil, verifier).Router().ServeHTTP(recorder, request)
+			New(nil, verifier).Router(nil).ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnprocessableEntity)
 			}
@@ -49,7 +49,7 @@ func TestScanContractAcceptsOccurrenceFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := New(nil, verifier).Router()
+	router := New(nil, verifier).Router(nil)
 
 	// Full pair: passes the contract validator, fails on the (bad) credential —
 	// proof the fields got past additionalProperties:false.
@@ -102,7 +102,7 @@ func TestReconcileRejectsBadCredentialsPerOccurrence(t *testing.T) {
 			`{"qr_payload":"not-a-ticket","occurrence_id":"`+malformed+`","occurred_at":"2026-07-17T09:02:00Z"},`+
 			`{"qr_payload":"","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:03:00Z"}]}`))
 	request.Header.Set("Content-Type", "application/json")
-	New(nil, verifier).Router().ServeHTTP(recorder, request)
+	New(nil, verifier).Router(nil).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (a bad credential is a per-occurrence result, not a batch failure)", recorder.Code)
 	}
@@ -139,7 +139,7 @@ func TestScanAcceptsLowercaseRFC3339(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(
 		`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17t09:00:00z"}`))
 	request.Header.Set("Content-Type", "application/json")
-	New(nil, verifier).Router().ServeHTTP(recorder, request)
+	New(nil, verifier).Router(nil).ServeHTTP(recorder, request)
 	var response map[string]string
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestReconcileUnavailableWithoutVerifier(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/scans/reconciliations", bytes.NewBufferString(
 		`{"occurrences":[{"qr_payload":"x","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z"}]}`))
 	request.Header.Set("Content-Type", "application/json")
-	New(nil, nil).Router().ServeHTTP(recorder, request)
+	New(nil, nil).Router(nil).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
@@ -166,7 +166,7 @@ func TestScanRejectsWhenVerifierIsUnavailable(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(`{"qr_payload":"not-a-ticket"}`))
 	request.Header.Set("Content-Type", "application/json")
-	New(nil, nil).Router().ServeHTTP(recorder, request)
+	New(nil, nil).Router(nil).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}

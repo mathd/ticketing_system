@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -31,7 +32,7 @@ type Server struct {
 func New(j *store.Journal, credential string) *Server {
 	return &Server{journal: j, credential: credential}
 }
-func (s *Server) Router() http.Handler {
+func (s *Server) Router(log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
@@ -41,7 +42,7 @@ func (s *Server) Router() http.Handler {
 	r.Post("/internal/facts", s.fact)
 	r.Post("/internal/charges", s.charge)
 	r.Get("/internal/operations", s.operation)
-	validated, err := contract.RequestValidator(apispec.Spec, r)
+	validated, err := contract.RequestValidator(apispec.Spec, r, log)
 	if err != nil {
 		panic(err)
 	}
@@ -63,6 +64,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	return true
 }
+
 // operation reports an already-bound payment operation's recorded outcome. Read-only:
 // it never binds, so a recovery pass cannot fabricate an operation for an order that
 // never charged. 404 means no operation exists — evidence the charge was never

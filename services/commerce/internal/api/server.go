@@ -48,7 +48,7 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 	}
 	return &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
 }
-func (s *Server) Router() http.Handler {
+func (s *Server) Router(log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
@@ -61,7 +61,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
 	r.Post("/internal/operational-holds/{id}/convert", s.convertOperational)
 	r.Post("/internal/group-reservations/{id}/draw-down", s.drawDownGroupReservation)
-	validated, err := contract.RequestValidator(apispec.Spec, r)
+	validated, err := contract.RequestValidator(apispec.Spec, r, log)
 	if err != nil {
 		panic(err)
 	}
