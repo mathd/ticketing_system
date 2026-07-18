@@ -16,7 +16,8 @@ package smoke_test
 // happy_path_coverage_test.go drives some heavily-exercised endpoints again.
 // Coverage is per-operation, not per-documented-2xx-status (checkout counts
 // covered via 200 even though 202 is also documented), and an operation
-// documented only via `default:` has no explicit 2xx and is exempt.
+// documented only via `default:` or a `2XX` wildcard has no explicit 2xx
+// key and is exempt.
 
 import (
 	"flag"

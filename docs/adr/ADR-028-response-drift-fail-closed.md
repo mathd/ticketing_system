@@ -64,7 +64,9 @@ five services enforce the same policy.
       scope notes in the two coverage_test.go files.
     - An undocumented response *status* is treated as drift as well
       (`IncludeResponseStatus`): a handler returning a status its spec does not commit is
-      failed closed like a body mismatch.
+      failed closed like a body mismatch. This guards what the inner handler writes;
+      statuses written by request-rejection short-circuits (the request validator's own
+      error responses) sit outside the response wrap and are not checked.
 - **Negative:**
     - A schema mistake (over-strict spec) is a production outage for that operation until
       corrected; the tests above are the mitigation, not a guarantee.
