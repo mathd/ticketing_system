@@ -4,7 +4,7 @@
   "classification": "simple",
   "parent": "TKT-2",
   "summary": "smoke.sh only cleans up on the exit trap, so a killed run can leave a migrated volume",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -12,7 +12,7 @@
   "pr": {
     "number": 68,
     "url": "https://github.com/mathd/ticketing_system/pull/68",
-    "state": "open"
+    "state": "merged"
   },
   "comments": [
     {
