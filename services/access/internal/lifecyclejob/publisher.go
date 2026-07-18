@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -97,7 +98,7 @@ func RequireAlarmRoute(ctx context.Context, js jetstream.JetStream, stream, dura
 // turnstile on paying customers.
 func ObserveAlarmRoute(meter metric.Meter, js jetstream.JetStream, stream, durable string) error {
 	pending, err := meter.Int64ObservableGauge("access.lifecycle.alarm.durable_pending",
-		metric.WithDescription("Integrity alarms sitting unread in the operator durable. Sustained non-zero means nobody is collecting them: alarms are retained but unmonitored, which ADR-021 §D6 forbids for a fail-open deployment."))
+		metric.WithDescription("Alarms sitting unread in an operator durable, per the durable attribute (integrity and admission-conflict classes). Sustained non-zero means nobody is collecting them: alarms are retained but unmonitored, which ADR-021 §D6 forbids for a fail-open deployment."))
 	if err != nil {
 		return err
 	}
@@ -114,7 +115,10 @@ func ObserveAlarmRoute(meter metric.Meter, js jetstream.JetStream, stream, durab
 		if err != nil {
 			return nil
 		}
-		o.ObserveInt64(pending, int64(info.NumPending))
+		// The durable is a series attribute: two alarm classes (integrity,
+		// admission-conflict) each register this gauge, and without it the
+		// second callback's observation would collide with the first's.
+		o.ObserveInt64(pending, int64(info.NumPending), metric.WithAttributes(attribute.String("durable", durable)))
 		return nil
 	}, pending)
 	return err

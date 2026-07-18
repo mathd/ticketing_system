@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { openOccurrenceStore, type OccurrenceStore } from './occurrences'
 import './index.css'
 
 type ScanOutcome =
-  | { kind: 'accepted'; scannedAt: string }
+  | { kind: 'accepted'; scannedAt: string; replay: boolean }
   | { kind: 'rejected'; reason: string; originalScanAt?: string }
+  | { kind: 'queued' }
+  | { kind: 'duplicate-response' }
 
 type BarcodeDetectorInstance = {
   detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>
@@ -18,6 +21,11 @@ declare global {
 }
 
 const scanURL = '/api/access/scans'
+const reconcileURL = '/api/access/scans/reconciliations'
+
+// Opened once per page: the durable occurrence queue (ADR-025 §D3). Every scan
+// commits its PENDING record here before the request leaves the device.
+const storePromise: Promise<OccurrenceStore> = openOccurrenceStore()
 
 function readableTime(value?: string) {
   return value ? new Date(value).toLocaleString() : undefined
@@ -27,6 +35,8 @@ function App() {
   const [payload, setPayload] = useState('')
   const [outcome, setOutcome] = useState<ScanOutcome | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [queuedCount, setQueuedCount] = useState(0)
+  const [syncNote, setSyncNote] = useState('')
   const [cameraMessage, setCameraMessage] = useState('')
   const [cameraActive, setCameraActive] = useState(false)
   const video = useRef<HTMLVideoElement>(null)
@@ -49,33 +59,94 @@ function App() {
 
   useEffect(() => {
     mounted.current = true
+    void refreshQueued()
+    // Reconnect is the natural sync point for the offline queue (ADR-025 §D6).
+    const onOnline = () => void syncQueued()
+    window.addEventListener('online', onOnline)
     return () => {
       mounted.current = false
+      window.removeEventListener('online', onOnline)
       stopCamera()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const refreshQueued = async () => {
+    const store = await storePromise
+    const queue = await store.queued()
+    if (mounted.current) setQueuedCount(queue.length)
+  }
 
   const submit = async (value = payload) => {
     if (!value.trim() || submitting) return
     setSubmitting(true)
     setOutcome(null)
+    // Mint and durably commit the occurrence BEFORE the request leaves
+    // (ADR-025 §D3): a retry reuses this record; a new scan mints a new one.
+    const store = await storePromise
+    const record = await store.mint(value.trim(), new Date().toISOString())
     try {
       const response = await fetch(scanURL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qr_payload: value.trim() }),
+        body: JSON.stringify({ qr_payload: record.qrPayload, occurrence_id: record.occurrenceId, occurred_at: record.occurredAt }),
       })
-      const result: { decision?: string; reason?: string; scanned_at?: string; original_scan_at?: string } = await response.json()
+      const result: { decision?: string; reason?: string; scanned_at?: string; original_scan_at?: string; replay?: boolean } = await response.json()
       if (response.ok && result.decision === 'accepted') {
-        setOutcome({ kind: 'accepted', scannedAt: result.scanned_at ?? '' })
+        // Actuation is keyed on OUR durable pending record, not on the
+        // response: mark-actuated-before-open, and a response for an
+        // occurrence this device never minted (or already actuated) opens
+        // nothing (ADR-025 §D3).
+        const opened = await store.actuate(record.occurrenceId)
+        if (opened) {
+          setOutcome({ kind: 'accepted', scannedAt: result.scanned_at ?? '', replay: result.replay === true })
+        } else {
+          setOutcome({ kind: 'duplicate-response' })
+        }
       } else {
+        await store.markSynced(record.occurrenceId, result.reason ?? 'scan_failed')
         setOutcome({ kind: 'rejected', reason: result.reason ?? 'scan_failed', originalScanAt: result.original_scan_at })
       }
     } catch {
-      setOutcome({ kind: 'rejected', reason: 'scanner_unavailable' })
+      // Offline: the occurrence stays durably queued and reconciles on sync.
+      await store.markQueued(record.occurrenceId)
+      setOutcome({ kind: 'queued' })
+      await refreshQueued()
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const syncQueued = async () => {
+    const store = await storePromise
+    const queue = await store.queued()
+    if (!queue.length) return
+    try {
+      const response = await fetch(reconcileURL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          occurrences: queue.map((r) => ({ qr_payload: r.qrPayload, occurrence_id: r.occurrenceId, occurred_at: r.occurredAt })),
+        }),
+      })
+      if (!response.ok) return
+      const data: { results?: Array<{ occurrence_id: string; result: string }> } = await response.json()
+      let conflicts = 0
+      for (const entry of data.results ?? []) {
+        await store.markSynced(entry.occurrence_id, entry.result)
+        if (entry.result === 'conflict') conflicts += 1
+      }
+      if (mounted.current) {
+        setSyncNote(
+          conflicts > 0
+            ? `Synced ${data.results?.length ?? 0} offline scan(s) — ${conflicts} conflict${conflicts > 1 ? 's' : ''} flagged for the operator.`
+            : `Synced ${data.results?.length ?? 0} offline scan(s).`,
+        )
+      }
+    } catch {
+      // Still offline — the queue is durable; try again later.
+    }
+    await refreshQueued()
   }
 
   const startCamera = async () => {
@@ -183,9 +254,24 @@ function App() {
         </div>
         <video ref={video} aria-label="Camera preview" muted playsInline hidden={!cameraActive} />
         {cameraMessage && <p className="camera-note" role="status">{cameraMessage}</p>}
+        {queuedCount > 0 && (
+          <p className="queue-note" role="status">
+            {`${queuedCount} queued offline scan${queuedCount > 1 ? 's' : ''} awaiting sync.`}{' '}
+            <button type="button" onClick={() => void syncQueued()}>Sync queued scans</button>
+          </p>
+        )}
+        {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
       </section>
-      {outcome?.kind === 'accepted' && <section className="result accepted" role="status"><h2>Accepted</h2><p>Entry recorded at {readableTime(outcome.scannedAt)}.</p></section>}
+      {outcome?.kind === 'accepted' && (
+        <section className="result accepted" role="status">
+          <h2>Accepted</h2>
+          <p>Entry recorded at {readableTime(outcome.scannedAt)}.</p>
+          {outcome.replay && <p>This scan was previously recorded — result replayed, entry counted once.</p>}
+        </section>
+      )}
       {outcome?.kind === 'rejected' && <section className="result rejected" role="alert"><h2>Rejected</h2><p>{outcome.reason === 'already_redeemed' ? `Already redeemed at ${readableTime(outcome.originalScanAt)}.` : 'Credential is invalid or cannot be redeemed.'}</p></section>}
+      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>No connection — the scan is saved on this device and will sync when back online. Admit per venue offline policy.</p></section>}
+      {outcome?.kind === 'duplicate-response' && <section className="result rejected" role="alert"><h2>Already processed</h2><p>This scan was already handled on this device — no second entry.</p></section>}
     </main>
   )
 }

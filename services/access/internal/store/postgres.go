@@ -56,8 +56,15 @@ type IssueInput struct {
 
 // RedeemInput contains only signed immutable ticket facts. It deliberately
 // excludes mutable admission policy, which belongs to later lifecycle work.
+//
+// OccurrenceID is the scanner-minted identity of this physical gate decision
+// (ADR-025 §D3); Nil means an old scanner and today's semantics exactly,
+// including the grandfathered deterministic redeemed id. When set, OccurredAt
+// is the device's claimed admission time and must be non-zero.
 type RedeemInput struct {
 	TicketID, OrderID, OrganizerID, SlotID uuid.UUID
+	OccurrenceID                           uuid.UUID
+	OccurredAt                             time.Time
 }
 
 type RedeemResult struct {
@@ -70,6 +77,10 @@ type RedeemResult struct {
 	// the whole point of the alarm.
 	Decision   Decision
 	OccurredAt time.Time
+	// Replayed marks a transport retry matched by occurrence id. ADR-025 §D3
+	// forbids returning a replay as a bare success: actuation must be able to
+	// tell a first-time result from a replayed one.
+	Replayed bool
 }
 
 type Postgres struct {
@@ -255,6 +266,14 @@ func (p *Postgres) TicketForQR(ctx context.Context, ref, ticket uuid.UUID) (stri
 // redeemed-event lookup, because already_redeemed would hide the degraded
 // admission and skip §D6's escalation.
 func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, error) {
+	if in.OccurrenceID != uuid.Nil {
+		if in.OccurrenceID.Version() != 4 || in.OccurrenceID.Variant() != uuid.RFC4122 {
+			return RedeemResult{}, fmt.Errorf("occurrence id %s is not a UUIDv4 (ADR-025 §D3)", in.OccurrenceID)
+		}
+		if in.OccurredAt.IsZero() {
+			return RedeemResult{}, errors.New("a gate occurrence carries its claimed admission time")
+		}
+	}
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RedeemResult{}, err
@@ -277,19 +296,36 @@ func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, er
 	if chainErr := p.verifyTicketChain(ctx, tx, in.TicketID, id); chainErr != nil {
 		// degradedScan commits the transaction itself: the quarantine record and
 		// the owed alarm must land whatever this scan decides.
-		return p.degradedScan(ctx, tx, in.TicketID, id, chainErr)
+		return p.degradedScan(ctx, tx, in.TicketID, id, in.OccurrenceID, chainErr)
+	}
+
+	// Occurrence identity resolves before any quarantine denial (ADR-025 §D3
+	// binding order): a lost-response retry must get its original result back,
+	// never a second-scan escalation.
+	if in.OccurrenceID != uuid.Nil {
+		replayed, result, replayErr := p.replayByOccurrence(ctx, tx, in.TicketID, in.OccurrenceID)
+		if replayErr != nil {
+			return RedeemResult{}, replayErr
+		}
+		if replayed {
+			if err = tx.Commit(); err != nil {
+				return RedeemResult{}, err
+			}
+			return result, nil
+		}
 	}
 
 	var quarantineReason string
 	var quarantinedAt time.Time
-	err = tx.QueryRowContext(ctx, `SELECT reason,admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1`, in.TicketID).
+	// Live degraded admissions only (admitted_at set): reconciliation-learned
+	// records are recordings of admissions that already happened elsewhere and
+	// never turn a verified scan into a denial.
+	err = tx.QueryRowContext(ctx, `SELECT reason,admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, in.TicketID).
 		Scan(&quarantineReason, &quarantinedAt)
 	if err == nil {
-		// Already took its one degraded admission (ADR-021 §D6): deny and
-		// escalate, exactly as the degraded path does. Under today's identity
-		// model a transport retry is indistinguishable from a second scan;
-		// occurrence ids (ADR-025 §D3) will let a retry return its original
-		// result without a second alarm.
+		// Already took its one degraded admission (ADR-021 §D6), and the replay
+		// check above says this is not that occurrence's retry: deny and
+		// escalate, exactly as the degraded path does.
 		mode, modeErr := organizerMode(ctx, tx, id.OrganizerID)
 		if modeErr != nil {
 			return RedeemResult{}, modeErr
@@ -318,18 +354,74 @@ func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, er
 		return RedeemResult{}, err
 	}
 
-	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.TicketID.String()+":redeemed"))
+	// The scanner's occurrence id becomes the event id — one identity model, no
+	// exceptions (ADR-025 §D3). The deterministic id is grandfathered for old
+	// scanners only.
+	eventID := in.OccurrenceID
+	var occurredAt time.Time
+	if in.OccurrenceID == uuid.Nil {
+		eventID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.TicketID.String()+":redeemed"))
+	} else {
+		occurredAt = in.OccurredAt
+	}
 	redeemedAt, err = p.appendLifecycle(ctx, tx, appendInput{
 		TicketID: in.TicketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
-		EventID: eventID, Type: "redeemed",
+		EventID: eventID, Type: "redeemed", OccurredAt: occurredAt,
 	})
 	if err != nil {
+		// Same reasoning as RecordAdmission: the ticket lock serializes
+		// same-ticket callers, so a taken event id can only be this occurrence
+		// id landing on another ticket concurrently.
+		if in.OccurrenceID != uuid.Nil && errors.Is(err, errEventIDTaken) {
+			return RedeemResult{}, fmt.Errorf("occurrence %s: %w", in.OccurrenceID, ErrOccurrenceCollision)
+		}
 		return RedeemResult{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return RedeemResult{}, err
 	}
 	return RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: redeemedAt}, nil
+}
+
+// replayByOccurrence resolves an occurrence id against the whole admission
+// record — the trail first, then the quarantine side (admission history is the
+// union of both, ADR-025 §D2). This is pure identity equality, never a decision
+// from the trace: it only ever hands back what this same occurrence already
+// got, so it is safe on the degraded path too.
+func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID, occ uuid.UUID) (bool, RedeemResult, error) {
+	var storedTicket uuid.UUID
+	var storedType string
+	var storedAt time.Time
+	err := tx.QueryRowContext(ctx, `SELECT ticket_id,event_type,occurred_at FROM lifecycle_events WHERE id=$1`, occ).
+		Scan(&storedTicket, &storedType, &storedAt)
+	if err == nil {
+		if storedTicket != ticketID || storedType != "redeemed" {
+			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
+		}
+		return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: storedAt, Replayed: true}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, RedeemResult{}, err
+	}
+
+	var quarantinedTicket uuid.UUID
+	var admittedAt, occurredAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `SELECT ticket_id,admitted_at,occurred_at FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1`, occ).
+		Scan(&quarantinedTicket, &admittedAt, &occurredAt)
+	if err == nil {
+		if quarantinedTicket != ticketID {
+			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
+		}
+		at := occurredAt.Time
+		if admittedAt.Valid {
+			at = admittedAt.Time
+		}
+		return true, RedeemResult{Accepted: true, Decision: DecisionAdmittedDegraded, OccurredAt: at, Replayed: true}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, RedeemResult{}, err
+	}
+	return false, RedeemResult{}, nil
 }
 
 // AdmissionEventType is a repeatable admission event (ADR-025 §D1). The

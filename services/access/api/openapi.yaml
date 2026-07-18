@@ -19,6 +19,18 @@ paths:
         '422': {description: Invalid credential, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /scans/reconciliations:
+    post:
+      # Offline occurrences syncing after reconnect (ADR-025 §D6). Recording,
+      # not deciding: never a live admit/deny, always a per-occurrence result —
+      # one bad occurrence never fails the batch.
+      operationId: reconcileScans
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ReconcileRequest'}}}}
+      responses:
+        '200': {description: Per-occurrence reconciliation results, content: {application/json: {schema: {$ref: '#/components/schemas/ReconcileResponse'}}}}
+        '422': {description: Malformed envelope, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /orders/{ref}/tickets:
     get:
       operationId: getTickets
@@ -46,12 +58,72 @@ components:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
     Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
-    ScanRequest: {type: object, additionalProperties: false, required: [qr_payload], properties: {qr_payload: {type: string, minLength: 1}}}
+    # occurrence_id/occurred_at are the ADR-025 §D3 occurrence protocol, expand
+    # phase (§D10): optional so old scanners keep today's semantics; occurred_at
+    # is required iff occurrence_id is present — a pairing the schema cannot
+    # express. Both are validated server-side (reason: invalid_occurrence) —
+    # deliberately not format uuid/date-time here, so the scanner gets the
+    # distinguishable invalid_occurrence answer instead of a generic contract
+    # 422, and lowercase RFC 3339 t/z (legal date-time) is accepted.
+    ScanRequest:
+      type: object
+      additionalProperties: false
+      required: [qr_payload]
+      properties:
+        qr_payload: {type: string, minLength: 1}
+        occurrence_id: {type: string, minLength: 1}
+        occurred_at: {type: string, minLength: 1}
     ScanAccepted:
       type: object
       additionalProperties: false
       required: [decision, scanned_at]
-      properties: {decision: {type: string, enum: [accepted]}, scanned_at: {type: string, format: date-time}}
+      # replay is present-and-true only on an occurrence-matched retry — never a
+      # bare accepted (ADR-025 §D3); absent on every first-time result, so old
+      # scanners parse new responses unchanged.
+      properties: {decision: {type: string, enum: [accepted]}, scanned_at: {type: string, format: date-time}, replay: {type: boolean}}
+    ReconcileRequest:
+      type: object
+      additionalProperties: false
+      required: [occurrences]
+      properties:
+        occurrences:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {$ref: '#/components/schemas/ReconcileOccurrence'}
+    ReconcileOccurrence:
+      type: object
+      additionalProperties: false
+      required: [qr_payload, occurrence_id, occurred_at]
+      # Deliberately plain strings with no minLength: batch entries are
+      # validated per occurrence server-side so ONE malformed entry — even an
+      # empty field — gets its own rejected result instead of 422-ing the
+      # whole sync. A gate syncing a night's queue must never be blocked by
+      # one bad row.
+      properties:
+        qr_payload: {type: string}
+        occurrence_id: {type: string}
+        occurred_at: {type: string}
+    ReconcileResponse:
+      type: object
+      additionalProperties: false
+      required: [results]
+      properties:
+        results: {type: array, items: {$ref: '#/components/schemas/ReconcileResult'}}
+    ReconcileResult:
+      type: object
+      additionalProperties: false
+      required: [occurrence_id, result]
+      # skew_flagged marks a device time outside the reconciliation bound —
+      # recorded and flagged, never rejected (ADR-025 §D5).
+      # occurrence_id is echoed VERBATIM from the request — plain string, not
+      # format uuid — so the sender can correlate a rejected entry back to its
+      # queue even when the id it sent was malformed.
+      properties:
+        occurrence_id: {type: string}
+        result: {type: string, enum: [recorded, conflict, synced, rejected]}
+        occurred_at: {type: string, format: date-time}
+        skew_flagged: {type: boolean}
     ScanRejected:
       type: object
       additionalProperties: false

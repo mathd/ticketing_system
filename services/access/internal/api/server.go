@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -35,6 +37,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/orders/{ref}/tickets", s.tickets)
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
+	r.Post("/scans/reconciliations", s.reconcile)
 	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, func(w http.ResponseWriter, _ string, _ int) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 	})
@@ -111,16 +114,48 @@ func (s *Server) qr(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(image)
 }
 
+// parseOccurrence enforces the pairing the contract cannot express: occurred_at
+// is required iff occurrence_id is present, and the id must be a UUIDv4
+// (ADR-025 §D3). An empty occurrence_id returns Nil — old-scanner semantics.
+func parseOccurrence(occurrenceID, occurredAt string) (uuid.UUID, time.Time, error) {
+	if occurrenceID == "" {
+		return uuid.Nil, time.Time{}, nil
+	}
+	occ, err := uuid.Parse(occurrenceID)
+	if err != nil || occ == uuid.Nil || occ.Version() != 4 || occ.Variant() != uuid.RFC4122 {
+		return uuid.Nil, time.Time{}, errors.New("occurrence_id must be a UUIDv4")
+	}
+	at, err := time.Parse(time.RFC3339, occurredAt)
+	if err != nil {
+		// RFC 3339 permits lowercase t/z; Go's layout is strict about them.
+		// The contract says date-time, so accept what it advertises.
+		at, err = time.Parse(time.RFC3339, strings.ToUpper(occurredAt))
+	}
+	if err != nil {
+		return uuid.Nil, time.Time{}, errors.New("occurred_at (RFC 3339) is required with occurrence_id")
+	}
+	return occ, at, nil
+}
+
 func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	if s.verifier == nil {
 		write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner unavailable"})
 		return
 	}
 	var input struct {
-		QRPayload string `json:"qr_payload"`
+		QRPayload    string `json:"qr_payload"`
+		OccurrenceID string `json:"occurrence_id"`
+		OccurredAt   string `json:"occurred_at"`
 	}
 	if err := httpx.DecodeJSON(w, r, &input, 8<<10); err != nil || input.QRPayload == "" {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+		return
+	}
+	occ, occurredAt, err := parseOccurrence(input.OccurrenceID, input.OccurredAt)
+	if err != nil {
+		// Its own reason: a scanner must be able to tell a broken occurrence
+		// envelope (fix the request) from a bad credential (deny the holder).
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_occurrence"})
 		return
 	}
 	claims, err := s.verifier.Verify(input.QRPayload)
@@ -130,9 +165,14 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.st.Redeem(r.Context(), store.RedeemInput{
 		TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
+		OccurrenceID: occ, OccurredAt: occurredAt,
 	})
 	if errors.Is(err, store.ErrTicketCredential) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+		return
+	}
+	if errors.Is(err, store.ErrOccurrenceCollision) {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "occurrence_collision"})
 		return
 	}
 	if err != nil {
@@ -156,5 +196,72 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusConflict, map[string]any{"decision": "rejected", "reason": reason, "original_scan_at": result.OccurredAt})
 		return
 	}
-	write(w, http.StatusOK, map[string]any{"decision": "accepted", "scanned_at": result.OccurredAt})
+	response := map[string]any{"decision": "accepted", "scanned_at": result.OccurredAt}
+	if result.Replayed {
+		// Present-and-true only on replays (ADR-025 §D3: never a bare accepted)
+		// — absent on first-time results so old scanners parse them unchanged.
+		response["replay"] = true
+	}
+	write(w, http.StatusOK, response)
+}
+
+// reconcile syncs offline occurrences (ADR-025 §D6). Recording, not deciding:
+// each occurrence gets its own result in request order, and one bad occurrence
+// never fails the batch — a gate syncing a night's queue must learn the fate
+// of every entry.
+func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
+	if s.verifier == nil {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner unavailable"})
+		return
+	}
+	var input struct {
+		Occurrences []struct {
+			QRPayload    string `json:"qr_payload"`
+			OccurrenceID string `json:"occurrence_id"`
+			OccurredAt   string `json:"occurred_at"`
+		} `json:"occurrences"`
+	}
+	if err := httpx.DecodeJSON(w, r, &input, 256<<10); err != nil || len(input.Occurrences) == 0 {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid reconciliation request"})
+		return
+	}
+	results := make([]map[string]any, 0, len(input.Occurrences))
+	// The id is echoed VERBATIM, even when malformed: the scanner correlates
+	// results to its queue by this value, and a normalized or zeroed id would
+	// strand the queue entry in retry-forever (ai-review R3).
+	rejected := func(occurrenceID string) map[string]any {
+		return map[string]any{"occurrence_id": occurrenceID, "result": "rejected"}
+	}
+	for _, entry := range input.Occurrences {
+		occ, occurredAt, err := parseOccurrence(entry.OccurrenceID, entry.OccurredAt)
+		if err != nil || occ == uuid.Nil {
+			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
+		claims, err := s.verifier.Verify(entry.QRPayload)
+		if err != nil {
+			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
+		result, err := s.st.ReconcileAdmission(r.Context(), store.ReconcileOccurrence{
+			TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
+			OccurrenceID: occ, OccurredAt: occurredAt,
+		})
+		if errors.Is(err, store.ErrTicketCredential) || errors.Is(err, store.ErrOccurrenceCollision) {
+			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
+		if err != nil {
+			// Infrastructure failure, not a per-occurrence verdict: the whole
+			// batch fails so the scanner keeps its queue and retries.
+			write(w, http.StatusInternalServerError, map[string]string{"error": "reconcile admissions"})
+			return
+		}
+		entryResult := map[string]any{"occurrence_id": result.OccurrenceID, "result": string(result.Outcome), "occurred_at": result.OccurredAt}
+		if result.SkewFlagged {
+			entryResult["skew_flagged"] = true
+		}
+		results = append(results, entryResult)
+	}
+	write(w, http.StatusOK, map[string]any{"results": results})
 }
