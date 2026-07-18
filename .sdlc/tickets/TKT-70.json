@@ -4,10 +4,18 @@
   "classification": "simple",
   "parent": "TKT-2",
   "summary": "smoke.sh only cleans up on the exit trap, so a killed run can leave a migrated volume",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
-  "comments": [],
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed** — branch `TKT-70-smoke-preclean` off `origin/main` (7ed7f4d).\n\n**Selection reason:** in Ready, zero open blockers, `classification: simple`, one-file shell change with a stated COS.\n\n**⚠️ Gate waiver (process experiment):** the repo owner has explicitly waived all four human gates for this run — the ticket runs Ready→Done fully autonomously in one session. Replacements: Gate 2 → self-resolved decisions recorded in plan-final; Gate 3 → agent squash-merges after adversarial ai-review converges (review-guide posted first as audit record); Gate 4 → self-validation of COS against test evidence on merged code. Everything else (config.models routing, cross-model review, TDD red-first, gate green before push, markers, no AI attribution) unchanged."
+    }
+  ],
   "description": "**Found by TKT-66** (and independently by the Codex plan draft on that ticket).\n\n`scripts/smoke.sh:26-29`:\n\n```bash\ncompose() { docker compose -p \"$PROJECT\" \"${COMPOSE_FILES[@]}\" \"$@\"; }\ncleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }\ntrap cleanup EXIT INT TERM\nif ! compose up -d --build --wait; then ...\n```\n\nTeardown runs **only** on the exit trap. A hard-killed run (SIGKILL, a crashed daemon, a reboot, a\nkilled CI runner) leaves the volumes behind, and the next `compose up` reuses the already-migrated\n`pgdata`. The gate then passes without ever proving the **clean-clone bootstrap** it claims to prove\n— `make check` from a clean clone is a stated repo invariant (`AGENTS.md`), and this is the one place\nthat would catch a migration chain that only works on a pre-existing database.\n\nNow more load-bearing than before: since [ADR-021](docs/adr/ADR-021-out-of-band-service-migrations.md)\nmigrations run in one-shot jobs, and `TestMigrationsAppliedOutOfBand` asserts each database is at its\nlatest checked-in version. Against a stale volume that assertion can pass on schema an earlier run\napplied, not this one.\n\n**COS:** the smoke run cannot start from a dirty volume — e.g. pre-clean (`down -v --remove-orphans`)\n*before* `compose up`, not only in the trap. Cheap; the trap stays for the normal path.\n\n**Not in scope:** the port-collision defect (TKT-69)."
 }
