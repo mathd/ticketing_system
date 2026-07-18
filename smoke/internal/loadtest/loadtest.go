@@ -5,7 +5,9 @@
 package loadtest
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"runtime"
 	"sort"
 	"sync"
@@ -63,6 +65,13 @@ type StageResult struct {
 	Hold, Finalize, Confirm, Lifecycle []time.Duration
 }
 
+// testBeforeAttempt runs as the worker goroutine's first statement, before the
+// lag capture. Test-only seam (TestLagMeasuredAtAttemptStart): goroutine-start
+// delay cannot be forced deterministically under the preemptive scheduler, so
+// the ordering "lag is captured after the goroutine is running" is pinned by
+// delaying here and asserting the delay shows up in the sample. Nil in prod.
+var testBeforeAttempt func()
+
 // RunStage drives one stage open-loop: every arrival time is computed from the
 // stage start (never from the previous completion), so a saturated server shows
 // up as drops and lag instead of a silently stretched schedule (coordinated
@@ -96,11 +105,17 @@ func RunStage(stage Stage, maxInFlight int, attempt AttemptFunc) StageResult {
 		if n > res.PeakInFlight { // only this goroutine writes PeakInFlight
 			res.PeakInFlight = n
 		}
-		lag := time.Since(scheduled)
 		wg.Add(1)
 		go func(seq int) {
 			defer wg.Done()
 			defer inFlight.Add(-1)
+			if testBeforeAttempt != nil {
+				testBeforeAttempt()
+			}
+			// Measured at attempt start, not spawn (TKT-93): post-spawn
+			// goroutine-scheduling delay is exactly the backpressure the
+			// CeilingInconclusive lag-p99 guard exists to catch.
+			lag := time.Since(scheduled)
 			out := attempt(stage, seq)
 			mu.Lock()
 			defer mu.Unlock()
@@ -311,6 +326,61 @@ type Report struct {
 	CeilingHighestStable  float64       `json:"ceiling_highest_stable_per_s"`
 	CeilingFirstUnstable  float64       `json:"ceiling_first_unstable_per_s"`
 	CeilingLowerBoundOnly bool          `json:"ceiling_lower_bound_only"`
+}
+
+// MaxConnsPerHost bounds the shared transport (TKT-92): without it a 3,000/s
+// sweep stage could open 12k concurrent connections (rate×4 in-flight cap).
+// 4096 preserves the rate×4 Little's-law headroom through the observed 600/s
+// knee; above ~1024/s a saturated bound surfaces as client errors or drops,
+// which CeilingInconclusive turns into a generator verdict — never a published
+// server ceiling.
+const MaxConnsPerHost = 4096
+
+// NewClient is the load-generator HTTP client: aggressive connection reuse (at
+// thousands of attempts/min the default 2 idle conns per host turns the client
+// into the bottleneck), the TKT-92 transport bound, and a fail-closed redirect
+// policy (TKT-93): a redirect is delivered as the 3xx response itself for the
+// attempt to classify — never a followed hop, so a custom header (the internal
+// token) can never be re-sent by the transport (ADR-028 posture).
+func NewClient() *http.Client {
+	return &http.Client{
+		Transport:     &http.Transport{MaxIdleConns: 1024, MaxIdleConnsPerHost: 1024, MaxConnsPerHost: MaxConnsPerHost},
+		Timeout:       15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// ClassifyHold409 discriminates a hold 409 body (TKT-93): only the bare
+// {"error":…} shape — what problem() in services/inventory/internal/api/server.go
+// emits for capacity sellout (ErrUnavailable), ErrConflict and ErrIdempotency —
+// counts as an expected capacity rejection. A body carrying any machine-readable
+// code (today slot_archived / slot_closed) is not sellout, and anything
+// unrecognized — a code, no error field, unparseable — fails closed as
+// KindServerError per ADR-028's drift posture:
+// server-error is the class that cannot be silently blessed as capacity
+// evidence. Cost accepted at plan: a new inventory 409 code breaks the harness
+// until taught here.
+func ClassifyHold409(body []byte) string {
+	var b struct {
+		Error *string `json:"error"`
+		Code  string  `json:"code"`
+	}
+	if json.Unmarshal(body, &b) != nil || b.Error == nil || b.Code != "" {
+		return KindServerError
+	}
+	return KindRejected
+}
+
+// ValidTransitionBody reports whether a finalize/confirm 200 body is the claim
+// object in the target state (TKT-93): parseable JSON whose status equals the
+// step's target. Status only — full-shape validation is the contract
+// middleware's job (ADR-028); this is malformed-success-body detection, which
+// the taxonomy classifies server-side (KindServerError doc above).
+func ValidTransitionBody(body []byte, wantStatus string) bool {
+	var b struct {
+		Status string `json:"status"`
+	}
+	return json.Unmarshal(body, &b) == nil && b.Status == wantStatus
 }
 
 func NewReport(ticket, profile, gitSHA string) *Report {

@@ -2,6 +2,11 @@ package loadtest
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -187,6 +192,104 @@ func TestCeilingBracket(t *testing.T) {
 	hi, first, lower = CeilingBracket([]StageResult{mk(150, true), slow}, slowAware)
 	if hi != 150 || first != 300 || lower {
 		t.Fatalf("latency-aware bracket = (%v,%v,%v), want (150,300,false)", hi, first, lower)
+	}
+}
+
+// TKT-93 finding 1: lag must be measured at attempt start (inside the worker
+// goroutine), not at spawn. Goroutine-start delay cannot be forced
+// deterministically under the preemptive scheduler, so the ordering is pinned
+// via the testBeforeAttempt hook: a delay injected after the goroutine starts
+// must show up in the lag sample — it cannot if the capture happened at spawn.
+func TestLagMeasuredAtAttemptStart(t *testing.T) {
+	const delay = 50 * time.Millisecond
+	testBeforeAttempt = func() { time.Sleep(delay) }
+	defer func() { testBeforeAttempt = nil }()
+	stage := Stage{Name: "s", Rate: 20, Duration: 100 * time.Millisecond, Quantity: 1}
+	res := RunStage(stage, 16, func(Stage, int) Outcome { return Outcome{Kind: KindOK} })
+	if res.Started == 0 {
+		t.Fatal("no attempts started")
+	}
+	if got := Percentile(res.Lag, 1); got < delay {
+		t.Fatalf("min lag %v < injected post-spawn delay %v — lag is captured at spawn, not at attempt start", got, delay)
+	}
+}
+
+// TKT-93 finding 2: the load client must never follow a redirect — the 3xx is
+// delivered for classification and the target is never contacted, so a custom
+// header (the internal token) cannot be re-sent by the transport. 307 is the
+// variant that would re-send body and headers on a follow; 302 covers the
+// common shape.
+func TestNewClientNeverFollowsRedirects(t *testing.T) {
+	var targetHits atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) { targetHits.Add(1) })
+	mux.HandleFunc("/redirect302", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/target", http.StatusFound) })
+	mux.HandleFunc("/redirect307", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/target", http.StatusTemporaryRedirect)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient()
+	for path, want := range map[string]int{"/redirect302": http.StatusFound, "/redirect307": http.StatusTemporaryRedirect} {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(`{}`))
+		req.Header.Set("X-Internal-Token", "secret")
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatalf("%s: redirect must be delivered, not errored: %v", path, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("%s: status %d, want the raw %d", path, resp.StatusCode, want)
+		}
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Fatalf("redirect target was contacted %d times — the transport followed a redirect", n)
+	}
+}
+
+// TKT-93 finding 3: only the bare {"error":…} 409 shape is a plausible capacity
+// rejection; coded and unrecognized bodies fail closed as server evidence.
+func TestClassifyHold409(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want string
+	}{
+		"sellout bare error":  {`{"error":"insufficient availability"}`, KindRejected},
+		"idempotency bare":    {`{"error":"idempotency conflict"}`, KindRejected},
+		"slot archived":       {`{"error":"slot archived","code":"slot_archived"}`, KindServerError},
+		"slot closed":         {`{"error":"slot closed","code":"slot_closed"}`, KindServerError},
+		"unknown code":        {`{"error":"x","code":"something_new"}`, KindServerError},
+		"not json":            {`not json`, KindServerError},
+		"empty object":        {`{}`, KindServerError},
+		"empty body":          {``, KindServerError},
+		"missing error field": {`{"code":""}`, KindServerError},
+	} {
+		if got := ClassifyHold409([]byte(tc.body)); got != tc.want {
+			t.Errorf("%s: ClassifyHold409(%q) = %q, want %q", name, tc.body, got, tc.want)
+		}
+	}
+}
+
+// TKT-93 finding 4: a finalize/confirm 200 body must be the claim in the target
+// state — empty/malformed success bodies are server errors per the taxonomy.
+func TestValidTransitionBody(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body, want string
+		ok         bool
+	}{
+		"finalizing ok":  {`{"hold_id":"h1","status":"finalizing"}`, "finalizing", true},
+		"confirmed ok":   {`{"hold_id":"h1","status":"confirmed"}`, "confirmed", true},
+		"wrong status":   {`{"hold_id":"h1","status":"held"}`, "finalizing", false},
+		"missing status": {`{"hold_id":"h1"}`, "finalizing", false},
+		"empty object":   {`{}`, "confirmed", false},
+		"empty body":     {``, "confirmed", false},
+		"unparseable":    {`not json`, "confirmed", false},
+	} {
+		if got := ValidTransitionBody([]byte(tc.body), tc.want); got != tc.ok {
+			t.Errorf("%s: ValidTransitionBody(%q, %q) = %v, want %v", name, tc.body, tc.want, got, tc.ok)
+		}
 	}
 }
 
