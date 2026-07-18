@@ -70,6 +70,10 @@ prompt-driven one is a semantic change to the experiment, not just plumbing.
 
 - **v1 covers read-only stages only** (`plan`, `planReview`, `aiReview`). `implement@claudex`
   is undefined — don't improvise a writable allowlist; extend this doc first.
+- **Retry a transient failure once on the same harness before falling back** (a
+  `Stream idle timeout` mid-response is the observed shape — TKT-90): for non-`gpt-*` models a
+  fallback substitutes model *and* harness, so a premature swap corrupts the measurement twice
+  over. One retry is cheap; a second identical failure is real.
 - On failure or hang, fall back to the **codex runner** for the same stage and say so in the
   stage comment. A substituted harness is a measurement note, never a silent detail.
   Non-`gpt-*` models (e.g. `kimi-k3`) have no codex equivalent — their fallback is

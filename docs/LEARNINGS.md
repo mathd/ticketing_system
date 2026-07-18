@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**Reconciliation acts only on positive assertions — absence is never death**](./learnings/2026-07-17-reconciliation-acts-only-on-positive-assertions.md) —
+  a published-only per-id lookup makes "archived solo slot" and "live festival group pool"
+  indistinguishable (both 404), and inventory pools carry no kind marker; a converge pass that
+  treats 404 as death archives live sellable inventory. Converge only on an endpoint that answers
+  for the id's whole kind-union, in any lifecycle. Caught at plan review on TKT-90. (TKT-90, PR #67)
 - **Dropping a table-wide UNIQUE drops its backing index** — audit every query that used the
   index prefix before an ADR-025-§D7-style constraint swap; the partial replacement cannot serve
   rows outside its predicate, so per-scan reads (chain verification, History) silently become
