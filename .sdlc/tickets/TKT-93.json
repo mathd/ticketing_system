@@ -4,10 +4,14 @@
   "summary": "Load-harness measurement fidelity follow-ups (from TKT-92 ai-review)",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 71,
+    "url": "https://github.com/mathd/ticketing_system/pull/71",
+    "state": "open"
+  },
   "links": [],
   "description": "Four incidental findings from TKT-92's adversarial ai-review (gpt-5.6-sol@claudex), real but out of scope for the taxonomy/bounding PR (#63): (1) attempt lag is measured at goroutine spawn, not at attempt start — under scheduler pressure CeilingInconclusive can accept a rate that was not delivered on schedule; (2) loadClient follows redirects and forwards X-Internal-Token on same-host redirects — pin CheckRedirect to fail closed; (3) every hold 409 counts as an expected capacity rejection — archived/closed-slot/idempotency 409s are indistinguishable from sellout; consider discriminating on the error body; (4) finalize/confirm validate status only — an empty/malformed 200 body counts as KindOK despite the taxonomy classifying malformed success bodies as server errors. Natural home: whichever of TKT-31/TKT-37 next touches the harness.",
   "comments": [
@@ -35,6 +39,11 @@
       "stage": "planning",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=planning kind=plan-final -->\n**Plan-final — delta over the kind=plan draft.** The kind=plan draft **as amended by the critique above is the plan**: §4.1's test replaced by the `testBeforeAttempt` hook design, §4.4 upgraded to a 307 redirect case, §1's `make test-go` claim corrected (unit tests run via the smoke stage / direct `go test`), everything else accepted as drafted.\n\n**Introduced at plan-review, reviewed by no second model:** (1) the `testBeforeAttempt` package-internal hook design for the finding-1 test; (2) the 307-redirect test choice. Both will be named again in the review-guide so Gate 3's reviewer knows they carry single-model review only. (The adversarial ai-review sees the resulting code cold, which partially covers them.)\n\n**Self-resolved decisions (Gate 2 waived by owner for this run — recorded per waiver protocol):**\n- Unrecognized/coded 409 bodies classify `KindServerError` — the critique's recommendation (and the draft's own §5 preference); fail-closed per ADR-028 posture.\n- `ValidTransitionBody` validates the `status` field only — draft recommendation, accepted by critique.\n- Redirect policy via `CheckRedirect` returning `http.ErrUseLastResponse` — draft recommendation, accepted by critique.\n- Finding-1 testability via package-internal hook — critique's replacement for a design proven unworkable; most reversible option (3 lines, test-only surface, nil in prod).\n\nNo open decisions remain. Proceeding to Building under the owner's gate waiver."
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implementation — by `main-agent` (implement per config).** PR #71, branch `TKT-93-load-harness-measurement-fidelity`, commits `44226f2` + `300228c`.\n\nstage:\n  implementer: main-agent\n  tdd: all four unit tests written first and observed red against behavior-preserving stubs (lag captured at spawn; redirect followed to 200; blanket KindRejected; blanket true) — red output in session log\n  gate: make check green on the committed tree (exit read separately from the push)\n  files: smoke/internal/loadtest/loadtest.go, smoke/internal/loadtest/loadtest_test.go, smoke/onsale_load_test.go (+1 out-of-scope repair, below)\n\nDeviations from plan: none on the four findings. One **unanticipated addition** — the first `make check` run failed on `services/access/internal/store` occurrence tests: the TKT-85 fixture hardcodes device time 2026-07-17T09:00Z, which crossed the 24h `AdmissionSkewBound` this morning and broke the gate on main with no code change (a time bomb, not caused by this diff). Clear fix existed (pin the fixture relative to now, cross-call determinism preserved), so per the run's stop-condition rules I repaired it as a separate flagged commit `44226f2` in this PR instead of stopping. It is test-only, in a service this ticket otherwise doesn't touch — called out in the PR body and to be named in the review-guide."
     }
   ]
 }
