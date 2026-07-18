@@ -10,6 +10,12 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**Time-window fixtures must be relative to now**](./learnings/2026-07-18-time-window-fixtures-must-be-relative.md) —
+  a calendar-literal fixture judged against `now()` with a bound is green at merge and fails when
+  the clock crosses the literal plus the bound; CI, mutation testing and review all pass because
+  the defect only exists later. Build such fixtures from `time.Now()` with a deliberate offset,
+  pinned once per run. (TKT-85 fixture, caught by TKT-93's gate run, PR #71)
+
 - [**Seed the failure state; don't race a kill**](./learnings/2026-07-17-seed-the-failure-state-dont-race-a-kill.md) —
   for leftover-state defects (trap ordering, pre-clean, stale locks), fabricate the dirty state
   directly (compose up the stateful piece, plant a marker, `docker kill` the container) instead of
