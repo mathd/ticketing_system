@@ -6,10 +6,14 @@
   "summary": "Nothing pins commerce's backfill wiring end-to-end",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "claude (fable-5 session)",
-  "pr": null,
+  "pr": {
+    "url": "https://github.com/mathd/ticketing_system/pull/72",
+    "number": 72,
+    "state": "open"
+  },
   "comments": [
     {
       "stage": "backlog",
@@ -30,6 +34,11 @@
       "stage": "plan-review",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=plan-review kind=plan-final -->\n**Critique (3b) by main-agent (fable-5 session) — planReview per config. Delta over the kind=plan drafts; the winning draft as amended below is the plan.**\n\n## A/B selection (Gate-2 judge = this critique, per the waived-gates record in the claim comment)\n\n**Winner: Draft A.** Reason: A's isolated-probe seam (dedicated migrated probe DB + throwaway container) never touches the shared commerce container or its live database; B's seam (stop shared commerce, seed live DB, restart) leaves the shared stack broken if the test dies between stop and cleanup, and interleaves fixture cleanup with a live drainer that may hold claims. B's stated cost argument against the probe — \"the probe database is deliberately unmigrated\" — dissolves on the facts: the image's `migrate` subcommand (verified, `services/commerce/cmd/commerce/main.go:36`, ADR-022's own mechanism) migrates a fresh probe DB in one `docker run`. A also caught and self-corrected the one trap that would have sunk a naive design: commerce's `/healthz` gates on `nc.IsConnected()` (verified, `main.go:146`), so a dead-NATS probe never reports healthy — A's final call (real NATS, existence-only assertion) is correct and B never surfaced the issue.\n\n**Arm mapping (revealed now that the selection is recorded): A = kimi-k3:medium@claudex, B = gpt-5.6-sol:medium@claudex.**\n\n## Per-part verdicts on Draft A\n- Seam (probe DB `backfill_wiring_probe`, throwaway container, poll `completion_outbox`): **accept** — pattern, symbols, and migrate subcommand all grep-verified at HEAD.\n- §1 \"Design detail: NATS must be unreachable\": **amend — struck.** Superseded by A's own risk-3 resolution: the probe uses the real smoke NATS (`nats://nats:4222`) and the test asserts row existence + subject only, with no `published_at` condition. That resolution is the binding design.\n- DoD (incl. the one-line `drainer_test.go` comment update naming the new test): **accept**.\n- TDD plan (red manufactured by temporarily passing `nil` at `main.go:179-184`, never committed; green with wiring restored; evidence recorded in the PR): **accept** — both arms independently converged on this.\n- Risks/pre-mortem: **accept**, with one addition below.\n- From Draft B, folded in: outbox rows are retired by setting `published_at`, not deleted — so existence polling is durable. Consistent with A's assertion design.\n\n## Introduced at plan-review, reviewed by no second model\n1. The strike of A's dead-NATS paragraph (resolution of A's internal contradiction in favor of its risk-3 conclusion).\n2. Cross-service side-effect analysis: the probe's drainer publishes the backfilled synthetic `order.completed` into the **shared** smoke JetStream; access consumes it and issues tickets straight from event data with no catalog validation (`services/access/internal/consumer/consumer.go:180-197`), deduped on `event_id`. Same class as normal smoke checkout traffic — accepted, no mitigation.\n\n## Decisions self-resolved under the gate waiver (rule: prefer critique's recommendation)\n- Winner = Draft A (above).\n- A's open decision 1 — share a probe container with the TKT-71 test? **No: two independent tests**, per A's recommendation (~15s marginal cost accepted).\n- A's open decision 2 — decode the envelope? **No: existence + `subject` only**, per A's recommendation (ADR-017-aligned; store-level tests already pin the envelope shape).\n- A's open decision 3 — no-op-closure coverage: already caught by the chosen seam; nothing extra.\n\nTransitioning Planning → Building under the recorded waiver (needs:human skipped)."
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\nImplementer: main-agent (fable-5 session), per config.models.implement.\n\nBuilt from the approved plan (Draft A as amended in plan-final). Diff: +123/−1 across 2 files — `smoke/smoke_test.go` (new probe `TestCommerceBackfillRepairsSeededOrder`) and a one-line comment update in `services/commerce/internal/outbox/drainer_test.go`. Zero source changes.\n\n**TDD evidence:**\n- Red observed: with `nil` temporarily passed as the backfill arg in main.go (never committed; `git diff` confirms main.go absent from the final diff), the full smoke stage failed on exactly this test — commerce healthy, seeded row never backfilled, 30s poll timeout with the designed message. Only failure in the suite.\n- Green observed: wiring restored, full `make check` exit 0, test passes in 0.82s.\n\nNotes for the record: one build iteration (missing `uuid` import in smoke_test.go — Go per-file imports); one mis-cwd'd gate run caught by reading the exit code before trusting output (the TKT-71 rule doing its job — `make smoke` from `smoke/` fails loudly).\n\nPR: https://github.com/mathd/ticketing_system/pull/72 (branch `TKT-94-backfill-wiring-pin`, base main, head dc22942). Moving to agent:ai-review."
     }
   ]
 }
