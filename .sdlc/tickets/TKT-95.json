@@ -1,0 +1,18 @@
+{
+  "key": "TKT-95",
+  "type": "Task",
+  "summary": "Unify smoke HTTP helpers on contract-validating variants",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "standard",
+  "description": "Follow-up from TKT-47 retro. The smoke suite has validating helpers (postJSON, getWithHeaders, get, internalJSON) and raw ones (holdRequest, postScan) — the split means the per-operation coverage gate only sees traffic through the former, and its scope comment has to disclaim the rest. Unify on validating helpers (raw helpers keep their concurrency-safe shape but report through a chokepoint the gate can see), then delete the scope disclaimers.\n\nConditions of Success:\n- All smoke HTTP traffic to the five services flows through helpers that validate against the committed contracts\n- holdRequest/postScan callers keep their concurrency semantics (no t.Fatal from non-test goroutines)\n- The scope disclaimers in smoke/coverage_test.go shrink accordingly\n- make check passes",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-47"
+    }
+  ],
+  "comments": []
+}
