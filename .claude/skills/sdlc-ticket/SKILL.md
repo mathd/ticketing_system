@@ -208,7 +208,9 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   re-run the gate yourself on the committed tree (quality-practices.md §2.b).
 #   READ the gate's exit code before pushing — never chain commit/push onto the same shell
 #   command as the gate: `gate; echo exit=$?` then push in a later call. Chained, a gate that
-#   failed to even start (mis-cwd'd, missing target) ships the push anyway (TKT-71).
+#   failed to even start (mis-cwd'd, missing target) ships the push anyway (TKT-71). And don't
+#   pipe the gate (`gate | tail; echo $?` reads tail's exit, not the gate's — a failed gate
+#   reported exit=0 on TKT-94): redirect to a file and read the file.
 #   Code: verify `git branch --show-current` is the ticket branch FIRST (a session's branch can
 #   be switched under it — TKT-84 briefly committed to local main), then commit (no AI
 #   attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"
