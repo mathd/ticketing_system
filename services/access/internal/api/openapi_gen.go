@@ -126,9 +126,9 @@ type ScanRejectedDecision string
 
 // ScanRequest defines model for ScanRequest.
 type ScanRequest struct {
-	OccurredAt   *time.Time          `json:"occurred_at,omitempty"`
-	OccurrenceId *openapi_types.UUID `json:"occurrence_id,omitempty"`
-	QrPayload    string              `json:"qr_payload"`
+	OccurredAt   *string `json:"occurred_at,omitempty"`
+	OccurrenceId *string `json:"occurrence_id,omitempty"`
+	QrPayload    string  `json:"qr_payload"`
 }
 
 // Ticket defines model for Ticket.

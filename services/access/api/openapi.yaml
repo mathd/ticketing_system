@@ -61,15 +61,18 @@ components:
     # occurrence_id/occurred_at are the ADR-025 §D3 occurrence protocol, expand
     # phase (§D10): optional so old scanners keep today's semantics; occurred_at
     # is required iff occurrence_id is present — a pairing the schema cannot
-    # express, enforced server-side (reason: invalid_occurrence).
+    # express. Both are validated server-side (reason: invalid_occurrence) —
+    # deliberately not format uuid/date-time here, so the scanner gets the
+    # distinguishable invalid_occurrence answer instead of a generic contract
+    # 422, and lowercase RFC 3339 t/z (legal date-time) is accepted.
     ScanRequest:
       type: object
       additionalProperties: false
       required: [qr_payload]
       properties:
         qr_payload: {type: string, minLength: 1}
-        occurrence_id: {type: string, format: uuid}
-        occurred_at: {type: string, format: date-time}
+        occurrence_id: {type: string, minLength: 1}
+        occurred_at: {type: string, minLength: 1}
     ScanAccepted:
       type: object
       additionalProperties: false
@@ -92,14 +95,15 @@ components:
       type: object
       additionalProperties: false
       required: [qr_payload, occurrence_id, occurred_at]
-      # Deliberately plain strings, not format uuid/date-time: batch entries
-      # are validated per occurrence server-side so ONE malformed entry gets
-      # its own rejected result instead of 422-ing the whole sync — a gate
-      # syncing a night's queue must never be blocked by one bad row.
+      # Deliberately plain strings with no minLength: batch entries are
+      # validated per occurrence server-side so ONE malformed entry — even an
+      # empty field — gets its own rejected result instead of 422-ing the
+      # whole sync. A gate syncing a night's queue must never be blocked by
+      # one bad row.
       properties:
-        qr_payload: {type: string, minLength: 1}
-        occurrence_id: {type: string, minLength: 1}
-        occurred_at: {type: string, minLength: 1}
+        qr_payload: {type: string}
+        occurrence_id: {type: string}
+        occurred_at: {type: string}
     ReconcileResponse:
       type: object
       additionalProperties: false

@@ -98,7 +98,7 @@ func RequireAlarmRoute(ctx context.Context, js jetstream.JetStream, stream, dura
 // turnstile on paying customers.
 func ObserveAlarmRoute(meter metric.Meter, js jetstream.JetStream, stream, durable string) error {
 	pending, err := meter.Int64ObservableGauge("access.lifecycle.alarm.durable_pending",
-		metric.WithDescription("Integrity alarms sitting unread in the operator durable. Sustained non-zero means nobody is collecting them: alarms are retained but unmonitored, which ADR-021 §D6 forbids for a fail-open deployment."))
+		metric.WithDescription("Alarms sitting unread in an operator durable, per the durable attribute (integrity and admission-conflict classes). Sustained non-zero means nobody is collecting them: alarms are retained but unmonitored, which ADR-021 §D6 forbids for a fail-open deployment."))
 	if err != nil {
 		return err
 	}

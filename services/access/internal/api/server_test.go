@@ -99,7 +99,8 @@ func TestReconcileRejectsBadCredentialsPerOccurrence(t *testing.T) {
 		`{"occurrences":[`+
 			`{"qr_payload":"not-a-ticket","occurrence_id":"`+occA+`","occurred_at":"2026-07-17T09:00:00Z"},`+
 			`{"qr_payload":"also-not-a-ticket","occurrence_id":"`+occB+`","occurred_at":"2026-07-17t09:01:00z"},`+
-			`{"qr_payload":"not-a-ticket","occurrence_id":"`+malformed+`","occurred_at":"2026-07-17T09:02:00Z"}]}`))
+			`{"qr_payload":"not-a-ticket","occurrence_id":"`+malformed+`","occurred_at":"2026-07-17T09:02:00Z"},`+
+			`{"qr_payload":"","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:03:00Z"}]}`))
 	request.Header.Set("Content-Type", "application/json")
 	New(nil, verifier).Router().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -114,8 +115,11 @@ func TestReconcileRejectsBadCredentialsPerOccurrence(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Results) != 3 || response.Results[0].OccurrenceID != occA || response.Results[1].OccurrenceID != occB || response.Results[2].OccurrenceID != malformed {
-		t.Fatalf("results = %+v, want all three occurrence ids echoed verbatim in request order", response.Results)
+	// Four entries: bad credential, lowercase timestamp + bad credential,
+	// malformed id, empty qr_payload — each a per-occurrence rejection, none a
+	// batch failure, every id echoed verbatim.
+	if len(response.Results) != 4 || response.Results[0].OccurrenceID != occA || response.Results[1].OccurrenceID != occB || response.Results[2].OccurrenceID != malformed {
+		t.Fatalf("results = %+v, want all four occurrence ids echoed verbatim in request order", response.Results)
 	}
 	for _, r := range response.Results {
 		if r.Result != "rejected" {
