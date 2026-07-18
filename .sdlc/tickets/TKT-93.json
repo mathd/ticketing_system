@@ -2,7 +2,7 @@
   "key": "TKT-93",
   "type": "Task",
   "summary": "Load-harness measurement fidelity follow-ups (from TKT-92 ai-review)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
