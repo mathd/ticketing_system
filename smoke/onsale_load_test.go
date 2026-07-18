@@ -30,20 +30,10 @@ import (
 // serialization ceiling without anything being wrong (plan-final, TKT-82).
 // ONSALE_PROFILE=full runs the festival-NFR profile (make onsale-load-full).
 
-// maxClientConnsPerHost bounds the shared transport (TKT-92): without it the
-// 3,000/s sweep stage could open 12k concurrent connections (rate×4 in-flight
-// cap). 4096 preserves the rate×4 Little's-law headroom through the observed
-// 600/s knee; above ~1024/s a saturated bound surfaces as client errors or
-// drops, which CeilingInconclusive turns into a generator verdict — never a
-// published server ceiling.
-const maxClientConnsPerHost = 4096
-
-// loadClient reuses connections aggressively: at thousands of attempts/min the
-// default 2 idle conns per host turns the client into the bottleneck.
-var loadClient = &http.Client{
-	Transport: &http.Transport{MaxIdleConns: 1024, MaxIdleConnsPerHost: 1024, MaxConnsPerHost: maxClientConnsPerHost},
-	Timeout:   15 * time.Second,
-}
+// Transport bounds (TKT-92) and the fail-closed redirect policy (TKT-93) live
+// with the harness in loadtest.NewClient; a 3xx surfaces as its raw status for
+// classification, never as a followed hop that could re-send X-Internal-Token.
+var loadClient = loadtest.NewClient()
 
 func timedPost(url string, headers map[string]string, body any) (int, []byte, time.Duration, error) {
 	var rd io.Reader
@@ -95,8 +85,17 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 		switch {
 		case err != nil && code == 0:
 			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
+		// A 409 is only sellout if the body says so (TKT-93): coded 409s
+		// (slot_archived/slot_closed) and unrecognized shapes fail closed as
+		// server evidence. A read error truncating the body lands there too —
+		// an unprovable rejection must not count as capacity evidence.
 		case code == http.StatusConflict:
-			return loadtest.Outcome{Kind: loadtest.KindRejected} // body unused; a read error changes nothing
+			kind := loadtest.ClassifyHold409(body)
+			out := loadtest.Outcome{Kind: kind}
+			if kind != loadtest.KindRejected {
+				out.Note = fmt.Sprintf("hold 409 not a capacity rejection: %.200s (%v)", body, err)
+			}
+			return out
 		// 200 is an idempotent replay. Keys are unique per attempt, so it only
 		// arises when Go transparently retried after losing the first response
 		// on a reused connection — the hold is real, not instability.
@@ -114,9 +113,9 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 		out := loadtest.Outcome{Hold: holdD}
 		hdr := map[string]string{"X-Internal-Token": internalToken}
 		for _, step := range []struct {
-			name string
-			dst  *time.Duration
-		}{{"finalize", &out.Finalize}, {"confirm", &out.Confirm}} {
+			name, target string
+			dst          *time.Duration
+		}{{"finalize", "finalizing", &out.Finalize}, {"confirm", "confirmed", &out.Confirm}} {
 			url := fmt.Sprintf("%s/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
 			code, rbody, d, err := timedPost(url, hdr, nil)
 			switch {
@@ -126,6 +125,11 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 				return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("%s: %d %.200s (%v)", step.name, code, rbody, err)}
 			case err != nil: // 200 delivered, body then cut off — transport health, inconclusive
 				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
+			// A fully delivered 200 whose body is not the claim in the target
+			// state is a malformed success body — server-side per the taxonomy
+			// (TKT-93; ADR-028 posture).
+			case !loadtest.ValidTransitionBody(rbody, step.target):
+				return loadtest.Outcome{Kind: loadtest.KindServerError, Note: fmt.Sprintf("%s: 200 with malformed body %.200s", step.name, rbody)}
 			}
 			*step.dst = d
 		}
@@ -293,7 +297,7 @@ func onsaleGate(t *testing.T) {
 	attempt := checkoutAttempt(runID, slot, 1)
 
 	report := loadtest.NewReport("TKT-82", "gate", gitSHA())
-	report.ClientMaxConnsPerHost = maxClientConnsPerHost
+	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 	loadStart := time.Now()
 
 	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 5, Duration: 2 * time.Second, Quantity: 1}, 64, attempt)
@@ -396,7 +400,7 @@ func onsaleFull(t *testing.T) {
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
 	report := loadtest.NewReport("TKT-82", "full", gitSHA())
-	report.ClientMaxConnsPerHost = maxClientConnsPerHost
+	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 	report.Notes = "local compose topology; DB_MAX_OPEN_CONNS=25; single-host client+server — see docs/verification/on-sale-load/README.md"
 
 	slot, _ := publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
@@ -469,7 +473,7 @@ func onsaleFull(t *testing.T) {
 	var sweep []loadtest.StageResult
 	for _, rate := range []int{75, 150, 300, 600, 1200, 2400, 3000} {
 		s, _ := publishedSlot(t, fmt.Sprintf("Onsale Sweep %s %d", runID, rate), 100000)
-		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, min(max(512, rate*4), maxClientConnsPerHost), checkoutAttempt(runID, s, 1))
+		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, min(max(512, rate*4), loadtest.MaxConnsPerHost), checkoutAttempt(runID, s, 1))
 		generatorHealthy(r)
 		report.Stages = append(report.Stages, logStage(t, r))
 		report.Accounting = append(report.Accounting, assertAccounting(t, conn, s, r.OK, r.OK))
