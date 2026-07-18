@@ -24,6 +24,12 @@ past the point where ADR-021 §D6's operator escalation has fired.
 Seeding time excluded; timing starts immediately before `provider.UpTo(ctx, 5)`
 under a fresh 30-second context and stops when goose records version 5.
 
+Pre-state provenance: the measurement seeds at schema version 4 (migrations
+0001–0004 applied), which **is** the production pre-state for 0005 — 0004
+touches `lifecycle_events` only and never the quarantine table, and version
+4's `admitted_at NOT NULL` means all-live-rows is the only seedable shape
+(also the worst case for the one-admission partial index build).
+
 ## Reproduce
 
 ```sh

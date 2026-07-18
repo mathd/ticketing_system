@@ -12,8 +12,11 @@ decision (a new scan) mints a new one. A response — first-time or replay — m
 actuate (render the accepted screen) **only** while this device holds a
 durably pending, never-actuated record for that occurrence id, and the record
 is marked actuated **before** the accepted screen renders (fail-closed). A
-`(qr_payload, occurrence_id)` pair copied to another device holds no pending
-record there and never actuates.
+`(qr_payload, occurrence_id)` pair copied to another device or browser profile
+holds no pending record there and does not actuate. This is a per-profile
+store property, not an authenticated-identity guarantee: nothing binds the
+queue to a gate identity yet — ADR-025 §D3 defers occurrence↔scanner identity
+binding to the hardware-gate work (TKT-19).
 
 Offline scans queue locally and sync through
 `POST /api/access/scans/reconciliations` on reconnect (or the manual sync

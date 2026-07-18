@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -126,6 +127,11 @@ func parseOccurrence(occurrenceID, occurredAt string) (uuid.UUID, time.Time, err
 	}
 	at, err := time.Parse(time.RFC3339, occurredAt)
 	if err != nil {
+		// RFC 3339 permits lowercase t/z; Go's layout is strict about them.
+		// The contract says date-time, so accept what it advertises.
+		at, err = time.Parse(time.RFC3339, strings.ToUpper(occurredAt))
+	}
+	if err != nil {
 		return uuid.Nil, time.Time{}, errors.New("occurred_at (RFC 3339) is required with occurrence_id")
 	}
 	return occ, at, nil
@@ -220,12 +226,11 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := make([]map[string]any, 0, len(input.Occurrences))
+	// The id is echoed VERBATIM, even when malformed: the scanner correlates
+	// results to its queue by this value, and a normalized or zeroed id would
+	// strand the queue entry in retry-forever (ai-review R3).
 	rejected := func(occurrenceID string) map[string]any {
-		occ, err := uuid.Parse(occurrenceID)
-		if err != nil {
-			occ = uuid.Nil
-		}
-		return map[string]any{"occurrence_id": occ, "result": "rejected"}
+		return map[string]any{"occurrence_id": occurrenceID, "result": "rejected"}
 	}
 	for _, entry := range input.Occurrences {
 		occ, occurredAt, err := parseOccurrence(entry.OccurrenceID, entry.OccurredAt)

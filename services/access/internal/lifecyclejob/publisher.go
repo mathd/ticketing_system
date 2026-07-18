@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -114,7 +115,10 @@ func ObserveAlarmRoute(meter metric.Meter, js jetstream.JetStream, stream, durab
 		if err != nil {
 			return nil
 		}
-		o.ObserveInt64(pending, int64(info.NumPending))
+		// The durable is a series attribute: two alarm classes (integrity,
+		// admission-conflict) each register this gauge, and without it the
+		// second callback's observation would collide with the first's.
+		o.ObserveInt64(pending, int64(info.NumPending), metric.WithAttributes(attribute.String("durable", durable)))
 		return nil
 	}, pending)
 	return err

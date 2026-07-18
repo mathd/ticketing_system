@@ -92,10 +92,14 @@ components:
       type: object
       additionalProperties: false
       required: [qr_payload, occurrence_id, occurred_at]
+      # Deliberately plain strings, not format uuid/date-time: batch entries
+      # are validated per occurrence server-side so ONE malformed entry gets
+      # its own rejected result instead of 422-ing the whole sync — a gate
+      # syncing a night's queue must never be blocked by one bad row.
       properties:
         qr_payload: {type: string, minLength: 1}
-        occurrence_id: {type: string, format: uuid}
-        occurred_at: {type: string, format: date-time}
+        occurrence_id: {type: string, minLength: 1}
+        occurred_at: {type: string, minLength: 1}
     ReconcileResponse:
       type: object
       additionalProperties: false
@@ -108,8 +112,11 @@ components:
       required: [occurrence_id, result]
       # skew_flagged marks a device time outside the reconciliation bound —
       # recorded and flagged, never rejected (ADR-025 §D5).
+      # occurrence_id is echoed VERBATIM from the request — plain string, not
+      # format uuid — so the sender can correlate a rejected entry back to its
+      # queue even when the id it sent was malformed.
       properties:
-        occurrence_id: {type: string, format: uuid}
+        occurrence_id: {type: string}
         result: {type: string, enum: [recorded, conflict, synced, rejected]}
         occurred_at: {type: string, format: date-time}
         skew_flagged: {type: boolean}

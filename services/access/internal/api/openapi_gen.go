@@ -78,9 +78,9 @@ type LifecycleEvent struct {
 
 // ReconcileOccurrence defines model for ReconcileOccurrence.
 type ReconcileOccurrence struct {
-	OccurredAt   time.Time          `json:"occurred_at"`
-	OccurrenceId openapi_types.UUID `json:"occurrence_id"`
-	QrPayload    string             `json:"qr_payload"`
+	OccurredAt   string `json:"occurred_at"`
+	OccurrenceId string `json:"occurrence_id"`
+	QrPayload    string `json:"qr_payload"`
 }
 
 // ReconcileRequest defines model for ReconcileRequest.
@@ -96,7 +96,7 @@ type ReconcileResponse struct {
 // ReconcileResult defines model for ReconcileResult.
 type ReconcileResult struct {
 	OccurredAt   *time.Time            `json:"occurred_at,omitempty"`
-	OccurrenceId openapi_types.UUID    `json:"occurrence_id"`
+	OccurrenceId string                `json:"occurrence_id"`
 	Result       ReconcileResultResult `json:"result"`
 	SkewFlagged  *bool                 `json:"skew_flagged,omitempty"`
 }

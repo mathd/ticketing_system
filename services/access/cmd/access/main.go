@@ -214,6 +214,12 @@ func run() error {
 	if err := lifecyclejob.ObserveAlarmRoute(otel.Meter("ticketing/access/lifecycle"), js, alarmStream, os.Getenv(envAlarmDurable)); err != nil {
 		return fmt.Errorf("alarm route metrics: %w", err)
 	}
+	// The conflict class gets the same pending-depth evidence as the integrity
+	// class: RequireAlarmRoute proves the durable exists, only this proves
+	// anyone is draining it (ai-review R2).
+	if err := lifecyclejob.ObserveAlarmRoute(otel.Meter("ticketing/access/lifecycle"), js, alarmStream, os.Getenv(envConflictDurable)); err != nil {
+		return fmt.Errorf("conflict alarm route metrics: %w", err)
+	}
 	workers, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	go checkpointer.Run(workers)
