@@ -45,7 +45,9 @@ type Consumer struct {
 	// quarantine table before a concurrent skew insert commits and then
 	// Store(true) AFTER that event latched false — silently ready with a
 	// pending quarantine, which is the exact state the latch exists to shout
-	// about. Serialized, either order converges on unready.
+	// about. Serialized, either order converges on unready — but only because
+	// the quarantine insert COMMITS before the latch is taken; latch first and
+	// the commit escapes the critical section, reopening the race.
 	readinessMu sync.Mutex
 	log         *slog.Logger
 	// retryBackoff paces startupConverge's reconciliation retries; the zero
