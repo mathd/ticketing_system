@@ -4,7 +4,7 @@
   "classification": "simple",
   "parent": "TKT-2",
   "summary": "Nothing pins commerce's backfill wiring end-to-end",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -12,7 +12,7 @@
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/72",
     "number": 72,
-    "state": "open"
+    "state": "merged"
   },
   "comments": [
     {
@@ -44,6 +44,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**ai-review ran as an A/B (config.models.aiReview is a 2-arm array) — one arm survived.**\n\n- **Arm kimi-k3:medium@claudex: completed.** Guilt-primed, diff only, read-only allowlist. Note per claudex-runner: this is a prompt-driven reviewer in the Claude Code harness, not codex's built-in `adversarial-review`.\n- **Arm gpt-5.6-sol:medium@claudex: aborted mid-stage — OpenAI quota exhausted** (provider-level failure; the codex fallback holds the same credentials so no fallback was attempted, per claudex-runner §Scope and fallback). The owner directed the run to continue without gpt-5.6. Logged as the arm's result in ~/.claude/ab-tests/results.jsonl. The surviving arm's output drives the pipeline (ab-stages rule); cross-model invariant intact (reviewer kimi-k3 ≠ implementer main-agent).\n\n**Per-finding verdicts (verified mechanically against dc22942, the revision under review):**\n\n| # | Arm | Finding | Verdict |\n|---|-----|---------|---------|\n| 1 | kimi-k3 | cleanup `DROP DATABASE` can fail against lingering probe backends; leaked DB hard-fails the next run (blocking) | **Refuted.** The scenario requires the probe DB to survive between smoke runs; it cannot — `scripts/smoke.sh` runs `compose down -v` on EXIT (pgdata destroyed) and pre-cleans with a full `down` before `up` for hard-killed runs (smoke.sh §pre-clean). Within-run, the ignored drop error has no consumer. The redundancy observation is accurate but the code deliberately mirrors the merged `TestCommerceStartsWithoutRunningBackfill` pattern; diverging in one test trades consistency for nothing. No change. |\n| 2 | kimi-k3 | probe shares network/broker with the live stack; drainer publishes a phantom `order.completed` access will consume (incidental) | **Confirmed — pre-triaged.** This is plan-final's \"introduced at plan-review\" item #2, analyzed and accepted there (access issues from event data, dedupes on event_id; same class as normal smoke checkout traffic). Documented in the test's own comment. No change. |\n\n**A/B tally:** kimi-k3: 0 confirmed-blocking / 1 refuted / 1 confirmed-incidental (unique by default). gpt-5.6-sol: aborted, no findings.\n\n**Fixes: none.** No fix diff exists, so no second pass is warranted (the second pass exists to review unreviewed fix code; there is none). One pass, recorded here. Diff stable at dc22942; branch is 0 behind origin/main, no rebase.\n\nReview-guide posted on PR #72. Under the recorded gate waiver, Gate 3 is executed by the agent next: squash-merge + branch delete, then PO Review."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Validation note (Gate 4 self-validated under the recorded waiver — COS checked against test evidence on the merged code, main @ 7fbcbff).**\n\n**COS:** \"some automated check fails when commerce's drainer is constructed without the real backfill.\"\n\n**Evidence it is met:**\n1. The check exists and runs in the gate: `TestCommerceBackfillRepairsSeededOrder` is in `smoke/smoke_test.go`, and the smoke stage runs the whole package with no `-run` filter (`scripts/smoke.sh` — the no-allowlist rule exists precisely so a new test cannot silently not-run). `make check` includes smoke.\n2. The check fails on the broken construction — observed, not inferred: during TDD red, `main.go` temporarily passed `nil` to `outbox.New`; the full suite failed on exactly this test (commerce healthy — positive control held — seeded row never backfilled, 30s poll timeout). Only failure in the suite.\n3. The check passes on the real wiring: green run pre-merge (`make check` exit 0 at dc22942, test passes in 0.82s), CI green on the PR (checks `check` + `gate-selftest` both pass), and a post-merge `make check` on main @ 7fbcbff is recorded in the metrics comment.\n4. Ticket-suggested seam honored: the ticket proposed \"a smoke test that seeds a completed order with no outbox row … and asserts the row appears\" — that is what shipped, with cost weighed (isolated probe DB + throwaway container, ~1s green-path cost on a stage already running three such probes; the invasive stop-the-shared-service variant was considered and rejected at plan review).\n\nPR #72 squash-merged, branch deleted. Not user-demonstrable by nature (it is a CI guard); validation is via code + gate evidence above, as the COS anticipated."
     }
   ]
 }
