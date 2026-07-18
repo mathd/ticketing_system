@@ -4,15 +4,22 @@
   "classification": "simple",
   "parent": "TKT-2",
   "summary": "Nothing pins commerce's backfill wiring end-to-end",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude (fable-5 session)",
   "pr": null,
   "comments": [
     {
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nIncidental finding from the TKT-71 ai-review (kimi-k3:medium@claudex, finding 2, triaged incidental): the drainer unit tests pin `Run`'s contract for a non-nil backfill, and the smoke probe pins that startup does not *depend* on the backfill — but no test fails if `main.go` passes `nil` to `outbox.New` instead of the `BackfillCompletionOutbox` closure. A refactor that silently drops the wiring re-opens the paid-but-no-ticket window for pre-outbox orders.\n\n**COS:** some automated check fails when commerce's drainer is constructed without the real backfill — e.g. a smoke test that seeds a completed order with no outbox row in the live commerce DB before (re)starting commerce and asserts the row appears; or a cheaper seam if one exists. Weigh cost against the smoke suite's runtime budget.\n\nContext: `services/commerce/cmd/commerce/main.go` (outbox.New call), `services/commerce/internal/outbox/drainer_test.go` (the comment that records this gap), TKT-71 PR #66."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaiming TKT-94. Selection reason: in Ready with zero open blockers (no `links` on the ticket); incidental finding from TKT-71's ai-review, small and well-scoped — pin commerce's backfill wiring end-to-end.\n\n**⚠️ Gate-waiver record (process experiment):** the repo owner has explicitly waived the four human gates for this ticket's run — it runs Ready → Done in one continuous autonomous session. Gate 1 was given by the Ready status; Gate 2 (plan approval) is replaced by self-resolution after cross-model critique (prefer critique's recommendation, else most reversible option, decisions recorded in plan-final); Gate 3 (review + merge) is replaced by agent squash-merge after the adversarial ai-review converges, review-guide posted first as audit record; Gate 4 (PO acceptance) is replaced by self-validation of each COS against test evidence on merged code. Everything else in the skill applies unchanged: config.models routing, cross-model review for plan and code, TDD with tests observed red first, `make check` green before every push and after merge, all marker comments, no AI attribution. Board history for this ticket therefore shows agent-driven status transitions across all gates — deliberate, owner-authorized, this comment is the record.\n\nBranch: `TKT-94-backfill-wiring-pin` off `origin/main` (0a8ad99...). Note: plan-stage A/B applies (config.models.plan is an array); since Gate 2's human judge is waived, the plan selection judge is the main-agent critique (3b) — arms stay anonymized until selection is recorded, per ab-stages.md adapted to the waiver."
     }
   ]
 }
