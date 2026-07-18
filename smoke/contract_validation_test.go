@@ -59,7 +59,11 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	if !found || !strings.Contains(" inventory commerce payments access ", " "+service+" ") || path == "openapi.yaml" {
 		return
 	}
-	// These 404s are the gateway security boundary, not service responses.
+	// These 404s are the gateway security boundary, not service responses:
+	// the gateway NotFounds every /api/<svc>/internal/* by construction.
+	if status == http.StatusNotFound && strings.HasPrefix(path, "internal/") {
+		return
+	}
 	if service == "inventory" && status == http.StatusNotFound {
 		for _, suffix := range []string{"/confirm", "/finalize", "/release"} {
 			if strings.HasSuffix(strings.TrimSuffix(request.URL.Path, "/"), suffix) {
@@ -79,6 +83,7 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	if err != nil {
 		t.Fatalf("%s %s is not committed in the %s contract: %v", request.Method, copyURL.Path, service, err)
 	}
+	recordSmokeCoverage(service, route.Operation.OperationID, status)
 	input := &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: copyRequest, PathParams: params, Route: route},
 		Status:                 status,
@@ -103,6 +108,7 @@ func validateDirectServiceResponse(t *testing.T, service string, request *http.R
 	if err != nil {
 		t.Fatalf("%s %s is not committed in the %s contract: %v", request.Method, request.URL.Path, service, err)
 	}
+	recordSmokeCoverage(service, route.Operation.OperationID, status)
 	input := &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: request, PathParams: params, Route: route},
 		Status:                 status,

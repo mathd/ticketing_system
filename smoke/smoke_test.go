@@ -71,6 +71,7 @@ func get(t *testing.T, url string, hdr map[string]string) (int, []byte) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
+	validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, body)
 	return resp.StatusCode, body
 }
 
