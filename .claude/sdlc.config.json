@@ -7,10 +7,10 @@
     "localGate": "make check"
   },
   "models": {
-    "plan": "kimi-k3:medium@claudex",
+    "plan": ["kimi-k3:medium@claudex", "gpt-5.6-sol"],
     "planReview": "main-agent",
     "implement": "main-agent",
-    "aiReview": "kimi-k3:medium@claudex"
+    "aiReview": ["kimi-k3:medium@claudex", "gpt-5.6-sol"]
   },
   "registry": {
     "bindingPath": "docs/adr/",
