@@ -155,7 +155,7 @@ func run() error {
 	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" {
 		return errors.New("CATALOG_URL, INVENTORY_URL and PAYMENTS_URL required")
 	}
-	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).Router())
+	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

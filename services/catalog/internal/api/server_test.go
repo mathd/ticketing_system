@@ -796,12 +796,14 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 func (e *env) validateResponse(req *http.Request, rec *httptest.ResponseRecorder) {
 	e.t.Helper()
 	if req.URL.Path == "/openapi.yaml" {
+		recordCoverage("getOpenAPISpec", rec.Code)
 		return // the YAML document is asserted byte-identical, not schema-validated
 	}
 	route, pathParams, err := e.router.FindRoute(req)
 	if err != nil {
 		return // route not in spec (spec middleware already rejected it)
 	}
+	recordCoverage(route.Operation.OperationID, rec.Code)
 	input := &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{
 			Request: req, PathParams: pathParams, Route: route,

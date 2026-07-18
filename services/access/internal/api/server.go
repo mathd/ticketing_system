@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ type Server struct {
 func New(st *store.Postgres, verifier *ticket.Verifier) *Server {
 	return &Server{st: st, verifier: verifier}
 }
-func (s *Server) Router() http.Handler {
+func (s *Server) Router(log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
@@ -38,7 +39,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
 	r.Post("/scans/reconciliations", s.reconcile)
-	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, func(w http.ResponseWriter, _ string, _ int) {
+	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, func(w http.ResponseWriter, _ string, _ int) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 	})
 	if err != nil {

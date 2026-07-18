@@ -258,7 +258,7 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
-	r.Mount("/", accessapi.New(st, verifier).Router())
+	r.Mount("/", accessapi.New(st, verifier).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

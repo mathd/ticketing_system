@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -24,7 +25,7 @@ func New(st *store.Postgres, credential string) *Server {
 	return &Server{st: st, credential: credential}
 }
 
-func (s *Server) Router() http.Handler {
+func (s *Server) Router(log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
@@ -47,7 +48,7 @@ func (s *Server) Router() http.Handler {
 	r.Post("/internal/slots/{id}/capacity-adjustments", s.internalOnly(s.adjustCapacity))
 	r.Get("/internal/slots/{id}/capacity-adjustments", s.internalOnly(s.capacityHistory))
 	r.Put("/internal/slots/{id}/channel-allocations", s.internalOnly(s.replaceAllocations))
-	validated, err := contract.RequestValidator(apispec.Spec, r)
+	validated, err := contract.RequestValidator(apispec.Spec, r, log)
 	if err != nil {
 		panic(err)
 	}

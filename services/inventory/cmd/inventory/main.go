@@ -185,7 +185,7 @@ func run() error {
 			return nil
 		})).ServeHTTP(w, req)
 	}))
-	r.Mount("/", api.New(st, credential).Router())
+	r.Mount("/", api.New(st, credential).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

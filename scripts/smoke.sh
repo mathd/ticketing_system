@@ -27,7 +27,7 @@ SLOT=$(( $(printf '%s' "$ROOT" | cksum | cut -d' ' -f1) % 40 ))
 PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-smoke-${SLOT}}"
 export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=$((14222 + SLOT)) \
        GRAFANA_PORT=$((13000 + SLOT)) PROM_PORT=$((19090 + SLOT)) OTLP_PORT=$((14318 + SLOT)) \
-       INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) \
+       INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) PAYMENTS_PORT=$((17580 + SLOT)) \
        ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s \
        ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
 echo "smoke: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
@@ -123,6 +123,7 @@ SMOKE_PG=localhost:${POSTGRES_PORT} \
 SMOKE_PROM_URL=http://localhost:${PROM_PORT} \
 SMOKE_INVENTORY_URL=http://localhost:${INVENTORY_PORT} \
 SMOKE_COMMERCE_URL=http://localhost:${COMMERCE_PORT} \
+SMOKE_PAYMENTS_URL=http://localhost:${PAYMENTS_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 

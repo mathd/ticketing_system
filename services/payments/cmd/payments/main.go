@@ -230,7 +230,7 @@ func run() error {
 	)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
-	r.Mount("/", api.New(paymentstore.New(db, keyID, key), internalToken).Router())
+	r.Mount("/", api.New(paymentstore.New(db, keyID, key), internalToken).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

@@ -204,6 +204,9 @@ services:
       payments-migrate:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/payments/cmd/payments } }
+    # Internal money surface, off the gateway by design (see inventory ports
+    # note): loopback is the ops/smoke access path in this testbed.
+    ports: ["127.0.0.1:${PAYMENTS_PORT:-8093}:8080"]
     environment:
       <<: *go-env
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments

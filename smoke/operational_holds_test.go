@@ -7,8 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,8 +19,9 @@ import (
 // The staff/internal surface is deliberately off the gateway; the smoke stack exposes
 // the services on localhost (compose.yaml ports) for box-office ops and this suite.
 var (
-	inventoryURL  = env("SMOKE_INVENTORY_URL", "http://localhost:8091")
-	commerceURL   = env("SMOKE_COMMERCE_URL", "http://localhost:8092")
+	inventoryURL = env("SMOKE_INVENTORY_URL", "http://localhost:8091")
+	commerceURL  = env("SMOKE_COMMERCE_URL", "http://localhost:8092")
+	paymentsURL  = env("SMOKE_PAYMENTS_URL", "http://localhost:8093")
 	// No fallback: the harness (scripts/smoke.sh) generates and exports the
 	// credential per invocation (TKT-83).
 	internalToken = os.Getenv("SMOKE_INTERNAL_TOKEN")
@@ -47,7 +49,24 @@ func internalJSON(t *testing.T, method, url, key string, body any) (int, []byte)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
+	if service := directService(url); service != "" {
+		validateDirectServiceResponse(t, service, resp.Request, resp.StatusCode, resp.Header, out)
+	}
 	return resp.StatusCode, out
+}
+
+// directService maps a direct (non-gateway) base URL to its contract; the
+// internal surface is off the gateway, so gateway-path parsing never sees it.
+func directService(url string) string {
+	switch {
+	case strings.HasPrefix(url, inventoryURL):
+		return "inventory"
+	case strings.HasPrefix(url, commerceURL):
+		return "commerce"
+	case strings.HasPrefix(url, paymentsURL):
+		return "payments"
+	}
+	return ""
 }
 
 // publishedSlot creates and publishes a GA performance of the given capacity and waits

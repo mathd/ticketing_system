@@ -54,7 +54,7 @@ func TestReserveRejectsNonStrictJSON(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Idempotency-Key", "strict-json")
 			res := httptest.NewRecorder()
-			s.Router().ServeHTTP(res, req)
+			s.Router(nil).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d", res.Code, http.StatusBadRequest)
 			}
@@ -120,7 +120,7 @@ func TestConvertOperationalRequiresInternalToken(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "wrong")
 			res := httptest.NewRecorder()
-			s.Router().ServeHTTP(res, req)
+			s.Router(nil).ServeHTTP(res, req)
 			if res.Code != http.StatusNotFound {
 				t.Fatalf("status=%d want=%d", res.Code, http.StatusNotFound)
 			}
@@ -141,7 +141,7 @@ func TestConvertOperationalRejectsNonStrictJSON(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			s.Router().ServeHTTP(res, req)
+			s.Router(nil).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 			}
@@ -161,7 +161,7 @@ func TestDrawDownGroupReservationRequiresInternalToken(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "wrong")
 			res := httptest.NewRecorder()
-			s.Router().ServeHTTP(res, req)
+			s.Router(nil).ServeHTTP(res, req)
 			if res.Code != http.StatusNotFound {
 				t.Fatalf("status=%d want=%d", res.Code, http.StatusNotFound)
 			}
@@ -199,7 +199,7 @@ func TestDrawDownForwardsSlotPreconditionToInventory(t *testing.T) {
 	req.Header.Set("Idempotency-Key", "k")
 	req.Header.Set("X-Internal-Token", "secret")
 	res := httptest.NewRecorder()
-	s.Router().ServeHTTP(res, req)
+	s.Router(nil).ServeHTTP(res, req)
 	if res.Code != http.StatusConflict {
 		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusConflict, res.Body.String())
 	}
@@ -243,7 +243,7 @@ func TestDrawDownReplayJudgedByChildLifecycle(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			s.Router().ServeHTTP(res, req)
+			s.Router(nil).ServeHTTP(res, req)
 			if res.Code != tc.want {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, tc.want, res.Body.String())
 			}
@@ -284,7 +284,7 @@ func TestConvertOperationalForwardsSlotPreconditionToInventory(t *testing.T) {
 	req.Header.Set("Idempotency-Key", "k")
 	req.Header.Set("X-Internal-Token", "secret")
 	res := httptest.NewRecorder()
-	s.Router().ServeHTTP(res, req)
+	s.Router(nil).ServeHTTP(res, req)
 	if res.Code != http.StatusConflict {
 		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusConflict, res.Body.String())
 	}
@@ -304,9 +304,9 @@ func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
 		hold string
 		want int
 	}{
-		"held past deadline": {hold: `"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"held past deadline":        {hold: `"status":"held","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
 		"released, future deadline": {hold: `"status":"released","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
-		"expired": {hold: `"status":"expired","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
+		"expired":                   {hold: `"status":"expired","expires_at":"2026-07-16T11:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusConflict},
 		// Unknown is not terminal: a version-skew status must not advise re-conversion
 		// (it could double-carve a still-live child) — it is an invalid response.
 		"empty status":   {hold: `"status":"","expires_at":"2026-07-16T12:00:00Z","server_time":"2026-07-16T11:50:00Z"`, want: http.StatusBadGateway},
@@ -332,7 +332,7 @@ func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			s.Router().ServeHTTP(res, req)
+			s.Router(nil).ServeHTTP(res, req)
 			if res.Code != tc.want {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, tc.want, res.Body.String())
 			}
