@@ -2,9 +2,11 @@
   "key": "TKT-93",
   "type": "Task",
   "summary": "Load-harness measurement fidelity follow-ups (from TKT-92 ai-review)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [],
   "description": "Four incidental findings from TKT-92's adversarial ai-review (gpt-5.6-sol@claudex), real but out of scope for the taxonomy/bounding PR (#63): (1) attempt lag is measured at goroutine spawn, not at attempt start — under scheduler pressure CeilingInconclusive can accept a rate that was not delivered on schedule; (2) loadClient follows redirects and forwards X-Internal-Token on same-host redirects — pin CheckRedirect to fail closed; (3) every hold 409 counts as an expected capacity rejection — archived/closed-slot/idempotency 409s are indistinguishable from sellout; consider discriminating on the error body; (4) finalize/confirm validate status only — an empty/malformed 200 body counts as KindOK despite the taxonomy classifying malformed success bodies as server errors. Natural home: whichever of TKT-31/TKT-37 next touches the harness.",
@@ -13,6 +15,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated from TKT-92 ai-review triage (incidental): pre-existing harness measurement-fidelity gaps, none introduced by PR #63."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed: zero open blockers (links empty), branch `TKT-93-load-harness-measurement-fidelity` off origin/main.\n\nSelection reason: four confirmed measurement-fidelity gaps from TKT-92's ai-review, scoped to `smoke/internal/loadtest/` — isolated, well-specified by the source findings, no product-path risk.\n\n**GATE WAIVER (owner-directed process experiment):** the repo owner has explicitly waived all four human gates for this run — the ticket runs Ready → Done in one continuous autonomous session. Gate 1: already given (ticket was in Ready). Gate 2: agent self-resolves open decisions after cross-model critique (prefer critique recommendation, else most reversible option), recorded in plan-final. Gate 3: agent squash-merges after converged ai-review, review-guide posted first as audit record. Gate 4: agent self-validates COS against test evidence on merged code. Everything else (config.models routing, cross-model review, TDD red-first, local gate green, markers, no AI attribution) unchanged.\n\nNote: ticket predates DoR shaping — no context-mémo or readiness object on it. Governing-ADR resolution will be done fresh at plan time against docs/adr/ per the skill (mémo absence noted as a measurement caveat, not a blocker: findings are precise and code-anchored)."
     }
   ]
 }
