@@ -56,6 +56,18 @@ compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
+# Pre-clean, between the trap install and `up`: a hard-killed previous run
+# (SIGKILL, crashed daemon, killed CI runner) never fires the trap and leaves
+# its volumes behind; `compose up` would then reuse the already-migrated
+# same-revision pgdata and the gate would "prove" the clean-clone bootstrap
+# against schema an earlier run applied — silently voiding
+# TestMigrationsAppliedOutOfBand (ADR-022). The full `down` matters, not just
+# volume removal: the kill also leaves the one-shot migrate jobs as Exited-0
+# containers that a plain `up` would reuse, so a volume-only pre-clean would
+# recreate pgdata that nothing migrates. Scoped to this worktree's project
+# name, so a sibling's running stack is untouched (TKT-70).
+cleanup
+
 if ! compose up -d --build --wait; then
   echo "--- compose up failed; recent logs: ---"
   compose logs --tail 50
