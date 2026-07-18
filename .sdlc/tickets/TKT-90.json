@@ -4,7 +4,7 @@
   "summary": "Inventory offering-state reconciliation beyond stream retention and readiness catch-up gating",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
@@ -39,6 +39,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implementation — by main-agent** (implement per config). PR: https://github.com/mathd/ticketing_system/pull/67 (branch `TKT-90-inventory-offering-reconciliation`, commit 5544919).\n\nTDD: all new tests written first and observed red (compile-level red on the new symbols across the three packages — `go test` failures recorded before any implementation code). Then implemented to green.\n\nDelivered per plan-final:\n- catalog `GET /internal/pools/{id}/offer-state` (any-lifecycle performance | festival kind | 404), handler + `GetPoolOfferState` on the Store interface, Postgres + fakeStore impls. Note for the record: internal endpoints are not in `openapi.yaml` (verified — the existing `/internal/performances/{id}` isn't either); the internal surface follows the code-level convention, so no spec change. ADR-009's public-contract machinery untouched.\n- inventory `consumer/reconcile.go`: positive-assertions-only pass, single write path (`ApplyArchive`/`ApplyClosure`), fresh `uuid.New()` ids, both-direction closure drift, `startupConverge` fail-open (3 attempts) with quarantine latch precedence; wired into `Run()` before the readiness latch.\n- `ListPublishedPoolOfferings` candidate query (non-archived pools only).\n- COS3's stale-write evidence: the pre-existing `TestOfferingEventDedupeAndClosureOrdering` already pins real-`ApplyClosure` version-guard behavior with distinct event ids (stale closed(v1) after reopened(v2) does not re-close); reconcile issues exactly that call shape, so no duplicate smoke test was added.\n\nGate: `make check` exit=0 (read on its own shell command before push, per TKT-71 rule). Diff: 12 files, +618/−13.\n\nstage:\n  implementer: main-agent\n  gate: make check exit=0\n  tdd: red observed (compile-red on new symbols), then green"
+    },
+    {
+      "stage": "ai-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**ai-review — by kimi-k3:medium@claudex** (reviewer ≠ author; @claudex harness — prompt-driven review, not Codex's built-in adversarial-review; recorded as part of the measurement). One transient stream-idle failure on pass 3 was retried on the same harness successfully — no model or harness substitution occurred.\n\nThree passes, converged. Full per-finding verdicts in the review-guide on PR #67 (the Gate-3 audit record). Summary:\n- Pass 1 (full diff, effort medium): 4 findings, 0 blocking → 2 fixed (consume-before-converge reorder 6d97544; drift-filter comment), 1 refuted (existing smoke test covers reconcile's exact stale-write shape), 1 rejected with reason (torn read is fail-open + retried).\n- Pass 2 (fix diff, effort low per the fix-diff discount): caught a real readiness race the pass-1 reorder introduced (silent ready with pending quarantine) → fixed 953677a (mutex serializing the two readiness writers; race-detector clean). Pass invalidating a prior fix ⇒ churn counter reset (absolute cap 4), so a third pass ran.\n- Pass 3 (mutex fix diff, effort low): clean; 1 comment nit applied (0ebf6d9).\n\nSecond-pass call: REQUIRED and taken — pass-1's fix changed control flow in Run(); pass-2's fix touched a concurrency path, earning pass 3. Diff stable since 953677a except a comment; stopping here is convergence, not the churn cap.\n\nGate: make check exit=0 before every push (4 runs), read on its own shell command each time."
     }
   ]
 }
