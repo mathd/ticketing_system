@@ -2,9 +2,11 @@
   "key": "TKT-47",
   "type": "Task",
   "summary": "Add happy-path contract coverage and choose response-drift policy",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude-fable-5",
   "pr": null,
   "classification": "standard",
   "description": "Follow-up from PR #10 review. Runtime OpenAPI response validation is the only coupling between strict response schemas and hand-built handler payloads. Add representative 2xx contract tests for every endpoint and explicitly decide whether production response drift should fail closed with 500 or log and pass through.\n\nConditions of Success:\n- Every documented endpoint has a happy-path test that drives the real handler response through contract middleware\n- Tests fail when a handler response drifts from its committed schema\n- The production response-drift policy is explicitly chosen and documented\n- If the current fail-closed policy remains, operational logging/metrics make contract-generated 500s diagnosable\n- make check passes",
@@ -59,6 +61,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness — BLOCKED ON POLICY DECISION\nImplementation and coverage scope are clear. Before prioritization, the owner must choose whether runtime response-schema drift remains fail-closed with HTTP 500 or becomes log-and-passthrough. The tests are required under either policy."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claim — TKT-47\n\n**Selection reason:** Ticket is in Ready with zero open blockers (only link is `found-in TKT-46`, which is Done). Direct follow-up to TKT-46's contract middleware — the code area is fresh and the COS are concrete.\n\n**⚠️ Gateless run — owner waiver on record.** The repo owner (Mathieu Dupuis) directed this ticket through the full pipeline in fully autonomous mode as a process experiment, explicitly waiving all four human gates for this run only:\n- Gate 1 (priority): satisfied by the ticket already being in Ready.\n- Gate 2 (plan approval): agent resolves open decisions itself after cross-model critique — prefer the critique's recommendation, else the most reversible option; every self-made decision recorded in plan-final.\n- Gate 3 (review + merge): agent squash-merges after the adversarial ai-review converges; review-guide still posted first as the audit record.\n- Gate 4 (PO acceptance): agent self-validates each COS against test evidence on merged code.\n\nAll other skill rules unchanged: config.models routing, cross-model review for plan and code, TDD red-first, `make check` green before every push, marker comments at each stage, no AI attribution.\n\n**Note on readiness:** `uncertainties` is `open` (owner decision: fail-closed 500 vs log-and-passthrough for production response drift). Under the Gate 2 waiver this decision will be resolved during Planning after the cross-model critique and recorded in plan-final.\n\nBranch: `TKT-47-contract-happy-path` off `origin/main`."
     }
   ]
 }
