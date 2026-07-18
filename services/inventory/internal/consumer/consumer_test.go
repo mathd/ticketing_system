@@ -70,6 +70,10 @@ type fakeResolver struct {
 	err             error
 }
 
+func (r fakeResolver) PoolOfferState(context.Context, uuid.UUID) (PoolOfferState, error) {
+	return PoolOfferState{}, r.err
+}
+
 func (r fakeResolver) PublishedPerformance(context.Context, uuid.UUID) (PublishedPerformance, error) {
 	return PublishedPerformance{
 		OrganizerID:     r.organizerID,

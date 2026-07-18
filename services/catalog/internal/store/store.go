@@ -88,6 +88,14 @@ type Closure struct {
 	ChangedAt *time.Time
 }
 
+// PoolOfferState is the reconciliation answer for a pool id (TKT-90).
+// Lifecycle and Closure are meaningful only for kind "performance".
+type PoolOfferState struct {
+	Kind      string // "performance" | "festival"
+	Lifecycle string // performance status: draft | published | archived
+	Closure   Closure
+}
+
 // LocalizedText is locale-keyed text; adding a locale is data, not schema (TKT-36).
 type LocalizedText map[string]string
 
@@ -287,6 +295,10 @@ type Store interface {
 	AttachDayToFestival(ctx context.Context, festivalID, performanceID uuid.UUID) (Festival, error)
 	GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error)
 	GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error)
+	// GetPoolOfferState answers for an inventory pool id whatever it is — a
+	// performance in ANY lifecycle or a festival capacity group — so the
+	// reconciliation pass (TKT-90) only ever acts on positive assertions.
+	GetPoolOfferState(ctx context.Context, id uuid.UUID) (PoolOfferState, error)
 	// PublishPerformance flips draft->published (idempotent). needsEmit is
 	// true while the domain event for this publication has not been ack'd
 	// (event_emitted_at is null) — the caller emits, then marks.

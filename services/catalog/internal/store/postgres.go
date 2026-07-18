@@ -661,6 +661,29 @@ func (p *Postgres) GetPublishedPerformance(ctx context.Context, id uuid.UUID) (P
 	return perf, nil
 }
 
+// GetPoolOfferState answers the reconciliation read (TKT-90): the id is tried as
+// a performance in any lifecycle first, then as a festival. Only a miss on both
+// is ErrNotFound — inventory treats that as a non-positive answer and writes
+// nothing, so this method must never collapse "festival" into "not found".
+func (p *Postgres) GetPoolOfferState(ctx context.Context, id uuid.UUID) (PoolOfferState, error) {
+	perf, _, _, err := p.getPerformance(ctx, id)
+	if err == nil {
+		return PoolOfferState{Kind: "performance", Lifecycle: perf.Status, Closure: perf.Closure}, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return PoolOfferState{}, err
+	}
+	var one int
+	err = p.db.QueryRowContext(ctx, `SELECT 1 FROM festivals WHERE id = $1`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PoolOfferState{}, fmt.Errorf("pool offer state: %w", ErrNotFound)
+	}
+	if err != nil {
+		return PoolOfferState{}, fmt.Errorf("pool offer state: %w", err)
+	}
+	return PoolOfferState{Kind: "festival"}, nil
+}
+
 // ArchivePerformance flips published->archived, deciding and transitioning
 // inside one transaction with the row locked FOR UPDATE. The lock closes the
 // check-then-act race: a concurrent publish cannot commit between reading the

@@ -65,6 +65,7 @@ func NewRouter(s *Server) (http.Handler, error) {
 	r := chi.NewRouter()
 	r.Get("/internal/ticket-types/{id}", s.getTicketType)
 	r.Get("/internal/performances/{id}", s.getPublishedPerformance)
+	r.Get("/internal/pools/{id}/offer-state", s.getPoolOfferState)
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -123,6 +124,37 @@ func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request)
 		out["shared_capacity"] = perf.SharedCapacity
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// getPoolOfferState is the reconciliation read (TKT-90): a positive per-id
+// answer whatever the id is — a performance in ANY lifecycle (archived included;
+// the published-only lookup above 404s those by design), or a festival capacity
+// group, which inventory skips rather than mistakes for a dead slot.
+func (s *Server) getPoolOfferState(w http.ResponseWriter, r *http.Request) {
+	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid pool id"})
+		return
+	}
+	state, err := s.store.GetPoolOfferState(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	if state.Kind == "festival" {
+		writeJSON(w, http.StatusOK, map[string]any{"kind": "festival"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":            "performance",
+		"lifecycle":       state.Lifecycle,
+		"closure_status":  state.Closure.Status,
+		"closure_version": state.Closure.Version,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

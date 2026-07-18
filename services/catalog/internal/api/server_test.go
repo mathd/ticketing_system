@@ -264,6 +264,16 @@ func (f *fakeStore) GetPublishedPerformance(_ context.Context, id uuid.UUID) (st
 	return p, nil
 }
 
+func (f *fakeStore) GetPoolOfferState(_ context.Context, id uuid.UUID) (store.PoolOfferState, error) {
+	if p, ok := f.performances[id]; ok {
+		return store.PoolOfferState{Kind: "performance", Lifecycle: p.Status, Closure: p.Closure}, nil
+	}
+	if _, ok := f.festivals[id]; ok {
+		return store.PoolOfferState{Kind: "festival"}, nil
+	}
+	return store.PoolOfferState{}, store.ErrNotFound
+}
+
 func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.Performance, bool, error) {
 	p, ok := f.performances[id]
 	if !ok {
@@ -707,6 +717,55 @@ func TestInternalPublishedPerformanceLookup(t *testing.T) {
 			}
 			if tt.want == http.StatusOK && !bytes.Contains(res.Body.Bytes(), []byte(`"capacity":500`)) {
 				t.Fatalf("lookup response %s", res.Body.String())
+			}
+		})
+	}
+}
+
+// TestInternalPoolOfferState covers the reconciliation read (TKT-90): a per-id
+// answer for whatever the pool id is — a performance in ANY lifecycle (archived
+// must be 200, not 404 — reconciliation acts only on positive assertions), a
+// festival capacity group, or unknown.
+func TestInternalPoolOfferState(t *testing.T) {
+	e := newEnv(t)
+	_, performanceID := e.createFixture(true)
+	closed := e.store.performances[performanceID]
+	closed.Closure = store.Closure{Status: "closed", Version: 2}
+	e.store.performances[performanceID] = closed
+
+	archivedID := uuid.New()
+	e.store.performances[archivedID] = store.Performance{ID: archivedID, OrganizerID: orgID, Status: "archived"}
+
+	festivalID := uuid.New()
+	e.store.festivals[festivalID] = store.Festival{ID: festivalID, OrganizerID: orgID}
+
+	for _, tt := range []struct {
+		name, id, token string
+		want            int
+		wantBody        []string
+	}{
+		{name: "missing credential", id: performanceID.String(), want: http.StatusUnauthorized},
+		{name: "closed performance", id: performanceID.String(), token: "test-internal-token", want: http.StatusOK,
+			wantBody: []string{`"kind":"performance"`, `"lifecycle":"published"`, `"closure_status":"closed"`, `"closure_version":2`}},
+		{name: "archived performance is a positive answer", id: archivedID.String(), token: "test-internal-token", want: http.StatusOK,
+			wantBody: []string{`"kind":"performance"`, `"lifecycle":"archived"`}},
+		{name: "festival capacity group", id: festivalID.String(), token: "test-internal-token", want: http.StatusOK,
+			wantBody: []string{`"kind":"festival"`}},
+		{name: "unknown id", id: uuid.New().String(), token: "test-internal-token", want: http.StatusNotFound},
+		{name: "invalid id", id: "not-a-uuid", token: "test-internal-token", want: http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/internal/pools/"+tt.id+"/offer-state", nil)
+			req.Header.Set("X-Internal-Token", tt.token)
+			res := httptest.NewRecorder()
+			e.handler.ServeHTTP(res, req)
+			if res.Code != tt.want {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, tt.want, res.Body.String())
+			}
+			for _, frag := range tt.wantBody {
+				if !bytes.Contains(res.Body.Bytes(), []byte(frag)) {
+					t.Fatalf("body %s missing %s", res.Body.String(), frag)
+				}
 			}
 		})
 	}
