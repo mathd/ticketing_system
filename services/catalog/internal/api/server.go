@@ -22,6 +22,8 @@ import (
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
+	"ticketing/shared/contract"
+
 	apispec "ticketing/services/catalog/api"
 	"ticketing/services/catalog/internal/events"
 	"ticketing/services/catalog/internal/store"
@@ -73,13 +75,16 @@ func NewRouter(s *Server) (http.Handler, error) {
 			next.ServeHTTP(w, req)
 		})
 	}
-	return HandlerWithOptions(s, ChiServerOptions{
+	handler := HandlerWithOptions(s, ChiServerOptions{
 		BaseRouter:  r,
 		Middlewares: []MiddlewareFunc{validator, limitBody},
 		ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
 		},
-	}), nil
+	})
+	// Response drift fails closed (ADR-028): hand-built payloads are checked
+	// against the committed spec at runtime, same as the non-codegen services.
+	return contract.ResponseValidator(apispec.Spec, handler, s.log)
 }
 
 func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
