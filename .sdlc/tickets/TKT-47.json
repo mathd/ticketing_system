@@ -2,10 +2,8 @@
   "key": "TKT-47",
   "type": "Task",
   "summary": "Add happy-path contract coverage and choose response-drift policy",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude-fable-5",
   "pr": {
     "number": 70,
@@ -105,6 +103,11 @@
       "stage": "done",
       "kind": "metrics",
       "body": "<!-- sdlc:stage=done kind=metrics -->\n### TKT-47 closeout — gateless autonomous run (all four gates owner-waived; waiver recorded in the claim comment)\n\n| stage | duration |\n|---|---|\n| Backlog | 3d 21h 52m (created 07-13 23:09 → Ready 07-17 21:01; queue, no agent work) |\n| Ready | 1h 36m (until the autonomous run claimed it) |\n| Planning | 5m 46s |\n| — agent:planning | ~5m 20s (kimi-k3:medium@claudex draft, headless) |\n| — agent:plan-review | ~26s label-time (critique ran concurrently with the draft wait; wall time not separable from the changelog) |\n| Building | 1h 17m |\n| — agent:coding | 27m 24s |\n| — agent:ai-review | 50m 08s (2 claudex passes, 2 full local gates, CI wait, merge) |\n| PO Review | ~15m (validation note + post-merge gate + this closeout) |\n\n**human-wait total:** 0m — all four gates waived for this run (the experiment's defining variable; Gate 2/Gate 3 wait is normally the dominant cost).\n\n**diff:** +747/−82 (26 files) — PR #70, squash `7952cc6`.\n\n**learnings:**\n- `kin-openapi` `ValidateResponse` allows undocumented response statuses unless `IncludeResponseStatus` is set — a fail-closed wrapper without it is open on the status dimension. House: recorded in ADR-028 (§Decision/Consequences) + pinned by `TestUndocumentedResponseStatusIsRejected`; cite, don't restate.\n- Coverage-by-instrumentation pattern (record at the validation chokepoint, enforce in TestMain, exempt `-run`-filtered runs) — house: repo, encoded in the two `coverage_test.go` files with scope comments; reusable for any future service.\n- Writing full-stack smoke drivers cold cost 4 smoke cycles (~5 min each) on server-side validation rules the specs don't express (journal fact-type allowlist, `order_id` payload). Working practice, below promotion bar: grep the handler's validators before writing a driver.\n\n**retro:**\n1. *What would have made this faster/better?* The 12 undriven operations were the ticket's real cost center, invisible in the COS wording. A context-mémo pointer to \"payments journal validation lives in `services/payments/internal/store/store.go` `validate()`\" would have saved 2 of the 4 smoke iterations. Concrete change: when a ticket's COS quantifies over \"every endpoint\", the shaping pass should attach the per-service validation-rule locations to the mémo.\n2. *What should the humans change?* The smoke suite has validating and non-validating HTTP helpers (`holdRequest`, `postScan` vs `postJSON`/`get`/`internalJSON`); the split is why the coverage gate needs a scope disclaimer. Concrete change: unify on validating helpers — **applied**: follow-up ticket TKT-93 created in Backlog with this scope. No skill edit warranted: both retro items are repo-specific, now readable from the repo (mémo practice noted here; TKT-93 on the board).\n"
+    },
+    {
+      "stage": "done",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=done kind=summary -->\nCorrection to the metrics comment: the retro follow-up ticket is **TKT-95** (TKT-93 was a stale key guess; 93–94 were taken). TKT-95 is in Backlog with the helper-unification scope. Closing: PR #70 merged (`7952cc6`), local + remote branches deleted, post-merge `make check` exit 0, `needs:human` removed."
     }
   ]
 }
