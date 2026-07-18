@@ -2,15 +2,15 @@
   "key": "TKT-93",
   "type": "Task",
   "summary": "Load-harness measurement fidelity follow-ups (from TKT-92 ai-review)",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 71,
     "url": "https://github.com/mathd/ticketing_system/pull/71",
-    "state": "open"
+    "state": "merged"
   },
   "links": [],
   "description": "Four incidental findings from TKT-92's adversarial ai-review (gpt-5.6-sol@claudex), real but out of scope for the taxonomy/bounding PR (#63): (1) attempt lag is measured at goroutine spawn, not at attempt start — under scheduler pressure CeilingInconclusive can accept a rate that was not delivered on schedule; (2) loadClient follows redirects and forwards X-Internal-Token on same-host redirects — pin CheckRedirect to fail closed; (3) every hold 409 counts as an expected capacity rejection — archived/closed-slot/idempotency 409s are indistinguishable from sellout; consider discriminating on the error body; (4) finalize/confirm validate status only — an empty/malformed 200 body counts as KindOK despite the taxonomy classifying malformed success bodies as server errors. Natural home: whichever of TKT-31/TKT-37 next touches the harness.",
@@ -49,6 +49,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n**Adversarial ai-review — by `kimi-k3:medium@claudex`** (per config; prompt-driven review in the headless Claude Code harness, read-only allowlist, diff-only brief primed for guilt — not Codex's built-in adversarial-review; harness recorded as part of the measurement).\n\n**Verdict: 0 findings (0 blocking).** The reviewer verified the diff's claims against the repo rather than trusting them: `problem()` 409 emit shapes, `Claim.status` serialization and route targets (finalize→finalizing, confirm→confirmed), `testBeforeAttempt` hook sequencing (write→workers→defer-after-Wait, no t.Parallel in package), the lag test's non-vacuity (p1 ≥ injected delay, fails if capture returns to spawn), the deviceTime fix vs `AdmissionSkewBound`, and the moved transport constant. One non-defect observation: `ClassifyHold409` hard-couples the harness to inventory's exact 409 shapes — the deliberate, comment-documented ADR-028 cost accepted at plan.\n\nTriage: nothing to triage (no findings). Rebase: not needed — branch is 0 behind origin/main; CI green on the PR head.\n\n**Second pass: not run** — the rule triggers on non-trivial *fixes*, and there were none; no fix diff exists to review. Call recorded here per the skill.\n\nReview-guide posted on PR #71 (Gate 3 audit record). Proceeding to squash-merge under the owner's Gate 3 waiver."
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n**Validation note (Gate 4 — owner-waived; agent self-validates COS against test evidence on the merged code, `main@5d7ae5a`).**\n\nNot user-demonstrable UI — the deliverable is measurement fidelity in the load harness, so validation is via code/test evidence:\n\n- **COS1 (lag at attempt start):** `RunStage` captures `lag` inside the worker goroutine, after the `testBeforeAttempt` hook. `TestLagMeasuredAtAttemptStart` injects a 50ms post-spawn delay and asserts min lag ≥ 50ms — observed red while capture was at spawn (min lag 250ns), green after the move. ✔\n- **COS2 (no redirect follow, token never re-sent):** `loadtest.NewClient` pins `CheckRedirect` to `ErrUseLastResponse`. `TestNewClientNeverFollowsRedirects` drives 302 AND 307 (the header-resending variant) with `X-Internal-Token` set: raw 3xx delivered, target handler hit count 0 — observed red (302 followed to 200) before the pin. ✔\n- **COS3 (409 discrimination):** `ClassifyHold409` — bare `{\"error\":…}` → KindRejected; coded/truncated/unrecognized → KindServerError, fail-closed per ADR-028 posture. Nine-case table test observed red against the blanket-KindRejected stub. Integration: the smoke gate profile's rejection tail (real `ErrUnavailable` 409s) passed — no false server-error on genuine sellout. ✔\n- **COS4 (success-body validation):** finalize/confirm 200s now require the claim in the target state via `ValidTransitionBody`; empty/malformed → KindServerError with body snippet in Note. Seven-case table test observed red against the always-true stub. Integration: every real lifecycle in the gate profile validated. ✔\n- **COS5 (gate unchanged for healthy runs):** `make check` green pre-push and re-run on merged main (result in the metrics comment); CI green on the PR head. Accounting queries, history pin (3× lifecycles), and stage profiles untouched. ✔\n\nAlso merged (flagged, out of scope): `44226f2` repairs the TKT-85 occurrence-test time bomb that broke `make check` on main this morning — without it COS5 was unfalsifiable."
     }
   ]
 }
