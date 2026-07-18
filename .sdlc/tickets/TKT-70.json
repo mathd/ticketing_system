@@ -6,10 +6,14 @@
   "summary": "smoke.sh only cleans up on the exit trap, so a killed run can leave a migrated volume",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 68,
+    "url": "https://github.com/mathd/ticketing_system/pull/68",
+    "state": "open"
+  },
   "comments": [
     {
       "stage": "ready",
@@ -25,6 +29,11 @@
       "stage": "planning",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=planning kind=plan-final -->\n**Plan critique (planReview: `main-agent`) + finalization — delta over the kind=plan draft.**\n\n**Verified against HEAD:** `cleanup`/trap/`compose up` at `scripts/smoke.sh:56/57/59` ✓; `TestMigrationsAppliedOutOfBand` at `smoke/smoke_test.go:277` (draft said 277 ✓); per-worktree project isolation `smoke.sh:26-27` ✓; `pgdata` is a compose-declared named volume (`compose.yaml:345-346`) ✓; `scripts/gate-selftest.sh` exists ✓. No hallucinated seams.\n\n**Accepted:** DoD, the one-file diff, calling `cleanup` (not duplicating the flags) between trap and `compose up`, the pre-mortem rows on sibling-worktree safety / cost / `SMOKE_COMPOSE_PROJECT` / CI, and the out-of-scope list (TKT-69 untouched, no bash test framework, repro script not committed).\n\n**Amended:**\n1. **§3 red repro** — the draft's SIGKILL-mid-run repro depends on a `sleep 60` timing guess and two full smoke runs. Replaced with a deterministic seeding repro: `compose up -d postgres` (seconds), write a marker file into the compose-created `pgdata` volume, `docker kill` the postgres container (simulating the hard-killed run — trap never fires, volume survives), then start `./scripts/smoke.sh` and observe the marker. **Red (pre-fix):** marker still present once the new run's postgres is up — the dirty volume leaked into the run. **Green (post-fix):** marker gone within seconds of script start (pre-clean removed the volume). Run killed with INT after observation (trap cleans); full `make check` at the end regardless.\n2. **§4 last pre-mortem row** — the draft's reasoning about placement vs the artifact checks is garbled (the trap is installed *after* those checks, and `cleanup` does not run before them \"regardless of position\"). Replaced with the simple rule: the pre-clean sits between the trap install and `compose up`; the call-site comment pins the ordering.\n\n**Rejected:** none.\n\n**Self-made decisions (Gate 2 waived by repo owner — recorded per the waiver):**\n- Form of the fix: call `cleanup` inline (draft's own recommendation).\n- Repro script not committed (draft's recommendation; also the most reversible choice).\n- Red-first TDD satisfied via the observed-red seeding repro, since an automated trap-ordering test is impractical (draft §3's argument, accepted).\n\n**Introduced at plan-review, reviewed by no second model:** the deterministic seeded-marker repro design (amendment 1). Everything else is the draft, as amended above — **the kind=plan draft as amended here is the plan.**"
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n**Implementation — by `main-agent`** (per config.models.implement).\n\n- Diff: `scripts/smoke.sh` +9/−0 — one `cleanup` call between the trap install and `compose up`, with a comment pinning the ordering (the plan-final's accepted form).\n- **TDD, observed red first** (plan-final's seeded-marker repro): seeded `ticketing-smoke-14_pgdata` with a marker file via a postgres-only compose up, `docker kill`ed the container (trap never fires — the hard-kill scenario). Unmodified script: marker survived into the next run → **red observed**. Fixed script, same seeding: marker gone within seconds of start, new postgres migrated from empty → **green observed**. Runs stopped with INT after observation; trap cleaned all volumes both times.\n- Local gate: `make check` **exit=0** (read from the gate's own exit file, push made in a separate command after).\n- PR: [#68](https://github.com/mathd/ticketing_system/pull/68), commit 9bfd6e3.\n\nstage:\n  implementer: main-agent\n  gate: \"make check exit=0\"\n  red_green: \"seeded dirty-volume marker: survived pre-fix, wiped post-fix\"\n"
     }
   ],
   "description": "**Found by TKT-66** (and independently by the Codex plan draft on that ticket).\n\n`scripts/smoke.sh:26-29`:\n\n```bash\ncompose() { docker compose -p \"$PROJECT\" \"${COMPOSE_FILES[@]}\" \"$@\"; }\ncleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }\ntrap cleanup EXIT INT TERM\nif ! compose up -d --build --wait; then ...\n```\n\nTeardown runs **only** on the exit trap. A hard-killed run (SIGKILL, a crashed daemon, a reboot, a\nkilled CI runner) leaves the volumes behind, and the next `compose up` reuses the already-migrated\n`pgdata`. The gate then passes without ever proving the **clean-clone bootstrap** it claims to prove\n— `make check` from a clean clone is a stated repo invariant (`AGENTS.md`), and this is the one place\nthat would catch a migration chain that only works on a pre-existing database.\n\nNow more load-bearing than before: since [ADR-021](docs/adr/ADR-021-out-of-band-service-migrations.md)\nmigrations run in one-shot jobs, and `TestMigrationsAppliedOutOfBand` asserts each database is at its\nlatest checked-in version. Against a stale volume that assertion can pass on schema an earlier run\napplied, not this one.\n\n**COS:** the smoke run cannot start from a dirty volume — e.g. pre-clean (`down -v --remove-orphans`)\n*before* `compose up`, not only in the trap. Cheap; the trap stays for the normal path.\n\n**Not in scope:** the port-collision defect (TKT-69)."
