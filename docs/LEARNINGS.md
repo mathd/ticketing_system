@@ -10,6 +10,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**Seed the failure state; don't race a kill**](./learnings/2026-07-17-seed-the-failure-state-dont-race-a-kill.md) —
+  for leftover-state defects (trap ordering, pre-clean, stale locks), fabricate the dirty state
+  directly (compose up the stateful piece, plant a marker, `docker kill` the container) instead of
+  SIGKILLing the real run on a timer; red and green each become observable in seconds. (TKT-70, PR #68)
+
 - [**Reconciliation acts only on positive assertions — absence is never death**](./learnings/2026-07-17-reconciliation-acts-only-on-positive-assertions.md) —
   a published-only per-id lookup makes "archived solo slot" and "live festival group pool"
   indistinguishable (both 404), and inventory pools carry no kind marker; a converge pass that
