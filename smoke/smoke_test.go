@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -474,6 +475,127 @@ func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
 			logs, _ := exec.Command("docker", "logs", "--tail", "20", probe).CombinedOutput()
 			t.Fatalf("commerce never became healthy against an unmigrated database — startup "+
 				"still depends on data work (TKT-71); logs:\n%s", logs)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// TestCommerceBackfillRepairsSeededOrder pins main.go's backfill wiring end-to-end
+// (TKT-94): the drainer unit tests prove Run invokes a non-nil backfill, and
+// TestCommerceStartsWithoutRunningBackfill proves startup doesn't depend on it —
+// but neither fails if main.go hands outbox.New nil instead of the real
+// BackfillCompletionOutbox closure. This test does: a dedicated probe database is
+// migrated out-of-band (ADR-022's one-shot subcommand), seeded with one pre-outbox
+// completed order (completed, guest_order_ref set, no completion_outbox row), and a
+// throwaway commerce container is started against it. The real wiring inserts the
+// owed row; nil wiring leaves the service healthy and the row absent forever.
+// Row existence + subject only — publication is at-least-once (ADR-016) and rows
+// are retired by setting published_at, not deleted, so existence is durable and
+// the assertion never waits on the broker.
+func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const probeDB = "backfill_wiring_probe"
+	pg := project + "-postgres-1"
+	psql := func(sql string) {
+		t.Helper()
+		if out, err := exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-v", "ON_ERROR_STOP=1", "-c", sql).CombinedOutput(); err != nil {
+			t.Fatalf("psql %q: %v: %s", sql, err, out)
+		}
+	}
+	psql("DROP DATABASE IF EXISTS " + probeDB)
+	psql("CREATE DATABASE " + probeDB + " OWNER commerce")
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "exec", pg, "psql", "-U", "postgres",
+			"-c", "DROP DATABASE IF EXISTS "+probeDB).Run()
+	})
+
+	// Migrate the probe DB the way the real stack does — the binary's one-shot
+	// migrate subcommand (ADR-022), never the server path.
+	if out, err := exec.Command("docker", "run", "--rm",
+		"--network", project+"_default",
+		"-e", fmt.Sprintf("DATABASE_URL=postgres://commerce:commerce@postgres:5432/%s", probeDB),
+		project+"-commerce", "migrate").CombinedOutput(); err != nil {
+		t.Fatalf("migrate probe DB: %v: %s", err, out)
+	}
+
+	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/%s", pgHostPort, probeDB))
+	if err != nil {
+		t.Fatalf("connect %s: %v", probeDB, err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	// One pre-outbox completed order: reservation + order rows inserted directly —
+	// CompleteOrder would insert the outbox row itself, which is exactly what the
+	// historical orders this backfill exists for never got.
+	reservationID, orderID := uuid.NewString(), uuid.NewString()
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO reservations (id, organizer_id, hold_id, slot_id, ticket_type_id, buyer_id,
+			quantity, unit_amount, total_amount, currency, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 1, 1000, 1000, 'CAD', 'completed')`,
+		reservationID, uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()); err != nil {
+		t.Fatalf("seed reservation: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO orders (id, reservation_id, status, idempotency_key, request_fingerprint, guest_order_ref)
+		VALUES ($1, $2, 'completed', $3, 'tkt94-fingerprint', $4)`,
+		orderID, reservationID, "tkt94-"+orderID, uuid.NewString()); err != nil {
+		t.Fatalf("seed order: %v", err)
+	}
+	var n int
+	if err := conn.QueryRow(ctx,
+		`SELECT count(*) FROM completion_outbox WHERE order_id=$1`, orderID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("precondition: want zero outbox rows for the seeded order, got n=%d err=%v", n, err)
+	}
+
+	probe := project + "-backfill-wiring-probe"
+	_ = exec.Command("docker", "rm", "-f", probe).Run()
+	out, err := exec.Command("docker", "run", "-d", "--name", probe,
+		"--network", project+"_default",
+		"-e", fmt.Sprintf("DATABASE_URL=postgres://commerce:commerce@postgres:5432/%s", probeDB),
+		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
+		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		"-e", "CATALOG_URL=http://catalog:8080",
+		"-e", "INVENTORY_URL=http://inventory:8080",
+		"-e", "PAYMENTS_URL=http://payments:8080",
+		project+"-commerce").CombinedOutput()
+	if err != nil {
+		t.Fatalf("start probe: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", probe).Run() })
+
+	// Positive control: a healthy probe proves the process booted and the drainer
+	// goroutine is running, so an absent outbox row below is broken wiring, not a
+	// process that died early.
+	for exec.Command("docker", "exec", probe, "/app", "healthcheck").Run() != nil {
+		if ctx.Err() != nil {
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", probe).CombinedOutput()
+			t.Fatalf("probe never became healthy — cannot conclude anything about the backfill; logs:\n%s", logs)
+		}
+		time.Sleep(time.Second)
+	}
+
+	// The drainer runs the backfill before its first drain pass, so the row appears
+	// within container-boot time, not a drain interval. published_at is deliberately
+	// unconstrained: the probe's drainer may already have published and retired the
+	// row via the shared NATS — existence is the wiring pin.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var got int
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM completion_outbox
+			WHERE order_id=$1 AND subject='platform.commerce.order.completed'`, orderID).Scan(&got); err != nil {
+			t.Fatalf("poll completion_outbox: %v", err)
+		}
+		if got == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", probe).CombinedOutput()
+			t.Fatalf("commerce became healthy but never backfilled the seeded pre-outbox order — "+
+				"main.go is not wiring the real backfill into outbox.New (TKT-94); logs:\n%s", logs)
 		}
 		time.Sleep(time.Second)
 	}
