@@ -11,7 +11,124 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned by TKT-73 / ADR-025 (admission lifecycle events and offline reconciliation). The ADR's decision statements are binding constraints on this ticket."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaping pass (autonomous run, owner gate-waiver — see forthcoming claim comment).\n\nVerdict: READY. All 8 DoR items met or deferred; zero open blockers (TKT-84 Done, TKT-73/ADR-025 Done).\n\n- objective/scope/approach/first_slice/success: met — COS 1-8 written to the description; scope IN/OUT pinned (scanner UI + offline durability stay TKT-19's, wristbands TKT-14's).\n- dependencies: met — TKT-84 landed the repeatable event types, partial singleton uniqueness and the occurrence-id protocol this ticket consumes.\n- uncertainties: deferred — three Planning-resolvable design choices, none a mid-sprint redesign risk because ADR-025 already fences them: (a) how the slot policy reaches access (catalog event payload extension + access projection is the leading option; ADR-017 governs), (b) old-scanner/no-occurrence-id scans on pass slots, (c) derived revisable conflict projection + conservative alarm representation (ADR-025 §D2 fixes the semantics, not the storage).\n- context_memo: met — baked with governingAdrs re-resolved at HEAD (ADR-025/005/003/021/017/020/022/028), binding rules verbatim, TKT-84 code pointers.\n\nrisk:low NOT suggested — this changes live admission decision logic."
     }
   ],
-  "description": "Implement ADR-005's re_entry_policy (multi / count_limited, max_entries, requires_exit) in access using the repeatable entry/exit event types and the occurrence-id protocol from ADR-025. redeemed stays absent for passes (ADR-025 §D1). Depends on TKT-84 (event types + uniqueness) and informs TKT-19. GATE-3 REVIEW ADDITION (ADR-025 §D2): pass reconciliation records factual entry/exit only; policy conflicts (e.g. requires_exit re-entry without prior exit) are DERIVED projections re-evaluated as late cross-device events arrive — alarmed conservatively and revisable, never minted as trail events."
+  "description": "Implement ADR-005's re_entry_policy (multi / count_limited, max_entries, requires_exit) in access using the repeatable entry/exit event types and the occurrence-id protocol from ADR-025. redeemed stays absent for passes (ADR-025 §D1). Depends on TKT-84 (event types + uniqueness) and informs TKT-19. GATE-3 REVIEW ADDITION (ADR-025 §D2): pass reconciliation records factual entry/exit only; policy conflicts (e.g. requires_exit re-entry without prior exit) are DERIVED projections re-evaluated as late cross-device events arrive — alarmed conservatively and revisable, never minted as trail events.\n\nCOS (Conditions of Success):\n1. A ticket on a slot with re_entry mode=multi admits repeatedly: each live scan appends an occurrence-keyed `entry` event; `redeemed` is never appended for multi/count_limited tickets (ADR-025 §D1).\n2. mode=count_limited: a live entry beyond max_entries is denied with a distinguishable reason and appends no lifecycle event (a denied scan is not an admission); the entry count is derived from the trace.\n3. requires_exit=true: a live re-entry without a prior exit is denied (distinguishable reason, no event); exit scans append occurrence-keyed `exit` events.\n4. mode=single slots — and any slot whose policy access does not know — behave exactly as today: full existing regression surface stays green.\n5. The occurrence protocol holds for entry/exit: a retry of a recorded occurrence returns a distinguishable replay of the original result; occurrence ids are validated UUIDv4; cross-ticket/type reuse is a collision error (ADR-025 §D3/§D4).\n6. Pass reconciliation records factual entry/exit only — never `duplicate_admit`, never `redeemed`; policy conflicts (e.g. requires_exit re-entry without prior exit) surface as DERIVED, revisable projections re-evaluated as late cross-device events arrive, alarmed conservatively, never minted as trail events (ADR-025 §D2/§D6, Gate-3 addition).\n7. Access learns each slot's re_entry policy via the mechanism decided at Planning; a missing policy defaults to single (fail to today's semantics, never fail-open).\n8. API evolution is expand/contract (ADR-025 §D10): old scanners' requests remain valid with unchanged single-entry behaviour; canonical form v1 and golden literals untouched (§D8).\n",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "ADR-005 re_entry_policy (multi/count_limited/max_entries/requires_exit) is decided but unenforceable: access has no policy knowledge and no entry/exit decision path; TKT-84 landed the event types and occurrence protocol this builds on."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: access-side policy dispatch at live scan + reconcile, entry/exit decision paths, minimal policy distribution catalog→access, derived pass-conflict projection. OUT: scanner UI/offline queue (TKT-19), wristband media (TKT-14), quarantine/degraded-path widening for passes beyond what exists, the pre-existing quarantine-admit-then-verified-readmit gap (ADR-025 names it, separate follow-up)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Three design choices left to Planning, all reversible within ADR-025's constraints: (a) policy distribution mechanism (extend catalog performance.published payload + access projection vs alternatives — ADR-017 governs a payload change); (b) old-scanner (no occurrence id) scans against pass slots; (c) representation of derived, revisable pass-policy conflicts + conservative alarm shape. Owner-waived autonomous run: these get self-resolved at plan-final with recorded rationale."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "TKT-84 (event types, partial uniqueness, RecordAdmission, occurrence protocol) Done; TKT-73/ADR-025 Done. No open blockers."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Policy-aware dispatch in the scan/reconcile paths of services/access/internal/store; entry/exit appended only through appendLifecycle; count/requires_exit decisions read the trace under the ticket lock (ADR-003 §D2); projection table for slot policy if event-driven distribution is chosen."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The ticket IS one slice: policy distribution + live-gate enforcement + pass reconciliation semantics + derived-conflict projection, all in access (plus at most an additive catalog event field). Scanner-side adoption is TKT-19's."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS 1-8 on the ticket description."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked on the ticket (context field), governingAdrs re-resolved against docs/adr/ at HEAD 2026-07-19."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-025 §D1",
+        "rule": "issued/delivered/redeemed remain singleton; entry/exit/duplicate_admit repeatable. A multi/count-limited ticket has zero redeemed and repeatable entry/exit.",
+        "date": "2026-07-16"
+      },
+      {
+        "id": "ADR-025 §D2",
+        "rule": "Pass (multi/count-limited) reconciliation never mints conflict events: it records the factual entry/exit events only, and policy conflicts — e.g. ADR-005's requires_exit re-entry without a prior exit — are derived projections that re-evaluate as late events arrive. Derived conflicts are alarmed conservatively and marked revisable; an alarm can be withdrawn, an appended event cannot. duplicate_admit is scoped to single-entry tickets.",
+        "date": "2026-07-16"
+      },
+      {
+        "id": "ADR-025 §D3",
+        "rule": "Occurrence id is an idempotency key, never admission authorization; replay returned as an explicitly distinguishable replay result, never a bare accepted.",
+        "date": "2026-07-16"
+      },
+      {
+        "id": "ADR-025 §D4",
+        "rule": "Event-id replay is resolved before appendLifecycle, under the ticket lock — the append module is never invoked for an already-recorded occurrence.",
+        "date": "2026-07-16"
+      },
+      {
+        "id": "ADR-005 (amended)",
+        "rule": "re_entry_policy { mode: single | multi | count_limited, max_entries?, requires_exit? } — single for performances. Multi/count entries are an append-only Access entry/exit stream; the UNIQUE(ticket_id,'redeemed') single-redemption DB guarantee is retained for the redeemed type and simply not applied to entry/exit.",
+        "date": "2026-06-28"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-025",
+        "why": "The whole decision space of this ticket: vocabulary, occurrence identity, pass-reconciliation-as-recording, derived conflicts, §D10 expand/contract on POST /scans."
+      },
+      {
+        "id": "ADR-005",
+        "why": "Defines the policy shape being enforced; entry/exit stream decided there, catalog owns the policy, access enforces at the gate."
+      },
+      {
+        "id": "ADR-003",
+        "why": "§D2 admission decisions are made FROM the trace (count/requires_exit checks read lifecycle_events, no parallel read model); §D3 no PII in events/alarms."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Every lifecycle write goes through the chained append path; degraded/broken-chain scans quarantine — pass scans on a broken chain must not silently bypass the degraded posture."
+      },
+      {
+        "id": "ADR-017",
+        "why": "If the catalog performance.published payload gains the policy: bump on consumer semantics, and the consumer must dispatch on schema before decoding data (§5b′)."
+      },
+      {
+        "id": "ADR-020",
+        "why": "Any new access/catalog migration index: plain CREATE INDEX, never CONCURRENTLY."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band (migrate subcommand as one-shot compose job); ADR-008's 30s fail-fast bound still applies."
+      },
+      {
+        "id": "ADR-028",
+        "why": "If access reads catalog over HTTP for policy: response drift fails closed."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-84 landed RecordAdmission (entry/exit/duplicate_admit store write path, occurrence-id replay, ErrOccurrenceCollision) — services/access/internal/store/postgres.go; reconcile.go holds single-entry reconciliation incl. duplicate_admit + conflict alarm outbox.",
+        "link": "PR #62"
+      },
+      {
+        "summary": "Catalog policy storage: services/catalog/internal/store (ReEntryPolicy, migration 0004_typed_slot.sql); performance.published envelope (schema 2/3) does NOT carry the policy today — services/catalog/internal/events/events.go.",
+        "link": "docs/adr/ADR-014-typed-dated-slot-implementation.md"
+      },
+      {
+        "summary": "Repo rule: every lifecycle event goes through store.appendLifecycle; canonical forms pinned by golden literals; verifier asserts one-to-one coverage.",
+        "link": "AGENTS.md"
+      }
+    ],
+    "capturedAt": "2026-07-19"
+  }
 }
