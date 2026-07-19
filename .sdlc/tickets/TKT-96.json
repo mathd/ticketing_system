@@ -1,0 +1,37 @@
+{
+  "key": "TKT-96",
+  "type": "Story",
+  "summary": "Catalog policy re-emission: pass slots published before the re_entry ride-along never reach access",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "TKT-87 ai-review incidental (gpt-5.6-sol arm, G1). A slot published before the re_entry field existed has retained publication events without the field; access's projector writes explicit single and the publish path never re-emits an acknowledged publication. Any pre-existing multi/count_limited slot therefore enforces single forever, with no operator signal. Needs a catalog re-emission or backfill path (the projection's upsert already converges on a new envelope id) — the residual gap the TKT-87 plan named. Constraints: ADR-017 (any payload/schema decision), deterministic publication event ids (events.go EventID).",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from TKT-87 PR #73 ai-review triage; minimal memo per decomposition.md: code pointers services/catalog/internal/events/events.go (EventID, performancePublishedEnvelope), services/access/internal/consumer/policy.go (projector), services/access/internal/store/policy.go (UpsertSlotPolicy — new-envelope convergence already works). Suspected governing ADRs: ADR-017, ADR-005."
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-017",
+        "why": "Whether a re-emission event rides the existing subject/schema or needs its own; consumer dispatch rules."
+      },
+      {
+        "id": "ADR-005",
+        "why": "The policy being distributed; catalog owns it."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-87 projector + upsert convergence",
+        "link": "PR #73"
+      }
+    ],
+    "capturedAt": "2026-07-19"
+  }
+}
