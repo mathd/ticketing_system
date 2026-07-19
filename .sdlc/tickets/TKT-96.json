@@ -6,12 +6,17 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "TKT-87 ai-review incidental (gpt-5.6-sol arm, G1). A slot published before the re_entry field existed has retained publication events without the field; access's projector writes explicit single and the publish path never re-emits an acknowledged publication. Any pre-existing multi/count_limited slot therefore enforces single forever, with no operator signal. Needs a catalog re-emission or backfill path (the projection's upsert already converges on a new envelope id) — the residual gap the TKT-87 plan named. Constraints: ADR-017 (any payload/schema decision), deterministic publication event ids (events.go EventID).",
+  "description": "TKT-87 ai-review incidental (gpt-5.6-sol arm, G1). A slot published before the re_entry field existed has retained publication events without the field; access's projector writes explicit single and the publish path never re-emits an acknowledged publication. Any pre-existing multi/count_limited slot therefore enforces single forever, with no operator signal. Needs a catalog re-emission or backfill path (the projection's upsert already converges on a new envelope id) — the residual gap the TKT-87 plan named. Constraints: ADR-017 (any payload/schema decision), deterministic publication event ids (events.go EventID).\n\nCOS:\n1. A multi/count_limited slot published before the re_entry ride-along enforces its real policy at the gate after the backfill/re-emission runs (proven end-to-end: catalog emit -> access projection -> scan).\n2. The mechanism is idempotent and bounded: re-running it is a no-op (access side converges by envelope id; stream does not accumulate unbounded duplicates).\n3. Inventory's consumption of the subject is provably unaffected (no duplicate pool provisioning; test evidence, not assertion).\n4. Single-policy slots re-emit harmlessly.\n5. make check green; ADR-017 discipline for any payload/schema decision.",
   "comments": [
     {
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from TKT-87 PR #73 ai-review triage; minimal memo per decomposition.md: code pointers services/catalog/internal/events/events.go (EventID, performancePublishedEnvelope), services/access/internal/consumer/policy.go (projector), services/access/internal/store/policy.go (UpsertSlotPolicy — new-envelope convergence already works). Suspected governing ADRs: ADR-017, ADR-005."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaping pass. Verdict: READY — one deferred Planning decision (re-emission mechanism), fenced by ADR-017 and the projector's existing new-envelope convergence. Two named traps for the planner: deterministic publication EventID must not be reused (dedup swallows the re-emission), and inventory consumes the same subject — a re-emitted publication must be provably side-effect-free there (its own consumed-event dedup or field semantics). risk:low NOT suggested: touches a cross-service event contract."
     }
   ],
   "context": {
@@ -33,5 +38,39 @@
       }
     ],
     "capturedAt": "2026-07-19"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Pass slots published before the re_entry ride-along project as single forever; catalog needs a re-emission/backfill path so access's projection converges."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: catalog-side mechanism to (re)emit policy for already-published slots + access convergence proof. OUT: policy mutation/update API (still none), projector changes (upsert convergence already shipped in TKT-87)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Mechanism choice — one-shot backfill subcommand re-emitting publications with fresh envelope ids vs a dedicated policy event — is Planning's; ADR-017 fences it and the projector accepts either via new-envelope convergence. Trap to respect: publication event ids are deterministic (EventID = id+published_at), so a re-emission must NOT reuse them or JetStream/consumed_events dedup will swallow it."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "TKT-87 merged (projector + UpsertSlotPolicy convergence on new envelope ids). No open blockers."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Leading option: catalog `publish-admission-policies`-style one-shot subcommand enumerating published slots and re-emitting at current schema with a distinct deterministic id; access needs zero changes."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "A multi slot published pre-TKT-87 gets its policy row in access after the backfill runs; single slots re-emit harmlessly (idempotent upsert)."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS on description: backfill idempotent + bounded; pre-existing pass slot enforces its real policy after run; no duplicate provisioning side-effects in inventory (same-id dedup or ignored fields — must be proven, inventory consumes this subject)."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Minimal mémo baked at creation (TKT-87 review); governingAdrs ADR-017/ADR-005 still current at HEAD 2026-07-19."
+    }
   }
 }
