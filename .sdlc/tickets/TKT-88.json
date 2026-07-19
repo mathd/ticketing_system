@@ -2,7 +2,7 @@
   "key": "TKT-88",
   "type": "Story",
   "summary": "Cross-service smoke coverage for multi-event admission flows",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
