@@ -2,10 +2,8 @@
   "key": "TKT-87",
   "type": "Story",
   "summary": "Pass admission policy: entry/exit semantics over occurrence ids",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude-fable-5",
   "pr": {
     "url": "https://github.com/mathd/ticketing_system/pull/73",
