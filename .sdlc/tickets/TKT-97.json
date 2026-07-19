@@ -1,0 +1,28 @@
+{
+  "key": "TKT-97",
+  "type": "Task",
+  "summary": "Access consumers: surface async consume termination (err handler / Closed) instead of silent stall with ready=true",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "TKT-87 ai-review incidental (gpt-5.6-sol arm, G6). Both access consumers (order-completed issuer and the TKT-87 slot-policy projector) start jetstream Consume without a ConsumeErrHandler and without watching ConsumeContext.Closed; if the durable is deleted or the subscription terminates, delivery stops silently while Run blocks on ctx and /readyz stays 200. Pre-existing pattern (the issuer shipped this way) — fix both together: err handler that latches unready and/or returns from Run.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from TKT-87 PR #73 ai-review triage; minimal memo: code pointers services/access/internal/consumer/consumer.go (Run), services/access/internal/consumer/policy.go (Run). Suspected governing ADRs: none specific; readiness semantics in cmd/access/main.go. Candidate risk:low."
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [],
+    "reference": [
+      {
+        "summary": "Both Run() methods, readiness wiring in cmd/access/main.go",
+        "link": "PR #73"
+      }
+    ],
+    "capturedAt": "2026-07-19"
+  }
+}
