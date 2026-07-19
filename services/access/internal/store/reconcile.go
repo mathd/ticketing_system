@@ -31,6 +31,12 @@ type ReconcileOccurrence struct {
 	TicketID, OrderID, OrganizerID, SlotID uuid.UUID
 	OccurrenceID                           uuid.UUID
 	OccurredAt                             time.Time
+	// Type is the factual admission direction the device recorded (TKT-87).
+	// Zero value means entry — an old scanner's occurrence keeps today's
+	// semantics exactly. Exit is meaningful only against pass slots; on a
+	// single slot it is refused per occurrence (ErrExitNotApplicable), never
+	// recorded (ADR-025 §D1).
+	Type AdmissionEventType
 }
 
 // ReconcileOutcome says what reconciliation did with one occurrence.
@@ -72,6 +78,13 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 	if in.OccurredAt.IsZero() {
 		return ReconcileResult{}, errors.New("a gate occurrence carries its claimed admission time")
 	}
+	direction := in.Type
+	if direction == "" {
+		direction = AdmissionEntry
+	}
+	if direction != AdmissionEntry && direction != AdmissionExit {
+		return ReconcileResult{}, fmt.Errorf("event type %q is not a reconcilable admission direction", direction)
+	}
 	skewFlagged := in.OccurredAt.Sub(p.now()).Abs() > AdmissionSkewBound
 
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -93,9 +106,23 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 		return ReconcileResult{}, ErrTicketCredential
 	}
 
+	policy, err := p.slotPolicy(ctx, tx, id.SlotID)
+	if err != nil {
+		return ReconcileResult{}, err
+	}
+	if !policy.IsPass() && direction == AdmissionExit {
+		// Single tickets have no exit vocabulary (ADR-025 §D1): refuse this
+		// occurrence — its own per-item rejection, never a recorded fact and
+		// never a failed batch.
+		return ReconcileResult{}, ErrExitNotApplicable
+	}
+
 	// Replay before anything else (ADR-025 §D4): an occurrence already in the
-	// record — trail or quarantine side — is synced, never re-recorded.
-	synced, syncedAt, err := p.reconcileReplay(ctx, tx, in.TicketID, in.OccurrenceID)
+	// record — trail or quarantine side — is synced, never re-recorded. The
+	// match is bound to the factual type (plan verdict 3): an entry-direction
+	// occurrence may match a row recorded under the single vocabulary (the
+	// ticket predates the policy projection), an exit matches only an exit.
+	synced, syncedAt, err := p.reconcileReplay(ctx, tx, in.TicketID, in.OccurrenceID, direction)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
@@ -110,17 +137,44 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 		// Appending onto an unverified predecessor would poison the chain
 		// (ADR-021 §D6), so the occurrence lands as a quarantine-side record:
 		// repeatable per ticket, keyed by occurrence, device time preserved,
-		// admitted_at NULL — this is a recording, not a live admission. No
-		// conflict alarm: the integrity alarm class owns broken chains, and
-		// every live scan of this ticket already raises it.
-		if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,occurrence_id,occurred_at) VALUES($1,$2,$3,$4,$5)`,
-			in.TicketID, id.OrganizerID, chainErr.Error(), in.OccurrenceID, in.OccurredAt); err != nil {
+		// admitted_at NULL — this is a recording, not a live admission. The
+		// factual direction is preserved (TKT-87): without it a quarantined
+		// entry and exit are indistinguishable and the derived projection
+		// could never re-evaluate them. No conflict alarm: the integrity
+		// alarm class owns broken chains, and every live scan of this ticket
+		// already raises it.
+		if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,occurrence_id,occurred_at,event_type) VALUES($1,$2,$3,$4,$5,$6)`,
+			in.TicketID, id.OrganizerID, chainErr.Error(), in.OccurrenceID, in.OccurredAt, quarantineEventType(policy, direction)); err != nil {
 			return ReconcileResult{}, err
 		}
 		if err = tx.Commit(); err != nil {
 			return ReconcileResult{}, err
 		}
 		return ReconcileResult{OccurrenceID: in.OccurrenceID, Outcome: ReconcileRecorded, OccurredAt: in.OccurredAt, SkewFlagged: skewFlagged}, nil
+	}
+
+	if policy.IsPass() {
+		// Pass reconciliation records factual entry/exit only — never
+		// `redeemed`, never `duplicate_admit` (ADR-025 §D2). Policy conflicts
+		// are derived and revisable: re-evaluated with the new fact included,
+		// alarmed conservatively through the raise/withdraw class.
+		occurredAt, appendErr := p.appendLifecycle(ctx, tx, appendInput{
+			TicketID: in.TicketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
+			EventID: in.OccurrenceID, Type: string(direction), OccurredAt: in.OccurredAt,
+		})
+		if appendErr != nil {
+			if errors.Is(appendErr, errEventIDTaken) {
+				return ReconcileResult{}, fmt.Errorf("occurrence %s: %w", in.OccurrenceID, ErrOccurrenceCollision)
+			}
+			return ReconcileResult{}, appendErr
+		}
+		if err = p.evaluatePolicyAlarms(ctx, tx, in.TicketID, id, policy); err != nil {
+			return ReconcileResult{}, err
+		}
+		if err = tx.Commit(); err != nil {
+			return ReconcileResult{}, err
+		}
+		return ReconcileResult{OccurrenceID: in.OccurrenceID, Outcome: ReconcileRecorded, OccurredAt: occurredAt, SkewFlagged: skewFlagged}, nil
 	}
 
 	var redeemedAt time.Time
@@ -170,15 +224,35 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 	return ReconcileResult{OccurrenceID: in.OccurrenceID, Outcome: ReconcileConflict, OccurredAt: occurredAt, SkewFlagged: skewFlagged}, nil
 }
 
+// quarantineEventType is the factual type a quarantine-side record carries.
+// Pass facts keep their direction; single-vocabulary occurrences keep the
+// column's redeemed default semantics explicitly.
+func quarantineEventType(policy ReEntryPolicy, direction AdmissionEventType) string {
+	if policy.IsPass() {
+		return string(direction)
+	}
+	return "redeemed"
+}
+
 // reconcileReplay reports whether the occurrence is already recorded, on
 // either side of the admission union, and the stored time if so. A hit on
-// another ticket or event context is a collision, never a replay.
-func (p *Postgres) reconcileReplay(ctx context.Context, tx *sql.Tx, ticketID, occ uuid.UUID) (bool, time.Time, error) {
+// another ticket is a collision, never a replay; the type binding mirrors
+// replayAdmissionOccurrence — an entry-direction occurrence may match a row
+// recorded under the single vocabulary, an exit matches only an exit, and a
+// live degraded admission replays un-directioned (§D3).
+func (p *Postgres) reconcileReplay(ctx context.Context, tx *sql.Tx, ticketID, occ uuid.UUID, direction AdmissionEventType) (bool, time.Time, error) {
+	matches := func(stored string) bool {
+		if direction == AdmissionExit {
+			return stored == string(AdmissionExit)
+		}
+		return stored == string(AdmissionEntry) || stored == "redeemed" || stored == string(AdmissionDuplicateAdmit)
+	}
 	var storedTicket uuid.UUID
+	var storedType string
 	var storedAt time.Time
-	err := tx.QueryRowContext(ctx, `SELECT ticket_id,occurred_at FROM lifecycle_events WHERE id=$1`, occ).Scan(&storedTicket, &storedAt)
+	err := tx.QueryRowContext(ctx, `SELECT ticket_id,event_type,occurred_at FROM lifecycle_events WHERE id=$1`, occ).Scan(&storedTicket, &storedType, &storedAt)
 	if err == nil {
-		if storedTicket != ticketID {
+		if storedTicket != ticketID || !matches(storedType) {
 			return false, time.Time{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 		}
 		return true, storedAt, nil
@@ -187,18 +261,21 @@ func (p *Postgres) reconcileReplay(ctx context.Context, tx *sql.Tx, ticketID, oc
 		return false, time.Time{}, err
 	}
 	var quarantinedTicket uuid.UUID
+	var quarantinedType string
 	var admittedAt, occurredAt sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT ticket_id,admitted_at,occurred_at FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1`, occ).
-		Scan(&quarantinedTicket, &admittedAt, &occurredAt)
+	err = tx.QueryRowContext(ctx, `SELECT ticket_id,event_type,admitted_at,occurred_at FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1`, occ).
+		Scan(&quarantinedTicket, &quarantinedType, &admittedAt, &occurredAt)
 	if err == nil {
 		if quarantinedTicket != ticketID {
 			return false, time.Time{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 		}
-		at := occurredAt.Time
 		if admittedAt.Valid {
-			at = admittedAt.Time
+			return true, admittedAt.Time, nil
 		}
-		return true, at, nil
+		if !matches(quarantinedType) {
+			return false, time.Time{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
+		}
+		return true, occurredAt.Time, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, time.Time{}, err

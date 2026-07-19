@@ -180,3 +180,73 @@ func mustJSON(t *testing.T, s string) string {
 	}
 	return string(raw)
 }
+
+// TKT-87 on the wire: the direction field maps to the pass path, policy
+// denials surface as distinguishable 409 reasons, and a reconciled pass
+// occurrence records factually. Store tests own the semantics; this pins the
+// HTTP mapping.
+func TestPassScanFlowOnTheWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	srv, st, qr := newSmokeServer(t, ctx)
+	router := srv.Router(nil)
+
+	ticketID, orderID := uuid.New(), uuid.New()
+	organizerID, slotID := uuid.New(), uuid.New()
+	issuedAt := time.Now().UTC()
+	payload, err := qr.Payload(ticketID, orderID, organizerID, slotID, issuedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Issue(ctx, store.IssueInput{EventID: uuid.New(), Tickets: []store.Ticket{{
+		ID: ticketID, OrderID: orderID, GuestOrderRef: uuid.New(), OrganizerID: organizerID,
+		BuyerID: uuid.New(), SlotID: slotID, TicketTypeID: uuid.New(), Payload: payload, IssuedAt: issuedAt,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertSlotPolicy(ctx, uuid.New(), store.SlotPolicy{
+		SlotID: slotID, OrganizerID: organizerID,
+		Policy: store.ReEntryPolicy{Mode: "multi", RequiresExit: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	at := func(offset time.Duration) string { return time.Now().UTC().Add(offset).Format(time.RFC3339) }
+	scan := func(direction string, occ string, offset time.Duration) (int, map[string]any) {
+		body := `{"qr_payload":` + mustJSON(t, payload) + `,"occurrence_id":"` + occ + `","occurred_at":"` + at(offset) + `"`
+		if direction != "" {
+			body += `,"direction":"` + direction + `"`
+		}
+		return postJSON(t, router, "/scans", body+`}`)
+	}
+
+	if code, r := scan("", uuid.NewString(), -time.Hour); code != http.StatusOK || r["decision"] != "accepted" {
+		t.Fatalf("pass entry = %d %v", code, r)
+	}
+	if code, r := scan("entry", uuid.NewString(), -50*time.Minute); code != http.StatusConflict || r["reason"] != "exit_required" {
+		t.Fatalf("re-entry while inside = %d %v, want 409 exit_required", code, r)
+	}
+	if code, r := scan("exit", uuid.NewString(), -40*time.Minute); code != http.StatusOK || r["decision"] != "accepted" {
+		t.Fatalf("exit = %d %v", code, r)
+	}
+	if code, r := scan("exit", uuid.NewString(), -35*time.Minute); code != http.StatusConflict || r["reason"] != "not_inside" {
+		t.Fatalf("exit while outside = %d %v, want 409 not_inside", code, r)
+	}
+	// No occurrence id on a pass slot: the distinguishable 409, nothing stored.
+	code, r := postJSON(t, router, "/scans", `{"qr_payload":`+mustJSON(t, payload)+`}`)
+	if code != http.StatusConflict || r["reason"] != "occurrence_required" {
+		t.Fatalf("occurrence-less pass scan = %d %v, want 409 occurrence_required", code, r)
+	}
+
+	// A reconciled pass occurrence records factually — result recorded, never
+	// conflict (pass conflicts are derived projections, ADR-025 §D2).
+	code, response := postJSON(t, router, "/scans/reconciliations",
+		`{"occurrences":[{"qr_payload":`+mustJSON(t, payload)+`,"occurrence_id":"`+uuid.NewString()+`","occurred_at":"`+at(-30*time.Minute)+`","event_type":"entry"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("pass reconcile = %d %v", code, response)
+	}
+	results, _ := response["results"].([]any)
+	entry, _ := results[0].(map[string]any)
+	if entry["result"] != "recorded" {
+		t.Fatalf("pass reconcile entry = %v, want recorded", entry)
+	}
+}

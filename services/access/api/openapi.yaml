@@ -69,10 +69,17 @@ components:
       type: object
       additionalProperties: false
       required: [qr_payload]
+      # direction (TKT-87, expand phase of §D10): optional, omitted means
+      # entry, so an old scanner's request is byte-identical in meaning. exit
+      # is meaningful only for pass (multi/count_limited) slots — on single or
+      # unknown policy it earns reason: exit_not_applicable. Pass scans
+      # without occurrence fields earn reason: occurrence_required. Pass
+      # policy denials: entry_limit_reached | exit_required | not_inside.
       properties:
         qr_payload: {type: string, minLength: 1}
         occurrence_id: {type: string, minLength: 1}
         occurred_at: {type: string, minLength: 1}
+        direction: {type: string, enum: [entry, exit]}
     ScanAccepted:
       type: object
       additionalProperties: false
@@ -100,10 +107,15 @@ components:
       # empty field — gets its own rejected result instead of 422-ing the
       # whole sync. A gate syncing a night's queue must never be blocked by
       # one bad row.
+      # event_type (TKT-87): the factual direction the device recorded.
+      # Omitted means entry — an old scanner's queue keeps today's semantics.
+      # Deliberately a plain string, same reason as the other fields: an
+      # unknown value gets its own per-item rejected result, never a batch 422.
       properties:
         qr_payload: {type: string}
         occurrence_id: {type: string}
         occurred_at: {type: string}
+        event_type: {type: string}
     ReconcileResponse:
       type: object
       additionalProperties: false

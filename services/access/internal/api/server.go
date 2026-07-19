@@ -147,10 +147,17 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		QRPayload    string `json:"qr_payload"`
 		OccurrenceID string `json:"occurrence_id"`
 		OccurredAt   string `json:"occurred_at"`
+		Direction    string `json:"direction"`
 	}
 	if err := httpx.DecodeJSON(w, r, &input, 8<<10); err != nil || input.QRPayload == "" {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 		return
+	}
+	// The contract enum already refused anything else; the default is entry so
+	// an old scanner's request means exactly what it always meant (§D10).
+	direction := store.AdmissionEntry
+	if input.Direction == string(store.AdmissionExit) {
+		direction = store.AdmissionExit
 	}
 	occ, occurredAt, err := parseOccurrence(input.OccurrenceID, input.OccurredAt)
 	if err != nil {
@@ -164,9 +171,12 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 		return
 	}
-	result, err := s.st.Redeem(r.Context(), store.RedeemInput{
-		TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
-		OccurrenceID: occ, OccurredAt: occurredAt,
+	result, err := s.st.Scan(r.Context(), store.ScanInput{
+		RedeemInput: store.RedeemInput{
+			TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
+			OccurrenceID: occ, OccurredAt: occurredAt,
+		},
+		Direction: direction,
 	})
 	if errors.Is(err, store.ErrTicketCredential) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
@@ -191,6 +201,12 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 			reason = "integrity_quarantined"
 		case store.DecisionIntegrityOperatorControlled:
 			reason = "integrity_operator_controlled"
+		// Pass-policy denials (TKT-87): the Decision values are already the
+		// wire reasons — distinguishable, and none of them appended anything.
+		case store.DecisionEntryLimitReached, store.DecisionExitRequired,
+			store.DecisionNotInside, store.DecisionExitNotApplicable,
+			store.DecisionOccurrenceRequired:
+			reason = string(result.Decision)
 		}
 		// No cryptographic detail leaves the gate: which field failed to verify
 		// is exactly what an attacker probing the trail would want back.
@@ -220,6 +236,7 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 			QRPayload    string `json:"qr_payload"`
 			OccurrenceID string `json:"occurrence_id"`
 			OccurredAt   string `json:"occurred_at"`
+			EventType    string `json:"event_type"`
 		} `json:"occurrences"`
 	}
 	if err := httpx.DecodeJSON(w, r, &input, 256<<10); err != nil || len(input.Occurrences) == 0 {
@@ -239,6 +256,17 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 			results = append(results, rejected(entry.OccurrenceID))
 			continue
 		}
+		// event_type follows the batch posture: an unknown value is ONE bad
+		// row with its own rejected result, never a 422 for the night's queue.
+		eventType := store.AdmissionEntry
+		switch entry.EventType {
+		case "", string(store.AdmissionEntry):
+		case string(store.AdmissionExit):
+			eventType = store.AdmissionExit
+		default:
+			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
 		claims, err := s.verifier.Verify(entry.QRPayload)
 		if err != nil {
 			results = append(results, rejected(entry.OccurrenceID))
@@ -246,9 +274,9 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err := s.st.ReconcileAdmission(r.Context(), store.ReconcileOccurrence{
 			TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
-			OccurrenceID: occ, OccurredAt: occurredAt,
+			OccurrenceID: occ, OccurredAt: occurredAt, Type: eventType,
 		})
-		if errors.Is(err, store.ErrTicketCredential) || errors.Is(err, store.ErrOccurrenceCollision) {
+		if errors.Is(err, store.ErrTicketCredential) || errors.Is(err, store.ErrOccurrenceCollision) || errors.Is(err, store.ErrExitNotApplicable) {
 			results = append(results, rejected(entry.OccurrenceID))
 			continue
 		}

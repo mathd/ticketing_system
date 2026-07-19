@@ -113,7 +113,10 @@ services:
         --filter "platform.access.lifecycle-integrity.alarm" --pull --deliver all --ack explicit --defaults;
         nats --server nats://nats:4222 consumer info PLATFORM access-admission-conflict-operator >/dev/null 2>&1 ||
         nats --server nats://nats:4222 consumer add PLATFORM access-admission-conflict-operator
-        --filter "platform.access.admission-conflict.alarm" --pull --deliver all --ack explicit --defaults
+        --filter "platform.access.admission-conflict.alarm" --pull --deliver all --ack explicit --defaults;
+        nats --server nats://nats:4222 consumer info PLATFORM access-policy-conflict-operator >/dev/null 2>&1 ||
+        nats --server nats://nats:4222 consumer add PLATFORM access-policy-conflict-operator
+        --filter "platform.access.admission-policy-conflict.alarm" --pull --deliver all --ack explicit --defaults
 
   lgtm:
     image: grafana/otel-lgtm:0.29.0@sha256:6e14b923e0130b8b294ca5bcc7c94d54e899d150817e6c3ed82d9b665afe5499
@@ -290,6 +293,7 @@ services:
       ACCESS_LIFECYCLE_ALARM_STREAM: ${ACCESS_LIFECYCLE_ALARM_STREAM:-PLATFORM}
       ACCESS_LIFECYCLE_ALARM_DURABLE: ${ACCESS_LIFECYCLE_ALARM_DURABLE:-access-lifecycle-integrity-operator}
       ACCESS_ADMISSION_CONFLICT_DURABLE: ${ACCESS_ADMISSION_CONFLICT_DURABLE:-access-admission-conflict-operator}
+      ACCESS_POLICY_CONFLICT_DURABLE: ${ACCESS_POLICY_CONFLICT_DURABLE:-access-policy-conflict-operator}
       ACCESS_EVENT_RETRY_BACKOFF: ${ACCESS_EVENT_RETRY_BACKOFF:-}
 
   storefront:

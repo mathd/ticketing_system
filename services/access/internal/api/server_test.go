@@ -171,3 +171,72 @@ func TestScanRejectsWhenVerifierIsUnavailable(t *testing.T) {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
 }
+
+// The TKT-87 expand phase: the contract must accept `direction` on scans and
+// `event_type` on reconciliation occurrences (today it rejects both under
+// additionalProperties:false), old bodies stay valid, and an invalid direction
+// is a contract rejection.
+func TestScanContractAcceptsDirectionField(t *testing.T) {
+	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(nil, verifier).Router(nil)
+
+	// direction gets past the validator: the failure must be the (bad)
+	// credential, not the contract.
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(
+		`{"qr_payload":"not-a-ticket","direction":"exit","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	var response map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusUnprocessableEntity || response["reason"] != "invalid_credential" {
+		t.Fatalf("scan with direction = %d %v, want the credential rejection (not a contract one)", recorder.Code, response)
+	}
+
+	// An unknown direction is refused by the contract enum.
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(
+		`{"qr_payload":"not-a-ticket","direction":"sideways"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown direction = %d, want 422", recorder.Code)
+	}
+}
+
+func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
+	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(nil, verifier).Router(nil)
+
+	// event_type passes the contract; the bad credential earns a per-item
+	// rejected result, and a malformed event_type is ALSO a per-item rejected
+	// result — batch entries never 422 the whole sync (the established
+	// batch-item posture).
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/scans/reconciliations", bytes.NewBufferString(
+		`{"occurrences":[`+
+			`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z","event_type":"exit"},`+
+			`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z","event_type":"sideways"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reconcile with event_type = %d, want 200 with per-item results", recorder.Code)
+	}
+	var out struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Results) != 2 || out.Results[0]["result"] != "rejected" || out.Results[1]["result"] != "rejected" {
+		t.Fatalf("results = %+v, want two per-item rejections", out.Results)
+	}
+}
