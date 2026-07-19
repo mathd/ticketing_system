@@ -11,7 +11,80 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned by TKT-73 / ADR-025 (admission lifecycle events and offline reconciliation). The ADR's decision statements are binding constraints on this ticket."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaping pass. Verdict: READY — test-only ticket (source changes out of scope; a bug surfaced by a new smoke test gets reported, not fixed in-line, per the test-scope rule). Scope refreshed to include TKT-87's pass flows, which post-date the ticket's creation. risk:low plausible but NOT suggested: the suite is gate-load-bearing and cross-service."
     }
   ],
-  "description": "Extend the gateway smoke suite beyond per-ticket TDD: replayed scans (same occurrence id), concurrent duplicates, offline out-of-order reconciliation, one redeemed + N duplicate_admit, N-event chains passing verify-lifecycle with RequireCoverage. Complements — does not replace — the TDD each implementation ticket owes (ADR-025 follow-up; seams: smoke/checkout_test.go, migration_smoke_test.go)."
+  "description": "Extend the gateway smoke suite beyond per-ticket TDD: replayed scans (same occurrence id), concurrent duplicates, offline out-of-order reconciliation, one redeemed + N duplicate_admit, N-event chains passing verify-lifecycle with RequireCoverage. Complements — does not replace — the TDD each implementation ticket owes (ADR-025 follow-up; seams: smoke/checkout_test.go, migration_smoke_test.go).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Per-ticket TDD proves store semantics; nothing proves the admission flows end-to-end across gateway/catalog/commerce/access on one running stack."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: gateway smoke additions — replayed scans (same occurrence id), concurrent duplicates, offline out-of-order reconciliation, one redeemed + N duplicate_admit, N-event chains under verify-lifecycle RequireCoverage; NOW ALSO the TKT-87 pass flows (entry/exit/direction, derived-conflict raise->withdraw) which post-date this ticket's creation. OUT: load/perf profiles (onsale-load owns those), scanner UI."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Which scenarios need new fixtures vs extending smoke/checkout_test.go's existing issuance path — Planning reads the suite. Time-window fixtures must be relative to now (TKT-93 learning)."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "TKT-84/85/87 all merged — every event type and path under test exists. No open blockers."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend the gateway smoke suite (smoke/*.go) driving the real compose stack through /api/access endpoints; assert trail + verify-lifecycle + alarm outbox effects."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One multi-scenario smoke test file covering the enumerated flows; runnable under make smoke."
+    },
+    "success": {
+      "state": "met",
+      "note": "Enumerated scenarios green in the gate; verify-lifecycle RequireCoverage passes over the generated histories; no existing smoke regression."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked now: seams smoke/checkout_test.go + store smoke suites; governing ADR-025 (occurrence semantics being exercised), ADR-021 (verify-lifecycle), TKT-93 relative-time-fixture learning."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-025 §D3",
+        "rule": "Occurrence id is an idempotency key; replay returns a distinguishable replay result, never a bare accepted.",
+        "date": "2026-07-16"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-025",
+        "why": "The semantics every scenario exercises (replay, duplicate_admit scoping, reconciliation ordering)."
+      },
+      {
+        "id": "ADR-021",
+        "why": "verify-lifecycle RequireCoverage is the closing assertion over generated histories."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Gateway smoke seams: smoke/checkout_test.go (scan/reconcile drivers), scripts/smoke.sh (stack)",
+        "link": "smoke/"
+      },
+      {
+        "summary": "TKT-93 learning: time-window fixtures relative to now, never fixed dates",
+        "link": "docs/LEARNINGS.md"
+      },
+      {
+        "summary": "TKT-87 pass flows to cover: direction field, exit_required/not_inside, derived-conflict raise->withdraw",
+        "link": "PR #73"
+      }
+    ],
+    "capturedAt": "2026-07-19"
+  }
 }
