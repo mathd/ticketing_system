@@ -63,6 +63,24 @@ func (e ScanRejectedDecision) Valid() bool {
 	}
 }
 
+// Defines values for ScanRequestDirection.
+const (
+	Entry ScanRequestDirection = "entry"
+	Exit  ScanRequestDirection = "exit"
+)
+
+// Valid indicates whether the value is a known member of the ScanRequestDirection enum.
+func (e ScanRequestDirection) Valid() bool {
+	switch e {
+	case Entry:
+		return true
+	case Exit:
+		return true
+	default:
+		return false
+	}
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error string `json:"error"`
@@ -78,9 +96,10 @@ type LifecycleEvent struct {
 
 // ReconcileOccurrence defines model for ReconcileOccurrence.
 type ReconcileOccurrence struct {
-	OccurredAt   string `json:"occurred_at"`
-	OccurrenceId string `json:"occurrence_id"`
-	QrPayload    string `json:"qr_payload"`
+	EventType    *string `json:"event_type,omitempty"`
+	OccurredAt   string  `json:"occurred_at"`
+	OccurrenceId string  `json:"occurrence_id"`
+	QrPayload    string  `json:"qr_payload"`
 }
 
 // ReconcileRequest defines model for ReconcileRequest.
@@ -126,10 +145,14 @@ type ScanRejectedDecision string
 
 // ScanRequest defines model for ScanRequest.
 type ScanRequest struct {
-	OccurredAt   *string `json:"occurred_at,omitempty"`
-	OccurrenceId *string `json:"occurrence_id,omitempty"`
-	QrPayload    string  `json:"qr_payload"`
+	Direction    *ScanRequestDirection `json:"direction,omitempty"`
+	OccurredAt   *string               `json:"occurred_at,omitempty"`
+	OccurrenceId *string               `json:"occurrence_id,omitempty"`
+	QrPayload    string                `json:"qr_payload"`
 }
+
+// ScanRequestDirection defines model for ScanRequest.Direction.
+type ScanRequestDirection string
 
 // Ticket defines model for Ticket.
 type Ticket struct {

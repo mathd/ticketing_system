@@ -166,6 +166,30 @@ database-write adversary deletes the quarantine row and resets the window betwee
 them fail-open is unbounded, full stop, and this section is the wording to reuse if any of it ever
 reaches a dashboard.
 
+**Pass admission policy (TKT-87,
+[ADR-025](adr/ADR-025-admission-events-and-offline-reconciliation.md) §D1/§D2).** A slot whose
+catalog `re_entry_policy` is `multi` or `count_limited` admits through repeatable occurrence-keyed
+`entry`/`exit` events; such a ticket never gains `redeemed`. Access learns the policy from the
+`re_entry` field riding additively on `platform.catalog.performance.published` (no schema bump —
+ADR-017 §2), projected into `slot_re_entry_policies` by the `access-slot-policy` durable; **a slot
+access knows nothing about is `single` — today's semantics, never fail-open**. Live policy denials
+(`entry_limit_reached`, `exit_required`, `not_inside`, `exit_not_applicable`,
+`occurrence_required`) append **nothing** to the trail.
+
+**Derived pass-policy conflicts — the only phrasing to quote.** Pass reconciliation records
+factual `entry`/`exit` only; it never mints `duplicate_admit` (that type is scoped to single-entry
+tickets). A policy conflict — a `requires_exit` re-entry without a prior exit, an entry beyond
+`max_entries` — is a **derived projection re-evaluated as late cross-device events arrive, ordered
+by claimed device time, which is not attested**. It is alarmed conservatively on
+`platform.access.admission-policy-conflict.alarm` (schema 1) as raise/withdraw pairs sharing one
+`conflict_id`, and it is **revisable: an alarm can be withdrawn, an appended event cannot**. The
+`pass_policy_conflicts` table is a rebuildable diff cache for that alarm stream — it is never
+consulted by an admission decision and proves nothing. Access refuses to boot unless
+`ACCESS_POLICY_CONFLICT_DURABLE` exists and filters the subject; the same
+retained-not-read caveat as the other alarm classes applies. Quarantine admissions remain
+operator-only: they do not surface in `GET /orders/{ref}/tickets` (the §D10 open question,
+answered here).
+
 ## Conventions
 
 - Money: integer minor units + ISO currency code; floats banned on money paths (ADR-001).

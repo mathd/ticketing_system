@@ -66,6 +66,91 @@ func TestPerformancePublishedEnvelopeSchemas(t *testing.T) {
 	}
 }
 
+// TestPerformancePublishedEnvelopeCarriesReEntryPolicy pins the TKT-87
+// additive ride-along (ADR-017 §2: no bump — no deployed consumer forks on the
+// field): re_entry is present on every publication, at the UNCHANGED schemas 2
+// and 3, so access's policy projection can read it while inventory keeps
+// ignoring it. The decode struct here is hand-written on purpose — a fixture
+// built from PerformancePublishedData could not fail (ADR-017 §5b′ trap).
+func TestPerformancePublishedEnvelopeCarriesReEntryPolicy(t *testing.T) {
+	publishedAt := time.Now().UTC()
+	groupID := uuid.New()
+	shared := int32(1000)
+	maxEntries := int32(3)
+	tests := []struct {
+		name        string
+		perf        store.Performance
+		wantSchema  int
+		wantMode    string
+		wantMax     *int32
+		wantExit    bool
+	}{
+		{
+			name: "single performance carries explicit single policy at schema 2",
+			perf: store.Performance{
+				ID: uuid.New(), EventID: uuid.New(), OrganizerID: uuid.New(), Kind: store.KindPerformance,
+				Capacity: 250, PublishedAt: &publishedAt,
+				ReEntry: store.ReEntryPolicy{Mode: "single"},
+			},
+			wantSchema: 2, wantMode: "single",
+		},
+		{
+			name: "multi operating day rides at schema 2",
+			perf: store.Performance{
+				ID: uuid.New(), EventID: uuid.New(), OrganizerID: uuid.New(), Kind: store.KindOperatingDay,
+				Capacity: 5000, PublishedAt: &publishedAt,
+				ReEntry: store.ReEntryPolicy{Mode: "multi", RequiresExit: true},
+			},
+			wantSchema: 2, wantMode: "multi", wantExit: true,
+		},
+		{
+			name: "count-limited grouped festival day rides at schema 3",
+			perf: store.Performance{
+				ID: uuid.New(), EventID: uuid.New(), OrganizerID: uuid.New(), Kind: store.KindFestivalDay,
+				Capacity: 250, CapacityGroupID: &groupID, SharedCapacity: &shared, PublishedAt: &publishedAt,
+				ReEntry: store.ReEntryPolicy{Mode: "count_limited", MaxEntries: &maxEntries},
+			},
+			wantSchema: 3, wantMode: "count_limited", wantMax: &maxEntries,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := performancePublishedEnvelope(tt.perf, publishedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Schema int `json:"schema"`
+				Data   struct {
+					ReEntry *struct {
+						Mode         string `json:"mode"`
+						MaxEntries   *int32 `json:"max_entries"`
+						RequiresExit bool   `json:"requires_exit"`
+					} `json:"re_entry"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Schema != tt.wantSchema {
+				t.Fatalf("schema = %d, want %d (the ride-along must not bump)", got.Schema, tt.wantSchema)
+			}
+			if got.Data.ReEntry == nil {
+				t.Fatal("data.re_entry absent, want explicit policy on every publication")
+			}
+			if got.Data.ReEntry.Mode != tt.wantMode || got.Data.ReEntry.RequiresExit != tt.wantExit {
+				t.Fatalf("re_entry = %+v, want mode=%s requires_exit=%v", got.Data.ReEntry, tt.wantMode, tt.wantExit)
+			}
+			if (got.Data.ReEntry.MaxEntries == nil) != (tt.wantMax == nil) {
+				t.Fatalf("max_entries presence = %v, want %v", got.Data.ReEntry.MaxEntries, tt.wantMax)
+			}
+			if tt.wantMax != nil && *got.Data.ReEntry.MaxEntries != *tt.wantMax {
+				t.Fatalf("max_entries = %d, want %d", *got.Data.ReEntry.MaxEntries, *tt.wantMax)
+			}
+		})
+	}
+}
+
 func TestPerformancePublishedFailsClosedForCorruptGroup(t *testing.T) {
 	groupID := uuid.New()
 	shared := int32(1000)

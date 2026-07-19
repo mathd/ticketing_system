@@ -42,6 +42,30 @@ type PerformancePublishedData struct {
 	Capacity        int32      `json:"capacity"`
 	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
 	SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
+	// ReEntry rides additively at the current schemas (ADR-017 §2, the `kind`
+	// precedent): no deployed consumer forks on it, so no bump. Access projects
+	// it for gate-side policy enforcement (ADR-005: catalog owns the policy,
+	// access enforces it); a consumer that predates the field treats absence as
+	// mode "single", which is also what every pre-field event means.
+	ReEntry *ReEntryData `json:"re_entry,omitempty"`
+}
+
+// ReEntryData is ADR-005's re_entry_policy on the wire.
+type ReEntryData struct {
+	Mode         string `json:"mode"`
+	MaxEntries   *int32 `json:"max_entries,omitempty"`
+	RequiresExit bool   `json:"requires_exit"`
+}
+
+// reEntryData mirrors the stored policy; an empty stored mode is the
+// pre-typed-slot default and is emitted as explicit single rather than absent —
+// absence is reserved for events older than the field itself.
+func reEntryData(perf store.Performance) *ReEntryData {
+	mode := perf.ReEntry.Mode
+	if mode == "" {
+		mode = "single"
+	}
+	return &ReEntryData{Mode: mode, MaxEntries: perf.ReEntry.MaxEntries, RequiresExit: perf.ReEntry.RequiresExit}
 }
 
 type PerformanceArchivedData struct {
@@ -160,6 +184,7 @@ func performancePublishedEnvelope(perf store.Performance, occurred time.Time) ([
 			Capacity:        perf.Capacity,
 			CapacityGroupID: capacityGroupID,
 			SharedCapacity:  sharedCapacity,
+			ReEntry:         reEntryData(perf),
 		},
 	})
 	if err != nil {

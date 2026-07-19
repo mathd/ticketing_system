@@ -44,6 +44,34 @@ const (
 	// DecisionIntegrityOperatorControlled is a corrupt-chain scan for an
 	// organizer a human has flipped to operator-controlled deny.
 	DecisionIntegrityOperatorControlled Decision = "integrity_operator_controlled"
+
+	// Pass-policy denials (TKT-87, ADR-005 re_entry_policy over ADR-025's
+	// repeatable events). A live policy denial appends NOTHING — a denied scan
+	// is not an admission, and keeping the denial off the trail is what lets a
+	// late cross-device fact revise the derived picture (ADR-025 §D2).
+	//
+	// DecisionEntryLimitReached: count_limited allowance exhausted — lifetime
+	// entries, exits never restore it.
+	DecisionEntryLimitReached Decision = "entry_limit_reached"
+	// DecisionExitRequired: requires_exit re-entry while the trace says the
+	// holder is inside.
+	DecisionExitRequired Decision = "exit_required"
+	// DecisionNotInside: an exit scan with no open entry.
+	DecisionNotInside Decision = "not_inside"
+	// DecisionExitNotApplicable: an exit scan against a single-policy (or
+	// unknown-policy) slot — single tickets have no entry/exit vocabulary
+	// (ADR-025 §D1).
+	DecisionExitNotApplicable Decision = "exit_not_applicable"
+	// DecisionExitUnverified: an exit scan against a ticket whose chain does
+	// not verify. An exit admits nobody, so it must never consume §D6's one
+	// degraded ADMISSION (ai-review K1) — denied, nothing recorded, the
+	// integrity alarm still owed.
+	DecisionExitUnverified Decision = "exit_unverified"
+	// DecisionOccurrenceRequired: a pass scan without an occurrence id. There
+	// is no sound fallback — a server-minted id voids retry idempotency and a
+	// derived deterministic id forges retries into second admissions (§D3) —
+	// so old scanners keep pass slots denied until they adopt the protocol.
+	DecisionOccurrenceRequired Decision = "occurrence_required"
 )
 
 // Mode is an organizer's degraded-mode posture (ADR-021 §D6).

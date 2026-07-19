@@ -250,9 +250,18 @@ func (p *Postgres) TicketForQR(ctx context.Context, ref, ticket uuid.UUID) (stri
 	return payload, nil
 }
 
-// Redeem appends exactly one redemption event. Locking the canonical ticket
-// before reading the trace makes a concurrent loser observe the winner's
-// timestamp instead of leaking a unique-constraint error to the scanner.
+// Redeem is the historical single-entry entry point. It now routes through
+// Scan (TKT-87) so every caller is policy-correct: on a single or unknown
+// slot it behaves byte-for-byte as it always has; on a pass slot it records
+// an entry, never a redemption (ADR-025 §D1).
+func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, error) {
+	return p.Scan(ctx, ScanInput{RedeemInput: in, Direction: AdmissionEntry})
+}
+
+// redeemSingle appends exactly one redemption event. Locking the canonical
+// ticket before reading the trace makes a concurrent loser observe the
+// winner's timestamp instead of leaking a unique-constraint error to the
+// scanner.
 //
 // The chain is verified under that same lock, before the duplicate check, since
 // ADR-003 §Decision 2 decides admission FROM the trace: a tampered trace is a
@@ -265,7 +274,7 @@ func (p *Postgres) TicketForQR(ctx context.Context, ref, ticket uuid.UUID) (stri
 // side, so the verified path must consult it too — checked before the
 // redeemed-event lookup, because already_redeemed would hide the degraded
 // admission and skip §D6's escalation.
-func (p *Postgres) Redeem(ctx context.Context, in RedeemInput) (RedeemResult, error) {
+func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResult, error) {
 	if in.OccurrenceID != uuid.Nil {
 		if in.OccurrenceID.Version() != 4 || in.OccurrenceID.Variant() != uuid.RFC4122 {
 			return RedeemResult{}, fmt.Errorf("occurrence id %s is not a UUIDv4 (ADR-025 §D3)", in.OccurrenceID)
@@ -395,10 +404,20 @@ func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID,
 	err := tx.QueryRowContext(ctx, `SELECT ticket_id,event_type,occurred_at FROM lifecycle_events WHERE id=$1`, occ).
 		Scan(&storedTicket, &storedType, &storedAt)
 	if err == nil {
-		if storedTicket != ticketID || storedType != "redeemed" {
+		// Any recorded admission occurrence — redeemed, entry or exit —
+		// replays its original result here: this helper also serves the
+		// degraded path, where §D3's identity-before-denial order must hold
+		// for pass events too (ai-review G4). A duplicate_admit stays a
+		// collision: its original outcome was a conflict recording, not an
+		// acceptance this result shape can honestly replay.
+		switch {
+		case storedTicket != ticketID:
+			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
+		case storedType == "redeemed", storedType == string(AdmissionEntry), storedType == string(AdmissionExit):
+			return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: storedAt, Replayed: true}, nil
+		default:
 			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 		}
-		return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: storedAt, Replayed: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, RedeemResult{}, err

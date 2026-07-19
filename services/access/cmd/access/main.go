@@ -199,6 +199,11 @@ func run() error {
 	if err := lifecyclejob.RequireAlarmRoute(ctx, js, alarmStream, os.Getenv(envConflictDurable), accessstore.SubjectAdmissionConflictAlarm); err != nil {
 		return fmt.Errorf("admission conflict alarm route: %w", err)
 	}
+	// The derived policy-conflict class (ADR-025 §D2, TKT-87) is revisable —
+	// raise/withdraw pairs — but no less owed: same fail-closed boot guard.
+	if err := lifecyclejob.RequireAlarmRoute(ctx, js, alarmStream, os.Getenv(envPolicyDurable), accessstore.SubjectAdmissionPolicyConflictAlarm); err != nil {
+		return fmt.Errorf("policy conflict alarm route: %w", err)
+	}
 	interval, err := checkpointInterval()
 	if err != nil {
 		return err
@@ -220,6 +225,9 @@ func run() error {
 	if err := lifecyclejob.ObserveAlarmRoute(otel.Meter("ticketing/access/lifecycle"), js, alarmStream, os.Getenv(envConflictDurable)); err != nil {
 		return fmt.Errorf("conflict alarm route metrics: %w", err)
 	}
+	if err := lifecyclejob.ObserveAlarmRoute(otel.Meter("ticketing/access/lifecycle"), js, alarmStream, os.Getenv(envPolicyDurable)); err != nil {
+		return fmt.Errorf("policy conflict alarm route metrics: %w", err)
+	}
 	workers, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	go checkpointer.Run(workers)
@@ -231,6 +239,10 @@ func run() error {
 	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log, consumerOptions)
 	consumerErr := make(chan error, 1)
 	go func() { consumerErr <- cons.Run(ctx) }()
+	// The slot-policy projector (TKT-87): its DeliverAll durable replays the
+	// publication history, so pass policies backfill on first boot for free.
+	policyCons := consumer.NewPolicyConsumer(js, st, log)
+	go func() { consumerErr <- policyCons.Run(ctx) }()
 
 	r := chi.NewRouter()
 	health := httpx.Healthz(serviceName,
@@ -250,6 +262,12 @@ func run() error {
 	r.Method(http.MethodGet, "/readyz", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !cons.Ready() {
 			http.Error(w, "consumer not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if !policyCons.Ready() {
+			// A parked future publication schema latches this false: better
+			// loudly unready than silently enforcing single on a pass slot.
+			http.Error(w, "policy projector not ready", http.StatusServiceUnavailable)
 			return
 		}
 		health.ServeHTTP(w, req)

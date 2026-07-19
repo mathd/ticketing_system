@@ -290,7 +290,7 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	if err != nil || current != 5 || target != 5 {
+	if err != nil || current != 6 || target != 6 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 
@@ -595,6 +595,209 @@ func TestRepeatableAdmissionMigrationRepresentativeVolume(t *testing.T) {
 	var version string
 	_ = db.QueryRowContext(ctx, `SELECT version()`).Scan(&version)
 	t.Logf("migration 0004: %v for %d lifecycle rows (%s) on %s", elapsed, rows, tableSize, version)
+	if elapsed > 15*time.Second {
+		t.Logf("WARNING: above the 15s engineering target — ship only with the reduced margin explicitly accepted")
+	}
+}
+
+// 0006 (TKT-87): slot policy projection, typed quarantine facts, and the
+// derived pass-policy conflict state table. Statement-order + banned-keyword
+// pin, same shape as 0004's.
+func TestPassPolicyMigrationStatementOrder(t *testing.T) {
+	raw, err := fs.ReadFile(migrationsFS, "migrations/0006_pass_admission_policy.sql")
+	if err != nil {
+		t.Fatalf("migration 0006 is missing: %v", err)
+	}
+	sql := string(raw)
+	steps := []string{
+		"CREATE TABLE slot_re_entry_policies",
+		"ADD COLUMN event_type",
+		"CREATE INDEX lifecycle_integrity_quarantine_ticket_idx",
+		"CREATE TABLE pass_policy_conflicts",
+	}
+	last := -1
+	for _, s := range steps {
+		i := strings.Index(sql, s)
+		if i < 0 {
+			t.Fatalf("migration 0006 lacks %q", s)
+		}
+		if i < last {
+			t.Fatalf("migration 0006 runs %q out of order", s)
+		}
+		last = i
+	}
+	for _, banned := range []string{"CONCURRENTLY", "NOT VALID", "NO TRANSACTION"} {
+		if strings.Contains(sql, banned) {
+			t.Fatalf("migration 0006 contains %q (ADR-020/ADR-022 forbid it here)", banned)
+		}
+	}
+}
+
+// The destination schema for 0006: policy rows carry ADR-005's cross-field
+// invariants; existing quarantine rows are typed 'redeemed' (they are
+// single-entry degraded/reconciliation records — ADR-025 §D1 gives single
+// tickets no entry/exit vocabulary); pass facts type at insert; the conflict
+// state table enforces bounded rule/status.
+func TestPassPolicyMigrationSchema(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.UpTo(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+
+	// A pre-0006 quarantine row, to prove the backfill types it 'redeemed'.
+	ticketID := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'signed-credential',now())`,
+		ticketID, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,admitted_at) VALUES($1,$2,'pre-0006 degraded admission',now())`,
+		ticketID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provider.UpTo(ctx, 6); err != nil {
+		t.Fatalf("migration 0006: %v", err)
+	}
+
+	var eventType string
+	if err := db.QueryRowContext(ctx, `SELECT event_type FROM lifecycle_integrity_quarantine WHERE ticket_id=$1`, ticketID).Scan(&eventType); err != nil {
+		t.Fatalf("quarantine event_type column missing: %v", err)
+	}
+	if eventType != "redeemed" {
+		t.Fatalf("pre-0006 quarantine row typed %q, want redeemed", eventType)
+	}
+	insertQuarantine := func(eventType string) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,occurrence_id,occurred_at,event_type) VALUES($1,$2,'reconciled offline fact',$3,now(),$4)`,
+			ticketID, uuid.New(), uuid.New(), eventType)
+		return err
+	}
+	for _, ok := range []string{"entry", "exit"} {
+		if err := insertQuarantine(ok); err != nil {
+			t.Fatalf("quarantine insert %s: %v", ok, err)
+		}
+	}
+	if err := insertQuarantine("duplicate_admit"); err == nil {
+		t.Fatal("quarantine accepted event_type duplicate_admit; the CHECK is too wide")
+	}
+
+	// Policy rows: ADR-005 cross-field invariants mirrored from catalog's 0004.
+	insertPolicy := func(mode string, maxEntries any, requiresExit bool) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO slot_re_entry_policies(slot_id,organizer_id,mode,max_entries,requires_exit) VALUES($1,$2,$3,$4,$5)`,
+			uuid.New(), uuid.New(), mode, maxEntries, requiresExit)
+		return err
+	}
+	if err := insertPolicy("single", nil, false); err != nil {
+		t.Fatalf("single policy: %v", err)
+	}
+	if err := insertPolicy("multi", nil, true); err != nil {
+		t.Fatalf("multi policy: %v", err)
+	}
+	if err := insertPolicy("count_limited", 3, false); err != nil {
+		t.Fatalf("count_limited policy: %v", err)
+	}
+	if err := insertPolicy("count_limited", nil, false); err == nil {
+		t.Fatal("count_limited without max_entries accepted")
+	}
+	if err := insertPolicy("multi", 3, false); err == nil {
+		t.Fatal("max_entries on non-count_limited mode accepted")
+	}
+	if err := insertPolicy("count_limited", 0, false); err == nil {
+		t.Fatal("non-positive max_entries accepted")
+	}
+	if err := insertPolicy("open_bar", nil, false); err == nil {
+		t.Fatal("unknown mode accepted")
+	}
+
+	// Conflict state rows: bounded rule/status, positive version.
+	insertConflict := func(rule, status string, version int) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO pass_policy_conflicts(ticket_id,organizer_id,slot_id,rule,occurrence_id,status,version) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+			ticketID, uuid.New(), uuid.New(), rule, uuid.New(), status, version)
+		return err
+	}
+	if err := insertConflict("entry_limit_reached", "raised", 1); err != nil {
+		t.Fatalf("conflict insert: %v", err)
+	}
+	if err := insertConflict("exit_required", "withdrawn", 2); err != nil {
+		t.Fatalf("conflict insert: %v", err)
+	}
+	if err := insertConflict("vibes", "raised", 1); err == nil {
+		t.Fatal("unknown conflict rule accepted")
+	}
+	if err := insertConflict("exit_required", "maybe", 1); err == nil {
+		t.Fatal("unknown conflict status accepted")
+	}
+	if err := insertConflict("exit_required", "raised", 0); err == nil {
+		t.Fatal("non-positive conflict version accepted")
+	}
+
+	// The union read (trace ∪ quarantine) is indexed by ticket or every pass
+	// scan seq-scans quarantine (ADR-019's lesson, generalized by 0004).
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_integrity_quarantine_ticket_idx'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("lifecycle_integrity_quarantine_ticket_idx missing (n=%d err=%v)", n, err)
+	}
+}
+
+// 0006's measured-migration obligation (ADR-025 §D7 pattern, ADR-008's 30s
+// bound): the complete migration — two new tables, the quarantine event_type
+// column (constant default: metadata-only on this PG), its CHECK validation
+// scan, and the quarantine ticket index build — at representative quarantine
+// volume. Quarantine is an error table; realistic volumes are orders of
+// magnitude below what this seeds.
+func TestPassPolicyMigrationRepresentativeVolume(t *testing.T) {
+	nStr := os.Getenv("ACCESS_MIGRATION_MEASUREMENT_QUARANTINE_ROWS")
+	if nStr == "" {
+		t.Skip("ACCESS_MIGRATION_MEASUREMENT_QUARANTINE_ROWS is not set")
+	}
+	n, err := strconv.Atoi(nStr)
+	if err != nil || n <= 0 {
+		t.Fatalf("ACCESS_MIGRATION_MEASUREMENT_QUARANTINE_ROWS=%q is not a positive integer", nStr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.UpTo(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed at version 5: reconciliation-shaped rows (occurrence-keyed), the
+	// realistic bulk. Seeding time is excluded from the measurement.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at)
+		SELECT gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),'signed-credential',now()
+		FROM generate_series(1,100)`); err != nil {
+		t.Fatalf("seed tickets: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,occurrence_id,occurred_at)
+		SELECT t.id, t.organizer_id, 'measurement seed', gen_random_uuid(), now()
+		FROM tickets t CROSS JOIN generate_series(1, $1/100)`, n); err != nil {
+		t.Fatalf("seed quarantine rows: %v", err)
+	}
+	var rows int64
+	var tableSize string
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM lifecycle_integrity_quarantine`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT pg_size_pretty(pg_total_relation_size('lifecycle_integrity_quarantine'))`).Scan(&tableSize); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer migrateCancel()
+	start := time.Now()
+	if _, err := provider.UpTo(migrateCtx, 6); err != nil {
+		t.Fatalf("migration 0006 breached the 30s bound at %d quarantine rows (%s): %v", rows, tableSize, err)
+	}
+	elapsed := time.Since(start)
+
+	var version string
+	_ = db.QueryRowContext(ctx, `SELECT version()`).Scan(&version)
+	t.Logf("migration 0006: %v for %d quarantine rows (%s) on %s", elapsed, rows, tableSize, version)
 	if elapsed > 15*time.Second {
 		t.Logf("WARNING: above the 15s engineering target — ship only with the reduced margin explicitly accepted")
 	}
