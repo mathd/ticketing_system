@@ -667,3 +667,35 @@ func TestPassReconcileBrokenChainStillEvaluatesConflicts(t *testing.T) {
 		t.Fatalf("conflict states = %+v, want exit_required raised from quarantine-side facts", states)
 	}
 }
+
+// Second-pass S5: a duplicate_admit row is a recorded physical admission —
+// once the policy is a pass, it must consume allowance like any other
+// un-directioned admission, or the facts basis drifts from the replay path.
+func TestScanCountsDuplicateAdmitTowardAllowance(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	// Single-vocabulary history: a redemption and a reconciled offline
+	// double-admit.
+	if _, err := st.Scan(ctx, scanInput(s, uuid.New(), AdmissionEntry, deviceTime())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(uuid.New(), deviceTime().Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, ctx, db, s.ticketID, "duplicate_admit"); got != 1 {
+		t.Fatalf("duplicate_admit events = %d, want 1", got)
+	}
+	seedPolicy(t, ctx, st, s, ReEntryPolicy{Mode: "count_limited", MaxEntries: i32(2)})
+
+	result, err := st.Scan(ctx, scanInput(s, uuid.New(), AdmissionEntry, deviceTime().Add(2*time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted || result.Decision != DecisionEntryLimitReached {
+		t.Fatalf("entry after redeemed+duplicate_admit = %+v, want entry_limit_reached — both physical admissions count", result)
+	}
+}

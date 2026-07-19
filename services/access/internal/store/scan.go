@@ -260,7 +260,7 @@ func (p *Postgres) admissionFacts(ctx context.Context, tx *sql.Tx, ticketID uuid
 		SELECT e.id, e.event_type, e.occurred_at, COALESCE(i.sequence, 0), false
 		FROM lifecycle_events e LEFT JOIN lifecycle_event_integrity i
 		  ON i.event_id = e.id AND i.ticket_id = e.ticket_id
-		WHERE e.ticket_id=$1 AND e.event_type IN ('entry','exit','redeemed')
+		WHERE e.ticket_id=$1 AND e.event_type IN ('entry','exit','redeemed','duplicate_admit')
 		UNION ALL
 		SELECT COALESCE(q.occurrence_id, q.quarantine_id), q.event_type,
 		       COALESCE(q.admitted_at, q.occurred_at), 0, (q.admitted_at IS NOT NULL)
@@ -277,12 +277,12 @@ func (p *Postgres) admissionFacts(ctx context.Context, tx *sql.Tx, ticketID uuid
 		if err := rows.Scan(&f.OccurrenceID, &eventType, &f.OccurredAt, &f.Sequence, &f.Undirected); err != nil {
 			return nil, err
 		}
-		// A redemption recorded before the policy projection landed is a
-		// physical admission (ai-review G3): the replay path already honors
-		// its occurrence, so the state derivation must consume its allowance
-		// too — an un-directioned entry-equivalent, exactly like a live
-		// degraded admission.
-		if eventType == "redeemed" {
+		// A redemption or duplicate_admit recorded under the single
+		// vocabulary is a physical admission (ai-review G3, second-pass S5):
+		// the replay path already honors those occurrences, so the state
+		// derivation must consume their allowance too — un-directioned
+		// entry-equivalents, exactly like a live degraded admission.
+		if eventType == "redeemed" || eventType == string(AdmissionDuplicateAdmit) {
 			f.Type = AdmissionEntry
 			f.Undirected = true
 		} else {
