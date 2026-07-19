@@ -2,7 +2,7 @@
   "key": "TKT-96",
   "type": "Story",
   "summary": "Catalog policy re-emission: pass slots published before the re_entry ride-along never reach access",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
