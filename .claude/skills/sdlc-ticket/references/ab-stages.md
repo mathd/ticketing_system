@@ -60,6 +60,10 @@ Ground rules for any A/B stage:
    unchanged. Log winner + the human's one-line reason.
 5. **`risk:low` tickets don't A/B the plan** — the approval gate is skipped there, so there
    is no judge. Run the first array element only and note the skip in the stage comment.
+6. **Gate waived by explicit owner directive ≠ `risk:low`:** the orchestrator stands in as the
+   Gate-2 judge — run every arm, critique both as `planReview`, select with stated reasons, and
+   disclose the arm mapping immediately in the stage comment (anonymization is moot when the
+   judge launched the arms; the disclosure is the audit substitute). First run: TKT-87.
 
 ## Cost note
 

@@ -206,8 +206,11 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   One implementer, no worktree — WIP is one ticket, and a TDD loop doesn't parallelize.
 #   Local gate (mirrors CI): run config.code.localGate. If you delegated, VERIFY don't trust —
 #   re-run the gate yourself on the committed tree (quality-practices.md §2.b).
-#   READ the gate's exit code before pushing — never chain commit/push onto the same shell
-#   command as the gate: `gate; echo exit=$?` then push in a later call. Chained, a gate that
+#   READ the gate's exit code before pushing — run the gate as the SOLE command in its shell
+#   call: no trailing chains AND no prefix chains (`verify && gate > log` short-circuits on the
+#   verify and reports the verify's failure as the gate's — TKT-87 closeout), and re-check cwd
+#   (a mis-cwd'd `make check` exits 2 on "No rule to make target" — TKT-71's shape). Never chain
+#   commit/push onto the same shell command as the gate: `gate; echo exit=$?` then push in a later call. Chained, a gate that
 #   failed to even start (mis-cwd'd, missing target) ships the push anyway (TKT-71). And don't
 #   pipe the gate (`gate | tail; echo $?` reads tail's exit, not the gate's — a failed gate
 #   reported exit=0 on TKT-94): redirect to a file and read the file.

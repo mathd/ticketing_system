@@ -20,7 +20,7 @@ Who drafts and who critiques is `config.models.plan` / `config.models.planReview
 
 After drafting the plan, re-examine it through one **named** reasoning lens — a generic "double-check it" re-confirms; a named lens forces an angle of attack.
 
-Default lens — **pre-mortem**: *assume this ticket bounced — the plan was rejected at Gate 2, or the PR at Gate 3. Work backward: what went wrong?* List the 3–5 most plausible failure causes (wrong integration point, missing migration, untestable AC, hidden coupling, scope too big…), then patch the plan where a cause is credible.
+Default lens — **pre-mortem**: *assume this ticket bounced — the plan was rejected at Gate 2, or the PR at Gate 3. Work backward: what went wrong?* List the 3–5 most plausible failure causes (wrong integration point, missing migration, untestable AC, hidden coupling, scope too big…), then patch the plan where a cause is credible. For any derived/revisable projection the plan introduces, ask explicitly: what ORDER does re-evaluation use, and can a late-arriving fact change the answer? (TKT-87: a draft ordered by append sequence would have made late cross-device exits unable to withdraw a conflict — caught at implementation, not at plan review.)
 
 If pre-mortem fits poorly: **inversion** (what would guarantee failure? avoid that), **first principles** (strip assumptions, rebuild), **stakeholder mapping** (re-read as the reviewer/user/on-call). One lens, one pass — a second look, not a committee.
 

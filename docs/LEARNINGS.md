@@ -92,3 +92,9 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 - [**A `-run` allowlist silently strands tests**](./learnings/2026-07-15-run-allowlists-strand-tests.md) —
   a test missing from the allowlist never runs and the gate still passes. Cost two merged tests that
   had never executed; the same trap had already bitten another package. (TKT-53, TKT-60)
+- **ADR-017 §2 additive-no-bump now has a worked precedent** — `re_entry` rides
+  `performance.published` at unchanged schemas 2/3; neither §3 trigger fired (no deployed
+  consumer forks on it, the invariant is conditional-on-presence). Both TKT-87 plan drafts
+  independently reached for heavier designs (schema bump / dedicated subject + backfill) and the
+  critique had to pull them back to the ADR's own default — check §2 before inventing
+  distribution machinery for a new optional field. (TKT-87, PR #73)
