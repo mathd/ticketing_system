@@ -2,9 +2,11 @@
   "key": "TKT-96",
   "type": "Story",
   "summary": "Catalog policy re-emission: pass slots published before the re_entry ride-along never reach access",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "sdlc-agent",
   "pr": null,
   "description": "TKT-87 ai-review incidental (gpt-5.6-sol arm, G1). A slot published before the re_entry field existed has retained publication events without the field; access's projector writes explicit single and the publish path never re-emits an acknowledged publication. Any pre-existing multi/count_limited slot therefore enforces single forever, with no operator signal. Needs a catalog re-emission or backfill path (the projection's upsert already converges on a new envelope id) — the residual gap the TKT-87 plan named. Constraints: ADR-017 (any payload/schema decision), deterministic publication event ids (events.go EventID).\n\nCOS:\n1. A multi/count_limited slot published before the re_entry ride-along enforces its real policy at the gate after the backfill/re-emission runs (proven end-to-end: catalog emit -> access projection -> scan).\n2. The mechanism is idempotent and bounded: re-running it is a no-op (access side converges by envelope id; stream does not accumulate unbounded duplicates).\n3. Inventory's consumption of the subject is provably unaffected (no duplicate pool provisioning; test evidence, not assertion).\n4. Single-policy slots re-emit harmlessly.\n5. make check green; ADR-017 discipline for any payload/schema decision.",
   "comments": [
@@ -17,6 +19,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaping pass. Verdict: READY — one deferred Planning decision (re-emission mechanism), fenced by ADR-017 and the projector's existing new-envelope convergence. Two named traps for the planner: deterministic publication EventID must not be reused (dedup swallows the re-emission), and inventory consumes the same subject — a re-emitted publication must be provably side-effect-free there (its own consumed-event dedup or field semantics). risk:low NOT suggested: touches a cross-service event contract."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed by the SDLC agent. Selection: already at the top of Ready (owner-prioritized), zero open blockers, DoR fully met** (one deferred Planning decision — the re-emission mechanism — which `deferred` readiness explicitly permits past Gate 1).\n\n**⚠️ GATELESS RUN — four human gates waived by the repo owner.** The owner has explicitly waived Gates 1–4 for this ticket as a process experiment; this run goes Ready → Done in one continuous autonomous pass. Recorded here so the board history shows this ticket ran gateless. Gate replacements in force:\n- **Gate 1 (priority):** already given (ticket in Ready).\n- **Gate 2 (plan approval):** after the cross-model plan critique, the agent self-resolves each open decision — prefer the option the critique recommends; absent a recommendation, the most reversible option. Every self-made decision + rationale recorded in `kind=plan-final`.\n- **Gate 3 (review + merge):** after the adversarial ai-review converges (same triage / second-pass / churn-cap rules), the agent squash-merges the PR and deletes the branch. Review-guide posted first as the audit record.\n- **Gate 4 (PO acceptance):** the agent self-validates each COS against test evidence on merged code, posts the validation note, and closes with the full `kind=metrics` comment.\n\nNon-negotiables held unchanged: `config.models` routing (no substitutions), cross-model review for both plan and code, TDD with tests observed red first, `make check` green before every push and after merge, all marker comments at each stage, no AI attribution in commits/PRs.\n\n**Claim-time governing-ADR re-resolution** (mémo list is a shaping-time snapshot — TKT-73/79): re-resolved against `docs/adr/` at HEAD `879565a`. The mémo named **ADR-017** (event schema evolution — dispatch-on-schema, consumer-semantics bumps) and **ADR-005** (unified dated-slot admission — the policy being distributed). Added at claim time as also governing the *re-emission mechanism*: **ADR-018** (catalog transitions decide under row lock, **emit after commit**) and **ADR-022** (service migrations / backfills run **out-of-band** as one-shot `migrate`-style subcommand jobs — the catalog `cmd/catalog` binary already carries this). These four + the TKT-87 projector/upsert precedent seed the plan brief.\n\nModel routing verified (cross-model invariant holds both pairs): plan=`kimi-k3:medium@claudex` ≠ planReview=`main-agent`; implement=`main-agent` ≠ aiReview=`kimi-k3:medium@claudex`. Claudex proxy pre-flight: **up**, `kimi-k3` present in `/v1/models`.\n\nBranch `TKT-96-catalog-policy-reemission` cut off `origin/main`. → Planning."
     }
   ],
   "context": {
