@@ -90,11 +90,38 @@ func (p *Postgres) admitPass(ctx context.Context, in RedeemInput, direction Admi
 		return RedeemResult{}, ErrTicketCredential
 	}
 
-	// A chain that does not verify takes the unchanged §D6 posture — admit
-	// once, alarm, deny later distinct occurrences. Policy evaluation needs a
-	// verified trace (count and inside-state are trace-derived), so degraded
-	// pass scans are not policy-evaluated. degradedScan commits itself.
+	// A chain that does not verify takes the unchanged §D6 posture for
+	// ENTRIES — admit once, alarm, deny later distinct occurrences. Policy
+	// evaluation needs a verified trace (count and inside-state are
+	// trace-derived), so degraded pass scans are not policy-evaluated.
+	// degradedScan commits itself.
+	//
+	// An EXIT admits nobody, so it must never consume the ticket's one
+	// degraded admission (ai-review K1): replay resolves first (§D3's binding
+	// identity-before-denial order), then the exit is denied distinguishably,
+	// records nothing, and still owes the integrity alarm — the operator
+	// learns the chain is corrupt either way.
 	if chainErr := p.verifyTicketChain(ctx, tx, in.TicketID, id); chainErr != nil {
+		if direction == AdmissionExit {
+			replayed, result, replayErr := p.replayAdmissionOccurrence(ctx, tx, in.TicketID, in.OccurrenceID, direction)
+			if replayErr != nil {
+				return RedeemResult{}, replayErr
+			}
+			if !replayed {
+				mode, modeErr := organizerMode(ctx, tx, id.OrganizerID)
+				if modeErr != nil {
+					return RedeemResult{}, modeErr
+				}
+				if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, chainErr.Error(), DecisionExitUnverified, mode); alarmErr != nil {
+					return RedeemResult{}, alarmErr
+				}
+				result = RedeemResult{Decision: DecisionExitUnverified, OccurredAt: p.now()}
+			}
+			if err = tx.Commit(); err != nil {
+				return RedeemResult{}, err
+			}
+			return result, nil
+		}
 		return p.degradedScan(ctx, tx, in.TicketID, id, in.OccurrenceID, chainErr)
 	}
 
@@ -233,12 +260,12 @@ func (p *Postgres) admissionFacts(ctx context.Context, tx *sql.Tx, ticketID uuid
 		SELECT e.id, e.event_type, e.occurred_at, COALESCE(i.sequence, 0), false
 		FROM lifecycle_events e LEFT JOIN lifecycle_event_integrity i
 		  ON i.event_id = e.id AND i.ticket_id = e.ticket_id
-		WHERE e.ticket_id=$1 AND e.event_type IN ('entry','exit')
+		WHERE e.ticket_id=$1 AND e.event_type IN ('entry','exit','redeemed')
 		UNION ALL
 		SELECT COALESCE(q.occurrence_id, q.quarantine_id), q.event_type,
 		       COALESCE(q.admitted_at, q.occurred_at), 0, (q.admitted_at IS NOT NULL)
 		FROM lifecycle_integrity_quarantine q
-		WHERE q.ticket_id=$1 AND (q.admitted_at IS NOT NULL OR q.event_type IN ('entry','exit'))`, ticketID)
+		WHERE q.ticket_id=$1 AND (q.admitted_at IS NOT NULL OR q.event_type IN ('entry','exit','redeemed'))`, ticketID)
 	if err != nil {
 		return nil, err
 	}
@@ -247,10 +274,20 @@ func (p *Postgres) admissionFacts(ctx context.Context, tx *sql.Tx, ticketID uuid
 	for rows.Next() {
 		var f AdmissionFact
 		var eventType string
-		if err := rows.Scan(&f.OccurrenceID, &eventType, &f.OccurredAt, &f.Sequence, &f.DegradedAdmission); err != nil {
+		if err := rows.Scan(&f.OccurrenceID, &eventType, &f.OccurredAt, &f.Sequence, &f.Undirected); err != nil {
 			return nil, err
 		}
-		f.Type = AdmissionEventType(eventType)
+		// A redemption recorded before the policy projection landed is a
+		// physical admission (ai-review G3): the replay path already honors
+		// its occurrence, so the state derivation must consume its allowance
+		// too — an un-directioned entry-equivalent, exactly like a live
+		// degraded admission.
+		if eventType == "redeemed" {
+			f.Type = AdmissionEntry
+			f.Undirected = true
+		} else {
+			f.Type = AdmissionEventType(eventType)
+		}
 		out = append(out, f)
 	}
 	return out, rows.Err()

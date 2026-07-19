@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -103,6 +104,17 @@ func (c *PolicyConsumer) handle(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 	sp, err := slotPolicyFrom(event)
+	if errors.Is(err, errUnknownMode) {
+		// Future vocabulary inside a known schema (a mode this binary does not
+		// know) is version skew arriving without a bump, not poison
+		// (ai-review K4): terminating it would silently enforce single on a
+		// slot that may be selling passes, with no readiness signal. Park it
+		// and go loudly unready, exactly like a future schema.
+		c.log.Error("unknown re_entry mode; parking", "event_id", env.ID, "err", err)
+		c.ready.Store(false)
+		_ = msg.NakWithDelay(30 * time.Second)
+		return
+	}
 	if err != nil {
 		c.log.Error("invalid publication policy", "event_id", env.ID, "err", err)
 		_ = msg.TermWithReason("invalid_contract")
@@ -118,6 +130,9 @@ func (c *PolicyConsumer) handle(ctx context.Context, msg jetstream.Msg) {
 	_ = msg.Ack()
 }
 
+// errUnknownMode is future re_entry vocabulary — parked, never terminated.
+var errUnknownMode = errors.New("unknown re_entry mode")
+
 // slotPolicyFrom validates the data-level contract. An absent re_entry field
 // is a pre-TKT-87 emission and means explicit single (COS 7) — the same
 // answer the scan path gives a slot it knows nothing about.
@@ -131,7 +146,7 @@ func slotPolicyFrom(event publication) (store.SlotPolicy, error) {
 		switch policy.Mode {
 		case "single", "multi", "count_limited":
 		default:
-			return store.SlotPolicy{}, fmt.Errorf("unknown re_entry mode %q", policy.Mode)
+			return store.SlotPolicy{}, fmt.Errorf("%w: %q", errUnknownMode, policy.Mode)
 		}
 		if policy.Mode == "count_limited" && (policy.MaxEntries == nil || *policy.MaxEntries <= 0) {
 			return store.SlotPolicy{}, fmt.Errorf("count_limited without a positive max_entries")
@@ -158,8 +173,6 @@ func (c *PolicyConsumer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.ready.Store(true)
-	defer c.ready.Store(false)
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		c.handle(ctx, msg)
 	})
@@ -167,6 +180,28 @@ func (c *PolicyConsumer) Run(ctx context.Context) error {
 		return err
 	}
 	defer cc.Stop()
+	defer c.ready.Store(false)
+	// Readiness waits for the initial backlog to drain (ai-review G2): on a
+	// first boot the DeliverAll replay IS the projection's backfill, and
+	// declaring ready mid-replay would let a pass ticket scan as single and
+	// take an irreversible `redeemed`. A parked message (future schema or
+	// vocabulary) keeps NumPending non-zero, so this also refuses readiness
+	// until skew is resolved — the same signal the latch carries later.
+	for {
+		info, infoErr := cons.Info(ctx)
+		if infoErr != nil {
+			return infoErr
+		}
+		if info.NumPending == 0 && info.NumAckPending == 0 {
+			c.ready.Store(true)
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("policy consumer stopped: %w", ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 	<-ctx.Done()
 	return fmt.Errorf("policy consumer stopped: %w", ctx.Err())
 }

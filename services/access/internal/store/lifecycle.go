@@ -62,6 +62,11 @@ const (
 	// unknown-policy) slot — single tickets have no entry/exit vocabulary
 	// (ADR-025 §D1).
 	DecisionExitNotApplicable Decision = "exit_not_applicable"
+	// DecisionExitUnverified: an exit scan against a ticket whose chain does
+	// not verify. An exit admits nobody, so it must never consume §D6's one
+	// degraded ADMISSION (ai-review K1) — denied, nothing recorded, the
+	// integrity alarm still owed.
+	DecisionExitUnverified Decision = "exit_unverified"
 	// DecisionOccurrenceRequired: a pass scan without an occurrence id. There
 	// is no sound fallback — a server-minted id voids retry idempotency and a
 	// derived deterministic id forges retries into second admissions (§D3) —

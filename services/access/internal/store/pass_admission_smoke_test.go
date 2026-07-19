@@ -548,3 +548,122 @@ func TestPassReconcileBrokenChainRecordsTypedQuarantine(t *testing.T) {
 		t.Fatalf("exit appended to an unverified chain: %d rows", got)
 	}
 }
+
+// ai-review findings, pinned red-first before their fixes.
+
+// K1: a live exit against a broken-chain pass ticket must never take the §D6
+// degraded ADMISSION — an exit admits nobody. It is denied distinguishably,
+// records nothing, and owes the integrity alarm.
+func TestScanBrokenChainExitIsDeniedNotAdmitted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueAndSeed(t, ctx, st, ReEntryPolicy{Mode: "multi", RequiresExit: true})
+	corruptChain(t, ctx, db, s.ticketID)
+
+	result, err := st.Scan(ctx, scanInput(s, uuid.New(), AdmissionExit, deviceTime()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted || result.Decision != DecisionExitUnverified {
+		t.Fatalf("broken-chain exit = %+v, want a non-admitting exit_unverified denial", result)
+	}
+	var quarantined int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, s.ticketID).Scan(&quarantined); err != nil {
+		t.Fatal(err)
+	}
+	if quarantined != 0 {
+		t.Fatalf("a denied exit consumed the ticket's one degraded admission (%d rows)", quarantined)
+	}
+	// The §D6 entry posture is untouched: the NEXT entry still takes it.
+	entry, err := st.Scan(ctx, scanInput(s, uuid.New(), AdmissionEntry, deviceTime()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entry.Accepted || entry.Decision != DecisionAdmittedDegraded {
+		t.Fatalf("entry after denied exit = %+v, want the degraded admission", entry)
+	}
+}
+
+// G3: a redemption recorded before the policy projection landed is a physical
+// admission — it must consume pass allowance once the policy arrives, or the
+// holder gets max_entries + 1.
+func TestScanCountsPrePolicyRedemptionTowardAllowance(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+
+	// Projection skew: redeemed lands under single semantics first.
+	if _, err := st.Scan(ctx, scanInput(s, uuid.New(), AdmissionEntry, deviceTime())); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEvents(t, ctx, db, s.ticketID, "redeemed"); got != 1 {
+		t.Fatalf("redeemed events = %d, want 1 (pre-policy single path)", got)
+	}
+	seedPolicy(t, ctx, st, s, ReEntryPolicy{Mode: "count_limited", MaxEntries: i32(1)})
+
+	result, err := st.Scan(ctx, scanInput(s, uuid.New(), AdmissionEntry, deviceTime().Add(time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted || result.Decision != DecisionEntryLimitReached {
+		t.Fatalf("post-policy entry = %+v, want entry_limit_reached — the redemption consumed the allowance", result)
+	}
+}
+
+// G4: ADR-025 §D3's identity-before-denial order holds on the degraded path
+// for pass events too — a lost-response entry retry against a now-broken
+// chain replays its original result, never a collision.
+func TestScanDegradedReplayHonorsRecordedEntry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueAndSeed(t, ctx, st, ReEntryPolicy{Mode: "multi"})
+	occ := uuid.New()
+
+	first, err := st.Scan(ctx, scanInput(s, occ, AdmissionEntry, deviceTime()))
+	if err != nil || !first.Accepted {
+		t.Fatalf("entry = %+v err=%v", first, err)
+	}
+	corruptChain(t, ctx, db, s.ticketID)
+	replay, err := st.Scan(ctx, scanInput(s, occ, AdmissionEntry, deviceTime()))
+	if err != nil {
+		t.Fatalf("entry retry on broken chain: %v, want its original result as a replay", err)
+	}
+	if !replay.Replayed || !replay.Accepted || !replay.OccurredAt.Equal(first.OccurredAt) {
+		t.Fatalf("replay = %+v, want the original accepted result", replay)
+	}
+}
+
+// G5: broken-chain pass reconciliation still re-evaluates the derived
+// projection — the union includes quarantine facts, and a conflict on a
+// never-live-scanned ticket must not stay silent.
+func TestPassReconcileBrokenChainStillEvaluatesConflicts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueAndSeed(t, ctx, st, ReEntryPolicy{Mode: "multi", RequiresExit: true})
+	corruptChain(t, ctx, db, s.ticketID)
+	occA, occB := uuid.New(), uuid.New()
+
+	for i, occ := range []uuid.UUID{occA, occB} {
+		in := s.reconcileInput(occ, deviceTime().Add(time.Duration(i*10)*time.Minute))
+		in.Type = AdmissionEntry
+		result, err := st.ReconcileAdmission(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Outcome != ReconcileRecorded {
+			t.Fatalf("occurrence %d = %+v, want recorded on the quarantine side", i, result)
+		}
+	}
+	states := conflictStates(t, ctx, db, s.ticketID)
+	if states[PolicyConflict{Rule: ConflictExitRequired, OccurrenceID: occB}] != "raised" {
+		t.Fatalf("conflict states = %+v, want exit_required raised from quarantine-side facts", states)
+	}
+}

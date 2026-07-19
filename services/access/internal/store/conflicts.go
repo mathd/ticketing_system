@@ -45,15 +45,17 @@ type PolicyConflict struct {
 }
 
 // AdmissionFact is one physical admission the union (trace ∪ quarantine) knows
-// about, reduced to what policy evaluation needs. DegradedAdmission marks a
-// live §D6 fail-open admission: an un-directioned entry-equivalent — it
-// consumes allowance and sets "inside" exactly as an entry does.
+// about, reduced to what policy evaluation needs. Undirected marks an
+// admission recorded without a direction — a live §D6 fail-open admission, or
+// a redemption that predates the policy projection: an entry-equivalent that
+// consumes allowance and sets "inside" exactly as an entry does, but is never
+// itself attributed a requires_exit conflict.
 type AdmissionFact struct {
-	OccurrenceID      uuid.UUID
-	Type              AdmissionEventType // entry | exit
-	OccurredAt        time.Time
-	Sequence          int64 // integrity sequence; 0 for quarantine-side facts
-	DegradedAdmission bool
+	OccurrenceID uuid.UUID
+	Type         AdmissionEventType // entry | exit
+	OccurredAt   time.Time
+	Sequence     int64 // integrity sequence; 0 for quarantine-side facts
+	Undirected   bool
 }
 
 // orderFacts sorts by claimed physical time, then integrity sequence, then
@@ -94,11 +96,11 @@ func DerivePolicyConflicts(policy ReEntryPolicy, facts []AdmissionFact) []Policy
 		case f.Type == AdmissionExit:
 			inside = false
 			continue
-		case f.DegradedAdmission, f.Type == AdmissionEntry:
+		case f.Undirected, f.Type == AdmissionEntry:
 			entries++
 			if policy.Mode == "count_limited" && policy.MaxEntries != nil && entries > int(*policy.MaxEntries) {
 				conflicts = append(conflicts, PolicyConflict{Rule: ConflictEntryLimitReached, OccurrenceID: f.OccurrenceID})
-			} else if policy.RequiresExit && inside && !f.DegradedAdmission {
+			} else if policy.RequiresExit && inside && !f.Undirected {
 				conflicts = append(conflicts, PolicyConflict{Rule: ConflictExitRequired, OccurrenceID: f.OccurrenceID})
 			}
 			inside = true
@@ -108,8 +110,13 @@ func DerivePolicyConflicts(policy ReEntryPolicy, facts []AdmissionFact) []Policy
 }
 
 // EvaluateLiveAdmission answers a live gate decision for a pass ticket from
-// the same ordered-facts basis the conflict projection uses — one rule copy,
-// shared, so the live verdict and the derived projection cannot drift apart.
+// the same ordered-facts basis the conflict projection uses. The two walks
+// deliberately encode the count boundary with different operators against
+// differently-sized fact sets (ai-review K7): here `entries` EXCLUDES the
+// scan being decided, so the limit check is `>= max` (this scan would be
+// entry max+1); DerivePolicyConflicts counts the offending fact itself, so
+// its check is `> max`. Feed this function a fact set that already contains
+// the pending scan and the boundary flips — don't.
 // Live denials append nothing; that is what keeps them free to be wrong when a
 // late cross-device fact arrives (the reconciled fact is recorded and the
 // derived projection re-evaluates — ADR-025 §D2).

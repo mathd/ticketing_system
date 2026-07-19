@@ -55,11 +55,11 @@ func TestDerivePolicyConflictsCountLimited(t *testing.T) {
 	}
 }
 
-func TestDerivePolicyConflictsCountsDegradedAdmission(t *testing.T) {
+func TestDerivePolicyConflictsCountsUndirected(t *testing.T) {
 	// A live degraded admission (ADR-021 §D6) is an un-directioned
 	// entry-equivalent in the union: it consumes allowance.
 	policy := ReEntryPolicy{Mode: "count_limited", MaxEntries: i32(1)}
-	degraded := AdmissionFact{OccurrenceID: uuid.New(), Type: AdmissionEntry, OccurredAt: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC), DegradedAdmission: true}
+	degraded := AdmissionFact{OccurrenceID: uuid.New(), Type: AdmissionEntry, OccurredAt: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC), Undirected: true}
 	e2 := fact(AdmissionEntry, 10, 1)
 	conflicts := DerivePolicyConflicts(policy, []AdmissionFact{degraded, e2})
 	if len(conflicts) != 1 || conflicts[0].OccurrenceID != e2.OccurrenceID {

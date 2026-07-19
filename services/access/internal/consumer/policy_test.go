@@ -174,3 +174,25 @@ func TestPolicyConsumerTransientStoreFailureRetries(t *testing.T) {
 		t.Fatal("a transient store failure latched readiness")
 	}
 }
+
+// ai-review K4: an unknown re_entry MODE inside a known schema is future
+// vocabulary arriving without a bump — park + latch unready, exactly like a
+// future schema. Terminating it would silently enforce single on a slot that
+// is selling passes, with no readiness signal. Structural invariant
+// violations (count_limited without max) stay poison.
+func TestPolicyConsumerUnknownModeParksAndLatchesUnready(t *testing.T) {
+	st := &fakePolicyStore{}
+	c := newPolicyConsumerForTest(st)
+	msg := policyMsg(`{"id":"20000000-0000-0000-0000-000000000051","type":"platform.catalog.performance.published","schema":2,"data":{"performance_id":"20000000-0000-0000-0000-000000000052","organizer_id":"20000000-0000-0000-0000-000000000053","re_entry":{"mode":"timed","requires_exit":false}}}`)
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "nak-delay" {
+		t.Fatalf("actions = %v, want nak-delay (park, not poison)", msg.actions)
+	}
+	if len(st.upserts) != 0 {
+		t.Fatalf("unknown mode was applied: %+v", st.upserts)
+	}
+	if c.Ready() {
+		t.Fatal("unknown mode did not latch the projector unready")
+	}
+}

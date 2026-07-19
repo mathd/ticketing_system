@@ -205,12 +205,20 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		// wire reasons — distinguishable, and none of them appended anything.
 		case store.DecisionEntryLimitReached, store.DecisionExitRequired,
 			store.DecisionNotInside, store.DecisionExitNotApplicable,
-			store.DecisionOccurrenceRequired:
+			store.DecisionOccurrenceRequired, store.DecisionExitUnverified:
 			reason = string(result.Decision)
 		}
 		// No cryptographic detail leaves the gate: which field failed to verify
 		// is exactly what an attacker probing the trail would want back.
-		write(w, http.StatusConflict, map[string]any{"decision": "rejected", "reason": reason, "original_scan_at": result.OccurredAt})
+		rejection := map[string]any{"decision": "rejected", "reason": reason}
+		switch result.Decision {
+		case store.DecisionAlreadyRedeemed, store.DecisionIntegrityQuarantined:
+			// Only these denials have an original admission whose time is real
+			// (ai-review G8): a policy denial has no prior scan to point at,
+			// and fabricating one misleads any client that trusts the field.
+			rejection["original_scan_at"] = result.OccurredAt
+		}
+		write(w, http.StatusConflict, rejection)
 		return
 	}
 	response := map[string]any{"decision": "accepted", "scanned_at": result.OccurredAt}

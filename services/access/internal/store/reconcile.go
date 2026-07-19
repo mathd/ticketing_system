@@ -147,6 +147,15 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 			in.TicketID, id.OrganizerID, chainErr.Error(), in.OccurrenceID, in.OccurredAt, quarantineEventType(policy, direction)); err != nil {
 			return ReconcileResult{}, err
 		}
+		// Quarantine-side pass facts still feed the derived projection
+		// (ai-review G5): the union includes them, the evaluation appends
+		// nothing to the broken chain, and a ticket that is only ever
+		// reconciled must not keep its conflicts silent.
+		if policy.IsPass() {
+			if err = p.evaluatePolicyAlarms(ctx, tx, in.TicketID, id, policy); err != nil {
+				return ReconcileResult{}, err
+			}
+		}
 		if err = tx.Commit(); err != nil {
 			return ReconcileResult{}, err
 		}

@@ -404,10 +404,20 @@ func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID,
 	err := tx.QueryRowContext(ctx, `SELECT ticket_id,event_type,occurred_at FROM lifecycle_events WHERE id=$1`, occ).
 		Scan(&storedTicket, &storedType, &storedAt)
 	if err == nil {
-		if storedTicket != ticketID || storedType != "redeemed" {
+		// Any recorded admission occurrence — redeemed, entry or exit —
+		// replays its original result here: this helper also serves the
+		// degraded path, where §D3's identity-before-denial order must hold
+		// for pass events too (ai-review G4). A duplicate_admit stays a
+		// collision: its original outcome was a conflict recording, not an
+		// acceptance this result shape can honestly replay.
+		switch {
+		case storedTicket != ticketID:
+			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
+		case storedType == "redeemed", storedType == string(AdmissionEntry), storedType == string(AdmissionExit):
+			return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: storedAt, Replayed: true}, nil
+		default:
 			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 		}
-		return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: storedAt, Replayed: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, RedeemResult{}, err

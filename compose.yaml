@@ -104,7 +104,11 @@ services:
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command:
+      # set -e: each provisioning compound must fail the init job itself —
+      # without it, only the LAST compound's status survives the semicolons
+      # and an earlier durable's creation failure exits 0 (ai-review G7).
       - >-
+        set -e;
         nats --server nats://nats:4222 stream info PLATFORM >/dev/null 2>&1 ||
         nats --server nats://nats:4222 stream add PLATFORM
         --subjects "platform.>" --storage file --retention limits --defaults;
