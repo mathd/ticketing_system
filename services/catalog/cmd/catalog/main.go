@@ -31,19 +31,31 @@ import (
 const serviceName = "catalog"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		if err := migrate(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s migrate: %v\n", serviceName, err)
-			os.Exit(1)
+	if len(os.Args) > 1 {
+		if sub, ok := subcommands()[os.Args[1]]; ok {
+			if err := sub(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
+				os.Exit(1)
+			}
+			return
 		}
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck())
 	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
 		os.Exit(1)
+	}
+}
+
+// subcommands are the one-shot modes (the registry shape services/access and
+// services/inventory use). migrate is the out-of-band migration job (ADR-022);
+// reemit-policies re-emits published slots' re_entry policy so access re-projects
+// slots published before the field existed (TKT-96) — a one-shot data repair,
+// idempotent and safe to re-run.
+func subcommands() map[string]func([]string) error {
+	return map[string]func([]string) error{
+		"migrate":         func([]string) error { return migrate() },
+		"healthcheck":     func([]string) error { os.Exit(healthcheck()); return nil },
+		"reemit-policies": reemitPolicies,
 	}
 }
 

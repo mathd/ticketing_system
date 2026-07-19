@@ -591,7 +591,31 @@ func (p *Postgres) getPerformanceTx(ctx context.Context, tx *sql.Tx, id uuid.UUI
 	return p.getPerformanceFrom(ctx, tx, id)
 }
 
-func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Performance, *sql.NullTime, *sql.NullTime, error) {
+// performanceColumns is the projection shared by every full-row Performance read
+// (single-row get and the backfill's list). Both hydrate through scanPerformance,
+// so the publication-time Capacity/SharedCapacity snapshot the backfill re-emits
+// is byte-identical to what live publish emitted (TKT-96 COS-3 premise). The
+// column ORDER is load-bearing — it must match scanPerformance's Scan targets.
+const performanceColumns = `p.id, p.organizer_id, p.event_id, p.venue_id, p.kind, p.starts_at,
+	        p.operating_date, p.opens_at, p.closes_at, p.timezone,
+	        p.re_entry_mode, p.max_entries, p.requires_exit,
+	        p.closure_status, p.closed_at, p.closure_reason, p.closure_version,
+	        p.closure_changed_at, p.capacity_group_id, p.status, p.published_at, p.archived_at,
+	        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity,
+	        f.shared_capacity`
+
+const performanceFrom = `FROM performances p JOIN venues v ON v.id = p.venue_id
+	 LEFT JOIN festivals f ON f.id = p.capacity_group_id`
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanPerformance hydrates one performanceColumns row into a Performance and its
+// two owed-event timestamps. Sole hydration path for full rows, so the get and
+// list callers can never drift on how a row becomes a Performance.
+func scanPerformance(s rowScanner) (Performance, *sql.NullTime, *sql.NullTime, error) {
 	var perf Performance
 	var (
 		emitted, archiveEmitted        sql.NullTime
@@ -600,27 +624,14 @@ func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid
 		capacityGroup                  uuid.NullUUID
 		sharedCapacity                 sql.NullInt32
 	)
-	err := q.QueryRowContext(ctx,
-		`SELECT p.id, p.organizer_id, p.event_id, p.venue_id, p.kind, p.starts_at,
-		        p.operating_date, p.opens_at, p.closes_at, p.timezone,
-		        p.re_entry_mode, p.max_entries, p.requires_exit,
-		        p.closure_status, p.closed_at, p.closure_reason, p.closure_version,
-		        p.closure_changed_at, p.capacity_group_id, p.status, p.published_at, p.archived_at,
-		        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity,
-		        f.shared_capacity
-		 FROM performances p JOIN venues v ON v.id = p.venue_id
-		 LEFT JOIN festivals f ON f.id = p.capacity_group_id WHERE p.id = $1`, id).
-		Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.Kind, &perf.StartsAt,
-			&perf.OperatingDate, &opensAt, &closesAt, &perf.Timezone,
-			&perf.ReEntry.Mode, &maxEntries, &perf.ReEntry.RequiresExit,
-			&perf.Closure.Status, &perf.Closure.ClosedAt, &closeReason, &perf.Closure.Version,
-			&perf.Closure.ChangedAt, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
-			&archiveEmitted, &perf.CreatedAt, &perf.Capacity, &sharedCapacity)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Performance{}, nil, nil, fmt.Errorf("performance: %w", ErrNotFound)
-	}
+	err := s.Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.Kind, &perf.StartsAt,
+		&perf.OperatingDate, &opensAt, &closesAt, &perf.Timezone,
+		&perf.ReEntry.Mode, &maxEntries, &perf.ReEntry.RequiresExit,
+		&perf.Closure.Status, &perf.Closure.ClosedAt, &closeReason, &perf.Closure.Version,
+		&perf.Closure.ChangedAt, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
+		&archiveEmitted, &perf.CreatedAt, &perf.Capacity, &sharedCapacity)
 	if err != nil {
-		return Performance{}, nil, nil, fmt.Errorf("get performance: %w", err)
+		return Performance{}, nil, nil, err
 	}
 	if opensAt.Valid {
 		perf.OpensAt = &opensAt.String
@@ -648,6 +659,60 @@ func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid
 		archiveEmittedPtr = &archiveEmitted
 	}
 	return perf, emittedPtr, archiveEmittedPtr, nil
+}
+
+func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Performance, *sql.NullTime, *sql.NullTime, error) {
+	perf, emittedPtr, archiveEmittedPtr, err := scanPerformance(
+		q.QueryRowContext(ctx, `SELECT `+performanceColumns+` `+performanceFrom+` WHERE p.id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Performance{}, nil, nil, fmt.Errorf("performance: %w", ErrNotFound)
+	}
+	if err != nil {
+		return Performance{}, nil, nil, fmt.Errorf("get performance: %w", err)
+	}
+	return perf, emittedPtr, archiveEmittedPtr, nil
+}
+
+// ListPublishedUngroupedPerformances returns fully-hydrated published, ungrouped
+// performances for the re_entry re-emission backfill (TKT-96), keyset-paginated
+// by id (cursor is exclusive; nil starts at the beginning). Grouped festival-day
+// members (capacity_group_id NOT NULL) are excluded in the predicate, not
+// post-filtered: re-emitting them would assert festival-shared capacity from a
+// per-member backfill, the aggregate-ownership inversion ADR-018 rule 2 prevents.
+//
+// This is a one-shot operator backfill, not a hot read path (ADR-019): a
+// sequential scan over published slots is acceptable and no index is added for
+// it. The id keyset only bounds the batch; ordering, not index-backing, is its job.
+func (p *Postgres) ListPublishedUngroupedPerformances(ctx context.Context, after *uuid.UUID, limit int) ([]Performance, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	args := []any{limit}
+	cursor := ""
+	if after != nil {
+		cursor = "AND p.id > $2"
+		args = append(args, *after)
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT `+performanceColumns+` `+performanceFrom+`
+		 WHERE p.status = 'published' AND p.capacity_group_id IS NULL `+cursor+`
+		 ORDER BY p.id LIMIT $1`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list published ungrouped performances: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Performance
+	for rows.Next() {
+		perf, _, _, scanErr := scanPerformance(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan performance: %w", scanErr)
+		}
+		out = append(out, perf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate performances: %w", err)
+	}
+	return out, nil
 }
 
 func (p *Postgres) GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error) {

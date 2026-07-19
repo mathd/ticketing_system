@@ -103,9 +103,33 @@ type SlotClosureData struct {
 // use a fake and the smoke stack the real stream.
 type Publisher interface {
 	PerformancePublished(ctx context.Context, p store.Performance) error
+	PerformancePublishedBackfill(ctx context.Context, p store.Performance) error
 	PerformanceArchived(ctx context.Context, p store.Performance) error
 	SlotClosed(ctx context.Context, p store.Performance) error
 	SlotReopened(ctx context.Context, p store.Performance) error
+}
+
+// backfillEpoch namespaces the re-emission id (TKT-96). It is a FIXED string,
+// never a timestamp or counter, so re-running the backfill produces the same id
+// for a slot and dedups to a no-op on the second run (COS-2). A future
+// correction wave that must re-emit again with a fresh identity bumps this
+// constant — the deliberate, reviewable escape hatch.
+const backfillEpoch = "reentry-backfill-1"
+
+// BackfillEventID derives the re-emission's envelope id for an already-published
+// slot (TKT-96). It MUST differ from EventID(perf): access's projector dedups on
+// the envelope id via consumed_events ON CONFLICT DO NOTHING, so re-emitting
+// under the live id would be swallowed and the re_entry backfill would silently
+// do nothing (ADR-017 §1: the id is a dedup key, not a schema concern — the
+// payload rides the unchanged (type,schema) 2/3). The ":backfill:" segment sits
+// in a fixed position so the derivation can never collide with the live EventID
+// domain; the id stays deterministic on (slot, published_at) so re-runs converge.
+func BackfillEventID(perf store.Performance) string {
+	key := SubjectPerformancePublished + ":backfill:" + backfillEpoch + ":" + perf.ID.String()
+	if perf.PublishedAt != nil {
+		key += ":" + perf.PublishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
 }
 
 func ArchivedEventID(perf store.Performance) string {
@@ -144,12 +168,25 @@ func EventID(perf store.Performance) string {
 }
 
 func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Performance) error {
+	return p.publishPerformancePublished(ctx, perf, EventID(perf))
+}
+
+// PerformancePublishedBackfill re-emits an already-published slot's publication
+// under a DISTINCT deterministic id (TKT-96), so access re-projects its current
+// re_entry policy for slots published before the field existed. The payload is
+// byte-for-byte the live-publish payload (same schema fork, same re_entry
+// population) — only the envelope id and Nats-Msg-Id differ, which is what makes
+// the re-emission escape dedup while staying additive-without-bump (ADR-017 §1).
+func (p *JetStream) PerformancePublishedBackfill(ctx context.Context, perf store.Performance) error {
+	return p.publishPerformancePublished(ctx, perf, BackfillEventID(perf))
+}
+
+func (p *JetStream) publishPerformancePublished(ctx context.Context, perf store.Performance, id string) error {
 	occurred := time.Now().UTC()
 	if perf.PublishedAt != nil {
 		occurred = *perf.PublishedAt
 	}
-	id := EventID(perf)
-	body, err := performancePublishedEnvelope(perf, occurred)
+	body, err := performancePublishedEnvelopeWithID(perf, occurred, id)
 	if err != nil {
 		return err
 	}
@@ -161,8 +198,15 @@ func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Perform
 	return nil
 }
 
+// performancePublishedEnvelope marshals the live-publish envelope, deriving the
+// id from EventID. The backfill path shares the body via
+// performancePublishedEnvelopeWithID so the schema fork and re_entry population
+// can never drift between the two.
 func performancePublishedEnvelope(perf store.Performance, occurred time.Time) ([]byte, error) {
-	id := EventID(perf)
+	return performancePublishedEnvelopeWithID(perf, occurred, EventID(perf))
+}
+
+func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Time, id string) ([]byte, error) {
 	capacityGroupID, sharedCapacity, err := festivalCapacity(perf)
 	if err != nil {
 		return nil, err

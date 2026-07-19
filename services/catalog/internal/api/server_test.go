@@ -591,14 +591,16 @@ func (f *fakeStore) GetPublishedFestival(_ context.Context, id uuid.UUID) (store
 }
 
 type fakePublisher struct {
-	published       []store.Performance
-	archived        []store.Performance
-	closed          []store.Performance
-	reopened        []store.Performance
-	calls           []string // ordered emission log: "published"|"archived"|"closed"|"reopened"
-	failNext        bool
-	failArchiveNext bool
-	failClosureNext bool
+	published        []store.Performance
+	backfilled       []store.Performance
+	archived         []store.Performance
+	closed           []store.Performance
+	reopened         []store.Performance
+	calls            []string // ordered emission log: "published"|"backfilled"|"archived"|"closed"|"reopened"
+	failNext         bool
+	failBackfillNext bool
+	failArchiveNext  bool
+	failClosureNext  bool
 }
 
 func (f *fakePublisher) SlotClosed(_ context.Context, p store.Performance) error {
@@ -638,6 +640,16 @@ func (f *fakePublisher) PerformancePublished(_ context.Context, p store.Performa
 	}
 	f.published = append(f.published, p)
 	f.calls = append(f.calls, "published")
+	return nil
+}
+
+func (f *fakePublisher) PerformancePublishedBackfill(_ context.Context, p store.Performance) error {
+	if f.failBackfillNext {
+		f.failBackfillNext = false
+		return errors.New("nats down")
+	}
+	f.backfilled = append(f.backfilled, p)
+	f.calls = append(f.calls, "backfilled")
 	return nil
 }
 
