@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from TKT-87 PR #73 ai-review triage; minimal memo: code pointers services/access/internal/consumer/consumer.go (Run), services/access/internal/consumer/policy.go (Run). Suspected governing ADRs: none specific; readiness semantics in cmd/access/main.go. Candidate risk:low."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaping pass. Verdict: READY — availability hardening, no admission-decision changes, expected <=4 files. risk:low SUGGESTED (would skip the plan gate): isolated, no auth/money/migration surface; owner to confirm or strike the label at claim."
     }
   ],
   "context": {
@@ -24,5 +29,39 @@
       }
     ],
     "capturedAt": "2026-07-19"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Async consume termination (durable deleted, subscription dies) is invisible: delivery stops while /readyz stays 200. Both access consumers share the defect."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: order-completed issuer + slot-policy projector — ConsumeErrHandler and/or ConsumeContext.Closed watch that latches unready and/or returns from Run. OUT: other services' consumers (inventory has its own patterns), retry-policy changes."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Exact jetstream-go API surface for error/closed notification at the pinned client version — a Planning read, not a product decision."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "TKT-87 merged (the projector exists). No open blockers."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Watch ConsumeContext.Closed()/err handler in both Run methods; on termination latch ready=false and return so main's consumerErr channel surfaces it."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Both consumers; a unit test proving a closed consume context flips readiness/returns."
+    },
+    "success": {
+      "state": "met",
+      "note": "Killing the durable under a running consumer makes /readyz fail (or the process exit) instead of a silent stall; existing behavior otherwise unchanged."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Minimal mémo baked at creation; no governing ADRs beyond readiness semantics in cmd/access/main.go (mémo says so explicitly)."
+    }
   }
 }
