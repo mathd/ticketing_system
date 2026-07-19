@@ -2,7 +2,7 @@
   "key": "TKT-97",
   "type": "Task",
   "summary": "Access consumers: surface async consume termination (err handler / Closed) instead of silent stall with ready=true",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
