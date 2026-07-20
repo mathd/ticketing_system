@@ -1,0 +1,28 @@
+{
+  "key": "TKT-98",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "access main: clean shutdown may exit with a non-nil consumer error (~50% select race)",
+  "description": "TKT-97 ai-review incidental (kimi-k3:medium@claudex arm, Finding 3). PRE-EXISTING, not introduced by TKT-97 — verified against origin/main. In cmd/access/main.go the final select (main.go:291-300) races <-consumerErr against <-ctx.Done(). On SIGTERM both become ready together: consumerErr carries fmt.Errorf(\"consumer stopped: %w\", context.Canceled) (non-nil) from each Run's tail, so ~50% of clean shutdowns the process exits reporting the consumer's cancellation error instead of the clean srv.Shutdown result. Cosmetic today (Compose ignores exit code on stop) but pollutes exit codes / logs and would mislead an orchestrator that treats non-zero exit as a crash. Fix: on ctx-cancellation, coalesce context.Canceled-wrapped Run errors to a clean exit (or have Run return nil on ctx.Done() — but that loses the 'why stopped' log line, so prefer filtering in main). Small, isolated; candidate risk:low.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from TKT-97 PR #75 ai-review triage (Finding 3, incidental — pre-existing). Code pointer: cmd/access/main.go:291-300 (the shutdown select) and each Run's `return fmt.Errorf(\"...stopped: %w\", ctx.Err())` tail. Suspected governing ADRs: none specific. Not a regression from TKT-97 — the identical non-nil error existed on origin/main."
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [],
+    "reference": [
+      {
+        "summary": "main.go shutdown select + Run error tails",
+        "link": "PR #75 Finding 3"
+      }
+    ],
+    "capturedAt": "2026-07-19"
+  }
+}
