@@ -1,0 +1,17 @@
+{
+  "key": "TKT-107",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Revisit draft seat-map read exposure — cache tier + tenant scoping (TKT-102 follow-up)",
+  "description": "### Revisit draft seat-map read exposure — cache tier + tenant scoping\n\nSurfaced by the TKT-102 ai-review (kimi-k3:medium@claudex), triaged as **incidental / follow-up** (not blocking TKT-102). Two related observations about the public seat-map reads added in TKT-102 (`GET /public/seat-maps/{id}`, `GET /public/venues/{venueId}/seat-maps`):\n\n1. **Draft geometry is served at the ADR-004 hours tier** (`public, s-maxage=3600`). This matches COS-3 / ADR-004 (seat-map geometry = hours tier) and the practical staleness is currently nil (back-office SSR `fetch` is uncached; no CDN in the stack). But once publishing lands (TKT-103) and/or a CDN sits in front, hour-long shared-cache lifetime on *mutable draft* geometry is wrong: an authoring write can look lost, and unpublished drafts become world-cacheable. Decide the split: published geometry stays hours-tier; draft geometry should likely be `no-store` or a short tier.\n\n2. **The by-id reads are not organizer-scoped** (they filter map/venue id only), matching the existing `getPublicEvent` by-id public pattern. In single-tenant v1 with no auth this is moot, but publishing drafts on `/public/` and cross-tenant readability by UUID both want revisiting when admin auth lands (the reads should gate/scope drafts).\n\n**Depends on / revisit with:** TKT-103 (publish) and the admin-auth work. **Governing:** ADR-004 (cache tiers), ADR-002 (tenancy). Source: TKT-102 board thread, ai-review kind=summary.\n\nThis is a decision ticket (cache/exposure policy for draft vs published geometry), so it goes through the pipeline rather than a direct commit.",
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-102"
+    }
+  ],
+  "comments": []
+}
