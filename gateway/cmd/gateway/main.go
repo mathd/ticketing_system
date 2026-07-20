@@ -33,6 +33,7 @@ var routes = map[string]string{
 	"/api/payments/":  "PAYMENTS_URL",
 	"/api/access/":    "ACCESS_URL",
 	"/scanner/":       "SCANNER_URL",
+	"/admin/":         "BACKOFFICE_URL", // back-office shell (US-018); web shell, not path-stripped
 	"/":               "STOREFRONT_URL", // catch-all LAST by construction (longest prefix wins)
 }
 

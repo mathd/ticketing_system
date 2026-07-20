@@ -1,4 +1,5 @@
 packages:
+  - web/backoffice
   - web/scanner
   - web/storefront
 allowBuilds:

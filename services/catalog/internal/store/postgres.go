@@ -74,6 +74,30 @@ func (p *Postgres) CreateVenue(ctx context.Context, in VenueInput) (Venue, error
 	return v, nil
 }
 
+func (p *Postgres) ListVenues(ctx context.Context, organizerID uuid.UUID) ([]Venue, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT id, organizer_id, name, ga_capacity, created_at
+		   FROM venues
+		  WHERE organizer_id = $1
+		  ORDER BY name`, organizerID)
+	if err != nil {
+		return nil, fmt.Errorf("list venues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	venues := make([]Venue, 0)
+	for rows.Next() {
+		var v Venue
+		if err := rows.Scan(&v.ID, &v.OrganizerID, &v.Name, &v.GACapacity, &v.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan venue: %w", err)
+		}
+		venues = append(venues, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate venues: %w", err)
+	}
+	return venues, nil
+}
+
 func (p *Postgres) CreateEvent(ctx context.Context, in EventInput) (Event, error) {
 	name, err := json.Marshal(in.Name)
 	if err != nil {

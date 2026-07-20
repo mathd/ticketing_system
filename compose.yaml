@@ -324,6 +324,23 @@ services:
       timeout: 3s
       retries: 10
 
+  backoffice:
+    # Astro 7 SSR back-office shell (ADR-006 / US-018). Root build context: the
+    # pnpm workspace lockfile lives at the repo root (scanner pattern). SSR
+    # reads go through the gateway (public contract, ADR-002); healthchecks are
+    # self-only so there is no startup deadlock with the gateway.
+    build: { context: ., dockerfile: web/backoffice/Dockerfile }
+    restart: unless-stopped
+    environment:
+      GATEWAY_URL: http://gateway:8080
+    healthcheck:
+      # base:'/admin' means Astro serves healthz at /admin/healthz; the probe
+      # hits the container directly (pre-gateway), so it targets the base path.
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/admin/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   gateway:
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/gateway/cmd/gateway } }
     restart: unless-stopped
@@ -338,6 +355,7 @@ services:
       ACCESS_URL: http://access:8080
       STOREFRONT_URL: http://storefront:8080
       SCANNER_URL: http://scanner:8080
+      BACKOFFICE_URL: http://backoffice:8080
       HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
       HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
       HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
@@ -350,6 +368,7 @@ services:
       access: { condition: service_healthy }
       storefront: { condition: service_healthy }
       scanner: { condition: service_healthy }
+      backoffice: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "/app", "healthcheck"]
       interval: 5s

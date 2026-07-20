@@ -35,3 +35,5 @@ services:
     build: { context: ., dockerfile: web/scanner/Dockerfile.smoke }
   storefront:
     build: { context: ., dockerfile: web/storefront/Dockerfile.smoke }
+  backoffice:
+    build: { context: ., dockerfile: web/backoffice/Dockerfile.smoke }

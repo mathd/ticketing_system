@@ -3,6 +3,7 @@
 **/dist
 !web/scanner/dist
 !web/storefront/dist
+!web/backoffice/dist
 bin/*
 !bin/gate
 docs
