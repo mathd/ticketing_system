@@ -1482,3 +1482,206 @@ func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (Fest
 	}
 	return out, nil
 }
+
+// --- Seat-map authoring (US-019 / TKT-102), draft-only. ---
+//
+// Each write is one INSERT ... SELECT that resolves the parent chain and
+// requires the owning map to be draft, so cross-map/cross-organizer parentage
+// and writes to a non-draft map are unrepresentable through the store: a
+// no-match yields ErrNotFound; any UNIQUE collision yields ErrSeatMapConflict.
+
+func (p *Postgres) CreateSeatMap(ctx context.Context, in SeatMapInput) (SeatMap, error) {
+	m := SeatMap{OrganizerID: in.OrganizerID, VenueID: in.VenueID, Name: in.Name}
+	err := p.db.QueryRowContext(ctx,
+		`INSERT INTO seat_maps (organizer_id, venue_id, name)
+		 SELECT $1, v.id, $3 FROM venues v WHERE v.id = $2 AND v.organizer_id = $1
+		 RETURNING id, version, status, created_at`,
+		in.OrganizerID, in.VenueID, in.Name).
+		Scan(&m.ID, &m.Version, &m.Status, &m.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatMap{}, fmt.Errorf("venue: %w", ErrNotFound)
+	}
+	if err != nil {
+		return SeatMap{}, fmt.Errorf("create seat map: %w", err)
+	}
+	return m, nil
+}
+
+func (p *Postgres) AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error) {
+	s := SeatMapSection{Name: in.Name, Position: in.Position}
+	err := p.db.QueryRowContext(ctx,
+		`INSERT INTO seat_map_sections (organizer_id, seat_map_id, name, position)
+		 SELECT $1, m.id, $3, $4 FROM seat_maps m
+		 WHERE m.id = $2 AND m.organizer_id = $1 AND m.status = 'draft'
+		 RETURNING id`,
+		in.OrganizerID, in.SeatMapID, in.Name, in.Position).Scan(&s.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatMapSection{}, fmt.Errorf("seat map: %w", ErrNotFound)
+	}
+	if isUniqueViolation(err) {
+		return SeatMapSection{}, fmt.Errorf("section: %w", ErrSeatMapConflict)
+	}
+	if err != nil {
+		return SeatMapSection{}, fmt.Errorf("add section: %w", err)
+	}
+	return s, nil
+}
+
+func (p *Postgres) AddSeatMapRow(ctx context.Context, in SeatMapRowInput) (SeatMapRow, error) {
+	r := SeatMapRow{Label: in.Label, Position: in.Position}
+	err := p.db.QueryRowContext(ctx,
+		`INSERT INTO seat_map_rows (organizer_id, seat_map_id, section_id, label, position)
+		 SELECT $1, s.seat_map_id, s.id, $4, $5 FROM seat_map_sections s
+		 JOIN seat_maps m ON m.id = s.seat_map_id
+		 WHERE s.id = $3 AND s.seat_map_id = $2 AND s.organizer_id = $1 AND m.status = 'draft'
+		 RETURNING id`,
+		in.OrganizerID, in.SeatMapID, in.SectionID, in.Label, in.Position).Scan(&r.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatMapRow{}, fmt.Errorf("section: %w", ErrNotFound)
+	}
+	if isUniqueViolation(err) {
+		return SeatMapRow{}, fmt.Errorf("row: %w", ErrSeatMapConflict)
+	}
+	if err != nil {
+		return SeatMapRow{}, fmt.Errorf("add row: %w", err)
+	}
+	return r, nil
+}
+
+func (p *Postgres) AddSeatMapSeat(ctx context.Context, in SeatMapSeatInput) (SeatMapSeat, error) {
+	seat := SeatMapSeat{Label: in.Label, Position: in.Position}
+	// seat_identity is composed here from the parent labels — "section/row/seat"
+	// — so it is deterministic and stable (the TKT-104 contract) and never
+	// caller-supplied.
+	err := p.db.QueryRowContext(ctx,
+		`INSERT INTO seat_map_seats (organizer_id, seat_map_id, row_id, seat_identity, label, position)
+		 SELECT $1, r.seat_map_id, r.id, sec.name || '/' || r.label || '/' || $4, $4, $5
+		 FROM seat_map_rows r
+		 JOIN seat_map_sections sec ON sec.id = r.section_id
+		 JOIN seat_maps m ON m.id = r.seat_map_id
+		 WHERE r.id = $3 AND r.seat_map_id = $2 AND r.organizer_id = $1 AND m.status = 'draft'
+		 RETURNING id, seat_identity`,
+		in.OrganizerID, in.SeatMapID, in.RowID, in.Label, in.Position).
+		Scan(&seat.ID, &seat.SeatIdentity)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatMapSeat{}, fmt.Errorf("row: %w", ErrNotFound)
+	}
+	if isUniqueViolation(err) {
+		return SeatMapSeat{}, fmt.Errorf("seat: %w", ErrSeatMapConflict)
+	}
+	if err != nil {
+		return SeatMapSeat{}, fmt.Errorf("add seat: %w", err)
+	}
+	return seat, nil
+}
+
+func (p *Postgres) ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]SeatMap, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT id, organizer_id, venue_id, name, version, status, created_at
+		   FROM seat_maps WHERE venue_id = $1 ORDER BY version, name, id`, venueID)
+	if err != nil {
+		return nil, fmt.Errorf("list seat maps: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]SeatMap, 0)
+	for rows.Next() {
+		var m SeatMap
+		if err := rows.Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &m.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan seat map: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// seatMapSeatsScopedQuery is the seat-level geometry read, referenced as a const
+// so the ADR-019 scan-scope proof EXPLAINs the exact shipped statement. It
+// filters seats by seat_map_id, backed by seat_map_seats_by_map.
+const seatMapSeatsScopedQuery = `SELECT id, row_id, seat_identity, label, position
+	FROM seat_map_seats WHERE seat_map_id = $1 ORDER BY position`
+
+func (p *Postgres) GetSeatMapGeometry(ctx context.Context, seatMapID uuid.UUID) (SeatMapGeometry, error) {
+	var g SeatMapGeometry
+	err := p.db.QueryRowContext(ctx,
+		`SELECT id, organizer_id, venue_id, name, version, status, created_at
+		   FROM seat_maps WHERE id = $1`, seatMapID).
+		Scan(&g.Map.ID, &g.Map.OrganizerID, &g.Map.VenueID, &g.Map.Name,
+			&g.Map.Version, &g.Map.Status, &g.Map.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatMapGeometry{}, ErrNotFound
+	}
+	if err != nil {
+		return SeatMapGeometry{}, fmt.Errorf("get seat map: %w", err)
+	}
+
+	// Rows keyed by their parent so the three flat reads assemble into a tree.
+	sections := map[uuid.UUID]*SeatMapSection{}
+	rowsByID := map[uuid.UUID]*SeatMapRow{}
+
+	secRows, err := p.db.QueryContext(ctx,
+		`SELECT id, name, position FROM seat_map_sections WHERE seat_map_id = $1 ORDER BY position`, seatMapID)
+	if err != nil {
+		return SeatMapGeometry{}, fmt.Errorf("read sections: %w", err)
+	}
+	defer func() { _ = secRows.Close() }()
+	for secRows.Next() {
+		var s SeatMapSection
+		if err := secRows.Scan(&s.ID, &s.Name, &s.Position); err != nil {
+			return SeatMapGeometry{}, fmt.Errorf("scan section: %w", err)
+		}
+		s.Rows = []SeatMapRow{}
+		g.Sections = append(g.Sections, s)
+	}
+	if err := secRows.Err(); err != nil {
+		return SeatMapGeometry{}, fmt.Errorf("sections rows: %w", err)
+	}
+	for i := range g.Sections {
+		sections[g.Sections[i].ID] = &g.Sections[i]
+	}
+
+	rowRows, err := p.db.QueryContext(ctx,
+		`SELECT id, section_id, label, position FROM seat_map_rows WHERE seat_map_id = $1 ORDER BY position`, seatMapID)
+	if err != nil {
+		return SeatMapGeometry{}, fmt.Errorf("read rows: %w", err)
+	}
+	defer func() { _ = rowRows.Close() }()
+	for rowRows.Next() {
+		var r SeatMapRow
+		var sectionID uuid.UUID
+		if err := rowRows.Scan(&r.ID, &sectionID, &r.Label, &r.Position); err != nil {
+			return SeatMapGeometry{}, fmt.Errorf("scan row: %w", err)
+		}
+		r.Seats = []SeatMapSeat{}
+		if sec, ok := sections[sectionID]; ok {
+			sec.Rows = append(sec.Rows, r)
+		}
+	}
+	if err := rowRows.Err(); err != nil {
+		return SeatMapGeometry{}, fmt.Errorf("rows rows: %w", err)
+	}
+	for si := range g.Sections {
+		for ri := range g.Sections[si].Rows {
+			rowsByID[g.Sections[si].Rows[ri].ID] = &g.Sections[si].Rows[ri]
+		}
+	}
+
+	seatRows, err := p.db.QueryContext(ctx, seatMapSeatsScopedQuery, seatMapID)
+	if err != nil {
+		return SeatMapGeometry{}, fmt.Errorf("read seats: %w", err)
+	}
+	defer func() { _ = seatRows.Close() }()
+	for seatRows.Next() {
+		var s SeatMapSeat
+		var rowID uuid.UUID
+		if err := seatRows.Scan(&s.ID, &rowID, &s.SeatIdentity, &s.Label, &s.Position); err != nil {
+			return SeatMapGeometry{}, fmt.Errorf("scan seat: %w", err)
+		}
+		if r, ok := rowsByID[rowID]; ok {
+			r.Seats = append(r.Seats, s)
+		}
+	}
+	if err := seatRows.Err(); err != nil {
+		return SeatMapGeometry{}, fmt.Errorf("seats rows: %w", err)
+	}
+	return g, nil
+}

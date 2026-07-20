@@ -204,6 +204,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "festival is not draft"})
 	case errors.Is(err, store.ErrEmptyFestival):
 		writeJSON(w, http.StatusConflict, Error{Error: "festival has no members"})
+	case errors.Is(err, store.ErrSeatMapConflict):
+		writeJSON(w, http.StatusConflict, Error{Error: "duplicate name or position within the seat map"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})
@@ -1002,4 +1004,123 @@ func (s *Server) GetOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(apispec.Spec)
+}
+
+// --- Seat-map authoring (US-019 / TKT-102). Draft-only writes at the trusted
+// root; geometry + summary reads under /public at the ADR-004 hours tier. ---
+
+func seatMapPayload(m store.SeatMap) SeatMap {
+	return SeatMap{
+		Id: m.ID, OrganizerId: m.OrganizerID, VenueId: m.VenueID, Name: m.Name,
+		Version: m.Version, Status: SeatMapStatus(m.Status), CreatedAt: m.CreatedAt,
+	}
+}
+
+func (s *Server) CreateSeatMap(w http.ResponseWriter, r *http.Request, venueId VenueId) {
+	var in SeatMapCreate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	m, err := s.store.CreateSeatMap(r.Context(), store.SeatMapInput{
+		OrganizerID: in.OrganizerId, VenueID: venueId, Name: in.Name,
+	})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, seatMapPayload(m))
+}
+
+func (s *Server) AddSeatMapSection(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	var in SeatMapSectionCreate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	sec, err := s.store.AddSeatMapSection(r.Context(), store.SeatMapSectionInput{
+		OrganizerID: in.OrganizerId, SeatMapID: seatMapId, Name: in.Name, Position: in.Position,
+	})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, SeatSection{Id: sec.ID, Name: sec.Name, Position: sec.Position})
+}
+
+func (s *Server) AddSeatMapRow(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	var in SeatMapRowCreate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	row, err := s.store.AddSeatMapRow(r.Context(), store.SeatMapRowInput{
+		OrganizerID: in.OrganizerId, SeatMapID: seatMapId, SectionID: in.SectionId,
+		Label: in.Label, Position: in.Position,
+	})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, SeatRow{Id: row.ID, Label: row.Label, Position: row.Position})
+}
+
+func (s *Server) AddSeatMapSeat(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	var in SeatMapSeatCreate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	seat, err := s.store.AddSeatMapSeat(r.Context(), store.SeatMapSeatInput{
+		OrganizerID: in.OrganizerId, SeatMapID: seatMapId, RowID: in.RowId,
+		Label: in.Label, Position: in.Position,
+	})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, Seat{
+		Id: seat.ID, SeatIdentity: seat.SeatIdentity, Label: seat.Label, Position: seat.Position,
+	})
+}
+
+func (s *Server) GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	g, err := s.store.GetSeatMapGeometry(r.Context(), seatMapId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	out := SeatMapGeometry{Map: seatMapPayload(g.Map), Sections: make([]SeatSection, 0, len(g.Sections))}
+	for _, sec := range g.Sections {
+		rows := make([]SeatRow, 0, len(sec.Rows))
+		for _, row := range sec.Rows {
+			seats := make([]Seat, 0, len(row.Seats))
+			for _, st := range row.Seats {
+				seats = append(seats, Seat{
+					Id: st.ID, SeatIdentity: st.SeatIdentity, Label: st.Label, Position: st.Position,
+				})
+			}
+			outRow := SeatRow{Id: row.ID, Label: row.Label, Position: row.Position, Seats: &seats}
+			rows = append(rows, outRow)
+		}
+		out.Sections = append(out.Sections, SeatSection{
+			Id: sec.ID, Name: sec.Name, Position: sec.Position, Rows: &rows,
+		})
+	}
+	w.Header().Set("Cache-Control", CacheControlPublicVenueReads)
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) ListVenueSeatMaps(w http.ResponseWriter, r *http.Request, venueId VenueId) {
+	maps, err := s.store.ListVenueSeatMaps(r.Context(), venueId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	out := SeatMapList{SeatMaps: make([]SeatMap, 0, len(maps))}
+	for _, m := range maps {
+		out.SeatMaps = append(out.SeatMaps, seatMapPayload(m))
+	}
+	w.Header().Set("Cache-Control", CacheControlPublicVenueReads)
+	writeJSON(w, http.StatusOK, out)
 }

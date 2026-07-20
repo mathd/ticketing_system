@@ -38,6 +38,11 @@ var (
 	ErrGroupedSlotLifecycle = errors.New("grouped festival day must transition via its festival")
 	ErrFestivalNotDraft     = errors.New("festival is not draft")
 	ErrEmptyFestival        = errors.New("festival has no members")
+	// ErrSeatMapConflict reports any uniqueness collision while authoring seat
+	// geometry (US-019): a duplicate seat identity, or two sections/rows/seats
+	// sharing a name/label/position within their scope. One sentinel maps every
+	// such unique violation to 409 so none falls through to a 500.
+	ErrSeatMapConflict = errors.New("seat map conflict: duplicate seat, row, section, name, or position")
 )
 
 type SeriesTransitionConflict struct {
@@ -193,6 +198,53 @@ type TicketType struct {
 	CreatedAt     time.Time
 }
 
+// SeatMap is a venue-owned, versioned description of reserved seating (US-019).
+// TKT-102 authors it in the draft state only; Version + Status are the stable
+// shape TKT-103 (publish) and TKT-104 (edit-safety) extend. A venue keeps its
+// GA capacity and may carry seat maps simultaneously.
+type SeatMap struct {
+	ID          uuid.UUID
+	OrganizerID uuid.UUID
+	VenueID     uuid.UUID
+	Name        string
+	Version     int32
+	Status      string // draft | published | archived — only draft is writable in TKT-102
+	CreatedAt   time.Time
+}
+
+// SeatMapSection / SeatMapRow / SeatMapSeat are the geometry tree. The nested
+// slices are populated only by GetSeatMapGeometry; the Add* writes return the
+// flat created resource (empty children).
+type SeatMapSection struct {
+	ID       uuid.UUID
+	Name     string
+	Position int32
+	Rows     []SeatMapRow
+}
+
+type SeatMapRow struct {
+	ID       uuid.UUID
+	Label    string
+	Position int32
+	Seats    []SeatMapSeat
+}
+
+type SeatMapSeat struct {
+	ID uuid.UUID
+	// SeatIdentity is the stable contract TKT-104 pins against, composed
+	// server-side as "section/row/seat" from the parent labels, never mutated.
+	SeatIdentity string
+	Label        string
+	Position     int32
+}
+
+// SeatMapGeometry is the full nested read unit: a map with its ordered
+// sections -> rows -> seats (each level ordered by position).
+type SeatMapGeometry struct {
+	Map      SeatMap
+	Sections []SeatMapSection
+}
+
 type VenueInput struct {
 	OrganizerID uuid.UUID
 	Name        string
@@ -203,6 +255,37 @@ type EventInput struct {
 	OrganizerID uuid.UUID
 	Name        LocalizedText
 	Description LocalizedText
+}
+
+type SeatMapInput struct {
+	OrganizerID uuid.UUID
+	VenueID     uuid.UUID
+	Name        string
+}
+
+type SeatMapSectionInput struct {
+	OrganizerID uuid.UUID
+	SeatMapID   uuid.UUID
+	Name        string
+	Position    int32
+}
+
+type SeatMapRowInput struct {
+	OrganizerID uuid.UUID
+	SeatMapID   uuid.UUID
+	SectionID   uuid.UUID
+	Label       string
+	Position    int32
+}
+
+// SeatMapSeatInput carries the seat's own label; SeatIdentity is composed by
+// the store from the parent section/row labels, not supplied by the caller.
+type SeatMapSeatInput struct {
+	OrganizerID uuid.UUID
+	SeatMapID   uuid.UUID
+	RowID       uuid.UUID
+	Label       string
+	Position    int32
 }
 
 type PerformanceInput struct {
@@ -287,6 +370,22 @@ type Store interface {
 	// scoping is a query predicate, not a post-filter (ADR-002).
 	ListVenues(ctx context.Context, organizerID uuid.UUID) ([]Venue, error)
 	CreateEvent(ctx context.Context, in EventInput) (Event, error)
+	// Seat-map authoring (US-019), draft-only. Each Add* scopes its parent by
+	// (id, organizer_id) and requires the map status='draft' in one INSERT ...
+	// SELECT, so cross-map/cross-organizer parentage and writes to a non-draft
+	// map are unrepresentable through the store. A no-match yields ErrNotFound;
+	// any uniqueness collision yields ErrSeatMapConflict.
+	CreateSeatMap(ctx context.Context, in SeatMapInput) (SeatMap, error)
+	AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error)
+	AddSeatMapRow(ctx context.Context, in SeatMapRowInput) (SeatMapRow, error)
+	AddSeatMapSeat(ctx context.Context, in SeatMapSeatInput) (SeatMapSeat, error)
+	// GetSeatMapGeometry returns a map's full nested geometry, each level
+	// ordered by position; ErrNotFound if the map does not exist.
+	GetSeatMapGeometry(ctx context.Context, seatMapID uuid.UUID) (SeatMapGeometry, error)
+	// ListVenueSeatMaps returns a venue's seat-map summaries (no geometry),
+	// version-then-name ordered. Tenant/venue scoping is a query predicate
+	// backed by seat_maps_by_venue (ADR-019).
+	ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]SeatMap, error)
 	CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error)
 	CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error)
 	CreateSeries(ctx context.Context, in SeriesInput) (Series, error)

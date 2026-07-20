@@ -6,6 +6,7 @@ import Layout from '../layouts/Layout.astro';
 import { getVenues } from '../lib/api';
 
 const venues = await getVenues();
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
 
 <Layout title="Venues — Back-office">
@@ -15,6 +16,7 @@ const venues = await getVenues();
       <tr>
         <th scope="col">Name</th>
         <th scope="col">GA capacity</th>
+        <th scope="col">Seat maps</th>
       </tr>
     </thead>
     <tbody>
@@ -23,13 +25,16 @@ const venues = await getVenues();
           <tr>
             <td>{v.name}</td>
             <td class="num">{v.ga_capacity.toLocaleString('en')}</td>
+            <td>
+              <a href={`${base}/venues/${v.id}`}>Author seat maps</a>
+            </td>
           </tr>
         ))
       }
       {
         venues.length === 0 && (
           <tr>
-            <td class="empty" colspan="2">
+            <td class="empty" colspan="3">
               No venues yet.
             </td>
           </tr>

@@ -27,6 +27,7 @@ const (
 	versionBeforeSeries    = 4 // roll 0005_series_seasons down
 	versionBeforeFestivals = 5 // roll 0006_festivals down
 	versionBeforeArchived  = 2 // roll 0003_archived_performance_lifecycle down
+	versionBeforeSeatMaps  = 8 // roll 0009_seat_maps down
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
