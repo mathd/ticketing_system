@@ -2,7 +2,7 @@
   "key": "TKT-88",
   "type": "Story",
   "summary": "Cross-service smoke coverage for multi-event admission flows",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -10,7 +10,8 @@
   "pr": {
     "number": 76,
     "url": "https://github.com/mathd/ticketing_system/pull/76",
-    "state": "open"
+    "state": "merged",
+    "merge_commit": "bb3187f"
   },
   "comments": [
     {
