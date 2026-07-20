@@ -1,7 +1,7 @@
 {
   "key": "TKT-102",
   "type": "Story",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -9,7 +9,8 @@
   "pr": {
     "number": 79,
     "url": "https://github.com/mathd/ticketing_system/pull/79",
-    "state": "open"
+    "state": "merged",
+    "mergeCommit": "4453d60"
   },
   "summary": "US-019: Author a draft seat map — sections, rows, seats",
   "description": "### US-019: Author a draft seat map — sections, rows, seats\n**As** staff, **I want** to author a draft seat map for a venue (named sections, rows within a section, and seats within a row), **so that** a venue can describe reserved seating alongside its GA capacity. **Priority:** P2 **Depends on:** TKT-101\n\nThis introduces the seat-map domain model and its authoring path end-to-end, but only in the **draft** state — publishing and the seated-slot/inventory contract are TKT-103. Versioning is designed in from birth (a map row carries a version and a `draft` state) so TKT-103/104 extend a stable shape rather than reshape it. Model seating as venue/map attributes — do **not** fork the inventory claim primitive (ADR-005) and do **not** add a new slot table (ADR-014).\n\n**Acceptance Criteria:**\n- [ ] Catalog schema: a versioned `seat_map` owned by a venue (`organizer_id`-scoped, carries a `version` and a `status` starting `draft`), with `section` → `row` → `seat` children; each seat carries a stable seat identity (the identity contract TKT-104 pins against). A venue may have GA capacity **and** seat map(s) — the two coexist (GA `ga_capacity` column untouched).\n- [ ] Catalog authoring API (OpenAPI-published, ADR-009): create a draft seat map under a venue and add/list its sections/rows/seats; a read returns the full geometry. Migration runs out-of-band (ADR-022), plain `CREATE INDEX` within the 30s budget (ADR-020).\n- [ ] The geometry read declares an ADR-004 **hours**-tier `Cache-Control`.\n- [ ] Back-office UI: staff create a draft map for a venue, add a section with rows and seats, and see the authored geometry rendered back (screenshot in the PR).\n- [ ] Invalid geometry is rejected at the API (e.g. a seat with no row, duplicate seat identity within a map version); a test pins each rejection.\n- [ ] GA-only venues and the M1 GA path are unaffected (M1 + TKT-101 tests green).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- New/changed public read endpoints declare an ADR-004 TTL tier with rationale\n- New migrations run out-of-band via the service `migrate` subcommand (ADR-022) and build within the 30s startup budget with plain `CREATE INDEX` (ADR-020)\n- Every owned entity is `organizer_id`-scoped (ADR-002)\n\nParent epic: TKT-3. Full lineage: docs/product/prd-v1.md §Capability map (TKT-3).",
