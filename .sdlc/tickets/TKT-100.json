@@ -2,12 +2,15 @@
   "key": "TKT-100",
   "type": "Task",
   "summary": "TKT-88 follow-up: kimi-k3 re-review clarity nits (test-only)",
-  "status": "Building",
-  "labels": [
-    "agent:coding"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "main-agent",
-  "pr": null,
+  "pr": {
+    "number": 77,
+    "url": "https://github.com/mathd/ticketing_system/pull/77",
+    "state": "merged",
+    "merge_commit": "5e88816"
+  },
   "risk": "low",
   "comments": [
     {
@@ -19,6 +22,11 @@
       "stage": "coding",
       "kind": "summary",
       "body": "<!-- sdlc:stage=coding kind=summary -->\nImplemented by main-agent. The 5 kimi nits:\n\n- **F1 (pass-test exit fixture)** — kimi flagged the withdrawing exit's claimed time (`+8m`) sits between the two entries rather than after both. **Investigated: this is NOT a nit to \"fix\" by moving the time.** `DerivePolicyConflicts` (conflicts.go) walks facts by claimed time and raises `exit_required` for an entry landing while-inside; moving the exit to `+25m` (after the reconciled `+20m` entry) leaves that entry landing while-inside, so the conflict CORRECTLY stays raised — the withdrawal is a property of the timeline, not of \"an exit.\" The gate caught my first (wrong) fix. Final change: kept `+8m` (the withdrawing timeline) and replaced the comment with an accurate explanation of the ordering-dependence. **kimi's finding was valuable — it surfaced a real non-obvious semantic, just not the fix it implied.**\n- **F2** — comment on `alarmEnvelopesFor`'s `ORDER BY created_at` (insertion order, not an authoritative sequence).\n- **F3** — comment on `assertRedeemedOccurrence` that isolation comes from the fresh ticket id, not DB partitioning.\n- **F4** — named constant `wantSingleEntryTickets = 2` + comment tying it to `reserveCheckout`'s quantity, so a future fixture change surfaces clearly.\n- **F5** — comment on the replay `ScannedAt.Equal` precision-coupling (safe: microsecond truncation both sides).\n\nNet: comments + one constant + one accurate comment rewrite. No behavior change (F1's behavior is identical to TKT-88 as merged). `make check` green (verify-lifecycle passes)."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n**TKT-100 closed — DONE.** Merged to `main` @ 5e88816 (PR #77). risk:low, gateless (owner-directed cleanup).\n\n## Metrics\n| stage | duration |\n|---|---|\n| Building (create → merge) | ~35m — 5 nit edits, 2 `make check` runs (1 caught a wrong F1 fix), PR, CI, merge |\n| human-wait | 0 (risk:low skips Gate 2; owner directed the rest) |\n\n**diff:** +34 / −5 (2 files, test-only).\n\n## Why this ticket existed\nThe owner re-ran the TKT-88 code review with the configured reviewer `kimi-k3@claudex` (TKT-88 had run on the gpt-5.6-sol fallback because kimi was down). kimi returned **approve, 0 blocking, 5 clarity nits**; the owner directed fixing all 5.\n\n## The one that mattered (F1)\nkimi flagged the pass-flow withdrawal fixture's exit time as \"mid-timeline.\" **Acting on it surfaced a real, non-obvious semantic, not a cosmetic fix:** `DerivePolicyConflicts` walks facts by claimed time, so whether a live exit *withdraws* the reconciliation-raised `exit_required` depends on where the exit sorts relative to the reconciled entry. My first fix (moving the exit to +25m) made the gate FAIL — because at +25m the reconciled entry still lands while-inside and the conflict CORRECTLY stays raised. Reverted to +8m (the withdrawing timeline) with an accurate comment documenting the dependence. **No behavior change from TKT-88 as merged** — the merged fixture always exercised the correct case; only the comment was misleading, and now isn't.\n\n## learnings\n- **A re-review by the config's intended model is worth running even post-merge.** kimi (the configured `aiReview`) agreed with the gpt-5.6-sol fallback on all substantive semantics — a useful cross-model confirmation that the fallback didn't miss anything — AND its one \"nit\" exposed a genuine ordering-dependence in the derived-conflict projection worth documenting. Target house: the value is captured in this thread + the code comment; no ADR/skill change needed (the semantic is in `conflicts.go:orderFacts` + `DerivePolicyConflicts`, discoverable).\n- **kimi-k3@claudex works again** (the TKT-88 outage was transient). No config change needed.\n\n## retro\n**(1) What would have made this faster/better?** I initially treated kimi's Finding 1 as a fixture-time tweak and made a wrong change that the gate caught. Reading `DerivePolicyConflicts` BEFORE editing (not after the failure) would have shown the ordering-dependence up front and gone straight to the comment fix. *Concrete:* when a review finding touches a fixture whose values feed a derived/ordered projection, trace the projection's ordering rule before changing the values. This is judgment, not a skill rule — noted here, not patched.\n**(2) What should the humans change?** Nothing. The gateless-with-gate-verification flow behaved correctly: my wrong fix was caught by `make check`, not shipped. The one open item from TKT-88 remains: optionally add a *generation* probe to the claudex-runner pre-flight so a dead provider fails fast instead of hanging a full stage timeout (offered to the owner; not applied)."
     }
   ],
   "links": [
