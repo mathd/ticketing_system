@@ -426,6 +426,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 		return err
 	}
 	defer cc.Stop()
-	<-ctx.Done()
+	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-ticket-issuer"); err != nil {
+		return err
+	}
 	return fmt.Errorf("consumer stopped: %w", ctx.Err())
 }
