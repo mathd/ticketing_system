@@ -1,0 +1,68 @@
+{
+  "key": "TKT-104",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "US-021: Edit a published map safely — pinned seats never orphaned or duplicated",
+  "description": "### US-021: Edit a published map safely — pinned seats never orphaned or duplicated\n**As** an organizer, **I want** to edit a published seat map (rename/add/remove sections, rows, seats) and get a new version, **with a guarantee that no seat already sold or held is orphaned or duplicated**. **Priority:** P2 **Depends on:** TKT-103\n\nThis is the epic's headline COS: *maps are versioned; edits never orphan or duplicate sold/held seats*. Per the decomposition decision, TKT-3 proves this **at the catalog layer via a seat-identity pinning contract** — a published seat identity is immutable across versions, and the editing path is defined so a version bump preserves every pinned seat. The interplay with live **held** seats (per-seat inventory holds) is exercised in TKT-80, which lists that AC; this story defines and proves the **pinning contract** TKT-80 consumes, not the hold itself. Backend correctness + tests here; the editing UI is TKT-105.\n\n**Acceptance Criteria:**\n- [ ] Editing a published map produces a **new version**; the previous published version stays immutable. The new version is created under the ADR-018 lock/emit discipline where a transition is involved.\n- [ ] The **pinning contract** is defined and documented (an ADR): a seat identity that any sale/hold references is stable across versions — it cannot be silently renumbered, merged, or dropped. An edit that would orphan such a seat is **rejected** (or expressed as an explicit, recorded remap), never silently applied.\n- [ ] A test proves the invariant against the sold case: given a seat referenced by a confirmed/sold record, no edit sequence orphans it (its identity still resolves) and none duplicates it (it maps to exactly one seat in the new version).\n- [ ] A concurrency test mirrors the sold-inventory race: concurrent edit vs. a sale/hold-reference against the same seat set never lands the map in a state where a pinned seat is lost or doubled (the check-then-act race is closed by the ADR-018 lock).\n- [ ] The pinning contract is written so TKT-80's held-seat AC can consume it without a catalog change (the contract, not the hold, is the deliverable).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- New/changed public read endpoints declare an ADR-004 TTL tier with rationale\n- New migrations run out-of-band via the service `migrate` subcommand (ADR-022) and build within the 30s startup budget with plain `CREATE INDEX` (ADR-020)\n- Every owned entity is `organizer_id`-scoped (ADR-002)\n\nParent epic: TKT-3. Full lineage: docs/product/prd-v1.md §Capability map (TKT-3).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-018",
+        "rule": "State-deriving catalog transitions decide under a row lock (`SELECT ... FOR UPDATE`) and emit the domain event only after the store commits, marking the outbox column on success. The lock closes the check-then-act race against concurrent transitions.",
+        "date": "2026-07-15"
+      },
+      {
+        "id": "ADR-021",
+        "rule": "State inside the database cannot constrain an adversary who writes to the database. Say which adversary you mean before writing 'tamper-evident'. (Relevant here as a discipline: 'safe against sold inventory' is a concurrency/consistency guarantee under honest writers, NOT a tamper claim — do not overclaim.)",
+        "date": "2026-07-15"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-018",
+        "why": "The new-version transition decides under a row lock and emits after commit; the lock is what closes the edit-vs-sale race that would orphan a seat."
+      },
+      {
+        "id": "ADR-026",
+        "why": "Precedent for 'edit vs live demand': capacity cuts clamp to max(new, confirmed+held), forward-only, never force-release. A seat-map edit against sold seats follows the same never-strand-a-confirmed-claim spirit."
+      },
+      {
+        "id": "ADR-005",
+        "why": "Seat identity is a slot attribute the claim core references; versioning must keep the identity the claim pinned resolvable."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Discipline check: name the adversary. This is honest-writer consistency, not tamper-evidence — do not overclaim in the ADR."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §Capability map — TKT-3 row is the source of truth for scope",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "TKT-3 epic — COS: authoring UI, versioning safe against sold inventory, GA+seated coexist",
+        "link": ".sdlc board TKT-3"
+      },
+      {
+        "summary": "ADR-018 row-lock-decide-emit-after-commit — the concurrency precedent this story instantiates for map edits",
+        "link": "docs/adr/ADR-018-catalog-slot-transition-concurrency.md"
+      },
+      {
+        "summary": "TKT-80 held-seat AC — the consumer of the pinning contract this story defines",
+        "link": ".sdlc board TKT-80"
+      }
+    ],
+    "capturedAt": "2026-07-20"
+  },
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-105"
+    }
+  ],
+  "comments": []
+}
