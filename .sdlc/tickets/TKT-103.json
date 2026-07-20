@@ -1,0 +1,85 @@
+{
+  "key": "TKT-103",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "US-020: Publish a seat map — a seated slot coexists with GA",
+  "description": "### US-020: Publish a seat map — a seated slot coexists with GA\n**As** an organizer, **I want** to publish a seat map and offer a performance as seated, **so that** downstream epics can claim seats (TKT-80) and buyers can pick them (TKT-35). **Priority:** P2 **Depends on:** TKT-102\n\nThis is the coexistence + contract slice: it moves a map from `draft` to `published`, lets a performance/slot reference a published map version, and extends the `performance.published` domain event so a seated slot conveys enough for inventory to provision seated pools later — **without building the seat claim itself** (that is TKT-80/TKT-4). The publish transition follows the ADR-018 row-lock-decide-emit-after-commit pattern. The event change follows ADR-017 (dispatch on schema before decoding `data`); inventory hard-switches on the event schema (ADR-014 warned of this), so the schema fork and inventory's tolerance of it are load-bearing — the plan must state whether inventory changes in lockstep or safely ignores the seated fork for now.\n\n**Acceptance Criteria:**\n- [ ] Publish transition on a seat map: `draft` → `published` decided under a row lock, event emitted only after commit, outbox column marked (ADR-018). A published map version is immutable (edits create a new version — the mechanics of the new version land in TKT-104).\n- [ ] A performance can be created/published as **seated**, referencing a published map version; GA performances are unchanged and still publish through the existing path (M1 tests green). GA and seated coexist per venue.\n- [ ] The `platform.catalog.performance.published` payload conveys the seated shape (e.g. seat/section counts or a map-version reference) under a **new schema fork** per ADR-017; the envelope and dispatch rules are honored. A contract test pins the new payload (ADR-009).\n- [ ] Inventory's consumer is not broken by the seated event: either it provisions a seated pool in lockstep, or it safely ignores the seated fork (dispatch-on-schema), proven by a test. The seat-level claim itself remains out of scope (TKT-80).\n- [ ] Publishing a seated performance is idempotent at the stream (deterministic event ID), matching the existing publish emission.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- New/changed public read endpoints declare an ADR-004 TTL tier with rationale\n- New migrations run out-of-band via the service `migrate` subcommand (ADR-022) and build within the 30s startup budget with plain `CREATE INDEX` (ADR-020)\n- Every owned entity is `organizer_id`-scoped (ADR-002)\n\nParent epic: TKT-3. Full lineage: docs/product/prd-v1.md §Capability map (TKT-3).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-018",
+        "rule": "State-deriving catalog transitions decide under a row lock (`SELECT ... FOR UPDATE`) and emit the domain event only after the store commits, marking the outbox column on success. The lock closes the check-then-act race against concurrent transitions.",
+        "date": "2026-07-15"
+      },
+      {
+        "id": "ADR-017",
+        "rule": "Domain events use the `{id,type,occurred_at,schema,data}` envelope. Bump `schema` on consumer semantics, not parse compatibility; additive fields that all live consumers ignore may ride the current schema. A consumer dispatches on `schema` before decoding `data`.",
+        "date": "2026-07-15"
+      },
+      {
+        "id": "ADR-005",
+        "rule": "Every admission-granting offer is a dated slot in one inventory machinery; slot attributes carry domain specifics (seated vs GA vs zoned, operating hours, closures) — the claim primitive does not fork.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-018",
+        "why": "The map publish transition decides under FOR UPDATE and emits after commit — same shape as performance publish/archive."
+      },
+      {
+        "id": "ADR-017",
+        "why": "The seated publish payload is a schema fork; a consumer must dispatch on schema before decoding data. The dangerous payload deserializes fine."
+      },
+      {
+        "id": "ADR-014",
+        "why": "Inventory's consumer hard-switches on the published event's schema — a bump stops provisioning unless inventory moves in lockstep; decide and test which."
+      },
+      {
+        "id": "ADR-005",
+        "why": "Seated is a slot attribute conveyed to inventory; the claim core still must not fork."
+      },
+      {
+        "id": "ADR-009",
+        "why": "The changed event payload is a contract boundary — contract/drift tests must cover the new fork."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §Capability map — TKT-3 row is the source of truth for scope",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "TKT-3 epic — COS: authoring UI, versioning safe against sold inventory, GA+seated coexist",
+        "link": ".sdlc board TKT-3"
+      },
+      {
+        "summary": "Catalog event envelope + publish emit-after-commit; PerformancePublishedData schema forks 2/3",
+        "link": "services/catalog/internal/events/events.go, services/catalog/internal/api/server.go"
+      },
+      {
+        "summary": "Inventory consumer dispatches on (subject,schema) → Provision(poolID, capacity int32) — the seam the seated fork must not break",
+        "link": "services/inventory/internal/consumer/consumer.go"
+      },
+      {
+        "summary": "TKT-80 (US-017, TKT-4 epic) is the seat-level claim that consumes this contract — hard-blocked on TKT-3",
+        "link": ".sdlc board TKT-80"
+      }
+    ],
+    "capturedAt": "2026-07-20"
+  },
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-104"
+    },
+    {
+      "type": "blocks",
+      "key": "TKT-105"
+    }
+  ],
+  "comments": []
+}
