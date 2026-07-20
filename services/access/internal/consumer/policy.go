@@ -202,6 +202,8 @@ func (c *PolicyConsumer) Run(ctx context.Context) error {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	<-ctx.Done()
+	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-slot-policy"); err != nil {
+		return err
+	}
 	return fmt.Errorf("policy consumer stopped: %w", ctx.Err())
 }
