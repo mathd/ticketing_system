@@ -64,5 +64,45 @@
       "key": "TKT-102"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-101 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the code-seam survey + the TKT-3 decomposition + owner decisions (2026-07-20: back-office = Astro+React; versioning proof is catalog-side via a pinning contract). **No `open owner:human` items remain** — the board hard-block is cleared.\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Gateway longest-prefix interaction with the /admin route and the catch-all '/' — verified pattern exists in gateway/cmd/gateway/main.go; plan confirms ordering. No product unknowns.\n\n**Ready to prioritize (Gate 1).**"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Staff have no surface to view/author venues; this stands up the back-office app so later seat-map slices have a home. Prefactor that de-risks new-app plumbing away from domain logic."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: new web/backoffice app (Astro+React) in the pnpm workspace + Compose + healthcheck; gateway /admin route; catalog venue read (GET /venues[/{id}]); render the venue list. OUT: any seat-map model/authoring (TKT-102+), auth/RBAC beyond what M1 has, editing."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Gateway longest-prefix interaction with the /admin route and the catch-all '/' — verified pattern exists in gateway/cmd/gateway/main.go; plan confirms ordering. No product unknowns."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None — first slice in the chain. Extends existing catalog venues + gateway route table; no blocked-by links."
+    },
+    "approach": {
+      "state": "met",
+      "note": "OWNER DECISION 2026-07-20: back-office = Astro+React, matching the storefront (ADR-006) precedent. Add /admin to the gateway route table; catalog gains an organizer-scoped venue GET (OpenAPI/ADR-009) at the ADR-004 hours tier; back-office renders via generated types."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket IS the first slice: shell + one working read-only page (venue list). Demoable via a browser screenshot at /admin."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: `docker compose up` brings up web/backoffice with a passing healthcheck; /admin proxies to it; the seeded organizer's venues+GA capacity render from the catalog read; storefront/scanner smoke green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition: ADR-004 (hours tier), ADR-006 (Astro precedent), ADR-009 (contract-first), ADR-002 (tenancy). governingAdrs present."
+    }
+  }
 }
