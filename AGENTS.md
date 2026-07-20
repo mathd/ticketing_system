@@ -85,3 +85,11 @@ experiment stays valid.
   service waits on (`service_completed_successfully`). The server path never migrates. ADR-008 still
   governs everything else (goose-as-library, embedded SQL, per-service ownership, fail-fast, 30s
   bound) — ADR-022 superseded it on *placement only*.
+- **Editing a published seat map, or claiming a seat is pin-safe? Read [ADR-029](docs/adr/ADR-029-seat-identity-pinning-contract.md) first.**
+  An edit produces a **new published version**; the old one stays immutable. A seat identity a
+  sale/hold pins (`seat_map_pins`, family-scoped) is preserved across versions — an orphaning edit is
+  **hard-rejected**, not silently applied. The edit-vs-sale race is closed by a **two-sided** row
+  lock: `EditSeatMap` *and* `PinSeat` both lock the family's current published row, because a
+  `FOR UPDATE` on the edit path alone does **not** conflict with a pin INSERT into a separate table.
+  And name the adversary (ADR-021): this is **honest-writer consistency, not tamper-evidence** — a
+  writer with catalog DB access can insert/delete pins at will. Shipped in TKT-104.

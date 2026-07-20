@@ -132,6 +132,20 @@ func (f *fakeStore) MarkSeatMapEventEmitted(_ context.Context, id uuid.UUID) err
 	return nil
 }
 
+// EditSeatMap / PinSeat / UnpinSeat are store-only in TKT-104 (no HTTP endpoint
+// this ticket — the deliverable is the pinning contract, the editing UI is
+// TKT-105). The fake satisfies the interface; the real behaviour is proven in
+// the store smoke tests (seatmap_edit_smoke_test.go).
+func (f *fakeStore) EditSeatMap(_ context.Context, _ store.EditSeatMapInput) (store.SeatMap, bool, error) {
+	return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
+}
+
+func (f *fakeStore) PinSeat(_ context.Context, _ store.PinSeatInput) error {
+	return fmt.Errorf("seat map: %w", store.ErrNotFound)
+}
+
+func (f *fakeStore) UnpinSeat(_ context.Context, _ store.PinSeatInput) error { return nil }
+
 func (f *fakeStore) AddSeatMapSection(_ context.Context, in store.SeatMapSectionInput) (store.SeatMapSection, error) {
 	if _, ok := f.draftMap(in.SeatMapID, in.OrganizerID); !ok {
 		return store.SeatMapSection{}, fmt.Errorf("seat map: %w", store.ErrNotFound)
