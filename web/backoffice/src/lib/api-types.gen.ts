@@ -21,6 +21,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/venues/{venueId}/seat-maps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a draft seat map under a venue (US-019)
+         * @description Authors a new versioned seat map in the draft state under a venue. The venue keeps its GA capacity; a venue may carry GA capacity and seat maps simultaneously. Publishing is TKT-103; only draft maps are writable here.
+         */
+        post: operations["createSeatMap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/seat-maps/{seatMapId}/sections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a section to a draft seat map (US-019) */
+        post: operations["addSeatMapSection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/seat-maps/{seatMapId}/rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a row to a section of a draft seat map (US-019) */
+        post: operations["addSeatMapRow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/seat-maps/{seatMapId}/seats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a seat to a row of a draft seat map (US-019)
+         * @description The stable seat identity is composed server-side as "section/row/seat" from the parent labels; a duplicate identity within the map version is a 409.
+         */
+        post: operations["addSeatMapSeat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events": {
         parameters: {
             query?: never;
@@ -442,6 +516,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/public/venues/{venueId}/seat-maps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A venue's seat-map summaries (hours tier)
+         * @description The seat maps authored under a venue — summaries only, no geometry — for the back-office venue page (US-019). Seat-map geometry is long-lived, so this read uses the ADR-004 hours tier: Cache-Control: public, max-age=3600, s-maxage=3600. Scoped to the venue, backed by seat_maps_by_venue (ADR-019).
+         */
+        get: operations["listVenueSeatMaps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/seat-maps/{seatMapId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A seat map's full geometry (hours tier)
+         * @description The full nested geometry (sections -> rows -> seats, each ordered by position) of one seat map, for the back-office authoring page (US-019). Hours tier: Cache-Control: public, max-age=3600, s-maxage=3600.
+         */
+        get: operations["getPublicSeatMapGeometry"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/openapi.yaml": {
         parameters: {
             query?: never;
@@ -493,6 +607,82 @@ export interface components {
             ga_capacity: number;
             /** Format: date-time */
             created_at: string;
+        };
+        SeatMapCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            name: string;
+        };
+        SeatMap: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            venue_id: string;
+            name: string;
+            /** Format: int32 */
+            version: number;
+            /** @enum {string} */
+            status: "draft" | "published" | "archived";
+            /** Format: date-time */
+            created_at: string;
+        };
+        SeatMapSectionCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            name: string;
+            /** Format: int32 */
+            position: number;
+        };
+        SeatMapRowCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            section_id: string;
+            label: string;
+            /** Format: int32 */
+            position: number;
+        };
+        SeatMapSeatCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            row_id: string;
+            label: string;
+            /** Format: int32 */
+            position: number;
+        };
+        Seat: {
+            /** Format: uuid */
+            id: string;
+            seat_identity: string;
+            label: string;
+            /** Format: int32 */
+            position: number;
+        };
+        SeatRow: {
+            /** Format: uuid */
+            id: string;
+            label: string;
+            /** Format: int32 */
+            position: number;
+            seats?: components["schemas"]["Seat"][];
+        };
+        SeatSection: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: int32 */
+            position: number;
+            rows?: components["schemas"]["SeatRow"][];
+        };
+        SeatMapGeometry: {
+            map: components["schemas"]["SeatMap"];
+            sections: components["schemas"]["SeatSection"][];
+        };
+        SeatMapList: {
+            seat_maps: components["schemas"]["SeatMap"][];
         };
         EventCreate: {
             /** Format: uuid */
@@ -820,6 +1010,8 @@ export interface components {
         FestivalId: string;
         /** @description Tenant scope (ADR-002); required — no session to infer from */
         OrganizerId: string;
+        VenueId: string;
+        SeatMapId: string;
     };
     requestBodies: never;
     headers: {
@@ -853,6 +1045,145 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+        };
+    };
+    createSeatMap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                venueId: components["parameters"]["VenueId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeatMapCreate"];
+            };
+        };
+        responses: {
+            /** @description Draft seat map created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatMap"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    addSeatMapSection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seatMapId: components["parameters"]["SeatMapId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeatMapSectionCreate"];
+            };
+        };
+        responses: {
+            /** @description Section added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatSection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Duplicate section name or position within the map */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    addSeatMapRow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seatMapId: components["parameters"]["SeatMapId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeatMapRowCreate"];
+            };
+        };
+        responses: {
+            /** @description Row added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatRow"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Duplicate row label or position within the section */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    addSeatMapSeat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seatMapId: components["parameters"]["SeatMapId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeatMapSeatCreate"];
+            };
+        };
+        responses: {
+            /** @description Seat added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Seat"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Duplicate seat identity or position within the row */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     createEvent: {
@@ -1550,6 +1881,55 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+        };
+    };
+    listVenueSeatMaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                venueId: components["parameters"]["VenueId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The venue's seat maps */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatMapList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    getPublicSeatMapGeometry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seatMapId: components["parameters"]["SeatMapId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The seat map geometry */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatMapGeometry"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
         };
     };
     getOpenAPISpec: {

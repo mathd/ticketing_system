@@ -31,6 +31,106 @@ paths:
                 $ref: '#/components/schemas/Venue'
         '400':
           $ref: '#/components/responses/BadRequest'
+  /venues/{venueId}/seat-maps:
+    post:
+      operationId: createSeatMap
+      summary: Create a draft seat map under a venue (US-019)
+      description: >
+        Authors a new versioned seat map in the draft state under a venue.
+        The venue keeps its GA capacity; a venue may carry GA capacity and
+        seat maps simultaneously. Publishing is TKT-103; only draft maps are
+        writable here.
+      parameters:
+        - $ref: '#/components/parameters/VenueId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeatMapCreate' }
+      responses:
+        '201':
+          description: Draft seat map created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatMap' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /seat-maps/{seatMapId}/sections:
+    post:
+      operationId: addSeatMapSection
+      summary: Add a section to a draft seat map (US-019)
+      parameters:
+        - $ref: '#/components/parameters/SeatMapId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeatMapSectionCreate' }
+      responses:
+        '201':
+          description: Section added
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatSection' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Duplicate section name or position within the map
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /seat-maps/{seatMapId}/rows:
+    post:
+      operationId: addSeatMapRow
+      summary: Add a row to a section of a draft seat map (US-019)
+      parameters:
+        - $ref: '#/components/parameters/SeatMapId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeatMapRowCreate' }
+      responses:
+        '201':
+          description: Row added
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatRow' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Duplicate row label or position within the section
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /seat-maps/{seatMapId}/seats:
+    post:
+      operationId: addSeatMapSeat
+      summary: Add a seat to a row of a draft seat map (US-019)
+      description: >
+        The stable seat identity is composed server-side as
+        "section/row/seat" from the parent labels; a duplicate identity within
+        the map version is a 409.
+      parameters:
+        - $ref: '#/components/parameters/SeatMapId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeatMapSeatCreate' }
+      responses:
+        '201':
+          description: Seat added
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Seat' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Duplicate seat identity or position within the row
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /events:
     post:
       operationId: createEvent
@@ -547,6 +647,47 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublicVenueList' }
         '400': { $ref: '#/components/responses/BadRequest' }
+  /public/venues/{venueId}/seat-maps:
+    get:
+      operationId: listVenueSeatMaps
+      summary: A venue's seat-map summaries (hours tier)
+      description: >
+        The seat maps authored under a venue — summaries only, no geometry —
+        for the back-office venue page (US-019). Seat-map geometry is
+        long-lived, so this read uses the ADR-004 hours tier: Cache-Control:
+        public, max-age=3600, s-maxage=3600. Scoped to the venue, backed by
+        seat_maps_by_venue (ADR-019).
+      parameters:
+        - $ref: '#/components/parameters/VenueId'
+      responses:
+        '200':
+          description: The venue's seat maps
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatMapList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /public/seat-maps/{seatMapId}:
+    get:
+      operationId: getPublicSeatMapGeometry
+      summary: A seat map's full geometry (hours tier)
+      description: >
+        The full nested geometry (sections -> rows -> seats, each ordered by
+        position) of one seat map, for the back-office authoring page (US-019).
+        Hours tier: Cache-Control: public, max-age=3600, s-maxage=3600.
+      parameters:
+        - $ref: '#/components/parameters/SeatMapId'
+      responses:
+        '200':
+          description: The seat map geometry
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatMapGeometry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec
@@ -602,6 +743,16 @@ components:
       in: query
       required: true
       description: Tenant scope (ADR-002); required — no session to infer from
+      schema: { type: string, format: uuid }
+    VenueId:
+      name: venueId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SeatMapId:
+      name: seatMapId
+      in: path
+      required: true
       schema: { type: string, format: uuid }
   headers:
     CacheControl:
@@ -680,6 +831,93 @@ components:
         created_at:
           type: string
           format: date-time
+    SeatMapCreate:
+      type: object
+      required: [organizer_id, name]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1 }
+    SeatMap:
+      type: object
+      required: [id, organizer_id, venue_id, name, version, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        organizer_id: { type: string, format: uuid }
+        venue_id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: integer, format: int32 }
+        status:
+          type: string
+          enum: [draft, published, archived]
+        created_at: { type: string, format: date-time }
+    SeatMapSectionCreate:
+      type: object
+      required: [organizer_id, name, position]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1 }
+        position: { type: integer, format: int32, minimum: 1 }
+    SeatMapRowCreate:
+      type: object
+      required: [organizer_id, section_id, label, position]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        section_id: { type: string, format: uuid }
+        label: { type: string, minLength: 1 }
+        position: { type: integer, format: int32, minimum: 1 }
+    SeatMapSeatCreate:
+      type: object
+      required: [organizer_id, row_id, label, position]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        row_id: { type: string, format: uuid }
+        label: { type: string, minLength: 1 }
+        position: { type: integer, format: int32, minimum: 1 }
+    Seat:
+      type: object
+      required: [id, seat_identity, label, position]
+      properties:
+        id: { type: string, format: uuid }
+        seat_identity: { type: string }
+        label: { type: string }
+        position: { type: integer, format: int32 }
+    SeatRow:
+      type: object
+      required: [id, label, position]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        position: { type: integer, format: int32 }
+        # populated only in the geometry read; omitted on the create response
+        seats:
+          type: array
+          items: { $ref: '#/components/schemas/Seat' }
+    SeatSection:
+      type: object
+      required: [id, name, position]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        position: { type: integer, format: int32 }
+        # populated only in the geometry read; omitted on the create response
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/SeatRow' }
+    SeatMapGeometry:
+      type: object
+      required: [map, sections]
+      properties:
+        map: { $ref: '#/components/schemas/SeatMap' }
+        sections:
+          type: array
+          items: { $ref: '#/components/schemas/SeatSection' }
+    SeatMapList:
+      type: object
+      required: [seat_maps]
+      properties:
+        seat_maps:
+          type: array
+          items: { $ref: '#/components/schemas/SeatMap' }
     EventCreate:
       type: object
       required: [organizer_id, name]

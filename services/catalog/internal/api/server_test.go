@@ -40,6 +40,28 @@ type fakeStore struct {
 	emitted        map[uuid.UUID]bool // performance id -> event_emitted_at set
 	archiveEmitted map[uuid.UUID]bool
 	closureEmitted map[uuid.UUID]int32 // performance id -> closure_emitted_version
+	seatMaps       map[uuid.UUID]store.SeatMap
+	seatSections   map[uuid.UUID]fakeSection
+	seatRows       map[uuid.UUID]fakeRow
+	seatSeats      map[uuid.UUID]fakeSeat
+}
+
+// fakeSection/fakeRow/fakeSeat carry the parent linkage the SQL enforces via
+// FKs, so the in-memory store can mirror the same referential/uniqueness checks.
+type fakeSection struct {
+	store.SeatMapSection
+	seatMapID uuid.UUID
+}
+type fakeRow struct {
+	store.SeatMapRow
+	seatMapID   uuid.UUID
+	sectionID   uuid.UUID
+	sectionName string
+}
+type fakeSeat struct {
+	store.SeatMapSeat
+	seatMapID uuid.UUID
+	rowID     uuid.UUID
 }
 
 func newFakeStore() *fakeStore {
@@ -54,7 +76,144 @@ func newFakeStore() *fakeStore {
 		emitted:        map[uuid.UUID]bool{},
 		archiveEmitted: map[uuid.UUID]bool{},
 		closureEmitted: map[uuid.UUID]int32{},
+		seatMaps:       map[uuid.UUID]store.SeatMap{},
+		seatSections:   map[uuid.UUID]fakeSection{},
+		seatRows:       map[uuid.UUID]fakeRow{},
+		seatSeats:      map[uuid.UUID]fakeSeat{},
 	}
+}
+
+// --- Seat-map authoring (US-019). Mirrors the SQL parent-scoping + draft
+// requirement + UNIQUE constraints so the handler tests exercise the same
+// referential surface the smoke suite proves against real Postgres. ---
+
+func (f *fakeStore) CreateSeatMap(_ context.Context, in store.SeatMapInput) (store.SeatMap, error) {
+	v, ok := f.venues[in.VenueID]
+	if !ok || v.OrganizerID != in.OrganizerID {
+		return store.SeatMap{}, fmt.Errorf("venue: %w", store.ErrNotFound)
+	}
+	m := store.SeatMap{ID: uuid.New(), OrganizerID: in.OrganizerID, VenueID: in.VenueID,
+		Name: in.Name, Version: 1, Status: "draft", CreatedAt: time.Now().UTC()}
+	f.seatMaps[m.ID] = m
+	return m, nil
+}
+
+func (f *fakeStore) draftMap(id, org uuid.UUID) (store.SeatMap, bool) {
+	m, ok := f.seatMaps[id]
+	return m, ok && m.OrganizerID == org && m.Status == "draft"
+}
+
+func (f *fakeStore) AddSeatMapSection(_ context.Context, in store.SeatMapSectionInput) (store.SeatMapSection, error) {
+	if _, ok := f.draftMap(in.SeatMapID, in.OrganizerID); !ok {
+		return store.SeatMapSection{}, fmt.Errorf("seat map: %w", store.ErrNotFound)
+	}
+	for _, s := range f.seatSections {
+		if s.seatMapID == in.SeatMapID && (s.Name == in.Name || s.Position == in.Position) {
+			return store.SeatMapSection{}, fmt.Errorf("section: %w", store.ErrSeatMapConflict)
+		}
+	}
+	sec := store.SeatMapSection{ID: uuid.New(), Name: in.Name, Position: in.Position}
+	f.seatSections[sec.ID] = fakeSection{SeatMapSection: sec, seatMapID: in.SeatMapID}
+	return sec, nil
+}
+
+func (f *fakeStore) AddSeatMapRow(_ context.Context, in store.SeatMapRowInput) (store.SeatMapRow, error) {
+	sec, ok := f.seatSections[in.SectionID]
+	if !ok || sec.seatMapID != in.SeatMapID {
+		return store.SeatMapRow{}, fmt.Errorf("section: %w", store.ErrNotFound)
+	}
+	if _, ok := f.draftMap(in.SeatMapID, in.OrganizerID); !ok {
+		return store.SeatMapRow{}, fmt.Errorf("section: %w", store.ErrNotFound)
+	}
+	for _, r := range f.seatRows {
+		if r.sectionID == in.SectionID && (r.Label == in.Label || r.Position == in.Position) {
+			return store.SeatMapRow{}, fmt.Errorf("row: %w", store.ErrSeatMapConflict)
+		}
+	}
+	row := store.SeatMapRow{ID: uuid.New(), Label: in.Label, Position: in.Position}
+	f.seatRows[row.ID] = fakeRow{SeatMapRow: row, seatMapID: in.SeatMapID, sectionID: in.SectionID, sectionName: sec.Name}
+	return row, nil
+}
+
+func (f *fakeStore) AddSeatMapSeat(_ context.Context, in store.SeatMapSeatInput) (store.SeatMapSeat, error) {
+	row, ok := f.seatRows[in.RowID]
+	if !ok || row.seatMapID != in.SeatMapID {
+		return store.SeatMapSeat{}, fmt.Errorf("row: %w", store.ErrNotFound)
+	}
+	if _, ok := f.draftMap(in.SeatMapID, in.OrganizerID); !ok {
+		return store.SeatMapSeat{}, fmt.Errorf("row: %w", store.ErrNotFound)
+	}
+	identity := row.sectionName + "/" + row.Label + "/" + in.Label
+	for _, s := range f.seatSeats {
+		if s.seatMapID == in.SeatMapID && s.SeatIdentity == identity {
+			return store.SeatMapSeat{}, fmt.Errorf("seat identity: %w", store.ErrSeatMapConflict)
+		}
+		if s.rowID == in.RowID && s.Position == in.Position {
+			return store.SeatMapSeat{}, fmt.Errorf("seat position: %w", store.ErrSeatMapConflict)
+		}
+	}
+	seat := store.SeatMapSeat{ID: uuid.New(), SeatIdentity: identity, Label: in.Label, Position: in.Position}
+	f.seatSeats[seat.ID] = fakeSeat{SeatMapSeat: seat, seatMapID: in.SeatMapID, rowID: in.RowID}
+	return seat, nil
+}
+
+func (f *fakeStore) GetSeatMapGeometry(_ context.Context, seatMapID uuid.UUID) (store.SeatMapGeometry, error) {
+	m, ok := f.seatMaps[seatMapID]
+	if !ok {
+		return store.SeatMapGeometry{}, store.ErrNotFound
+	}
+	g := store.SeatMapGeometry{Map: m, Sections: []store.SeatMapSection{}}
+	var secs []fakeSection
+	for _, s := range f.seatSections {
+		if s.seatMapID == seatMapID {
+			secs = append(secs, s)
+		}
+	}
+	sort.Slice(secs, func(i, j int) bool { return secs[i].Position < secs[j].Position })
+	for _, fs := range secs {
+		sec := fs.SeatMapSection
+		sec.Rows = []store.SeatMapRow{}
+		var rws []fakeRow
+		for _, r := range f.seatRows {
+			if r.sectionID == fs.ID {
+				rws = append(rws, r)
+			}
+		}
+		sort.Slice(rws, func(i, j int) bool { return rws[i].Position < rws[j].Position })
+		for _, fr := range rws {
+			row := fr.SeatMapRow
+			row.Seats = []store.SeatMapSeat{}
+			var sts []fakeSeat
+			for _, st := range f.seatSeats {
+				if st.rowID == fr.ID {
+					sts = append(sts, st)
+				}
+			}
+			sort.Slice(sts, func(i, j int) bool { return sts[i].Position < sts[j].Position })
+			for _, fst := range sts {
+				row.Seats = append(row.Seats, fst.SeatMapSeat)
+			}
+			sec.Rows = append(sec.Rows, row)
+		}
+		g.Sections = append(g.Sections, sec)
+	}
+	return g, nil
+}
+
+func (f *fakeStore) ListVenueSeatMaps(_ context.Context, venueID uuid.UUID) ([]store.SeatMap, error) {
+	out := make([]store.SeatMap, 0)
+	for _, m := range f.seatMaps {
+		if m.VenueID == venueID {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Version != out[j].Version {
+			return out[i].Version < out[j].Version
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
 }
 
 func (f *fakeStore) CreateFestival(_ context.Context, in store.FestivalInput) (store.Festival, error) {

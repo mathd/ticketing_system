@@ -1,0 +1,278 @@
+---
+// Seat-map authoring for one venue (US-019 / TKT-102), draft-only. Staff create
+// a draft map, add sections/rows/seats, and see the authored geometry rendered
+// back. SSR through the gateway (ADR-002 public contract); all catalog calls are
+// server-side (lib/api.ts). Forms POST to this page; on success we redirect
+// (post/redirect/get) so a reload never re-submits, on failure we re-render with
+// the error. Publishing + editing are TKT-103/104 — only draft authoring here.
+import Layout from '../../layouts/Layout.astro';
+import {
+  addSeatMapRow,
+  addSeatMapSeat,
+  addSeatMapSection,
+  createSeatMap,
+  getSeatMapGeometry,
+  getVenue,
+  listVenueSeatMaps,
+  type SeatMapGeometry,
+} from '../../lib/api';
+
+const venueId = Astro.params.id!;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const here = `${base}/venues/${venueId}`;
+
+let error: string | null = null;
+// The map to show after this request: form-supplied on POST, query param on GET.
+let selectedId = Astro.url.searchParams.get('map');
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const action = form.get('_action');
+  const mapId = String(form.get('map_id') ?? '');
+  if (mapId) selectedId = mapId;
+  try {
+    if (action === 'create-map') {
+      const m = await createSeatMap(venueId, String(form.get('name') ?? ''));
+      return Astro.redirect(`${here}?map=${m.id}`);
+    } else if (action === 'add-section') {
+      await addSeatMapSection(mapId, {
+        name: String(form.get('name') ?? ''),
+        position: Number(form.get('position')),
+      });
+      return Astro.redirect(`${here}?map=${mapId}`);
+    } else if (action === 'add-row') {
+      await addSeatMapRow(mapId, {
+        section_id: String(form.get('section_id') ?? ''),
+        label: String(form.get('label') ?? ''),
+        position: Number(form.get('position')),
+      });
+      return Astro.redirect(`${here}?map=${mapId}`);
+    } else if (action === 'add-seat') {
+      await addSeatMapSeat(mapId, {
+        row_id: String(form.get('row_id') ?? ''),
+        label: String(form.get('label') ?? ''),
+        position: Number(form.get('position')),
+      });
+      return Astro.redirect(`${here}?map=${mapId}`);
+    }
+  } catch (e) {
+    error = e instanceof Error ? e.message : 'request failed';
+  }
+}
+
+const venue = await getVenue(venueId);
+const maps = await listVenueSeatMaps(venueId);
+let geometry: SeatMapGeometry | null = null;
+if (selectedId) {
+  try {
+    geometry = await getSeatMapGeometry(selectedId);
+  } catch {
+    geometry = null;
+  }
+}
+// Flatten rows for the add-seat select: each option needs section + row context.
+const rowOptions =
+  geometry?.sections.flatMap((s) =>
+    (s.rows ?? []).map((r) => ({ id: r.id, label: `${s.name} / ${r.label}` })),
+  ) ?? [];
+---
+
+<Layout title={`Seat maps — ${venue?.name ?? venueId}`}>
+  <p><a href={base + '/'}>← Venues</a></p>
+  <h1>{venue?.name ?? 'Venue'} — seat maps</h1>
+
+  {error && <p class="error" role="alert">Could not save: {error}</p>}
+
+  <section class="panel">
+    <h2>Draft maps</h2>
+    <ul class="maps">
+      {maps.map((m) => (
+        <li>
+          <a href={`${here}?map=${m.id}`} aria-current={m.id === selectedId ? 'true' : undefined}>
+            {m.name}
+          </a>
+          <span class="badge">v{m.version} · {m.status}</span>
+        </li>
+      ))}
+      {maps.length === 0 && <li class="empty">No seat maps yet.</li>}
+    </ul>
+    <form method="POST" class="row-form">
+      <input type="hidden" name="_action" value="create-map" />
+      <input type="text" name="name" placeholder="New draft map name" required />
+      <button type="submit">Create draft map</button>
+    </form>
+  </section>
+
+  {geometry && (
+    <section class="panel">
+      <h2>{geometry.map.name} <span class="badge">v{geometry.map.version} · {geometry.map.status}</span></h2>
+
+      <div class="forms">
+        <form method="POST" class="row-form">
+          <input type="hidden" name="_action" value="add-section" />
+          <input type="hidden" name="map_id" value={geometry.map.id} />
+          <input type="text" name="name" placeholder="Section name" required />
+          <input type="number" name="position" placeholder="Pos" min="1" required />
+          <button type="submit">Add section</button>
+        </form>
+
+        {geometry.sections.length > 0 && (
+          <form method="POST" class="row-form">
+            <input type="hidden" name="_action" value="add-row" />
+            <input type="hidden" name="map_id" value={geometry.map.id} />
+            <select name="section_id" required>
+              {geometry.sections.map((s) => <option value={s.id}>{s.name}</option>)}
+            </select>
+            <input type="text" name="label" placeholder="Row label" required />
+            <input type="number" name="position" placeholder="Pos" min="1" required />
+            <button type="submit">Add row</button>
+          </form>
+        )}
+
+        {rowOptions.length > 0 && (
+          <form method="POST" class="row-form">
+            <input type="hidden" name="_action" value="add-seat" />
+            <input type="hidden" name="map_id" value={geometry.map.id} />
+            <select name="row_id" required>
+              {rowOptions.map((r) => <option value={r.id}>{r.label}</option>)}
+            </select>
+            <input type="text" name="label" placeholder="Seat label" required />
+            <input type="number" name="position" placeholder="Pos" min="1" required />
+            <button type="submit">Add seat</button>
+          </form>
+        )}
+      </div>
+
+      <div class="geometry">
+        {geometry.sections.length === 0 && <p class="empty">No sections yet — add one above.</p>}
+        {geometry.sections.map((s) => (
+          <div class="sec">
+            <h3>{s.name} <span class="muted">#{s.position}</span></h3>
+            {(s.rows ?? []).map((r) => (
+              <div class="rowline">
+                <span class="rlabel">Row {r.label}</span>
+                <span class="seats">
+                  {(r.seats ?? []).map((seat) => (
+                    <span class="seat" title={seat.seat_identity}>{seat.label}</span>
+                  ))}
+                  {(r.seats ?? []).length === 0 && <span class="muted">no seats</span>}
+                </span>
+              </div>
+            ))}
+            {(s.rows ?? []).length === 0 && <p class="muted">no rows</p>}
+          </div>
+        ))}
+      </div>
+    </section>
+  )}
+</Layout>
+
+<style>
+  h1 {
+    font-size: 1.4rem;
+  }
+  .panel {
+    margin: 1.5rem 0;
+    padding: 1.1rem 1.25rem;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .panel h2 {
+    margin-top: 0;
+    font-size: 1.1rem;
+  }
+  .error {
+    padding: 0.6rem 0.9rem;
+    border: 1px solid #b42318;
+    background: #fef3f2;
+    color: #b42318;
+    border-radius: 6px;
+  }
+  ul.maps {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 1rem;
+  }
+  ul.maps li {
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  ul.maps a[aria-current='true'] {
+    font-weight: 700;
+  }
+  .badge {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-left: 0.5rem;
+  }
+  .muted {
+    color: var(--muted);
+  }
+  .forms {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-bottom: 1.25rem;
+  }
+  .row-form {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .row-form input[type='text'] {
+    flex: 1 1 10rem;
+    min-width: 8rem;
+  }
+  .row-form input[type='number'] {
+    width: 5rem;
+  }
+  .row-form input,
+  .row-form select,
+  .row-form button {
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font: inherit;
+  }
+  .row-form button {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    cursor: pointer;
+  }
+  .sec {
+    padding: 0.6rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .sec h3 {
+    margin: 0.3rem 0;
+    font-size: 1rem;
+  }
+  .rowline {
+    display: flex;
+    gap: 0.75rem;
+    align-items: baseline;
+    padding: 0.2rem 0;
+  }
+  .rlabel {
+    min-width: 5rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .seats {
+    display: flex;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+  }
+  .seat {
+    display: inline-block;
+    min-width: 1.6rem;
+    text-align: center;
+    padding: 0.15rem 0.35rem;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-size: 0.85rem;
+  }
+</style>
