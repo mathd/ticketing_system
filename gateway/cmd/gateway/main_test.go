@@ -11,13 +11,10 @@ func TestBackofficeRoute(t *testing.T) {
 		t.Fatalf("gateway must proxy /admin/ to BACKOFFICE_URL, got %q", routes["/admin/"])
 	}
 	// The catch-all stays the storefront; longest-prefix (ServeMux) resolves
-	// /admin/ ahead of / regardless of map order.
+	// /admin/ ahead of / regardless of map order. The strip logic keys on the
+	// /api/ prefix, so a non-/api/ web shell like /admin/ is passed through
+	// intact — that behavior is exercised end-to-end by the smoke suite.
 	if routes["/"] != "STOREFRONT_URL" {
 		t.Fatalf("/ must remain the storefront catch-all, got %q", routes["/"])
-	}
-	// /admin/ is not an /api/ prefix, so it must not be path-stripped — the
-	// app serves under its base. (Strip logic keys on the /api/ prefix.)
-	if got := "/admin/"; got[:5] == "/api/" {
-		t.Fatalf("admin prefix must not be an /api/ route")
 	}
 }
