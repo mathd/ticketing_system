@@ -1,8 +1,10 @@
 {
   "key": "TKT-102",
   "type": "Story",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "summary": "US-019: Author a draft seat map — sections, rows, seats",
