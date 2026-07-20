@@ -81,5 +81,45 @@
       "key": "TKT-105"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-103 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the code-seam survey + the TKT-3 decomposition + owner decisions (2026-07-20: back-office = Astro+React; versioning proof is catalog-side via a pinning contract). **No `open owner:human` items remain** — the board hard-block is cleared.\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Whether inventory provisions seated pools in lockstep or safely ignores the seated fork for now — an AC requires the plan to decide and test it. ADR-014 flags that inventory hard-switches on schema; dispatch-on-schema (ADR-017) is the tolerance mechanism. Resolvable in Planning; no product call.\n\n**Ready to prioritize (Gate 1).**"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Draft maps can't be offered; this publishes a map and lets a performance be offered as seated, and defines the catalog→inventory event contract that downstream seat claims (TKT-80) and buyer selection (TKT-35) consume — coexisting with GA."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: seat-map draft→published transition (ADR-018 lock/emit-after-commit); a performance references a published map version; performance.published payload conveys the seated shape under a new schema fork (ADR-017); inventory consumer proven not to break (lockstep provision OR safe ignore). OUT: the seat-level claim itself (TKT-80/TKT-4); edit-after-publish safety (TKT-104); buyer UI (TKT-35)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether inventory provisions seated pools in lockstep or safely ignores the seated fork for now — an AC requires the plan to decide and test it. ADR-014 flags that inventory hard-switches on schema; dispatch-on-schema (ADR-017) is the tolerance mechanism. Resolvable in Planning; no product call."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-102 (needs a draft seat-map model to publish). Linked. Also the contract this ticket ships is consumed by TKT-80 (cross-epic, downstream — TKT-80 is blocked-by the epic)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Map publish mirrors performance publish/archive: decide under FOR UPDATE, emit after commit, mark the outbox column (ADR-018). Seated payload rides a new schema fork on platform.catalog.performance.published; envelope + dispatch-on-schema per ADR-017; contract/drift tests per ADR-009. Claim core unchanged (ADR-005)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Publish + seated-offer + the event fork + an inventory-tolerance test — the minimum that makes 'GA and seated coexist' true and the contract real, without building the claim."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: a map publishes under the lock/emit rule; a seated performance publishes referencing a map version while GA performances are untouched (M1 green); the published event carries the seated shape under a new schema, pinned by a contract test; inventory's consumer is proven safe against the new fork; publish is idempotent at the stream."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-018 (transition concurrency), ADR-017 (schema evolution/dispatch), ADR-014 (inventory schema hard-switch warning), ADR-005 (no fork), ADR-009 (contract). governingAdrs present."
+    }
+  }
 }
