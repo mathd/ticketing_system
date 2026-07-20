@@ -64,5 +64,45 @@
       "key": "TKT-105"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-104 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the code-seam survey + the TKT-3 decomposition + owner decisions (2026-07-20: back-office = Astro+React; versioning proof is catalog-side via a pinning contract). **No `open owner:human` items remain** — the board hard-block is cleared.\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Whether an orphaning edit is hard-rejected vs expressed as an explicit recorded remap — a design choice for the ADR/plan, both satisfy the COS. Not a product decision.\n\n**Ready to prioritize (Gate 1).**"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The epic's headline COS: edits to a published map must never orphan or duplicate a sold/held seat. Proven catalog-side via a seat-identity pinning contract (owner decision 2026-07-20), independent of inventory seat-holds."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: editing a published map yields a NEW version (prior version immutable); a seat-identity pinning contract (published seat identity stable across versions) documented as an ADR; sold-case invariant test; concurrency test (edit vs sale-reference). OUT: building inventory per-seat holds and the HELD-seat interplay (that is TKT-80's AC, which consumes this contract); the editing UI (TKT-105)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether an orphaning edit is hard-rejected vs expressed as an explicit recorded remap — a design choice for the ADR/plan, both satisfy the COS. Not a product decision."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-103 (needs a published map + the seated slot/contract to edit and to reference from a sale). Linked. Delivers the pinning contract TKT-80 (cross-epic) later consumes."
+    },
+    "approach": {
+      "state": "met",
+      "note": "New-version transition under the ADR-018 lock/emit discipline; the lock closes the edit-vs-sale race. Pinning-contract ADR: a seat identity any sale references is immutable/resolvable across versions. Spirit of ADR-026 (never strand a confirmed claim; forward-only). Discipline (ADR-021): this is honest-writer consistency, NOT a tamper claim — do not overclaim."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Backend safety invariant + the pinning-contract ADR + sold-case & concurrency tests. Watch the ~400-line budget; if the plan estimates over, split the ADR/contract out as its own slice first (noted in the epic verdict)."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: an edit produces a new version, prior stays immutable; a seat referenced by a sold record is never orphaned (still resolves) nor duplicated (maps to exactly one seat) across any edit sequence; a concurrency test proves the edit-vs-sale race is closed; the pinning contract is written so TKT-80's held-seat AC consumes it with no catalog change."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-018 (concurrency precedent), ADR-026 (never-strand-a-confirmed-claim spirit), ADR-005 (identity the claim references stays resolvable), ADR-021 (name-the-adversary discipline; do not overclaim tamper-evidence). governingAdrs present."
+    }
+  }
 }
