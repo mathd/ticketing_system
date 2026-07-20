@@ -3,7 +3,7 @@
   "type": "Story",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": {
