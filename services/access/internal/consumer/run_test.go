@@ -83,27 +83,27 @@ func TestWaitConsumeTerminationErrorNamesConsumer(t *testing.T) {
 	}
 }
 
-// TestWaitConsumeReturnsPromptlyWhenBothSignalsReady guards against a future
-// refactor that orders the select arms into a deadlock: with both ctx cancelled
-// and closed already closed, either arm is a defensible outcome, but the helper
-// must return in bounded time and never block.
-func TestWaitConsumeReturnsPromptlyWhenBothSignalsReady(t *testing.T) {
+// TestWaitConsumeTerminationWinsOverLiveContext pins that the termination arm is
+// taken deterministically when only `closed` is ready and the context is still
+// live — the real running-consumer scenario, where ctx.Done() is NOT ready. This
+// is the deterministic counterpart to the async-termination test: it proves the
+// select does not require ctx to be cancelled to observe termination. (A test
+// that closes both channels cannot assert an arm — Go picks a ready case at
+// random — so it would only prove "no deadlock", which the tests above already
+// prove; this one asserts the outcome instead.)
+func TestWaitConsumeTerminationWinsOverLiveContext(t *testing.T) {
 	var ready atomic.Bool
 	ready.Store(true)
 	closed := make(chan struct{})
 	close(closed)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel() // ctx stays live; only `closed` is ready
 
-	done := make(chan struct{})
-	go func() {
-		_ = waitConsume(ctx, closed, &ready, "test-consumer")
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("waitConsume blocked when both signals were ready")
+	err := waitConsume(ctx, closed, &ready, "access-ticket-issuer")
+	if err == nil {
+		t.Fatal("expected the termination arm to win when only closed is ready")
+	}
+	if ready.Load() {
+		t.Fatal("termination arm must latch ready false")
 	}
 }
