@@ -1,0 +1,12 @@
+{
+  "key": "TKT-106",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Smoke contract validator skips catalog (allowlist omits it)",
+  "description": "### Smoke contract-validator allowlist omits catalog\n\n`smoke/contract_validation_test.go:~59` gates response contract-validation on `strings.Contains(\" inventory commerce payments access \", \" \"+service+\" \")` — **catalog is not in the allowlist**, so `validateServiceResponse` returns early for every `/api/catalog/*` response reached through the gateway in smoke. Catalog responses ARE still validated in-process (catalog's `NewRouter` wraps handlers in the response validator, ADR-028), so this is not a correctness hole — but the smoke suite gives catalog reads a false sense of end-to-end contract coverage. Surfaced during TKT-101 ai-review (kimi-k3): the new `/api/catalog/public/venues` smoke assertion runs the validator as a no-op.\n\n**Acceptance:** add `catalog` to the allowlist; FIRST verify no existing catalog endpoint drifts once validated (the reviewer flagged this may surface latent drift on endpoints never smoke-validated). If drift surfaces, fix the drift or scope the change per endpoint.\n\nOrigin: TKT-101 ai-review incidental finding (pre-existing, not introduced by TKT-101).",
+  "comments": [],
+  "links": []
+}
