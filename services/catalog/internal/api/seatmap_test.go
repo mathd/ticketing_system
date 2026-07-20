@@ -193,6 +193,20 @@ func TestDuplicateSectionNameIsConflict(t *testing.T) {
 	}
 }
 
+// TestSeatMapRejectsSlashInLabel: '/' is the seat-identity delimiter, so a
+// component carrying one is rejected at the contract (400) — otherwise distinct
+// seats could compose to the same identity.
+func TestSeatMapRejectsSlashInLabel(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "Hall")
+	m := seedDraftMap(t, e, venueID, "Floor")
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{OrganizerId: orgID, Name: "A/B", Position: 1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("section name with '/' must be 400, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestGetGeometryUnknownMap(t *testing.T) {
 	e := newEnv(t)
 	rec := e.do("GET", "/public/seat-maps/"+orgID.String(), nil)

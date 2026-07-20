@@ -855,7 +855,9 @@ components:
       required: [organizer_id, name, position]
       properties:
         organizer_id: { type: string, format: uuid }
-        name: { type: string, minLength: 1 }
+        # no '/': it is the seat-identity delimiter, so a component carrying one
+        # would make distinct seats compose to the same identity.
+        name: { type: string, minLength: 1, pattern: '^[^/]+$' }
         position: { type: integer, format: int32, minimum: 1 }
     SeatMapRowCreate:
       type: object
@@ -863,7 +865,7 @@ components:
       properties:
         organizer_id: { type: string, format: uuid }
         section_id: { type: string, format: uuid }
-        label: { type: string, minLength: 1 }
+        label: { type: string, minLength: 1, pattern: '^[^/]+$' }
         position: { type: integer, format: int32, minimum: 1 }
     SeatMapSeatCreate:
       type: object
@@ -871,7 +873,7 @@ components:
       properties:
         organizer_id: { type: string, format: uuid }
         row_id: { type: string, format: uuid }
-        label: { type: string, minLength: 1 }
+        label: { type: string, minLength: 1, pattern: '^[^/]+$' }
         position: { type: integer, format: int32, minimum: 1 }
     Seat:
       type: object

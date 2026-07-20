@@ -205,7 +205,7 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, store.ErrEmptyFestival):
 		writeJSON(w, http.StatusConflict, Error{Error: "festival has no members"})
 	case errors.Is(err, store.ErrSeatMapConflict):
-		writeJSON(w, http.StatusConflict, Error{Error: "duplicate seat, row, section, name, or position within the seat map"})
+		writeJSON(w, http.StatusConflict, Error{Error: "duplicate name or position within the seat map"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})

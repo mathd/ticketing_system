@@ -28,7 +28,11 @@ CREATE TABLE seat_map_sections (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     organizer_id uuid NOT NULL REFERENCES organizers (id),
     seat_map_id  uuid NOT NULL REFERENCES seat_maps (id),
-    name         text NOT NULL,
+    -- '/' is the seat-identity delimiter (see seat_map_seats.seat_identity);
+    -- forbidding it in the components keeps the composed identity unambiguous,
+    -- so distinct seats can never collide into one identity. Enforced at the API
+    -- too (openapi pattern) — this is the direct-SQL backstop.
+    name         text NOT NULL CHECK (name NOT LIKE '%/%'),
     position     integer NOT NULL CHECK (position > 0),
     UNIQUE (seat_map_id, name),
     UNIQUE (seat_map_id, position)
@@ -48,7 +52,8 @@ CREATE TABLE seat_map_rows (
     -- uniqueness scope); also gives the geometry read an index to scope by.
     seat_map_id  uuid NOT NULL REFERENCES seat_maps (id),
     section_id   uuid NOT NULL REFERENCES seat_map_sections (id),
-    label        text NOT NULL,   -- 'A', 'AA', '12' — venues don't number uniformly
+    -- 'A', 'AA', '12' — venues don't number uniformly; no '/' (identity delimiter).
+    label        text NOT NULL CHECK (label NOT LIKE '%/%'),
     position     integer NOT NULL CHECK (position > 0),
     UNIQUE (section_id, label),
     UNIQUE (section_id, position)
@@ -63,7 +68,8 @@ CREATE TABLE seat_map_seats (
     -- Stable seat identity: the contract TKT-104 pins against. Composed once,
     -- server-side, from the parent section/row/seat labels and never mutated.
     seat_identity text NOT NULL,
-    label         text NOT NULL,   -- display label; may differ from the identity
+    -- display label; may differ from the identity; no '/' (identity delimiter).
+    label         text NOT NULL CHECK (label NOT LIKE '%/%'),
     position      integer NOT NULL CHECK (position > 0),
     UNIQUE (seat_map_id, seat_identity),   -- duplicate seat within a map version -> 409
     UNIQUE (row_id, position)

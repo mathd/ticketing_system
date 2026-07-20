@@ -1578,7 +1578,7 @@ func (p *Postgres) AddSeatMapSeat(ctx context.Context, in SeatMapSeatInput) (Sea
 func (p *Postgres) ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]SeatMap, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT id, organizer_id, venue_id, name, version, status, created_at
-		   FROM seat_maps WHERE venue_id = $1 ORDER BY version, name`, venueID)
+		   FROM seat_maps WHERE venue_id = $1 ORDER BY version, name, id`, venueID)
 	if err != nil {
 		return nil, fmt.Errorf("list seat maps: %w", err)
 	}

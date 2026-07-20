@@ -211,7 +211,10 @@ func (f *fakeStore) ListVenueSeatMaps(_ context.Context, venueID uuid.UUID) ([]s
 		if out[i].Version != out[j].Version {
 			return out[i].Version < out[j].Version
 		}
-		return out[i].Name < out[j].Name
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID.String() < out[j].ID.String()
 	})
 	return out, nil
 }

@@ -191,6 +191,13 @@ func TestGetSeatMapGeometryIsSeatScoped(t *testing.T) {
 	// seed many other maps, each carrying one seat that references this row (so
 	// seat_map_id varies while the FK stays valid), and ANALYZE. The target
 	// read stays selective, so an index scan must win.
+	//
+	// NB: this raw bulk insert deliberately pairs a bulk seat_map_id with the
+	// target's row_id — a cross-map parentage NO API path allows (the store's
+	// parent-scoped INSERT ... SELECT forbids it). It exists only to grow the
+	// table so the planner rejects a seq scan; the target read filters
+	// seat_map_id and never sees these rows. Do not copy this shape into a test
+	// that exercises the authoring path.
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO seat_maps(id,organizer_id,venue_id,name)
 		SELECT gen_random_uuid(), $1, $2, 'bulk-'||g FROM generate_series(1,3000) g`,
