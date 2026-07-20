@@ -27,6 +27,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "TKT-27 learning (2026-07-12): external AI review sessions may attach stale project context and confidently cite nonexistent files. Require a fresh external-tool project plus repository fingerprint checks (HEAD and known file/toolchain facts) before accepting review findings. Candidate promotion target: project-local sdlc-ticket cross-model review instructions."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### 🧠 Promoted from TKT-103 — composite-FK tenancy is the repo idiom for `performances` cross-refs\n\n**Pattern:** cross-table tenancy on a `performances` foreign reference is enforced at the DATABASE with a **composite FK** `(child_ref, organizer_id[, venue_id]) → parent(id, organizer_id[, venue_id])`, backed by a composite UNIQUE on the parent — NOT a store-query check alone.\n\n**Why:** a plain single-column FK only proves the parent row exists; the composite FK makes a cross-organizer/cross-venue reference *unrepresentable* even for a direct SQL / repair path (ADR-002 physical boundary), which a store-query check does not.\n\n**Instances:** festivals capacity group (`0006_festivals.sql`: `performances_capacity_group_fk → festivals(id, organizer_id)`); seat maps (`0010_publish_seat_maps.sql`: `performances_seat_map_fk → seat_maps(id, organizer_id, venue_id)`).\n\n**MATCH SIMPLE caveat (safe here):** the child ref column is nullable; when NULL the composite FK is skipped (correct for a GA/ungrouped slot). When non-NULL, organizer_id/venue_id are NOT NULL so all columns are present and the FK is fully enforced. No partial-set hole.\n\n**Apply when:** any future `performances → X` reference (or similar owned cross-ref). Reach for the composite FK first; a store-query tenancy check is defense-in-depth on top, not the primary guard. TKT-103's ai-review (gpt-5.6-luna) caught a plan that used only the store-query check — it was the plan's one net-new, single-model-reviewed element.\n"
     }
   ]
 }
