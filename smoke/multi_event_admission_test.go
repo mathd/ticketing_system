@@ -208,6 +208,20 @@ func ticketID(t *testing.T, ctx context.Context, guestRef string) string {
 	return id
 }
 
+// ticketIDByEvent resolves the ticket id owning a lifecycle event (the event id
+// is the occurrence id). Used when a guest order issued multiple tickets and the
+// assertion must target the specific one an occurrence landed on.
+func ticketIDByEvent(t *testing.T, ctx context.Context, eventID string) string {
+	t.Helper()
+	conn := accessConn(t, ctx)
+	defer func() { _ = conn.Close(ctx) }()
+	var id string
+	if err := conn.QueryRow(ctx, `SELECT ticket_id::text FROM lifecycle_events WHERE id=$1`, eventID).Scan(&id); err != nil {
+		t.Fatalf("resolve ticket id for event %s: %v", eventID, err)
+	}
+	return id
+}
+
 // alarmEnvelopesFor loads every alarm-outbox envelope for a subject+ticket,
 // decoded. Alarms are owed in the same transaction as the trail write, so they
 // exist synchronously once the API call that produced them returns; publication
@@ -424,22 +438,35 @@ func TestOfflineReconciliationOutOfOrderAndConflicts(t *testing.T) {
 	// alarm keyed by its occurrence — removing oweConflictAlarm must fail here,
 	// not slip through as a green run. The redemption (occs[0]) is not a conflict
 	// and owes no alarm.
-	conflictAlarms := alarmEnvelopesFor(t, ctx, "platform.access.admission-conflict.alarm", ticketID(t, ctx, guestRef))
-	alarmedOccs := map[string]bool{}
-	for _, a := range conflictAlarms {
-		if a.Schema != 1 {
-			t.Fatalf("admission-conflict alarm schema = %d, want 1", a.Schema)
+	// Exactly one alarm per conflicting occurrence, zero for the redemption, and
+	// no alarms for any other occurrence on this ticket (duplicate or misrouted
+	// operator alarms are themselves the defect). Resolve the ticket from the
+	// redeemed occurrence, NOT from the guest order: the order issued two tickets
+	// and only this one was reconciled, so a guest-ref lookup could pick the
+	// other ticket.
+	ticket := ticketIDByEvent(t, ctx, occs[0].id)
+	retry(t, 15*time.Second, func() error {
+		conflictAlarms := alarmEnvelopesFor(t, ctx, "platform.access.admission-conflict.alarm", ticket)
+		alarmCountByOcc := map[string]int{}
+		for _, a := range conflictAlarms {
+			if a.Schema != 1 {
+				return fmt.Errorf("admission-conflict alarm schema = %d, want 1", a.Schema)
+			}
+			alarmCountByOcc[a.Data.OccurrenceID]++
 		}
-		alarmedOccs[a.Data.OccurrenceID] = true
-	}
-	for _, o := range occs[1:] {
-		if !alarmedOccs[o.id] {
-			t.Fatalf("no admission-conflict alarm for conflicting occurrence %s (have %v)", o.id, alarmedOccs)
+		for _, o := range occs[1:] {
+			if alarmCountByOcc[o.id] != 1 {
+				return fmt.Errorf("admission-conflict alarms for conflicting occurrence %s = %d, want exactly 1 (all: %v)", o.id, alarmCountByOcc[o.id], alarmCountByOcc)
+			}
 		}
-	}
-	if alarmedOccs[occs[0].id] {
-		t.Fatalf("redemption occurrence %s must not owe a conflict alarm", occs[0].id)
-	}
+		if alarmCountByOcc[occs[0].id] != 0 {
+			return fmt.Errorf("redemption occurrence %s owes %d conflict alarms, want 0", occs[0].id, alarmCountByOcc[occs[0].id])
+		}
+		if len(alarmCountByOcc) != len(occs)-1 {
+			return fmt.Errorf("admission-conflict alarms reference %d distinct occurrences, want %d (all: %v)", len(alarmCountByOcc), len(occs)-1, alarmCountByOcc)
+		}
+		return nil
+	})
 
 	// COS-1 (reconcile half): replaying a recorded occurrence is synced, appends
 	// nothing, and the history does not grow.
@@ -705,29 +732,42 @@ func TestPassEntryExitAndDerivedConflictWithdrawal(t *testing.T) {
 	// outbox carries both transitions for the same conflict identity, with the
 	// withdrawal at a higher version than the raise. Retry: the withdrawal alarm
 	// is owed in the exit's transaction, observable once committed.
+	// The conflict is keyed to the offending fact's occurrence (conflicts.go:104):
+	// the reconciliation entry that opened the second entry is reconEntryOcc, so
+	// both transitions carry it. Assert exactly one raised (v1) and one withdrawn
+	// (v2), both schema 1, both bound to reconEntryOcc and the same conflict id —
+	// a schema-0 or misattributed alarm must fail here.
 	retry(t, 15*time.Second, func() error {
 		alarms := alarmEnvelopesFor(t, ctx, "platform.access.admission-policy-conflict.alarm", ticketID(t, ctx, guestRef))
-		var raised, withdrawn *alarmEnvelope
-		for i := range alarms {
-			a := alarms[i]
+		var raised, withdrawn []alarmEnvelope
+		for _, a := range alarms {
 			if a.Data.Rule != "exit_required" {
 				continue
 			}
 			switch a.Data.Status {
 			case "raised":
-				raised = &alarms[i]
+				raised = append(raised, a)
 			case "withdrawn":
-				withdrawn = &alarms[i]
+				withdrawn = append(withdrawn, a)
 			}
 		}
-		if raised == nil || withdrawn == nil {
-			return fmt.Errorf("policy-conflict alarms incomplete: raised=%v withdrawn=%v", raised != nil, withdrawn != nil)
+		if len(raised) != 1 || len(withdrawn) != 1 {
+			return fmt.Errorf("policy-conflict transitions: raised=%d withdrawn=%d, want exactly 1 each", len(raised), len(withdrawn))
 		}
-		if raised.Data.ConflictID == "" || raised.Data.ConflictID != withdrawn.Data.ConflictID {
-			return fmt.Errorf("raise/withdraw conflict_id mismatch: %q vs %q", raised.Data.ConflictID, withdrawn.Data.ConflictID)
+		r, w := raised[0], withdrawn[0]
+		for _, a := range []alarmEnvelope{r, w} {
+			if a.Schema != 1 {
+				return fmt.Errorf("policy-conflict alarm %s schema = %d, want 1", a.Data.Status, a.Schema)
+			}
+			if a.Data.OccurrenceID != reconEntryOcc {
+				return fmt.Errorf("policy-conflict %s occurrence_id = %q, want reconEntryOcc %q", a.Data.Status, a.Data.OccurrenceID, reconEntryOcc)
+			}
 		}
-		if withdrawn.Data.Version <= raised.Data.Version {
-			return fmt.Errorf("withdrawn version %d must exceed raised version %d", withdrawn.Data.Version, raised.Data.Version)
+		if r.Data.ConflictID == "" || r.Data.ConflictID != w.Data.ConflictID {
+			return fmt.Errorf("raise/withdraw conflict_id mismatch: %q vs %q", r.Data.ConflictID, w.Data.ConflictID)
+		}
+		if r.Data.Version != 1 || w.Data.Version != 2 {
+			return fmt.Errorf("versions raised=%d withdrawn=%d, want 1 then 2", r.Data.Version, w.Data.Version)
 		}
 		return nil
 	})
