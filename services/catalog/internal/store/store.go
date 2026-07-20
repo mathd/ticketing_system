@@ -43,6 +43,11 @@ var (
 	// sharing a name/label/position within their scope. One sentinel maps every
 	// such unique violation to 409 so none falls through to a 500.
 	ErrSeatMapConflict = errors.New("seat map conflict: duplicate seat, row, section, name, or position")
+	// ErrSeatMapNotPublished reports a seated performance referencing a seat map
+	// that exists and belongs to the organizer/venue but is not in the published
+	// state (TKT-103): a slot may only be seated against a published version, so
+	// a draft/archived reference is rejected rather than silently accepted.
+	ErrSeatMapNotPublished = errors.New("seat map is not published")
 )
 
 type SeriesTransitionConflict struct {
@@ -176,8 +181,13 @@ type Performance struct {
 	// CapacityGroupID identifies the festival capacity group for grouped
 	// festival days; nil keeps ordinary slots keyed by their own id.
 	CapacityGroupID *uuid.UUID
-	Status          string // draft | published | archived
-	PublishedAt     *time.Time
+	// SeatMapID references the exact published seat-map version this slot is
+	// seated against (TKT-103); nil is a GA slot. A version is a seat_maps row
+	// (TKT-102), so the id IS the version. Seated and CapacityGroupID are
+	// mutually exclusive — a festival day is GA-shared-capacity by definition.
+	SeatMapID   *uuid.UUID
+	Status      string // draft | published | archived
+	PublishedAt *time.Time
 	ArchivedAt      *time.Time
 	CreatedAt       time.Time
 	// Capacity is the publication-time snapshot used to provision the
@@ -208,7 +218,9 @@ type SeatMap struct {
 	VenueID     uuid.UUID
 	Name        string
 	Version     int32
-	Status      string // draft | published | archived — only draft is writable in TKT-102
+	Status      string // draft | published | archived
+	// PublishedAt is set when the map is published (TKT-103); nil while draft.
+	PublishedAt *time.Time
 	CreatedAt   time.Time
 }
 
@@ -299,6 +311,10 @@ type PerformanceInput struct {
 	ClosesAt      *string    // "HH:MM", required for day kinds
 	Timezone      string
 	ReEntry       ReEntryPolicy // defaults to {Mode: single} when Mode empty
+	// SeatMapID, when set, makes this a seated slot referencing a published
+	// seat-map version (TKT-103). The store validates the map exists, is
+	// published, and shares the performance's organizer and venue; nil is GA.
+	SeatMapID *uuid.UUID
 }
 
 type TicketTypeInput struct {
@@ -379,6 +395,13 @@ type Store interface {
 	AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error)
 	AddSeatMapRow(ctx context.Context, in SeatMapRowInput) (SeatMapRow, error)
 	AddSeatMapSeat(ctx context.Context, in SeatMapSeatInput) (SeatMapSeat, error)
+	// PublishSeatMap flips a seat map draft->published (TKT-103, idempotent,
+	// monotonic/lock-free per ADR-018). needsEmit is true while the
+	// seat_map.published domain event has not been ack'd (event_emitted_at is
+	// null) — the caller emits, then marks. A published version is immutable:
+	// the Add* write gate (status='draft') refuses further authoring.
+	PublishSeatMap(ctx context.Context, id uuid.UUID) (m SeatMap, needsEmit bool, err error)
+	MarkSeatMapEventEmitted(ctx context.Context, id uuid.UUID) error
 	// GetSeatMapGeometry returns a map's full nested geometry, each level
 	// ordered by position; ErrNotFound if the map does not exist.
 	GetSeatMapGeometry(ctx context.Context, seatMapID uuid.UUID) (SeatMapGeometry, error)

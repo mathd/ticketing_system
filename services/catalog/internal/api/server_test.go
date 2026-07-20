@@ -41,6 +41,7 @@ type fakeStore struct {
 	archiveEmitted map[uuid.UUID]bool
 	closureEmitted map[uuid.UUID]int32 // performance id -> closure_emitted_version
 	seatMaps       map[uuid.UUID]store.SeatMap
+	seatMapEmitted map[uuid.UUID]bool // seat map id -> seat_map.published event_emitted_at set
 	seatSections   map[uuid.UUID]fakeSection
 	seatRows       map[uuid.UUID]fakeRow
 	seatSeats      map[uuid.UUID]fakeSeat
@@ -101,6 +102,34 @@ func (f *fakeStore) CreateSeatMap(_ context.Context, in store.SeatMapInput) (sto
 func (f *fakeStore) draftMap(id, org uuid.UUID) (store.SeatMap, bool) {
 	m, ok := f.seatMaps[id]
 	return m, ok && m.OrganizerID == org && m.Status == "draft"
+}
+
+func (f *fakeStore) PublishSeatMap(_ context.Context, id uuid.UUID) (store.SeatMap, bool, error) {
+	m, ok := f.seatMaps[id]
+	if !ok {
+		return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
+	}
+	if m.Status == "archived" {
+		return store.SeatMap{}, false, store.ErrIllegalTransition
+	}
+	if m.Status != "published" {
+		now := time.Now().UTC()
+		m.Status = "published"
+		m.PublishedAt = &now
+		f.seatMaps[id] = m
+	}
+	if f.seatMapEmitted == nil {
+		f.seatMapEmitted = map[uuid.UUID]bool{}
+	}
+	return m, !f.seatMapEmitted[id], nil
+}
+
+func (f *fakeStore) MarkSeatMapEventEmitted(_ context.Context, id uuid.UUID) error {
+	if f.seatMapEmitted == nil {
+		f.seatMapEmitted = map[uuid.UUID]bool{}
+	}
+	f.seatMapEmitted[id] = true
+	return nil
 }
 
 func (f *fakeStore) AddSeatMapSection(_ context.Context, in store.SeatMapSectionInput) (store.SeatMapSection, error) {
@@ -393,6 +422,24 @@ func (f *fakeStore) CreatePerformance(_ context.Context, in store.PerformanceInp
 	if kind == "" {
 		kind = store.KindPerformance
 	}
+	// Seated validation mirrors the real store (TKT-103): the map must exist,
+	// be published, and share the slot's organizer AND venue; a festival day
+	// cannot be seated.
+	if in.SeatMapID != nil {
+		if kind == store.KindFestivalDay {
+			return store.Performance{}, fmt.Errorf("festival day cannot be seated: %w", store.ErrIllegalTransition)
+		}
+		m, ok := f.seatMaps[*in.SeatMapID]
+		if !ok {
+			return store.Performance{}, fmt.Errorf("seat map: %w", store.ErrNotFound)
+		}
+		if m.OrganizerID != in.OrganizerID || m.VenueID != in.VenueID {
+			return store.Performance{}, store.ErrOrganizerMismatch
+		}
+		if m.Status != "published" {
+			return store.Performance{}, store.ErrSeatMapNotPublished
+		}
+	}
 	re := in.ReEntry
 	if re.Mode == "" {
 		re.Mode = "single"
@@ -400,8 +447,9 @@ func (f *fakeStore) CreatePerformance(_ context.Context, in store.PerformanceInp
 	p := store.Performance{ID: uuid.New(), OrganizerID: in.OrganizerID, EventID: in.EventID,
 		VenueID: in.VenueID, Kind: kind, StartsAt: in.StartsAt, OperatingDate: in.OperatingDate,
 		OpensAt: in.OpensAt, ClosesAt: in.ClosesAt, Timezone: in.Timezone, ReEntry: re,
-		Closure: store.Closure{Status: "open"},
-		Status:  "draft", Capacity: v.GACapacity, CreatedAt: time.Now().UTC()}
+		Closure:   store.Closure{Status: "open"},
+		SeatMapID: in.SeatMapID,
+		Status:    "draft", Capacity: v.GACapacity, CreatedAt: time.Now().UTC()}
 	f.performances[p.ID] = p
 	return p, nil
 }
@@ -769,11 +817,23 @@ type fakePublisher struct {
 	archived         []store.Performance
 	closed           []store.Performance
 	reopened         []store.Performance
-	calls            []string // ordered emission log: "published"|"backfilled"|"archived"|"closed"|"reopened"
+	seatMapsPub      []store.SeatMap
+	calls            []string // ordered emission log: "published"|"backfilled"|"archived"|"closed"|"reopened"|"seat_map_published"
 	failNext         bool
 	failBackfillNext bool
 	failArchiveNext  bool
 	failClosureNext  bool
+	failSeatMapNext  bool
+}
+
+func (f *fakePublisher) SeatMapPublished(_ context.Context, m store.SeatMap) error {
+	if f.failSeatMapNext {
+		f.failSeatMapNext = false
+		return errors.New("nats down")
+	}
+	f.seatMapsPub = append(f.seatMapsPub, m)
+	f.calls = append(f.calls, "seat_map_published")
+	return nil
 }
 
 func (f *fakePublisher) SlotClosed(_ context.Context, p store.Performance) error {

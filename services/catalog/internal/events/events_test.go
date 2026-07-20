@@ -14,6 +14,7 @@ import (
 func TestPerformancePublishedEnvelopeSchemas(t *testing.T) {
 	groupID := uuid.New()
 	shared := int32(1000)
+	seatMapID := uuid.New()
 	publishedAt := time.Now().UTC()
 	tests := []struct {
 		name       string
@@ -37,6 +38,19 @@ func TestPerformancePublishedEnvelopeSchemas(t *testing.T) {
 			},
 			wantSchema: 3,
 			wantGroup:  true,
+		},
+		{
+			// TKT-103: a seated performance references a published seat-map
+			// version and forks to schema 4 (ADR-017 §3: the payload changes what
+			// a consumer does — inventory must not provision a GA quantity pool for
+			// it, access must still project re_entry). Seated and grouped are
+			// mutually exclusive, so no CapacityGroupID here.
+			name: "seated publication uses schema 4",
+			perf: store.Performance{
+				ID: uuid.New(), EventID: uuid.New(), OrganizerID: uuid.New(), Kind: store.KindPerformance,
+				Capacity: 250, SeatMapID: &seatMapID, PublishedAt: &publishedAt,
+			},
+			wantSchema: 4,
 		},
 	}
 	for _, tt := range tests {
@@ -63,6 +77,125 @@ func TestPerformancePublishedEnvelopeSchemas(t *testing.T) {
 				t.Fatalf("festival fields = (%v, %v), want present=%v", got.Data.CapacityGroupID, got.Data.SharedCapacity, tt.wantGroup)
 			}
 		})
+	}
+}
+
+// TestSeatedPublicationEnvelopeSchema4 (TKT-103, COS-3) pins the seated fork.
+// The decode struct is hand-written, not built from PerformancePublishedData, so
+// it can actually fail if the fork drifts (ADR-017 §5b′ trap). A seated event
+// carries the exact published seat_map_id (the version is a row, TKT-102), the
+// re_entry policy access still needs, and NO festival capacity fields; its
+// envelope id is the SAME deterministic EventID as any publication (COS-5).
+func TestSeatedPublicationEnvelopeSchema4(t *testing.T) {
+	publishedAt := time.Now().UTC()
+	seatMapID := uuid.New()
+	perf := store.Performance{
+		ID: uuid.New(), EventID: uuid.New(), OrganizerID: uuid.New(), Kind: store.KindPerformance,
+		Capacity: 250, SeatMapID: &seatMapID, PublishedAt: &publishedAt,
+		ReEntry: store.ReEntryPolicy{Mode: "single"},
+	}
+	body, err := performancePublishedEnvelope(perf, publishedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		ID     string `json:"id"`
+		Type   string `json:"type"`
+		Schema int    `json:"schema"`
+		Data   struct {
+			PerformanceID   uuid.UUID  `json:"performance_id"`
+			OrganizerID     uuid.UUID  `json:"organizer_id"`
+			SeatMapID       *uuid.UUID `json:"seat_map_id"`
+			CapacityGroupID *uuid.UUID `json:"capacity_group_id"`
+			SharedCapacity  *int32     `json:"shared_capacity"`
+			ReEntry         *struct {
+				Mode string `json:"mode"`
+			} `json:"re_entry"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != SubjectPerformancePublished || got.ID != EventID(perf) {
+		t.Fatalf("type/id = %s/%s, want %s/%s", got.Type, got.ID, SubjectPerformancePublished, EventID(perf))
+	}
+	if got.Schema != 4 {
+		t.Fatalf("schema = %d, want 4 (seated fork)", got.Schema)
+	}
+	if got.Data.SeatMapID == nil || *got.Data.SeatMapID != seatMapID {
+		t.Fatalf("data.seat_map_id = %v, want %s", got.Data.SeatMapID, seatMapID)
+	}
+	if got.Data.CapacityGroupID != nil || got.Data.SharedCapacity != nil {
+		t.Fatalf("seated fork must not carry festival capacity fields, got group=%v shared=%v",
+			got.Data.CapacityGroupID, got.Data.SharedCapacity)
+	}
+	if got.Data.ReEntry == nil || got.Data.ReEntry.Mode != "single" {
+		t.Fatalf("seated fork must carry re_entry (access projects it), got %+v", got.Data.ReEntry)
+	}
+	if got.Data.PerformanceID != perf.ID || got.Data.OrganizerID != perf.OrganizerID {
+		t.Fatal("seated fork must carry performance/organizer identity")
+	}
+}
+
+// TestSeatMapPublishedEnvelope (TKT-103, COS-1) pins the seat_map.published
+// event: a distinct subject at schema 1, carrying the published map version's
+// identity, with a deterministic id derived from (map id + published_at) so a
+// retried emission de-duplicates at the stream. No consumer reads it yet — it is
+// versioned against future readers (ADR-017 §1); the emit-after-commit discipline
+// is what COS-1 requires.
+func TestSeatMapPublishedEnvelope(t *testing.T) {
+	publishedAt := time.Now().UTC()
+	m := store.SeatMap{
+		ID: uuid.New(), OrganizerID: uuid.New(), VenueID: uuid.New(),
+		Name: "Main floor", Version: 1, Status: "published", PublishedAt: &publishedAt,
+	}
+	body, err := seatMapPublishedEnvelope(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		ID     string `json:"id"`
+		Type   string `json:"type"`
+		Schema int    `json:"schema"`
+		Data   struct {
+			SeatMapID   uuid.UUID `json:"seat_map_id"`
+			OrganizerID uuid.UUID `json:"organizer_id"`
+			VenueID     uuid.UUID `json:"venue_id"`
+			Version     int32     `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != SubjectSeatMapPublished {
+		t.Fatalf("type = %s, want %s", got.Type, SubjectSeatMapPublished)
+	}
+	if got.Schema != 1 {
+		t.Fatalf("schema = %d, want 1", got.Schema)
+	}
+	if got.ID != SeatMapPublishedEventID(m) {
+		t.Fatalf("id = %s, want deterministic %s", got.ID, SeatMapPublishedEventID(m))
+	}
+	if got.Data.SeatMapID != m.ID || got.Data.OrganizerID != m.OrganizerID || got.Data.VenueID != m.VenueID || got.Data.Version != m.Version {
+		t.Fatalf("data = %+v, want map=%s org=%s venue=%s v%d", got.Data, m.ID, m.OrganizerID, m.VenueID, m.Version)
+	}
+}
+
+// TestSeatMapPublishedEventIDDeterministic pins COS-1's at-least-once/idempotent
+// property: the same published map yields the same envelope id across calls, so
+// a retried emission dedups at the stream.
+func TestSeatMapPublishedEventIDDeterministic(t *testing.T) {
+	publishedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	m := store.SeatMap{ID: uuid.New(), OrganizerID: uuid.New(), VenueID: uuid.New(), Version: 1, PublishedAt: &publishedAt}
+	first, second := SeatMapPublishedEventID(m), SeatMapPublishedEventID(m)
+	if first != second {
+		t.Fatalf("seat-map published id must be deterministic across calls: %s vs %s", first, second)
+	}
+	other := m
+	otherAt := publishedAt.Add(time.Second)
+	other.PublishedAt = &otherAt
+	if SeatMapPublishedEventID(m) == SeatMapPublishedEventID(other) {
+		t.Fatal("a different published_at must yield a different id")
 	}
 }
 

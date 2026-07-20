@@ -206,6 +206,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "festival has no members"})
 	case errors.Is(err, store.ErrSeatMapConflict):
 		writeJSON(w, http.StatusConflict, Error{Error: "duplicate name or position within the seat map"})
+	case errors.Is(err, store.ErrSeatMapNotPublished):
+		writeJSON(w, http.StatusConflict, Error{Error: "seat map must be published before a slot can be seated against it"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})
@@ -477,6 +479,7 @@ func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 		ClosesAt:    in.ClosesAt,
 		Timezone:    in.Timezone,
 		ReEntry:     re,
+		SeatMapID:   in.SeatMapId,
 	}
 	if in.OperatingDate != nil {
 		d := in.OperatingDate.Time
@@ -503,7 +506,8 @@ func performanceToAPI(p store.Performance) Performance {
 			Status: ClosureStatus(p.Closure.Status), ClosedAt: p.Closure.ClosedAt, Reason: p.Closure.Reason,
 		},
 		Status: PerformanceStatus(p.Status), PublishedAt: p.PublishedAt,
-		ArchivedAt: p.ArchivedAt, CapacityGroupId: p.CapacityGroupID, CreatedAt: p.CreatedAt,
+		ArchivedAt: p.ArchivedAt, CapacityGroupId: p.CapacityGroupID, SeatMapId: p.SeatMapID,
+		CreatedAt: p.CreatedAt,
 	}
 	if p.OperatingDate != nil {
 		out.OperatingDate = &openapi_types.Date{Time: *p.OperatingDate}
@@ -1012,8 +1016,37 @@ func (s *Server) GetOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 func seatMapPayload(m store.SeatMap) SeatMap {
 	return SeatMap{
 		Id: m.ID, OrganizerId: m.OrganizerID, VenueId: m.VenueID, Name: m.Name,
-		Version: m.Version, Status: SeatMapStatus(m.Status), CreatedAt: m.CreatedAt,
+		Version: m.Version, Status: SeatMapStatus(m.Status), PublishedAt: m.PublishedAt,
+		CreatedAt: m.CreatedAt,
 	}
+}
+
+// PublishSeatMap is idempotent on the resource and at-least-once on the event
+// (TKT-103), the same emit-after-commit owed-marker contract as
+// PublishPerformance: the seat_map.published event is emitted only while
+// unacknowledged (event_emitted_at null), so a failed emission is retried by
+// re-POSTing publish; consumers de-duplicate on the deterministic id.
+func (s *Server) PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	m, needsEmit, err := s.store.PublishSeatMap(r.Context(), seatMapId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	if needsEmit {
+		if err := s.pub.SeatMapPublished(r.Context(), m); err != nil {
+			s.log.ErrorContext(r.Context(), "seat-map domain event emission failed; re-POST publish to retry",
+				"seat_map_id", m.ID, "err", err)
+			writeJSON(w, http.StatusInternalServerError,
+				Error{Error: "seat map is published but the domain event was not emitted; retry publish"})
+			return
+		}
+		if err := s.store.MarkSeatMapEventEmitted(r.Context(), m.ID); err != nil {
+			// Ack'd but unmarked: a publish retry may re-emit — the at-least-once
+			// contract, consumers de-duplicate on the deterministic id.
+			s.log.ErrorContext(r.Context(), "seat-map event emitted but not marked", "seat_map_id", m.ID, "err", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, seatMapPayload(m))
 }
 
 func (s *Server) CreateSeatMap(w http.ResponseWriter, r *http.Request, venueId VenueId) {

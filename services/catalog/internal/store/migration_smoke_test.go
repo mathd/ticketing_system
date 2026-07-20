@@ -23,11 +23,12 @@ import (
 // one (TKT-60's 0007 index is what surfaced it: the guards silently started
 // testing the migration below their target).
 const (
-	versionBeforeTypedSlot = 3 // roll 0004_typed_slot down
-	versionBeforeSeries    = 4 // roll 0005_series_seasons down
-	versionBeforeFestivals = 5 // roll 0006_festivals down
-	versionBeforeArchived  = 2 // roll 0003_archived_performance_lifecycle down
-	versionBeforeSeatMaps  = 8 // roll 0009_seat_maps down
+	versionBeforeTypedSlot          = 3 // roll 0004_typed_slot down
+	versionBeforeSeries             = 4 // roll 0005_series_seasons down
+	versionBeforeFestivals          = 5 // roll 0006_festivals down
+	versionBeforeArchived           = 2 // roll 0003_archived_performance_lifecycle down
+	versionBeforeSeatMaps           = 8 // roll 0009_seat_maps down
+	versionBeforeSeatedPerformances = 9 // roll 0010_publish_seat_maps down
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -381,6 +382,118 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if !kindCol {
 			t.Fatal("failed down partially dropped the typed-slot columns")
+		}
+	})
+
+	t.Run("0010 down refuses a seated performance", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID, eventID, mapID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+		// A GA venue that also carries a (published) seat map, then a performance
+		// seated against it — the exact coexistence TKT-103 introduces.
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'m') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'v',100 FROM o RETURNING id
+		), e AS (
+			INSERT INTO events(id,organizer_id,name) SELECT $3,id,'{"en":"e","fr":"e"}' FROM o RETURNING id
+		), m AS (
+			INSERT INTO seat_maps(id,organizer_id,venue_id,name,status,published_at)
+			SELECT $4,o.id,v.id,'main','published',now() FROM o,v RETURNING id
+		)
+		INSERT INTO performances(organizer_id,event_id,venue_id,starts_at,timezone,status,seat_map_id)
+		SELECT $1,e.id,v.id,now(),'UTC','published',m.id FROM e,v,m`,
+			organizerID, venueID, eventID, mapID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeSeatedPerformances); err == nil {
+			t.Fatal("0010 down unexpectedly accepted a seated performance")
+		}
+		var seatMapCol, publishedAtCol bool
+		if err := db.QueryRowContext(ctx, `SELECT
+			EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='performances' AND column_name='seat_map_id'),
+			EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='seat_maps' AND column_name='published_at')`).
+			Scan(&seatMapCol, &publishedAtCol); err != nil {
+			t.Fatal(err)
+		}
+		if !seatMapCol || !publishedAtCol {
+			t.Fatalf("failed 0010 down partially dropped seated columns: seat_map_id=%v published_at=%v", seatMapCol, publishedAtCol)
+		}
+	})
+
+	t.Run("0010 composite FK rejects a cross-tenant seated reference via direct SQL", func(t *testing.T) {
+		// ai-review L1: tenancy is enforced at the DATABASE, not only in the store
+		// query. A direct INSERT wiring a performance to a seat map of another
+		// organizer or another venue must be UNREPRESENTABLE — the composite FK
+		// (seat_map_id, organizer_id, venue_id) -> seat_maps(id, organizer_id,
+		// venue_id) makes it fail, exactly as the festival capacity-group FK does.
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		orgA, orgB := uuid.New(), uuid.New()
+		venueA, venueB, eventA, mapA := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+		// orgA owns venueA + eventA + a map on venueA; orgB owns venueB.
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'a'),($2,'b') RETURNING id
+		), va AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $3,id,'va',100 FROM o WHERE id=$1 RETURNING id
+		), vb AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $4,id,'vb',100 FROM o WHERE id=$2 RETURNING id
+		), e AS (
+			INSERT INTO events(id,organizer_id,name) SELECT $5,id,'{"en":"e","fr":"e"}' FROM o WHERE id=$1 RETURNING id
+		)
+		INSERT INTO seat_maps(id,organizer_id,venue_id,name,status,published_at)
+		SELECT $6,id,$3,'m','published',now() FROM o WHERE id=$1`,
+			orgA, orgB, venueA, venueB, eventA, mapA); err != nil {
+			t.Fatal(err)
+		}
+		// Wrong organizer: orgB referencing orgA's map -> composite FK violation.
+		if _, err := db.ExecContext(ctx, `INSERT INTO performances
+			(organizer_id,event_id,venue_id,starts_at,timezone,seat_map_id)
+			VALUES($1,$2,$3,now(),'UTC',$4)`, orgB, eventA, venueB, mapA); err == nil {
+			t.Fatal("composite FK accepted a cross-organizer seated reference")
+		}
+		// Wrong venue: orgA's performance in a DIFFERENT venue than the map's venue.
+		if _, err := db.ExecContext(ctx, `INSERT INTO performances
+			(organizer_id,event_id,venue_id,starts_at,timezone,seat_map_id)
+			VALUES($1,$2,$3,now(),'UTC',$4)`, orgA, eventA, venueB, mapA); err == nil {
+			t.Fatal("composite FK accepted a cross-venue seated reference")
+		}
+		// The correct wiring (same organizer + same venue) is accepted.
+		if _, err := db.ExecContext(ctx, `INSERT INTO performances
+			(organizer_id,event_id,venue_id,starts_at,timezone,seat_map_id)
+			VALUES($1,$2,$3,now(),'UTC',$4)`, orgA, eventA, venueA, mapA); err != nil {
+			t.Fatalf("composite FK rejected a valid same-tenant seated reference: %v", err)
+		}
+	})
+
+	t.Run("0010 down refuses a published seat map", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID, mapID := uuid.New(), uuid.New(), uuid.New()
+		// A published map with no seated performance still blocks 0010's down. This
+		// matters for a PARTIAL rollback that stops above 0009 (DownTo(9), as here):
+		// 0009's own guard would also refuse a full rollback-to-zero (it blocks when
+		// *any* seat map exists), but only 0010's guard protects the intermediate
+		// state where the schema still has the publish columns and a publication
+		// must not be silently discarded.
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'m') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'v',100 FROM o RETURNING id
+		)
+		INSERT INTO seat_maps(id,organizer_id,venue_id,name,status,published_at)
+		SELECT $3,o.id,v.id,'main','published',now() FROM o,v`,
+			organizerID, venueID, mapID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeSeatedPerformances); err == nil {
+			t.Fatal("0010 down unexpectedly accepted a published seat map")
 		}
 	})
 

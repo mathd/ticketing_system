@@ -110,12 +110,13 @@ func TestPolicyConsumerDefaultsAbsentPolicyToSingle(t *testing.T) {
 }
 
 func TestPolicyConsumerFutureSchemaParksAndLatchesUnready(t *testing.T) {
-	// Schema 4 does not exist yet. When it does, its data may be reshaped
-	// arbitrarily — this fixture is deliberately incompatible so decoding it
-	// with today's struct would fail loudly if dispatch ordering ever broke.
+	// Schema 4 is now the KNOWN seated variant (TKT-103); schema 5 does not exist
+	// yet. When it does, its data may be reshaped arbitrarily — this fixture is
+	// deliberately incompatible so decoding it with today's struct would fail
+	// loudly if dispatch ordering ever broke.
 	st := &fakePolicyStore{}
 	c := newPolicyConsumerForTest(st)
-	msg := policyMsg(`{"id":"20000000-0000-0000-0000-000000000021","type":"platform.catalog.performance.published","schema":4,"data":{"admission":{"policy_ref":"opaque-v4-shape"}}}`)
+	msg := policyMsg(`{"id":"20000000-0000-0000-0000-000000000021","type":"platform.catalog.performance.published","schema":5,"data":{"admission":{"policy_ref":"opaque-v5-shape"}}}`)
 	c.handle(context.Background(), msg)
 
 	if len(msg.actions) != 1 || msg.actions[0] != "nak-delay" {
@@ -126,6 +127,31 @@ func TestPolicyConsumerFutureSchemaParksAndLatchesUnready(t *testing.T) {
 	}
 	if c.Ready() {
 		t.Fatal("future schema did not latch the projector unready")
+	}
+}
+
+// TestPolicyConsumerProjectsSeatedSchema4 (TKT-103 COS-4, access side). A seated
+// publication (schema 4) still carries a re_entry policy — a seated slot has
+// re-entry semantics like any slot — and access must project it, not park it.
+// The seat-map fields are ignored by construction (access reads only re_entry).
+// The fixture is hand-written so it can fail if dispatch drifts (ADR-017 §5b′).
+func TestPolicyConsumerProjectsSeatedSchema4(t *testing.T) {
+	st := &fakePolicyStore{}
+	c := newPolicyConsumerForTest(st)
+	msg := policyMsg(`{"id":"20000000-0000-0000-0000-000000000031","type":"platform.catalog.performance.published","schema":4,"data":{"performance_id":"20000000-0000-0000-0000-000000000032","event_id":"20000000-0000-0000-0000-000000000033","organizer_id":"20000000-0000-0000-0000-000000000034","kind":"performance","seat_map_id":"20000000-0000-0000-0000-000000000035","re_entry":{"mode":"multi","requires_exit":true}}}`)
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "ack" {
+		t.Fatalf("actions = %v, want ack — a seated publication is a known variant", msg.actions)
+	}
+	if len(st.upserts) != 1 {
+		t.Fatalf("upserts = %d, want 1 — the seated slot's re_entry must project", len(st.upserts))
+	}
+	if st.upserts[0].Policy.Mode != "multi" || !st.upserts[0].Policy.RequiresExit {
+		t.Fatalf("policy = %+v, want multi/requires_exit projected from the seated event", st.upserts[0].Policy)
+	}
+	if !c.Ready() {
+		t.Fatal("a known seated variant must not latch the projector unready")
 	}
 }
 

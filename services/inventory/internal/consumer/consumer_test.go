@@ -218,11 +218,13 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 		name, body string
 		schema     int
 	}{
-		{"reshaped data", `{` + id + `,"schema":4,"data":{"slot_ref":"a","org_ref":"b"}}`, 4},
-		{"changed field type", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`, 4},
-		{"empty data", `{` + id + `,"schema":5,"data":{}}`, 5},
+		// schema 4 is now the KNOWN seated variant (TKT-103); the unknown-future
+		// fixtures move to schema 5, which remains beyond maxKnownPublicationSchema.
+		{"reshaped data", `{` + id + `,"schema":5,"data":{"slot_ref":"a","org_ref":"b"}}`, 5},
+		{"changed field type", `{` + id + `,"schema":5,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`, 5},
+		{"empty data", `{` + id + `,"schema":6,"data":{}}`, 6},
 		{"data is not an object", `{` + id + `,"schema":9,"data":[1,2,3]}`, 9},
-		{"shaped like today", `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`, 4},
+		{"shaped like today", `{` + id + `,"schema":5,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`, 5},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
@@ -258,7 +260,7 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 // them would still show an ack.
 func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
-	body := `{` + id + `,"schema":4,"data":{"slot_ref":"a"}}`
+	body := `{` + id + `,"schema":5,"data":{"slot_ref":"a"}}` // schema 5 = unknown future (4 is now seated)
 	for _, tt := range []struct {
 		name string
 		err  error
@@ -293,7 +295,7 @@ func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 func TestQuarantineCollisionIsPoison(t *testing.T) {
 	c, st := testConsumerWithStore()
 	st.quarantineErr = store.ErrCatalogQuarantineCollision
-	msg := &fakeMsg{data: []byte(`{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":4,"data":{"x":1}}`)}
+	msg := &fakeMsg{data: []byte(`{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{"x":1}}`)} // schema 5 = unknown future
 
 	c.handle(context.Background(), msg)
 
@@ -311,7 +313,7 @@ func TestKnownEventFlowsWhileUnknownIsHeld(t *testing.T) {
 	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	c, st := testConsumerWithStore()
 
-	future := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":4,"data":{"slot_ref":"a"}}`)}
+	future := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":5,"data":{"slot_ref":"a"}}`)} // schema 5 = unknown future
 	c.handle(context.Background(), future)
 	if !slices.Contains(future.actions, "ack") || len(st.quarantined) != 1 {
 		t.Fatalf("future: actions = %v quarantined = %d, want quarantine + ack", future.actions, len(st.quarantined))
@@ -405,6 +407,38 @@ func TestSchema1ResolutionFailureIsRetriedAndStaysReady(t *testing.T) {
 	}
 	if !c.Ready() {
 		t.Fatal("catalog being down is not version skew — readiness must not latch")
+	}
+}
+
+// TestSeatedPublicationAcknowledgedWithoutProvisioning (TKT-103 COS-4). A schema-4
+// seated publication is a KNOWN variant — it must NOT quarantine (that would latch
+// inventory unready on every seated publish) and must NOT provision a fungible GA
+// quantity pool (that would let seated tickets sell through the GA claim path
+// before TKT-80's seat-level claim exists). The correct disposition is: ack,
+// stay ready, provision nothing. The payload is hand-written, not built from a Go
+// struct, so it can actually fail if dispatch drifts (ADR-017 §5b′).
+func TestSeatedPublicationAcknowledgedWithoutProvisioning(t *testing.T) {
+	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	body := `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","kind":"performance","seat_map_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","re_entry":{"mode":"single","requires_exit":false}}}`
+	c, st := testConsumerWithStore()
+	msg := &fakeMsg{data: []byte(body)}
+
+	c.handle(context.Background(), msg)
+
+	if !slices.Contains(msg.actions, "ack") {
+		t.Fatalf("actions = %v, want ack — a seated publication is known and must be acknowledged", msg.actions)
+	}
+	if slices.Contains(msg.actions, "term") {
+		t.Fatalf("actions = %v — a seated publication is not poison", msg.actions)
+	}
+	if len(st.provisioned) != 0 {
+		t.Fatalf("provisioned = %v — seated must NOT provision a GA pool (seat claim is TKT-80)", st.provisioned)
+	}
+	if len(st.quarantined) != 0 {
+		t.Fatalf("quarantined = %v — schema 4 is a KNOWN variant, it must not quarantine", st.quarantined)
+	}
+	if !c.Ready() {
+		t.Fatal("a known seated publication must not latch readiness false")
 	}
 }
 

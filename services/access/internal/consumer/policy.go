@@ -30,7 +30,14 @@ type PolicyStore interface {
 // (ADR-017 §2 — no bump; absence means single), so "known" here tracks
 // catalog's published range, not a policy-specific number. Above it is the
 // future: park + latch unready (§5b′).
-const maxKnownPublicationSchema = 3
+//
+// Schema 4 is the seated fork (TKT-103). Access reads only re_entry, which a
+// seated slot carries exactly like any other slot; the seat-map fields are
+// ignored by construction (see the publication struct). So this consumer needs
+// nothing but to STOP treating schema 4 as the future — no new arm, no decode
+// change. Without this bump, every seated publication would park access and
+// latch it unready (ADR-017 §5b′ binds both consumers; TKT-74).
+const maxKnownPublicationSchema = 4
 
 // publicationSchemaMin is the bottom of the known range: performance.published
 // started at 1 (the capacity-resolver era). At or below zero is a broken
