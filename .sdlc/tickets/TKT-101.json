@@ -1,10 +1,8 @@
 {
   "key": "TKT-101",
   "type": "Story",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "autonomous-agent",
   "pr": {
     "number": 78,
