@@ -1,9 +1,9 @@
 {
   "key": "TKT-101",
   "type": "Story",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "autonomous-agent",
   "pr": null,
