@@ -20,6 +20,11 @@ const (
 	SubjectPerformanceArchived  = "platform.catalog.performance.archived"
 	SubjectSlotClosed           = "platform.catalog.performance.closed"
 	SubjectSlotReopened         = "platform.catalog.performance.reopened"
+	// SubjectSeatMapPublished announces a seat-map version becoming published
+	// (TKT-103). No consumer reads it yet — it is versioned against future
+	// readers (TKT-104/TKT-35/TKT-80), and its emission follows the same
+	// emit-after-commit + deterministic-id discipline as the performance events.
+	SubjectSeatMapPublished = "platform.catalog.seat_map.published"
 )
 
 // Envelope is the platform domain-event envelope (ADR-009 §5): minimal
@@ -42,6 +47,12 @@ type PerformancePublishedData struct {
 	Capacity        int32      `json:"capacity"`
 	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
 	SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
+	// SeatMapID is set only on the seated fork (schema 4, TKT-103): the exact
+	// published seat-map version this slot references. Inventory dispatches on
+	// the schema and does NOT provision a quantity pool for it (the seat-level
+	// claim is TKT-80); access still projects re_entry. A GA/festival event
+	// (schema 2/3) omits it.
+	SeatMapID *uuid.UUID `json:"seat_map_id,omitempty"`
 	// ReEntry rides additively at the current schemas (ADR-017 §2, the `kind`
 	// precedent): no deployed consumer forks on it, so no bump. Access projects
 	// it for gate-side policy enforcement (ADR-005: catalog owns the policy,
@@ -99,6 +110,17 @@ type SlotClosureData struct {
 	Reason        *string   `json:"reason,omitempty"`
 }
 
+// SeatMapPublishedData carries the identity of a published seat-map version
+// (TKT-103). The id references the exact immutable version (a seat_maps row);
+// Version is carried for readers that reason about version families without a
+// second lookup. Capacity/geometry stay out — a consumer reads the map by id.
+type SeatMapPublishedData struct {
+	SeatMapID   uuid.UUID `json:"seat_map_id"`
+	OrganizerID uuid.UUID `json:"organizer_id"`
+	VenueID     uuid.UUID `json:"venue_id"`
+	Version     int32     `json:"version"`
+}
+
 // Publisher is the emission port; the API layer emits through it so tests
 // use a fake and the smoke stack the real stream.
 type Publisher interface {
@@ -107,6 +129,55 @@ type Publisher interface {
 	PerformanceArchived(ctx context.Context, p store.Performance) error
 	SlotClosed(ctx context.Context, p store.Performance) error
 	SlotReopened(ctx context.Context, p store.Performance) error
+	SeatMapPublished(ctx context.Context, m store.SeatMap) error
+}
+
+// SeatMapPublishedEventID derives the seat_map.published envelope id from the
+// map id and its publication instant, so a retried emission carries the same id
+// and de-duplicates at the stream (mirrors EventID for performances).
+func SeatMapPublishedEventID(m store.SeatMap) string {
+	key := SubjectSeatMapPublished + ":" + m.ID.String()
+	if m.PublishedAt != nil {
+		key += ":" + m.PublishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+}
+
+func seatMapPublishedEnvelope(m store.SeatMap) ([]byte, error) {
+	occurred := time.Now().UTC()
+	if m.PublishedAt != nil {
+		occurred = m.PublishedAt.UTC()
+	}
+	body, err := json.Marshal(Envelope{
+		ID:         SeatMapPublishedEventID(m),
+		Type:       SubjectSeatMapPublished,
+		OccurredAt: occurred,
+		Schema:     1,
+		Data: SeatMapPublishedData{
+			SeatMapID:   m.ID,
+			OrganizerID: m.OrganizerID,
+			VenueID:     m.VenueID,
+			Version:     m.Version,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal seat map envelope: %w", err)
+	}
+	return body, nil
+}
+
+func (p *JetStream) SeatMapPublished(ctx context.Context, m store.SeatMap) error {
+	id := SeatMapPublishedEventID(m)
+	body, err := seatMapPublishedEnvelope(m)
+	if err != nil {
+		return err
+	}
+	msg := &nats.Msg{Subject: SubjectSeatMapPublished, Data: body}
+	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
+	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
+		return fmt.Errorf("publish %s: %w", SubjectSeatMapPublished, err)
+	}
+	return nil
 }
 
 // backfillEpoch namespaces the re-emission id (TKT-96). It is a FIXED string,
@@ -211,8 +282,19 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 	if err != nil {
 		return nil, err
 	}
+	// Schema is chosen from the payload's own shape (ADR-017 §4): 2 = plain GA,
+	// 3 = grouped festival, 4 = seated (TKT-103). Seated and grouped are mutually
+	// exclusive — a grouped festival day is shared-capacity GA — so a slot that
+	// is somehow both is a corrupt row we fail closed on rather than emit an
+	// ambiguous variant.
+	seated := perf.SeatMapID != nil
 	schema := 2
-	if capacityGroupID != nil {
+	switch {
+	case seated && capacityGroupID != nil:
+		return nil, fmt.Errorf("seated slot must not carry festival capacity")
+	case seated:
+		schema = 4
+	case capacityGroupID != nil:
 		schema = 3
 	}
 	body, err := json.Marshal(Envelope{
@@ -228,6 +310,7 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 			Capacity:        perf.Capacity,
 			CapacityGroupID: capacityGroupID,
 			SharedCapacity:  sharedCapacity,
+			SeatMapID:       perf.SeatMapID,
 			ReEntry:         reEntryData(perf),
 		},
 	})

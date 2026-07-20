@@ -131,6 +131,32 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+  /seat-maps/{seatMapId}/publish:
+    post:
+      operationId: publishSeatMap
+      summary: Publish a seat map (idempotent, TKT-103)
+      description: >
+        Flips a seat map draft to published and emits the
+        platform.catalog.seat_map.published domain event at least once while it
+        is owed (envelope id is deterministic per publication, so retried or
+        raced emissions de-duplicate). A published version is immutable — further
+        section/row/seat authoring is refused. Publishing an already-published
+        map returns 200 without re-emitting; an archived map is a 409.
+      parameters:
+        - $ref: '#/components/parameters/SeatMapId'
+      responses:
+        '200':
+          description: Seat map is published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatMap' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: An archived seat map cannot be published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /events:
     post:
       operationId: createEvent
@@ -176,6 +202,12 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: >
+            Seated reference to a seat map that is not published (TKT-103).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /performances/{performanceId}/publish:
     post:
       operationId: publishPerformance
@@ -849,6 +881,10 @@ components:
         status:
           type: string
           enum: [draft, published, archived]
+        published_at:
+          description: Publication instant (TKT-103); absent while draft
+          type: string
+          format: date-time
         created_at: { type: string, format: date-time }
     SeatMapSectionCreate:
       type: object
@@ -1037,6 +1073,13 @@ components:
           minLength: 1
         re_entry:
           $ref: '#/components/schemas/ReEntryPolicy'
+        seat_map_id:
+          description: >
+            Published seat-map version to seat this slot against (TKT-103). Omit
+            for a GA slot. The referenced map must be published and share the
+            slot's organizer and venue; a festival day cannot be seated.
+          type: string
+          format: uuid
     Performance:
       type: object
       required: [id, organizer_id, event_id, venue_id, kind, timezone, re_entry, closure, status, created_at]
@@ -1086,6 +1129,12 @@ components:
           nullable: true
         capacity_group_id:
           description: Festival capacity-group id for grouped festival days
+          type: string
+          format: uuid
+        seat_map_id:
+          description: >
+            Published seat-map version this slot is seated against (TKT-103);
+            absent for a GA slot.
           type: string
           format: uuid
         created_at:

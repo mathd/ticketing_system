@@ -243,6 +243,9 @@ type Performance struct {
 	// ReEntry How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
 	ReEntry ReEntryPolicy `json:"re_entry"`
 
+	// SeatMapId Published seat-map version this slot is seated against (TKT-103); absent for a GA slot.
+	SeatMapId *openapi_types.UUID `json:"seat_map_id,omitempty"`
+
 	// StartsAt Present for kind 'performance'; absent for day kinds
 	StartsAt *time.Time         `json:"starts_at,omitempty"`
 	Status   PerformanceStatus  `json:"status"`
@@ -271,6 +274,9 @@ type PerformanceCreate struct {
 
 	// ReEntry How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
 	ReEntry *ReEntryPolicy `json:"re_entry,omitempty"`
+
+	// SeatMapId Published seat-map version to seat this slot against (TKT-103). Omit for a GA slot. The referenced map must be published and share the slot's organizer and venue; a festival day cannot be seated.
+	SeatMapId *openapi_types.UUID `json:"seat_map_id,omitempty"`
 
 	// StartsAt Instant for kind 'performance'; omit for day kinds
 	StartsAt *time.Time `json:"starts_at,omitempty"`
@@ -418,6 +424,9 @@ type SeatMap struct {
 	Id          openapi_types.UUID `json:"id"`
 	Name        string             `json:"name"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// PublishedAt Publication instant (TKT-103); absent while draft
+	PublishedAt *time.Time         `json:"published_at,omitempty"`
 	Status      SeatMapStatus      `json:"status"`
 	VenueId     openapi_types.UUID `json:"venue_id"`
 	Version     int32              `json:"version"`
@@ -753,6 +762,9 @@ type ServerInterface interface {
 	// Attach a series to a season
 	// (POST /seasons/{seasonId}/series)
 	AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId)
+	// Publish a seat map (idempotent, TKT-103)
+	// (POST /seat-maps/{seatMapId}/publish)
+	PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
 	// Add a row to a section of a draft seat map (US-019)
 	// (POST /seat-maps/{seatMapId}/rows)
 	AddSeatMapRow(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
@@ -912,6 +924,12 @@ func (_ Unimplemented) AttachEventToSeason(w http.ResponseWriter, r *http.Reques
 // Attach a series to a season
 // (POST /seasons/{seasonId}/series)
 func (_ Unimplemented) AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Publish a seat map (idempotent, TKT-103)
+// (POST /seat-maps/{seatMapId}/publish)
+func (_ Unimplemented) PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1532,6 +1550,32 @@ func (siw *ServerInterfaceWrapper) AttachSeriesToSeason(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// PublishSeatMap operation middleware
+func (siw *ServerInterfaceWrapper) PublishSeatMap(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seatMapId" -------------
+	var seatMapId SeatMapId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seatMapId", chi.URLParam(r, "seatMapId"), &seatMapId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seatMapId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PublishSeatMap(w, r, seatMapId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // AddSeatMapRow operation middleware
 func (siw *ServerInterfaceWrapper) AddSeatMapRow(w http.ResponseWriter, r *http.Request) {
 
@@ -1931,6 +1975,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/seasons/{seasonId}/series", wrapper.AttachSeriesToSeason)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/seat-maps/{seatMapId}/publish", wrapper.PublishSeatMap)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/seat-maps/{seatMapId}/rows", wrapper.AddSeatMapRow)

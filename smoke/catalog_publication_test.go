@@ -404,6 +404,235 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	}
 }
 
+// TestSeatedPublicationCoexistsWithGA (TKT-103) drives seated + GA through the
+// real stack: author and publish a seat map (asserting the seat_map.published
+// event), create a seated performance referencing that published version,
+// publish it and assert the schema-4 fork on the stream, then create a GA
+// performance at the same venue and assert it still publishes at schema 2.
+// Inventory must NOT provision a pool for the seated slot (the seat-level claim
+// is TKT-80), proving the schema-4 arm acknowledges without provisioning.
+func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
+	catalog := gatewayURL + "/api/catalog"
+	suffixBytes := make([]byte, 4)
+	_, _ = rand.Read(suffixBytes)
+	suffix := hex.EncodeToString(suffixBytes)
+
+	venue := created(t, catalog+"/venues", map[string]any{
+		"organizer_id": organizerID, "name": "Seated Hall " + suffix, "ga_capacity": 400,
+	})
+	event := created(t, catalog+"/events", map[string]any{
+		"organizer_id": organizerID,
+		"name":         map[string]string{"fr": "Récital " + suffix, "en": "Recital " + suffix},
+	})
+
+	// -- author a draft seat map: map -> section -> row -> seat --
+	seatMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
+		"organizer_id": organizerID, "name": "Main floor " + suffix,
+	})
+	section := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
+		"organizer_id": organizerID, "name": "Orchestra", "position": 1,
+	})
+	row := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/rows", map[string]any{
+		"organizer_id": organizerID, "section_id": section["id"], "label": "A", "position": 1,
+	})
+	created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/seats", map[string]any{
+		"organizer_id": organizerID, "row_id": row["id"], "label": "1", "position": 1,
+	})
+
+	// -- consumer BEFORE publishing the map: assert the seat_map.published event --
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	ctx := t.Context()
+	stream, err := js.Stream(ctx, "PLATFORM")
+	if err != nil {
+		t.Fatalf("PLATFORM stream: %v", err)
+	}
+	mapCons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "smoke-seatmap-published-" + suffix,
+		FilterSubject: "platform.catalog.seat_map.published",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatalf("seat_map consumer: %v", err)
+	}
+	pubCons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "smoke-seated-published-" + suffix,
+		FilterSubject: "platform.catalog.performance.published",
+		DeliverPolicy: jetstream.DeliverNewPolicy,
+	})
+	if err != nil {
+		t.Fatalf("published consumer: %v", err)
+	}
+
+	// -- publish the seat map (idempotent); a published version is immutable --
+	mapPublishURL := catalog + "/seat-maps/" + fmt.Sprint(seatMap["id"]) + "/publish"
+	if code, body := postJSON(t, mapPublishURL, nil); code != http.StatusOK {
+		t.Fatalf("publish seat map: %d %s", code, body)
+	}
+	if code, body := postJSON(t, mapPublishURL, nil); code != http.StatusOK {
+		t.Fatalf("re-publish seat map must stay 200, got %d %s", code, body)
+	}
+	// A published version rejects further authoring (immutability, COS-1).
+	if code, _ := postJSON(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
+		"organizer_id": organizerID, "name": "Balcony", "position": 2,
+	}); code != http.StatusNotFound {
+		t.Fatalf("authoring a published map must be refused with 404, got %d", code)
+	}
+
+	mapMsg, err := mapCons.Next(jetstream.FetchMaxWait(15 * time.Second))
+	if err != nil {
+		t.Fatalf("seat_map.published not received: %v", err)
+	}
+	_ = mapMsg.Ack()
+	var mapEnv struct {
+		Type   string `json:"type"`
+		Schema int    `json:"schema"`
+		Data   struct {
+			SeatMapID   string `json:"seat_map_id"`
+			OrganizerID string `json:"organizer_id"`
+			VenueID     string `json:"venue_id"`
+			Version     int32  `json:"version"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(mapMsg.Data(), &mapEnv); err != nil {
+		t.Fatalf("seat_map envelope: %v (%s)", err, mapMsg.Data())
+	}
+	if mapEnv.Type != "platform.catalog.seat_map.published" || mapEnv.Schema != 1 ||
+		mapEnv.Data.SeatMapID != fmt.Sprint(seatMap["id"]) || mapEnv.Data.VenueID != fmt.Sprint(venue["id"]) ||
+		mapEnv.Data.OrganizerID != organizerID || mapEnv.Data.Version != 1 {
+		t.Fatalf("seat_map envelope mismatch: %+v", mapEnv)
+	}
+
+	// -- create a SEATED performance referencing the published map version --
+	seated := created(t, catalog+"/performances", map[string]any{
+		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"starts_at": "2026-10-01T20:00:00Z", "timezone": "Europe/Paris",
+		"seat_map_id": seatMap["id"],
+	})
+	if seated["seat_map_id"] != seatMap["id"] {
+		t.Fatalf("seated performance must echo the map reference, got %+v", seated["seat_map_id"])
+	}
+	// A seated reference to the STILL-draft state is impossible now (it's
+	// published), but a reference to a draft map in a fresh venue is a 409.
+	draftMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
+		"organizer_id": organizerID, "name": "Draft " + suffix,
+	})
+	if code, _ := postJSON(t, catalog+"/performances", map[string]any{
+		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"starts_at": "2026-10-02T20:00:00Z", "timezone": "Europe/Paris",
+		"seat_map_id": draftMap["id"],
+	}); code != http.StatusConflict {
+		t.Fatalf("seated ref to a draft map must be 409, got %d", code)
+	}
+
+	created(t, catalog+"/ticket-types", map[string]any{
+		"organizer_id": organizerID, "performance_id": seated["id"],
+		"name":  map[string]string{"fr": "Place assise", "en": "Reserved seat"},
+		"price": map[string]any{"amount": 8000, "currency": "EUR"},
+	})
+	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, seated["id"]), nil); code != http.StatusOK {
+		t.Fatalf("publish seated: %d %s", code, body)
+	}
+
+	// -- the seated publication forks to schema 4 with the map reference (COS-3) --
+	seatedEnv := awaitPublishedEnvelope(t, pubCons, seated["id"])
+	if seatedEnv.Schema != 4 || seatedEnv.Data.SeatMapID != fmt.Sprint(seatMap["id"]) {
+		t.Fatalf("seated publication envelope: schema=%d seat_map_id=%q (want 4/%v)",
+			seatedEnv.Schema, seatedEnv.Data.SeatMapID, seatMap["id"])
+	}
+
+	// -- a GA performance at the same venue still publishes at schema 2 (coexistence, COS-2) --
+	ga := created(t, catalog+"/performances", map[string]any{
+		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"starts_at": "2026-10-03T20:00:00Z", "timezone": "Europe/Paris",
+	})
+	created(t, catalog+"/ticket-types", map[string]any{
+		"organizer_id": organizerID, "performance_id": ga["id"],
+		"name":  map[string]string{"fr": "Admission générale", "en": "General admission"},
+		"price": map[string]any{"amount": 4550, "currency": "EUR"},
+	})
+	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, ga["id"]), nil); code != http.StatusOK {
+		t.Fatalf("publish GA: %d %s", code, body)
+	}
+	gaEnv := awaitPublishedEnvelope(t, pubCons, ga["id"])
+	if gaEnv.Schema != 2 || gaEnv.Data.SeatMapID != "" {
+		t.Fatalf("GA publication must stay schema 2 without a seat map ref, got schema=%d seat_map_id=%q",
+			gaEnv.Schema, gaEnv.Data.SeatMapID)
+	}
+
+	// -- inventory provisions the GA pool but NOT the seated one (COS-4) --
+	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(ctx) }()
+	var gaPools int
+	for i := 0; i < 40; i++ {
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, ga["id"]).Scan(&gaPools); err == nil && gaPools == 1 {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if gaPools != 1 {
+		t.Fatalf("GA slot must provision exactly one pool, got %d", gaPools)
+	}
+	// Give inventory the same window it had for GA, then assert the seated slot
+	// still has NO pool — the schema-4 arm acknowledged without provisioning.
+	var seatedPools int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, seated["id"]).Scan(&seatedPools); err != nil {
+		t.Fatal(err)
+	}
+	if seatedPools != 0 {
+		t.Fatalf("seated slot must NOT provision a GA pool (seat claim is TKT-80), got %d", seatedPools)
+	}
+
+	// Inventory stays ready: a known seated variant must not latch it unready.
+	code, _, _ := getWithHeaders(t, inventoryURL+"/readyz")
+	if code != http.StatusOK {
+		t.Fatalf("inventory /readyz = %d after a seated publication; the schema-4 arm must not latch unready", code)
+	}
+}
+
+// awaitPublishedEnvelope pulls performance.published messages until one
+// correlates to slotID, tolerating raced events from other tests, and returns
+// the seated-aware envelope (schema + seat_map_id).
+func awaitPublishedEnvelope(t *testing.T, cons jetstream.Consumer, slotID any) publishedEnvelope {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		msg, err := cons.Next(jetstream.FetchMaxWait(5 * time.Second))
+		if err != nil {
+			continue
+		}
+		_ = msg.Ack()
+		var env publishedEnvelope
+		if err := json.Unmarshal(msg.Data(), &env); err != nil {
+			t.Fatalf("published envelope decode: %v (%s)", err, msg.Data())
+		}
+		if env.Data.PerformanceID == fmt.Sprint(slotID) {
+			return env
+		}
+	}
+	t.Fatalf("performance.published not received for slot %v", slotID)
+	return publishedEnvelope{}
+}
+
+type publishedEnvelope struct {
+	Type   string `json:"type"`
+	Schema int    `json:"schema"`
+	Data   struct {
+		PerformanceID string `json:"performance_id"`
+		SeatMapID     string `json:"seat_map_id"`
+	} `json:"data"`
+}
+
 func TestSeriesSeasonPublicationAndStorefrontGrouping(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	suffixBytes := make([]byte, 4)

@@ -489,6 +489,34 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 	if kind == "" {
 		kind = KindPerformance
 	}
+	// Seated validation (TKT-103): the referenced map must exist, share the
+	// performance's organizer AND venue, and be published — a slot may only be
+	// seated against a published version. Seating is orthogonal to `kind`
+	// (ADR-005), but a grouped festival day is shared-capacity GA by definition,
+	// so a seat-map reference on one is contradictory and refused here. The check
+	// mirrors the tenancy-by-scoped-query pattern the AddSeatMap* writes use.
+	if in.SeatMapID != nil {
+		if kind == KindFestivalDay {
+			return Performance{}, fmt.Errorf("festival day cannot be seated: %w", ErrIllegalTransition)
+		}
+		var mapOrg, mapVenue uuid.UUID
+		var mapStatus string
+		err = p.db.QueryRowContext(ctx,
+			`SELECT organizer_id, venue_id, status FROM seat_maps WHERE id = $1`, *in.SeatMapID).
+			Scan(&mapOrg, &mapVenue, &mapStatus)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Performance{}, fmt.Errorf("seat map: %w", ErrNotFound)
+		}
+		if err != nil {
+			return Performance{}, fmt.Errorf("lookup seat map: %w", err)
+		}
+		if mapOrg != in.OrganizerID || mapVenue != in.VenueID {
+			return Performance{}, ErrOrganizerMismatch
+		}
+		if mapStatus != "published" {
+			return Performance{}, ErrSeatMapNotPublished
+		}
+	}
 	mode := in.ReEntry.Mode
 	if mode == "" {
 		mode = "single"
@@ -497,11 +525,11 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 	err = p.db.QueryRowContext(ctx,
 		`INSERT INTO performances
 		   (organizer_id, event_id, venue_id, kind, starts_at, operating_date,
-		    opens_at, closes_at, timezone, re_entry_mode, max_entries, requires_exit)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		    opens_at, closes_at, timezone, re_entry_mode, max_entries, requires_exit, seat_map_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 RETURNING id`,
 		in.OrganizerID, in.EventID, in.VenueID, kind, in.StartsAt, in.OperatingDate,
-		in.OpensAt, in.ClosesAt, in.Timezone, mode, in.ReEntry.MaxEntries, in.ReEntry.RequiresExit).
+		in.OpensAt, in.ClosesAt, in.Timezone, mode, in.ReEntry.MaxEntries, in.ReEntry.RequiresExit, in.SeatMapID).
 		Scan(&id)
 	if err != nil {
 		return Performance{}, fmt.Errorf("insert performance: %w", err)
@@ -626,7 +654,7 @@ const performanceColumns = `p.id, p.organizer_id, p.event_id, p.venue_id, p.kind
 	        p.closure_status, p.closed_at, p.closure_reason, p.closure_version,
 	        p.closure_changed_at, p.capacity_group_id, p.status, p.published_at, p.archived_at,
 	        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity,
-	        f.shared_capacity`
+	        f.shared_capacity, p.seat_map_id`
 
 const performanceFrom = `FROM performances p JOIN venues v ON v.id = p.venue_id
 	 LEFT JOIN festivals f ON f.id = p.capacity_group_id`
@@ -647,15 +675,19 @@ func scanPerformance(s rowScanner) (Performance, *sql.NullTime, *sql.NullTime, e
 		maxEntries                     sql.NullInt32
 		capacityGroup                  uuid.NullUUID
 		sharedCapacity                 sql.NullInt32
+		seatMap                        uuid.NullUUID
 	)
 	err := s.Scan(&perf.ID, &perf.OrganizerID, &perf.EventID, &perf.VenueID, &perf.Kind, &perf.StartsAt,
 		&perf.OperatingDate, &opensAt, &closesAt, &perf.Timezone,
 		&perf.ReEntry.Mode, &maxEntries, &perf.ReEntry.RequiresExit,
 		&perf.Closure.Status, &perf.Closure.ClosedAt, &closeReason, &perf.Closure.Version,
 		&perf.Closure.ChangedAt, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
-		&archiveEmitted, &perf.CreatedAt, &perf.Capacity, &sharedCapacity)
+		&archiveEmitted, &perf.CreatedAt, &perf.Capacity, &sharedCapacity, &seatMap)
 	if err != nil {
 		return Performance{}, nil, nil, err
+	}
+	if seatMap.Valid {
+		perf.SeatMapID = &seatMap.UUID
 	}
 	if opensAt.Valid {
 		perf.OpensAt = &opensAt.String
@@ -1505,6 +1537,57 @@ func (p *Postgres) CreateSeatMap(ctx context.Context, in SeatMapInput) (SeatMap,
 		return SeatMap{}, fmt.Errorf("create seat map: %w", err)
 	}
 	return m, nil
+}
+
+// PublishSeatMap flips a seat map draft->published (TKT-103, COS-1). The
+// transition is MONOTONIC and therefore lock-free (ADR-018 rule 1): a single
+// atomic conditional UPDATE flips draft->published exactly once, so no row lock
+// is needed — a concurrent transition cannot invalidate the publication's
+// identity, exactly as PublishPerformance. needsEmit is true while the
+// seat_map.published domain event is still owed (event_emitted_at is null);
+// the caller emits, then marks. Publishing an already-published map is a
+// resource no-op that still reports whether the event is owed.
+func (p *Postgres) PublishSeatMap(ctx context.Context, id uuid.UUID) (SeatMap, bool, error) {
+	if _, err := p.db.ExecContext(ctx,
+		`UPDATE seat_maps SET status = 'published', published_at = now()
+		 WHERE id = $1 AND status = 'draft'`, id); err != nil {
+		return SeatMap{}, false, fmt.Errorf("publish seat map: %w", err)
+	}
+	var m SeatMap
+	var publishedAt sql.NullTime
+	var emittedAt sql.NullTime
+	err := p.db.QueryRowContext(ctx,
+		`SELECT id, organizer_id, venue_id, name, version, status, published_at, event_emitted_at, created_at
+		 FROM seat_maps WHERE id = $1`, id).
+		Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &publishedAt, &emittedAt, &m.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatMap{}, false, fmt.Errorf("seat map: %w", ErrNotFound)
+	}
+	if err != nil {
+		return SeatMap{}, false, fmt.Errorf("read seat map: %w", err)
+	}
+	if publishedAt.Valid {
+		m.PublishedAt = &publishedAt.Time
+	}
+	if m.Status != "published" {
+		// A map that could not flip and is not already published cannot be a
+		// draft that just published, so it is an illegal transition target
+		// (e.g. archived). Draft that already flipped falls through as published.
+		return SeatMap{}, false, ErrIllegalTransition
+	}
+	return m, !emittedAt.Valid, nil
+}
+
+// MarkSeatMapEventEmitted records that the seat_map.published event for this map
+// has been acknowledged by the stream (TKT-103). Mirrors
+// MarkPerformanceEventEmitted: at-least-once, so a retry before this lands
+// re-emits under the same deterministic id.
+func (p *Postgres) MarkSeatMapEventEmitted(ctx context.Context, id uuid.UUID) error {
+	if _, err := p.db.ExecContext(ctx,
+		`UPDATE seat_maps SET event_emitted_at = now() WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("mark seat map emitted: %w", err)
+	}
+	return nil
 }
 
 func (p *Postgres) AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error) {

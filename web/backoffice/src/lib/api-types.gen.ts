@@ -95,6 +95,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/seat-maps/{seatMapId}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish a seat map (idempotent, TKT-103)
+         * @description Flips a seat map draft to published and emits the platform.catalog.seat_map.published domain event at least once while it is owed (envelope id is deterministic per publication, so retried or raced emissions de-duplicate). A published version is immutable — further section/row/seat authoring is refused. Publishing an already-published map returns 200 without re-emitting; an archived map is a 409.
+         */
+        post: operations["publishSeatMap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events": {
         parameters: {
             query?: never;
@@ -625,6 +645,11 @@ export interface components {
             version: number;
             /** @enum {string} */
             status: "draft" | "published" | "archived";
+            /**
+             * Format: date-time
+             * @description Publication instant (TKT-103); absent while draft
+             */
+            published_at?: string;
             /** Format: date-time */
             created_at: string;
         };
@@ -751,6 +776,11 @@ export interface components {
             /** @description IANA zone name, e.g. Europe/Paris */
             timezone: string;
             re_entry?: components["schemas"]["ReEntryPolicy"];
+            /**
+             * Format: uuid
+             * @description Published seat-map version to seat this slot against (TKT-103). Omit for a GA slot. The referenced map must be published and share the slot's organizer and venue; a festival day cannot be seated.
+             */
+            seat_map_id?: string;
         };
         Performance: {
             /** Format: uuid */
@@ -785,6 +815,11 @@ export interface components {
              * @description Festival capacity-group id for grouped festival days
              */
             capacity_group_id?: string;
+            /**
+             * Format: uuid
+             * @description Published seat-map version this slot is seated against (TKT-103); absent for a GA slot.
+             */
+            seat_map_id?: string;
             /** Format: date-time */
             created_at: string;
         };
@@ -1186,6 +1221,38 @@ export interface operations {
             };
         };
     };
+    publishSeatMap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seatMapId: components["parameters"]["SeatMapId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Seat map is published */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatMap"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description An archived seat map cannot be published */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     createEvent: {
         parameters: {
             query?: never;
@@ -1235,6 +1302,15 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            /** @description Seated reference to a seat map that is not published (TKT-103). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     publishPerformance: {

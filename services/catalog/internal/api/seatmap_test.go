@@ -3,7 +3,9 @@ package api
 import (
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -98,6 +100,171 @@ func TestSeatMapAuthoringChain(t *testing.T) {
 	}
 	if (*r.Seats)[0].SeatIdentity != "Orchestra/A/12" {
 		t.Fatalf("seat geometry wrong: %+v", (*r.Seats)[0])
+	}
+}
+
+// seedPublishedMap authors a one-seat draft map and publishes it via the API,
+// returning the published version.
+func seedPublishedMap(t *testing.T, e *env, venueID openapi_types.UUID, name string) SeatMap {
+	t.Helper()
+	m := seedDraftMap(t, e, venueID, name)
+	sec := decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1}))
+	row := decode[SeatRow](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/rows",
+		SeatMapRowCreate{OrganizerId: orgID, SectionId: sec.Id, Label: "A", Position: 1}))
+	e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
+		SeatMapSeatCreate{OrganizerId: orgID, RowId: row.Id, Label: "1", Position: 1})
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish seat map: %d %s", rec.Code, rec.Body.String())
+	}
+	return decode[SeatMap](t, rec)
+}
+
+// TestPublishSeatMap (TKT-103 COS-1) exercises the publish endpoint: draft ->
+// published emits the seat_map.published event once, is idempotent, and marks
+// the outbox so a re-publish does not re-emit.
+func TestPublishSeatMap(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "La Grande Salle")
+	m := seedDraftMap(t, e, venueID, "Main floor")
+
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())
+	}
+	published := decode[SeatMap](t, rec)
+	if published.Status != "published" || published.PublishedAt == nil {
+		t.Fatalf("published map = %q publishedAt=%v, want published with a timestamp", published.Status, published.PublishedAt)
+	}
+	if len(e.pub.seatMapsPub) != 1 || e.pub.seatMapsPub[0].ID != m.Id {
+		t.Fatalf("expected exactly one seat_map.published emission for %s, got %+v", m.Id, e.pub.seatMapsPub)
+	}
+
+	// Idempotent re-publish: still 200 published, and NO second emission (marked).
+	rec2 := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("re-publish: %d %s", rec2.Code, rec2.Body.String())
+	}
+	if len(e.pub.seatMapsPub) != 1 {
+		t.Fatalf("re-publish must not re-emit once marked, got %d emissions", len(e.pub.seatMapsPub))
+	}
+}
+
+// TestPublishSeatMapEmitFailureRetries (COS-1 at-least-once): a failed emission
+// leaves the event owed, so a retry re-emits — the marker is set only after ack.
+func TestPublishSeatMapEmitFailureRetries(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "Hall")
+	m := seedDraftMap(t, e, venueID, "Floor")
+
+	e.pub.failSeatMapNext = true
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("emit failure must 500, got %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.seatMapsPub) != 0 {
+		t.Fatalf("failed emission must not record a publish, got %+v", e.pub.seatMapsPub)
+	}
+	// Retry succeeds and emits (the event was still owed).
+	rec = e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry publish: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(e.pub.seatMapsPub) != 1 {
+		t.Fatalf("retry must emit the owed event once, got %d", len(e.pub.seatMapsPub))
+	}
+}
+
+func TestPublishSeatMapUnknown(t *testing.T) {
+	e := newEnv(t)
+	rec := e.do("POST", "/seat-maps/"+orgID.String()+"/publish", nil) // not a map id
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("want 404 for unknown map, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPublishedSeatMapRejectsAuthoring (COS-1 immutability): a published version
+// is frozen — further section authoring is a 404 (the draft-only write gate).
+func TestPublishedSeatMapRejectsAuthoring(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "Hall")
+	m := seedPublishedMap(t, e, venueID, "Frozen")
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{OrganizerId: orgID, Name: "New", Position: 9})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("authoring a published map must be refused (404), got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCreateSeatedPerformance (TKT-103 COS-2): a performance referencing a
+// published map in the same venue is created seated; the response carries the
+// map reference. A GA performance (no reference) is unchanged.
+func TestCreateSeatedPerformance(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "La Grande Salle")
+	m := seedPublishedMap(t, e, venueID, "Main floor")
+	event := decode[Event](t, e.do("POST", "/events", EventCreate{
+		OrganizerId: orgID, Name: LocalizedString{"fr": "Récital", "en": "Recital"},
+	}))
+	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+
+	seatedRec := e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+		StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapId: &m.Id,
+	})
+	if seatedRec.Code != http.StatusCreated {
+		t.Fatalf("create seated: %d %s", seatedRec.Code, seatedRec.Body.String())
+	}
+	seated := decode[Performance](t, seatedRec)
+	if seated.SeatMapId == nil || *seated.SeatMapId != m.Id {
+		t.Fatalf("seated performance must carry the map reference, got %+v", seated.SeatMapId)
+	}
+
+	// GA performance at the same venue is unchanged: no reference, coexists.
+	gaRec := e.do("POST", "/performances", PerformanceCreate{
+		OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+		StartsAt: &startsAt, Timezone: "Europe/Paris",
+	})
+	ga := decode[Performance](t, gaRec)
+	if ga.SeatMapId != nil {
+		t.Fatalf("GA performance must not carry a map reference, got %+v", ga.SeatMapId)
+	}
+}
+
+// TestCreateSeatedPerformanceRejectsUnpublishedOrCrossTenant (COS-2 validation):
+// a seated reference must be to a published map in the same venue/organizer.
+func TestCreateSeatedPerformanceRejectsUnpublishedOrCrossTenant(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "La Grande Salle")
+	otherVenueID := seedVenue(t, e, "Petit Théâtre")
+	draft := seedDraftMap(t, e, venueID, "Draft map")
+	publishedElsewhere := seedPublishedMap(t, e, otherVenueID, "Other venue map")
+	event := decode[Event](t, e.do("POST", "/events", EventCreate{
+		OrganizerId: orgID, Name: LocalizedString{"fr": "R", "en": "R"},
+	}))
+	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+	unknown := uuid.New()
+
+	for _, tc := range []struct {
+		name  string
+		mapID uuid.UUID
+		want  int
+	}{
+		{"draft map is not seatable", draft.Id, http.StatusConflict},
+		{"published map in another venue", publishedElsewhere.Id, http.StatusBadRequest},
+		{"unknown map", unknown, http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := tc.mapID
+			rec := e.do("POST", "/performances", PerformanceCreate{
+				OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+				StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapId: &id,
+			})
+			if rec.Code != tc.want {
+				t.Fatalf("want %d, got %d %s", tc.want, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

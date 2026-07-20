@@ -69,8 +69,15 @@ type publication struct {
 		Capacity        int32      `json:"capacity"`
 		CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
 		SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
+		SeatMapID       *uuid.UUID `json:"seat_map_id,omitempty"`
 	} `json:"data"`
 }
+
+// errSeatedNoProvision marks a valid schema-4 seated publication that this binary
+// deliberately provisions nothing for (TKT-103): the caller acks without touching
+// the store. It is distinct from the unsupported-schema sentinel so the seated
+// arm reads as a real, known arm — not a hole that would quarantine.
+var errSeatedNoProvision = errors.New("seated publication provisions no pool")
 
 type provisionInput struct {
 	organizerID uuid.UUID
@@ -91,6 +98,28 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 			return provisionInput{}, fmt.Errorf("schema-2 publication must not carry festival capacity")
 		}
 		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity}, nil
+	case 4:
+		// Seated fork (TKT-103). This binary KNOWS this variant — so it does not
+		// quarantine it — but it deliberately provisions no inventory pool: a
+		// seated slot is claimed seat-by-seat (TKT-80), never through the GA
+		// quantity path. Provisioning a fungible pool here would let seated
+		// tickets sell as GA before the seat-level claim exists. errSeatedNoProvision
+		// is a distinct sentinel (NOT "unsupported"): the caller acks and moves
+		// on, and the tripwire tests accept it as a real arm.
+		if e.Data.PerformanceID == uuid.Nil || e.Data.OrganizerID == uuid.Nil {
+			return provisionInput{}, fmt.Errorf("schema-4 seated publication is missing required identifiers")
+		}
+		if e.Data.SeatMapID == nil || *e.Data.SeatMapID == uuid.Nil {
+			return provisionInput{}, fmt.Errorf("schema-4 seated publication has no seat map reference")
+		}
+		if e.Data.CapacityGroupID != nil || e.Data.SharedCapacity != nil {
+			return provisionInput{}, fmt.Errorf("schema-4 seated publication must not carry festival capacity")
+		}
+		// Note: `capacity` is deliberately NOT validated here (unlike case 2). A
+		// seated event's capacity is the venue GA snapshot, which this arm never
+		// uses — it provisions nothing. TKT-80, when it reads the seated payload,
+		// must vet any field it consumes itself rather than assume this arm did.
+		return provisionInput{}, errSeatedNoProvision
 	case 3:
 		// Deploy this consumer before catalog starts emitting Schema 3 so grouped
 		// festival publications remain safe during a rolling rollout.
@@ -127,8 +156,10 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 // maxKnownPublicationSchema is the highest `performance.published` variant this binary can read.
 // Keep it in step with provisionInput's case arms above — TestEveryKnownSchemaHasAnArm is the
 // tripwire if you add an arm and forget, and TestMaxKnownSchemaIsNotBehindTheArms if you bump it
-// without adding one.
-const maxKnownPublicationSchema = 3
+// without adding one. Schema 4 is the seated fork (TKT-103): a KNOWN variant that this binary
+// deliberately provisions NOTHING for (the seat-level claim is TKT-80) — see provisionInput's
+// case 4 and errSeatedNoProvision.
+const maxKnownPublicationSchema = 4
 
 // knownSchemas is the per-subject registry of variants this binary can read (ADR-017 §5b′).
 // Above max is the future (park + latch unready); at or below zero is a broken envelope; a gap
@@ -252,6 +283,13 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 		return
 	}
 	input, err := c.provisionInput(ctx, e)
+	if errors.Is(err, errSeatedNoProvision) {
+		// Known seated variant (TKT-103): valid, but provisions nothing here. Ack
+		// and move on — the seat-level claim is TKT-80. Never quarantine (it is
+		// known) and never terminate (it is valid).
+		_ = msg.Ack()
+		return
+	}
 	if err != nil {
 		if e.Schema == 1 {
 			// Schema 1 resolves against catalog; its failures are transient.
