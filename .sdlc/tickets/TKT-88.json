@@ -2,9 +2,11 @@
   "key": "TKT-88",
   "type": "Story",
   "summary": "Cross-service smoke coverage for multi-event admission flows",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "main-agent",
   "pr": null,
   "comments": [
     {
@@ -16,6 +18,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaping pass. Verdict: READY — test-only ticket (source changes out of scope; a bug surfaced by a new smoke test gets reported, not fixed in-line, per the test-scope rule). Scope refreshed to include TKT-87's pass flows, which post-date the ticket's creation. risk:low plausible but NOT suggested: the suite is gate-load-bearing and cross-service."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed** by main-agent (Claude Opus 4.8) off `origin/main` @ e204387.\nBranch: `TKT-88-cross-service-admission-smoke`.\n\n**Blocker check:** zero open blockers — `links` empty; readiness `dependencies` = met (TKT-84/85/87 merged, every event type under test exists). `uncertainties` = deferred (which scenarios need new fixtures vs extending `smoke/checkout_test.go` — Planning resolves), which passes the Gate-1 hard-block.\n\n**Selection reason:** in `Ready`, well-shaped (all readiness items met/deferred), test-only, and its dependency chain (TKT-84/85/87) is fully merged, so it is unblocked and self-contained.\n\n**⚠️ GATELESS RUN — human gates waived by repo owner.** The owner (mathd1@gmail.com) is running TKT-88 through the pipeline in fully autonomous mode, Ready→Done in one continuous run, deliberately waiving all four human gates as a process experiment:\n- Gate 1 (priority): already given — ticket was in Ready.\n- Gate 2 (plan approval): after cross-model plan critique, the agent resolves open decisions itself (prefer the critique's recommendation; else most-reversible option), recording each in plan-final.\n- Gate 3 (review + merge): after ai-review converges, the agent squash-merges the PR and deletes the branch. Review-guide still posted first as the audit record.\n- Gate 4 (PO acceptance): the agent self-validates each COS against test evidence on merged code, then closes with the full metrics comment.\n\nEverything else in the sdlc-ticket skill applies unchanged: config.models routing (plan=kimi-k3:medium@claudex, planReview=main-agent, implement=main-agent, aiReview=kimi-k3:medium@claudex; both cross-model pairs distinct), cross-model review for plan and code, TDD tests-red-first, `make check` green before every push and after merge, all marker comments at each stage, no AI attribution in commits/PRs.\n\nBoard history records this ticket ran gateless."
     }
   ],
   "description": "Extend the gateway smoke suite beyond per-ticket TDD: replayed scans (same occurrence id), concurrent duplicates, offline out-of-order reconciliation, one redeemed + N duplicate_admit, N-event chains passing verify-lifecycle with RequireCoverage. Complements — does not replace — the TDD each implementation ticket owes (ADR-025 follow-up; seams: smoke/checkout_test.go, migration_smoke_test.go).",
