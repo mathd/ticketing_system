@@ -1,0 +1,68 @@
+{
+  "key": "TKT-101",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "US-018: Back-office app shell — staff see the venue list",
+  "description": "### US-018: Back-office app shell — staff see the venue list\n**As** staff, **I want** a back-office web app where I can see the organizer's venues and their GA capacity, **so that** later slices have a surface to author seat maps on. **Priority:** P2 **Depends on:** —\n\nThis is the prefactor slice: it stands up a new back-office web app and its gateway route, de-risking the new-app plumbing (framework, pnpm workspace, OpenAPI codegen, gateway routing, Compose wiring, healthcheck) **separately** from any seat-map domain logic. No seat-map code here — it renders venues that already exist.\n\n**Acceptance Criteria:**\n- [ ] A new `web/backoffice` app is added to the pnpm workspace and starts under `docker compose up` with a `/healthz` (or equivalent liveness) that the Compose healthcheck gates on; stack matches an existing precedent (storefront Astro+React **or** scanner React+Vite) — the plan picks one with a one-line rationale.\n- [ ] The gateway route table gains a back-office prefix (e.g. `/admin/`) proxying to the new app, added alongside the existing `/api/catalog/` and `/` routes without breaking longest-prefix matching; the storefront catch-all `/` still resolves.\n- [ ] Catalog exposes a venue **read** the back-office consumes: `GET /venues` (list) and/or `GET /venues/{id}` returning at least `{id, name, ga_capacity}`, `organizer_id`-scoped, with an ADR-004 `Cache-Control` tier declared (hours tier — venue geometry is long-lived) and the OpenAPI contract published (ADR-009).\n- [ ] The back-office renders the venue list from that endpoint via generated types; opening `/admin/` in a browser shows the seeded organizer's venues with GA capacity (screenshot in the PR).\n- [ ] The M1 storefront and scanner paths are untouched (their smoke tests stay green).\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- New/changed public read endpoints declare an ADR-004 TTL tier with rationale\n- New migrations run out-of-band via the service `migrate` subcommand (ADR-022) and build within the 30s startup budget with plain `CREATE INDEX` (ADR-020)\n- Every owned entity is `organizer_id`-scoped (ADR-002)\n\nParent epic: TKT-3. Full lineage: docs/product/prd-v1.md §Capability map (TKT-3).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-004",
+        "rule": "Every public read endpoint declares a volatility-tiered `Cache-Control`/`s-maxage`. Venue/seat-map geometry is the 'hours' tier (longer-lived than the 'minutes' event tier); availability is 'seconds'; hold/order state is never cached. Writes are never cached.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-002",
+        "rule": "Every owned entity carries an `organizer_id` (tenant-aware) even though v1 has one organizer.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "The new venue read must declare the 'hours' geometry TTL tier, not the events 'minutes' tier."
+      },
+      {
+        "id": "ADR-006",
+        "why": "Storefront-shell precedent (Astro) — reuse its scaffolding shape if the plan picks Astro; scanner is the React+Vite alternative."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the new venue GET is an OpenAPI addition, codegen'd into the back-office types."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Venue reads and the app are organizer-scoped from birth."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §Capability map — TKT-3 row is the source of truth for scope",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "TKT-3 epic — COS: authoring UI, versioning safe against sold inventory, GA+seated coexist",
+        "link": ".sdlc board TKT-3"
+      },
+      {
+        "summary": "Gateway route table — add the /admin prefix here; longest-prefix wins, catch-all `/` last",
+        "link": "gateway/cmd/gateway/main.go"
+      },
+      {
+        "summary": "Storefront = Astro+React public reads; scanner = React+Vite SPA — the two stack precedents",
+        "link": "web/storefront, web/scanner"
+      }
+    ],
+    "capturedAt": "2026-07-20"
+  },
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-102"
+    }
+  ],
+  "comments": []
+}
