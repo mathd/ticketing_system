@@ -492,6 +492,11 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 // scan race is the single stored `redeemed` lifecycle event, with the timestamp
 // the accepted response reported. The redemption event's id IS the occurrence
 // id (ADR-025 §D3), so the occurrence uniquely identifies the stored row.
+//
+// Isolation on the shared smoke stack comes from the freshly-minted UUIDv4
+// occurrence and ticket id unique to this run, NOT from any DB partitioning — a
+// future refactor that reuses a fixture ticket would silently break the
+// exactly-one-redeemed/zero-duplicate_admit counts below.
 func assertRedeemedOccurrence(t *testing.T, qrPayload, winningOccurrence string, acceptedAt time.Time) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

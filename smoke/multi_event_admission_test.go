@@ -55,9 +55,17 @@ type ticketHistoryEvent struct {
 // returns the two issued tickets once access has delivered them. It reuses the
 // shared checkout drivers so the issuance path is identical to the feature
 // tests; only the assertions here differ.
+// wantSingleEntryTickets is how many tickets one issueSingleEntryTickets
+// checkout yields — inherited from reserveCheckout's fixed quantity of 2
+// (checkout_test.go). Named here so a change to that fixture surfaces as a
+// clear constant mismatch rather than a bare "issued tickets = N, want 2".
+const wantSingleEntryTickets = 2
+
 func issueSingleEntryTickets(t *testing.T, suffix string) (guestRef string, tickets []issuedTicket) {
 	t.Helper()
 	_, ticketType := setupCheckoutOffer(t, suffix)
+	// reserveCheckout reserves quantity 2 and asserts the 2×1250=2500 total, so
+	// this order issues wantSingleEntryTickets tickets.
 	reservation := reserveCheckout(t, ticketType, "tkt88-reserve-"+suffix)
 	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "tkt88-order-"+suffix, map[string]any{
 		"reservation_id": reservation["reservation_id"], "name": "TKT88 Buyer", "email": "tkt88-" + suffix + "@example.test", "payment_token": "fake-ok",
@@ -85,8 +93,8 @@ func issueSingleEntryTickets(t *testing.T, suffix string) (guestRef string, tick
 		if err := json.Unmarshal(body, &bundle); err != nil {
 			return err
 		}
-		if len(bundle.Tickets) != 2 {
-			return fmt.Errorf("issued tickets = %d, want 2", len(bundle.Tickets))
+		if len(bundle.Tickets) != wantSingleEntryTickets {
+			return fmt.Errorf("issued tickets = %d, want %d", len(bundle.Tickets), wantSingleEntryTickets)
 		}
 		tickets = bundle.Tickets
 		return nil
@@ -232,6 +240,10 @@ func alarmEnvelopesFor(t *testing.T, ctx context.Context, subject, ticket string
 	t.Helper()
 	conn := accessConn(t, ctx)
 	defer func() { _ = conn.Close(ctx) }()
+	// ORDER BY created_at is insertion order for stable output, NOT an
+	// authoritative sequence (the outbox has no sequence column). Callers assert
+	// per-occurrence counts and raise/withdraw pairs, never positional order
+	// across occurrences — do not add such an assertion on top of this ordering.
 	rows, err := conn.Query(ctx, `SELECT envelope::text FROM lifecycle_integrity_alarm_outbox WHERE subject=$1 AND envelope->'data'->>'ticket_id'=$2 ORDER BY created_at`, subject, ticket)
 	if err != nil {
 		t.Fatalf("query alarm outbox: %v", err)
@@ -316,6 +328,10 @@ func TestOccurrenceReplayIsDistinguishable(t *testing.T) {
 	if replay.Decision != "accepted" || replay.Replay == nil || !*replay.Replay {
 		t.Fatalf("replay must be a distinguishable accepted (replay:true), got %s", body)
 	}
+	// time.Equal is safe here: the fixture truncates to microseconds and the
+	// value round-trips through RFC3339Nano JSON and a timestamptz column, both
+	// microsecond-precision, so no monotonic-clock or sub-microsecond drift can
+	// make two equal stored instants compare unequal.
 	if !replay.ScannedAt.Equal(first.ScannedAt) {
 		t.Fatalf("replay scanned_at = %s, want %s (idempotent, same stored time)", replay.ScannedAt, first.ScannedAt)
 	}
@@ -705,9 +721,17 @@ func TestPassEntryExitAndDerivedConflictWithdrawal(t *testing.T) {
 		return nil
 	})
 
-	// (5) Live exit closes the open entry: accepted, and the derived conflict is
-	// WITHDRAWN (a live exit is what withdraws a reconciliation-raised
-	// exit_required) with an incremented version.
+	// (5) Live exit WITHDRAWS the reconciliation-raised exit_required, with an
+	// incremented version. The exit's claimed time (+8m) is deliberately BETWEEN
+	// the live entry (+5m) and the reconciled entry (+20m): DerivePolicyConflicts
+	// walks facts ordered by claimed time (conflicts.go:orderFacts) and raises
+	// exit_required for an entry that lands while already inside. With the exit
+	// at +8m the ordered walk is entry(+5m,inside)→exit(+8m,outside)→
+	// reconEntry(+20m,NOT inside) — so the reconciled entry no longer conflicts
+	// and the derived set is empty → withdrawn. This ordering-dependence is the
+	// point: an exit placed AFTER the reconciled entry (e.g. +25m) would leave
+	// reconEntry landing while-inside and the conflict would correctly STAY
+	// raised. The withdrawal is a property of the timeline, not of any exit.
 	code, body = postWithKey(t, gatewayURL+"/api/access/scans", "tkt88-pass-exit-"+suffix,
 		scanBody(qr, uuid.NewString(), base.Add(8*time.Minute), "exit"))
 	if code != http.StatusOK {
