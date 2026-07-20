@@ -57,7 +57,11 @@ func setupCheckoutOffer(t *testing.T, suffix string) (string, string) {
 	catalog := gatewayURL + "/api/catalog"
 	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Checkout " + suffix, "ga_capacity": 5})
 	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": "Paiement " + suffix, "en": "Checkout " + suffix}})
-	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-11-01T20:00:00Z", "timezone": "UTC"})
+	// starts_at is relative to now, never a fixed date (TKT-93): a hardcoded
+	// 2026 date silently ages into the past and would eventually publish a
+	// performance that has already started.
+	startsAt := time.Now().UTC().AddDate(0, 0, 90).Truncate(time.Second).Format(time.RFC3339)
+	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": startsAt, "timezone": "UTC"})
 	tt := created(t, catalog+"/ticket-types", map[string]any{"organizer_id": organizerID, "performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1250, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
@@ -243,21 +247,31 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 
 	// A real-Postgres race proves the lock -> trace read -> insert ordering:
 	// one gate accepts and the other obtains that exact stored timestamp.
+	// TKT-88: each gate carries a DISTINCT occurrence id (two physical gates
+	// admitting the same single-entry ticket at once), so the race also proves
+	// the occurrence-keyed redemption: exactly one occurrence becomes the
+	// stored `redeemed`, and the loser sees its already-redeemed time.
 	type scanResult struct {
-		code int
-		body []byte
-		err  error
+		code       int
+		body       []byte
+		occurrence string
+		err        error
 	}
+	firstOcc, secondOcc := uuid.NewString(), uuid.NewString()
+	raceOccurrences := []string{firstOcc, secondOcc}
+	raceClaimedAt := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Microsecond)
 	start := make(chan struct{})
 	scanResults := make(chan scanResult, 2)
 	var scans sync.WaitGroup
-	for range 2 {
+	for i := range 2 {
+		occurrence := raceOccurrences[i]
 		scans.Add(1)
 		go func() {
 			defer scans.Done()
 			<-start
-			code, body, scanErr := postScan(gatewayURL+"/api/access/scans", second.QRPayload)
-			scanResults <- scanResult{code: code, body: body, err: scanErr}
+			code, body := postWithKey(t, gatewayURL+"/api/access/scans", "concurrent-scan-"+occurrence,
+				map[string]any{"qr_payload": second.QRPayload, "occurrence_id": occurrence, "occurred_at": raceClaimedAt.Format(time.RFC3339Nano)})
+			scanResults <- scanResult{code: code, body: body, occurrence: occurrence}
 		}()
 	}
 	close(start)
@@ -265,6 +279,8 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	close(scanResults)
 	var concurrentAccepted time.Time
 	var concurrentDuplicate time.Time
+	var winningOccurrence string
+	acceptedCount, duplicateCount := 0, 0
 	for result := range scanResults {
 		if result.err != nil {
 			t.Fatal(result.err)
@@ -277,6 +293,8 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 				t.Fatalf("concurrent accepted result = %s: %v", result.body, err)
 			}
 			concurrentAccepted = value.ScannedAt
+			winningOccurrence = result.occurrence
+			acceptedCount++
 			continue
 		}
 		if result.code == http.StatusConflict {
@@ -287,13 +305,20 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 				t.Fatalf("concurrent duplicate result = %s: %v", result.body, err)
 			}
 			concurrentDuplicate = value.OriginalScanAt
+			duplicateCount++
 			continue
 		}
 		t.Fatalf("concurrent scan = %d %s", result.code, result.body)
 	}
+	if acceptedCount != 1 || duplicateCount != 1 {
+		t.Fatalf("concurrent outcomes accepted=%d duplicate=%d, want exactly 1 each", acceptedCount, duplicateCount)
+	}
 	if concurrentAccepted.IsZero() || concurrentDuplicate.IsZero() || !concurrentAccepted.Equal(concurrentDuplicate) {
 		t.Fatalf("concurrent outcomes have timestamps accepted=%s duplicate=%s", concurrentAccepted, concurrentDuplicate)
 	}
+	// The winning occurrence is the one and only stored redeemed event; the
+	// loser appended nothing.
+	assertRedeemedOccurrence(t, second.QRPayload, winningOccurrence, concurrentAccepted)
 	retry(t, 10*time.Second, func() error {
 		code, body, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestRef+"/tickets")
 		if code != http.StatusOK {
@@ -461,6 +486,46 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	}
 	// Released claims are terminal, so retry means reacquiring a fresh hold.
 	_ = reserveCheckout(t, ticketType, "reserve-retry")
+}
+
+// assertRedeemedOccurrence asserts that the winning occurrence of a concurrent
+// scan race is the single stored `redeemed` lifecycle event, with the timestamp
+// the accepted response reported. The redemption event's id IS the occurrence
+// id (ADR-025 §D3), so the occurrence uniquely identifies the stored row.
+func assertRedeemedOccurrence(t *testing.T, qrPayload, winningOccurrence string, acceptedAt time.Time) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://access:access@%s/access", pgHostPort))
+	if err != nil {
+		t.Fatalf("connect access db: %v", err)
+	}
+	defer func() { _ = db.Close(ctx) }()
+	var eventType string
+	var occurredAt time.Time
+	if err := db.QueryRow(ctx, `SELECT event_type, occurred_at FROM lifecycle_events WHERE id=$1`, winningOccurrence).Scan(&eventType, &occurredAt); err != nil {
+		t.Fatalf("winning occurrence %s has no lifecycle event: %v", winningOccurrence, err)
+	}
+	if eventType != "redeemed" {
+		t.Fatalf("winning occurrence event_type = %q, want redeemed", eventType)
+	}
+	if !occurredAt.UTC().Equal(acceptedAt.UTC()) {
+		t.Fatalf("redeemed occurred_at = %s, want accepted scanned_at %s", occurredAt.UTC(), acceptedAt.UTC())
+	}
+	// The losing occurrence never became an event: exactly one redeemed for
+	// this ticket, and no duplicate_admit from a live concurrent scan.
+	var redeemed, dupes int
+	if err := db.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE event_type='redeemed'),
+			count(*) FILTER (WHERE event_type='duplicate_admit')
+		FROM lifecycle_events
+		WHERE ticket_id = (SELECT ticket_id FROM lifecycle_events WHERE id=$1)`, winningOccurrence).Scan(&redeemed, &dupes); err != nil {
+		t.Fatalf("count redemptions: %v", err)
+	}
+	if redeemed != 1 || dupes != 0 {
+		t.Fatalf("concurrent race left redeemed=%d duplicate_admit=%d, want 1 and 0", redeemed, dupes)
+	}
 }
 
 func corruptSignature(t *testing.T, token string) string {
