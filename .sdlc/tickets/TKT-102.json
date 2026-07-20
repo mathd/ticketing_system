@@ -77,5 +77,45 @@
       "key": "TKT-103"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-102 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the code-seam survey + the TKT-3 decomposition + owner decisions (2026-07-20: back-office = Astro+React; versioning proof is catalog-side via a pinning contract). **No `open owner:human` items remain** — the board hard-block is cleared.\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Exact seat-identity representation (composite section/row/label vs opaque id) and typed-columns-vs-jsonb for geometry — resolvable in Planning under ADR-014 (prefer typed so invalid state is unrepresentable). Not a product decision.\n\n**Ready to prioritize (Gate 1).**"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A venue can only express GA today; this introduces the seat-map domain (section→row→seat) and its authoring path in the draft state, so reserved seating can be described."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: catalog schema for a versioned seat_map (venue-owned, version + draft status) with section/row/seat + stable seat identity; authoring API (create draft, add/list geometry); back-office authoring UI; invalid-geometry rejections. OUT: publish (TKT-103), edit-after-publish/versioning safety (TKT-104), buyer rendering (TKT-35), seat claims (TKT-80)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Exact seat-identity representation (composite section/row/label vs opaque id) and typed-columns-vs-jsonb for geometry — resolvable in Planning under ADR-014 (prefer typed so invalid state is unrepresentable). Not a product decision."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-101 (needs the back-office app to author in). Linked."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend catalog (ADR-014: add tables/typed columns, don't rebuild the slot/venue tables); model seating as venue/map attributes, never fork the claim primitive (ADR-005). Migration out-of-band (ADR-022), plain CREATE INDEX in the 30s budget (ADR-020). Geometry read at ADR-004 hours tier."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Draft-only author-and-read of one map with a section/row/seats — publish and edit-safety deliberately deferred to keep this slice reviewable."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: schema + API create/read a draft map; a venue holds GA capacity AND a seat map simultaneously; back-office authors a small map and renders it back; invalid geometry rejected with a pinned test; M1/TKT-101 green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-005/014 (model shape, no fork), ADR-004 (hours tier), ADR-022/020 (migrations/index), ADR-019 (scoped read needs a backing index). governingAdrs present."
+    }
+  }
 }
