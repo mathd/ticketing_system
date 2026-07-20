@@ -526,6 +526,27 @@ paths:
               schema: { $ref: '#/components/schemas/PublicFestivalDetail' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /public/venues:
+    get:
+      operationId: listPublicVenues
+      summary: Organizer-scoped venue list (hours tier)
+      description: >
+        The venues owned by an organizer, for the back-office venue list
+        (US-018). Venue geometry is long-lived, so this read uses the ADR-004
+        hours tier — Cache-Control: public, max-age=3600, s-maxage=3600 —
+        distinct from the events minutes tier. Scoped explicitly by
+        organizer_id (ADR-002); there is no session to infer it from.
+      parameters:
+        - $ref: '#/components/parameters/OrganizerId'
+      responses:
+        '200':
+          description: The organizer's venues
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicVenueList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec
@@ -575,6 +596,12 @@ components:
       name: festivalId
       in: path
       required: true
+      schema: { type: string, format: uuid }
+    OrganizerId:
+      name: organizer_id
+      in: query
+      required: true
+      description: Tenant scope (ADR-002); required — no session to infer from
       schema: { type: string, format: uuid }
   headers:
     CacheControl:
@@ -975,6 +1002,19 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PublicEventSummary'
+    PublicVenueList:
+      description: >
+        The back-office venue list (US-018). Wrapper object (not a bare array)
+        matching PublicEventList, so pagination can be added without a breaking
+        contract change. Items are the full Venue (ga_capacity + tenancy),
+        distinct from the id+name PublicVenue used inside event/festival detail.
+      type: object
+      required: [venues]
+      properties:
+        venues:
+          type: array
+          items:
+            $ref: '#/components/schemas/Venue'
     PublicEventSummary:
       type: object
       required: [id, name, performances]

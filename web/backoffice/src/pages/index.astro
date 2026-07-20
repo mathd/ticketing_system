@@ -1,0 +1,40 @@
+---
+// The back-office venue list (US-018): staff see the organizer's venues and
+// their GA capacity. SSR reads through the gateway (ADR-002 public contract);
+// no seat-map logic — this renders venues that already exist. Served at /admin/.
+import Layout from '../layouts/Layout.astro';
+import { getVenues } from '../lib/api';
+
+const venues = await getVenues();
+---
+
+<Layout title="Venues — Back-office">
+  <table>
+    <caption>Venues</caption>
+    <thead>
+      <tr>
+        <th scope="col">Name</th>
+        <th scope="col">GA capacity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {
+        venues.map((v) => (
+          <tr>
+            <td>{v.name}</td>
+            <td class="num">{v.ga_capacity.toLocaleString('en')}</td>
+          </tr>
+        ))
+      }
+      {
+        venues.length === 0 && (
+          <tr>
+            <td class="empty" colspan="2">
+              No venues yet.
+            </td>
+          </tr>
+        )
+      }
+    </tbody>
+  </table>
+</Layout>

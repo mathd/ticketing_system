@@ -283,6 +283,9 @@ type FestivalAggregate struct {
 // it (they need the data); shape/locale validation lives in the API layer.
 type Store interface {
 	CreateVenue(ctx context.Context, in VenueInput) (Venue, error)
+	// ListVenues returns an organizer's venues, name-ordered (US-018). Tenant
+	// scoping is a query predicate, not a post-filter (ADR-002).
+	ListVenues(ctx context.Context, organizerID uuid.UUID) ([]Venue, error)
 	CreateEvent(ctx context.Context, in EventInput) (Event, error)
 	CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error)
 	CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error)

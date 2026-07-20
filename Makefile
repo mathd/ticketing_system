@@ -28,10 +28,11 @@ generate:
 	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../payments/internal/api/openapi_gen.go ../payments/api/openapi.yaml
 	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../access/internal/api/openapi_gen.go ../access/api/openapi.yaml
 	pnpm --filter storefront generate:api
+	pnpm --filter backoffice generate:api
 
 # The gate fails when committed generated code drifts from the spec.
 check-generate: generate
-	@git diff --exit-code -- services/*/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts \
+	@git diff --exit-code -- services/*/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts web/backoffice/src/lib/api-types.gen.ts \
 		|| { echo "generated code drifted from the OpenAPI spec — commit the output of 'make generate'" >&2; exit 1; }
 
 ## ---- lint ----
@@ -137,4 +138,4 @@ down:
 	docker compose down -v
 
 clean: down
-	rm -rf bin web/scanner/dist web/storefront/dist
+	rm -rf bin web/scanner/dist web/storefront/dist web/backoffice/dist

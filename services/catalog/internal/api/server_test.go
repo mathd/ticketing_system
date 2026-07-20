@@ -197,6 +197,17 @@ func (f *fakeStore) CreateVenue(_ context.Context, in store.VenueInput) (store.V
 	return v, nil
 }
 
+func (f *fakeStore) ListVenues(_ context.Context, organizerID uuid.UUID) ([]store.Venue, error) {
+	out := make([]store.Venue, 0)
+	for _, v := range f.venues {
+		if v.OrganizerID == organizerID {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func (f *fakeStore) CreateEvent(_ context.Context, in store.EventInput) (store.Event, error) {
 	e := store.Event{ID: uuid.New(), OrganizerID: in.OrganizerID, Name: in.Name,
 		Description: in.Description, CreatedAt: time.Now().UTC()}
@@ -1821,5 +1832,62 @@ func TestCloseRetriesEmissionAfterFailure(t *testing.T) {
 	}
 	if len(e.pub.closed) != 1 {
 		t.Fatalf("retry must emit the owed closure, got %d", len(e.pub.closed))
+	}
+}
+
+// TestListPublicVenues covers the US-018 back-office venue read: organizer-scoped,
+// hours-tier Cache-Control (ADR-004, distinct from the minutes tier), full Venue
+// payload conforming to the contract (ADR-028), and a 400 on a missing/invalid
+// organizer_id. Response validation runs through env.do (spec conformance).
+func TestListPublicVenues(t *testing.T) {
+	e := newEnv(t)
+	otherOrg := uuid.MustParse("00000000-0000-0000-0000-0000000000ff")
+	// Two venues for orgID, one for another organizer — the read must scope.
+	_ = decode[Venue](t, e.do("POST", "/venues",
+		VenueCreate{OrganizerId: orgID, Name: "Zed Hall", GaCapacity: 900}))
+	_ = decode[Venue](t, e.do("POST", "/venues",
+		VenueCreate{OrganizerId: orgID, Name: "Alpha Room", GaCapacity: 200}))
+	_ = decode[Venue](t, e.do("POST", "/venues",
+		VenueCreate{OrganizerId: otherOrg, Name: "Not Ours", GaCapacity: 100}))
+
+	rec := e.do("GET", "/public/venues?organizer_id="+orgID.String(), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list venues: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=3600, s-maxage=3600" {
+		t.Fatalf("venue read must carry the ADR-004 hours tier, got %q", got)
+	}
+	out := decode[PublicVenueList](t, rec)
+	if len(out.Venues) != 2 {
+		t.Fatalf("read must be organizer-scoped: want 2, got %d", len(out.Venues))
+	}
+	// Deterministic order (ORDER BY name) for the smoke assertion + screenshot.
+	if out.Venues[0].Name != "Alpha Room" || out.Venues[1].Name != "Zed Hall" {
+		t.Fatalf("venues must be name-ordered, got %q, %q", out.Venues[0].Name, out.Venues[1].Name)
+	}
+	for _, v := range out.Venues {
+		if v.OrganizerId != orgID {
+			t.Fatalf("scoping leak: got organizer %s", v.OrganizerId)
+		}
+		if v.GaCapacity == 0 || v.Id == (uuid.UUID{}) {
+			t.Fatalf("venue payload incomplete: %+v", v)
+		}
+	}
+}
+
+func TestListPublicVenuesRejectsBadOrganizer(t *testing.T) {
+	e := newEnv(t)
+	for _, tt := range []struct {
+		name, query string
+	}{
+		{"missing", ""},
+		{"malformed", "?organizer_id=not-a-uuid"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := e.do("GET", "/public/venues"+tt.query, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

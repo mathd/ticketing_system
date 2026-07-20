@@ -339,6 +339,11 @@ type PublicVenue struct {
 	Name string             `json:"name"`
 }
 
+// PublicVenueList The back-office venue list (US-018). Wrapper object (not a bare array) matching PublicEventList, so pagination can be added without a breaking contract change. Items are the full Venue (ga_capacity + tenancy), distinct from the id+name PublicVenue used inside event/festival detail.
+type PublicVenueList struct {
+	Venues []Venue `json:"venues"`
+}
+
 // ReEntryPolicy How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
 type ReEntryPolicy struct {
 	MaxEntries   *int32            `json:"max_entries,omitempty"`
@@ -482,6 +487,9 @@ type FestivalId = openapi_types.UUID
 // Locale defines model for Locale.
 type Locale = string
 
+// OrganizerId defines model for OrganizerId.
+type OrganizerId = openapi_types.UUID
+
 // PerformanceId defines model for PerformanceId.
 type PerformanceId = openapi_types.UUID
 
@@ -519,6 +527,12 @@ type GetPublicFestivalParams struct {
 type GetPublicSeasonParams struct {
 	// Locale BCP-47 primary subtag; supported set is data, not schema (TKT-36)
 	Locale Locale `form:"locale" json:"locale"`
+}
+
+// ListPublicVenuesParams defines parameters for ListPublicVenues.
+type ListPublicVenuesParams struct {
+	// OrganizerId Tenant scope (ADR-002); required — no session to infer from
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 
 // CreateEventJSONRequestBody defines body for CreateEvent for application/json ContentType.
@@ -604,6 +618,9 @@ type ServerInterface interface {
 	// Aggregated public season detail (minutes tier)
 	// (GET /public/seasons/{seasonId})
 	GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId, params GetPublicSeasonParams)
+	// Organizer-scoped venue list (hours tier)
+	// (GET /public/venues)
+	ListPublicVenues(w http.ResponseWriter, r *http.Request, params ListPublicVenuesParams)
 	// Create a localized season
 	// (POST /seasons)
 	CreateSeason(w http.ResponseWriter, r *http.Request)
@@ -724,6 +741,12 @@ func (_ Unimplemented) GetPublicFestival(w http.ResponseWriter, r *http.Request,
 // Aggregated public season detail (minutes tier)
 // (GET /public/seasons/{seasonId})
 func (_ Unimplemented) GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId, params GetPublicSeasonParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Organizer-scoped venue list (hours tier)
+// (GET /public/venues)
+func (_ Unimplemented) ListPublicVenues(w http.ResponseWriter, r *http.Request, params ListPublicVenuesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1187,6 +1210,39 @@ func (siw *ServerInterfaceWrapper) GetPublicSeason(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListPublicVenues operation middleware
+func (siw *ServerInterfaceWrapper) ListPublicVenues(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPublicVenuesParams
+
+	// ------------- Required query parameter "organizer_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "organizer_id", r.URL.Query(), &params.OrganizerId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "organizer_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "organizer_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPublicVenues(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateSeason operation middleware
 func (siw *ServerInterfaceWrapper) CreateSeason(w http.ResponseWriter, r *http.Request) {
 
@@ -1530,6 +1586,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/public/seasons/{seasonId}", wrapper.GetPublicSeason)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/public/venues", wrapper.ListPublicVenues)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/seasons", wrapper.CreateSeason)

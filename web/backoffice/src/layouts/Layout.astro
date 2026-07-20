@@ -1,0 +1,94 @@
+---
+// Back-office shell layout (US-018). Single-locale staff tool — no locale
+// switcher (unlike the storefront). base:'/admin' means brand links resolve
+// under the proxy prefix via Astro's import.meta.env.BASE_URL.
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href={base}>Back-office</a>
+    </header>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --bg: #faf9f7;
+    --ink: #1a1a1f;
+    --muted: #6b6b76;
+    --card: #ffffff;
+    --line: #e6e3dd;
+    --accent: #0f4c81;
+    color-scheme: light;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family:
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      sans-serif;
+    line-height: 1.55;
+  }
+  header {
+    padding: 1.1rem 1.5rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--card);
+  }
+  .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--ink);
+    text-decoration: none;
+  }
+  main {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--line);
+  }
+  caption {
+    text-align: left;
+    font-weight: 600;
+    margin-bottom: 0.6rem;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--line);
+  }
+  td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .empty {
+    color: var(--muted);
+  }
+</style>

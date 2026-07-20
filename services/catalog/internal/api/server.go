@@ -37,6 +37,11 @@ var SupportedLocales = []string{"en", "fr"}
 // aggregated public reads (event list, event detail).
 const CacheControlPublicReads = "public, max-age=300, s-maxage=300"
 
+// CacheControlPublicVenueReads is the ADR-004 hours tier: venue/seat-map
+// geometry is long-lived, so the back-office venue read (US-018) is cacheable
+// far longer than the events minutes tier.
+const CacheControlPublicVenueReads = "public, max-age=3600, s-maxage=3600"
+
 type Server struct {
 	store              store.Store
 	pub                events.Publisher
@@ -843,6 +848,31 @@ func (s *Server) ListPublicEvents(w http.ResponseWriter, r *http.Request, params
 		out.Events = append(out.Events, eventSummary(agg, params.Locale))
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicReads)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ListPublicVenues serves the back-office venue list (US-018): an organizer's
+// venues, name-ordered, at the ADR-004 hours tier. organizer_id is a required
+// query param (parsed + validated by the generated wrapper); scoping is a store
+// predicate (ADR-002). The response is the full Venue payload so the contract
+// (ADR-028) is satisfied without hand-shaping.
+func (s *Server) ListPublicVenues(w http.ResponseWriter, r *http.Request, params ListPublicVenuesParams) {
+	venues, err := s.store.ListVenues(r.Context(), params.OrganizerId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	out := PublicVenueList{Venues: make([]Venue, 0, len(venues))}
+	for _, v := range venues {
+		out.Venues = append(out.Venues, Venue{
+			Id:          v.ID,
+			OrganizerId: v.OrganizerID,
+			Name:        v.Name,
+			GaCapacity:  v.GACapacity,
+			CreatedAt:   v.CreatedAt,
+		})
+	}
+	w.Header().Set("Cache-Control", CacheControlPublicVenueReads)
 	writeJSON(w, http.StatusOK, out)
 }
 
