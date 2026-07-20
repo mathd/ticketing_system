@@ -180,6 +180,67 @@ func assertIntegrityCoverage(t *testing.T, ctx context.Context, guestRef string)
 	}
 }
 
+// alarmEnvelope is the decoded data payload of an alarm-outbox row, covering
+// both the admission-conflict (offline duplicate_admit) and the policy-conflict
+// (pass raise/withdraw) alarm classes.
+type alarmEnvelope struct {
+	Schema int `json:"schema"`
+	Data   struct {
+		TicketID     string `json:"ticket_id"`
+		OccurrenceID string `json:"occurrence_id"`
+		ConflictID   string `json:"conflict_id"`
+		Rule         string `json:"rule"`
+		Status       string `json:"status"`
+		Version      int    `json:"version"`
+	} `json:"data"`
+}
+
+// ticketID resolves the single ticket id for a guest order (single-ticket
+// fixtures) via the access tickets table.
+func ticketID(t *testing.T, ctx context.Context, guestRef string) string {
+	t.Helper()
+	conn := accessConn(t, ctx)
+	defer func() { _ = conn.Close(ctx) }()
+	var id string
+	if err := conn.QueryRow(ctx, `SELECT id::text FROM tickets WHERE guest_order_ref=$1`, guestRef).Scan(&id); err != nil {
+		t.Fatalf("resolve ticket id for %s: %v", guestRef, err)
+	}
+	return id
+}
+
+// alarmEnvelopesFor loads every alarm-outbox envelope for a subject+ticket,
+// decoded. Alarms are owed in the same transaction as the trail write, so they
+// exist synchronously once the API call that produced them returns; publication
+// only flips published_at and never deletes the row (ADR-021 0003), so a query
+// by subject+ticket sees raised and withdrawn transitions regardless of
+// delivery state.
+func alarmEnvelopesFor(t *testing.T, ctx context.Context, subject, ticket string) []alarmEnvelope {
+	t.Helper()
+	conn := accessConn(t, ctx)
+	defer func() { _ = conn.Close(ctx) }()
+	rows, err := conn.Query(ctx, `SELECT envelope::text FROM lifecycle_integrity_alarm_outbox WHERE subject=$1 AND envelope->'data'->>'ticket_id'=$2 ORDER BY created_at`, subject, ticket)
+	if err != nil {
+		t.Fatalf("query alarm outbox: %v", err)
+	}
+	defer rows.Close()
+	var out []alarmEnvelope
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatalf("scan alarm envelope: %v", err)
+		}
+		var env alarmEnvelope
+		if err := json.Unmarshal([]byte(raw), &env); err != nil {
+			t.Fatalf("decode alarm envelope: %v", err)
+		}
+		out = append(out, env)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate alarm outbox: %v", err)
+	}
+	return out
+}
+
 func scanBody(qr, occurrence string, occurredAt time.Time, direction string) map[string]any {
 	body := map[string]any{"qr_payload": qr}
 	if occurrence != "" {
@@ -290,8 +351,9 @@ func TestOfflineReconciliationOutOfOrderAndConflicts(t *testing.T) {
 	}
 	var resp struct {
 		Results []struct {
-			OccurrenceID string `json:"occurrence_id"`
-			Result       string `json:"result"`
+			OccurrenceID string    `json:"occurrence_id"`
+			Result       string    `json:"result"`
+			OccurredAt   time.Time `json:"occurred_at"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -307,13 +369,21 @@ func TestOfflineReconciliationOutOfOrderAndConflicts(t *testing.T) {
 		if resp.Results[i].Result != o.wantRes {
 			t.Fatalf("results[%d].result = %q, want %q", i, resp.Results[i].Result, o.wantRes)
 		}
+		// The stored time is the device-claimed time, not server time: reconciliation
+		// records what the gate reported (ADR-025 §D5), so a handler that stamped
+		// server time here would break the record.
+		if !resp.Results[i].OccurredAt.Equal(o.claimed) {
+			t.Fatalf("results[%d].occurred_at = %s, want claimed %s (device time preserved)", i, resp.Results[i].OccurredAt, o.claimed)
+		}
 	}
 
 	// Authoritative history: one redemption then two duplicate_admit, contiguous
 	// sequences 1..5. occurred_at values remain the claimed (non-monotonic) times.
 	assertHistoryTypes(t, ticketHistory(t, guestRef), []string{"issued", "delivered", "redeemed", "duplicate_admit", "duplicate_admit"})
 
-	// DB shape: exactly one redeemed, two duplicate_admit for this ticket.
+	// DB shape: exactly one redeemed, two duplicate_admit for this ticket, and
+	// each stored lifecycle event is keyed by its occurrence id with the claimed
+	// device time (proves reconciliation neither relabeled nor reordered).
 	conn := accessConn(t, ctx)
 	defer func() { _ = conn.Close(ctx) }()
 	var redeemed, dupes int
@@ -329,7 +399,47 @@ func TestOfflineReconciliationOutOfOrderAndConflicts(t *testing.T) {
 	if redeemed != 1 || dupes != 2 {
 		t.Fatalf("admission events redeemed=%d duplicate_admit=%d, want 1 and 2", redeemed, dupes)
 	}
+	// First-arriving occurrence is the stored redeemed; the other two are the
+	// stored duplicate_admit rows — all under their own occurrence id and claimed time.
+	for i, o := range occs {
+		var eventType string
+		var occurredAt time.Time
+		if err := conn.QueryRow(ctx, `SELECT event_type, occurred_at FROM lifecycle_events WHERE id=$1`, o.id).Scan(&eventType, &occurredAt); err != nil {
+			t.Fatalf("occurrence %s (%d) has no lifecycle event: %v", o.id, i, err)
+		}
+		wantType := "duplicate_admit"
+		if i == 0 {
+			wantType = "redeemed"
+		}
+		if eventType != wantType {
+			t.Fatalf("occurrence %s event_type = %q, want %q", o.id, eventType, wantType)
+		}
+		if !occurredAt.UTC().Equal(o.claimed) {
+			t.Fatalf("occurrence %s occurred_at = %s, want claimed %s", o.id, occurredAt.UTC(), o.claimed)
+		}
+	}
 	assertIntegrityCoverage(t, ctx, guestRef)
+
+	// F1 (ADR-025 §D6): every offline conflict owes a durable admission-conflict
+	// alarm keyed by its occurrence — removing oweConflictAlarm must fail here,
+	// not slip through as a green run. The redemption (occs[0]) is not a conflict
+	// and owes no alarm.
+	conflictAlarms := alarmEnvelopesFor(t, ctx, "platform.access.admission-conflict.alarm", ticketID(t, ctx, guestRef))
+	alarmedOccs := map[string]bool{}
+	for _, a := range conflictAlarms {
+		if a.Schema != 1 {
+			t.Fatalf("admission-conflict alarm schema = %d, want 1", a.Schema)
+		}
+		alarmedOccs[a.Data.OccurrenceID] = true
+	}
+	for _, o := range occs[1:] {
+		if !alarmedOccs[o.id] {
+			t.Fatalf("no admission-conflict alarm for conflicting occurrence %s (have %v)", o.id, alarmedOccs)
+		}
+	}
+	if alarmedOccs[occs[0].id] {
+		t.Fatalf("redemption occurrence %s must not owe a conflict alarm", occs[0].id)
+	}
 
 	// COS-1 (reconcile half): replaying a recorded occurrence is synced, appends
 	// nothing, and the history does not grow.
@@ -341,8 +451,9 @@ func TestOfflineReconciliationOutOfOrderAndConflicts(t *testing.T) {
 	}
 	var replayResp struct {
 		Results []struct {
-			OccurrenceID string `json:"occurrence_id"`
-			Result       string `json:"result"`
+			OccurrenceID string    `json:"occurrence_id"`
+			Result       string    `json:"result"`
+			OccurredAt   time.Time `json:"occurred_at"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(body, &replayResp); err != nil {
@@ -350,6 +461,14 @@ func TestOfflineReconciliationOutOfOrderAndConflicts(t *testing.T) {
 	}
 	if len(replayResp.Results) != 1 || replayResp.Results[0].Result != "synced" {
 		t.Fatalf("reconcile replay must be synced, got %s", body)
+	}
+	// The replay echoes the queried occurrence verbatim (scanner queue
+	// correlation) and returns the UNCHANGED stored time, not a fresh one.
+	if replayResp.Results[0].OccurrenceID != occs[0].id {
+		t.Fatalf("reconcile replay occurrence_id = %q, want %q (verbatim echo)", replayResp.Results[0].OccurrenceID, occs[0].id)
+	}
+	if !replayResp.Results[0].OccurredAt.Equal(occs[0].claimed) {
+		t.Fatalf("reconcile replay occurred_at = %s, want unchanged stored %s", replayResp.Results[0].OccurredAt, occs[0].claimed)
 	}
 	assertHistoryTypes(t, ticketHistory(t, guestRef), []string{"issued", "delivered", "redeemed", "duplicate_admit", "duplicate_admit"})
 }
@@ -491,6 +610,40 @@ func TestPassEntryExitAndDerivedConflictWithdrawal(t *testing.T) {
 	}
 	assertHistoryTypes(t, ticketHistory(t, guestRef), []string{"issued", "delivered", "entry"})
 
+	// (2b) Identity-before-denial (ADR-025 §D3 binding order): replaying the
+	// SAME entry occurrence while inside must resolve as a replay BEFORE the
+	// exit_required policy denial — an implementation that evaluated policy first
+	// would misdeny a lost-response retry. Same occurrence, same direction: 200,
+	// replay:true, original stored time, no append.
+	code, body = postWithKey(t, gatewayURL+"/api/access/scans", "tkt88-pass-entry-replay-"+suffix,
+		scanBody(qr, entryOcc, base.Add(5*time.Minute), "entry"))
+	if code != http.StatusOK {
+		t.Fatalf("entry replay while inside = %d %s, want 200 (identity before denial)", code, body)
+	}
+	var entryReplay struct {
+		Decision  string    `json:"decision"`
+		Replay    *bool     `json:"replay"`
+		ScannedAt time.Time `json:"scanned_at"`
+	}
+	if err := json.Unmarshal(body, &entryReplay); err != nil {
+		t.Fatal(err)
+	}
+	if entryReplay.Decision != "accepted" || entryReplay.Replay == nil || !*entryReplay.Replay {
+		t.Fatalf("entry replay must be a distinguishable accepted (replay:true), got %s", body)
+	}
+	if !entryReplay.ScannedAt.Equal(base.Add(5 * time.Minute)) {
+		t.Fatalf("entry replay scanned_at = %s, want original %s", entryReplay.ScannedAt, base.Add(5*time.Minute))
+	}
+	// The same occurrence in the OTHER direction is a collision, not a replay:
+	// direction is part of the occurrence's identity binding (§D3).
+	code, body = postWithKey(t, gatewayURL+"/api/access/scans", "tkt88-pass-entry-as-exit-"+suffix,
+		scanBody(qr, entryOcc, base.Add(5*time.Minute), "exit"))
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("entry occurrence resent as exit = %d %s, want 422 occurrence_collision", code, body)
+	}
+	assertRejectReason(t, body, "occurrence_collision")
+	assertHistoryTypes(t, ticketHistory(t, guestRef), []string{"issued", "delivered", "entry"})
+
 	// (3) Second entry while inside: exit_required, 409, nothing appended.
 	code, body = postWithKey(t, gatewayURL+"/api/access/scans", "tkt88-pass-entry-again-"+suffix,
 		scanBody(qr, uuid.NewString(), base.Add(10*time.Minute), "entry"))
@@ -542,6 +695,39 @@ func TestPassEntryExitAndDerivedConflictWithdrawal(t *testing.T) {
 		}
 		if status != "withdrawn" || version < 2 {
 			return fmt.Errorf("conflict status=%s v%d, want withdrawn v>=2", status, version)
+		}
+		return nil
+	})
+
+	// F2 (ADR-025 §D2): the raise and the withdrawal each owe a durable
+	// policy-conflict alarm — the mutable pass_policy_conflicts projection alone
+	// could regress while operators receive neither transition. Assert the
+	// outbox carries both transitions for the same conflict identity, with the
+	// withdrawal at a higher version than the raise. Retry: the withdrawal alarm
+	// is owed in the exit's transaction, observable once committed.
+	retry(t, 15*time.Second, func() error {
+		alarms := alarmEnvelopesFor(t, ctx, "platform.access.admission-policy-conflict.alarm", ticketID(t, ctx, guestRef))
+		var raised, withdrawn *alarmEnvelope
+		for i := range alarms {
+			a := alarms[i]
+			if a.Data.Rule != "exit_required" {
+				continue
+			}
+			switch a.Data.Status {
+			case "raised":
+				raised = &alarms[i]
+			case "withdrawn":
+				withdrawn = &alarms[i]
+			}
+		}
+		if raised == nil || withdrawn == nil {
+			return fmt.Errorf("policy-conflict alarms incomplete: raised=%v withdrawn=%v", raised != nil, withdrawn != nil)
+		}
+		if raised.Data.ConflictID == "" || raised.Data.ConflictID != withdrawn.Data.ConflictID {
+			return fmt.Errorf("raise/withdraw conflict_id mismatch: %q vs %q", raised.Data.ConflictID, withdrawn.Data.ConflictID)
+		}
+		if withdrawn.Data.Version <= raised.Data.Version {
+			return fmt.Errorf("withdrawn version %d must exceed raised version %d", withdrawn.Data.Version, raised.Data.Version)
 		}
 		return nil
 	})
