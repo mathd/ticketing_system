@@ -51,5 +51,45 @@
     "capturedAt": "2026-07-20"
   },
   "links": [],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-105 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the code-seam survey + the TKT-3 decomposition + owner decisions (2026-07-20: back-office = Astro+React; versioning proof is catalog-side via a pinning contract). **No `open owner:human` items remain** — the board hard-block is cleared.\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — UI/UX shape of the map editor and version-history view — a frontend design choice settled in the plan/build; no product or architecture unknown.\n\n**Ready to prioritize (Gate 1).**"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Completes the 'staff can author AND edit a seat map in the back office UI' COS on the UI side: edit a published map, see version history, manage a venue's GA/seated configuration."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: back-office UI to edit a published map (new version via TKT-104 path), version-history view, GA/seated config view+set per venue, surfacing the pinning-contract rejection cases as clear UX. OUT: any new domain rules (surfaces existing ones); back-office-only backend logic (must live in catalog)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "UI/UX shape of the map editor and version-history view — a frontend design choice settled in the plan/build; no product or architecture unknown."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-103 (published maps + GA/seated coexistence) and TKT-104 (the safe-edit path + rejection cases to surface). Both linked."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend the TKT-101 Astro+React back-office; bind to catalog OpenAPI contracts from TKT-102/103/104 via generated types (ADR-009 — no hand-rolled logic); geometry/version reads at the ADR-004 hours tier; version history is catalog-owned, not a new back-office store."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Edit→new-version + version history + GA/seated visibility + a surfaced rejection case — the UI that makes the author-and-EDIT COS demonstrable end-to-end."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: staff edit a published map producing a new version; version history shows which version is published and when; a pinning-contract rejection surfaces a clear actionable error (no silent failure/corruption); GA vs seated config is visible and settable per venue; verified in a browser; storefront/scanner untouched."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-009 (bind to published contracts, regenerate types), ADR-004 (hours tier reads, catalog-owned history). governingAdrs present."
+    }
+  }
 }
