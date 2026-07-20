@@ -1,0 +1,55 @@
+{
+  "key": "TKT-105",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "US-022: Back-office seat-map editing UI + version history",
+  "description": "### US-022: Back-office seat-map editing UI + version history\n**As** staff, **I want** to edit a published seat map, see its version history, and manage a venue's GA/seated configuration from the back office, **so that** the full author-and-edit COS is met in the UI. **Priority:** P2 **Depends on:** TKT-103, TKT-104\n\nThis rounds out the epic's 'staff can author **and edit** a seat map in the back office UI' COS on the UI side, on top of the draft authoring (TKT-102), publish (TKT-103) and safe-edit backend + pinning contract (TKT-104). No new domain rules — it surfaces the existing ones and must respect the pinning contract's rejection cases in the UX.\n\n**Acceptance Criteria:**\n- [ ] Back-office UI: staff edit a published map, producing a new version through the TKT-104 path; the UI shows the version history for a map (which version is published, when).\n- [ ] An edit the pinning contract rejects (would orphan a sold/held seat) surfaces a clear, actionable error in the UI rather than failing silently or corrupting state (screenshot in the PR).\n- [ ] Staff can see and set a venue's GA vs seated configuration from the back office (GA capacity and its seat map(s) coexist and are both visible).\n- [ ] The back-office consumes only published catalog contracts (ADR-009 generated types); no back-office-only backend logic that belongs in catalog.\n- [ ] UI verified in a browser; storefront and scanner untouched.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- New/changed public read endpoints declare an ADR-004 TTL tier with rationale\n- New migrations run out-of-band via the service `migrate` subcommand (ADR-022) and build within the 30s startup budget with plain `CREATE INDEX` (ADR-020)\n- Every owned entity is `organizer_id`-scoped (ADR-002)\n\nParent epic: TKT-3. Full lineage: docs/product/prd-v1.md §Capability map (TKT-3).",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-009",
+        "rule": "Contract-first: frontends consume OpenAPI-published catalog contracts via generated types; no ad-hoc backend logic in the web app.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-004",
+        "rule": "Every public read endpoint declares a volatility-tiered `Cache-Control`/`s-maxage`. Venue/seat-map geometry is the 'hours' tier (longer-lived than the 'minutes' event tier); availability is 'seconds'; hold/order state is never cached. Writes are never cached.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-009",
+        "why": "Editing/version-history UI binds to the catalog OpenAPI contracts from TKT-102/103/104; regenerate types, don't hand-roll."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Any geometry/version reads the UI triggers are the 'hours' tier; version-history is catalog-owned, not a new back-office store."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 §Capability map — TKT-3 row is the source of truth for scope",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "TKT-3 epic — COS: authoring UI, versioning safe against sold inventory, GA+seated coexist",
+        "link": ".sdlc board TKT-3"
+      },
+      {
+        "summary": "Back-office app scaffolded in TKT-101; extend it here",
+        "link": "web/backoffice (created in TKT-101)"
+      },
+      {
+        "summary": "TKT-104 pinning contract — the rejection cases this UI must surface",
+        "link": ".sdlc board TKT-104"
+      }
+    ],
+    "capturedAt": "2026-07-20"
+  },
+  "links": [],
+  "comments": []
+}
