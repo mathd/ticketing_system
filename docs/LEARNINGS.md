@@ -10,6 +10,12 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**A test validator downstream of the production wrap sees laundered statuses**](./learnings/2026-07-21-test-validator-downstream-of-production-wrap-sees-laundered-statuses.md) —
+  when production middleware rewrites contract drift into a documented generic 500, a test-side
+  re-validation of the recorded response can only pass — the undocumented status was laundered
+  before the helper saw it. Detect the mask body itself (written by exactly one place) instead of
+  re-checking the status. (TKT-108, PR #84)
+
 - [**API smoke can't see the SSR layer — a browser-submit test is the only checkOrigin catch**](./learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md) —
   Astro's default SSR `checkOrigin` 403s every back-office POST behind the gateway reverse proxy
   (`Origin` ≠ `Host`); it silently broke *all* back-office write forms from TKT-102 on, invisible
