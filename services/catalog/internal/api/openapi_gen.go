@@ -655,6 +655,9 @@ type VenueId = openapi_types.UUID
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
 
+// InternalError defines model for InternalError.
+type InternalError = Error
+
 // NotFound defines model for NotFound.
 type NotFound = Error
 
