@@ -217,6 +217,10 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   BACKGROUND job, judge PASS/FAIL from the log body (`grep -E 'Error [0-9]+|FAIL|drifted'`), not
 #   the harness-reported exit code — they diverged on TKT-101 (bg wrapper said exit 0 across three
 #   runs the log showed failing: errcheck, a .dockerignore miss, a migration-version collision).
+#   And judge a bg gate DONE by an explicit exit-code sentinel (`gate > log 2>&1; echo EXIT=$? > done`;
+#   wait on the sentinel file), NEVER by `pgrep -f "<gate cmd>"` — `-f` matches the watcher's own
+#   command line, so the poll self-matches and reports a false "still running" long after the gate
+#   exited (TKT-106; docs/learnings/2026-07-21-pgrep-watchers-self-match.md).
 #   Code: verify `git branch --show-current` is the ticket branch FIRST (a session's branch can
 #   be switched under it — TKT-84 briefly committed to local main), then commit (no AI
 #   attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"

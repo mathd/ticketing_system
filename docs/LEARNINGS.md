@@ -93,6 +93,11 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   fact correct, tests green, sentence false — so tests, the author, and consistency are all blind to
   it. Four instances across two tickets; every one caught by review, none by the gate. (TKT-57,
   TKT-67, PR #51)
+- [**A `pgrep`-for-the-command-name watcher self-matches its own command line**](./learnings/2026-07-21-pgrep-watchers-self-match.md) —
+  a background-gate "is it still running?" poll written as `until ! pgrep -f "make check"` reported
+  "still running" for minutes after the gate had exited, because the watcher's own command line
+  contains `make check`. Judge a backgrounded gate by an explicit exit-code sentinel + log-body scan,
+  never by process-name liveness. Extends the TKT-101 "background exit code lies" family. (TKT-106, PR #83)
 - [**A passing test is not evidence it tests anything**](./learnings/2026-07-15-prove-tests-fail.md) —
   green is the default state of a test that is misaimed, drifted, or not running. Break it on purpose
   and confirm it goes red. (TKT-53, TKT-60, PR #43)
