@@ -2,7 +2,7 @@
   "key": "TKT-80",
   "type": "Story",
   "summary": "US-017: Seat-level claims — reserved seating enters the core",
-  "status": "PO Review",
+  "status": "Done",
   "labels": [],
   "assignee": "agent:opus-4.8",
   "pr": "https://github.com/mathd/ticketing_system/pull/86",
