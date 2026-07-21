@@ -26,8 +26,8 @@ import (
 // deliberately absent from the uncovered2xxOps coverage gate (coverage_test.go),
 // so a *new, unexercised* catalog operation can still be added without smoke
 // contract-validating it — catalog's per-operation coverage lives in its unit
-// suite by design. Validating unexercised catalog operations end-to-end is a
-// separate, larger concern than this allowlist flip.
+// suite by design. That exclusion is a recorded decision (ADR-030, TKT-109),
+// pinned by TestCatalogCoverageGateIsDeliberatelyUnitScoped in coverage_test.go.
 //
 // This test relies on smoke's top-level tests running sequentially (none call
 // t.Parallel()): it deletes and restores a shared smokeCoverage entry, which
