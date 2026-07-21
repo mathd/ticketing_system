@@ -40,10 +40,17 @@ import (
 // service) to the smoke gate must come through here, with ADR-030 amended
 // first. If this test is failing, you either reordered the list (restore the
 // order) or changed the gate's scope (update ADR-030 and this pin together).
+// The second assertion is behavioral: whatever the gate's internals, its
+// output must never name a catalog operation.
 func TestCatalogCoverageGateIsDeliberatelyUnitScoped(t *testing.T) {
 	want := []string{"inventory", "commerce", "payments", "access"}
 	if !slices.Equal(smokeCoverageGatedServices, want) {
 		t.Fatalf("smokeCoverageGatedServices = %v, want %v (exact order): the smoke coverage gate's scope is pinned by ADR-030 — amend the ADR before changing it", smokeCoverageGatedServices, want)
+	}
+	for _, missing := range uncovered2xxOps() {
+		if strings.HasPrefix(missing, "catalog ") {
+			t.Fatalf("uncovered2xxOps reported %q: the smoke gate must not scan catalog (ADR-030 — amend the ADR before changing its scope)", missing)
+		}
 	}
 }
 

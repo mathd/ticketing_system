@@ -29,11 +29,13 @@ Measured state at decision time (verified at file:line during TKT-109 plan revie
 - Catalog's contract documents **35 operations**; **29 already reach `validateServiceResponse`**
   through smoke's validating helpers.
 - The 5 never exercised by smoke — `editSeatMap`, `updateVenueGaCapacity`, `listVenueSeatMaps`,
-  `getPublicSeatMapGeometry`, `listSeatMapVersions` — are precisely the seat-map surface shipped
-  by TKT-104 (ADR-029), so the gap is recent and live, not hypothetical.
+  `getPublicSeatMapGeometry`, `listSeatMapVersions` — are the venue/seat-map HTTP surface
+  shipped in TKT-105: four seat-map operations (the edit one surfacing TKT-104's ADR-029
+  contract) plus venue GA capacity. The gap is recent and live, not hypothetical.
 - `getOpenAPISpec` is exercised but never recorded: `validateServiceResponse` deliberately
   early-returns on the spec path. The smoke suite instead asserts the served spec is
-  byte-identical to the committed file, which strictly dominates schema validation.
+  byte-identical to the committed file — a tighter check on the payload than schema validation,
+  though headers are outside it (a `Content-Type` regression would pass byte-identity).
 - The risk is **end-to-end only**, not "un-validated": catalog's unit gate fails closed on any
   new documented 2xx operation without a driving test, and those unit responses flow through the
   real validation middleware. What a unit-only operation skips is the real store, gateway
@@ -82,8 +84,10 @@ fixture obligation today. Option 2's flip-cost is recorded above so a future tic
 deliberately.
 
 The TKT-106 pin `TestValidateServiceResponseCoversCatalog` needs no rework under either option:
-it re-records the coverage entry it deletes via its own `validateServiceResponse` call, so it is
-gate-safe even if catalog later joins.
+it re-records the coverage entry it deletes via its own `validateServiceResponse` call, so it
+never breaks the gate. Caveat for a future flip ticket: that re-record is stack-free, so once
+catalog joins the gate, this pin alone keeps `listPublicVenues` counted as covered even if the
+real smoke request disappears — the flip must exempt or rework it.
 
 ## Consequences
 
@@ -95,7 +99,7 @@ gate-safe even if catalog later joins.
       change that a failing pin forces through an ADR amendment.
 - **Negative:**
     - `editSeatMap`, `updateVenueGaCapacity`, `listVenueSeatMaps`, `getPublicSeatMapGeometry`,
-      and `listSeatMapVersions` (the ADR-029 surface) keep unit-only per-operation coverage; a
+      and `listSeatMapVersions` (the TKT-105 surface) keep unit-only per-operation coverage; a
       real-stack regression there (routing, store, migration) is invisible until a smoke test
       happens to exercise it. Driving those five through smoke remains worthwhile independent of
       which layer owns the gate.
@@ -104,8 +108,8 @@ gate-safe even if catalog later joins.
 
 ## References
 
-- TKT-109 (this decision), TKT-106 (validator allowlist + review finding), TKT-104 / ADR-029
-  (the uncovered surface), TKT-47 (gate design; fake-store rationale)
+- TKT-109 (this decision), TKT-106 (validator allowlist + review finding), TKT-105 (the
+  uncovered HTTP surface) / TKT-104 / ADR-029, TKT-47 (gate design; fake-store rationale)
 - ADR-009 (contract-first APIs), ADR-028 (response drift fails closed)
 - docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md (TKT-105 — the
   limits of non-e2e verification, the counterweight this decision accepts)
