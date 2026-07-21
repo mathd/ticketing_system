@@ -27,6 +27,7 @@ const (
 // and the disposition tests substitute a recorder.
 type catalogStore interface {
 	Provision(ctx context.Context, eventID, slotID, organizerID uuid.UUID, capacity int32) error
+	ProvisionSeated(ctx context.Context, eventID, slotID, organizerID, seatMapID uuid.UUID, capacity int32) error
 	ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) error
 	ApplyClosure(ctx context.Context, eventID, pool, performance uuid.UUID, closed bool, version int32) error
 	QuarantineCatalogEvent(ctx context.Context, subject string, eventID uuid.UUID, schema int, envelope []byte) error
@@ -73,16 +74,13 @@ type publication struct {
 	} `json:"data"`
 }
 
-// errSeatedNoProvision marks a valid schema-4 seated publication that this binary
-// deliberately provisions nothing for (TKT-103): the caller acks without touching
-// the store. It is distinct from the unsupported-schema sentinel so the seated
-// arm reads as a real, known arm — not a hole that would quarantine.
-var errSeatedNoProvision = errors.New("seated publication provisions no pool")
-
 type provisionInput struct {
 	organizerID uuid.UUID
 	poolID      uuid.UUID
 	capacity    int32
+	// seatMapID is set (non-nil) only for a seated pool (schema 4); it routes the
+	// apply to ProvisionSeated. Zero for a GA/festival pool.
+	seatMapID uuid.UUID
 }
 
 func (c *Consumer) provisionInput(ctx context.Context, e publication) (provisionInput, error) {
@@ -99,13 +97,11 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		}
 		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity}, nil
 	case 4:
-		// Seated fork (TKT-103). This binary KNOWS this variant — so it does not
-		// quarantine it — but it deliberately provisions no inventory pool: a
-		// seated slot is claimed seat-by-seat (TKT-80), never through the GA
-		// quantity path. Provisioning a fungible pool here would let seated
-		// tickets sell as GA before the seat-level claim exists. errSeatedNoProvision
-		// is a distinct sentinel (NOT "unsupported"): the caller acks and moves
-		// on, and the tripwire tests accept it as a real arm.
+		// Seated fork (TKT-103): a slot claimed seat-by-seat (TKT-80). This provisions
+		// a SEATED pool — distinct from a GA quantity pool — carrying the catalog seat
+		// map so seat holds can pin, and a coarse capacity ceiling. The tight per-seat
+		// oversell boundary is the claim_seats unique index + PinSeat existence
+		// validation, not this capacity (ADR-031).
 		if e.Data.PerformanceID == uuid.Nil || e.Data.OrganizerID == uuid.Nil {
 			return provisionInput{}, fmt.Errorf("schema-4 seated publication is missing required identifiers")
 		}
@@ -115,11 +111,13 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		if e.Data.CapacityGroupID != nil || e.Data.SharedCapacity != nil {
 			return provisionInput{}, fmt.Errorf("schema-4 seated publication must not carry festival capacity")
 		}
-		// Note: `capacity` is deliberately NOT validated here (unlike case 2). A
-		// seated event's capacity is the venue GA snapshot, which this arm never
-		// uses — it provisions nothing. TKT-80, when it reads the seated payload,
-		// must vet any field it consumes itself rather than assume this arm did.
-		return provisionInput{}, errSeatedNoProvision
+		// `capacity` is the venue GA snapshot, used only as a coarse ceiling — but it
+		// MUST be vetted here (the schema-2 arm's validation does not cover this arm):
+		// a non-positive value would provision a stillborn pool where every hold fails.
+		if e.Data.Capacity <= 0 {
+			return provisionInput{}, fmt.Errorf("schema-4 seated publication has invalid capacity")
+		}
+		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID}, nil
 	case 3:
 		// Deploy this consumer before catalog starts emitting Schema 3 so grouped
 		// festival publications remain safe during a rolling rollout.
@@ -156,9 +154,8 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 // maxKnownPublicationSchema is the highest `performance.published` variant this binary can read.
 // Keep it in step with provisionInput's case arms above — TestEveryKnownSchemaHasAnArm is the
 // tripwire if you add an arm and forget, and TestMaxKnownSchemaIsNotBehindTheArms if you bump it
-// without adding one. Schema 4 is the seated fork (TKT-103): a KNOWN variant that this binary
-// deliberately provisions NOTHING for (the seat-level claim is TKT-80) — see provisionInput's
-// case 4 and errSeatedNoProvision.
+// without adding one. Schema 4 is the seated fork (TKT-103): a KNOWN variant that provisions a
+// SEATED pool for seat-level claims (TKT-80) — see provisionInput's case 4.
 const maxKnownPublicationSchema = 4
 
 // knownSchemas is the per-subject registry of variants this binary can read (ADR-017 §5b′).
@@ -283,13 +280,6 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 		return
 	}
 	input, err := c.provisionInput(ctx, e)
-	if errors.Is(err, errSeatedNoProvision) {
-		// Known seated variant (TKT-103): valid, but provisions nothing here. Ack
-		// and move on — the seat-level claim is TKT-80. Never quarantine (it is
-		// known) and never terminate (it is valid).
-		_ = msg.Ack()
-		return
-	}
 	if err != nil {
 		if e.Schema == 1 {
 			// Schema 1 resolves against catalog; its failures are transient.
@@ -303,8 +293,18 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 		_ = msg.Term()
 		return
 	}
-	// Grouped festival days deliberately converge on the festival id. Slot to
-	// group resolution for claims is owned by TKT-14 and remains out of scope.
+	// A seated publication (schema 4) provisions a seated pool carrying its seat map;
+	// everything else is a GA/festival quantity pool. Grouped festival days deliberately
+	// converge on the festival id (slot→group resolution is TKT-14, out of scope).
+	if input.seatMapID != uuid.Nil {
+		if err := c.st.ProvisionSeated(ctx, e.ID, input.poolID, input.organizerID, input.seatMapID, input.capacity); err != nil {
+			c.log.Error("provision seated inventory", "err", err)
+			_ = msg.Nak()
+			return
+		}
+		_ = msg.Ack()
+		return
+	}
 	if err := c.st.Provision(ctx, e.ID, input.poolID, input.organizerID, input.capacity); err != nil {
 		c.log.Error("provision inventory", "err", err)
 		_ = msg.Nak()

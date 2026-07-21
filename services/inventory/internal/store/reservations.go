@@ -42,13 +42,19 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	defer func() { _ = tx.Rollback() }()
 	var capacity, confirmed int32
 	var target sql.NullInt32
-	var lifecycle, closure string
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &closure)
+	var lifecycle, closure, kind string
+	// closure_status stays last before FROM (lock-handshake pattern; see CreateHold).
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return GroupReservation{}, false, ErrNotFound
 	}
 	if err != nil {
 		return GroupReservation{}, false, err
+	}
+	// A seated pool holds seat-by-seat only (TKT-80 AC2); draw-down acts on reservations
+	// placed here, so this Place entry point is the guard.
+	if kind == "seated" {
+		return GroupReservation{}, false, ErrPoolKindMismatch
 	}
 	// Reservations are new demand: a draining cut (TKT-76) bounds them by the target.
 	limit := capacity

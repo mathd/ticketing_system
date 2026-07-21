@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// ErrSeatPinRejected is catalog's deterministic refusal of a seat pin: an identity is
+// absent from the current published version (a map edit dropped it, or the client named
+// a seat that never existed). It is NOT transient — the inventory hold must be released,
+// not retried (TKT-80 hold-then-pin compensation).
+var ErrSeatPinRejected = errors.New("catalog rejected seat pin")
 
 // ErrPerformanceNotFound is the resolver's 404: the slot is not published right now.
 // Callers must not treat it as transient — for closure events it means the slot has
@@ -88,6 +95,51 @@ func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID
 		return PublishedPerformance{}, fmt.Errorf("invalid catalog festival capacity lookup")
 	}
 	return PublishedPerformance{OrganizerID: body.OrganizerID, Capacity: body.Capacity, CapacityGroupID: body.CapacityGroupID, SharedCapacity: body.SharedCapacity}, nil
+}
+
+// PinSeats pins a seat-hold's whole set against catalog (TKT-80, hold-then-pin). The
+// batch is all-or-nothing on catalog's side; a 4xx means a deterministic rejection
+// (ErrSeatPinRejected) the caller compensates by releasing the hold, a 5xx/transport
+// error is transient. Idempotent, so a replay-re-pin is safe.
+func (r *CatalogResolver) PinSeats(ctx context.Context, org, seatMapID uuid.UUID, seats []string, pinnedBy string) error {
+	return r.batchPin(ctx, "pins", org, seatMapID, seats, pinnedBy)
+}
+
+// UnpinSeats clears a seat-hold's pins (release/expiry/compensation). Idempotent.
+func (r *CatalogResolver) UnpinSeats(ctx context.Context, org, seatMapID uuid.UUID, seats []string, pinnedBy string) error {
+	return r.batchPin(ctx, "unpins", org, seatMapID, seats, pinnedBy)
+}
+
+func (r *CatalogResolver) batchPin(ctx context.Context, action string, org, seatMapID uuid.UUID, seats []string, pinnedBy string) error {
+	if len(seats) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]any{"organizer_id": org, "seat_identities": seats, "pinned_by": pinnedBy})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/internal/seat-maps/"+seatMapID.String()+"/"+action, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Internal-Token", r.credential)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	// Only 409 is a DETERMINISTIC seat rejection (the identity is absent from the current
+	// published version — catalog's ErrSeatIdentityNotFound). Everything else — 401 (token
+	// rotation), 404 (map lookup), 429 (throttle), 5xx, transport — is transient: the caller
+	// must NOT release a valid hold over it; retry or let the TTL reclaim it.
+	if resp.StatusCode == http.StatusConflict {
+		return fmt.Errorf("catalog seat %s %s: %w", action, seatMapID, ErrSeatPinRejected)
+	}
+	return fmt.Errorf("catalog seat %s: status %d", action, resp.StatusCode)
 }
 
 // PoolOfferState fetches the reconciliation read (TKT-90). The response is a

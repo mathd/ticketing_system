@@ -113,8 +113,11 @@ cd "$ROOT/services/inventory"
 # No -run filter, for the same reason as commerce, catalog and access above: an allowlist
 # means a newly added test silently never runs while the gate still passes green. This
 # block was the last one carrying one (TKT-77 removed it).
+# ./internal/... (not just ./internal/store): the seat-hold handler's DB-backed smoke
+# tests live in ./internal/api (TKT-80), and scoping to ./internal/store would silently
+# skip them — the exact allowlist defect the notes above warn about.
 INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 ./internal/store
+go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/smoke"
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \

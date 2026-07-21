@@ -1850,6 +1850,89 @@ func (p *Postgres) UnpinSeat(ctx context.Context, in PinSeatInput) error {
 	return nil
 }
 
+// PinSeats pins a seat set atomically (TKT-80): one family advisory lock, every identity
+// validated against the current published version, all inserted or — if any is absent —
+// none, returning ErrSeatIdentityNotFound. This mirrors the single-seat PinSeat's
+// lock-then-validate-then-insert but over a set, so an inventory seat-hold's pins land
+// all-or-nothing under the same lock EditSeatMap takes.
+func (p *Postgres) PinSeats(ctx context.Context, in BatchPinInput) error {
+	if len(in.SeatIdentities) == 0 {
+		return nil
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	curID, _, family, err := lockCurrentPublishedVersion(ctx, tx, in.SeatMapID, in.OrganizerID)
+	if err != nil {
+		return err
+	}
+	for _, identity := range in.SeatIdentities {
+		var exists bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM seat_map_seats WHERE seat_map_id = $1 AND seat_identity = $2)`,
+			curID, identity).Scan(&exists); err != nil {
+			return fmt.Errorf("check seat identity: %w", err)
+		}
+		if !exists {
+			return ErrSeatIdentityNotFound
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO seat_map_pins (organizer_id, map_family_id, seat_identity, pinned_by)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (map_family_id, seat_identity, pinned_by) DO NOTHING`,
+			in.OrganizerID, family, identity, in.PinnedBy); err != nil {
+			return fmt.Errorf("insert pin: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit pins: %w", err)
+	}
+	return nil
+}
+
+// UnpinSeats clears a seat set atomically under the same family advisory lock. Idempotent:
+// removing an absent pin is a no-op, so a retried release cannot fail.
+func (p *Postgres) UnpinSeats(ctx context.Context, in BatchPinInput) error {
+	if len(in.SeatIdentities) == 0 {
+		return nil
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var family uuid.UUID
+	err = tx.QueryRowContext(ctx,
+		`SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2`,
+		in.SeatMapID, in.OrganizerID).Scan(&family)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // unknown map/organizer: nothing to unpin, stay idempotent
+	}
+	if err != nil {
+		return fmt.Errorf("resolve seat-map family: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, family); err != nil {
+		return fmt.Errorf("lock seat-map family: %w", err)
+	}
+	for _, identity := range in.SeatIdentities {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM seat_map_pins
+			 WHERE organizer_id = $1 AND map_family_id = $2 AND pinned_by = $3 AND seat_identity = $4`,
+			in.OrganizerID, family, in.PinnedBy, identity); err != nil {
+			return fmt.Errorf("unpin seat: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit unpins: %w", err)
+	}
+	return nil
+}
+
 func (p *Postgres) AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error) {
 	s := SeatMapSection{Name: in.Name, Position: in.Position}
 	err := p.db.QueryRowContext(ctx,

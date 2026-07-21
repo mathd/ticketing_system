@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -73,6 +74,11 @@ func NewRouter(s *Server) (http.Handler, error) {
 	r.Get("/internal/ticket-types/{id}", s.getTicketType)
 	r.Get("/internal/performances/{id}", s.getPublishedPerformance)
 	r.Get("/internal/pools/{id}/offer-state", s.getPoolOfferState)
+	// TKT-80: inventory pins/unpins a seat-hold's seats here (ADR-029 contract). Hand-mounted
+	// internal routes, like the reads above — service-to-service, not part of the public
+	// OpenAPI contract; the response validator skips undeclared paths.
+	r.Post("/internal/seat-maps/{id}/pins", s.pinSeats)
+	r.Post("/internal/seat-maps/{id}/unpins", s.unpinSeats)
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -165,6 +171,56 @@ func (s *Server) getPoolOfferState(w http.ResponseWriter, r *http.Request) {
 		"closure_status":  state.Closure.Status,
 		"closure_version": state.Closure.Version,
 	})
+}
+
+// batchPinRequest is the body inventory sends to pin/unpin a seat-hold's seats (TKT-80).
+type batchPinRequest struct {
+	OrganizerID    uuid.UUID `json:"organizer_id"`
+	SeatIdentities []string  `json:"seat_identities"`
+	PinnedBy       string    `json:"pinned_by"`
+}
+
+func (s *Server) decodeBatchPin(w http.ResponseWriter, r *http.Request) (store.BatchPinInput, bool) {
+	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		return store.BatchPinInput{}, false
+	}
+	seatMapID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid seat map id"})
+		return store.BatchPinInput{}, false
+	}
+	var body batchPinRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil ||
+		body.OrganizerID == uuid.Nil || len(body.SeatIdentities) == 0 || strings.TrimSpace(body.PinnedBy) == "" {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid pin request"})
+		return store.BatchPinInput{}, false
+	}
+	return store.BatchPinInput{OrganizerID: body.OrganizerID, SeatMapID: seatMapID, SeatIdentities: body.SeatIdentities, PinnedBy: body.PinnedBy}, true
+}
+
+func (s *Server) pinSeats(w http.ResponseWriter, r *http.Request) {
+	in, ok := s.decodeBatchPin(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.PinSeats(r.Context(), in); err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "pinned"})
+}
+
+func (s *Server) unpinSeats(w http.ResponseWriter, r *http.Request) {
+	in, ok := s.decodeBatchPin(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.UnpinSeats(r.Context(), in); err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "unpinned"})
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

@@ -11,7 +11,7 @@ import (
 )
 
 func TestCreateHoldRejectsNonStrictJSON(t *testing.T) {
-	s := New(nil, "")
+	s := New(nil, "", nil)
 	valid := `{"organizer_id":"00000000-0000-0000-0000-000000000001","slot_id":"00000000-0000-0000-0000-000000000002","quantity":1,"unit_amount":100}`
 	for name, body := range map[string]string{
 		"unknown field":  valid[:len(valid)-1] + `,"unexpected":true}`,
@@ -31,7 +31,7 @@ func TestCreateHoldRejectsNonStrictJSON(t *testing.T) {
 }
 
 func TestTransitionsRequireInternalCredential(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	for _, token := range []string{"", "wrong"} {
 		req := httptest.NewRequest(http.MethodPost, "/holds/00000000-0000-0000-0000-000000000001/finalize?organizer_id=00000000-0000-0000-0000-000000000002", nil)
 		req.Header.Set("X-Internal-Token", token)
@@ -44,7 +44,7 @@ func TestTransitionsRequireInternalCredential(t *testing.T) {
 }
 
 func TestOperationalEndpointsRequireInternalCredential(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	placeBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000003","quantity":5,"purpose":"house","label":"foh","actor":"staff:amy","reason":"ops"}`
 	mutBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"ops"}`
@@ -82,7 +82,7 @@ func TestOperationalEndpointsRequireInternalCredential(t *testing.T) {
 		}
 	}
 	// An empty configured credential must fail closed, not open.
-	open := New(nil, "")
+	open := New(nil, "", nil)
 	req := httptest.NewRequest(http.MethodGet, "/internal/slots/"+id+"/availability?organizer_id="+id, nil)
 	res := httptest.NewRecorder()
 	open.Router(nil).ServeHTTP(res, req)
@@ -92,7 +92,7 @@ func TestOperationalEndpointsRequireInternalCredential(t *testing.T) {
 }
 
 func TestOperationalPlaceRejectsBadShapes(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	for name, body := range map[string]string{
 		"bad purpose":   `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000003","quantity":5,"purpose":"vip","label":"foh","actor":"staff:amy","reason":"ops"}`,
 		"blank label":   `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000003","quantity":5,"purpose":"house","label":"","actor":"staff:amy","reason":"ops"}`,
@@ -115,7 +115,7 @@ func TestOperationalPlaceRejectsBadShapes(t *testing.T) {
 }
 
 func TestGroupReservationEndpointsRequireInternalCredential(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	placeBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000003","quantity":5,"counterparty":"Acme","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops"}`
 	drawBody := `{"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000005","quantity":1,"ticket_type_id":"00000000-0000-0000-0000-000000000004","unit_amount":1000,"currency":"EUR","actor":"staff:amy","reason":"ops"}`
@@ -148,7 +148,7 @@ func TestGroupReservationEndpointsRequireInternalCredential(t *testing.T) {
 }
 
 func TestGroupReservationPlaceRejectsBadShapes(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	base := `"organizer_id":"00000000-0000-0000-0000-000000000002","slot_id":"00000000-0000-0000-0000-000000000003"`
 	for name, body := range map[string]string{
 		"blank counterparty": `{` + base + `,"quantity":5,"counterparty":"","expires_at":"2027-01-01T00:00:00Z","actor":"staff:amy","reason":"ops"}`,
@@ -185,7 +185,7 @@ func TestGroupReservationPlaceRejectsBadShapes(t *testing.T) {
 }
 
 func TestChannelAllocationEndpointRequiresInternalCredential(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	body := `{"organizer_id":"00000000-0000-0000-0000-000000000002","allocations":[{"channel":"presale","cap":10}]}`
 	for _, token := range []string{"", "wrong"} {
@@ -203,7 +203,7 @@ func TestChannelAllocationEndpointRequiresInternalCredential(t *testing.T) {
 }
 
 func TestChannelAllocationRejectsBadShapes(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	org := `"organizer_id":"00000000-0000-0000-0000-000000000002"`
 	for name, body := range map[string]string{
@@ -227,7 +227,7 @@ func TestChannelAllocationRejectsBadShapes(t *testing.T) {
 }
 
 func TestCreateHoldRejectsBadChannel(t *testing.T) {
-	s := New(nil, "")
+	s := New(nil, "", nil)
 	base := `"organizer_id":"00000000-0000-0000-0000-000000000001","slot_id":"00000000-0000-0000-0000-000000000002","quantity":1`
 	for name, body := range map[string]string{
 		"empty channel":    `{` + base + `,"channel":""}`,
@@ -272,7 +272,7 @@ func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
 }
 
 func TestCapacityAdjustmentEndpointsRequireInternalCredential(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	body := `{"organizer_id":"00000000-0000-0000-0000-000000000002","capacity":50,"actor":"staff:amy","reason":"reconfig"}`
 	requests := map[string]func() *http.Request{
@@ -301,7 +301,7 @@ func TestCapacityAdjustmentEndpointsRequireInternalCredential(t *testing.T) {
 }
 
 func TestCapacityAdjustmentRejectsBadShapes(t *testing.T) {
-	s := New(nil, "secret")
+	s := New(nil, "secret", nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	org := `"organizer_id":"00000000-0000-0000-0000-000000000002"`
 	for name, body := range map[string]string{

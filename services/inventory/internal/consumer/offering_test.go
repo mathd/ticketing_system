@@ -47,6 +47,8 @@ type fakeCatalogStore struct {
 	closures        []closureCall
 	closureEventIDs []uuid.UUID
 	provisioned     []uuid.UUID
+	seatProvisioned []uuid.UUID
+	seatMapIDs      []uuid.UUID
 	quarantined     []quarantineCall
 	pools           []store.PoolOffering
 	err             error
@@ -65,6 +67,15 @@ func (s *fakeCatalogStore) Provision(_ context.Context, eventID, _, _ uuid.UUID,
 		return s.err
 	}
 	s.provisioned = append(s.provisioned, eventID)
+	return nil
+}
+
+func (s *fakeCatalogStore) ProvisionSeated(_ context.Context, eventID, _, _, seatMapID uuid.UUID, _ int32) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.seatProvisioned = append(s.seatProvisioned, eventID)
+	s.seatMapIDs = append(s.seatMapIDs, seatMapID)
 	return nil
 }
 
