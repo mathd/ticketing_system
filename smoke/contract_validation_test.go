@@ -56,7 +56,7 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	}
 	remainder := request.URL.Path[index+len(marker):]
 	service, path, found := strings.Cut(remainder, "/")
-	if !found || !strings.Contains(" inventory commerce payments access ", " "+service+" ") || path == "openapi.yaml" {
+	if !found || !strings.Contains(" catalog inventory commerce payments access ", " "+service+" ") || path == "openapi.yaml" {
 		return
 	}
 	// These 404s are the gateway security boundary, not service responses:
@@ -121,7 +121,7 @@ func validateDirectServiceResponse(t *testing.T, service string, request *http.R
 }
 
 func TestCommittedServiceContractsAreComplete(t *testing.T) {
-	for _, service := range []string{"inventory", "commerce", "payments", "access"} {
+	for _, service := range []string{"catalog", "inventory", "commerce", "payments", "access"} {
 		t.Run(service, func(t *testing.T) {
 			contract := loadContract(service)
 			if contract.err != nil {
