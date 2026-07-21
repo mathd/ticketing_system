@@ -7,10 +7,10 @@
     "localGate": "make check"
   },
   "models": {
-    "plan": ["deepseek-v4-pro:medium@claudex", "gpt-5.6-luna:high@claudex"],
+    "plan": ["deepseek-v4-pro:high@claudex", "gpt-5.6-luna:xhigh@claudex"],
     "planReview": "main-agent",
     "implement": "main-agent",
-    "aiReview": ["deepseek-v4-pro:medium@claudex", "gpt-5.6-luna:high@claudex"]
+    "aiReview": ["deepseek-v4-pro:high@claudex", "gpt-5.6-luna:xhigh@claudex"]
   },
   "registry": {
     "bindingPath": "docs/adr/",
