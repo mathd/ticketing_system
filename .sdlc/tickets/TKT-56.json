@@ -2,7 +2,7 @@
   "key": "TKT-56",
   "type": "Story",
   "summary": "PSP port, compensation and journal keyring (deferred from TKT-43 until a real processor)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSplit from TKT-43 on a human scope decision (2026-07-14): defer everything that only makes sense against a real payment processor.\n\n**Do not start this before the processor is chosen.** The whole point of the deferral is that provider reference identity, status semantics, void-vs-refund rules and the error taxonomy are provider-specific — an abstraction designed over the fake PSP gets rewritten on contact with a real one.\n\n**Launch-blocking, not merely deferred:** while this is open, `payment_unknown` orders have no automated resolution, and `reconciliation_required` orders hold captured money with no automated refund path. Safe only while the PSP is fake. Connecting a real processor without this ticket means real money can strand with no recovery path.\n\nDesign is already recorded — see ADR-016 (recovery state machine, §Decision 3 lookup-vs-PSP-status split, §Decision 4 compensation-as-facts, §Decision 7 tamper boundary, §Decision 8 keyring). This ticket implements against it; it should not need to re-derive it."
+    },
+    {
+      "stage": "Ready",
+      "kind": "readiness",
+      "body": "PSP chosen 2026-07-21: Stripe (test mode), behind the provider-agnostic port — ADR-030-stripe-behind-psp-port.md. Blocker (real-provider decision) cleared; port spec to be written against Stripe test mode, fake PSP stays as second implementation."
     }
   ],
   "links": [
