@@ -1590,25 +1590,54 @@ func (p *Postgres) MarkSeatMapEventEmitted(ctx context.Context, id uuid.UUID) er
 	return nil
 }
 
-// lockCurrentPublishedVersion resolves the target family (from any version id)
-// and locks its CURRENT PUBLISHED version row FOR UPDATE, returning that row's
-// id, version, family, and organizer. EditSeatMap and PinSeat both call it, so a
-// concurrent edit and pin serialize on the identical row (ADR-018, TKT-104): the
+// lockCurrentPublishedVersion serializes all edit/pin/unpin work on a seat-map
+// FAMILY, then resolves the family's current published version. EditSeatMap and
+// PinSeat both call it, so a concurrent edit and pin serialize (TKT-104): the
 // loser sees the winner's committed result. ErrNotFound if no version of the
 // family is published (or the id/organizer does not match).
+//
+// It must NOT serialize by locking the current-version *row* with FOR UPDATE.
+// EditSeatMap makes a new version by INSERTing a new row, which never conflicts
+// with a FOR UPDATE lock on the old row — so a PinSeat blocked on the old row
+// would, once the edit commits, still hold the STALE old row (PostgreSQL rechecks
+// the locked row, it does not re-run the ORDER BY … LIMIT) and validate against
+// the old geometry, landing an orphaned pin (ai-review F1/F2; reproduced). The
+// same stale row lets two concurrent edits both derive version+1 and collide
+// (F3). We therefore serialize on the FAMILY IDENTITY via a transaction-scoped
+// advisory lock keyed on the family UUID — a lock that is immune to which row is
+// current — and only then read the current published version, freshly, seeing
+// every committed row. A UNIQUE(map_family_id, version) constraint (migration
+// 0011) is the belt-and-suspenders backstop against a version collision.
 func lockCurrentPublishedVersion(ctx context.Context, tx *sql.Tx, seatMapID, organizerID uuid.UUID) (id uuid.UUID, version int32, family uuid.UUID, err error) {
+	// Resolve the family from any version id (organizer-scoped), then take the
+	// family advisory lock BEFORE reading the current version. hashtextextended
+	// maps the family UUID to the bigint pg_advisory_xact_lock expects; the lock
+	// releases automatically at commit/rollback.
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, version, map_family_id FROM seat_maps
-		 WHERE map_family_id = (SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2)
-		   AND status = 'published'
-		 ORDER BY version DESC
-		 LIMIT 1
-		 FOR UPDATE`, seatMapID, organizerID).Scan(&id, &version, &family)
+		`SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2`,
+		seatMapID, organizerID).Scan(&family)
 	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("seat map: %w", ErrNotFound)
 	}
 	if err != nil {
-		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("lock current published version: %w", err)
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("resolve seat-map family: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, family); err != nil {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("lock seat-map family: %w", err)
+	}
+	// Now that the family is exclusively held, the current published version is
+	// stable for the rest of this transaction.
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, version FROM seat_maps
+		 WHERE map_family_id = $1 AND status = 'published'
+		 ORDER BY version DESC
+		 LIMIT 1`, family).Scan(&id, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("seat map: %w", ErrNotFound)
+	}
+	if err != nil {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("read current published version: %w", err)
 	}
 	return id, version, family, nil
 }
@@ -1776,15 +1805,42 @@ func (p *Postgres) PinSeat(ctx context.Context, in PinSeatInput) error {
 }
 
 // UnpinSeat clears a pin (sale cancelled / hold released). Idempotent: removing
-// an absent pin is a no-op. It resolves the family from any version id and
-// deletes by (family, identity, pinned_by), organizer-scoped.
+// an absent pin is a no-op. It runs under the SAME family advisory lock as
+// PinSeat/EditSeatMap (ai-review F4): a standalone DELETE could not see an
+// uncommitted concurrent PinSeat and would report a release that then never
+// happened once the pin commits — serializing on the family closes that window.
 func (p *Postgres) UnpinSeat(ctx context.Context, in PinSeatInput) error {
-	if _, err := p.db.ExecContext(ctx,
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Resolve the family (organizer-scoped) and take the family advisory lock, so
+	// the delete serializes with a concurrent pin/edit on the same family.
+	var family uuid.UUID
+	err = tx.QueryRowContext(ctx,
+		`SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2`,
+		in.SeatMapID, in.OrganizerID).Scan(&family)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Unknown map/organizer: nothing to unpin, stay idempotent.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve seat-map family: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, family); err != nil {
+		return fmt.Errorf("lock seat-map family: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM seat_map_pins
-		 WHERE organizer_id = $1 AND seat_identity = $2 AND pinned_by = $3
-		   AND map_family_id = (SELECT map_family_id FROM seat_maps WHERE id = $4 AND organizer_id = $1)`,
-		in.OrganizerID, in.SeatIdentity, in.PinnedBy, in.SeatMapID); err != nil {
+		 WHERE organizer_id = $1 AND map_family_id = $2 AND seat_identity = $3 AND pinned_by = $4`,
+		in.OrganizerID, family, in.SeatIdentity, in.PinnedBy); err != nil {
 		return fmt.Errorf("unpin seat: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit unpin: %w", err)
 	}
 	return nil
 }

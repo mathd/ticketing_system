@@ -35,9 +35,14 @@ ALTER TABLE seat_maps ADD COLUMN map_family_id uuid;
 UPDATE seat_maps SET map_family_id = id WHERE map_family_id IS NULL;
 ALTER TABLE seat_maps ALTER COLUMN map_family_id SET DEFAULT gen_random_uuid();
 ALTER TABLE seat_maps ALTER COLUMN map_family_id SET NOT NULL;
--- The family read (current published version of a family) scopes by
--- (map_family_id, status); ADR-019 — an index backs the filter.
-CREATE INDEX seat_maps_by_family ON seat_maps (map_family_id, status);
+-- A version is unique within a family: EditSeatMap serializes on a family
+-- advisory lock so two concurrent edits cannot both derive the same version+1,
+-- but this constraint is the belt-and-suspenders backstop — a version collision
+-- fails closed at the database rather than producing two "current" versions
+-- (ai-review F3). It also backs the (map_family_id, status)-ordered current-
+-- version read (ADR-019), so no separate seat_maps_by_family index is needed.
+ALTER TABLE seat_maps
+    ADD CONSTRAINT seat_maps_family_version_unique UNIQUE (map_family_id, version);
 
 CREATE TABLE seat_map_pins (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -72,5 +77,5 @@ END
 $$;
 -- +goose StatementEnd
 DROP TABLE seat_map_pins;
-DROP INDEX seat_maps_by_family;
+ALTER TABLE seat_maps DROP CONSTRAINT seat_maps_family_version_unique;
 ALTER TABLE seat_maps DROP COLUMN map_family_id;

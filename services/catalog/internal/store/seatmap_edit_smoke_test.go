@@ -282,19 +282,27 @@ func TestEditSeatMapDoesNotRacePin(t *testing.T) {
 }
 
 // assertNoOrphanPins fails if any pin in the family references a seat identity
-// that is not present in the family's current published version.
+// that is not present in the family's CURRENT (max-version) published version.
+// It MUST bind to the current version, not any published version: the
+// predecessor stays published after an edit, so "present in any published
+// version" is a false negative that would mask an orphaned pin against the new
+// current version (ai-review F2/F3).
 func assertNoOrphanPins(ctx context.Context, t *testing.T, st *Postgres, anyVersionID uuid.UUID, iter int) {
 	t.Helper()
 	rows, err := st.db.QueryContext(ctx, `
+		WITH fam AS (SELECT map_family_id FROM seat_maps WHERE id = $1),
+		     current_version AS (
+		       SELECT id FROM seat_maps
+		       WHERE map_family_id = (SELECT map_family_id FROM fam)
+		         AND status = 'published'
+		       ORDER BY version DESC
+		       LIMIT 1)
 		SELECT p.seat_identity
 		FROM seat_map_pins p
-		JOIN seat_maps src ON src.id = $1
-		WHERE p.map_family_id = src.map_family_id
+		WHERE p.map_family_id = (SELECT map_family_id FROM fam)
 		  AND NOT EXISTS (
 		    SELECT 1 FROM seat_map_seats s
-		    JOIN seat_maps cur ON cur.id = s.seat_map_id
-		    WHERE cur.map_family_id = src.map_family_id
-		      AND cur.status = 'published'
+		    WHERE s.seat_map_id = (SELECT id FROM current_version)
 		      AND s.seat_identity = p.seat_identity)`, anyVersionID)
 	if err != nil {
 		t.Fatalf("iter %d: orphan-pin query: %v", iter, err)
@@ -311,4 +319,35 @@ func assertNoOrphanPins(ctx context.Context, t *testing.T, st *Postgres, anyVers
 	if len(orphans) > 0 {
 		t.Fatalf("iter %d: orphaned pins (identity absent from current published version): %v", iter, orphans)
 	}
+}
+
+// TestPinSeatSerializesBehindEditThatDroppedSeat (ai-review F1, regression)
+// proves the family advisory lock — not a row FOR UPDATE — is what serializes
+// edit and pin. It commits an edit that drops the seat, THEN pins it, and the
+// pin must reject against the new current version. The deterministic ordering
+// (edit fully committed before the pin runs) is the worst case for the OLD
+// design: a row-only lock would still resolve the stale predecessor as "current"
+// under the ORDER BY … LIMIT recheck; the advisory lock forces a fresh resolve
+// so the pin sees the new version and rejects.
+func TestPinSeatSerializesBehindEditThatDroppedSeat(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+	m := seedPublishedMap(ctx, t, st, "stale-guard") // Orchestra/A/1, version 1
+
+	// Edit drops Orchestra/A/1 (replaces it with an unpinned Orchestra/A/99).
+	v2, _, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: m.ID,
+		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("99", 1)))}})
+	if err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	// A pin request referencing the dropped seat — using the OLD version id — must
+	// resolve the family's CURRENT version (v2, which lacks it) and reject.
+	if err := st.PinSeat(ctx, PinSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, SeatIdentity: "Orchestra/A/1", PinnedBy: "sale:stale"}); !errors.Is(err, ErrSeatIdentityNotFound) {
+		t.Fatalf("pin of a dropped seat (via old version id) err = %v, want ErrSeatIdentityNotFound", err)
+	}
+	// And a pin referencing a seat that DOES exist in the current version, via the
+	// old version id, still succeeds (the family resolves forward to v2).
+	if err := st.PinSeat(ctx, PinSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, SeatIdentity: "Orchestra/A/99", PinnedBy: "sale:current"}); err != nil {
+		t.Fatalf("pin of a current seat via old version id: %v", err)
+	}
+	assertNoOrphanPins(ctx, t, st, v2.ID, -1)
 }

@@ -454,24 +454,25 @@ type Store interface {
 	// the Add* write gate (status='draft') refuses further authoring.
 	PublishSeatMap(ctx context.Context, id uuid.UUID) (m SeatMap, needsEmit bool, err error)
 	MarkSeatMapEventEmitted(ctx context.Context, id uuid.UUID) error
-	// EditSeatMap safely edits a published seat map (TKT-104). It resolves the
-	// target family's current published version, locks it FOR UPDATE, and — in
-	// one transaction — validates that every currently-pinned seat identity
-	// survives exactly once in the submitted geometry, then creates a new
-	// published version (version+1, same map_family_id) with the new geometry and
-	// commits. An edit that would orphan a pinned identity is rejected with
-	// ErrSeatMapEditOrphansPinned; the predecessor is never mutated. needsEmit is
-	// true while the new version's seat_map.published event is still owed — the
-	// caller emits, then marks (same discipline as PublishSeatMap). The lock is
-	// state-deriving per ADR-018 (the outcome depends on the current pinned set),
-	// and PinSeat takes the SAME lock so an edit and a concurrent pin serialize.
+	// EditSeatMap safely edits a published seat map (TKT-104). Under a family-
+	// scoped advisory lock (NOT a current-row FOR UPDATE — see ADR-029/§lock), in
+	// one transaction it re-resolves the family's current published version,
+	// validates that every currently-pinned seat identity survives exactly once in
+	// the submitted geometry, then creates a new published version (version+1, same
+	// map_family_id) with the new geometry and commits. An edit that would orphan a
+	// pinned identity is rejected with ErrSeatMapEditOrphansPinned; the predecessor
+	// is never mutated. needsEmit is true while the new version's seat_map.published
+	// event is still owed — the caller emits, then marks (same discipline as
+	// PublishSeatMap). The lock is state-deriving per ADR-018 (the outcome depends
+	// on the current pinned set), and PinSeat takes the SAME family lock so an edit
+	// and a concurrent pin serialize.
 	EditSeatMap(ctx context.Context, in EditSeatMapInput) (m SeatMap, needsEmit bool, err error)
 	// PinSeat records that a seat identity is referenced by a sale/hold — the
-	// write path TKT-80 consumes (COS-5). It locks the family's current published
-	// version FOR UPDATE (the same row EditSeatMap locks), validates the identity
-	// exists in that version (else ErrSeatIdentityNotFound), and inserts the pin
-	// idempotently on (map_family_id, seat_identity, pinned_by). Taking the same
-	// lock as the edit is what closes the edit-vs-sale race (ADR-018).
+	// write path TKT-80 consumes (COS-5). Under the SAME family advisory lock
+	// EditSeatMap takes, it re-resolves the current published version, validates the
+	// identity exists in that version (else ErrSeatIdentityNotFound), and inserts
+	// the pin idempotently on (map_family_id, seat_identity, pinned_by). Taking the
+	// same family lock as the edit is what closes the edit-vs-sale race (ADR-029).
 	PinSeat(ctx context.Context, in PinSeatInput) error
 	// UnpinSeat clears a pin (sale cancelled / hold released), so a later edit may
 	// drop that seat. Idempotent: removing an absent pin is a no-op.

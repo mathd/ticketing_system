@@ -63,25 +63,36 @@ We adopt **Option 1 (hard-reject)**, with a **two-sided row lock** closing the r
    (all versions of one edited map share a `map_family_id`), never to a specific version row —
    a version bump must not drop a pin.
 
-2. **`EditSeatMap` is state-deriving, so it decides under a row lock (ADR-018 rule 1).** In one
-   transaction it: locks the family's **current published version** row
-   (`SELECT … WHERE map_family_id = … AND status='published' ORDER BY version DESC LIMIT 1 FOR
-   UPDATE`); reads the family's pinned identity set; requires **every** pinned identity to
+2. **`EditSeatMap` is state-deriving, so it decides under a lock (ADR-018 rule 1) — a
+   FAMILY-scoped advisory lock, not a row lock.** In one transaction it: takes
+   `pg_advisory_xact_lock(hashtextextended(map_family_id::text, 0))`; then reads the family's
+   current published version (`… WHERE map_family_id = … AND status='published' ORDER BY
+   version DESC LIMIT 1`) and its pinned identity set; requires **every** pinned identity to
    appear **exactly once** in the submitted geometry (absent → `ErrSeatMapEditOrphansPinned`;
    duplicate → the new version's `UNIQUE(seat_map_id, seat_identity)` yields
    `ErrSeatMapConflict`); inserts a new published version (`version+1`, same `map_family_id`)
-   with the new geometry; commits; then emits the existing `seat_map.published` event
-   after commit. The predecessor is never mutated (COS-1).
+   with the new geometry; commits; then emits the existing `seat_map.published` event after
+   commit. The predecessor is never mutated (COS-1).
 
-3. **`PinSeat`/`UnpinSeat` take the *same* lock (the two sides).** `PinSeat` locks the family's
-   current published version FOR UPDATE, validates the identity exists in that version (else
-   `ErrSeatIdentityNotFound`), and inserts the pin idempotently. Because both `EditSeatMap`
-   and `PinSeat` lock the identical row, a concurrent edit and pin **serialize**: the loser
-   sees the winner's committed result. Either the pin lands first and the edit is rejected as
+   **Why an advisory lock and not `SELECT … FOR UPDATE` on the current row** (the subtle part,
+   caught in adversarial review and reproduced): `EditSeatMap` makes a new version by
+   **INSERT**ing a new row, which never conflicts with a `FOR UPDATE` lock on the *old* row. A
+   `PinSeat` blocked on the old row would, once the edit commits, still hold the **stale** old
+   row — PostgreSQL rechecks the locked row, it does **not** re-run the `ORDER BY … LIMIT` — and
+   validate the seat against the old geometry, landing an orphaned pin. The same stale row lets
+   two concurrent edits both derive `version+1` and collide. Serializing on the **family
+   identity** (a lock immune to which row is current), then re-resolving the current version
+   under that lock, is what actually closes it. `UNIQUE (map_family_id, version)` is the
+   belt-and-suspenders backstop.
+
+3. **`PinSeat`/`UnpinSeat` take the *same* family advisory lock (the two sides).** `PinSeat`
+   takes the family lock, resolves the current published version freshly, validates the identity
+   exists in it (else `ErrSeatIdentityNotFound`), and inserts the pin idempotently. `UnpinSeat`
+   takes it too, so a release cannot be lost against an uncommitted concurrent pin. Because all
+   three take the identical family lock, a concurrent edit and pin **serialize**: the loser sees
+   the winner's committed result. Either the pin lands first and the edit is rejected as
    orphaning, or the edit lands first and the pin is rejected as not-found. It can **never** be
-   that both succeed and leave a pin for a seat the current version lacks — a locked-row FOR
-   UPDATE on the edit path *alone* would not have closed this, because a pin INSERT into a
-   separate table does not conflict with it; the pin path must take the same lock too.
+   that both succeed and leave a pin for a seat the current version lacks.
 
 4. **No new event, no new schema.** A new version, once created, is just a published map, so it
    emits the existing `seat_map.published` (schema 1); its payload already carries id,
