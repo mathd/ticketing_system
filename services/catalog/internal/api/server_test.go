@@ -1176,6 +1176,13 @@ func (e *env) validateResponse(req *http.Request, rec *httptest.ResponseRecorder
 		return // route not in spec (spec middleware already rejected it)
 	}
 	recordCoverage(route.Operation.OperationID, rec.Code)
+	// The production ResponseValidator wraps every routed handler (NewRouter),
+	// so an undocumented status is laundered into a documented generic 500
+	// before this helper ever sees it. Detect the mask itself: a handler
+	// response rewritten by ADR-028 fail-closed is always a test failure here.
+	if strings.Contains(rec.Body.String(), "response violates OpenAPI contract") {
+		e.t.Fatalf("production validator masked the response for %s %s (status %d) — handler drifted from the spec", req.Method, req.URL.Path, rec.Code)
+	}
 	input := &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{
 			Request: req, PathParams: pathParams, Route: route,
@@ -1328,7 +1335,7 @@ func TestPublishRetriesEmissionAfterFailure(t *testing.T) {
 		t.Fatalf("failed emission should 500, got %d", rec.Code)
 	}
 	// The recovery hint must survive the production ResponseValidator (TKT-108).
-	if !strings.Contains(rec.Body.String(), "retry publish") {
+	if !strings.Contains(rec.Body.String(), "performance is published but the domain event was not emitted; retry publish") {
 		t.Fatalf("recovery body lost, got: %s", rec.Body.String())
 	}
 	// The performance is published but the event is still owed: retry emits.
@@ -1395,6 +1402,8 @@ func TestArchiveRetriesEmissionAfterFailure(t *testing.T) {
 	e.pub.failArchiveNext = true
 	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("failed archive emission: want 500, got %d", rec.Code)
+	} else if !strings.Contains(rec.Body.String(), "performance is archived but the archive event was not emitted; retry archive") {
+		t.Fatalf("recovery body lost, got: %s", rec.Body.String())
 	}
 	if rec := e.do("POST", "/performances/"+perfID.String()+"/archive", nil); rec.Code != http.StatusOK {
 		t.Fatalf("archive retry: %d", rec.Code)
@@ -2178,6 +2187,8 @@ func TestCloseRetriesEmissionAfterFailure(t *testing.T) {
 	e.pub.failClosureNext = true
 	if rec := e.do("POST", "/performances/"+perfID.String()+"/close", nil); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("emission failure must surface as 500, got %d", rec.Code)
+	} else if !strings.Contains(rec.Body.String(), "slot state changed but the closure event was not emitted; retry close") {
+		t.Fatalf("recovery body lost, got: %s", rec.Body.String())
 	}
 	if len(e.pub.closed) != 0 {
 		t.Fatalf("failed emission must not record, got %d", len(e.pub.closed))

@@ -1072,14 +1072,10 @@ func (s *Server) PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapI
 // is re-POSTing publish of the NEW version id, NOT retrying the edit, which
 // would mint yet another version).
 //
-// NOTE (ai-review): like every emit-failing endpoint here (PublishSeatMap,
-// PublishPerformance), 500 is not declared in the spec, so the ADR-028 response
-// validator (shared/go/contract/http.go) rewrites this body to the generic
-// "response violates OpenAPI contract" — the recovery hint above does not reach
-// the client. That is a pre-existing, repo-wide gap (no endpoint declares 500),
-// tracked as its own backlog ticket rather than fixed only for /edit here, which
-// would leave publish inconsistent. The new version is intact and event-owed;
-// operators recover via the owed-event retry the same way as for publish.
+// The 500 is declared in the spec (TKT-108), so the recovery hint reaches the
+// client through the ADR-028 response validator. The new version is intact and
+// event-owed; operators recover via the owed-event retry the same way as for
+// publish.
 func (s *Server) EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
 	var in SeatMapEdit
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
