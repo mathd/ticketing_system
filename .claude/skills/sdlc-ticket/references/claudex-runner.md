@@ -49,11 +49,16 @@ each pass costs ~10–20 min of wall clock regardless of diff size (TKT-92: four
 diffs down to 30 lines). Keep the *first* full-diff pass at the configured effort — only
 re-reviews of fix commits get the discount, and say in the stage comment which effort ran.
 
-- **The allowlist IS the sandbox.** Headless `claude -p` denies tools that aren't pre-approved,
-  so `--allowedTools "Read,Grep,Glob"` is what makes the stage read-only. Omitting the flag is
-  the claudex equivalent of the codex runner's dropped `-s read-only` — the substitute gets more
-  privilege than the command it stands in for, and a reviewer that can edit the tree it is
-  reviewing is not a reviewer.
+- **The allowlist IS the sandbox — but do not trust it to hold; verify.** Headless `claude -p`
+  is *supposed* to deny tools that aren't pre-approved, so `--allowedTools "Read,Grep,Glob"` is
+  what should make the stage read-only. Omitting the flag is the claudex equivalent of the codex
+  runner's dropped `-s read-only` — the substitute gets more privilege than the command it stands
+  in for, and a reviewer that can edit the tree it is reviewing is not a reviewer. **The allowlist
+  was observed NOT enforcing read-only for some models: `deepseek-v4-pro@claudex` wrote a 22KB file
+  to the tree under `--allowedTools "Read,Grep,Glob"` during a plan-draft stage (TKT-104).** So
+  after every read-only claudex stage, `git status` the tree, revert any stray file the drafter/
+  reviewer created (it is not a deliverable), and note the sandbox breach as a measurement finding.
+  Never let a plan/review stage's stray write reach the commit.
 - **Inline the plan/diff in the brief.** No Bash in the allowlist means the worker cannot run
   `git diff` itself — same rule as codex-runner (d), enforced here by construction.
 - **Background + poll** via the harness (`run_in_background: true`), same as codex `task`.
