@@ -2,7 +2,7 @@
   "key": "TKT-86",
   "type": "Story",
   "summary": "Admission-conflict alarm: durable, versioned, PII-free",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
