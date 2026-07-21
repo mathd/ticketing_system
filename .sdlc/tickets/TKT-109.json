@@ -1,0 +1,12 @@
+{
+  "key": "TKT-109",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Decide if catalog joins the smoke coverage gate (uncovered2xxOps) — TKT-106 ai-review follow-up",
+  "description": "### Decide whether catalog joins the smoke happy-path coverage gate\n\n**Origin:** TKT-106 ai-review incidental — raised independently by BOTH A/B arms (`deepseek-v4-pro@claudex` and `gpt-5.6-luna@claudex`). Pre-existing, not introduced by TKT-106.\n\nTKT-106 added `catalog` to the smoke **response-validator** allowlist, so `/api/catalog/*` responses are now contract-validated end-to-end *when a smoke request exercises them*. But `uncovered2xxOps` (`smoke/coverage_test.go:55`) still iterates only `{inventory,commerce,payments,access}` — catalog is deliberately excluded (header comment: \"Catalog's coverage gate lives in its unit suite ... where a fake store exists\"). So a NEW catalog operation added to `openapi.yaml` without a smoke test would pass the suite and go un-contract-validated end-to-end. TKT-106 softened its own comment to state this scope limit rather than claim a guarantee it can't back.\n\n**This is a DECISION, not an obvious fix** (hence a ticket, not a direct commit): should catalog's end-to-end coverage be enforced by the *smoke* gate (requires driving ~35 catalog ops through smoke happy-paths, or a justified per-op allowlist), or is the existing unit-suite coverage the right layer and the smoke response-validator sufficient for exercised routes? Weigh against the original ADR-047/coverage-gate design rationale (fake store in the unit suite).\n\n**Not urgent:** exercised catalog routes ARE validated today; this closes a latent gap for *future unexercised* endpoints.\n\nSecondary (cheap, may fold in): the TKT-106 pin `TestValidateServiceResponseCoversCatalog` mutates the shared `smokeCoverage` map and relies on smoke top-level tests being sequential (no `t.Parallel()`); if catalog coverage moves into smoke, revisit that isolation.",
+  "comments": [],
+  "links": []
+}
