@@ -156,17 +156,6 @@ func (f *fakeStore) currentPublishedInFamily(mapID, org uuid.UUID) (store.SeatMa
 	return best, found
 }
 
-// identitiesFor returns the set of seat identities in a given map version.
-func (f *fakeStore) identitiesFor(mapID uuid.UUID) map[string]bool {
-	out := map[string]bool{}
-	for _, s := range f.seatSeats {
-		if s.seatMapID == mapID {
-			out[s.SeatIdentity] = true
-		}
-	}
-	return out
-}
-
 // pinSeat seeds a pin on a family (test helper; TKT-80 does this in prod). The
 // pin is family-scoped and version-independent, keyed by the seat identity.
 func (f *fakeStore) pinSeat(anyVersionID uuid.UUID, identity string) {
