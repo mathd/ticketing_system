@@ -4,7 +4,7 @@
   "summary": "US-017: Seat-level claims — reserved seating enters the core",
   "status": "Ready",
   "labels": [],
-  "assignee": null,
+  "assignee": "agent:opus-4.8",
   "pr": null,
   "description": "### US-017: Seat-level claims — reserved seating enters the core\n**As** a buyer, **I want** to hold specific seats, not just a quantity, with oversell impossible\nper seat. **Priority:** P2 **Depends on:** TKT-3 (a seat map to claim against — hard blocker)\n**Acceptance Criteria:**\n- [ ] The claim core accepts a seat-set claim against a seated slot: each seat is held/confirmed\n      by at most one live claim (DB-enforced), reusing the ADR-010 lifecycle, lock order,\n      idempotency and TTL machinery — the primitive extends, it does not fork (ADR-005 /\n      ADR-010 \"seats reuse the lifecycle and lock ordering but add their own resource\n      constraints\").\n- [ ] GA and seated pools coexist; the existing GA path is untouched (M1 tests green).\n- [ ] Seat-map versioning interplay (TKT-3 COS: edits never orphan or duplicate sold/held seats)\n      is honored from the inventory side: a claim pins the seats it named regardless of later map\n      edits.\n- [ ] The contention test gains a seated variant: ≫C claimants targeting overlapping seat sets;\n      no seat is ever double-held.\n\n**Quality gates (every story):**\n- `make check` green (lint + unit + integration + smoke; mirrors CI)\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n- Money/ticket-path: audit-trail invariants hold (ADR-003)\n- Read-endpoint changes: ADR-004 TTL tier declared with rationale\n\nParent epic: TKT-4. Full lineage: docs/product/prd-v1.md §TKT-4.",
   "links": [
