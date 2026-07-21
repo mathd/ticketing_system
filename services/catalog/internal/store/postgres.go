@@ -1590,6 +1590,266 @@ func (p *Postgres) MarkSeatMapEventEmitted(ctx context.Context, id uuid.UUID) er
 	return nil
 }
 
+// lockCurrentPublishedVersion serializes all edit/pin/unpin work on a seat-map
+// FAMILY, then resolves the family's current published version. EditSeatMap and
+// PinSeat both call it, so a concurrent edit and pin serialize (TKT-104): the
+// loser sees the winner's committed result. ErrNotFound if no version of the
+// family is published (or the id/organizer does not match).
+//
+// It must NOT serialize by locking the current-version *row* with FOR UPDATE.
+// EditSeatMap makes a new version by INSERTing a new row, which never conflicts
+// with a FOR UPDATE lock on the old row — so a PinSeat blocked on the old row
+// would, once the edit commits, still hold the STALE old row (PostgreSQL rechecks
+// the locked row, it does not re-run the ORDER BY … LIMIT) and validate against
+// the old geometry, landing an orphaned pin (ai-review F1/F2; reproduced). The
+// same stale row lets two concurrent edits both derive version+1 and collide
+// (F3). We therefore serialize on the FAMILY IDENTITY via a transaction-scoped
+// advisory lock keyed on the family UUID — a lock that is immune to which row is
+// current — and only then read the current published version, freshly, seeing
+// every committed row. A UNIQUE(map_family_id, version) constraint (migration
+// 0011) is the belt-and-suspenders backstop against a version collision.
+func lockCurrentPublishedVersion(ctx context.Context, tx *sql.Tx, seatMapID, organizerID uuid.UUID) (id uuid.UUID, version int32, family uuid.UUID, err error) {
+	// Resolve the family from any version id (organizer-scoped), then take the
+	// family advisory lock BEFORE reading the current version. hashtextextended
+	// maps the family UUID to the bigint pg_advisory_xact_lock expects; the lock
+	// releases automatically at commit/rollback.
+	err = tx.QueryRowContext(ctx,
+		`SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2`,
+		seatMapID, organizerID).Scan(&family)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("seat map: %w", ErrNotFound)
+	}
+	if err != nil {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("resolve seat-map family: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, family); err != nil {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("lock seat-map family: %w", err)
+	}
+	// Now that the family is exclusively held, the current published version is
+	// stable for the rest of this transaction. organizer_id is carried through
+	// explicitly (defense in depth, ADR-002): the family was already resolved
+	// organizer-scoped and map_family_id is immutable, so this is transitively
+	// redundant — but it means the read never crosses a tenant boundary even if
+	// the resolution above were ever refactored away.
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, version FROM seat_maps
+		 WHERE map_family_id = $1 AND organizer_id = $2 AND status = 'published'
+		 ORDER BY version DESC
+		 LIMIT 1`, family, organizerID).Scan(&id, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("seat map: %w", ErrNotFound)
+	}
+	if err != nil {
+		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("read current published version: %w", err)
+	}
+	return id, version, family, nil
+}
+
+// EditSeatMap edits a published seat map into a new published version (TKT-104,
+// COS-1/2/3/4). The transition is state-deriving — whether the edit is legal
+// depends on which seats are currently pinned — so it decides under the family
+// advisory lock (lockCurrentPublishedVersion, NOT a row FOR UPDATE — see ADR-029
+// and that function's doc) and emits after commit.
+// A pinned seat identity that the submitted geometry does not reproduce exactly
+// once is orphaned; the edit is hard-rejected (ErrSeatMapEditOrphansPinned) and
+// the predecessor is left untouched. Duplicate identities in the submission are
+// caught by the new version's UNIQUE(seat_map_id, seat_identity) as
+// ErrSeatMapConflict. Organizer scoping is enforced in the lock resolution and
+// on every insert (ADR-002).
+func (p *Postgres) EditSeatMap(ctx context.Context, in EditSeatMapInput) (SeatMap, bool, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SeatMap{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	curID, curVersion, family, err := lockCurrentPublishedVersion(ctx, tx, in.SeatMapID, in.OrganizerID)
+	if err != nil {
+		return SeatMap{}, false, err
+	}
+
+	// The set of identities the submitted geometry will compose, server-side, the
+	// same way AddSeatMapSeat does: "section/row/seat".
+	submitted := map[string]struct{}{}
+	for _, s := range in.Sections {
+		for _, r := range s.Rows {
+			for _, seat := range r.Seats {
+				submitted[s.Name+"/"+r.Label+"/"+seat.Label] = struct{}{}
+			}
+		}
+	}
+
+	// Pins are family-scoped and version-independent: read them under the lock so
+	// a concurrent PinSeat (which holds the same lock) cannot slip a pin in
+	// between this check and the commit.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT DISTINCT seat_identity FROM seat_map_pins WHERE map_family_id = $1`, family)
+	if err != nil {
+		return SeatMap{}, false, fmt.Errorf("read pins: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var identity string
+		if err := rows.Scan(&identity); err != nil {
+			return SeatMap{}, false, fmt.Errorf("scan pin: %w", err)
+		}
+		if _, ok := submitted[identity]; !ok {
+			return SeatMap{}, false, ErrSeatMapEditOrphansPinned
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return SeatMap{}, false, fmt.Errorf("iterate pins: %w", err)
+	}
+	_ = rows.Close()
+
+	// Create the new published version in the same family. name/organizer/venue
+	// are copied from the current version so the edit is a pure geometry change.
+	var newMap SeatMap
+	var publishedAt sql.NullTime
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO seat_maps (organizer_id, venue_id, name, version, status, published_at, map_family_id)
+		 SELECT organizer_id, venue_id, name, $2, 'published', now(), map_family_id
+		 FROM seat_maps WHERE id = $1
+		 RETURNING id, organizer_id, venue_id, name, version, status, published_at, created_at`,
+		curID, curVersion+1).
+		Scan(&newMap.ID, &newMap.OrganizerID, &newMap.VenueID, &newMap.Name,
+			&newMap.Version, &newMap.Status, &publishedAt, &newMap.CreatedAt)
+	if err != nil {
+		return SeatMap{}, false, fmt.Errorf("create new version: %w", err)
+	}
+	if publishedAt.Valid {
+		newMap.PublishedAt = &publishedAt.Time
+	}
+
+	// Clone the submitted geometry into the new version. seat_identity is composed
+	// server-side, exactly as AddSeatMapSeat, so a pinned identity that the caller
+	// reproduced by section/row/seat labels resolves byte-identically.
+	for _, s := range in.Sections {
+		var sectionID uuid.UUID
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO seat_map_sections (organizer_id, seat_map_id, name, position)
+			 VALUES ($1, $2, $3, $4) RETURNING id`,
+			in.OrganizerID, newMap.ID, s.Name, s.Position).Scan(&sectionID); err != nil {
+			if isUniqueViolation(err) {
+				return SeatMap{}, false, fmt.Errorf("section: %w", ErrSeatMapConflict)
+			}
+			return SeatMap{}, false, fmt.Errorf("clone section: %w", err)
+		}
+		for _, r := range s.Rows {
+			var rowID uuid.UUID
+			if err := tx.QueryRowContext(ctx,
+				`INSERT INTO seat_map_rows (organizer_id, seat_map_id, section_id, label, position)
+				 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+				in.OrganizerID, newMap.ID, sectionID, r.Label, r.Position).Scan(&rowID); err != nil {
+				if isUniqueViolation(err) {
+					return SeatMap{}, false, fmt.Errorf("row: %w", ErrSeatMapConflict)
+				}
+				return SeatMap{}, false, fmt.Errorf("clone row: %w", err)
+			}
+			for _, seat := range r.Seats {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO seat_map_seats (organizer_id, seat_map_id, row_id, seat_identity, label, position)
+					 VALUES ($1, $2, $3, $4 || '/' || $5 || '/' || $6, $6, $7)`,
+					in.OrganizerID, newMap.ID, rowID, s.Name, r.Label, seat.Label, seat.Position); err != nil {
+					if isUniqueViolation(err) {
+						return SeatMap{}, false, fmt.Errorf("seat: %w", ErrSeatMapConflict)
+					}
+					return SeatMap{}, false, fmt.Errorf("clone seat: %w", err)
+				}
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return SeatMap{}, false, fmt.Errorf("commit edit: %w", err)
+	}
+	// A freshly created version always owes its event.
+	return newMap, true, nil
+}
+
+// PinSeat records a sale/hold reference to a seat identity (TKT-104, COS-5 — the
+// write path TKT-80 consumes). Under the SAME family advisory lock EditSeatMap
+// takes, it re-resolves the current published version and validates the identity
+// exists in that version before inserting, so an edit that already dropped the
+// seat is visible here as ErrSeatIdentityNotFound. Idempotent on
+// (map_family_id, seat_identity, pinned_by).
+func (p *Postgres) PinSeat(ctx context.Context, in PinSeatInput) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	curID, _, family, err := lockCurrentPublishedVersion(ctx, tx, in.SeatMapID, in.OrganizerID)
+	if err != nil {
+		return err
+	}
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM seat_map_seats WHERE seat_map_id = $1 AND seat_identity = $2)`,
+		curID, in.SeatIdentity).Scan(&exists); err != nil {
+		return fmt.Errorf("check seat identity: %w", err)
+	}
+	if !exists {
+		return ErrSeatIdentityNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO seat_map_pins (organizer_id, map_family_id, seat_identity, pinned_by)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (map_family_id, seat_identity, pinned_by) DO NOTHING`,
+		in.OrganizerID, family, in.SeatIdentity, in.PinnedBy); err != nil {
+		return fmt.Errorf("insert pin: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit pin: %w", err)
+	}
+	return nil
+}
+
+// UnpinSeat clears a pin (sale cancelled / hold released). Idempotent: removing
+// an absent pin is a no-op. It runs under the SAME family advisory lock as
+// PinSeat/EditSeatMap (ai-review F4): a standalone DELETE could not see an
+// uncommitted concurrent PinSeat and would report a release that then never
+// happened once the pin commits — serializing on the family closes that window.
+func (p *Postgres) UnpinSeat(ctx context.Context, in PinSeatInput) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Resolve the family (organizer-scoped) and take the family advisory lock, so
+	// the delete serializes with a concurrent pin/edit on the same family.
+	var family uuid.UUID
+	err = tx.QueryRowContext(ctx,
+		`SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2`,
+		in.SeatMapID, in.OrganizerID).Scan(&family)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Unknown map/organizer: nothing to unpin, stay idempotent.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve seat-map family: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, family); err != nil {
+		return fmt.Errorf("lock seat-map family: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM seat_map_pins
+		 WHERE organizer_id = $1 AND map_family_id = $2 AND seat_identity = $3 AND pinned_by = $4`,
+		in.OrganizerID, family, in.SeatIdentity, in.PinnedBy); err != nil {
+		return fmt.Errorf("unpin seat: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit unpin: %w", err)
+	}
+	return nil
+}
+
 func (p *Postgres) AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error) {
 	s := SeatMapSection{Name: in.Name, Position: in.Position}
 	err := p.db.QueryRowContext(ctx,
