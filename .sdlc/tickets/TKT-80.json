@@ -4,7 +4,7 @@
   "summary": "US-017: Seat-level claims — reserved seating enters the core",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent:opus-4.8",
   "pr": "https://github.com/mathd/ticketing_system/pull/86",
