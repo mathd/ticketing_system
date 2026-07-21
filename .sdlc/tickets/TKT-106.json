@@ -1,12 +1,91 @@
 {
   "key": "TKT-106",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
   "summary": "Smoke contract validator skips catalog (allowlist omits it)",
   "description": "### Smoke contract-validator allowlist omits catalog\n\n`smoke/contract_validation_test.go:~59` gates response contract-validation on `strings.Contains(\" inventory commerce payments access \", \" \"+service+\" \")` — **catalog is not in the allowlist**, so `validateServiceResponse` returns early for every `/api/catalog/*` response reached through the gateway in smoke. Catalog responses ARE still validated in-process (catalog's `NewRouter` wraps handlers in the response validator, ADR-028), so this is not a correctness hole — but the smoke suite gives catalog reads a false sense of end-to-end contract coverage. Surfaced during TKT-101 ai-review (kimi-k3): the new `/api/catalog/public/venues` smoke assertion runs the validator as a no-op.\n\n**Acceptance:** add `catalog` to the allowlist; FIRST verify no existing catalog endpoint drifts once validated (the reviewer flagged this may surface latent drift on endpoints never smoke-validated). If drift surfaces, fix the drift or scope the change per endpoint.\n\nOrigin: TKT-101 ai-review incidental finding (pre-existing, not introduced by TKT-101).",
-  "comments": [],
-  "links": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-106 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the seam (verified at HEAD: the allowlist `' inventory commerce payments access '` at `smoke/contract_validation_test.go:59` omits catalog). Self-contained, no blockers.\n\n| item | state |\n|---|---|\n| objective | met |\n| scope | met |\n| uncertainties | deferred |\n| dependencies | met |\n| approach | met |\n| first_slice | met |\n| success | met |\n| context_memo | met |\n\n**Deferred:** whether flipping catalog on surfaces latent response-drift is a build-time discovery — the AC prescribes verify-first-then-fix/scope. Governing: **ADR-028** (the fail-closed check being extended) + **ADR-009** (any drift is fixed at the contract). **Ready to prioritize (Gate 1).**"
+    }
+  ],
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The smoke suite's response contract-validator (smoke/contract_validation_test.go:59) allowlists only ' inventory commerce payments access ' — CATALOG is omitted, so validateServiceResponse returns early for every /api/catalog/* response reached through the gateway in smoke. Not a correctness hole (catalog validates in-process via its own NewRouter/ADR-028 wrapper), but it gives catalog reads a FALSE sense of end-to-end contract coverage in smoke."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: add 'catalog' to the smoke allowlist so /api/catalog/* responses are contract-validated end-to-end through the gateway; FIRST verify no existing catalog endpoint drifts once validated (the reviewer flagged latent drift risk on endpoints never smoke-validated). If drift surfaces, fix it or scope per-endpoint. OUT: broadening to non-catalog services (they're already in the allowlist); refactoring the smoke helper structure (that's TKT-95)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether flipping catalog on surfaces latent response-drift on some catalog endpoint is a build-time discovery, not a shaping unknown — the AC already prescribes: verify first, then fix or per-endpoint-scope. No product/architecture unknown; worst case is a per-endpoint follow-up."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. Touches only smoke/contract_validation_test.go (allowlist string) + possibly catalog spec/handlers IF drift is found. Related but independent: TKT-95 (unify smoke HTTP helpers) — not a blocker. Seam verified at HEAD: allowlist at line 59."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Add 'catalog' to the allowlist string in smoke/contract_validation_test.go:59 (' catalog inventory commerce payments access '). Run the smoke suite; if any /api/catalog/* response now fails the response validator, that is real latent drift — fix the spec or handler (ADR-009/ADR-028) or, if a specific endpoint is legitimately unvalidatable, scope it out with a documented reason. Keep in-process catalog validation unchanged."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice: flip the allowlist, run smoke, resolve whatever drift surfaces. Sprint-sized (likely small; the size depends entirely on whether latent drift appears)."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) 'catalog' is in the smoke response-validator allowlist; (2) the smoke suite contract-validates /api/catalog/* responses end-to-end through the gateway; (3) no endpoint drifts (or any drift found is fixed / explicitly scoped with a reason); (4) make check green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-028 (response drift fail-closed — the validation being extended to catalog) and ADR-009 (contract-first, the drift this would catch). governingAdrs present."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-028",
+        "rule": "Responses are validated against the spec and fail closed on drift. This ticket extends that end-to-end smoke check to catalog, which was silently skipped.",
+        "date": "2026-07-20"
+      },
+      {
+        "id": "ADR-009",
+        "rule": "Contract-first: the OpenAPI doc is the source of truth; smoke contract-validation is how per-boundary drift is caught end-to-end. Catalog being skipped means a class of drift went unchecked in smoke.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-028",
+        "why": "The validator being extended to catalog is the ADR-028 fail-closed response check; read it to understand what 'drift' means when deciding how to resolve any surfaced failure."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Any drift found is fixed at the contract level (spec/handler + regen), not by loosening the validator."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Origin: TKT-101 ai-review incidental (kimi-k3) — pre-existing, not introduced by TKT-101",
+        "link": ".sdlc board TKT-101"
+      },
+      {
+        "summary": "The allowlist that omits catalog",
+        "link": "smoke/contract_validation_test.go:59"
+      },
+      {
+        "summary": "Related follow-up (independent): unify smoke HTTP helpers",
+        "link": ".sdlc board TKT-95"
+      }
+    ],
+    "capturedAt": "2026-07-20"
+  }
 }
