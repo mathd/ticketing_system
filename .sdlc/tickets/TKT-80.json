@@ -99,6 +99,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    },
+    {
+      "stage": "Ready",
+      "kind": "readiness",
+      "body": "Owner confirmed 2026-07-21: TKT-3 hard blocker cleared — TKT-104/105 shipped seat maps (versioning + pin contract, ADR-029), sufficient for seat-level claims. Note for TKT-81: adjacency/rank data availability still to verify."
     }
   ]
 }
