@@ -7,10 +7,10 @@
     "localGate": "make check"
   },
   "models": {
-    "plan": "kimi-k3:medium@claudex",
+    "plan": ["deepseek-v4-pro:medium@claudex", "gpt-5.6-luna:high@claudex"],
     "planReview": "main-agent",
     "implement": "main-agent",
-    "aiReview": "kimi-k3:medium@claudex"
+    "aiReview": ["deepseek-v4-pro:medium@claudex", "gpt-5.6-luna:high@claudex"]
   },
   "registry": {
     "bindingPath": "docs/adr/",
