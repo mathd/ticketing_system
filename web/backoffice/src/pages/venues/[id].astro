@@ -1,20 +1,30 @@
 ---
-// Seat-map authoring for one venue (US-019 / TKT-102), draft-only. Staff create
-// a draft map, add sections/rows/seats, and see the authored geometry rendered
-// back. SSR through the gateway (ADR-002 public contract); all catalog calls are
-// server-side (lib/api.ts). Forms POST to this page; on success we redirect
-// (post/redirect/get) so a reload never re-submits, on failure we re-render with
-// the error. Publishing + editing are TKT-103/104 — only draft authoring here.
+// Seat-map authoring + editing for one venue (US-019..022 / TKT-102..105). Staff
+// create a draft map, add sections/rows/seats, publish it, then EDIT a published
+// map into a new version (TKT-105) and see its version history. They can also set
+// the venue's GA capacity. SSR through the gateway (ADR-002 public contract); all
+// catalog calls are server-side (lib/api.ts). Forms POST to this page; on success
+// we redirect (post/redirect/get) so a reload never re-submits, on failure we
+// re-render with the error. The published-map editor is a React island; every
+// backend rule (pinning contract, versioning) lives in catalog — the UI adds none.
 import Layout from '../../layouts/Layout.astro';
+import SeatMapEditor from '../../components/SeatMapEditor';
 import {
   addSeatMapRow,
   addSeatMapSeat,
   addSeatMapSection,
   createSeatMap,
+  DEFAULT_ORGANIZER_ID,
+  editSeatMap,
   getSeatMapGeometry,
   getVenue,
+  listSeatMapVersions,
   listVenueSeatMaps,
+  publishSeatMap,
+  updateVenueGaCapacity,
+  type SeatMapEdit,
   type SeatMapGeometry,
+  type SeatMapVersionHistory,
 } from '../../lib/api';
 
 const venueId = Astro.params.id!;
@@ -54,6 +64,18 @@ if (Astro.request.method === 'POST') {
         position: Number(form.get('position')),
       });
       return Astro.redirect(`${here}?map=${mapId}`);
+    } else if (action === 'publish-map') {
+      await publishSeatMap(mapId);
+      return Astro.redirect(`${here}?map=${mapId}`);
+    } else if (action === 'edit-map') {
+      // The React editor serializes the full replacement geometry into `geometry`.
+      const edit = JSON.parse(String(form.get('geometry') ?? '{}')) as SeatMapEdit;
+      const nv = await editSeatMap(mapId, edit);
+      // Show the NEW version after a successful edit.
+      return Astro.redirect(`${here}?map=${nv.id}`);
+    } else if (action === 'set-ga') {
+      await updateVenueGaCapacity(venueId, Number(form.get('ga_capacity')));
+      return Astro.redirect(here);
     }
   } catch (e) {
     error = e instanceof Error ? e.message : 'request failed';
@@ -63,13 +85,20 @@ if (Astro.request.method === 'POST') {
 const venue = await getVenue(venueId);
 const maps = await listVenueSeatMaps(venueId);
 let geometry: SeatMapGeometry | null = null;
+let versions: SeatMapVersionHistory | null = null;
 if (selectedId) {
   try {
     geometry = await getSeatMapGeometry(selectedId);
   } catch {
     geometry = null;
   }
+  try {
+    versions = await listSeatMapVersions(selectedId);
+  } catch {
+    versions = null;
+  }
 }
+const isPublished = geometry?.map.status === 'published';
 // Flatten rows for the add-seat select: each option needs section + row context.
 const rowOptions =
   geometry?.sections.flatMap((s) =>
@@ -84,7 +113,22 @@ const rowOptions =
   {error && <p class="error" role="alert">Could not save: {error}</p>}
 
   <section class="panel">
-    <h2>Draft maps</h2>
+    <h2>General admission</h2>
+    <p class="muted">
+      GA capacity and seat maps coexist for this venue. GA capacity is used by unseated (GA) slots;
+      seated slots draw on a published seat map below.
+    </p>
+    <form method="POST" class="row-form">
+      <input type="hidden" name="_action" value="set-ga" />
+      <label>GA capacity
+        <input type="number" name="ga_capacity" min="1" value={venue?.ga_capacity ?? 1} required />
+      </label>
+      <button type="submit">Save GA capacity</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Seat maps</h2>
     <ul class="maps">
       {maps.map((m) => (
         <li>
@@ -103,45 +147,85 @@ const rowOptions =
     </form>
   </section>
 
+  {geometry && versions && versions.versions.length > 0 && (
+    <section class="panel">
+      <h2>Version history</h2>
+      <ul class="versions">
+        {versions.versions.map((v) => (
+          <li>
+            <span class="badge">v{v.version}</span>
+            <span class="muted">{v.status}</span>
+            {v.version === versions!.current_version && <span class="current">current</span>}
+            {v.published_at && <span class="muted">published {new Date(v.published_at).toLocaleString()}</span>}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )}
+
   {geometry && (
     <section class="panel">
       <h2>{geometry.map.name} <span class="badge">v{geometry.map.version} · {geometry.map.status}</span></h2>
 
-      <div class="forms">
-        <form method="POST" class="row-form">
-          <input type="hidden" name="_action" value="add-section" />
-          <input type="hidden" name="map_id" value={geometry.map.id} />
-          <input type="text" name="name" placeholder="Section name" required />
-          <input type="number" name="position" placeholder="Pos" min="1" required />
-          <button type="submit">Add section</button>
-        </form>
-
-        {geometry.sections.length > 0 && (
+      {isPublished ? (
+        <div class="editwrap">
+          <p class="muted">
+            This version is published and immutable. Editing creates a <strong>new published version</strong>;
+            seats currently sold or held cannot be removed.
+          </p>
+          <SeatMapEditor
+            client:load
+            geometry={geometry}
+            organizerId={DEFAULT_ORGANIZER_ID}
+            action="edit-map"
+            postTo={here}
+          />
+        </div>
+      ) : (
+        <div class="forms">
           <form method="POST" class="row-form">
-            <input type="hidden" name="_action" value="add-row" />
+            <input type="hidden" name="_action" value="add-section" />
             <input type="hidden" name="map_id" value={geometry.map.id} />
-            <select name="section_id" required>
-              {geometry.sections.map((s) => <option value={s.id}>{s.name}</option>)}
-            </select>
-            <input type="text" name="label" placeholder="Row label" required />
+            <input type="text" name="name" placeholder="Section name" required />
             <input type="number" name="position" placeholder="Pos" min="1" required />
-            <button type="submit">Add row</button>
+            <button type="submit">Add section</button>
           </form>
-        )}
 
-        {rowOptions.length > 0 && (
-          <form method="POST" class="row-form">
-            <input type="hidden" name="_action" value="add-seat" />
-            <input type="hidden" name="map_id" value={geometry.map.id} />
-            <select name="row_id" required>
-              {rowOptions.map((r) => <option value={r.id}>{r.label}</option>)}
-            </select>
-            <input type="text" name="label" placeholder="Seat label" required />
-            <input type="number" name="position" placeholder="Pos" min="1" required />
-            <button type="submit">Add seat</button>
-          </form>
-        )}
-      </div>
+          {geometry.sections.length > 0 && (
+            <form method="POST" class="row-form">
+              <input type="hidden" name="_action" value="add-row" />
+              <input type="hidden" name="map_id" value={geometry.map.id} />
+              <select name="section_id" required>
+                {geometry.sections.map((s) => <option value={s.id}>{s.name}</option>)}
+              </select>
+              <input type="text" name="label" placeholder="Row label" required />
+              <input type="number" name="position" placeholder="Pos" min="1" required />
+              <button type="submit">Add row</button>
+            </form>
+          )}
+
+          {rowOptions.length > 0 && (
+            <form method="POST" class="row-form">
+              <input type="hidden" name="_action" value="add-seat" />
+              <input type="hidden" name="map_id" value={geometry.map.id} />
+              <select name="row_id" required>
+                {rowOptions.map((r) => <option value={r.id}>{r.label}</option>)}
+              </select>
+              <input type="text" name="label" placeholder="Seat label" required />
+              <input type="number" name="position" placeholder="Pos" min="1" required />
+              <button type="submit">Add seat</button>
+            </form>
+          )}
+
+          {geometry.sections.length > 0 && (
+            <form method="POST" class="row-form publish">
+              <input type="hidden" name="_action" value="publish-map" />
+              <input type="hidden" name="map_id" value={geometry.map.id} />
+              <button type="submit">Publish this map</button>
+            </form>
+          )}
+        </div>
+      )}
 
       <div class="geometry">
         {geometry.sections.length === 0 && <p class="empty">No sections yet — add one above.</p>}
@@ -274,5 +358,69 @@ const rowOptions =
     border: 1px solid var(--line);
     border-radius: 3px;
     font-size: 0.85rem;
+  }
+  ul.versions {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  ul.versions li {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .current {
+    color: #067647;
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+  .row-form label {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .row-form.publish button {
+    background: #067647;
+    border-color: #067647;
+  }
+  .editwrap .hint,
+  .editwrap .muted {
+    margin-top: 0;
+  }
+  .editor .sec {
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .editor .seat-edit {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+  }
+  .editor .seat-edit input {
+    width: 2.5rem;
+    padding: 0.2rem 0.3rem;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font: inherit;
+  }
+  .editor .seat-edit button,
+  .editor .seats > button {
+    padding: 0.15rem 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--bg);
+    cursor: pointer;
+    font: inherit;
+  }
+  .editor .save {
+    margin-top: 0.9rem;
+    padding: 0.45rem 0.9rem;
+    background: var(--accent);
+    color: #fff;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
   }
 </style>

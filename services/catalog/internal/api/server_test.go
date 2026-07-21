@@ -41,7 +41,9 @@ type fakeStore struct {
 	archiveEmitted map[uuid.UUID]bool
 	closureEmitted map[uuid.UUID]int32 // performance id -> closure_emitted_version
 	seatMaps       map[uuid.UUID]store.SeatMap
-	seatMapEmitted map[uuid.UUID]bool // seat map id -> seat_map.published event_emitted_at set
+	seatMapEmitted map[uuid.UUID]bool            // seat map id -> seat_map.published event_emitted_at set
+	families       map[uuid.UUID]uuid.UUID       // seat map id -> its map_family_id (TKT-105)
+	pins           map[uuid.UUID]map[string]bool // map_family_id -> pinned seat identities (TKT-104/105)
 	seatSections   map[uuid.UUID]fakeSection
 	seatRows       map[uuid.UUID]fakeRow
 	seatSeats      map[uuid.UUID]fakeSeat
@@ -78,6 +80,8 @@ func newFakeStore() *fakeStore {
 		archiveEmitted: map[uuid.UUID]bool{},
 		closureEmitted: map[uuid.UUID]int32{},
 		seatMaps:       map[uuid.UUID]store.SeatMap{},
+		families:       map[uuid.UUID]uuid.UUID{},
+		pins:           map[uuid.UUID]map[string]bool{},
 		seatSections:   map[uuid.UUID]fakeSection{},
 		seatRows:       map[uuid.UUID]fakeRow{},
 		seatSeats:      map[uuid.UUID]fakeSeat{},
@@ -96,6 +100,7 @@ func (f *fakeStore) CreateSeatMap(_ context.Context, in store.SeatMapInput) (sto
 	m := store.SeatMap{ID: uuid.New(), OrganizerID: in.OrganizerID, VenueID: in.VenueID,
 		Name: in.Name, Version: 1, Status: "draft", CreatedAt: time.Now().UTC()}
 	f.seatMaps[m.ID] = m
+	f.families[m.ID] = m.ID // a new draft map starts its own family (id == family key)
 	return m, nil
 }
 
@@ -132,12 +137,131 @@ func (f *fakeStore) MarkSeatMapEventEmitted(_ context.Context, id uuid.UUID) err
 	return nil
 }
 
-// EditSeatMap / PinSeat / UnpinSeat are store-only in TKT-104 (no HTTP endpoint
-// this ticket — the deliverable is the pinning contract, the editing UI is
-// TKT-105). The fake satisfies the interface; the real behaviour is proven in
-// the store smoke tests (seatmap_edit_smoke_test.go).
-func (f *fakeStore) EditSeatMap(_ context.Context, _ store.EditSeatMapInput) (store.SeatMap, bool, error) {
-	return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
+// currentPublishedInFamily returns the highest published version of the family
+// that mapID belongs to (mirrors lockCurrentPublishedVersion). ok is false when
+// mapID is unknown or the family has no published version.
+func (f *fakeStore) currentPublishedInFamily(mapID, org uuid.UUID) (store.SeatMap, bool) {
+	seed, ok := f.seatMaps[mapID]
+	if !ok || seed.OrganizerID != org {
+		return store.SeatMap{}, false
+	}
+	fam := f.families[mapID] // family key; seeded on create, inherited on edit
+	var best store.SeatMap
+	found := false
+	for id, m := range f.seatMaps {
+		if f.families[id] == fam && m.Status == "published" && (!found || m.Version > best.Version) {
+			best, found = m, true
+		}
+	}
+	return best, found
+}
+
+// identitiesFor returns the set of seat identities in a given map version.
+func (f *fakeStore) identitiesFor(mapID uuid.UUID) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range f.seatSeats {
+		if s.seatMapID == mapID {
+			out[s.SeatIdentity] = true
+		}
+	}
+	return out
+}
+
+// pinSeat seeds a pin on a family (test helper; TKT-80 does this in prod). The
+// pin is family-scoped and version-independent, keyed by the seat identity.
+func (f *fakeStore) pinSeat(anyVersionID uuid.UUID, identity string) {
+	if f.pins == nil {
+		f.pins = map[uuid.UUID]map[string]bool{}
+	}
+	fam := f.families[anyVersionID]
+	if f.pins[fam] == nil {
+		f.pins[fam] = map[string]bool{}
+	}
+	f.pins[fam][identity] = true
+}
+
+// EditSeatMap mirrors the store contract (TKT-104/ADR-029) in memory: resolve
+// the family's current published version, reject if the submitted geometry drops
+// any pinned identity, else create a new published version (version+1) with the
+// new geometry. The authoritative behaviour is proven by the store smoke tests;
+// this fake exists so the HTTP handler can be tested without Postgres.
+func (f *fakeStore) EditSeatMap(_ context.Context, in store.EditSeatMapInput) (store.SeatMap, bool, error) {
+	cur, ok := f.currentPublishedInFamily(in.SeatMapID, in.OrganizerID)
+	if !ok {
+		return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
+	}
+	// Compose the submitted geometry's identities; a duplicate is a conflict.
+	newIdentities := map[string]bool{}
+	for _, sec := range in.Sections {
+		for _, row := range sec.Rows {
+			for _, seat := range row.Seats {
+				id := sec.Name + "/" + row.Label + "/" + seat.Label
+				if newIdentities[id] {
+					return store.SeatMap{}, false, fmt.Errorf("seat identity: %w", store.ErrSeatMapConflict)
+				}
+				newIdentities[id] = true
+			}
+		}
+	}
+	// Every currently-pinned identity must survive.
+	fam := f.families[in.SeatMapID]
+	for identity := range f.pins[fam] {
+		if !newIdentities[identity] {
+			return store.SeatMap{}, false, store.ErrSeatMapEditOrphansPinned
+		}
+	}
+	// Create the new published version.
+	now := time.Now().UTC()
+	nv := store.SeatMap{
+		ID: uuid.New(), OrganizerID: cur.OrganizerID, VenueID: cur.VenueID, Name: cur.Name,
+		Version: cur.Version + 1, Status: "published", PublishedAt: &now, CreatedAt: now,
+	}
+	f.seatMaps[nv.ID] = nv
+	f.families[nv.ID] = fam
+	// Materialize the new version's seats (so a subsequent edit/pin sees them).
+	for _, sec := range in.Sections {
+		for _, row := range sec.Rows {
+			for _, seat := range row.Seats {
+				sid := sec.Name + "/" + row.Label + "/" + seat.Label
+				f.seatSeats[uuid.New()] = fakeSeat{
+					SeatMapSeat: store.SeatMapSeat{ID: uuid.New(), SeatIdentity: sid, Label: seat.Label, Position: seat.Position},
+					seatMapID:   nv.ID,
+				}
+			}
+		}
+	}
+	if f.seatMapEmitted == nil {
+		f.seatMapEmitted = map[uuid.UUID]bool{}
+	}
+	return nv, !f.seatMapEmitted[nv.ID], nil
+}
+
+func (f *fakeStore) ListSeatMapVersions(_ context.Context, seatMapID uuid.UUID) ([]store.SeatMap, error) {
+	fam, ok := f.families[seatMapID]
+	if !ok {
+		return nil, fmt.Errorf("seat map: %w", store.ErrNotFound)
+	}
+	var out []store.SeatMap
+	for id, m := range f.seatMaps {
+		if f.families[id] == fam {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version > out[j].Version }) // newest first
+	if len(out) == 0 {
+		return nil, fmt.Errorf("seat map: %w", store.ErrNotFound)
+	}
+	return out, nil
+}
+
+func (f *fakeStore) UpdateVenueGACapacity(_ context.Context, in store.VenueGACapacityInput) (store.Venue, error) {
+	v, ok := f.venues[in.VenueID]
+	if !ok || v.OrganizerID != in.OrganizerID {
+		return store.Venue{}, fmt.Errorf("venue: %w", store.ErrNotFound)
+	}
+	v.GACapacity = in.GACapacity
+	f.venues[in.VenueID] = v
+	return v, nil
 }
 
 func (f *fakeStore) PinSeat(_ context.Context, _ store.PinSeatInput) error {

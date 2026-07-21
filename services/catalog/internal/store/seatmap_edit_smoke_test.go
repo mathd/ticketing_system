@@ -351,3 +351,87 @@ func TestPinSeatSerializesBehindEditThatDroppedSeat(t *testing.T) {
 	}
 	assertNoOrphanPins(ctx, t, st, v2.ID, -1)
 }
+
+// TestListSeatMapVersionsHistory (TKT-105 COS-3): the version-history read
+// returns every version of the family newest-first, each with its published_at,
+// resolvable from ANY version id — proving the family subselect against real
+// Postgres, not just the fake.
+func TestListSeatMapVersionsHistory(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+	m := seedPublishedMap(ctx, t, st, "History") // v1, Orchestra/A/1
+
+	v2, _, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: m.ID,
+		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("1", 1), st1("2", 2)))}})
+	if err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+
+	for _, from := range []uuid.UUID{m.ID, v2.ID} {
+		versions, err := st.ListSeatMapVersions(ctx, from)
+		if err != nil {
+			t.Fatalf("list versions from %s: %v", from, err)
+		}
+		if len(versions) != 2 {
+			t.Fatalf("family must have 2 versions, got %d (from %s)", len(versions), from)
+		}
+		if versions[0].Version != 2 || versions[1].Version != 1 {
+			t.Fatalf("versions must be newest-first, got %d then %d", versions[0].Version, versions[1].Version)
+		}
+		for _, v := range versions {
+			if v.PublishedAt == nil {
+				t.Fatalf("published version %d must carry published_at", v.Version)
+			}
+		}
+	}
+
+	// Unknown id -> ErrNotFound.
+	if _, err := st.ListSeatMapVersions(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("versions of an unknown map err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestUpdateVenueGACapacity (TKT-105 COS-5): the GA-capacity write persists and
+// is organizer-scoped — a wrong organizer or unknown venue is ErrNotFound.
+func TestUpdateVenueGACapacity(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+
+	v, err := st.UpdateVenueGACapacity(ctx, VenueGACapacityInput{
+		OrganizerID: seatMapOrg, VenueID: seatMapVenue, GACapacity: 4242,
+	})
+	if err != nil {
+		t.Fatalf("update GA: %v", err)
+	}
+	if v.GACapacity != 4242 || v.ID != seatMapVenue {
+		t.Fatalf("GA update returned %+v, want capacity 4242 for %s", v, seatMapVenue)
+	}
+	// Persisted: a fresh read via ListVenues reflects it.
+	venues, err := st.ListVenues(ctx, seatMapOrg)
+	if err != nil {
+		t.Fatalf("list venues: %v", err)
+	}
+	found := false
+	for _, vv := range venues {
+		if vv.ID == seatMapVenue {
+			found = true
+			if vv.GACapacity != 4242 {
+				t.Fatalf("persisted GA = %d, want 4242", vv.GACapacity)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("seeded venue missing from ListVenues")
+	}
+
+	// Wrong organizer -> ErrNotFound (tenancy predicate).
+	if _, err := st.UpdateVenueGACapacity(ctx, VenueGACapacityInput{
+		OrganizerID: uuid.New(), VenueID: seatMapVenue, GACapacity: 1,
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-tenant GA update err = %v, want ErrNotFound", err)
+	}
+	// Unknown venue -> ErrNotFound.
+	if _, err := st.UpdateVenueGACapacity(ctx, VenueGACapacityInput{
+		OrganizerID: seatMapOrg, VenueID: uuid.New(), GACapacity: 1,
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown-venue GA update err = %v, want ErrNotFound", err)
+	}
+}

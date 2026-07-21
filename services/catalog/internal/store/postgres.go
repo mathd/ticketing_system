@@ -1937,6 +1937,59 @@ func (p *Postgres) ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]
 	return out, rows.Err()
 }
 
+// ListSeatMapVersions returns every version of the family that seatMapID belongs
+// to (TKT-105 COS-3), newest first, each carrying published_at. The family is
+// resolved from any version id via a subselect on map_family_id (immutable,
+// UNIQUE(map_family_id, version) — migration 0011); an unknown id yields no rows
+// and ErrNotFound. Unscoped-by-organizer like its sibling public reads
+// (ListVenueSeatMaps, GetSeatMapGeometry) — the map id is unguessable and the
+// read is non-sensitive geometry metadata.
+func (p *Postgres) ListSeatMapVersions(ctx context.Context, seatMapID uuid.UUID) ([]SeatMap, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT id, organizer_id, venue_id, name, version, status, published_at, created_at
+		   FROM seat_maps
+		  WHERE map_family_id = (SELECT map_family_id FROM seat_maps WHERE id = $1)
+		  ORDER BY version DESC`, seatMapID)
+	if err != nil {
+		return nil, fmt.Errorf("list seat-map versions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]SeatMap, 0)
+	for rows.Next() {
+		var m SeatMap
+		if err := rows.Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &m.PublishedAt, &m.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan seat-map version: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("seat map: %w", ErrNotFound)
+	}
+	return out, nil
+}
+
+// UpdateVenueGACapacity sets a venue's GA capacity (TKT-105 COS-5). The
+// organizer_id predicate scopes the write to the tenant (ADR-002); no matching
+// row yields ErrNotFound (unknown venue or cross-tenant).
+func (p *Postgres) UpdateVenueGACapacity(ctx context.Context, in VenueGACapacityInput) (Venue, error) {
+	v := Venue{ID: in.VenueID, OrganizerID: in.OrganizerID, GACapacity: in.GACapacity}
+	err := p.db.QueryRowContext(ctx,
+		`UPDATE venues SET ga_capacity = $3
+		  WHERE id = $1 AND organizer_id = $2
+		  RETURNING name, created_at`,
+		in.VenueID, in.OrganizerID, in.GACapacity).Scan(&v.Name, &v.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Venue{}, fmt.Errorf("venue: %w", ErrNotFound)
+	}
+	if err != nil {
+		return Venue{}, fmt.Errorf("update venue ga_capacity: %w", err)
+	}
+	return v, nil
+}
+
 // seatMapSeatsScopedQuery is the seat-level geometry read, referenced as a const
 // so the ADR-019 scan-scope proof EXPLAINs the exact shipped statement. It
 // filters seats by seat_map_id, backed by seat_map_seats_by_map.

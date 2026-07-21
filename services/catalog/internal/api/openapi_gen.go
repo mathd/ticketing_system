@@ -441,6 +441,32 @@ type SeatMapCreate struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
+// SeatMapEdit Full replacement geometry for a published seat map (TKT-105). Mirrors the store's EditSeatMapInput; seat identity is composed server-side from the section/row/seat labels, so no component may contain the '/' delimiter.
+type SeatMapEdit struct {
+	OrganizerId openapi_types.UUID   `json:"organizer_id"`
+	Sections    []SeatMapEditSection `json:"sections"`
+}
+
+// SeatMapEditRow defines model for SeatMapEditRow.
+type SeatMapEditRow struct {
+	Label    string            `json:"label"`
+	Position int32             `json:"position"`
+	Seats    []SeatMapEditSeat `json:"seats"`
+}
+
+// SeatMapEditSeat defines model for SeatMapEditSeat.
+type SeatMapEditSeat struct {
+	Label    string `json:"label"`
+	Position int32  `json:"position"`
+}
+
+// SeatMapEditSection defines model for SeatMapEditSection.
+type SeatMapEditSection struct {
+	Name     string           `json:"name"`
+	Position int32            `json:"position"`
+	Rows     []SeatMapEditRow `json:"rows"`
+}
+
 // SeatMapGeometry defines model for SeatMapGeometry.
 type SeatMapGeometry struct {
 	Map      SeatMap       `json:"map"`
@@ -473,6 +499,13 @@ type SeatMapSectionCreate struct {
 	Name        string             `json:"name"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 	Position    int32              `json:"position"`
+}
+
+// SeatMapVersionHistory A seat-map family's versions (TKT-105), newest first.
+type SeatMapVersionHistory struct {
+	// CurrentVersion Highest published version — the one an edit targets. Absent when the family has no published version yet (draft-only).
+	CurrentVersion *int32    `json:"current_version,omitempty"`
+	Versions       []SeatMap `json:"versions"`
 }
 
 // SeatRow defines model for SeatRow.
@@ -586,6 +619,12 @@ type VenueCreate struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
+// VenueGaCapacityUpdate defines model for VenueGaCapacityUpdate.
+type VenueGaCapacityUpdate struct {
+	GaCapacity  int32              `json:"ga_capacity"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+}
+
 // EventId defines model for EventId.
 type EventId = openapi_types.UUID
 
@@ -673,6 +712,9 @@ type AttachEventToSeasonJSONRequestBody = SeasonEventAttach
 // AttachSeriesToSeasonJSONRequestBody defines body for AttachSeriesToSeason for application/json ContentType.
 type AttachSeriesToSeasonJSONRequestBody = SeasonSeriesAttach
 
+// EditSeatMapJSONRequestBody defines body for EditSeatMap for application/json ContentType.
+type EditSeatMapJSONRequestBody = SeatMapEdit
+
 // AddSeatMapRowJSONRequestBody defines body for AddSeatMapRow for application/json ContentType.
 type AddSeatMapRowJSONRequestBody = SeatMapRowCreate
 
@@ -693,6 +735,9 @@ type CreateTicketTypeJSONRequestBody = TicketTypeCreate
 
 // CreateVenueJSONRequestBody defines body for CreateVenue for application/json ContentType.
 type CreateVenueJSONRequestBody = VenueCreate
+
+// UpdateVenueGaCapacityJSONRequestBody defines body for UpdateVenueGaCapacity for application/json ContentType.
+type UpdateVenueGaCapacityJSONRequestBody = VenueGaCapacityUpdate
 
 // CreateSeatMapJSONRequestBody defines body for CreateSeatMap for application/json ContentType.
 type CreateSeatMapJSONRequestBody = SeatMapCreate
@@ -747,6 +792,9 @@ type ServerInterface interface {
 	// A seat map's full geometry (hours tier)
 	// (GET /public/seat-maps/{seatMapId})
 	GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
+	// A seat map family's version history (hours tier, TKT-105)
+	// (GET /public/seat-maps/{seatMapId}/versions)
+	ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
 	// Organizer-scoped venue list (hours tier)
 	// (GET /public/venues)
 	ListPublicVenues(w http.ResponseWriter, r *http.Request, params ListPublicVenuesParams)
@@ -762,6 +810,9 @@ type ServerInterface interface {
 	// Attach a series to a season
 	// (POST /seasons/{seasonId}/series)
 	AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId)
+	// Edit a published seat map, producing a new version (TKT-105)
+	// (POST /seat-maps/{seatMapId}/edit)
+	EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
 	// Publish a seat map (idempotent, TKT-103)
 	// (POST /seat-maps/{seatMapId}/publish)
 	PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
@@ -792,6 +843,9 @@ type ServerInterface interface {
 	// Create a general-admission venue
 	// (POST /venues)
 	CreateVenue(w http.ResponseWriter, r *http.Request)
+	// Update a venue's GA capacity (TKT-105)
+	// (POST /venues/{venueId}/ga-capacity)
+	UpdateVenueGaCapacity(w http.ResponseWriter, r *http.Request, venueId VenueId)
 	// Create a draft seat map under a venue (US-019)
 	// (POST /venues/{venueId}/seat-maps)
 	CreateSeatMap(w http.ResponseWriter, r *http.Request, venueId VenueId)
@@ -897,6 +951,12 @@ func (_ Unimplemented) GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// A seat map family's version history (hours tier, TKT-105)
+// (GET /public/seat-maps/{seatMapId}/versions)
+func (_ Unimplemented) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Organizer-scoped venue list (hours tier)
 // (GET /public/venues)
 func (_ Unimplemented) ListPublicVenues(w http.ResponseWriter, r *http.Request, params ListPublicVenuesParams) {
@@ -924,6 +984,12 @@ func (_ Unimplemented) AttachEventToSeason(w http.ResponseWriter, r *http.Reques
 // Attach a series to a season
 // (POST /seasons/{seasonId}/series)
 func (_ Unimplemented) AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Edit a published seat map, producing a new version (TKT-105)
+// (POST /seat-maps/{seatMapId}/edit)
+func (_ Unimplemented) EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -984,6 +1050,12 @@ func (_ Unimplemented) CreateTicketType(w http.ResponseWriter, r *http.Request) 
 // Create a general-admission venue
 // (POST /venues)
 func (_ Unimplemented) CreateVenue(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Update a venue's GA capacity (TKT-105)
+// (POST /venues/{venueId}/ga-capacity)
+func (_ Unimplemented) UpdateVenueGaCapacity(w http.ResponseWriter, r *http.Request, venueId VenueId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1425,6 +1497,32 @@ func (siw *ServerInterfaceWrapper) GetPublicSeatMapGeometry(w http.ResponseWrite
 	handler.ServeHTTP(w, r)
 }
 
+// ListSeatMapVersions operation middleware
+func (siw *ServerInterfaceWrapper) ListSeatMapVersions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seatMapId" -------------
+	var seatMapId SeatMapId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seatMapId", chi.URLParam(r, "seatMapId"), &seatMapId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seatMapId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSeatMapVersions(w, r, seatMapId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListPublicVenues operation middleware
 func (siw *ServerInterfaceWrapper) ListPublicVenues(w http.ResponseWriter, r *http.Request) {
 
@@ -1541,6 +1639,32 @@ func (siw *ServerInterfaceWrapper) AttachSeriesToSeason(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AttachSeriesToSeason(w, r, seasonId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EditSeatMap operation middleware
+func (siw *ServerInterfaceWrapper) EditSeatMap(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "seatMapId" -------------
+	var seatMapId SeatMapId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "seatMapId", chi.URLParam(r, "seatMapId"), &seatMapId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seatMapId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EditSeatMap(w, r, seatMapId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1774,6 +1898,32 @@ func (siw *ServerInterfaceWrapper) CreateVenue(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// UpdateVenueGaCapacity operation middleware
+func (siw *ServerInterfaceWrapper) UpdateVenueGaCapacity(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "venueId" -------------
+	var venueId VenueId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "venueId", chi.URLParam(r, "venueId"), &venueId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "venueId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateVenueGaCapacity(w, r, venueId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateSeatMap operation middleware
 func (siw *ServerInterfaceWrapper) CreateSeatMap(w http.ResponseWriter, r *http.Request) {
 
@@ -1962,6 +2112,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/public/seat-maps/{seatMapId}", wrapper.GetPublicSeatMapGeometry)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/public/seat-maps/{seatMapId}/versions", wrapper.ListSeatMapVersions)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/public/venues", wrapper.ListPublicVenues)
 	})
 	r.Group(func(r chi.Router) {
@@ -1975,6 +2128,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/seasons/{seasonId}/series", wrapper.AttachSeriesToSeason)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/seat-maps/{seatMapId}/edit", wrapper.EditSeatMap)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/seat-maps/{seatMapId}/publish", wrapper.PublishSeatMap)
@@ -2005,6 +2161,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/venues", wrapper.CreateVenue)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/venues/{venueId}/ga-capacity", wrapper.UpdateVenueGaCapacity)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/venues/{venueId}/seat-maps", wrapper.CreateSeatMap)

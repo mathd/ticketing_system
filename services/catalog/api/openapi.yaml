@@ -157,6 +157,66 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+  /seat-maps/{seatMapId}/edit:
+    post:
+      operationId: editSeatMap
+      summary: Edit a published seat map, producing a new version (TKT-105)
+      description: >
+        Surfaces the TKT-104 safe-edit contract (ADR-029) over HTTP. The body is
+        the FULL replacement geometry (section -> row -> seat); seatMapId may be
+        ANY version of the target family — the store resolves the current
+        published version, takes a family-scoped advisory lock, and INSERTs a new
+        published version (version+1). The predecessor stays immutable. An edit
+        whose new geometry would orphan a seat identity pinned by a sale/hold is
+        hard-rejected (409) — no new domain rule is introduced here, the contract
+        is TKT-104's. Emits platform.catalog.seat_map.published for the new
+        version at least once (deterministic id; de-duplicated on retry).
+      parameters:
+        - $ref: '#/components/parameters/SeatMapId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeatMapEdit' }
+      responses:
+        '201':
+          description: A new published version was created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatMap' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            The edit would orphan a pinned seat identity, or the new geometry has
+            a duplicate seat identity.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /venues/{venueId}/ga-capacity:
+    post:
+      operationId: updateVenueGaCapacity
+      summary: Update a venue's GA capacity (TKT-105)
+      description: >
+        Sets a venue's general-admission capacity (write-once at venue creation
+        until now). POST-action style, matching the spec's other mutations
+        (publish/close/reopen). Organizer-scoped (ADR-002). A venue may carry GA
+        capacity and seat maps simultaneously — this only touches ga_capacity.
+      parameters:
+        - $ref: '#/components/parameters/VenueId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VenueGaCapacityUpdate' }
+      responses:
+        '200':
+          description: The updated venue
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Venue' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /events:
     post:
       operationId: createEvent
@@ -720,6 +780,30 @@ paths:
               schema: { $ref: '#/components/schemas/SeatMapGeometry' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /public/seat-maps/{seatMapId}/versions:
+    get:
+      operationId: listSeatMapVersions
+      summary: A seat map family's version history (hours tier, TKT-105)
+      description: >
+        Every version of the seat-map family that seatMapId belongs to (any
+        version resolves the family), newest first, each carrying its
+        published_at. current_version is the highest published version — the one
+        an edit targets — and is absent for a draft-only family. Seat-map
+        geometry is long-lived, so this read uses the ADR-004 hours tier:
+        Cache-Control: public, max-age=3600, s-maxage=3600. Catalog-owned; the
+        back office does not keep a version store of its own.
+      parameters:
+        - $ref: '#/components/parameters/SeatMapId'
+      responses:
+        '200':
+          description: The family's versions, newest first
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeatMapVersionHistory' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec
@@ -956,6 +1040,62 @@ components:
         seat_maps:
           type: array
           items: { $ref: '#/components/schemas/SeatMap' }
+    SeatMapVersionHistory:
+      description: A seat-map family's versions (TKT-105), newest first.
+      type: object
+      required: [versions]
+      properties:
+        current_version:
+          description: >
+            Highest published version — the one an edit targets. Absent when the
+            family has no published version yet (draft-only).
+          type: integer
+          format: int32
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/SeatMap' }
+    SeatMapEdit:
+      description: >
+        Full replacement geometry for a published seat map (TKT-105). Mirrors the
+        store's EditSeatMapInput; seat identity is composed server-side from the
+        section/row/seat labels, so no component may contain the '/' delimiter.
+      type: object
+      required: [organizer_id, sections]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        sections:
+          type: array
+          items: { $ref: '#/components/schemas/SeatMapEditSection' }
+    SeatMapEditSection:
+      type: object
+      required: [name, position, rows]
+      properties:
+        name: { type: string, minLength: 1, pattern: '^[^/]+$' }
+        position: { type: integer, format: int32, minimum: 1 }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/SeatMapEditRow' }
+    SeatMapEditRow:
+      type: object
+      required: [label, position, seats]
+      properties:
+        label: { type: string, minLength: 1, pattern: '^[^/]+$' }
+        position: { type: integer, format: int32, minimum: 1 }
+        seats:
+          type: array
+          items: { $ref: '#/components/schemas/SeatMapEditSeat' }
+    SeatMapEditSeat:
+      type: object
+      required: [label, position]
+      properties:
+        label: { type: string, minLength: 1, pattern: '^[^/]+$' }
+        position: { type: integer, format: int32, minimum: 1 }
+    VenueGaCapacityUpdate:
+      type: object
+      required: [organizer_id, ga_capacity]
+      properties:
+        organizer_id: { type: string, format: uuid }
+        ga_capacity: { type: integer, format: int32, minimum: 1 }
     EventCreate:
       type: object
       required: [organizer_id, name]

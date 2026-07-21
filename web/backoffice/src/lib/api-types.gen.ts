@@ -115,6 +115,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/seat-maps/{seatMapId}/edit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Edit a published seat map, producing a new version (TKT-105)
+         * @description Surfaces the TKT-104 safe-edit contract (ADR-029) over HTTP. The body is the FULL replacement geometry (section -> row -> seat); seatMapId may be ANY version of the target family — the store resolves the current published version, takes a family-scoped advisory lock, and INSERTs a new published version (version+1). The predecessor stays immutable. An edit whose new geometry would orphan a seat identity pinned by a sale/hold is hard-rejected (409) — no new domain rule is introduced here, the contract is TKT-104's. Emits platform.catalog.seat_map.published for the new version at least once (deterministic id; de-duplicated on retry).
+         */
+        post: operations["editSeatMap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/venues/{venueId}/ga-capacity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update a venue's GA capacity (TKT-105)
+         * @description Sets a venue's general-admission capacity (write-once at venue creation until now). POST-action style, matching the spec's other mutations (publish/close/reopen). Organizer-scoped (ADR-002). A venue may carry GA capacity and seat maps simultaneously — this only touches ga_capacity.
+         */
+        post: operations["updateVenueGaCapacity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events": {
         parameters: {
             query?: never;
@@ -576,6 +616,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/public/seat-maps/{seatMapId}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A seat map family's version history (hours tier, TKT-105)
+         * @description Every version of the seat-map family that seatMapId belongs to (any version resolves the family), newest first, each carrying its published_at. current_version is the highest published version — the one an edit targets — and is absent for a draft-only family. Seat-map geometry is long-lived, so this read uses the ADR-004 hours tier: Cache-Control: public, max-age=3600, s-maxage=3600. Catalog-owned; the back office does not keep a version store of its own.
+         */
+        get: operations["listSeatMapVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/openapi.yaml": {
         parameters: {
             query?: never;
@@ -708,6 +768,44 @@ export interface components {
         };
         SeatMapList: {
             seat_maps: components["schemas"]["SeatMap"][];
+        };
+        /** @description A seat-map family's versions (TKT-105), newest first. */
+        SeatMapVersionHistory: {
+            /**
+             * Format: int32
+             * @description Highest published version — the one an edit targets. Absent when the family has no published version yet (draft-only).
+             */
+            current_version?: number;
+            versions: components["schemas"]["SeatMap"][];
+        };
+        /** @description Full replacement geometry for a published seat map (TKT-105). Mirrors the store's EditSeatMapInput; seat identity is composed server-side from the section/row/seat labels, so no component may contain the '/' delimiter. */
+        SeatMapEdit: {
+            /** Format: uuid */
+            organizer_id: string;
+            sections: components["schemas"]["SeatMapEditSection"][];
+        };
+        SeatMapEditSection: {
+            name: string;
+            /** Format: int32 */
+            position: number;
+            rows: components["schemas"]["SeatMapEditRow"][];
+        };
+        SeatMapEditRow: {
+            label: string;
+            /** Format: int32 */
+            position: number;
+            seats: components["schemas"]["SeatMapEditSeat"][];
+        };
+        SeatMapEditSeat: {
+            label: string;
+            /** Format: int32 */
+            position: number;
+        };
+        VenueGaCapacityUpdate: {
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: int32 */
+            ga_capacity: number;
         };
         EventCreate: {
             /** Format: uuid */
@@ -1251,6 +1349,71 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    editSeatMap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seatMapId: components["parameters"]["SeatMapId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeatMapEdit"];
+            };
+        };
+        responses: {
+            /** @description A new published version was created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatMap"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description The edit would orphan a pinned seat identity, or the new geometry has a duplicate seat identity. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateVenueGaCapacity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                venueId: components["parameters"]["VenueId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VenueGaCapacityUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated venue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Venue"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
         };
     };
     createEvent: {
@@ -2002,6 +2165,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SeatMapGeometry"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listSeatMapVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                seatMapId: components["parameters"]["SeatMapId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The family's versions, newest first */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatMapVersionHistory"];
                 };
             };
             400: components["responses"]["BadRequest"];
