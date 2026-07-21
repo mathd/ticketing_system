@@ -8,7 +8,9 @@ package smoke_test
 // chokepoints (validateServiceResponse / validateDirectServiceResponse) and
 // enforced after the run in TestMain; a new spec operation without a driving
 // smoke test fails the suite. Catalog's coverage gate lives in its unit suite
-// (services/catalog/internal/api), where a fake store exists.
+// (services/catalog/internal/api), where a fake store exists — a deliberate
+// exclusion, decided in ADR-030 (TKT-109) and pinned by
+// TestCatalogCoverageGateIsDeliberatelyUnitScoped below.
 //
 // Scope, precisely: only traffic through the validating helpers (postJSON,
 // getWithHeaders, get, internalJSON) reaches the chokepoints — raw helpers
@@ -23,11 +25,37 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 )
+
+// TestCatalogCoverageGateIsDeliberatelyUnitScoped pins the ADR-030 / TKT-109
+// decision: catalog's per-operation coverage gate lives in its unit suite
+// (services/catalog/internal/api/coverage_test.go), NOT in uncovered2xxOps.
+// The assertion is exact and ordered on purpose — smokeCoverageGatedServices
+// is the single point of truth the gate iterates, so adding catalog (or any
+// service) to the smoke gate must come through here, with ADR-030 amended
+// first. If this test is failing, you either reordered the list (restore the
+// order) or changed the gate's scope (update ADR-030 and this pin together).
+// The second assertion guards one specific future refactor: uncovered2xxOps
+// growing a catalog scan that bypasses smokeCoverageGatedServices. Today it
+// is implied by the first assertion (the gate only iterates the pinned list);
+// it exists so that class of change fails here, against ADR-030, instead of
+// shipping silently.
+func TestCatalogCoverageGateIsDeliberatelyUnitScoped(t *testing.T) {
+	want := []string{"inventory", "commerce", "payments", "access"}
+	if !slices.Equal(smokeCoverageGatedServices, want) {
+		t.Fatalf("smokeCoverageGatedServices = %v, want %v (exact order): the smoke coverage gate's scope is pinned by ADR-030 — amend the ADR before changing it", smokeCoverageGatedServices, want)
+	}
+	for _, missing := range uncovered2xxOps() {
+		if strings.HasPrefix(missing, "catalog ") {
+			t.Fatalf("uncovered2xxOps reported %q: the smoke gate must not scan catalog (ADR-030 — amend the ADR before changing its scope)", missing)
+		}
+	}
+}
 
 var (
 	smokeCoverageMu sync.Mutex
@@ -48,11 +76,17 @@ func recordSmokeCoverage(service, operationID string, status int) {
 // rare and reviewed.
 var coverageAllowlist = map[string]string{}
 
+// smokeCoverageGatedServices is the single point of truth for which services'
+// documented 2xx operations the smoke gate enforces. Catalog is deliberately
+// absent (ADR-030): its per-operation gate lives in its unit suite, and smoke
+// contract-validates catalog only on exercised routes.
+var smokeCoverageGatedServices = []string{"inventory", "commerce", "payments", "access"}
+
 func uncovered2xxOps() []string {
 	smokeCoverageMu.Lock()
 	defer smokeCoverageMu.Unlock()
 	var missing []string
-	for _, service := range []string{"inventory", "commerce", "payments", "access"} {
+	for _, service := range smokeCoverageGatedServices {
 		contract := loadContract(service)
 		if contract.err != nil {
 			missing = append(missing, fmt.Sprintf("%s: load contract: %v", service, contract.err))
