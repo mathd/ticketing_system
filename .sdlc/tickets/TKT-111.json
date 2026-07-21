@@ -1,0 +1,40 @@
+{
+  "key": "TKT-111",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Drive the 5 smoke-uncovered catalog ops (TKT-105 surface) through smoke happy-paths",
+  "description": "### Close the e2e-coverage gap ADR-030 accepted\n\n**Origin:** TKT-109 closeout (ADR-030's named negative consequence). ADR-030 keeps catalog's coverage *gate* unit-side, but driving these five ops through smoke has real-stack coverage value independent of which layer owns the gate:\n\n- `getPublicSeatMapGeometry`, `listVenueSeatMaps`, `listSeatMapVersions` — trivial GETs against the seat-map fixture smoke already builds (smoke/catalog_publication_test.go, seat-map section)\n- `updateVenueGaCapacity` — venue GA capacity write\n- `editSeatMap` — write fixture; surfaces ADR-029 pin semantics (read ADR-029 first)\n\n**Not** a gate change: `smokeCoverageGatedServices` stays as pinned by `TestCatalogCoverageGateIsDeliberatelyUnitScoped` (ADR-030). If instead the decision is to flip catalog into the gate, that is an ADR-030 amendment ticket — see the ADR's recorded flip-cost, incl. the `getOpenAPISpec` allowlist entry and the TKT-106 pin's stack-free re-record caveat.\n\nSuggest `risk:low` (smoke-test-only, no runtime code).",
+  "comments": [],
+  "links": [],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-030",
+        "why": "The gate scope is pinned; this ticket adds happy-paths WITHOUT touching smokeCoverageGatedServices."
+      },
+      {
+        "id": "ADR-029",
+        "why": "editSeatMap's semantics (new version per edit, pin preservation, family advisory lock) — the write fixture must respect them."
+      },
+      {
+        "id": "ADR-028",
+        "why": "New happy-paths must produce validated 2xx through the fail-closed middleware."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Source ticket + measured coverage state",
+        "link": "TKT-109 / docs/adr/ADR-030-catalog-coverage-gate-scope.md"
+      },
+      {
+        "summary": "Existing seat-map smoke fixture to extend",
+        "link": "smoke/catalog_publication_test.go (seat-map section, ~line 429)"
+      }
+    ],
+    "capturedAt": "2026-07-21"
+  }
+}
