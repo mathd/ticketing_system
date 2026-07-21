@@ -77,9 +77,26 @@ func sweepExpired(ctx context.Context, tx *sql.Tx, pool uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	// A seated claim's seats are released in the SAME transaction as its expiry flip
+	// (TKT-80/ADR-031): an already-expired claim is never revisited, so a decoupled
+	// update would block the seat forever. No-op on GA pools (no claim_seats rows).
+	if err = releaseSeatsForTerminal(ctx, tx, pool); err != nil {
+		return err
+	}
 	// Expiry lowers demand: settle a draining capacity cut (TKT-76), same lock, no-op
 	// without a pending target.
 	return reconcileCapacity(ctx, tx, pool)
+}
+
+// releaseSeatsForTerminal flips released_at on any live seat row whose claim has reached
+// a terminal state (expired/released) in this pool. Idempotent (guarded by released_at
+// IS NULL) and pool-scoped; a no-op for GA pools. Runs inside the caller's pool-locked
+// transaction so the seat release commits atomically with the claim's terminal flip.
+func releaseSeatsForTerminal(ctx context.Context, tx *sql.Tx, pool uuid.UUID) error {
+	_, err := tx.ExecContext(ctx, `UPDATE claim_seats SET released_at=now()
+		WHERE pool_id=$1 AND released_at IS NULL
+		  AND claim_id IN (SELECT id FROM claims WHERE pool_id=$1 AND status IN ('expired','released'))`, pool)
+	return err
 }
 
 func appendHistory(ctx context.Context, tx *sql.Tx, org, claim uuid.UUID, related *uuid.UUID, action, actor, reason string, qty, qtyAfter int32, statusAfter string, key, fp *string) error {
@@ -173,13 +190,22 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	defer func() { _ = tx.Rollback() }()
 	var capacity, confirmed int32
 	var target sql.NullInt32
-	var lifecycle, closure string
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &closure)
+	var lifecycle, closure, kind string
+	// closure_status stays the LAST column before FROM: the lock-handshake tests pin the
+	// pool-lock statement by the LIKE pattern "%closure_status FROM inventory_pools%FOR
+	// UPDATE%" (docs/learnings/2026-07-16-lock-handshakes-pin-the-exact-statement.md), so
+	// new columns go before it, never between it and FROM.
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Claim{}, false, ErrNotFound
 	}
 	if err != nil {
 		return Claim{}, false, err
+	}
+	// A seated pool is claimed seat-by-seat (CreateSeatHold), never through the GA
+	// quantity path — else fungible tickets would sell over reserved seats (AC2).
+	if kind == "seated" {
+		return Claim{}, false, ErrPoolKindMismatch
 	}
 	// A draining cut (TKT-76) admits against the requested target, not the clamped
 	// ceiling — new demand may never grow past what the organizer asked for.
@@ -303,6 +329,9 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 		if err = appendHistory(ctx, tx, org, id, nil, "expire", "system", "ttl_elapsed", c.Quantity, 0, "expired", nil, nil); err != nil {
 			return Claim{}, err
 		}
+		if err = releaseSeatsForTerminal(ctx, tx, pool); err != nil {
+			return Claim{}, err
+		}
 		if err = reconcileCapacity(ctx, tx, pool); err != nil {
 			return Claim{}, err
 		}
@@ -341,7 +370,11 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	action, after := "confirm", c.Quantity
 	if target == "released" {
 		action, after = "release", 0
-		// Release lowers demand: settle a draining capacity cut (TKT-76).
+		// Release lowers demand: settle a draining capacity cut (TKT-76). A seated
+		// claim's seats free in the same txn (ADR-031).
+		if err = releaseSeatsForTerminal(ctx, tx, pool); err != nil {
+			return Claim{}, err
+		}
 		if err = reconcileCapacity(ctx, tx, pool); err != nil {
 			return Claim{}, err
 		}

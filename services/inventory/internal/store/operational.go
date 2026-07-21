@@ -111,13 +111,21 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	defer func() { _ = tx.Rollback() }()
 	var capacity, confirmed int32
 	var target sql.NullInt32
-	var lifecycle, closure string
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &closure)
+	var lifecycle, closure, kind string
+	// closure_status stays last before FROM (lock-handshake pattern; see CreateHold).
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,closure_status FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OperationalHold{}, false, ErrNotFound
 	}
 	if err != nil {
 		return OperationalHold{}, false, err
+	}
+	// A seated pool holds seat-by-seat only: a quantity-based operational hold would
+	// consume capacity with no seat rows, selling fungible tickets over reserved seats
+	// (TKT-80 AC2). Convert/release act on holds placed here, so they are transitively
+	// covered — this Place entry point is the guard.
+	if kind == "seated" {
+		return OperationalHold{}, false, ErrPoolKindMismatch
 	}
 	// Staff holds are new demand too: a draining cut (TKT-76) bounds them by the target.
 	limit := capacity

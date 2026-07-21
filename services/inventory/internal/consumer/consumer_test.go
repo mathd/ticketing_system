@@ -410,16 +410,16 @@ func TestSchema1ResolutionFailureIsRetriedAndStaysReady(t *testing.T) {
 	}
 }
 
-// TestSeatedPublicationAcknowledgedWithoutProvisioning (TKT-103 COS-4). A schema-4
-// seated publication is a KNOWN variant — it must NOT quarantine (that would latch
-// inventory unready on every seated publish) and must NOT provision a fungible GA
-// quantity pool (that would let seated tickets sell through the GA claim path
-// before TKT-80's seat-level claim exists). The correct disposition is: ack,
-// stay ready, provision nothing. The payload is hand-written, not built from a Go
+// TestSeatedPublicationProvisionsSeatedPool (TKT-80). A schema-4 seated publication is a
+// KNOWN variant that now provisions a SEATED pool (distinct from a GA quantity pool),
+// carrying its seat map so seat-level holds can pin (TKT-80). It must ack, stay ready,
+// NOT quarantine, and must route to ProvisionSeated (never the GA Provision path — that
+// would sell seated tickets fungibly). The payload is hand-written, not built from a Go
 // struct, so it can actually fail if dispatch drifts (ADR-017 §5b′).
-func TestSeatedPublicationAcknowledgedWithoutProvisioning(t *testing.T) {
+func TestSeatedPublicationProvisionsSeatedPool(t *testing.T) {
 	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
-	body := `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","kind":"performance","seat_map_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","re_entry":{"mode":"single","requires_exit":false}}}`
+	seatMap := "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	body := `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","kind":"performance","capacity":500,"seat_map_id":"` + seatMap + `","re_entry":{"mode":"single","requires_exit":false}}}`
 	c, st := testConsumerWithStore()
 	msg := &fakeMsg{data: []byte(body)}
 
@@ -432,13 +432,35 @@ func TestSeatedPublicationAcknowledgedWithoutProvisioning(t *testing.T) {
 		t.Fatalf("actions = %v — a seated publication is not poison", msg.actions)
 	}
 	if len(st.provisioned) != 0 {
-		t.Fatalf("provisioned = %v — seated must NOT provision a GA pool (seat claim is TKT-80)", st.provisioned)
+		t.Fatalf("provisioned = %v — seated must route to ProvisionSeated, never the GA Provision path", st.provisioned)
+	}
+	if len(st.seatProvisioned) != 1 || st.seatMapIDs[0].String() != seatMap {
+		t.Fatalf("seatProvisioned = %v seatMapIDs = %v — a seated publication must provision a seated pool with its seat map", st.seatProvisioned, st.seatMapIDs)
 	}
 	if len(st.quarantined) != 0 {
 		t.Fatalf("quarantined = %v — schema 4 is a KNOWN variant, it must not quarantine", st.quarantined)
 	}
 	if !c.Ready() {
 		t.Fatal("a known seated publication must not latch readiness false")
+	}
+}
+
+// A schema-4 seated publication with a non-positive capacity is poison: the GA snapshot
+// is the coarse ceiling and a stillborn pool (capacity 0) would fail every hold. The
+// seated arm must vet it (the schema-2 validation does not cover this arm).
+func TestSeatedPublicationWithoutCapacityIsPoison(t *testing.T) {
+	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	body := `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","seat_map_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}}`
+	c, st := testConsumerWithStore()
+	msg := &fakeMsg{data: []byte(body)}
+
+	c.handle(context.Background(), msg)
+
+	if !slices.Contains(msg.actions, "term") {
+		t.Fatalf("actions = %v — a seated publication with capacity 0 is poison and must terminate", msg.actions)
+	}
+	if len(st.seatProvisioned) != 0 {
+		t.Fatalf("seatProvisioned = %v — a stillborn seated pool must not be provisioned", st.seatProvisioned)
 	}
 }
 

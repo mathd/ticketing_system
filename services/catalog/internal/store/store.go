@@ -360,6 +360,17 @@ type PinSeatInput struct {
 	PinnedBy     string
 }
 
+// BatchPinInput pins (or clears) a whole seat set under one family advisory lock, all
+// or nothing (TKT-80). A seat-set hold in inventory maps to one BatchPin: either every
+// seat pins or the batch fails (ErrSeatIdentityNotFound) and none do — matching the
+// inventory hold's atomicity so a live claim never has a partially-pinned set.
+type BatchPinInput struct {
+	OrganizerID    uuid.UUID
+	SeatMapID      uuid.UUID
+	SeatIdentities []string
+	PinnedBy       string
+}
+
 type PerformanceInput struct {
 	OrganizerID   uuid.UUID
 	EventID       uuid.UUID
@@ -482,6 +493,13 @@ type Store interface {
 	// the pin idempotently on (map_family_id, seat_identity, pinned_by). Taking the
 	// same family lock as the edit is what closes the edit-vs-sale race (ADR-029).
 	PinSeat(ctx context.Context, in PinSeatInput) error
+	// PinSeats pins a whole seat set atomically under one family advisory lock (TKT-80).
+	// Every identity must exist in the current published version or the batch fails with
+	// ErrSeatIdentityNotFound and nothing is pinned. Idempotent per (family, seat, pinned_by).
+	PinSeats(ctx context.Context, in BatchPinInput) error
+	// UnpinSeats clears a whole seat set atomically under the same family lock. Idempotent:
+	// absent pins are a no-op.
+	UnpinSeats(ctx context.Context, in BatchPinInput) error
 	// UnpinSeat clears a pin (sale cancelled / hold released), so a later edit may
 	// drop that seat. Idempotent: removing an absent pin is a no-op.
 	UnpinSeat(ctx context.Context, in PinSeatInput) error

@@ -259,6 +259,12 @@ func (f *fakeStore) PinSeat(_ context.Context, _ store.PinSeatInput) error {
 
 func (f *fakeStore) UnpinSeat(_ context.Context, _ store.PinSeatInput) error { return nil }
 
+func (f *fakeStore) PinSeats(_ context.Context, _ store.BatchPinInput) error {
+	return fmt.Errorf("seat map: %w", store.ErrNotFound)
+}
+
+func (f *fakeStore) UnpinSeats(_ context.Context, _ store.BatchPinInput) error { return nil }
+
 func (f *fakeStore) AddSeatMapSection(_ context.Context, in store.SeatMapSectionInput) (store.SeatMapSection, error) {
 	if _, ok := f.draftMap(in.SeatMapID, in.OrganizerID); !ok {
 		return store.SeatMapSection{}, fmt.Errorf("seat map: %w", store.ErrNotFound)

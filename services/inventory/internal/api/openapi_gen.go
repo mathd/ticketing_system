@@ -50,13 +50,22 @@ func (e CapacityAdjustmentStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	SlotArchived ErrorCode = "slot_archived"
-	SlotClosed   ErrorCode = "slot_closed"
+	PinUnavailable  ErrorCode = "pin_unavailable"
+	SeatTaken       ErrorCode = "seat_taken"
+	SeatUnavailable ErrorCode = "seat_unavailable"
+	SlotArchived    ErrorCode = "slot_archived"
+	SlotClosed      ErrorCode = "slot_closed"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case PinUnavailable:
+		return true
+	case SeatTaken:
+		return true
+	case SeatUnavailable:
+		return true
 	case SlotArchived:
 		return true
 	case SlotClosed:
@@ -192,12 +201,12 @@ type ConvertResult struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable conflict reason; present when a dead slot (not contention) rejected the request
+	// Code Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 }
 
-// ErrorCode Machine-readable conflict reason; present when a dead slot (not contention) rejected the request
+// ErrorCode Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
 type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.
@@ -319,6 +328,32 @@ type OperationalRelease struct {
 	Reason      string             `json:"reason"`
 }
 
+// SeatHold defines model for SeatHold.
+type SeatHold struct {
+	Channel      *string             `json:"channel,omitempty"`
+	Currency     *string             `json:"currency,omitempty"`
+	ExpiresAt    time.Time           `json:"expires_at"`
+	HoldId       openapi_types.UUID  `json:"hold_id"`
+	OrganizerId  openapi_types.UUID  `json:"organizer_id"`
+	Quantity     int                 `json:"quantity"`
+	Seats        []string            `json:"seats"`
+	ServerTime   time.Time           `json:"server_time"`
+	SlotId       openapi_types.UUID  `json:"slot_id"`
+	Status       string              `json:"status"`
+	TicketTypeId *openapi_types.UUID `json:"ticket_type_id,omitempty"`
+	UnitAmount   *int64              `json:"unit_amount,omitempty"`
+}
+
+// SeatHoldCreate defines model for SeatHoldCreate.
+type SeatHoldCreate struct {
+	Currency       string             `json:"currency"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	SeatIdentities []string           `json:"seat_identities"`
+	SlotId         openapi_types.UUID `json:"slot_id"`
+	TicketTypeId   openapi_types.UUID `json:"ticket_type_id"`
+	UnitAmount     int64              `json:"unit_amount"`
+}
+
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {
 	Available int `json:"available"`
@@ -356,6 +391,11 @@ type OrganizerId = openapi_types.UUID
 
 // CreateHoldParams defines parameters for CreateHold.
 type CreateHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// CreateSeatHoldParams defines parameters for CreateSeatHold.
+type CreateSeatHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
@@ -434,6 +474,9 @@ type GetAvailabilityParams struct {
 
 // CreateHoldJSONRequestBody defines body for CreateHold for application/json ContentType.
 type CreateHoldJSONRequestBody = HoldCreate
+
+// CreateSeatHoldJSONRequestBody defines body for CreateSeatHold for application/json ContentType.
+type CreateSeatHoldJSONRequestBody = SeatHoldCreate
 
 // PlaceGroupReservationJSONRequestBody defines body for PlaceGroupReservation for application/json ContentType.
 type PlaceGroupReservationJSONRequestBody = GroupReservationCreate

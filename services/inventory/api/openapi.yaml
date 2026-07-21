@@ -14,6 +14,20 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /holds/seats:
+    post:
+      operationId: createSeatHold
+      summary: Atomically hold a specific set of seats on a seated slot (TKT-80)
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SeatHoldCreate'}}}}
+      responses:
+        '200': {$ref: '#/components/responses/SeatHold'}
+        '201': {$ref: '#/components/responses/SeatHold'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /holds/{id}/confirm:
     post:
       operationId: confirmHold
@@ -184,6 +198,7 @@ components:
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
   responses:
     Hold: {description: Hold state, content: {application/json: {schema: {$ref: '#/components/schemas/Hold'}}}}
+    SeatHold: {description: Seat hold state, content: {application/json: {schema: {$ref: '#/components/schemas/SeatHold'}}}}
     OperationalHold: {description: Operational hold state, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalHold'}}}}
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
@@ -193,7 +208,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [slot_archived, slot_closed], description: 'Machine-readable conflict reason; present when a dead slot (not contention) rejected the request'}
+        code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
     HoldCreate:
       type: object
       additionalProperties: false
@@ -222,6 +237,40 @@ components:
         channel: {type: string}
         expires_at: {type: string, format: date-time}
         server_time: {type: string, format: date-time}
+    SeatHoldCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, slot_id, seat_identities, ticket_type_id, unit_amount, currency]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        seat_identities:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {type: string, minLength: 1, maxLength: 200, description: 'Stable seat identity "section/row/seat"'}
+        ticket_type_id: {type: string, format: uuid}
+        unit_amount: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+    SeatHold:
+      type: object
+      additionalProperties: false
+      required: [hold_id, organizer_id, slot_id, quantity, status, expires_at, server_time, seats]
+      properties:
+        hold_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        ticket_type_id: {type: string, format: uuid}
+        unit_amount: {type: integer, format: int64}
+        currency: {type: string}
+        status: {type: string}
+        channel: {type: string}
+        expires_at: {type: string, format: date-time}
+        server_time: {type: string, format: date-time}
+        seats:
+          type: array
+          items: {type: string}
     Availability:
       type: object
       additionalProperties: false

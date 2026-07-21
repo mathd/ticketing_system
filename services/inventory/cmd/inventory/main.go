@@ -155,7 +155,8 @@ func run() error {
 		ttl = parsed
 	}
 	st := store.New(db, ttl)
-	cons := consumer.New(js, st, consumer.NewCatalogResolver(catalogURL, credential, &http.Client{Timeout: 5 * time.Second}), log)
+	catalog := consumer.NewCatalogResolver(catalogURL, credential, &http.Client{Timeout: 5 * time.Second})
+	cons := consumer.New(js, st, catalog, log)
 	consumerErr := make(chan error, 1)
 	go func() { consumerErr <- cons.Run(ctx) }()
 
@@ -185,7 +186,7 @@ func run() error {
 			return nil
 		})).ServeHTTP(w, req)
 	}))
-	r.Mount("/", api.New(st, credential).Router(log))
+	r.Mount("/", api.New(st, credential, catalog).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

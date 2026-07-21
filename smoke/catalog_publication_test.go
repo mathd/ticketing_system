@@ -404,13 +404,13 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	}
 }
 
-// TestSeatedPublicationCoexistsWithGA (TKT-103) drives seated + GA through the
-// real stack: author and publish a seat map (asserting the seat_map.published
-// event), create a seated performance referencing that published version,
-// publish it and assert the schema-4 fork on the stream, then create a GA
-// performance at the same venue and assert it still publishes at schema 2.
-// Inventory must NOT provision a pool for the seated slot (the seat-level claim
-// is TKT-80), proving the schema-4 arm acknowledges without provisioning.
+// TestSeatedPublicationCoexistsWithGA (TKT-103, updated TKT-80) drives seated + GA
+// through the real stack: author and publish a seat map (asserting the
+// seat_map.published event), create a seated performance referencing that published
+// version, publish it and assert the schema-4 fork on the stream, then create a GA
+// performance at the same venue and assert it still publishes at schema 2. Inventory
+// provisions a GA pool for the GA slot and a SEATED pool (inventory_kind='seated',
+// carrying the seat map) for the seated slot — the seat-level claim path is TKT-80.
 func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	suffixBytes := make([]byte, 4)
@@ -583,14 +583,21 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	if gaPools != 1 {
 		t.Fatalf("GA slot must provision exactly one pool, got %d", gaPools)
 	}
-	// Give inventory the same window it had for GA, then assert the seated slot
-	// still has NO pool — the schema-4 arm acknowledged without provisioning.
-	var seatedPools int
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, seated["id"]).Scan(&seatedPools); err != nil {
-		t.Fatal(err)
+	// Inventory now provisions a SEATED pool for the seated slot (TKT-80): distinct from a
+	// GA quantity pool (inventory_kind='seated'), carrying the seat map so seat-level holds
+	// can pin. The GA path stays untouched (the GA slot above got a plain pool).
+	var seatedKind, seatedMapID string
+	for i := 0; i < 40; i++ {
+		if err := db.QueryRow(ctx, `SELECT inventory_kind, COALESCE(seat_map_id::text,'') FROM inventory_pools WHERE slot_id=$1`, seated["id"]).Scan(&seatedKind, &seatedMapID); err == nil && seatedKind == "seated" {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	if seatedPools != 0 {
-		t.Fatalf("seated slot must NOT provision a GA pool (seat claim is TKT-80), got %d", seatedPools)
+	if seatedKind != "seated" {
+		t.Fatalf("seated slot must provision a seated pool (TKT-80), got kind=%q", seatedKind)
+	}
+	if seatedMapID != fmt.Sprint(seatMap["id"]) {
+		t.Fatalf("seated pool must carry its seat map reference, got %q want %v", seatedMapID, seatMap["id"])
 	}
 
 	// Inventory stays ready: a known seated variant must not latch it unready.
@@ -598,6 +605,72 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("inventory /readyz = %d after a seated publication; the schema-4 arm must not latch unready", code)
 	}
+
+	// -- TKT-80 end-to-end: a real seat hold pins the seat in catalog over HTTP --
+	// This exercises the wired cross-service path no unit test covers: main.go →
+	// CatalogResolver.PinSeats → catalog's internal batch-pin endpoint → store.PinSeats
+	// (hold-then-pin, AC3). The seated pool was provisioned above; Orchestra/A/1 is the
+	// one authored seat. postSeatHold contract-validates the 201 and records happy-path
+	// coverage for createSeatHold (TestCommittedServiceContractsAreComplete).
+	hcode, hbody := postSeatHold(t, "seat-e2e-"+suffix, map[string]any{
+		"organizer_id": organizerID, "slot_id": seated["id"],
+		"seat_identities": []string{"Orchestra/A/1"},
+		"ticket_type_id":  "11111111-1111-1111-1111-111111111111",
+		"unit_amount":     3000, "currency": "EUR",
+	})
+	if hcode != http.StatusCreated {
+		t.Fatalf("seat hold = %d %s want 201", hcode, hbody)
+	}
+	var held struct {
+		HoldID string   `json:"hold_id"`
+		Seats  []string `json:"seats"`
+	}
+	if err := json.Unmarshal(hbody, &held); err != nil || held.HoldID == "" || len(held.Seats) != 1 {
+		t.Fatalf("seat hold response: %v (%s)", err, hbody)
+	}
+	catDB, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/catalog", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catDB.Close(ctx) }()
+	var pins int
+	for i := 0; i < 20; i++ {
+		if err := catDB.QueryRow(ctx, `SELECT count(*) FROM seat_map_pins WHERE seat_identity=$1 AND pinned_by=$2`,
+			"Orchestra/A/1", "hold:"+held.HoldID).Scan(&pins); err == nil && pins == 1 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if pins != 1 {
+		t.Fatalf("seat hold must pin Orchestra/A/1 in catalog as hold:%s, got %d pins", held.HoldID, pins)
+	}
+	// A second hold on the same seat is DB-rejected (per-seat no-oversell, AC1) end-to-end.
+	if dcode, dbody := postSeatHold(t, "seat-e2e-dup-"+suffix, map[string]any{
+		"organizer_id": organizerID, "slot_id": seated["id"],
+		"seat_identities": []string{"Orchestra/A/1"},
+		"ticket_type_id":  "11111111-1111-1111-1111-111111111111",
+		"unit_amount":     3000, "currency": "EUR",
+	}); dcode != http.StatusConflict {
+		t.Fatalf("double seat hold = %d %s want 409", dcode, dbody)
+	}
+}
+
+// postSeatHold POSTs a seat hold through the gateway with an idempotency key and
+// contract-validates the response (recording happy-path coverage, like postJSON).
+func postSeatHold(t *testing.T, key string, body any) (int, []byte) {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, gatewayURL+"/api/inventory/holds/seats", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST seat hold: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, out)
+	return resp.StatusCode, out
 }
 
 // awaitPublishedEnvelope pulls performance.published messages until one
