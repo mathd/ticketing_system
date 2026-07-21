@@ -1,0 +1,13 @@
+{
+  "key": "TKT-108",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [],
+  "summary": "Declare 500 (or a shared default) on emit-failing catalog endpoints so ADR-028 doesn't mask recovery messages",
+  "description": "### Incidental finding spun out of TKT-105 ai-review (deepseek-v4-pro@claudex, confirmed against HEAD)\n\n**Problem:** every catalog endpoint that can return HTTP 500 on a domain-event emission failure (`PublishSeatMap`, `PublishPerformance`, `EditSeatMap` [TKT-105], and any `writeStoreError` default) returns a **500 that is not declared in `services/catalog/api/openapi.yaml`**. The ADR-028 response validator (`shared/go/contract/http.go:87`, `IncludeResponseStatus: true`) treats an undocumented status as drift and **overwrites the handler's body** with `{\"error\":\"response violates OpenAPI contract\"}` — so the actionable recovery hint (e.g. 'retry by publishing the new version') never reaches the client.\n\n**Scope:** repo-wide and pre-existing — 0 of the catalog spec's endpoints declare a 500. TKT-105 did not introduce it and deliberately did NOT fix only its own endpoints (that would leave publish inconsistent). Fix once, consistently: either declare a `500` response (shared `#/components/responses/InternalError`) on every emit-failing operation, or add a spec-level default response, and regenerate. Then the recovery messages survive.\n\n**Also fold in (same area, TKT-105 ai-review incidental #E):** the catalog handler test helper `validateResponse` (`server_test.go`) does NOT set `IncludeResponseStatus: true`, so it passes on undocumented statuses that production rejects — which is why the masked-500 gap was invisible to tests. Align the test validator with production so this can't recur silently.\n\n**Acceptance:** an emit-failure 500 (unit test with a failing publisher) reaches the client with its original recovery body intact through the production ResponseValidator; the handler test validator checks status codes; `make check` green.\n\nSource: TKT-105 PR #82 ai-review, finding #1 (+#3). Governing: ADR-028 (response drift fail-closed), ADR-009 (contract-first).",
+  "readiness": {},
+  "context": {}
+}
