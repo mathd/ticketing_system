@@ -23,19 +23,19 @@ afterEach(cleanup);
 
 describe('SeatMapEditor (TKT-105)', () => {
   it('renders the current geometry as editable seats', () => {
-    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" postTo="/admin/venues/v1" />);
+    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" />);
     expect(screen.getByText('Orchestra')).toBeTruthy();
     expect((screen.getByLabelText('Seat Orchestra/A label') as HTMLInputElement).value).toBe('1');
   });
 
   it('serializes an untouched map to the exact SeatMapEdit shape (round-trips pinned seats)', () => {
-    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" postTo="/admin/venues/v1" />);
+    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" />);
     const hidden = screen.getByTestId('geometry-input') as HTMLInputElement;
     expect(JSON.parse(hidden.value)).toEqual(toEdit(ORG, [{ name: 'Orchestra', position: 1, rows: [{ label: 'A', position: 1, seats: [{ label: '1', position: 1 }] }] }]));
   });
 
   it('reflects a seat removal in the serialized geometry (the change the server may reject)', () => {
-    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" postTo="/admin/venues/v1" />);
+    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" />);
     fireEvent.click(screen.getByLabelText('Remove seat Orchestra/A/1'));
     const hidden = screen.getByTestId('geometry-input') as HTMLInputElement;
     const body = JSON.parse(hidden.value);
@@ -43,10 +43,18 @@ describe('SeatMapEditor (TKT-105)', () => {
   });
 
   it('reflects a seat rename in the serialized geometry', () => {
-    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" postTo="/admin/venues/v1" />);
+    render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" />);
     fireEvent.change(screen.getByLabelText('Seat Orchestra/A label'), { target: { value: '9' } });
     const hidden = screen.getByTestId('geometry-input') as HTMLInputElement;
     expect(JSON.parse(hidden.value).sections[0].rows[0].seats[0].label).toBe('9');
+  });
+
+  it('posts to the current page (no absolute action) so Astro checkOrigin does not reject it as cross-site', () => {
+    const { container } = render(<SeatMapEditor geometry={geometry} organizerId={ORG} action="edit-map" />);
+    const form = container.querySelector('form')!;
+    // An absolute action= would trip Astro's CSRF guard ("cross-site POST forbidden").
+    expect(form.getAttribute('action')).toBeNull();
+    expect(form.method.toLowerCase()).toBe('post');
   });
 });
 

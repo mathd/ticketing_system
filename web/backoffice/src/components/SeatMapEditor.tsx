@@ -76,12 +76,11 @@ export function toEdit(organizerId: string, sections: SectionState[]): SeatMapEd
 export interface SeatMapEditorProps {
   geometry: SeatMapGeometry;
   organizerId: string;
-  /** The page action + hidden fields to submit alongside the geometry JSON. */
+  /** The page `_action` value submitted with the geometry JSON (e.g. "edit-map"). */
   action: string;
-  postTo: string;
 }
 
-export default function SeatMapEditor({ geometry, organizerId, action, postTo }: SeatMapEditorProps) {
+export default function SeatMapEditor({ geometry, organizerId, action }: SeatMapEditorProps) {
   const [sections, setSections] = useState<SectionState[]>(() => fromGeometry(geometry));
 
   const editJson = useMemo(() => JSON.stringify(toEdit(organizerId, sections)), [organizerId, sections]);
@@ -125,7 +124,10 @@ export default function SeatMapEditor({ geometry, organizerId, action, postTo }:
   };
 
   return (
-    <form method="POST" action={postTo} className="editor">
+    // No `action` → posts to the current page (relative), matching the sibling
+    // authoring forms. An absolute action URL trips Astro's checkOrigin CSRF
+    // guard ("cross-site POST forbidden") even for a same-origin gateway path.
+    <form method="POST" className="editor">
       <input type="hidden" name="_action" value={action} />
       <input type="hidden" name="map_id" value={geometry.map.id} />
       <input type="hidden" name="geometry" value={editJson} data-testid="geometry-input" />

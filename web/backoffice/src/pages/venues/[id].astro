@@ -173,13 +173,7 @@ const rowOptions =
             This version is published and immutable. Editing creates a <strong>new published version</strong>;
             seats currently sold or held cannot be removed.
           </p>
-          <SeatMapEditor
-            client:load
-            geometry={geometry}
-            organizerId={DEFAULT_ORGANIZER_ID}
-            action="edit-map"
-            postTo={here}
-          />
+          <SeatMapEditor client:load geometry={geometry} organizerId={DEFAULT_ORGANIZER_ID} action="edit-map" />
         </div>
       ) : (
         <div class="forms">
