@@ -55,21 +55,21 @@ describe('SeatMapEditor (TKT-105)', () => {
 describe('nextSeat', () => {
   it('takes the next position above the current max, not the count', () => {
     // seats [1@1, 3@2] with a gap: length+1 would give label "3" (collision).
+    // Candidate label = maxPos+1 = "3" collides → bump to "4"; position = 3.
     const next = nextSeat([
       { label: '1', position: 1 },
       { label: '3', position: 2 },
     ]);
-    expect(next.position).toBe(3);
-    expect(next.label).not.toBe('3');
+    expect(next).toEqual({ label: '4', position: 3 });
   });
 
-  it('bumps the label past any existing label so the identity is unique', () => {
-    // max position is 2, so the first candidate label "3" already exists → bump to "4".
+  it('bumps the label past every existing label so the identity is unique', () => {
+    // maxPos = 2, so candidate label "3" exists → "4" also exists → "5"; position = 3.
     const next = nextSeat([
       { label: '3', position: 1 },
       { label: '4', position: 2 },
     ]);
-    expect(next.label).toBe('5');
+    expect(next).toEqual({ label: '5', position: 3 });
   });
 
   it('handles an empty row', () => {
