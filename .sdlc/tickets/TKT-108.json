@@ -1,7 +1,7 @@
 {
   "key": "TKT-108",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -9,7 +9,7 @@
   "pr": {
     "number": 84,
     "url": "https://github.com/mathd/ticketing_system/pull/84",
-    "state": "open"
+    "state": "merged"
   },
   "comments": [
     {
@@ -41,6 +41,11 @@
       "stage": "ai-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=ai-review kind=summary -->\n### ai-review — A/B (2 arms), converged; second pass clean\n\n**A/B ran: 2 arms**, both `@claudex` (prompt-driven reviewer, not codex's built-in — semantic note per claudex-runner): **Arm A = deepseek-v4-pro:high@claudex**, **Arm B = gpt-5.6-luna:high@claudex**. Same guilt-primed, diff-only brief. Verification was mechanical against the revision under review (judge = code, no LLM judge).\n\n**Tally (dedup by defect — zero overlap between arms):**\n\n| arm | findings | confirmed | refuted | unique-confirmed |\n|---|---|---|---|---|\n| deepseek-v4-pro:high@claudex | 2 | 2 | 0 | 2 |\n| gpt-5.6-luna:high@claudex | 3 | 3 | 0 | 3 |\n\n**Per-finding verdicts:**\n- **A1 (important, CONFIRMED — fixed d04dd15):** stale NOTE at `server.go:1075` still claimed the 500 is masked; premise false after this PR. Rewritten.\n- **A2 (minor, CONFIRMED — fixed):** close/archive emit-failure tests didn't pin recovery bodies. Assertions added with exact handler literals.\n- **B1 (important, CONFIRMED — fixed):** test-side `IncludeResponseStatus` alone can't catch undocumented non-500 statuses — the production validator (in `NewRouter`, `server.go:92`) launders them into a documented generic 500 before the helper sees them. Fixed by failing any test whose response body is the production mask (verified: only `shared/go/contract/http.go:99` writes that literal, so no false positives; full gate green with the check active, so no spurious failures).\n- **B2 (important, CONFIRMED fact — triaged INCIDENTAL → TKT-110):** request-validator 400s (e.g. malformed UUID) are undocumented on lifecycle ops. Production-safe by ADR-028's explicit carve-out (request-rejection short-circuits sit outside the response wrap); latent test-trap only. Out of this ticket's scope (500s); spun out.\n- **B3 (minor, CONFIRMED — fixed):** substring assertions tightened to full handler messages.\n\n**Second pass:** required (fix diff adds control flow to the test helper). Ran on the control arm only per ab-stages (deepseek-v4-pro@claudex, effort medium — one-notch discount per claudex-runner re-review rule). Verdict: FINDINGS: 0, conclusive. Caveat: it enumerated 3 of the 4 fix changes; the 4th (mask-detection helper) was verified by the orchestrator, labeled as own work (grep + full-gate evidence above).\n\n**Gate:** `make check` EXIT=0 on the fix commit (sentinel + log-body judged). Pushed; `HEAD == origin/branch` asserted (d04dd15).\n"
+    },
+    {
+      "stage": "po-review",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=po-review kind=summary -->\n### Validation note — COS vs evidence on merged main (14a863b); Gate 4 owner-waived, self-validation follows\n\nMerged by orchestrator per the recorded Gate-3 waiver; squash `14a863b`, branch deleted, merge verified by CONTENT on origin/main (mask-detection check present, 34× `'500':` in the catalog spec) per the TKT-97 rule.\n\n| COS | evidence |\n|---|---|\n| 1. emit-failure 500 reaches client with original recovery body through the production ResponseValidator | `TestPublishSeatMapEmitFailureRetries`, `TestPublishRetriesEmissionAfterFailure`, `TestEditSeatMapEmitFailureReturns500` (+close/archive) assert exact recovery literals through the `NewRouter` stack (production validator in-path, `server.go:92`); all were observed RED against the mask before the spec fix |\n| 2. test validator checks status codes | `IncludeResponseStatus: true` + mask-detection in `validateResponse`; red 2 observed (`status is not supported` on archive/close) before declarations landed |\n| 3. every emit-failing op declares 500 | 34/35 ops (all but `getOpenAPISpec`) — exceeds COS floor per plan D1 (scope's writeStoreError default surface), verified op-by-op by planReview |\n| 4. regen committed, check-generate passes | Go alias +3, TS +43×2 in `d82665a`; `check-generate` green in all three gate runs |\n| 5. make check green | EXIT=0 at `d82665a`, `d04dd15`, and post-merge on main (result posted in the metrics comment) |\n\nNot user-demonstrable in a browser (error-path contract change); validated via code/test evidence per the skill's provision. No write form touched — the TKT-105 browser-submit rule doesn't apply."
     }
   ],
   "summary": "Declare 500 (or a shared default) on emit-failing catalog endpoints so ADR-028 doesn't mask recovery messages",
