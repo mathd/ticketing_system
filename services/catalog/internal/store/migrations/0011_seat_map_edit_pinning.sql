@@ -1,9 +1,12 @@
 -- Safe edit of a published seat map (US-021 / TKT-104). An edit produces a NEW
 -- published version in the same map FAMILY; the previous version stays immutable
--- (ADR-018: the version decision is state-deriving — it depends on which seats
--- are currently pinned — so EditSeatMap decides under a `SELECT … FOR UPDATE`
--- lock on the family's current published row and emits after commit). This
--- migration adds only what that transition and its pinning contract need:
+-- (ADR-018/ADR-029: the version decision is state-deriving — it depends on which
+-- seats are currently pinned — so EditSeatMap decides under a FAMILY-scoped
+-- advisory lock, NOT a row `FOR UPDATE`: an edit INSERTs a new version row, which
+-- never conflicts with a row lock on the old one, so a blocked pin would recheck
+-- the stale predecessor. Lock the family identity, then re-resolve; emit after
+-- commit). This migration adds only what that transition and its pinning contract
+-- need:
 --
 --   * seat_maps.map_family_id — all versions of one edited map share this UUID.
 --     A pin is version-INDEPENDENT within a family (it survives version bumps),

@@ -1627,12 +1627,16 @@ func lockCurrentPublishedVersion(ctx context.Context, tx *sql.Tx, seatMapID, org
 		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("lock seat-map family: %w", err)
 	}
 	// Now that the family is exclusively held, the current published version is
-	// stable for the rest of this transaction.
+	// stable for the rest of this transaction. organizer_id is carried through
+	// explicitly (defense in depth, ADR-002): the family was already resolved
+	// organizer-scoped and map_family_id is immutable, so this is transitively
+	// redundant — but it means the read never crosses a tenant boundary even if
+	// the resolution above were ever refactored away.
 	err = tx.QueryRowContext(ctx,
 		`SELECT id, version FROM seat_maps
-		 WHERE map_family_id = $1 AND status = 'published'
+		 WHERE map_family_id = $1 AND organizer_id = $2 AND status = 'published'
 		 ORDER BY version DESC
-		 LIMIT 1`, family).Scan(&id, &version)
+		 LIMIT 1`, family, organizerID).Scan(&id, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.Nil, 0, uuid.Nil, fmt.Errorf("seat map: %w", ErrNotFound)
 	}
@@ -1644,8 +1648,9 @@ func lockCurrentPublishedVersion(ctx context.Context, tx *sql.Tx, seatMapID, org
 
 // EditSeatMap edits a published seat map into a new published version (TKT-104,
 // COS-1/2/3/4). The transition is state-deriving — whether the edit is legal
-// depends on which seats are currently pinned — so it decides under a FOR UPDATE
-// lock on the family's current published row (ADR-018) and emits after commit.
+// depends on which seats are currently pinned — so it decides under the family
+// advisory lock (lockCurrentPublishedVersion, NOT a row FOR UPDATE — see ADR-029
+// and that function's doc) and emits after commit.
 // A pinned seat identity that the submitted geometry does not reproduce exactly
 // once is orphaned; the edit is hard-rejected (ErrSeatMapEditOrphansPinned) and
 // the predecessor is left untouched. Duplicate identities in the submission are
@@ -1764,11 +1769,11 @@ func (p *Postgres) EditSeatMap(ctx context.Context, in EditSeatMapInput) (SeatMa
 }
 
 // PinSeat records a sale/hold reference to a seat identity (TKT-104, COS-5 — the
-// write path TKT-80 consumes). It locks the family's current published version
-// (the SAME row EditSeatMap locks) and validates the identity exists in that
-// version before inserting, so an edit that already dropped the seat is visible
-// here as ErrSeatIdentityNotFound. Idempotent on (map_family_id, seat_identity,
-// pinned_by).
+// write path TKT-80 consumes). Under the SAME family advisory lock EditSeatMap
+// takes, it re-resolves the current published version and validates the identity
+// exists in that version before inserting, so an edit that already dropped the
+// seat is visible here as ErrSeatIdentityNotFound. Idempotent on
+// (map_family_id, seat_identity, pinned_by).
 func (p *Postgres) PinSeat(ctx context.Context, in PinSeatInput) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
