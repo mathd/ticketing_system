@@ -199,8 +199,8 @@ type Performance struct {
 	SeatMapID   *uuid.UUID
 	Status      string // draft | published | archived
 	PublishedAt *time.Time
-	ArchivedAt      *time.Time
-	CreatedAt       time.Time
+	ArchivedAt  *time.Time
+	CreatedAt   time.Time
 	// Capacity is the publication-time snapshot used to provision the
 	// inventory-owned dated-slot pool. It is not persisted on performances.
 	Capacity int32
@@ -271,6 +271,14 @@ type SeatMapGeometry struct {
 type VenueInput struct {
 	OrganizerID uuid.UUID
 	Name        string
+	GACapacity  int32
+}
+
+// VenueGACapacityInput carries a GA-capacity update (TKT-105). Organizer-scoped
+// like every owned-entity write (ADR-002).
+type VenueGACapacityInput struct {
+	OrganizerID uuid.UUID
+	VenueID     uuid.UUID
 	GACapacity  int32
 }
 
@@ -484,6 +492,16 @@ type Store interface {
 	// version-then-name ordered. Tenant/venue scoping is a query predicate
 	// backed by seat_maps_by_venue (ADR-019).
 	ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]SeatMap, error)
+	// ListSeatMapVersions returns every version of the family that seatMapID
+	// belongs to (any version resolves the family), newest first, each carrying
+	// its PublishedAt. It is the read behind the TKT-105 version-history UI
+	// (COS-3); "current" is the caller's job to derive (highest published
+	// version). ErrNotFound if seatMapID is unknown.
+	ListSeatMapVersions(ctx context.Context, seatMapID uuid.UUID) ([]SeatMap, error)
+	// UpdateVenueGACapacity sets a venue's GA capacity (TKT-105 COS-5) — until
+	// now it was write-once at CreateVenue. Organizer-scoped as a query predicate
+	// (ADR-002); ErrNotFound when the (id, organizer_id) pair matches no row.
+	UpdateVenueGACapacity(ctx context.Context, in VenueGACapacityInput) (Venue, error)
 	CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error)
 	CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error)
 	CreateSeries(ctx context.Context, in SeriesInput) (Series, error)

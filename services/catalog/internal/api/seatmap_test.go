@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,6 +345,11 @@ func TestDuplicateSeatIdentity(t *testing.T) {
 		SeatMapSeatCreate{OrganizerId: orgID, RowId: row.Id, Label: "12", Position: 2})
 	if dup.Code != http.StatusConflict {
 		t.Fatalf("duplicate seat identity must be 409, got %d %s", dup.Code, dup.Body.String())
+	}
+	// The 409 body must name the seat-identity cause (TKT-105 broadened it so an
+	// edit's identity conflict is not misdescribed as "name or position").
+	if body := decode[Error](t, dup); !strings.Contains(body.Error, "seat identity") {
+		t.Fatalf("conflict body must name the seat-identity cause, got %q", body.Error)
 	}
 }
 

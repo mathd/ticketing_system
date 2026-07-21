@@ -11,6 +11,18 @@ import { defineConfig } from 'astro/config';
 export default defineConfig({
   output: 'server',
   base: '/admin',
+  // The back-office is served exclusively behind the gateway reverse proxy
+  // (SetXForwarded; gateway/cmd/gateway/main.go). Astro's default SSR CSRF guard
+  // (security.checkOrigin) compares the browser Origin against the app's own
+  // Host, which never matches through the proxy — so it 403s EVERY POST
+  // ("Cross-site POST form submissions are forbidden"), breaking all staff write
+  // forms (found in TKT-105 browser verification; TKT-102's authoring forms were
+  // latently broken the same way, undetected because smoke tests hit the catalog
+  // API directly, not the Astro SSR layer). The gateway is the trust boundary for
+  // this internal, single-organizer staff tool (no auth yet); disable the check
+  // here. Revisit if the back-office is ever exposed off the gateway or gains
+  // per-user auth — then origin/host must be reconciled at the proxy instead.
+  security: { checkOrigin: false },
   adapter: node({ mode: 'standalone' }),
   vite: {
     // Bundle every SSR dependency into dist/server so the runtime image ships

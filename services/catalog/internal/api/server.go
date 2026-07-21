@@ -205,9 +205,21 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, store.ErrEmptyFestival):
 		writeJSON(w, http.StatusConflict, Error{Error: "festival has no members"})
 	case errors.Is(err, store.ErrSeatMapConflict):
-		writeJSON(w, http.StatusConflict, Error{Error: "duplicate name or position within the seat map"})
+		// Covers both authoring (duplicate section/row name or position) and an
+		// edit that submits a duplicate seat identity (TKT-105) — one sentinel, so
+		// the message names both causes rather than misdescribing an edit conflict.
+		writeJSON(w, http.StatusConflict, Error{Error: "duplicate seat identity, or duplicate name or position within the seat map"})
 	case errors.Is(err, store.ErrSeatMapNotPublished):
 		writeJSON(w, http.StatusConflict, Error{Error: "seat map must be published before a slot can be seated against it"})
+	case errors.Is(err, store.ErrSeatMapEditOrphansPinned):
+		// TKT-105/ADR-029: an edit that drops a seat identity pinned by a sale or
+		// hold is a conflict, not a 500. The message is actionable for the UI.
+		writeJSON(w, http.StatusConflict, Error{Error: "edit would orphan a seat identity pinned by a sale or hold; the new geometry must keep every pinned seat (same section/row/seat labels)"})
+	case errors.Is(err, store.ErrSeatIdentityNotFound):
+		// Defensive: never let this store sentinel fall through to 500. No HTTP
+		// path triggers it today (PinSeat is store-only), but if one does, it is a
+		// conflict against the current published version, not a missing resource.
+		writeJSON(w, http.StatusConflict, Error{Error: "seat identity is not present in the current published version"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "internal error"})
@@ -1047,6 +1059,113 @@ func (s *Server) PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapI
 		}
 	}
 	writeJSON(w, http.StatusOK, seatMapPayload(m))
+}
+
+// EditSeatMap surfaces the TKT-104 safe-edit contract (ADR-029) over HTTP
+// (TKT-105). It is a thin wrapper: the store re-resolves the family's current
+// published version under a family advisory lock, validates that every pinned
+// seat identity survives, and INSERTs a new published version — the HTTP layer
+// re-implements none of that. An orphaning edit surfaces as
+// ErrSeatMapEditOrphansPinned -> 409 via writeStoreError. The new version owes
+// its own seat_map.published event, so this mirrors PublishSeatMap's
+// emit-after-commit owed-marker discipline (a failed emission -> 500; recovery
+// is re-POSTing publish of the NEW version id, NOT retrying the edit, which
+// would mint yet another version).
+//
+// NOTE (ai-review): like every emit-failing endpoint here (PublishSeatMap,
+// PublishPerformance), 500 is not declared in the spec, so the ADR-028 response
+// validator (shared/go/contract/http.go) rewrites this body to the generic
+// "response violates OpenAPI contract" — the recovery hint above does not reach
+// the client. That is a pre-existing, repo-wide gap (no endpoint declares 500),
+// tracked as its own backlog ticket rather than fixed only for /edit here, which
+// would leave publish inconsistent. The new version is intact and event-owed;
+// operators recover via the owed-event retry the same way as for publish.
+func (s *Server) EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	var in SeatMapEdit
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	m, needsEmit, err := s.store.EditSeatMap(r.Context(), editInput(seatMapId, in))
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	if needsEmit {
+		if err := s.pub.SeatMapPublished(r.Context(), m); err != nil {
+			s.log.ErrorContext(r.Context(), "edited seat-map event emission failed; re-POST publish of the new version to retry",
+				"seat_map_id", m.ID, "version", m.Version, "err", err)
+			writeJSON(w, http.StatusInternalServerError,
+				Error{Error: "the new version is published but its domain event was not emitted; retry by publishing the new version"})
+			return
+		}
+		if err := s.store.MarkSeatMapEventEmitted(r.Context(), m.ID); err != nil {
+			s.log.ErrorContext(r.Context(), "edited seat-map event emitted but not marked", "seat_map_id", m.ID, "err", err)
+		}
+	}
+	writeJSON(w, http.StatusCreated, seatMapPayload(m))
+}
+
+// editInput maps the wire SeatMapEdit (any version id + full geometry tree) to
+// the store's EditSeatMapInput. Seat identity is composed server-side from the
+// labels, so no id plumbing is needed.
+func editInput(seatMapID SeatMapId, in SeatMapEdit) store.EditSeatMapInput {
+	sections := make([]store.EditSectionInput, 0, len(in.Sections))
+	for _, sec := range in.Sections {
+		rows := make([]store.EditRowInput, 0, len(sec.Rows))
+		for _, row := range sec.Rows {
+			seats := make([]store.EditSeatInput, 0, len(row.Seats))
+			for _, seat := range row.Seats {
+				seats = append(seats, store.EditSeatInput{Label: seat.Label, Position: seat.Position})
+			}
+			rows = append(rows, store.EditRowInput{Label: row.Label, Position: row.Position, Seats: seats})
+		}
+		sections = append(sections, store.EditSectionInput{Name: sec.Name, Position: sec.Position, Rows: rows})
+	}
+	return store.EditSeatMapInput{OrganizerID: in.OrganizerId, SeatMapID: seatMapID, Sections: sections}
+}
+
+// ListSeatMapVersions is the TKT-105 version-history read (COS-3): the family's
+// versions newest-first, current_version = highest published. Hours tier
+// (ADR-004: geometry is long-lived), catalog-owned.
+func (s *Server) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
+	versions, err := s.store.ListSeatMapVersions(r.Context(), seatMapId)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	out := SeatMapVersionHistory{Versions: make([]SeatMap, 0, len(versions))}
+	for _, v := range versions {
+		out.Versions = append(out.Versions, seatMapPayload(v))
+		// versions are newest-first, so the first published row is the current one.
+		if out.CurrentVersion == nil && v.Status == "published" {
+			cv := v.Version
+			out.CurrentVersion = &cv
+		}
+	}
+	w.Header().Set("Cache-Control", CacheControlPublicVenueReads)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// UpdateVenueGaCapacity sets a venue's GA capacity (TKT-105 COS-5). Write ->
+// no-store.
+func (s *Server) UpdateVenueGaCapacity(w http.ResponseWriter, r *http.Request, venueId VenueId) {
+	var in VenueGaCapacityUpdate
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
+		return
+	}
+	v, err := s.store.UpdateVenueGACapacity(r.Context(), store.VenueGACapacityInput{
+		OrganizerID: in.OrganizerId, VenueID: venueId, GACapacity: in.GaCapacity,
+	})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, Venue{
+		Id: v.ID, OrganizerId: v.OrganizerID, Name: v.Name,
+		GaCapacity: v.GACapacity, CreatedAt: v.CreatedAt,
+	})
 }
 
 func (s *Server) CreateSeatMap(w http.ResponseWriter, r *http.Request, venueId VenueId) {

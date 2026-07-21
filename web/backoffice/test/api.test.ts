@@ -4,11 +4,16 @@ import {
   addSeatMapRow,
   addSeatMapSeat,
   addSeatMapSection,
+  CatalogApiError,
   createSeatMap,
   DEFAULT_ORGANIZER_ID,
+  editSeatMap,
   getSeatMapGeometry,
   getVenues,
+  listSeatMapVersions,
   listVenueSeatMaps,
+  publishSeatMap,
+  updateVenueGaCapacity,
 } from '../src/lib/api';
 
 function jsonResponse(body: unknown): Response {
@@ -145,6 +150,77 @@ describe('seat-map authoring client', () => {
 
   it('throws on a write failure so the page surfaces it, not a silent success', async () => {
     spyFetch({ error: 'conflict' }, 409);
-    await expect(addSeatMapSeat('m1', { row_id: 'r1', label: '1', position: 1 })).rejects.toThrow(/catalog write failed: 409/);
+    await expect(addSeatMapSeat('m1', { row_id: 'r1', label: '1', position: 1 })).rejects.toThrow(/conflict/);
+  });
+});
+
+// TKT-105: editing, version history, GA config, and error-body surfacing.
+describe('seat-map edit + versioning client (TKT-105)', () => {
+  const publishedMap = {
+    id: 'm2',
+    organizer_id: DEFAULT_ORGANIZER_ID,
+    venue_id: 'v1',
+    name: 'Floor',
+    version: 2,
+    status: 'published',
+    published_at: '2026-07-20T10:00:00Z',
+    created_at: '2026-07-20T10:00:00Z',
+  };
+
+  it('surfaces the server {error} body on a rejected edit (409 orphan), not just the status', async () => {
+    spyFetch({ error: 'edit would orphan a seat identity pinned by a sale or hold' }, 409);
+    // The actionable message reaches the UI — a bare "409" would be useless.
+    await expect(
+      editSeatMap('m1', { organizer_id: DEFAULT_ORGANIZER_ID, sections: [] }),
+    ).rejects.toThrow(/orphan a seat identity pinned/);
+  });
+
+  it('throws a typed CatalogApiError carrying the status', async () => {
+    spyFetch({ error: 'nope' }, 409);
+    try {
+      await editSeatMap('m1', { organizer_id: DEFAULT_ORGANIZER_ID, sections: [] });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(CatalogApiError);
+      expect((e as CatalogApiError).status).toBe(409);
+    }
+  });
+
+  it('posts the full replacement geometry to the edit endpoint and returns the new version', async () => {
+    const calls = spyFetch(publishedMap, 201);
+    const body = {
+      organizer_id: DEFAULT_ORGANIZER_ID,
+      sections: [{ name: 'Orchestra', position: 1, rows: [{ label: 'A', position: 1, seats: [{ label: '1', position: 1 }] }] }],
+    };
+    const nv = await editSeatMap('m1', body);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toContain('/api/catalog/seat-maps/m1/edit');
+    expect(calls[0].body).toMatchObject(body);
+    expect(nv.version).toBe(2);
+  });
+
+  it('publishes a draft map through the publish endpoint', async () => {
+    const calls = spyFetch(publishedMap, 200);
+    await publishSeatMap('m1');
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toContain('/api/catalog/seat-maps/m1/publish');
+  });
+
+  it('reads version history and unwraps current_version + versions', async () => {
+    const calls = spyFetch({ current_version: 2, versions: [publishedMap, { ...publishedMap, id: 'm1', version: 1 }] }, 200);
+    const h = await listSeatMapVersions('m1');
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].url).toContain('/api/catalog/public/seat-maps/m1/versions');
+    expect(h.current_version).toBe(2);
+    expect(h.versions).toHaveLength(2);
+  });
+
+  it('updates a venue GA capacity through the GA endpoint', async () => {
+    const calls = spyFetch({ id: 'v1', organizer_id: DEFAULT_ORGANIZER_ID, name: 'Hall', ga_capacity: 250, created_at: '2026-07-20T00:00:00Z' }, 200);
+    const v = await updateVenueGaCapacity('v1', 250);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toContain('/api/catalog/venues/v1/ga-capacity');
+    expect(calls[0].body).toMatchObject({ organizer_id: DEFAULT_ORGANIZER_ID, ga_capacity: 250 });
+    expect(v.ga_capacity).toBe(250);
   });
 });
