@@ -7,6 +7,82 @@
   "pr": null,
   "summary": "Decide if catalog joins the smoke coverage gate (uncovered2xxOps) — TKT-106 ai-review follow-up",
   "description": "### Decide whether catalog joins the smoke happy-path coverage gate\n\n**Origin:** TKT-106 ai-review incidental — raised independently by BOTH A/B arms (`deepseek-v4-pro@claudex` and `gpt-5.6-luna@claudex`). Pre-existing, not introduced by TKT-106.\n\nTKT-106 added `catalog` to the smoke **response-validator** allowlist, so `/api/catalog/*` responses are now contract-validated end-to-end *when a smoke request exercises them*. But `uncovered2xxOps` (`smoke/coverage_test.go:55`) still iterates only `{inventory,commerce,payments,access}` — catalog is deliberately excluded (header comment: \"Catalog's coverage gate lives in its unit suite ... where a fake store exists\"). So a NEW catalog operation added to `openapi.yaml` without a smoke test would pass the suite and go un-contract-validated end-to-end. TKT-106 softened its own comment to state this scope limit rather than claim a guarantee it can't back.\n\n**This is a DECISION, not an obvious fix** (hence a ticket, not a direct commit): should catalog's end-to-end coverage be enforced by the *smoke* gate (requires driving ~35 catalog ops through smoke happy-paths, or a justified per-op allowlist), or is the existing unit-suite coverage the right layer and the smoke response-validator sufficient for exercised routes? Weigh against the original ADR-047/coverage-gate design rationale (fake store in the unit suite).\n\n**Not urgent:** exercised catalog routes ARE validated today; this closes a latent gap for *future unexercised* endpoints.\n\nSecondary (cheap, may fold in): the TKT-106 pin `TestValidateServiceResponseCoversCatalog` mutates the shared `smokeCoverage` map and relies on smoke top-level tests being sequential (no `t.Parallel()`); if catalog coverage moves into smoke, revisit that isolation.",
-  "comments": [],
-  "links": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness - PASS\n\n**COS (Conditions of Success):**\n1. An ADR in `docs/adr/` (next free number) records the decision - catalog joins the smoke coverage gate, or the unit-suite layer is affirmed as the right one - with options + rationale weighed against the TKT-47 fake-store design and ADR-009/ADR-028 constraints. Status: Accepted.\n2. Code matches the decision: either `catalog` joins `uncovered2xxOps` (per-op allowlist entries each carrying a justification, and/or smoke happy-paths), or the deliberate exclusion is pinned (test or gate-adjacent assertion citing the ADR) so a future reader cannot take it for an oversight.\n3. Iff catalog coverage moves into smoke: revisit `TestValidateServiceResponseCoversCatalog`'s shared-map mutation / no-`t.Parallel()` reliance (ticket's secondary item). If it stays unit-side, explicitly say why the pin is fine as-is.\n4. `make check` green (local gate mirrors CI).\n\n| Item | State | Note |\n|---|---|---|\n| objective | met | latent gap for future unexercised catalog ops; both TKT-106 review arms flagged it |\n| scope | met | decision + matching code; not a 35-endpoint smoke buildout |\n| uncertainties | met | the decision is the deliverable; inputs identified |\n| dependencies | met | none open; TKT-106 merged |\n| approach | met | two candidate layers, enumerated |\n| first_slice | met | ADR + minimal enforcement; full happy-path coverage would be a follow-up |\n| success | met | COS above |\n| context_memo | met | baked (governingAdrs: ADR-009, ADR-028; TKT-47 noted - description's \"ADR-047\" is a typo for TKT-47) |\n\n**Concerns:** none\n**Verdict:** PASS - claimable as soon as prioritized."
+    }
+  ],
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Close/accept the latent gap: a future catalog op added to openapi.yaml without a smoke test passes the suite un-contract-validated e2e. Raised by both TKT-106 ai-review arms."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Deliverable = a recorded decision (ADR) + code matching it: catalog joins uncovered2xxOps (allowlist or happy-paths) OR its exclusion is pinned citing the ADR. Out: unrelated services' coverage."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The decision IS the ticket; inputs known (TKT-47 fake-store rationale, ADR-009/028 constraints, 35 catalog ops). No external unknowns."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. TKT-106 merged (#83)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Compare enforcement layers: catalog unit-suite gate (fake store, per-op) vs smoke gate (real stack). Options enumerated in description; planning picks."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "ADR + minimal enforcement (gate change w/ justified allowlist, or pinned exclusion). NOT 35 new smoke happy-paths - if the decision demands full coverage, that is a named follow-up ticket."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS in readiness comment: (1) Accepted ADR records the decision + rationale; (2) code enforces it; (3) pin-test isolation revisited iff catalog joins smoke coverage; (4) make check green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked on ticket.context, governingAdrs included."
+    }
+  },
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the OpenAPI doc is the source of truth and the gate exists to enforce spec-code coupling; any coverage-gate change extends this mechanism, not a new one."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed with 500; TKT-108 declared 500 on catalog ops so validation doesn't mask recovery bodies. Any new smoke happy-path must expect a validated 2xx through this middleware."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Smoke coverage gate excluding catalog (header comment states the design rationale)",
+        "link": "smoke/coverage_test.go:55 uncovered2xxOps"
+      },
+      {
+        "summary": "Catalog's own per-op coverage gate in the unit suite (fake store, env.do chokepoint) - TKT-47 design",
+        "link": "services/catalog/internal/api/coverage_test.go"
+      },
+      {
+        "summary": "TKT-106 pin test; its doc-comment scopes the guarantee and names the shared-map/no-t.Parallel isolation caveat (the ticket's secondary item)",
+        "link": "smoke/contract_validation_catalog_test.go"
+      },
+      {
+        "summary": "Catalog spec has 35 operationIds today",
+        "link": "services/catalog/api/openapi.yaml"
+      },
+      {
+        "summary": "NOTE: description says 'ADR-047' - no such ADR exists (registry ends at ADR-029); it means TKT-47, where the coverage-gate design (catalog gate in unit suite where a fake store exists) was decided",
+        "link": "smoke/coverage_test.go:5"
+      }
+    ],
+    "capturedAt": "2026-07-21"
+  }
 }
