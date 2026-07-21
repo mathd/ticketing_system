@@ -1,9 +1,11 @@
 {
   "key": "TKT-106",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (main-agent / Opus 4.8)",
   "pr": null,
   "summary": "Smoke contract validator skips catalog (allowlist omits it)",
   "description": "### Smoke contract-validator allowlist omits catalog\n\n`smoke/contract_validation_test.go:~59` gates response contract-validation on `strings.Contains(\" inventory commerce payments access \", \" \"+service+\" \")` — **catalog is not in the allowlist**, so `validateServiceResponse` returns early for every `/api/catalog/*` response reached through the gateway in smoke. Catalog responses ARE still validated in-process (catalog's `NewRouter` wraps handlers in the response validator, ADR-028), so this is not a correctness hole — but the smoke suite gives catalog reads a false sense of end-to-end contract coverage. Surfaced during TKT-101 ai-review (kimi-k3): the new `/api/catalog/public/venues` smoke assertion runs the validator as a no-op.\n\n**Acceptance:** add `catalog` to the allowlist; FIRST verify no existing catalog endpoint drifts once validated (the reviewer flagged this may surface latent drift on endpoints never smoke-validated). If drift surfaces, fix the drift or scope the change per endpoint.\n\nOrigin: TKT-101 ai-review incidental finding (pre-existing, not introduced by TKT-101).",
@@ -12,6 +14,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-106 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the seam (verified at HEAD: the allowlist `' inventory commerce payments access '` at `smoke/contract_validation_test.go:59` omits catalog). Self-contained, no blockers.\n\n| item | state |\n|---|---|\n| objective | met |\n| scope | met |\n| uncertainties | deferred |\n| dependencies | met |\n| approach | met |\n| first_slice | met |\n| success | met |\n| context_memo | met |\n\n**Deferred:** whether flipping catalog on surfaces latent response-drift is a build-time discovery — the AC prescribes verify-first-then-fix/scope. Governing: **ADR-028** (the fail-closed check being extended) + **ADR-009** (any drift is fixed at the contract). **Ready to prioritize (Gate 1).**"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed TKT-106 — Ready → Planning\n\n**Selection reason.** Top of Ready, fully shaped (DoR 8/8 met/deferred), zero open\nblockers (`links: []`), self-contained. Seam re-verified at HEAD before claiming:\n`smoke/contract_validation_test.go:59` allowlist `\" inventory commerce payments access \"`\nomits `catalog`.\n\n**Branch:** `TKT-106-smoke-catalog-contract-allowlist` off `origin/main` @ `4c0bb8e`.\n\n**Assignee:** agent (main-agent / Opus 4.8).\n\n---\n\n#### ⚠️ Gateless run — human gates waived by repo owner (process experiment)\n\nThe repo owner is running this ticket **fully autonomously, Ready → Done, gateless**, and\nhas **deliberately waived the four human gates** for this run. Recorded here so the board\nhistory shows this ticket ran without human gates:\n\n- **Gate 1 (priority):** given — ticket was placed in Ready by the owner.\n- **Gate 2 (plan approval):** waived. After the cross-model plan critique, the agent\n  resolves open decisions itself (prefer the critique's recommendation; else the most\n  reversible option) and records each self-made decision + rationale in `kind=plan-final`.\n- **Gate 3 (review + merge):** waived. After the adversarial ai-review converges (same\n  triage / second-pass / churn-cap rules), the agent squash-merges the PR itself and\n  deletes the branch. The review-guide is still posted first as the audit record.\n- **Gate 4 (PO acceptance):** waived. The agent self-validates each COS against test\n  evidence on the merged code, posts the validation note, and closes with the full\n  metrics comment.\n\n**Non-negotiable (unchanged):** config.models routing (no model substitution), cross-model\nreview for plan and code, TDD with tests observed red first, `make check` green before\nevery push and after merge, all marker comments at each stage, no AI attribution in\ncommits/PRs.\n\n**Model routing for this ticket** (from `.claude/sdlc.config.json`):\n- plan draft = `deepseek-v4-pro:high@claudex`\n- plan review = `fable-5:medium` (≠ plan ✓)\n- implement = `main-agent`\n- ai-review = A/B `[deepseek-v4-pro:high@claudex, gpt-5.6-luna:high@claudex]` (≠ implement ✓)\n\nClaudex proxy pre-flight: env present, `/v1/models` answered, both models listed."
     }
   ],
   "links": [],
