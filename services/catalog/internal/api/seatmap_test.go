@@ -164,6 +164,11 @@ func TestPublishSeatMapEmitFailureRetries(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("emit failure must 500, got %d %s", rec.Code, rec.Body.String())
 	}
+	// The recovery hint must survive the production ResponseValidator (TKT-108):
+	// an undocumented 500 would be rewritten to the generic contract-violation body.
+	if !strings.Contains(rec.Body.String(), "the domain event was not emitted; retry publish") {
+		t.Fatalf("recovery body lost, got: %s", rec.Body.String())
+	}
 	if len(e.pub.seatMapsPub) != 0 {
 		t.Fatalf("failed emission must not record a publish, got %+v", e.pub.seatMapsPub)
 	}

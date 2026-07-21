@@ -1132,6 +1132,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Internal error. Emit-failure bodies carry an actionable recovery hint (e.g. retry the publish); declared so the fail-closed response validator (ADR-028) does not mask them as contract drift (TKT-108). */
+        InternalError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
         /** @description BCP-47 primary subtag; supported set is data, not schema (TKT-36) */
@@ -1178,6 +1187,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            500: components["responses"]["InternalError"];
         };
     };
     createSeatMap: {
@@ -1206,6 +1216,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     addSeatMapSection: {
@@ -1243,6 +1254,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     addSeatMapRow: {
@@ -1280,6 +1292,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     addSeatMapSeat: {
@@ -1317,6 +1330,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     publishSeatMap: {
@@ -1349,6 +1363,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     editSeatMap: {
@@ -1386,6 +1401,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     updateVenueGaCapacity: {
@@ -1414,6 +1430,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     createEvent: {
@@ -1439,6 +1456,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            500: components["responses"]["InternalError"];
         };
     };
     createPerformance: {
@@ -1474,6 +1492,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     publishPerformance: {
@@ -1506,6 +1525,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     archivePerformance: {
@@ -1538,6 +1558,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     closeSlot: {
@@ -1574,6 +1595,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     reopenSlot: {
@@ -1606,6 +1628,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     createSeries: {
@@ -1632,6 +1655,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     attachPerformanceToSeries: {
@@ -1669,6 +1693,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     publishSeries: {
@@ -1701,6 +1726,7 @@ export interface operations {
                     "application/json": components["schemas"]["SeriesTransitionConflict"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     archiveSeries: {
@@ -1733,6 +1759,7 @@ export interface operations {
                     "application/json": components["schemas"]["SeriesTransitionConflict"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     createSeason: {
@@ -1759,6 +1786,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     attachSeriesToSeason: {
@@ -1796,6 +1824,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     attachEventToSeason: {
@@ -1833,6 +1862,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     createFestival: {
@@ -1859,6 +1889,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     attachDayToFestival: {
@@ -1896,6 +1927,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     publishFestival: {
@@ -1928,6 +1960,7 @@ export interface operations {
                     "application/json": components["schemas"]["SeriesTransitionConflict"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     archiveFestival: {
@@ -1960,6 +1993,7 @@ export interface operations {
                     "application/json": components["schemas"]["SeriesTransitionConflict"];
                 };
             };
+            500: components["responses"]["InternalError"];
         };
     };
     createTicketType: {
@@ -1986,6 +2020,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     listPublicEvents: {
@@ -2011,6 +2046,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            500: components["responses"]["InternalError"];
         };
     };
     getPublicEvent: {
@@ -2039,6 +2075,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     getPublicSeason: {
@@ -2067,6 +2104,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     getPublicFestival: {
@@ -2095,6 +2133,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     listPublicVenues: {
@@ -2120,6 +2159,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            500: components["responses"]["InternalError"];
         };
     };
     listVenueSeatMaps: {
@@ -2144,6 +2184,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            500: components["responses"]["InternalError"];
         };
     };
     getPublicSeatMapGeometry: {
@@ -2169,6 +2210,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     listSeatMapVersions: {
@@ -2194,6 +2236,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     getOpenAPISpec: {

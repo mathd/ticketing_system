@@ -1183,6 +1183,9 @@ func (e *env) validateResponse(req *http.Request, rec *httptest.ResponseRecorder
 		Status: rec.Code,
 		Header: rec.Header(),
 		Body:   io.NopCloser(bytes.NewReader(rec.Body.Bytes())),
+		// Mirror production (shared/go/contract): an undocumented status is
+		// drift too — without this, tests pass on statuses production rejects.
+		Options: &openapi3filter.Options{IncludeResponseStatus: true},
 	}
 	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
 		e.t.Fatalf("response for %s %s violates the contract: %v", req.Method, req.URL.Path, err)
@@ -1323,6 +1326,10 @@ func TestPublishRetriesEmissionAfterFailure(t *testing.T) {
 	rec := e.do("POST", "/performances/"+perfID.String()+"/publish", nil)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("failed emission should 500, got %d", rec.Code)
+	}
+	// The recovery hint must survive the production ResponseValidator (TKT-108).
+	if !strings.Contains(rec.Body.String(), "retry publish") {
+		t.Fatalf("recovery body lost, got: %s", rec.Body.String())
 	}
 	// The performance is published but the event is still owed: retry emits.
 	rec = e.do("POST", "/performances/"+perfID.String()+"/publish", nil)

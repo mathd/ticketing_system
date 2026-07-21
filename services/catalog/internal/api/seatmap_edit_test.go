@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -101,6 +102,10 @@ func TestEditSeatMapEmitFailureReturns500(t *testing.T) {
 	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/edit", editBody(false))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("emit failure on edit must 500, got %d %s", rec.Code, rec.Body.String())
+	}
+	// The recovery hint must survive the production ResponseValidator (TKT-108).
+	if !strings.Contains(rec.Body.String(), "retry by publishing the new version") {
+		t.Fatalf("recovery body lost, got: %s", rec.Body.String())
 	}
 }
 
