@@ -10,6 +10,13 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
 
 ## Top recurring lessons
 
+- [**API smoke can't see the SSR layer — a browser-submit test is the only checkOrigin catch**](./learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md) —
+  Astro's default SSR `checkOrigin` 403s every back-office POST behind the gateway reverse proxy
+  (`Origin` ≠ `Host`); it silently broke *all* back-office write forms from TKT-102 on, invisible
+  to the smoke suite because smoke hits the catalog API directly and only renders `/admin/`, never
+  submitting a form. A web-UI ticket isn't verified until a browser has submitted its write path.
+  (TKT-105, PR #82)
+
 - [**Time-window fixtures must be relative to now**](./learnings/2026-07-18-time-window-fixtures-must-be-relative.md) —
   a calendar-literal fixture judged against `now()` with a bound is green at merge and fails when
   the clock crosses the literal plus the bound; CI, mutation testing and review all pass because

@@ -32,6 +32,13 @@ experiment stays valid.
 - **Money is integer minor units + ISO currency code — floats are banned on money paths.**
 - **Local gate:** `make check` (lint + test + build, Go & TS, plus the gateway smoke suite;
   run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored.
+- **A web-UI ticket isn't verified until a browser has *submitted* its forms.** `make check`'s
+  smoke suite exercises the catalog API directly and only *renders* back-office pages — it never
+  submits an Astro form, so the whole class of "the SSR layer rejects/mangles the request before
+  the handler runs" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it.
+  For any back-office/storefront/scanner ticket that adds or changes a write form, drive the real
+  stack (`make up`) in a browser and submit the write path, not just the render. There is no
+  Playwright/e2e harness in-repo yet. (Why: [browser-submit is the only checkOrigin catch](docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md), TKT-105.)
 - **Specs before code.** Prefer writing/refining a spec or PRD before implementing. Ground work in
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`
