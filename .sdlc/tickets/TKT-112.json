@@ -1,0 +1,23 @@
+{
+  "key": "TKT-112",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Seat-pin reconciliation: reclaim leaked catalog pins from expired holds",
+  "description": "Deferred from TKT-80 (ADR-031). Hold-then-pin unpins on explicit release and best-effort on the next pool mutation's sweep, but a seated pool that is never touched again after an on-sale can leak catalog `seat_map_pins` rows from TTL-expired holds. A leaked pin fails SAFE — it blocks a now-safe map edit (409), never orphans or oversells — but it degrades an organizer's ability to edit a published map over time.\n\n**Scope:** a one-shot `reconcile-pins` subcommand (inventory or catalog binary) that reconciles `seat_map_pins` (pinned_by='hold:*') against live inventory `claim_seats` and unpins the dead ones. Must NOT have inventory read the catalog DB (ADR-010) — reconcile over the existing internal HTTP contract, or as a catalog-side job fed the live hold set. The manually-callable internal batch-unpin endpoint (shipped in TKT-80) is the interim operator remedy.\n\n**COS:** given N expired-hold pins with no live claim, the subcommand removes exactly those and leaves confirmed-sale and live-hold pins intact; idempotent; honest-writer only (ADR-021).",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-80"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "note",
+      "body": "Created by the TKT-80 autonomous run to record the deferred leaked-pin reconciliation (ADR-031 §Consequences). Not shaped for Ready yet."
+    }
+  ]
+}
