@@ -3,10 +3,14 @@
   "type": "Task",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "claude (fable-5 session)",
-  "pr": null,
+  "pr": {
+    "number": 84,
+    "url": "https://github.com/mathd/ticketing_system/pull/84",
+    "state": "open"
+  },
   "comments": [
     {
       "stage": "backlog",
@@ -27,6 +31,11 @@
       "stage": "planning",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=planning kind=plan-final -->\n### Plan-final — delta on the kind=plan drafts (Gate 2 waived by owner; orchestrator stood in as judge)\n\n**Selection: Arm B's spine (gpt-5.6-luna) wins**, amended per the fable-5 critique. Reason: B's 34-operation inventory is what the ticket's Scope IN actually requires (\"the writeStoreError default surface\"), verified operation-by-operation by the critique; A's 10-op reading contradicts the scope line. B's regen predictions were also the factually correct ones. A/B mapping was disclosed in the kind=plan comment (waived-gate protocol, ab-stages §plan.6). Logged to ab-tests results (B won, A lost, sol fallback aborted/unscored).\n\n**planReview:** fable-5 (config `fable-5:medium`; note — the Agent harness exposes no per-call effort override, so the critique ran at session-default effort; recorded as a measurement caveat). Critique verified every named symbol/test/line at HEAD, both coverage gates, and vendored kin-openapi v0.142.0 source.\n\n**Amendments adopted (the kind=plan Arm B draft as amended is the plan):**\n1. Import A's concrete diffs with anchors: `validateResponse` Options edit (`server_test.go:1168`) + `\"retry publish\"` body assertion (`TestPublishRetriesEmissionAfterFailure`, :1319).\n2. Import A's red-run test table as the checklist (correct `TestArchiveRetryReplaysOwedPublishBeforeArchive` to :1424).\n3. Import A's `default:`-rejection rationale (kin-openapi `validate_response.go:48-57`: `default` resolves any status before the `IncludeResponseStatus` gate → a 201/418 would pass silently), plus the coverage-gate argument: `default:`-only ops are exempt from the 2xx coverage gate (ADR-028).\n4. Correct B's regen wording: `openapi_gen.go` WILL diff (new `type InternalError = Error` alias); both TS gen files WILL gain `500:` response keys.\n5. Risks rewritten as risks of the chosen plan; pre-mortem folded in (TS typecheck exposure via full gate; single body assertion is the only body-mask guard — status masking is guarded suite-wide by the aligned test validator; a future op #35 can re-open the hole — follow-up, not scope-creep; `reopenSlot` emit path untested — low risk, shared `emitClosure` path; focused-run coverage-gate behavior noted for TDD).\n6. TDD order: TWO separately observed reds — (red 1, COS-1) exact-body assertion on `TestPublishSeatMapEmitFailureRetries` + `\"retry publish\"` assertion fails against the production mask; (red 2, COS-2) `IncludeResponseStatus: true` in the test validator fails emit-failure tests with `status is not supported`; then green via `components.responses.InternalError` + `'500'` on all 34 ops (all but `getOpenAPISpec`); then `make generate`; then full gate.\n\n**Self-made decisions (gateless-run record):**\n- D1: breadth = 34 ops, not 10 — per critique recommendation (waiver rule: prefer the critique's recommendation).\n- D2: explicit `500` via shared `#/components/responses/InternalError`, NOT spec-level `default` — both arms and the critique independently converge; grounded in kin-openapi v0.142.0 source + ADR-028 coverage-gate exemption.\n- D3: stray fabricated ADR-030 from the deepseek arm quarantined to scratchpad, not committed — it invents TKT-56's human-gated PSP decision.\n\n**Introduced at plan-review, reviewed by no second model** (per skill; these reach Building reviewed only by their author, fable-5):\n- The `/internal/*` handlers (`server.go:73-75`) are outside the spec ⇒ outside the mask (closes the inventory-completeness question).\n- Both coverage gates are 2xx-only ⇒ unaffected by 500 declarations.\n- The `default:`-exempts-from-coverage-gate argument.\n- Pre-mortem items: TS typecheck exposure, future-op hole, focused-run gate behavior.\n"
+    },
+    {
+      "stage": "coding",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=coding kind=summary -->\n### Coding done — PR #84 open\n\n**Implementer:** main-agent (fable-5 session), per config. TDD per plan-final: two separately observed reds — (1) recovery-body assertions on 3 emit-failure tests failed against the production mask (`response violates OpenAPI contract`); (2) `IncludeResponseStatus: true` in the test validator failed archive/close tests with `status is not supported` — then green via `components/responses/InternalError` + `'500'` on 34/35 operations (all but `getOpenAPISpec`).\n\n**Diff:** 7 files, +183/−0 (spec, 3 test files, Go gen +3, 2× TS gen +43 — regen exactly as plan-final predicted). Commit `d82665a`.\n\n**Gate:** `make check` EXIT=0 post-commit (first run failed as expected pre-commit: `check-generate` diffs gen files against the index). Judged from sentinel file + log body per skill rules.\n\nStage: coding → ai-review (A/B, 2 arms per config)."
     }
   ],
   "summary": "Declare 500 (or a shared default) on emit-failing catalog endpoints so ADR-028 doesn't mask recovery messages",
