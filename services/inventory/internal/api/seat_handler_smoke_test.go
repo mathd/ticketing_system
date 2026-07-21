@@ -124,36 +124,59 @@ func TestCreateSeatHoldHappyPathPins(t *testing.T) {
 	}
 }
 
-func TestCreateSeatHoldDeterministicRejectReleases(t *testing.T) {
+func TestCreateSeatHoldDeterministicRejectReleasesAndBlocksReplay(t *testing.T) {
 	st, org, slot := seatAPIStore(t)
 	pin := &recordingPinner{pinErr: fmt.Errorf("nope: %w", consumer.ErrSeatPinRejected)}
 	srv := New(st, "", pin).Router(nil)
+	tt := uuid.New()
 
-	res := postSeatHold(t, srv, org, slot, []string{"A/1/1"}, "k1")
+	res := postSeatHoldTT(t, srv, org, slot, tt, []string{"A/1/1"}, "k1")
 	if res.Code != http.StatusConflict {
 		t.Fatalf("status = %d body=%s want 409", res.Code, res.Body.String())
 	}
-	// The hold was released, so a fresh hold on the same seat succeeds (pinner now ok).
+	// The hold was released. A same-key + same-request retry finds a TERMINAL claim and is
+	// rejected (409), never re-pinning a released hold as a false success.
+	if res2 := postSeatHoldTT(t, srv, org, slot, tt, []string{"A/1/1"}, "k1"); res2.Code != http.StatusConflict {
+		t.Fatalf("terminal replay = %d body=%s want 409", res2.Code, res2.Body.String())
+	}
+	// And the seat is genuinely free: a fresh key holds it (pinner now ok).
 	pin.pinErr = nil
-	res2 := postSeatHold(t, srv, org, slot, []string{"A/1/1"}, "k2")
-	if res2.Code != http.StatusCreated {
-		t.Fatalf("re-hold after deterministic reject = %d body=%s want 201", res2.Code, res2.Body.String())
+	if res3 := postSeatHold(t, srv, org, slot, []string{"A/1/1"}, "k2"); res3.Code != http.StatusCreated {
+		t.Fatalf("re-hold after release = %d body=%s want 201", res3.Code, res3.Body.String())
 	}
 }
 
-func TestCreateSeatHoldTransientFailReleases(t *testing.T) {
+func TestCreateSeatHoldTransientFailKeepsHoldForRetry(t *testing.T) {
 	st, org, slot := seatAPIStore(t)
 	pin := &recordingPinner{pinErr: errors.New("connection reset")}
 	srv := New(st, "", pin).Router(nil)
+	tt := uuid.New()
 
-	res := postSeatHold(t, srv, org, slot, []string{"A/1/1"}, "k1")
+	res := postSeatHoldTT(t, srv, org, slot, tt, []string{"A/1/1"}, "k1")
 	if res.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d body=%s want 503", res.Code, res.Body.String())
 	}
-	// Released for the invariant → seat is free for a fresh key.
+	// The hold is NOT released on a transient failure: a same-key retry re-pins it (the
+	// replay-re-pin invariant) and returns 200, rather than freeing seats a concurrent
+	// retry may have already pinned.
 	pin.pinErr = nil
-	if res2 := postSeatHold(t, srv, org, slot, []string{"A/1/1"}, "k2"); res2.Code != http.StatusCreated {
-		t.Fatalf("re-hold after transient fail = %d want 201", res2.Code)
+	res2 := postSeatHoldTT(t, srv, org, slot, tt, []string{"A/1/1"}, "k1")
+	if res2.Code != http.StatusOK {
+		t.Fatalf("same-key retry after transient = %d body=%s want 200", res2.Code, res2.Body.String())
+	}
+	if pin.pins != 2 {
+		t.Fatalf("retry must re-pin the surviving hold: pin calls = %d want 2", pin.pins)
+	}
+}
+
+// A seat that survives the OpenAPI minLength:1 check as whitespace is rejected by
+// canonicalSeats and must surface as 400, not 500.
+func TestCreateSeatHoldWhitespaceSeatIs400(t *testing.T) {
+	st, org, slot := seatAPIStore(t)
+	srv := New(st, "", &recordingPinner{}).Router(nil)
+	res := postSeatHold(t, srv, org, slot, []string{" "}, "k1")
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("whitespace seat = %d body=%s want 400", res.Code, res.Body.String())
 	}
 }
 

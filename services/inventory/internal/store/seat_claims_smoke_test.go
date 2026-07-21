@@ -200,6 +200,22 @@ func TestSeatHoldIdempotencyCanonicalizesOrder(t *testing.T) {
 	}
 }
 
+// TestSeatHoldFingerprintIsInjectiveOverCommas: two DIFFERENT seat sets that a
+// comma-join would collide (["A","B,C"] vs ["A,B","C"]) must not replay each other.
+func TestSeatHoldFingerprintIsInjectiveOverCommas(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+	tt := uuid.New()
+
+	if _, err := st.CreateSeatHold(ctx, org, slot, tt, []string{"A", "B,C"}, 0, "EUR", "same"); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	// Same key, a genuinely different set that comma-joins identically → must conflict.
+	if _, err := st.CreateSeatHold(ctx, org, slot, tt, []string{"A,B", "C"}, 0, "EUR", "same"); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("comma-colliding different set, same key err = %v want ErrIdempotency", err)
+	}
+}
+
 func TestSeatHoldRejectsGaPool(t *testing.T) {
 	ctx, st, _ := storeForTest(t, 10*time.Minute)
 	org, slot := provisioned(t, ctx, st, 100) // GA pool

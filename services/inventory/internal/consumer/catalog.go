@@ -132,7 +132,11 @@ func (r *CatalogResolver) batchPin(ctx context.Context, action string, org, seat
 	if resp.StatusCode == http.StatusOK {
 		return nil
 	}
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+	// Only 409 is a DETERMINISTIC seat rejection (the identity is absent from the current
+	// published version — catalog's ErrSeatIdentityNotFound). Everything else — 401 (token
+	// rotation), 404 (map lookup), 429 (throttle), 5xx, transport — is transient: the caller
+	// must NOT release a valid hold over it; retry or let the TTL reclaim it.
+	if resp.StatusCode == http.StatusConflict {
 		return fmt.Errorf("catalog seat %s %s: %w", action, seatMapID, ErrSeatPinRejected)
 	}
 	return fmt.Errorf("catalog seat %s: status %d", action, resp.StatusCode)

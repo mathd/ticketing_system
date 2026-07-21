@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -78,9 +79,13 @@ func canonicalSeats(seats []string) ([]string, error) {
 }
 
 // seatFingerprint binds the idempotency key to the canonical request (ADR-010): same
-// key + same request replays; same key + different seats/price conflicts.
+// key + same request replays; same key + different seats/price conflicts. The seat set
+// is JSON-encoded, not comma-joined: a seat identity may itself contain a comma, and a
+// comma-join is not injective (["A","B,C"] and ["A,B","C"] would collide and let one
+// request replay the other's claim).
 func seatFingerprint(org, slot, ticketType uuid.UUID, seats []string, unitAmount int64, currency string) string {
-	s := fmt.Sprintf("seat:%s:%s:%s:%s:%d:%s", org, slot, ticketType, strings.Join(seats, ","), unitAmount, currency)
+	enc, _ := json.Marshal(seats)
+	s := fmt.Sprintf("seat:%s:%s:%s:%s:%d:%s", org, slot, ticketType, enc, unitAmount, currency)
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
 }
 
@@ -184,6 +189,12 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 			if err = tx.Commit(); err != nil {
 				return SeatHold{}, err
 			}
+			return SeatHold{}, ErrConflict
+		}
+		// A terminal claim (released, or already-swept expired) cannot be revived by a
+		// replay: returning it as a live hold would re-pin seats that are free again and
+		// report a false success. The key is spent — the caller must hold anew (ErrConflict).
+		if existing.Status == "released" || existing.Status == "expired" {
 			return SeatHold{}, ErrConflict
 		}
 		existing.Kind = "buyer"

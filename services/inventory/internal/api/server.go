@@ -89,8 +89,13 @@ func problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrSlotClosed):
 		write(w, 409, map[string]string{"error": err.Error(), "code": "slot_closed"})
 		return
-	case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrIdempotency):
+	case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrIdempotency), errors.Is(err, store.ErrPoolKindMismatch):
+		// ErrPoolKindMismatch: a quantity claim hit a seated pool (or a seat claim a GA
+		// pool) — a 409 conflict, not a 500.
 		code = 409
+	case errors.Is(err, store.ErrSeatSetInvalid):
+		// Empty/oversized/whitespace seat set that slipped past the shape checks — a 400.
+		code = 400
 	}
 	write(w, code, map[string]string{"error": err.Error()})
 }
@@ -177,15 +182,18 @@ func (s *Server) createSeatHold(w http.ResponseWriter, r *http.Request) {
 	}
 	// Hold-then-pin (+ replay-re-pin): always pin before returning success, replay too.
 	if err := s.pinner.PinSeats(ctx, in.OrganizerID, sh.SeatMapID, sh.Seats, sh.PinnedBy); err != nil {
-		// The hold exists but its seats are not (fully) pinned — never return success.
-		_, _ = s.st.Transition(ctx, in.OrganizerID, sh.Claim.ID, "released")
 		if errors.Is(err, consumer.ErrSeatPinRejected) {
 			// Deterministic: a named seat is not in the current published map. Retrying
-			// cannot help; the hold is released, report conflict.
+			// cannot help, and the batch pin is all-or-nothing so nothing landed — release
+			// the invalid hold and report conflict.
+			_, _ = s.st.Transition(ctx, in.OrganizerID, sh.Claim.ID, "released")
 			write(w, 409, map[string]string{"error": "one or more seats are not available in the current seat map", "code": "seat_unavailable"})
 			return
 		}
-		// Transient: released to keep the invariant; the client may retry the same key.
+		// Transient: do NOT release — the hold stays held (unpinned), a same-key retry
+		// re-pins it, and the TTL reclaims it if the client abandons. Releasing here would
+		// both break the replay-re-pin retry and, under a concurrent same-key retry that
+		// pinned successfully, free seats out from under a request that returned success.
 		write(w, 503, map[string]string{"error": "seat pin temporarily unavailable, retry", "code": "pin_unavailable"})
 		return
 	}
