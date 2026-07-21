@@ -40,8 +40,11 @@ import (
 // service) to the smoke gate must come through here, with ADR-030 amended
 // first. If this test is failing, you either reordered the list (restore the
 // order) or changed the gate's scope (update ADR-030 and this pin together).
-// The second assertion is behavioral: whatever the gate's internals, its
-// output must never name a catalog operation.
+// The second assertion guards one specific future refactor: uncovered2xxOps
+// growing a catalog scan that bypasses smokeCoverageGatedServices. Today it
+// is implied by the first assertion (the gate only iterates the pinned list);
+// it exists so that class of change fails here, against ADR-030, instead of
+// shipping silently.
 func TestCatalogCoverageGateIsDeliberatelyUnitScoped(t *testing.T) {
 	want := []string{"inventory", "commerce", "payments", "access"}
 	if !slices.Equal(smokeCoverageGatedServices, want) {
