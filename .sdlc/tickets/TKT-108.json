@@ -1,13 +1,90 @@
 {
   "key": "TKT-108",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
-  "comments": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-108 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the code seams (verified at HEAD: `http.go:87` IncludeResponseStatus:true; **0** `500` decls in the catalog spec; `writeStoreError` default-500 `server.go:225`; test validator `server_test.go:1168`). Self-contained, no blockers, no human decision pending.\n\n| item | state |\n|---|---|\n| objective | met |\n| scope | met |\n| uncertainties | deferred |\n| dependencies | met |\n| approach | met |\n| first_slice | met |\n| success | met |\n| context_memo | met |\n\n**Deferred:** the explicit-500-per-op vs spec-level-`default`-response choice is a plan-time decision against the real spec — no product/architecture unknown. Governing: **ADR-028** (the masking mechanism to satisfy) + **ADR-009** (regen/drift). **Ready to prioritize (Gate 1).**"
+    }
+  ],
   "summary": "Declare 500 (or a shared default) on emit-failing catalog endpoints so ADR-028 doesn't mask recovery messages",
   "description": "### Incidental finding spun out of TKT-105 ai-review (deepseek-v4-pro@claudex, confirmed against HEAD)\n\n**Problem:** every catalog endpoint that can return HTTP 500 on a domain-event emission failure (`PublishSeatMap`, `PublishPerformance`, `EditSeatMap` [TKT-105], and any `writeStoreError` default) returns a **500 that is not declared in `services/catalog/api/openapi.yaml`**. The ADR-028 response validator (`shared/go/contract/http.go:87`, `IncludeResponseStatus: true`) treats an undocumented status as drift and **overwrites the handler's body** with `{\"error\":\"response violates OpenAPI contract\"}` — so the actionable recovery hint (e.g. 'retry by publishing the new version') never reaches the client.\n\n**Scope:** repo-wide and pre-existing — 0 of the catalog spec's endpoints declare a 500. TKT-105 did not introduce it and deliberately did NOT fix only its own endpoints (that would leave publish inconsistent). Fix once, consistently: either declare a `500` response (shared `#/components/responses/InternalError`) on every emit-failing operation, or add a spec-level default response, and regenerate. Then the recovery messages survive.\n\n**Also fold in (same area, TKT-105 ai-review incidental #E):** the catalog handler test helper `validateResponse` (`server_test.go`) does NOT set `IncludeResponseStatus: true`, so it passes on undocumented statuses that production rejects — which is why the masked-500 gap was invisible to tests. Align the test validator with production so this can't recur silently.\n\n**Acceptance:** an emit-failure 500 (unit test with a failing publisher) reaches the client with its original recovery body intact through the production ResponseValidator; the handler test validator checks status codes; `make check` green.\n\nSource: TKT-105 PR #82 ai-review, finding #1 (+#3). Governing: ADR-028 (response drift fail-closed), ADR-009 (contract-first).",
-  "readiness": {},
-  "context": {}
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Emit-failure 500s on catalog endpoints are undeclared in the OpenAPI spec, so the ADR-028 response validator (shared/go/contract/http.go:87, IncludeResponseStatus:true) overwrites the handler's actionable recovery body with the generic contract-violation message — the client never sees how to recover. Repo-wide (0 of the catalog spec's endpoints declare 500)."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: declare a 500 response consistently on catalog operations that can emit-fail (PublishSeatMap, PublishPerformance, EditSeatMap, and the writeStoreError default surface) — via a shared #/components/responses/InternalError OR a spec-level default response; regenerate Go+TS types; align the catalog handler test helper validateResponse (server_test.go:1168) to set IncludeResponseStatus:true so undocumented statuses fail tests too. OUT: changing the actual recovery behavior/messages (only making them survive the validator); other services' specs (catalog only — same pattern applies elsewhere but is separate work)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Design choice — per-operation explicit 500 vs one spec-level default response — is a plan-time decision, settled against the real spec/handlers; no product or architecture unknown. Whether adding 500 surfaces any secondary drift is a build-time test question, not a blocker."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. Touches only shared/go/contract (validator, unchanged) and services/catalog (spec+handlers+tests). All seams verified at HEAD: http.go:87 IncludeResponseStatus:true; 0 '500' decls in the catalog spec; writeStoreError default-500 at server.go:225; test validateResponse at server_test.go:1168."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Add a reusable 500 response to services/catalog/api/openapi.yaml (either a shared components/responses/InternalError referencing the Error schema, or a `default` response) and attach it to every operation whose handler can reach a 500 (emit-failure paths + writeStoreError default). `make generate` → commit regenerated Go (openapi_gen.go) + TS (backoffice+storefront api-types.gen.ts) per ADR-009; check-generate must pass. Set IncludeResponseStatus:true in the test env's validateResponse so a future undocumented status fails the handler tests. Add a unit test with a failing publisher asserting the ORIGINAL recovery body survives through the production ResponseValidator."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The full fix is one sprint-sized slice: spec 500 declaration + regen + test-validator alignment + one failing-publisher assertion that the recovery body survives. Not decomposable further without leaving publish/edit inconsistent (the whole point)."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) an emit-failure 500 (unit test, failing publisher) reaches the client with its ORIGINAL recovery body intact through the production ResponseValidator — not the generic 'response violates OpenAPI contract'; (2) the catalog handler test validator checks status codes (IncludeResponseStatus:true), so an undocumented status fails a test; (3) every emit-failing catalog operation declares 500 in the spec; (4) regenerated types committed, check-generate passes; (5) make check green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-028 (response drift fail-closed — the mechanism being worked around) and ADR-009 (contract-first, regen + drift gate). governingAdrs present."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-028",
+        "rule": "The response validator fails closed on drift, INCLUDING an undocumented status (IncludeResponseStatus:true): a status not in the spec is overwritten with a generic contract-violation body. This is the exact mechanism to satisfy by declaring 500.",
+        "date": "2026-07-20"
+      },
+      {
+        "id": "ADR-009",
+        "rule": "Contract-first: the OpenAPI doc is the source of truth; Go+TS types are generated and committed; make check-generate fails on drift. A new/changed response requires regenerating all affected gen files.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-028",
+        "why": "The fix is precisely to make the declared response set match reality so the fail-closed validator stops masking the 500 body. Read it before deciding explicit-500 vs default response."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Any spec change means regenerate + commit Go (openapi_gen.go) and both TS gen files (backoffice+storefront); the drift gate enforces it."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Origin: TKT-105 PR #82 ai-review finding #1 (masked-500) + #3 (test validator ignores status)",
+        "link": ".sdlc board TKT-105"
+      },
+      {
+        "summary": "The validator + the exact masking behavior",
+        "link": "shared/go/contract/http.go:87"
+      },
+      {
+        "summary": "writeStoreError default-500 + emit-failure 500 sites",
+        "link": "services/catalog/internal/api/server.go:225"
+      }
+    ],
+    "capturedAt": "2026-07-20"
+  }
 }
