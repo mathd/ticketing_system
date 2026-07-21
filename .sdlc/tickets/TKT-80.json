@@ -4,7 +4,7 @@
   "summary": "US-017: Seat-level claims — reserved seating enters the core",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent:opus-4.8",
   "pr": null,
