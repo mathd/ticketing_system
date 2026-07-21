@@ -20,6 +20,18 @@ import (
 // catalog is absent from the allowlist (early return -> no recordSmokeCoverage)
 // and GREEN once catalog is in it. It also permanently guards the allowlist
 // against a future regression that silently drops catalog again.
+//
+// Scope of the guarantee: the allowlist only validates catalog responses that
+// actually reach validateServiceResponse via a smoke request. Catalog is
+// deliberately absent from the uncovered2xxOps coverage gate (coverage_test.go),
+// so a *new, unexercised* catalog operation can still be added without smoke
+// contract-validating it — catalog's per-operation coverage lives in its unit
+// suite by design. Validating unexercised catalog operations end-to-end is a
+// separate, larger concern than this allowlist flip.
+//
+// This test relies on smoke's top-level tests running sequentially (none call
+// t.Parallel()): it deletes and restores a shared smokeCoverage entry, which
+// would race a concurrent catalog test if that invariant ever changed.
 func TestValidateServiceResponseCoversCatalog(t *testing.T) {
 	const op = "catalog listPublicVenues"
 
