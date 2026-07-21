@@ -116,3 +116,10 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   independently reached for heavier designs (schema bump / dedicated subject + backfill) and the
   critique had to pull them back to the ADR's own default — check §2 before inventing
   distribution machinery for a new optional field. (TKT-87, PR #73)
+- **Catalog's `/internal/*` service-to-service routes are hand-mounted, outside the OpenAPI
+  contract** — not in `catalog/api/openapi.yaml`, not codegen'd; the ADR-028 response validator
+  skips paths it can't resolve, so a new internal endpoint needs no spec change or `make generate`.
+  Inventory is the opposite (its request validator rejects undeclared paths; every route is
+  declared). Both TKT-80 plan drafts over-scoped the catalog pin endpoint as an OpenAPI change —
+  check the target service's existing `/internal/*` routes before planning. See
+  `docs/learnings/2026-07-21-catalog-internal-routes-are-hand-mounted-outside-openapi.md`. (TKT-80, PR #86)
