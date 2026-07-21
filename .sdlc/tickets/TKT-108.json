@@ -1,15 +1,22 @@
 {
   "key": "TKT-108",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude (fable-5 session)",
   "pr": null,
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-108 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the code seams (verified at HEAD: `http.go:87` IncludeResponseStatus:true; **0** `500` decls in the catalog spec; `writeStoreError` default-500 `server.go:225`; test validator `server_test.go:1168`). Self-contained, no blockers, no human decision pending.\n\n| item | state |\n|---|---|\n| objective | met |\n| scope | met |\n| uncertainties | deferred |\n| dependencies | met |\n| approach | met |\n| first_slice | met |\n| success | met |\n| context_memo | met |\n\n**Deferred:** the explicit-500-per-op vs spec-level-`default`-response choice is a plan-time decision against the real spec — no product/architecture unknown. Governing: **ADR-028** (the masking mechanism to satisfy) + **ADR-009** (regen/drift). **Ready to prioritize (Gate 1).**"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-108 (fully autonomous, gateless run)\n\n**Selection reason:** in Ready, zero open blockers (no links on the ticket), all 8 DoR items met/deferred, self-contained scope (catalog spec + regen + test-validator alignment).\n\n**⚠️ GATE WAIVER — recorded per repo-owner directive (2026-07-21):** the owner is deliberately waiving all four human gates for this run as a process experiment. Gate 1: satisfied by Ready status. Gate 2: orchestrator resolves open decisions after cross-model critique (prefer the critique's recommendation; else most reversible), recorded in plan-final. Gate 3: orchestrator squash-merges after ai-review converges, review-guide posted first as audit record. Gate 4: orchestrator self-validates COS against test evidence on merged code, posts validation note + full metrics. Everything else in the skill applies unchanged: config.models routing, cross-model review both stages, TDD red-first, make check green before every push and after merge, all markers, no AI attribution.\n\nBranch: `TKT-108-declare-500-catalog-spec` off `origin/main` (786faa8)."
     }
   ],
   "summary": "Declare 500 (or a shared default) on emit-failing catalog endpoints so ADR-028 doesn't mask recovery messages",
