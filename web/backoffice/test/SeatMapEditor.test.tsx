@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import SeatMapEditor, { toEdit } from '../src/components/SeatMapEditor';
+import SeatMapEditor, { nextSeat, toEdit } from '../src/components/SeatMapEditor';
 import type { SeatMapGeometry } from '../src/lib/api';
 
 const ORG = '00000000-0000-0000-0000-000000000001';
@@ -47,5 +47,33 @@ describe('SeatMapEditor (TKT-105)', () => {
     fireEvent.change(screen.getByLabelText('Seat Orchestra/A label'), { target: { value: '9' } });
     const hidden = screen.getByTestId('geometry-input') as HTMLInputElement;
     expect(JSON.parse(hidden.value).sections[0].rows[0].seats[0].label).toBe('9');
+  });
+});
+
+// nextSeat must not collide with an existing label/position — deriving from
+// length duplicates a seat identity the catalog then rejects (ai-review finding).
+describe('nextSeat', () => {
+  it('takes the next position above the current max, not the count', () => {
+    // seats [1@1, 3@2] with a gap: length+1 would give label "3" (collision).
+    const next = nextSeat([
+      { label: '1', position: 1 },
+      { label: '3', position: 2 },
+    ]);
+    expect(next.position).toBe(3);
+    expect(next.label).not.toBe('3');
+  });
+
+  it('bumps the label past any existing label so the identity is unique', () => {
+    // max position is 2, so the first candidate label "3" already exists → bump to "4".
+    const next = nextSeat([
+      { label: '3', position: 1 },
+      { label: '4', position: 2 },
+    ]);
+    expect(next.label).toBe('5');
+  });
+
+  it('handles an empty row', () => {
+    const next = nextSeat([]);
+    expect(next).toEqual({ label: '1', position: 1 });
   });
 });

@@ -38,6 +38,24 @@ function fromGeometry(g: SeatMapGeometry): SectionState[] {
   }));
 }
 
+// nextSeat proposes a fresh seat for a row without colliding with an existing
+// label or position: it takes the next integer above the current max position,
+// then bumps the label until it is unique in the row. Deriving from length
+// (seats.length + 1) collides after a removal or with non-contiguous labels —
+// producing a duplicate section/row/seat identity the catalog then rejects (409).
+// Exported for the component test.
+export function nextSeat(seats: SeatState[]): SeatState {
+  const maxPos = seats.reduce((mx, s) => Math.max(mx, s.position), 0);
+  const used = new Set(seats.map((s) => s.label));
+  let n = maxPos + 1;
+  let label = String(n);
+  while (used.has(label)) {
+    n += 1;
+    label = String(n);
+  }
+  return { label, position: maxPos + 1 };
+}
+
 // toEdit converts the editor state to the SeatMapEdit request body. Exported so
 // the component test can assert the exact serialized shape without a DOM submit.
 export function toEdit(organizerId: string, sections: SectionState[]): SeatMapEdit {
@@ -100,9 +118,7 @@ export default function SeatMapEditor({ geometry, organizerId, action, postTo }:
           ? s
           : {
               ...s,
-              rows: s.rows.map((r, j) =>
-                j !== ri ? r : { ...r, seats: [...r.seats, { label: String(r.seats.length + 1), position: r.seats.length + 1 }] },
-              ),
+              rows: s.rows.map((r, j) => (j !== ri ? r : { ...r, seats: [...r.seats, nextSeat(r.seats)] })),
             },
       ),
     );
