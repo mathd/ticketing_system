@@ -163,10 +163,17 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 			write(w, 500, map[string]string{"error": "lookup operation"})
 			return
 		}
-		if storedResult, storedOK := providerStateResult(fresh); storedOK {
-			write(w, 200, statusBody(storedResult, fresh.AuthorizedAmount, fresh.CapturedAmount, fresh.RequestCurrency))
+		storedResult, storedOK := providerStateResult(fresh)
+		if !storedOK {
+			// The guard blocked the write but the stored state is not reconstructable
+			// (a state this switch does not know): reporting the refused observation
+			// would present blocked-as-stale data as truth — fail loud instead
+			// (third-pass P3-1).
+			write(w, 500, map[string]string{"error": "provider evidence inconsistent"})
 			return
 		}
+		write(w, 200, statusBody(storedResult, fresh.AuthorizedAmount, fresh.CapturedAmount, fresh.RequestCurrency))
+		return
 	}
 	write(w, 200, statusBody(result, authorized, captured, op.RequestCurrency))
 }
