@@ -2,14 +2,10 @@ package psp
 
 import (
 	"context"
+	"fmt"
 
 	"ticketing/shared/fakepsp"
 )
-
-// ErrUnknownToken reports a payment token the fake PSP does not recognize. The inline
-// charge handler answered this with HTTP 400 "unknown fake payment token"; the handler
-// still maps it to 400, now from a typed error rather than a switch default.
-var ErrUnknownToken = fakepsp.ErrUnknownToken
 
 // Fake is the in-repo PSP used for local development and the offline gate. It reproduces
 // exactly the outcomes the inline charge switch produced (server.go:169-187 before this
@@ -31,7 +27,9 @@ func (f *Fake) Authorize(_ context.Context, req AuthorizeRequest) (Result, error
 	case fakepsp.TokenTimeout:
 		return Result{Outcome: Timeout, TerminalNoSideEffect: true}, nil
 	default:
-		return Result{}, ErrUnknownToken
+		// Wrap the fake-specific error in the port-level sentinel so the handler checks a
+		// PSP concept (ErrInvalidToken), not a fake one. errors.Is matches both.
+		return Result{}, fmt.Errorf("%w: %w", ErrInvalidToken, fakepsp.ErrUnknownToken)
 	}
 }
 

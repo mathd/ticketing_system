@@ -168,14 +168,15 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.psp.Authorize(r.Context(), psp.AuthorizeRequest{
-		OrganizerID:  in.OrganizerID.String(),
-		OrderID:      in.OrderID.String(),
-		BuyerID:      in.BuyerID.String(),
-		Amount:       in.Amount,
-		Currency:     in.Currency,
-		PaymentToken: in.PaymentToken,
+		OrganizerID:    in.OrganizerID.String(),
+		OrderID:        in.OrderID.String(),
+		BuyerID:        in.BuyerID.String(),
+		Amount:         in.Amount,
+		Currency:       in.Currency,
+		PaymentToken:   in.PaymentToken,
+		IdempotencyKey: key,
 	})
-	if errors.Is(err, psp.ErrUnknownToken) {
+	if errors.Is(err, psp.ErrInvalidToken) {
 		write(w, 400, map[string]string{"error": "unknown fake payment token"})
 		return
 	}
@@ -187,14 +188,30 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "payment provider error"})
 		return
 	}
+	// Fail closed on a self-contradictory provider result before writing anything to the
+	// money journal (e.g. a captured outcome that did not capture). The fake always produces
+	// consistent results; a future adapter might not, and the journal must not record an
+	// impossible payment.
+	if err := result.Validate(); err != nil {
+		write(w, 500, map[string]string{"error": "invalid payment outcome"})
+		return
+	}
 	// Derive the journalled fact type, the operation status string and the HTTP code from
-	// the normalized PSP outcome. This preserves the pre-refactor mapping exactly: captured
-	// success appends payment.authorized first, decline/timeout append a single terminal
-	// fact, and the HTTP codes are unchanged (200/402/408).
+	// the normalized PSP outcome ALONE — a single dispatch point, so the authorize append
+	// and the terminal fact can never be decided from divergent fields. This preserves the
+	// pre-refactor mapping exactly: a captured success appends payment.authorized first,
+	// decline/timeout append a single terminal fact, HTTP codes unchanged (200/402/408).
 	var status, factType string
 	var code int
 	switch result.Outcome {
 	case psp.Captured:
+		// Captured is authorize-then-capture: append payment.authorized first, from this
+		// case, not a separate boolean guard (Validate has proven Authorized && Captured).
+		authorizedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":payment.authorized"))
+		if _, _, err := s.journal.Append(r.Context(), store.Fact{ID: authorizedID, OrganizerID: in.OrganizerID, Type: "payment.authorized", OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}); err != nil {
+			write(w, 500, map[string]string{"error": "journal append failed"})
+			return
+		}
 		status, factType, code = "captured", "payment.captured", 200
 	case psp.Declined:
 		status, factType, code = "declined", "payment.declined", 402
@@ -202,16 +219,9 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		status, factType, code = "timeout", "payment.timeout", 408
 	default:
 		// Authorized-only and Unknown are the compensation/status surface of later slices;
-		// the charge path only produces captured/declined/timeout today.
+		// the charge path only produces captured/declined/timeout today. Fail closed.
 		write(w, 500, map[string]string{"error": "unsupported payment outcome"})
 		return
-	}
-	if result.Authorized && result.Captured {
-		authorizedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":payment.authorized"))
-		if _, _, err := s.journal.Append(r.Context(), store.Fact{ID: authorizedID, OrganizerID: in.OrganizerID, Type: "payment.authorized", OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}); err != nil {
-			write(w, 500, map[string]string{"error": "journal append failed"})
-			return
-		}
 	}
 	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":"+factType))
 	e, replay, err := s.journal.Append(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}})
