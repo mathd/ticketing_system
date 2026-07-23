@@ -1,10 +1,8 @@
 {
   "key": "TKT-114",
   "type": "Story",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "sdlc-agent",
   "pr": {
     "number": 107,
@@ -68,6 +66,11 @@
       "stage": "po-review",
       "kind": "summary",
       "body": "<!-- sdlc:stage=po-review kind=summary -->\n### Validation note — COS met (owner-gated live verification INCLUDED and reported)\n\nMerged to main as 65e5c3b (PR #107, squash; merge verified by CONTENT on origin/main — all four\nbranch commits' signatures present). COS evidence:\n- Stripe test-mode adapter behind the psp.PSP port: live-verified against api.stripe.com by the\n  OWNER'S sk_test_ key — the shipped adapter code performed authorize(internal capture)/status/\n  refund/refund-status/decline correctly (results reported to the owner before merge; owner gave\n  the explicit go). Offline: hand-written literal fixtures, gate makes zero Stripe calls.\n- /internal/psp/{status,void,refund}: provider-neutral (no pi_/ch_/re_/pm_ in any request or\n  response — spec additionalProperties:false + response validator enforce it), state-checked\n  against stored evidence, amounts from the stored row, exactly-once facts via deterministic IDs.\n- Migration 0002 out-of-band (ADR-022 path); BIGINT money; smoke suite drives the full composed\n  flow including the S3 recovery sequence (auth-hold -> status -> void) and replay semantics.\n- Config: fake by default, sk_test_ selects Stripe, sk_live_/garbage refuse startup (tested).\nOwner directive for this slice was full-autonomous through self-merge with one stop (live-verify\nresults) — both honored. Owner reminded to ROLL the sk_test_ key (it transited the chat)."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### TKT-114 metrics\n\n| stage | duration |\n|---|---|\n| Backlog | ~1 min (created directly Ready-shaped, 07-22 23:35) |\n| Ready | 2 min (claim 23:37) |\n| Planning / agent:planning | ~10 min (A/B arms parallel) |\n| Planning / agent:plan-review | ~8 min (fable-5 critique + plan-final; Gate 2 waived) |\n| Building / agent:coding | ~4h active across 2 sessions (23:55 -> 09:19 next day incl. overnight handoff gap; WIP checkpoint 943ca54 between) |\n| Building / agent:ai-review | ~1.5h (3 passes incl. 2 fix rounds + gates) |\n| PO Review | ~1 min (self-accept per waiver, live-verify stop served as the human gate) |\n| human-wait total | ~10 min (one stop: live sk_test_ key re-paste + merge go) |\n\ndiff: +2150/−54 (19 files), PR #107, merged 2026-07-23T14:48Z as 65e5c3b.\nGate runs: 7 total (2 check-generate mechanics, 1 real coverage-gate catch, 4 green).\nReview: A/B pass 1 (deepseek-v4-pro:max@claudex, gpt-5.6-sol:medium@claudex) + 2 control-arm fix\npasses; 13 findings, 12 confirmed, 0 refuted, 1 accepted-design-bound; ledger line appended.\n\nlearnings:\n- **check-generate diffs against HEAD** — regenerated code must be COMMITTED before `make check`\n  can pass; running the gate on a dirty codegen tree wastes a full run. Target: repo\n  (AGENTS.md one-liner; see retro 1). Hit twice this ticket.\n- **The smoke coverage gate is a real reviewer**: it forced the void happy path into existence\n  (fake-auth-hold + deterministic fake Status), which IS the S3 recovery testbed. Target: repo\n  (already encoded in code comments + smoke test; S3 ticket will cite it).\n- **Stripe's ~24h idempotency-key retention bounds every same-key replay contract** (status\n  replay AND capture retry). Target: ADR-032 (amended in-diff, done).\n- **2-arm A/B review on money paths earned its 2x cost**: zero overlap — arm A alone would have\n  missed 3 crash-boundary defects, arm B alone the capture-taxonomy hold-stranding bug. Target:\n  process/ab-ledger (line appended); keep arrays for money-path tickets.\n- **deepseek-v4-pro@claudex ran CLEAN twice this ticket** (review pass 1 + both fix passes) after\n  2 prior breaches — the breach is intermittent, not systematic. Target: ab-ledger note (recorded);\n  keep the post-stage `git status` check regardless.\n\nretro:\n1. *What would have made this faster/better:* The handoff doc was excellent (state reconstruction\n   worked first try). One gap cost ~15 min: it said \"gate green, then commit\" but check-generate\n   structurally requires committed codegen. Concrete change: add to AGENTS.md gate bullet:\n   \"commit regenerated openapi_gen/api-types before running `make check` — check-generate diffs\n   against HEAD.\" (offering to apply now)\n2. *What should the humans change:* `.claude/sdlc.config.json` still names `deepseek-v4-flash`,\n   which the proxy does not serve — every stage re-records the flash->pro substitution. Concrete\n   change: edit both A/B arrays to `deepseek-v4-pro:...@claudex` so the config matches reality\n   and the substitution note disappears from future stage comments. (offering to apply now)\n"
     }
   ]
 }
