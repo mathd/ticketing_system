@@ -1,9 +1,11 @@
 {
   "key": "TKT-114",
   "type": "Story",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "sdlc-agent",
   "pr": null,
   "summary": "Stripe test-mode adapter + /internal/psp/* endpoints + operation/compensation schema (Slice 2 of TKT-56)",
   "description": "Slice 2 of TKT-56 (parent umbrella). Implements the Stripe test-mode adapter behind the psp.PSP port (ADR-032), plus the payments /internal/psp/* endpoints and the durable operation/compensation schema. Scope: psp/stripe.go (PaymentIntent manual-capture authorize, capture, void, refund, status) against an injected http.Client + base URL, tested with hand-written literal Stripe JSON fixtures via httptest (gate stays 100% offline); new /internal/psp/status, /internal/psp/refund, /internal/psp/void endpoints + OpenAPI + regen; migration 0002_psp_operations.sql extending payment_operations with provider refs / captured-vs-authorized amounts / normalized state + a payment_compensations child table keyed by (operation, kind); fake<->Stripe equivalence asserted against ADR-032's normalized outcome vocabulary; config: STRIPE_SECRET_KEY (fake fallback when unset, live-mode key rejected at startup) mirroring signingConfig(). NOT in S2: commerce recovery wiring (S3), keyring (S4). Owner directives for this run: full autonomous through self-merge; offline gate + owner-run live sk_test_ verification once (key never committed / never in CI). Governing: ADR-032.",
@@ -22,6 +24,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nCarved from the TKT-56 umbrella after S1 (TKT-113) merged. DoR inherited from the parent's plan-final + ADR-032 (the governing contract already written). governingAdrs: ADR-032 (port contract + Stripe mappings — exists at HEAD, verified), ADR-016 (recovery evidence rules), ADR-011 (canonical money journal, EUR pin), ADR-003 (append-only), ADR-021 (adversary naming), ADR-022 (out-of-band migrations). Blocker TKT-113 Done. Placed directly in Ready: the parent already cleared Gate-1 and the owner directed the S2 run. Test seam: psp package (stripe adapter behind injected http.Client + httptest) + payments Server.Router httptest for the new endpoints + a store smoke test for the migration."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed — TKT-114 (Slice 2 of TKT-56), FULLY AUTONOMOUS THROUGH SELF-MERGE.**\n\nOwner directives for this slice (recorded):\n- **Full autonomous through merge:** run Ready → Done in one continuous run including the Gate-3\n  self-merge (squash + delete branch) and Gate-4 self-accept. No mid-run checkpoint (unlike S1/TKT-113,\n  which stopped before merge). Same non-gate invariants as the parent run: config.models routing (no\n  substitution beyond the recorded flash→pro one), cross-model review for plan + code, TDD tests-red-first,\n  make check green before every push and after merge, all marker comments, no AI attribution.\n- **Offline gate + owner-run live verification once:** `make check`/CI stays 100% offline — the Stripe\n  adapter is tested against an injected http.Client + httptest.Server replaying **hand-written literal\n  Stripe JSON fixtures**. Separately, the orchestrator makes a few **live sk_test_ calls** locally\n  (authorize + capture + refund against api.stripe.com test mode) to verify the adapter really works, and\n  reports what it saw. The key is NEVER committed, NEVER in CI, used only in local verification.\n\n**Stop conditions still hold** (this slice touches money paths, a real payment provider, AND a data\nmigration): if implementation diverges from the plan in those areas, a blocking review finding survives\nthe churn cap, or the gate/CI fails twice on the same cause with no clear fix — STOP and report rather\nthan merge blind.\n\nBlocker TKT-113 (S1) is Done/merged. Branch `TKT-114-stripe-adapter-psp-endpoints-schema` off updated\norigin/main (has ea49534 = S1). Governing ADRs (re-resolved at claim, all exist at HEAD):\n- **ADR-032** — the port contract + Stripe PaymentIntent/charge/refund mappings this slice implements.\n- ADR-016 §Dec3 (normalized terminal-no-side-effect; timeout=Unknown not release), ADR-011 (canonical\n  money journal, EUR pin), ADR-003 (append-only), ADR-021 (adversary naming — HMAC boundary unchanged\n  this slice), ADR-022 (out-of-band migrations — 0002_psp_operations.sql runs via the migrate subcommand),\n  ADR-009 (contract-first APIs — the new /internal/psp/* endpoints go in the OpenAPI spec + regen).\n\nReal Stripe REST contract fetched from docs.stripe.com (not memory) and cached for the plan brief.\n"
     }
   ]
 }
