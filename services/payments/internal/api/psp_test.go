@@ -106,3 +106,37 @@ func TestCompensationFactIDDeterministic(t *testing.T) {
 		t.Fatal("distinct fact types must derive distinct IDs")
 	}
 }
+
+// When the monotonic guard refuses a stale observation, the endpoint answers from the
+// STORED evidence (second-pass P2-2); this pins the reconstruction for every recordable
+// provider state.
+func TestProviderStateResult(t *testing.T) {
+	cases := map[string]struct {
+		outcome  string
+		terminal bool
+		ok       bool
+	}{
+		"authorized": {"authorized", false, true},
+		"captured":   {"captured", false, true},
+		"declined":   {"declined", true, true},
+		"timeout":    {"timeout", true, true},
+		"voided":     {"voided", true, true},
+		"":           {"", false, false},
+		"garbage":    {"", false, false},
+	}
+	for state, want := range cases {
+		got, ok := providerStateResult(store.Operation{ProviderState: state})
+		if ok != want.ok {
+			t.Fatalf("providerStateResult(%q) ok = %v, want %v", state, ok, want.ok)
+		}
+		if !ok {
+			continue
+		}
+		if string(got.Outcome) != want.outcome || got.TerminalNoSideEffect != want.terminal {
+			t.Fatalf("providerStateResult(%q) = %+v, want outcome %q terminal %v", state, got, want.outcome, want.terminal)
+		}
+		if err := got.Validate(); err != nil {
+			t.Fatalf("providerStateResult(%q) invalid: %v", state, err)
+		}
+	}
+}

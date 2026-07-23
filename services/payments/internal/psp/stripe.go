@@ -189,6 +189,10 @@ func (s *Stripe) Capture(ctx context.Context, providerRef string, amount int64, 
 	if amount > 0 {
 		form.Set("amount_to_capture", strconv.FormatInt(amount, 10))
 	}
+	// The capture key is operation-derived and stable; like the Status replay it is only
+	// idempotent within Stripe's ~24h key retention (ADR-032 §Status/replay amendment).
+	// Past the window an already-captured PI answers with an error we map to Unknown —
+	// still recoverable, because Status's GET retrieve does not depend on the key.
 	status, raw, se, err := s.do(ctx, http.MethodPost, "/v1/payment_intents/"+providerRef+"/capture", "capture:"+providerRef, form)
 	if err != nil {
 		return Result{Outcome: Unknown, ProviderRef: providerRef}, err

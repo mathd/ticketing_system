@@ -378,9 +378,19 @@ func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, sta
 // "captured" would let a void through on captured money). NULL and "authorized" may
 // progress to anything; every other recorded state accepts only an idempotent re-write of
 // itself.
-func (j *Journal) RecordProviderState(ctx context.Context, org uuid.UUID, key string, prov ProviderResult) error {
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET provider_payment_ref=COALESCE(NULLIF($3,''),provider_payment_ref),provider_charge_ref=COALESCE(NULLIF($4,''),provider_charge_ref),provider_state=NULLIF($5,''),authorized_amount=$6,captured_amount=$7,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND (provider_state IS NULL OR provider_state='authorized' OR provider_state=$5)`, org, key, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
-	return err
+// The boolean reports whether the write LANDED: false means the guard blocked a stale
+// observation, and the caller must answer from the stored evidence instead of the
+// provider result it failed to record (second-pass P2-2).
+func (j *Journal) RecordProviderState(ctx context.Context, org uuid.UUID, key string, prov ProviderResult) (bool, error) {
+	res, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET provider_payment_ref=COALESCE(NULLIF($3,''),provider_payment_ref),provider_charge_ref=COALESCE(NULLIF($4,''),provider_charge_ref),provider_state=NULLIF($5,''),authorized_amount=$6,captured_amount=$7,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND (provider_state IS NULL OR provider_state='authorized' OR provider_state=$5)`, org, key, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // CompensationKey derives the bounded, versioned provider idempotency key for a

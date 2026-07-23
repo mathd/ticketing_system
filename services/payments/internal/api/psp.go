@@ -146,14 +146,49 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, statusBody(result, 0, 0, op.RequestCurrency))
 		return
 	}
-	if err := s.journal.RecordProviderState(r.Context(), org, key, store.ProviderResult{
+	recorded, err := s.journal.RecordProviderState(r.Context(), org, key, store.ProviderResult{
 		PaymentRef: result.ProviderRef, ChargeRef: result.ProviderChargeRef,
 		State: state, AuthorizedAmount: authorized, CapturedAmount: captured,
-	}); err != nil {
+	})
+	if err != nil {
 		write(w, 500, map[string]string{"error": "persist provider state"})
 		return
 	}
+	if !recorded {
+		// The monotonic guard blocked a STALE observation (second-pass P2-2): the store
+		// holds stronger evidence than what the provider just answered — report the
+		// stored truth, not the answer we refused to record.
+		fresh, found, err := s.journal.LookupOperation(r.Context(), org, key)
+		if err != nil || !found {
+			write(w, 500, map[string]string{"error": "lookup operation"})
+			return
+		}
+		if storedResult, storedOK := providerStateResult(fresh); storedOK {
+			write(w, 200, statusBody(storedResult, fresh.AuthorizedAmount, fresh.CapturedAmount, fresh.RequestCurrency))
+			return
+		}
+	}
 	write(w, 200, statusBody(result, authorized, captured, op.RequestCurrency))
+}
+
+// providerStateResult reconstructs the normalized result from the operation's recorded
+// provider evidence — the answer of record when a fresher observation was refused by the
+// monotonic guard.
+func providerStateResult(op store.Operation) (psp.Result, bool) {
+	switch op.ProviderState {
+	case "authorized":
+		return psp.Result{Outcome: psp.Authorized, Authorized: true}, true
+	case "captured":
+		return psp.Result{Outcome: psp.Captured, Captured: true, Authorized: true}, true
+	case "declined":
+		return psp.Result{Outcome: psp.Declined, TerminalNoSideEffect: true}, true
+	case "timeout":
+		return psp.Result{Outcome: psp.Timeout, TerminalNoSideEffect: true}, true
+	case "voided":
+		return psp.Result{Outcome: psp.Voided, TerminalNoSideEffect: true}, true
+	default:
+		return psp.Result{}, false
+	}
 }
 
 // compensationAllowed validates that the requested compensation is the correct one for
@@ -236,22 +271,34 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		write(w, 404, map[string]string{"error": "operation not found"})
 		return
 	}
-	// Replay check FIRST, read-only (ai-review B5): a completed compensation answers as a
-	// replay even when the evidence has since moved on (e.g. a status resolution recorded
-	// the operation as voided after the void completed) — re-deriving eligibility for an
-	// already-performed compensation would 409 its own success.
-	if done, found, err := s.journal.LookupCompensation(r.Context(), in.OrganizerID, key, kind); err != nil {
+	// Replay/resume check FIRST, read-only (ai-review B5, second-pass P2-1): a completed
+	// compensation answers as a replay, and a BOUND-but-incomplete one RESUMES on the
+	// basis recorded at bind time. Eligibility is derived once, when the compensation is
+	// first bound — re-deriving it on a resume would 409 the compensation's own progress
+	// (a crash between the provider call and completion legitimately moves the evidence
+	// to voided/refunded, which no longer looks eligible), wedging it permanently.
+	existing, resuming, err := s.journal.LookupCompensation(r.Context(), in.OrganizerID, key, kind)
+	if err != nil {
 		write(w, 500, map[string]string{"error": "lookup compensation"})
 		return
-	} else if found && done.Completed {
-		write(w, 200, map[string]any{"status": done.Status, "fact_id": done.FactID, "replay": true})
+	}
+	if resuming && existing.Completed {
+		write(w, 200, map[string]any{"status": existing.Status, "fact_id": existing.FactID, "replay": true})
 		return
 	}
-	if err := compensationAllowed(op, kind); err != nil {
-		write(w, 409, map[string]string{"error": err.Error()})
-		return
+	var amount int64
+	var currency string
+	if resuming {
+		// The bind recorded the money basis durably; evidence columns may since have been
+		// zeroed by the very progress we are resuming (e.g. voided => authorized_amount 0).
+		amount, currency = existing.Amount, existing.Currency
+	} else {
+		if err := compensationAllowed(op, kind); err != nil {
+			write(w, 409, map[string]string{"error": err.Error()})
+			return
+		}
+		amount, currency = compensationBasis(op, kind)
 	}
-	amount, currency := compensationBasis(op, kind)
 	comp, err := s.journal.BindCompensation(r.Context(), in.OrganizerID, key, kind, amount, currency)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "bind compensation"})
