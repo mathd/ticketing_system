@@ -115,7 +115,7 @@ func TestStripeAuthorizeConfirmsThenCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authorize: %v", err)
 	}
-	want := Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: "pi_test_authonly"}
+	want := Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: "pi_test_authonly", ProviderChargeRef: "ch_test_1"}
 	if got != want {
 		t.Fatalf("Authorize\n got=%+v\nwant=%+v", got, want)
 	}
@@ -290,5 +290,62 @@ func TestFixturesParse(t *testing.T) {
 		if err := json.Unmarshal([]byte(f), &m); err != nil {
 			t.Fatalf("fixture does not parse: %v", err)
 		}
+	}
+}
+
+// The charge reference (ch_) rides latest_charge on the captured PaymentIntent; the
+// adapter surfaces it as ProviderChargeRef so the store can persist both pi_ and ch_
+// (ADR-032 §provider reference identity). A PaymentIntent without latest_charge (or
+// null) simply yields an empty ChargeRef — never an error.
+func TestStripeCaptureExtractsChargeRef(t *testing.T) {
+	stub := newStripeStub(t, map[string]stubResp{
+		"POST /v1/payment_intents":                          {200, piRequiresCapture},
+		"POST /v1/payment_intents/pi_test_authonly/capture": {200, piSucceeded},
+	})
+	s := newStripeForStub(stub)
+	got, err := s.Authorize(context.Background(), AuthorizeRequest{
+		OrganizerID: "org", OrderID: "ord", BuyerID: "buy",
+		Amount: 1250, Currency: "EUR", PaymentToken: "pm_card_visa", IdempotencyKey: "idem-ch-1",
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if got.ProviderChargeRef != "ch_test_1" {
+		t.Fatalf("want ProviderChargeRef ch_test_1 from latest_charge, got %q", got.ProviderChargeRef)
+	}
+	// null latest_charge: hand-written literal with explicit null — parses, empty ref.
+	const piNullCharge = `{"id":"pi_nl","object":"payment_intent","status":"succeeded","currency":"eur","latest_charge":null}`
+	stub2 := newStripeStub(t, map[string]stubResp{"GET /v1/payment_intents/pi_nl": {200, piNullCharge}})
+	s2 := newStripeForStub(stub2)
+	got2, err := s2.Status(context.Background(), StatusRequest{ProviderRef: "pi_nl"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got2.ProviderChargeRef != "" {
+		t.Fatalf("null latest_charge must yield empty ChargeRef, got %q", got2.ProviderChargeRef)
+	}
+}
+
+// 429 and 5xx mean the request may have reached Stripe: ambiguous, never terminal, never
+// Declined (plan-final A1/A2, ADR-016 §Dec3).
+func TestStripeRateLimitAndServerErrorsAreUnknown(t *testing.T) {
+	for name, resp := range map[string]stubResp{
+		"rate limited": {429, `{"error":{"message":"Too many requests","type":"rate_limit_error"}}`},
+		"server error": {500, `{"error":{"message":"boom","type":"api_error"}}`},
+		"bad gateway no envelope": {502, `<html>bad gateway</html>`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := newStripeStub(t, map[string]stubResp{"POST /v1/payment_intents": resp})
+			s := newStripeForStub(stub)
+			got, err := s.Authorize(context.Background(), AuthorizeRequest{
+				Amount: 100, Currency: "EUR", PaymentToken: "pm", IdempotencyKey: "idem-u",
+			})
+			if err == nil {
+				t.Fatal("ambiguous provider failure must surface an error")
+			}
+			if got.Outcome != Unknown || got.TerminalNoSideEffect {
+				t.Fatalf("want Unknown+non-terminal, got %+v", got)
+			}
+		})
 	}
 }

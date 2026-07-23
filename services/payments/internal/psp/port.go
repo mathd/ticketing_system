@@ -91,9 +91,13 @@ type Result struct {
 	// for this attempt (Declined or a status-proven Timeout) — ADR-016 §Dec3. Recovery may
 	// release the claim on this; it must NOT release on Unknown.
 	TerminalNoSideEffect bool
-	// ProviderRef is the provider's durable identity for the operation (Stripe charge id).
-	// Empty for the fake PSP. Stored on the operation, never in the journal payload (S2).
+	// ProviderRef is the provider's durable identity for the operation (Stripe
+	// PaymentIntent pi_… on the payment path, refund re_… on the refund path). Empty for
+	// the fake PSP. Stored on the operation, never in the journal payload (S2).
 	ProviderRef string
+	// ProviderChargeRef is the provider's charge identity (Stripe latest_charge ch_…) when
+	// one exists. Purely informational evidence for the operation row; Validate ignores it.
+	ProviderChargeRef string
 }
 
 // Validate rejects a self-contradictory Result. The charge handler journals from a Result,

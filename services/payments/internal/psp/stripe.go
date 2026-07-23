@@ -118,7 +118,7 @@ func mapPIStatus(pi stripePI) (Result, error) {
 	case "requires_capture":
 		return Result{Outcome: Authorized, Authorized: true, ProviderRef: pi.ID}, nil
 	case "succeeded":
-		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID}, nil
+		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge}, nil
 	case "canceled":
 		return Result{Outcome: Voided, TerminalNoSideEffect: true, ProviderRef: pi.ID}, nil
 	case "processing", "requires_action", "requires_confirmation", "requires_payment_method":
@@ -172,7 +172,7 @@ func (s *Stripe) Authorize(ctx context.Context, req AuthorizeRequest) (Result, e
 		return s.Capture(ctx, pi.ID, req.Amount, req.Currency)
 	case "succeeded":
 		// Already captured (some flows capture on confirm) — done.
-		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID}, nil
+		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge}, nil
 	default:
 		// requires_action / processing / etc. on the charge path: not settled, not terminal.
 		return mapPIStatus(pi)
@@ -197,7 +197,7 @@ func (s *Stripe) Capture(ctx context.Context, providerRef string, amount int64, 
 		return unknown(err)
 	}
 	if pi.Status == "succeeded" {
-		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID}, nil
+		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge}, nil
 	}
 	return mapPIStatus(pi)
 }

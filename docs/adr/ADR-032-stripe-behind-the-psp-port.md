@@ -66,6 +66,10 @@ concrete Stripe mappings. Constraints:
 - **Operations:** `Authorize`, `Capture`, `Void`, `Refund`, `Status`.
 - **Normalized outcomes:** `authorized`, `captured`, `declined`, `timeout` (a status-proven
   no-side-effect), and `unknown` (a transport failure whose side effect is genuinely undetermined).
+  *Amended (TKT-114/S2):* two compensation outcomes added — `voided` (a successful void: the hold is
+  released, nothing moved, terminal-no-side-effect) and `refunded` (a successful refund: money moved
+  and came back — a real side effect, so **not** terminal-no-side-effect; recovery must never read a
+  refund as "no side effect").
   A `Result` additionally carries `Captured`, `Authorized`, `TerminalNoSideEffect` and an opaque
   `ProviderRef`. Recovery may release a claim on `TerminalNoSideEffect`; it must **never** release on
   `unknown` (ADR-016 §Decision 3).

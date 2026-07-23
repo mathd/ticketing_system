@@ -39,6 +39,55 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /internal/psp/status:
+    get:
+      # Provider-neutral status resolution (ADR-032 §Status/replay). A resolved operation
+      # answers from its recorded terminal status; an unresolved one asks the provider —
+      # retrieve when the provider reference was persisted, or replay the original create
+      # under the SAME idempotency key when it was lost to a crash. 502 = still ambiguous:
+      # the operation stays recoverable, never invented as terminal.
+      operationId: pspStatus
+      parameters:
+        - {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: idempotency_key, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+      responses:
+        '200': {description: Normalized provider state, content: {application/json: {schema: {$ref: '#/components/schemas/PSPStatus'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /internal/psp/void:
+    post:
+      # Void an authorized, uncaptured operation. Amounts and provider references come
+      # from the stored operation, never the caller; a successful void appends the
+      # payment.voided compensating fact exactly once. 409 = the stored evidence does not
+      # support a void; 502 = provider unresolved, compensation stays bound (recoverable).
+      operationId: pspVoid
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PSPCompensation'}}}}
+      responses:
+        '200': {description: Voided (or replay of the completed void), content: {application/json: {schema: {$ref: '#/components/schemas/PSPCompensationResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /internal/psp/refund:
+    post:
+      # Refund captured money. The refund amount/currency are the STORED captured amount —
+      # callers cannot supply an amount. A pending/failed provider refund is 502 with the
+      # compensation still bound: payment.refunded is appended only on a settled success.
+      operationId: pspRefund
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PSPCompensation'}}}}
+      responses:
+        '200': {description: Refunded (or replay of the completed refund), content: {application/json: {schema: {$ref: '#/components/schemas/PSPCompensationResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
 components:
   parameters:
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
@@ -84,6 +133,37 @@ components:
         payment_id: {type: string, format: uuid}
         sequence: {type: integer, format: int64}
         replay: {type: boolean}
+    PSPCompensation:
+      # Provider-neutral compensation identity: the organizer-scoped source operation
+      # only. No Stripe references, no amounts (the stored row is the basis).
+      type: object
+      additionalProperties: false
+      required: [organizer_id, idempotency_key]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        idempotency_key: {type: string, minLength: 1, maxLength: 200}
+    PSPCompensationResult:
+      type: object
+      additionalProperties: false
+      required: [status, fact_id, replay]
+      properties:
+        status: {type: string, enum: [voided, refunded]}
+        fact_id: {type: string, format: uuid}
+        replay: {type: boolean}
+    PSPStatus:
+      # Normalized provider evidence. Never contains provider references (pi_/ch_/re_),
+      # the payment-method reference, or any secret material.
+      type: object
+      additionalProperties: false
+      required: [outcome, terminal_no_side_effect, captured, authorized, authorized_amount, captured_amount, currency]
+      properties:
+        outcome: {type: string, enum: [authorized, captured, declined, timeout, unknown, voided, refunded]}
+        terminal_no_side_effect: {type: boolean}
+        captured: {type: boolean}
+        authorized: {type: boolean}
+        authorized_amount: {type: integer, format: int64}
+        captured_amount: {type: integer, format: int64}
+        currency: {type: string}
     OperationState:
       type: object
       additionalProperties: false
