@@ -1,0 +1,27 @@
+{
+  "key": "TKT-114",
+  "type": "Story",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Stripe test-mode adapter + /internal/psp/* endpoints + operation/compensation schema (Slice 2 of TKT-56)",
+  "description": "Slice 2 of TKT-56 (parent umbrella). Implements the Stripe test-mode adapter behind the psp.PSP port (ADR-032), plus the payments /internal/psp/* endpoints and the durable operation/compensation schema. Scope: psp/stripe.go (PaymentIntent manual-capture authorize, capture, void, refund, status) against an injected http.Client + base URL, tested with hand-written literal Stripe JSON fixtures via httptest (gate stays 100% offline); new /internal/psp/status, /internal/psp/refund, /internal/psp/void endpoints + OpenAPI + regen; migration 0002_psp_operations.sql extending payment_operations with provider refs / captured-vs-authorized amounts / normalized state + a payment_compensations child table keyed by (operation, kind); fake<->Stripe equivalence asserted against ADR-032's normalized outcome vocabulary; config: STRIPE_SECRET_KEY (fake fallback when unset, live-mode key rejected at startup) mirroring signingConfig(). NOT in S2: commerce recovery wiring (S3), keyring (S4). Owner directives for this run: full autonomous through self-merge; offline gate + owner-run live sk_test_ verification once (key never committed / never in CI). Governing: ADR-032.",
+  "links": [
+    {
+      "type": "child-of",
+      "key": "TKT-56"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-113"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nCarved from the TKT-56 umbrella after S1 (TKT-113) merged. DoR inherited from the parent's plan-final + ADR-032 (the governing contract already written). governingAdrs: ADR-032 (port contract + Stripe mappings — exists at HEAD, verified), ADR-016 (recovery evidence rules), ADR-011 (canonical money journal, EUR pin), ADR-003 (append-only), ADR-021 (adversary naming), ADR-022 (out-of-band migrations). Blocker TKT-113 Done. Placed directly in Ready: the parent already cleared Gate-1 and the owner directed the S2 run. Test seam: psp package (stripe adapter behind injected http.Client + httptest) + payments Server.Router httptest for the new endpoints + a store smoke test for the migration."
+    }
+  ]
+}
