@@ -98,6 +98,68 @@ func TestPSPCompensationFlow(t *testing.T) {
 		t.Fatalf("refund of missing operation = %d: %s", code, body)
 	}
 
+	// Void happy path: the auth-hold token simulates an interrupted provider flow — the
+	// charge authorizes but never captures (500, operation stays unresolved), PSP status
+	// resolves it to authorized-uncaptured and persists that evidence, and void then
+	// releases the hold, appending payment.voided.
+	holdKey := "psp-comp-hold-" + uuid.NewString()
+	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", holdKey,
+		map[string]any{"order_id": uuid.NewString(), "organizer_id": organizer, "buyer_id": buyer,
+			"amount": 800, "currency": "EUR", "payment_token": "fake-auth-hold"}); code != http.StatusInternalServerError {
+		t.Fatalf("auth-hold charge = %d, want 500 (fails closed, operation unresolved): %s", code, body)
+	}
+	holdStatusURL := paymentsURL + "/internal/psp/status?organizer_id=" + organizer + "&idempotency_key=" + holdKey
+	code, body = internalJSON(t, http.MethodGet, holdStatusURL, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("auth-hold status = %d: %s", code, body)
+	}
+	var holdStatus struct {
+		Outcome          string `json:"outcome"`
+		Authorized       bool   `json:"authorized"`
+		AuthorizedAmount int64  `json:"authorized_amount"`
+		CapturedAmount   int64  `json:"captured_amount"`
+	}
+	if err := json.Unmarshal(body, &holdStatus); err != nil {
+		t.Fatalf("auth-hold status body: %v", err)
+	}
+	if holdStatus.Outcome != "authorized" || !holdStatus.Authorized || holdStatus.AuthorizedAmount != 800 || holdStatus.CapturedAmount != 0 {
+		t.Fatalf("auth-hold status = %+v, want authorized 800/0", holdStatus)
+	}
+	holdComp := map[string]any{"organizer_id": organizer, "idempotency_key": holdKey}
+	// Uncaptured money cannot be refunded.
+	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/psp/refund", "", holdComp); code != http.StatusConflict {
+		t.Fatalf("refund of authorized-uncaptured = %d, want 409: %s", code, body)
+	}
+	code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/psp/void", "", holdComp)
+	if code != http.StatusOK {
+		t.Fatalf("void = %d: %s", code, body)
+	}
+	var void struct {
+		Status string    `json:"status"`
+		FactID uuid.UUID `json:"fact_id"`
+		Replay bool      `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &void); err != nil {
+		t.Fatalf("void body: %v", err)
+	}
+	if void.Status != "voided" || void.Replay || void.FactID == uuid.Nil {
+		t.Fatalf("void = %+v, want fresh voided with a fact id", void)
+	}
+	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/psp/void", "", holdComp); code != http.StatusOK {
+		t.Fatalf("void replay = %d: %s", code, body)
+	} else {
+		var voidReplay struct {
+			FactID uuid.UUID `json:"fact_id"`
+			Replay bool      `json:"replay"`
+		}
+		if err := json.Unmarshal(body, &voidReplay); err != nil {
+			t.Fatalf("void replay body: %v", err)
+		}
+		if !voidReplay.Replay || voidReplay.FactID != void.FactID {
+			t.Fatalf("void replay = %+v, want replay of fact %s", voidReplay, void.FactID)
+		}
+	}
+
 	// A declined charge left no captured money: refund refused.
 	declinedKey := "psp-comp-declined-" + uuid.NewString()
 	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", declinedKey,

@@ -72,8 +72,8 @@ func TestFakeAuthorizeRejectsUnknownToken(t *testing.T) {
 }
 
 // TKT-114/S2 wires the fake's compensation surface: Capture/Void/Refund report deterministic
-// success and Status reports Unknown (no provider to query). Every result must obey the same
-// Validate() invariants Stripe's does — a fake that produced an invalid Result would let an
+// success and Status resolves deterministically from the replayed token (Unknown when there
+// is none to replay). Every result must obey the same Validate() invariants Stripe's does — a fake that produced an invalid Result would let an
 // invalid shape reach the money-path boundary in local/gate runs.
 func TestFakeCompensationSurfaceIsDeterministicAndValid(t *testing.T) {
 	f := NewFake()
@@ -176,6 +176,51 @@ func TestFakeAuthorizeOutputsAreValid(t *testing.T) {
 		}
 		if err := got.Validate(); err != nil {
 			t.Fatalf("fake Authorize(%s) produced an invalid Result %+v: %v", tok, got, err)
+		}
+	}
+}
+
+// The auth-hold token (TKT-114/S2) is the offline simulation of a crashed/interrupted
+// Stripe flow: Authorize reports Authorized-only (the charge handler fails closed and the
+// operation stays unresolved), and Status later resolves it deterministically from the
+// durable token the store replays. This is what makes the void happy path — and S3's
+// payment_unknown recovery — drivable against the fake.
+func TestFakeAuthHoldAndDeterministicStatus(t *testing.T) {
+	f := NewFake()
+	ctx := context.Background()
+	got, err := f.Authorize(ctx, AuthorizeRequest{
+		OrganizerID: "o", OrderID: "o2", BuyerID: "b", Amount: 1250, Currency: "EUR",
+		IdempotencyKey: "idem-hold", PaymentToken: fakepsp.TokenAuthHold,
+	})
+	if err != nil {
+		t.Fatalf("Authorize(auth-hold): %v", err)
+	}
+	want := Result{Outcome: Authorized, Authorized: true}
+	if got != want {
+		t.Fatalf("Authorize(auth-hold)\n got=%+v\nwant=%+v", got, want)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("auth-hold result invalid: %v", err)
+	}
+	// Status is deterministic on the replayed token — the same durable evidence the store
+	// carries in StatusRequest — never on hidden state.
+	statuses := map[string]Outcome{
+		fakepsp.TokenSuccess:  Captured,
+		fakepsp.TokenAuthHold: Authorized,
+		fakepsp.TokenDecline:  Declined,
+		fakepsp.TokenTimeout:  Timeout,
+		"":                    Unknown,
+	}
+	for token, wantOutcome := range statuses {
+		res, err := f.Status(ctx, StatusRequest{PaymentToken: token, IdempotencyKey: "idem-hold", Amount: 1250, Currency: "EUR"})
+		if err != nil {
+			t.Fatalf("Status(%q): %v", token, err)
+		}
+		if res.Outcome != wantOutcome {
+			t.Fatalf("Status(%q) = %+v, want outcome %q", token, res, wantOutcome)
+		}
+		if err := res.Validate(); err != nil {
+			t.Fatalf("Status(%q) produced invalid Result: %v", token, err)
 		}
 	}
 }

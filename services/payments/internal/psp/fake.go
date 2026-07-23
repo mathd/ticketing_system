@@ -26,6 +26,11 @@ func (f *Fake) Authorize(_ context.Context, req AuthorizeRequest) (Result, error
 		return Result{Outcome: Declined, TerminalNoSideEffect: true}, nil
 	case fakepsp.TokenTimeout:
 		return Result{Outcome: Timeout, TerminalNoSideEffect: true}, nil
+	case fakepsp.TokenAuthHold:
+		// Authorized-only: the charge handler fails closed on this (its switch only
+		// journals captured/declined/timeout), leaving the operation bound-unresolved —
+		// the offline simulation of a crashed real-provider flow (payment_unknown).
+		return Result{Outcome: Authorized, Authorized: true}, nil
 	default:
 		// Wrap the fake-specific error in the port-level sentinel so the handler checks a
 		// PSP concept (ErrInvalidToken), not a fake one. errors.Is matches both.
@@ -53,9 +58,21 @@ func (f *Fake) Refund(context.Context, string, string, int64, string) (Result, e
 	return Result{Outcome: Refunded}, nil
 }
 
-// Status resolves an operation. The fake has no provider to query, so it reports Unknown
-// (the honest answer for a provider that keeps no state) — recovery treats Unknown as
-// "not resolved", never releasing a claim on it.
-func (f *Fake) Status(context.Context, StatusRequest) (Result, error) {
-	return Result{Outcome: Unknown}, nil
+// Status resolves an operation deterministically from the replayed token — the same
+// durable evidence the store carries in StatusRequest — mirroring Stripe's replay-under-
+// the-same-key contract without hidden state. An empty/unknown token stays Unknown: no
+// evidence, no resolution, and recovery never releases a claim on Unknown.
+func (f *Fake) Status(_ context.Context, req StatusRequest) (Result, error) {
+	switch req.PaymentToken {
+	case fakepsp.TokenSuccess:
+		return Result{Outcome: Captured, Captured: true, Authorized: true}, nil
+	case fakepsp.TokenAuthHold:
+		return Result{Outcome: Authorized, Authorized: true}, nil
+	case fakepsp.TokenDecline:
+		return Result{Outcome: Declined, TerminalNoSideEffect: true}, nil
+	case fakepsp.TokenTimeout:
+		return Result{Outcome: Timeout, TerminalNoSideEffect: true}, nil
+	default:
+		return Result{Outcome: Unknown}, nil
+	}
 }
