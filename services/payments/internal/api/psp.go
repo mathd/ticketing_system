@@ -86,6 +86,23 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 		write(w, 404, map[string]string{"error": "operation not found"})
 		return
 	}
+	// A completed compensation supersedes the operation's terminal status (ai-review B6):
+	// after a refund/void, reporting "captured"/"authorized" with live amounts would tell
+	// the caller money is still held that has already been returned or released.
+	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "refund"); err == nil && found && comp.Completed {
+		write(w, 200, statusBody(psp.Result{Outcome: psp.Refunded}, 0, 0, op.RequestCurrency))
+		return
+	} else if err != nil {
+		write(w, 500, map[string]string{"error": "lookup compensation"})
+		return
+	}
+	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "void"); err == nil && found && comp.Completed {
+		write(w, 200, statusBody(psp.Result{Outcome: psp.Voided, TerminalNoSideEffect: true}, 0, 0, op.RequestCurrency))
+		return
+	} else if err != nil {
+		write(w, 500, map[string]string{"error": "lookup compensation"})
+		return
+	}
 	if result, ok := resolvedResult(op); ok {
 		write(w, 200, statusBody(result, op.AuthorizedAmount, op.CapturedAmount, op.RequestCurrency))
 		return
@@ -122,8 +139,10 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 		state = "declined"
 	case psp.Timeout:
 		state = "timeout"
-	case psp.Unknown:
-		// Nothing proven; answer honestly, persist nothing.
+	default:
+		// Unknown, Refunded (only reachable through a re_ ref this endpoint never holds),
+		// or any future outcome: nothing this operation's evidence columns can safely
+		// record — answer honestly, persist nothing (fail-safe, ai-review A3).
 		write(w, 200, statusBody(result, 0, 0, op.RequestCurrency))
 		return
 	}
@@ -217,6 +236,17 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		write(w, 404, map[string]string{"error": "operation not found"})
 		return
 	}
+	// Replay check FIRST, read-only (ai-review B5): a completed compensation answers as a
+	// replay even when the evidence has since moved on (e.g. a status resolution recorded
+	// the operation as voided after the void completed) — re-deriving eligibility for an
+	// already-performed compensation would 409 its own success.
+	if done, found, err := s.journal.LookupCompensation(r.Context(), in.OrganizerID, key, kind); err != nil {
+		write(w, 500, map[string]string{"error": "lookup compensation"})
+		return
+	} else if found && done.Completed {
+		write(w, 200, map[string]any{"status": done.Status, "fact_id": done.FactID, "replay": true})
+		return
+	}
 	if err := compensationAllowed(op, kind); err != nil {
 		write(w, 409, map[string]string{"error": err.Error()})
 		return
@@ -234,15 +264,29 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 	var result psp.Result
 	var wantOutcome psp.Outcome
 	var status, factType string
-	switch kind {
-	case "void":
+	switch {
+	case kind == "void":
 		wantOutcome, status, factType = psp.Voided, "voided", "payment.voided"
 		result, err = s.psp.Void(r.Context(), op.ProviderPaymentRef, comp.ProviderKey)
+	case comp.ProviderRef != "":
+		// A refund the provider accepted but left pending on an earlier attempt: RESOLVE
+		// the recorded re_ reference — re-submitting under the same idempotency key would
+		// replay the original "pending" snapshot forever (ai-review B3).
+		wantOutcome, status, factType = psp.Refunded, "refunded", "payment.refunded"
+		result, err = s.psp.Status(r.Context(), psp.StatusRequest{ProviderRef: comp.ProviderRef})
 	default:
 		wantOutcome, status, factType = psp.Refunded, "refunded", "payment.refunded"
 		result, err = s.psp.Refund(r.Context(), op.ProviderPaymentRef, comp.ProviderKey, amount, currency)
 	}
 	if err != nil {
+		// A pending refund is recoverable, but its provider reference is durable progress:
+		// persist it so the next attempt resolves instead of re-submitting (ai-review B3).
+		if errors.Is(err, psp.ErrRefundPending) && result.ProviderRef != "" && comp.ProviderRef == "" {
+			if recErr := s.journal.RecordCompensationProviderRef(r.Context(), in.OrganizerID, key, kind, result.ProviderRef); recErr != nil {
+				write(w, 500, map[string]string{"error": "persist compensation reference"})
+				return
+			}
+		}
 		write(w, 502, map[string]string{"error": "provider compensation unresolved"})
 		return
 	}
@@ -257,8 +301,13 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		return
 	}
 	factID := compensationFactID(in.OrganizerID, key, factType)
+	// OccurredAt is the compensation row's stable bound_at, NEVER the clock: the fact ID is
+	// deterministic and the journal's replay dedupe compares the full canonical fact, so a
+	// retry across the append/complete crash boundary must rebuild byte-identical content —
+	// a fresh timestamp would fail "fact id reused with different content" and wedge the
+	// compensation permanently (ai-review B1).
 	if _, _, err := s.journal.Append(r.Context(), store.Fact{
-		ID: factID, OrganizerID: in.OrganizerID, Type: factType,
+		ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: comp.BoundAt,
 		BuyerID: op.BuyerID, Amount: amount, Currency: currency,
 		Payload: map[string]string{"order_id": op.OrderID.String()},
 	}); err != nil {

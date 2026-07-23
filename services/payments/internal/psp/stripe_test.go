@@ -3,6 +3,7 @@ package psp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -347,5 +348,56 @@ func TestStripeRateLimitAndServerErrorsAreUnknown(t *testing.T) {
 				t.Fatalf("want Unknown+non-terminal, got %+v", got)
 			}
 		})
+	}
+}
+
+// A capture-stage failure is NEVER terminal Declined: createIntent already succeeded, so a
+// live authorization exists at Stripe holding the customer's funds. Mapping it Declined
+// would record "no side effect" while money is held AND drop the pi_ identity needed to
+// void it (ai-review A1). It must stay Unknown, with the ProviderRef preserved.
+func TestStripeCaptureFailureIsUnknownAndKeepsProviderRef(t *testing.T) {
+	stub := newStripeStub(t, map[string]stubResp{
+		"POST /v1/payment_intents":                          {200, piRequiresCapture},
+		"POST /v1/payment_intents/pi_test_authonly/capture": {402, cardDeclined},
+	})
+	s := newStripeForStub(stub)
+	got, err := s.Authorize(context.Background(), AuthorizeRequest{
+		Amount: 1250, Currency: "EUR", PaymentToken: "pm_card_visa", IdempotencyKey: "idem-capfail",
+	})
+	if err == nil {
+		t.Fatal("a failed capture of a live authorization must surface an error")
+	}
+	if got.Outcome != Unknown || got.TerminalNoSideEffect {
+		t.Fatalf("capture failure must be Unknown+non-terminal (a hold exists), got %+v", got)
+	}
+	if got.ProviderRef != "pi_test_authonly" {
+		t.Fatalf("capture failure must preserve the pi_ identity for recovery, got %q", got.ProviderRef)
+	}
+}
+
+// Status dispatches a re_ provider ref to the refund object (ai-review B3): a pending
+// refund is resolved by RETRIEVING it — re-POSTing /v1/refunds under the same idempotency
+// key would replay Stripe's original "pending" snapshot forever (and after key expiry,
+// mint a SECOND refund). succeeded -> Refunded; pending -> ErrRefundPending.
+func TestStripeStatusResolvesRefundRef(t *testing.T) {
+	const refundDone = `{"id":"re_test_9","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_x","charge":"ch_x"}`
+	stub := newStripeStub(t, map[string]stubResp{"GET /v1/refunds/re_test_9": {200, refundDone}})
+	s := newStripeForStub(stub)
+	got, err := s.Status(context.Background(), StatusRequest{ProviderRef: "re_test_9"})
+	if err != nil {
+		t.Fatalf("Status(re_): %v", err)
+	}
+	if got.Outcome != Refunded || got.ProviderRef != "re_test_9" {
+		t.Fatalf("want Refunded re_test_9, got %+v", got)
+	}
+	const refundStillPending = `{"id":"re_test_10","object":"refund","amount":1250,"currency":"eur","status":"pending"}`
+	stub2 := newStripeStub(t, map[string]stubResp{"GET /v1/refunds/re_test_10": {200, refundStillPending}})
+	s2 := newStripeForStub(stub2)
+	got2, err := s2.Status(context.Background(), StatusRequest{ProviderRef: "re_test_10"})
+	if !errors.Is(err, ErrRefundPending) {
+		t.Fatalf("pending refund retrieve must be ErrRefundPending, got %v", err)
+	}
+	if got2.Outcome == Refunded {
+		t.Fatalf("pending must not map to Refunded: %+v", got2)
 	}
 }

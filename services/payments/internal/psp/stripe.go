@@ -179,7 +179,11 @@ func (s *Stripe) Authorize(ctx context.Context, req AuthorizeRequest) (Result, e
 	}
 }
 
-// Capture captures a prior authorization -> Captured.
+// Capture captures a prior authorization -> Captured. Any capture-stage failure — even a
+// card_error — is Unknown with the ProviderRef PRESERVED, never terminal Declined: the
+// PaymentIntent already exists holding the customer's funds, so "no side effect" would be
+// a lie and dropping the pi_ identity would strand the hold with no way to void it
+// (ai-review A1). The unresolved operation stays recoverable via Status.
 func (s *Stripe) Capture(ctx context.Context, providerRef string, amount int64, currency string) (Result, error) {
 	form := url.Values{}
 	if amount > 0 {
@@ -187,14 +191,18 @@ func (s *Stripe) Capture(ctx context.Context, providerRef string, amount int64, 
 	}
 	status, raw, se, err := s.do(ctx, http.MethodPost, "/v1/payment_intents/"+providerRef+"/capture", "capture:"+providerRef, form)
 	if err != nil {
-		return unknown(err)
+		return Result{Outcome: Unknown, ProviderRef: providerRef}, err
 	}
 	if se != nil {
-		return classifyError(status, se)
+		msg := "stripe capture failed"
+		if se.Err.Message != "" {
+			msg = se.Err.Message
+		}
+		return Result{Outcome: Unknown, ProviderRef: providerRef}, fmt.Errorf("stripe capture status %d: %s", status, msg)
 	}
 	var pi stripePI
 	if err := json.Unmarshal(raw, &pi); err != nil {
-		return unknown(err)
+		return Result{Outcome: Unknown, ProviderRef: providerRef}, err
 	}
 	if pi.Status == "succeeded" {
 		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge}, nil
@@ -241,24 +249,49 @@ func (s *Stripe) Refund(ctx context.Context, providerRef, idempotencyKey string,
 	if err := json.Unmarshal(raw, &rf); err != nil {
 		return unknown(err)
 	}
+	return mapRefundStatus(rf)
+}
+
+// mapRefundStatus maps a refund object to a Result. pending is ErrRefundPending so the
+// caller persists the re_ ref and later RESOLVES it via Status — never re-submits.
+func mapRefundStatus(rf stripeRefund) (Result, error) {
 	switch rf.Status {
 	case "succeeded":
 		return Result{Outcome: Refunded, ProviderRef: rf.ID}, nil
 	case "pending":
-		return Result{Outcome: Unknown, ProviderRef: rf.ID}, errRefundPending
+		return Result{Outcome: Unknown, ProviderRef: rf.ID}, ErrRefundPending
 	default: // "failed" or unexpected
 		return Result{Outcome: Unknown, ProviderRef: rf.ID}, fmt.Errorf("stripe refund not settled: status %q", rf.Status)
 	}
 }
 
-// errRefundPending lets a caller detect a pending (not-yet-settled) refund and retry rather
-// than treat it as done or failed.
-var errRefundPending = errors.New("stripe refund pending")
+// ErrRefundPending reports a refund the provider accepted but has not settled. The caller
+// keeps the compensation bound, persists the refund reference, and resolves it later by
+// retrieving that reference (Status with a re_ ProviderRef) — re-submitting the refund
+// under the same idempotency key would only replay the provider's original "pending"
+// snapshot, and after key expiry could mint a second refund (ai-review B3).
+var ErrRefundPending = errors.New("psp: refund pending")
 
 // Status resolves an operation via ProviderRef (GET retrieve) or, when no ProviderRef was
 // persisted, by REPLAYING the original create under the SAME idempotency key (never a fresh
 // key — Stripe idempotency returns the original PaymentIntent, so no duplicate charge).
 func (s *Stripe) Status(ctx context.Context, req StatusRequest) (Result, error) {
+	// A refund reference resolves against the refund object (ai-review B3): retrieving is
+	// the only way to observe a pending refund settle.
+	if strings.HasPrefix(req.ProviderRef, "re_") {
+		status, raw, se, err := s.do(ctx, http.MethodGet, "/v1/refunds/"+req.ProviderRef, "", nil)
+		if err != nil {
+			return unknown(err)
+		}
+		if se != nil {
+			return classifyError(status, se)
+		}
+		var rf stripeRefund
+		if err := json.Unmarshal(raw, &rf); err != nil {
+			return unknown(err)
+		}
+		return mapRefundStatus(rf)
+	}
 	if req.ProviderRef != "" {
 		status, raw, se, err := s.do(ctx, http.MethodGet, "/v1/payment_intents/"+req.ProviderRef, "", nil)
 		if err != nil {
@@ -274,7 +307,10 @@ func (s *Stripe) Status(ctx context.Context, req StatusRequest) (Result, error) 
 		return mapPIStatus(pi)
 	}
 	// No provider ref: replay the create under the ORIGINAL key. This only learns the
-	// outcome; it does not capture.
+	// outcome; it does not capture. BOUNDED: Stripe retains idempotency keys ~24h — after
+	// that this same-key replay would CREATE a new PaymentIntent instead of returning the
+	// original (ADR-032 §Status/replay amendment). Resolution must happen within the
+	// window; an older ref-less operation is a manual-reconciliation case.
 	pi, se, status, err := s.createIntent(ctx, AuthorizeRequest{
 		Amount: req.Amount, Currency: req.Currency, PaymentToken: req.PaymentToken, IdempotencyKey: req.IdempotencyKey,
 	})

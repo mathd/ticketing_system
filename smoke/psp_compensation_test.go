@@ -88,6 +88,24 @@ func TestPSPCompensationFlow(t *testing.T) {
 		t.Fatalf("replay = %+v, want replay of fact %s", replayed, refund.FactID)
 	}
 
+	// After the refund completes, status reports the compensation, not the stale capture:
+	// the money is no longer held (ai-review B6).
+	code, body = internalJSON(t, http.MethodGet, statusURL, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("post-refund status = %d: %s", code, body)
+	}
+	var postRefund struct {
+		Outcome        string `json:"outcome"`
+		Captured       bool   `json:"captured"`
+		CapturedAmount int64  `json:"captured_amount"`
+	}
+	if err := json.Unmarshal(body, &postRefund); err != nil {
+		t.Fatalf("post-refund status body: %v", err)
+	}
+	if postRefund.Outcome != "refunded" || postRefund.Captured || postRefund.CapturedAmount != 0 {
+		t.Fatalf("post-refund status = %+v, want refunded with nothing captured", postRefund)
+	}
+
 	// An unknown operation supports nothing: 404 on all three endpoints.
 	missing := map[string]any{"organizer_id": organizer, "idempotency_key": "psp-comp-missing-" + uuid.NewString()}
 	missingURL := paymentsURL + "/internal/psp/status?organizer_id=" + organizer + "&idempotency_key=missing-" + uuid.NewString()
@@ -158,6 +176,26 @@ func TestPSPCompensationFlow(t *testing.T) {
 		if !voidReplay.Replay || voidReplay.FactID != void.FactID {
 			t.Fatalf("void replay = %+v, want replay of fact %s", voidReplay, void.FactID)
 		}
+	}
+
+	// After the void completes, status reports voided (terminal-no-side-effect), and a
+	// void retry still replays even though the evidence has moved on (ai-review B5/B6).
+	code, body = internalJSON(t, http.MethodGet, holdStatusURL, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("post-void status = %d: %s", code, body)
+	}
+	var postVoid struct {
+		Outcome              string `json:"outcome"`
+		TerminalNoSideEffect bool   `json:"terminal_no_side_effect"`
+	}
+	if err := json.Unmarshal(body, &postVoid); err != nil {
+		t.Fatalf("post-void status body: %v", err)
+	}
+	if postVoid.Outcome != "voided" || !postVoid.TerminalNoSideEffect {
+		t.Fatalf("post-void status = %+v, want voided+terminal", postVoid)
+	}
+	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/psp/void", "", holdComp); code != http.StatusOK {
+		t.Fatalf("void replay after status = %d, want 200 replay: %s", code, body)
 	}
 
 	// A declined charge left no captured money: refund refused.
