@@ -344,6 +344,15 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	if target == "finalizing" && c.Status == "confirmed" {
 		return c, tx.Commit()
 	}
+	// A release against an expired claim is vacuously satisfied: expiry already freed
+	// the seats (the branch above / an earlier pass), so the obligation a release
+	// discharges is gone either way. Answering conflict here made expiry
+	// indistinguishable from `confirmed` — a genuinely sold seat — and commerce
+	// recovery parked refundable orders on the difference (TKT-115). Confirm of an
+	// expired claim stays a conflict below: expired can never buy a seat.
+	if target == "released" && c.Status == "expired" {
+		return c, tx.Commit()
+	}
 	if target == "finalizing" && c.Status == "held" {
 		c.Status = target
 		_, err = tx.ExecContext(ctx, `UPDATE claims SET status='finalizing',updated_at=now() WHERE id=$1`, id)

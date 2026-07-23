@@ -209,11 +209,12 @@ func (c HTTPClients) Release(ctx context.Context, org, hold uuid.UUID) error {
 		// release ambiguous. Genuinely idempotent for a repeated target.
 		return nil
 	case http.StatusConflict:
-		// NOT "already gone". Inventory answers 200 for an already-released claim, so a
-		// 409 here means a terminal state that is not released — `confirmed`, i.e. the
-		// seat is sold. Treating it as success would journal order.failed for an order
-		// inventory counts as confirmed, and permanently strand the seat as sold against
-		// a failed order. Surface it: the runner parks it for a human.
+		// NOT "already gone". Inventory answers 200 for an already-released claim AND
+		// for an expired one (expiry already freed the seats — TKT-115), so a 409 here
+		// means a terminal state that is neither — `confirmed`, i.e. the seat is sold.
+		// Treating it as success would journal order.failed for an order inventory
+		// counts as confirmed, and permanently strand the seat as sold against a failed
+		// order. Surface it: the runner parks it for a human.
 		return ErrClaimNotReleasable
 	case http.StatusNotFound:
 		// No such claim for this organizer. Nothing is holding the seat, so there is no
