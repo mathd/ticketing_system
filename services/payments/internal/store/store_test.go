@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"github.com/google/uuid"
 	"testing"
 	"time"
@@ -48,5 +49,36 @@ func TestCompensatingFactTypesAreAccepted(t *testing.T) {
 	// exactly two, not into a prefix wildcard.
 	if err := validate(base("payment.reversed")); err == nil {
 		t.Fatal("payment.reversed is not an allowed fact type but was accepted")
+	}
+}
+
+// The compensation idempotency key is derived, versioned and bounded (plan-final /
+// ADR-032 §Refund): the SAME (organizer, source key, kind) must always produce the SAME
+// provider key — that determinism is what makes a crashed compensation replay hit
+// Stripe's idempotency layer instead of issuing a second refund. NUL separators keep
+// ("a","bc") and ("ab","c") from colliding.
+func TestCompensationKeyDeterministic(t *testing.T) {
+	org := uuid.MustParse("00000000-0000-0000-0000-000000000042")
+	k1 := CompensationKey(org, "order-1-charge", "refund")
+	k2 := CompensationKey(org, "order-1-charge", "refund")
+	if k1 != k2 {
+		t.Fatalf("compensation key not deterministic: %q vs %q", k1, k2)
+	}
+	if !strings.HasPrefix(k1, "psp-comp-v1:") {
+		t.Fatalf("compensation key must be versioned: %q", k1)
+	}
+	// sha256 hex after the prefix: bounded length regardless of source key size.
+	if len(k1) != len("psp-comp-v1:")+64 {
+		t.Fatalf("compensation key not bounded: %d chars", len(k1))
+	}
+	if CompensationKey(org, "order-1-charge", "void") == k1 {
+		t.Fatal("void and refund kinds must derive distinct keys")
+	}
+	if CompensationKey(uuid.MustParse("00000000-0000-0000-0000-000000000043"), "order-1-charge", "refund") == k1 {
+		t.Fatal("distinct organizers must derive distinct keys")
+	}
+	// NUL separation: ambiguous concatenations must not collide.
+	if CompensationKey(org, "ab", "refund") == CompensationKey(org, "a", "brefund") {
+		t.Fatal("separator collision between source key and kind")
 	}
 }

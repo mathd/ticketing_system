@@ -24,6 +24,57 @@ func (e ChargeCurrency) Valid() bool {
 	}
 }
 
+// Defines values for PSPCompensationResultStatus.
+const (
+	PSPCompensationResultStatusRefunded PSPCompensationResultStatus = "refunded"
+	PSPCompensationResultStatusVoided   PSPCompensationResultStatus = "voided"
+)
+
+// Valid indicates whether the value is a known member of the PSPCompensationResultStatus enum.
+func (e PSPCompensationResultStatus) Valid() bool {
+	switch e {
+	case PSPCompensationResultStatusRefunded:
+		return true
+	case PSPCompensationResultStatusVoided:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PSPStatusOutcome.
+const (
+	PSPStatusOutcomeAuthorized PSPStatusOutcome = "authorized"
+	PSPStatusOutcomeCaptured   PSPStatusOutcome = "captured"
+	PSPStatusOutcomeDeclined   PSPStatusOutcome = "declined"
+	PSPStatusOutcomeRefunded   PSPStatusOutcome = "refunded"
+	PSPStatusOutcomeTimeout    PSPStatusOutcome = "timeout"
+	PSPStatusOutcomeUnknown    PSPStatusOutcome = "unknown"
+	PSPStatusOutcomeVoided     PSPStatusOutcome = "voided"
+)
+
+// Valid indicates whether the value is a known member of the PSPStatusOutcome enum.
+func (e PSPStatusOutcome) Valid() bool {
+	switch e {
+	case PSPStatusOutcomeAuthorized:
+		return true
+	case PSPStatusOutcomeCaptured:
+		return true
+	case PSPStatusOutcomeDeclined:
+		return true
+	case PSPStatusOutcomeRefunded:
+		return true
+	case PSPStatusOutcomeTimeout:
+		return true
+	case PSPStatusOutcomeUnknown:
+		return true
+	case PSPStatusOutcomeVoided:
+		return true
+	default:
+		return false
+	}
+}
+
 // Charge defines model for Charge.
 type Charge struct {
 	Amount       int64              `json:"amount"`
@@ -77,6 +128,36 @@ type OperationState struct {
 	Status     *string             `json:"status,omitempty"`
 }
 
+// PSPCompensation defines model for PSPCompensation.
+type PSPCompensation struct {
+	IdempotencyKey string             `json:"idempotency_key"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+}
+
+// PSPCompensationResult defines model for PSPCompensationResult.
+type PSPCompensationResult struct {
+	FactId openapi_types.UUID          `json:"fact_id"`
+	Replay bool                        `json:"replay"`
+	Status PSPCompensationResultStatus `json:"status"`
+}
+
+// PSPCompensationResultStatus defines model for PSPCompensationResult.Status.
+type PSPCompensationResultStatus string
+
+// PSPStatus defines model for PSPStatus.
+type PSPStatus struct {
+	Authorized           bool             `json:"authorized"`
+	AuthorizedAmount     int64            `json:"authorized_amount"`
+	Captured             bool             `json:"captured"`
+	CapturedAmount       int64            `json:"captured_amount"`
+	Currency             string           `json:"currency"`
+	Outcome              PSPStatusOutcome `json:"outcome"`
+	TerminalNoSideEffect bool             `json:"terminal_no_side_effect"`
+}
+
+// PSPStatusOutcome defines model for PSPStatus.Outcome.
+type PSPStatusOutcome string
+
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
@@ -91,8 +172,20 @@ type GetOperationParams struct {
 	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
 }
 
+// PspStatusParams defines parameters for PspStatus.
+type PspStatusParams struct {
+	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
+	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
+}
+
 // ChargeJSONRequestBody defines body for Charge for application/json ContentType.
 type ChargeJSONRequestBody = Charge
 
 // AppendFactJSONRequestBody defines body for AppendFact for application/json ContentType.
 type AppendFactJSONRequestBody = Fact
+
+// PspRefundJSONRequestBody defines body for PspRefund for application/json ContentType.
+type PspRefundJSONRequestBody = PSPCompensation
+
+// PspVoidJSONRequestBody defines body for PspVoid for application/json ContentType.
+type PspVoidJSONRequestBody = PSPCompensation

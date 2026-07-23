@@ -253,8 +253,21 @@ func (j *Journal) Verify(ctx context.Context) error {
 	return nil
 }
 
-func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerprint string) (string, uuid.UUID, time.Time, bool, error) {
-	result, err := j.db.ExecContext(ctx, `INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, org, key, fingerprint)
+// OperationRequest is the durable original charge request bound with the operation
+// (TKT-114/S2). It is what lets a compensation fact be built from the row alone
+// (buyer/order/amount/currency) and lets Status replay the exact original create when the
+// provider reference was lost to a crash. PaymentMethodRef is sensitive operational data:
+// stored for replay only, never journalled, logged, or returned by an endpoint.
+type OperationRequest struct {
+	OrderID          uuid.UUID
+	BuyerID          uuid.UUID
+	Amount           int64
+	Currency         string
+	PaymentMethodRef string
+}
+
+func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerprint string, req OperationRequest) (string, uuid.UUID, time.Time, bool, error) {
+	result, err := j.db.ExecContext(ctx, `INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint,order_id,buyer_id,request_amount,request_currency,payment_method_ref) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`, org, key, fingerprint, req.OrderID, req.BuyerID, req.Amount, req.Currency, req.PaymentMethodRef)
 	if err != nil {
 		return "", uuid.Nil, time.Time{}, false, err
 	}
@@ -292,6 +305,30 @@ type Operation struct {
 	// charge was bound and is still in flight, or the process driving it died. Callers
 	// must not read that as "no side effect" — it is the payment_unknown case.
 	Resolved bool
+	// The durable original request (TKT-114/S2). Zero values on rows bound before
+	// migration 0002 — a compensation cannot be built from such a row.
+	OrderID          uuid.UUID
+	BuyerID          uuid.UUID
+	RequestAmount    int64
+	RequestCurrency  string
+	PaymentMethodRef string
+	// Provider evidence, written by CompleteOperation (charge path) or
+	// RecordProviderState (status resolution). Empty until either has run.
+	ProviderPaymentRef string
+	ProviderChargeRef  string
+	ProviderState      string
+	AuthorizedAmount   int64
+	CapturedAmount     int64
+}
+
+// ProviderResult is the provider evidence persisted onto an operation row: references,
+// the normalized provider state, and the amounts that state proves.
+type ProviderResult struct {
+	PaymentRef       string
+	ChargeRef        string
+	State            string
+	AuthorizedAmount int64
+	CapturedAmount   int64
 }
 
 // LookupOperation reads an operation's recorded outcome. Strictly read-only, unlike
@@ -304,10 +341,12 @@ type Operation struct {
 func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string) (Operation, bool, error) {
 	var op Operation
 	var status sql.NullString
-	var factID uuid.NullUUID
+	var factID, orderID, buyerID uuid.NullUUID
 	var occurredAt time.Time
-	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&status, &factID, &occurredAt)
+	var reqAmount, authAmount, capAmount sql.NullInt64
+	var reqCurrency, pmRef, provPayRef, provChRef, provState sql.NullString
+	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, false, nil
 	}
@@ -318,11 +357,127 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	op.Status = status.String
 	op.FactID = factID.UUID
 	op.OccurredAt = occurredAt.UTC().Truncate(time.Microsecond)
+	op.OrderID, op.BuyerID = orderID.UUID, buyerID.UUID
+	op.RequestAmount, op.RequestCurrency, op.PaymentMethodRef = reqAmount.Int64, reqCurrency.String, pmRef.String
+	op.ProviderPaymentRef, op.ProviderChargeRef, op.ProviderState = provPayRef.String, provChRef.String, provState.String
+	op.AuthorizedAmount, op.CapturedAmount = authAmount.Int64, capAmount.Int64
 	return op, true, nil
 }
 
-func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID) error {
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4 WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID)
+func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID, prov ProviderResult) error {
+	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4,provider_payment_ref=NULLIF($5,''),provider_charge_ref=NULLIF($6,''),provider_state=NULLIF($7,''),authorized_amount=$8,captured_amount=$9,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
+	return err
+}
+
+// RecordProviderState persists provider evidence learned by a Status resolution WITHOUT
+// touching the operation's terminal status/fact — those belong to the charge and recovery
+// flows. This is what turns a retrieved/replayed provider answer into the durable evidence
+// the void/refund state checks read (TKT-114/S2; the S3 recovery slice consumes it).
+// Provider-state writes are MONOTONIC: a status answer that raced a completion must not
+// regress durable evidence (ai-review B4 — a delayed "authorized" observation overwriting
+// "captured" would let a void through on captured money). NULL and "authorized" may
+// progress to anything; every other recorded state accepts only an idempotent re-write of
+// itself.
+// The boolean reports whether the write LANDED: false means the guard blocked a stale
+// observation, and the caller must answer from the stored evidence instead of the
+// provider result it failed to record (second-pass P2-2).
+func (j *Journal) RecordProviderState(ctx context.Context, org uuid.UUID, key string, prov ProviderResult) (bool, error) {
+	res, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET provider_payment_ref=COALESCE(NULLIF($3,''),provider_payment_ref),provider_charge_ref=COALESCE(NULLIF($4,''),provider_charge_ref),provider_state=NULLIF($5,''),authorized_amount=$6,captured_amount=$7,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND (provider_state IS NULL OR provider_state='authorized' OR provider_state=$5)`, org, key, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// CompensationKey derives the bounded, versioned provider idempotency key for a
+// compensation from its database identity (ADR-032 §Refund; plan-final). Deterministic by
+// construction: a crashed compensation that re-binds re-derives the SAME key, so its
+// provider call lands on the provider's idempotency layer instead of issuing a second
+// void/refund. NUL separators prevent concatenation collisions.
+func CompensationKey(org uuid.UUID, sourceKey, kind string) string {
+	sum := sha256.Sum256([]byte(org.String() + "\x00" + sourceKey + "\x00" + kind))
+	return "psp-comp-v1:" + hex.EncodeToString(sum[:])
+}
+
+// Compensation is one durable void/refund attempt against a source operation.
+type Compensation struct {
+	Kind        string
+	ProviderKey string // deterministic provider idempotency key (CompensationKey)
+	Status      string // "" until completed; then "voided"/"refunded"
+	ProviderRef string // provider compensation reference (re_… for refunds)
+	FactID      uuid.UUID
+	Amount      int64
+	Currency    string
+	Completed   bool
+	// BoundAt is the row's stable creation time. The compensating fact's OccurredAt MUST
+	// come from here, not the clock: the fact ID is deterministic and the journal's replay
+	// dedupe compares the full canonical fact, so a retry across the append/complete crash
+	// boundary must reconstruct byte-identical content (ai-review B1).
+	BoundAt time.Time
+}
+
+// BindCompensation inserts-or-loads the one compensation row for (org, sourceKey, kind),
+// recording the amount/currency evidence the compensation was decided on. The PK makes a
+// concurrent duplicate converge on the same row — and therefore the same deterministic
+// provider key — so two racing refund calls cannot issue two provider refunds.
+func (j *Journal) BindCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind string, amount int64, currency string) (Compensation, error) {
+	providerKey := CompensationKey(org, sourceKey, kind)
+	_, err := j.db.ExecContext(ctx, `INSERT INTO payment_compensations(organizer_id,source_idempotency_key,kind,provider_idempotency_key,amount,currency) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, org, sourceKey, kind, providerKey, amount, currency)
+	if err != nil {
+		return Compensation{}, err
+	}
+	c, found, err := j.LookupCompensation(ctx, org, sourceKey, kind)
+	if err != nil {
+		return Compensation{}, err
+	}
+	if !found {
+		return Compensation{}, errors.New("compensation row missing after bind")
+	}
+	return c, nil
+}
+
+// LookupCompensation reads a compensation row without binding one — the read-only replay
+// check (ai-review B5): a completed compensation must answer as a replay BEFORE any
+// eligibility re-derivation, whose evidence may legitimately have moved on since.
+func (j *Journal) LookupCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind string) (Compensation, bool, error) {
+	var c Compensation
+	var status, providerRef sql.NullString
+	var factID uuid.NullUUID
+	var amt sql.NullInt64
+	var cur sql.NullString
+	var boundAt time.Time
+	err := j.db.QueryRowContext(ctx, `SELECT kind,provider_idempotency_key,status,provider_ref,fact_id,amount,currency,bound_at FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3`, org, sourceKey, kind).
+		Scan(&c.Kind, &c.ProviderKey, &status, &providerRef, &factID, &amt, &cur, &boundAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Compensation{}, false, nil
+	}
+	if err != nil {
+		return Compensation{}, false, err
+	}
+	c.Status, c.ProviderRef, c.FactID = status.String, providerRef.String, factID.UUID
+	c.Amount, c.Currency = amt.Int64, cur.String
+	c.Completed = status.Valid
+	c.BoundAt = boundAt.UTC().Truncate(time.Microsecond)
+	return c, true, nil
+}
+
+// RecordCompensationProviderRef persists the provider's compensation reference on a
+// still-bound row (a pending refund's re_ — ai-review B3): the next attempt resolves that
+// reference instead of re-submitting the refund.
+func (j *Journal) RecordCompensationProviderRef(ctx context.Context, org uuid.UUID, sourceKey, kind, providerRef string) error {
+	_, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET provider_ref=$4 WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, providerRef)
+	return err
+}
+
+// CompleteCompensation records the durable provider result and the journalled fact for a
+// bound compensation. Only the first completion writes (status IS NULL guard) — a replay
+// keeps the original result.
+func (j *Journal) CompleteCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind, status, providerRef string, factID uuid.UUID) error {
+	_, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET status=$4,provider_ref=NULLIF($5,''),fact_id=$6,completed_at=now() WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, status, providerRef, factID)
 	return err
 }
 

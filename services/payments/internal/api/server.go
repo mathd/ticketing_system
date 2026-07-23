@@ -46,6 +46,9 @@ func (s *Server) Router(log *slog.Logger) http.Handler {
 	r.Post("/internal/facts", s.fact)
 	r.Post("/internal/charges", s.charge)
 	r.Get("/internal/operations", s.operation)
+	r.Get("/internal/psp/status", s.pspStatus)
+	r.Post("/internal/psp/void", s.pspVoid)
+	r.Post("/internal/psp/refund", s.pspRefund)
 	validated, err := contract.RequestValidator(apispec.Spec, r, log)
 	if err != nil {
 		panic(err)
@@ -151,7 +154,9 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s", in.OrderID, in.BuyerID, in.Amount, in.Currency, in.PaymentToken))))
-	boundStatus, boundID, occurredAt, replay, err := s.journal.BindOperation(r.Context(), in.OrganizerID, key, fingerprint)
+	boundStatus, boundID, occurredAt, replay, err := s.journal.BindOperation(r.Context(), in.OrganizerID, key, fingerprint, store.OperationRequest{
+		OrderID: in.OrderID, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, PaymentMethodRef: in.PaymentToken,
+	})
 	if err != nil {
 		write(w, 409, map[string]string{"error": err.Error()})
 		return
@@ -205,6 +210,10 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 	// decline/timeout append a single terminal fact, HTTP codes unchanged (200/402/408).
 	var status, factType string
 	var code int
+	// Provider evidence persisted with the completion: references and the amounts the
+	// normalized outcome proves. This is the durable basis the compensation endpoints'
+	// state checks read (void needs authorized-uncaptured, refund needs captured money).
+	prov := store.ProviderResult{PaymentRef: result.ProviderRef, ChargeRef: result.ProviderChargeRef}
 	switch result.Outcome {
 	case psp.Captured:
 		// Captured is authorize-then-capture: append payment.authorized first, from this
@@ -215,18 +224,21 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		status, factType, code = "captured", "payment.captured", 200
+		prov.State, prov.AuthorizedAmount, prov.CapturedAmount = "captured", in.Amount, in.Amount
 	case psp.Declined:
 		status, factType, code = "declined", "payment.declined", 402
+		prov.State = "declined"
 	case psp.Timeout:
 		status, factType, code = "timeout", "payment.timeout", 408
+		prov.State = "timeout"
 	default:
 		// Authorized-only and Unknown are structurally valid (Validate accepts them) but the
-		// charge path only produces captured/declined/timeout today, so they fail closed here.
-		// S2 WARNING: before wiring an adapter that returns Authorized/Unknown on this path,
-		// this default must resolve the already-bound operation (CompleteOperation) — otherwise
-		// each retry re-binds, re-calls the provider (an external side effect already made),
-		// and 500s again with no terminal state. Not reachable in S1 (the fake never returns
-		// these); tracked for the Stripe slice.
+		// charge path only produces captured/declined/timeout, so they fail closed here.
+		// The S2 Stripe adapter satisfies this by CAPTURING INTERNALLY on the charge path
+		// (Authorize returns Captured, never Authorized — plan-final F2), and a transport
+		// failure surfaces as err != nil above, so this default stays unreachable on the
+		// happy path. The bound-but-incomplete operation a 500 leaves behind is exactly the
+		// payment_unknown case, now resolvable via GET /internal/psp/status (replay-safe).
 		write(w, 500, map[string]string{"error": "unsupported payment outcome"})
 		return
 	}
@@ -236,7 +248,7 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "journal append failed"})
 		return
 	}
-	if err := s.journal.CompleteOperation(r.Context(), in.OrganizerID, key, status, factID); err != nil {
+	if err := s.journal.CompleteOperation(r.Context(), in.OrganizerID, key, status, factID, prov); err != nil {
 		write(w, 500, map[string]string{"error": "persist payment result"})
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"ticketing/services/payments/internal/api"
+	"ticketing/services/payments/internal/psp"
 	paymentstore "ticketing/services/payments/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
@@ -130,6 +132,24 @@ func verifyConcurrentAppend() error {
 	return nil
 }
 
+// pspForKey selects the payment provider from STRIPE_SECRET_KEY, fail-fast like
+// signingConfig (ADR-032): unset or the explicit "fake" sentinel selects the fake (the
+// offline default — the gate never talks to Stripe), a test-mode secret key selects the
+// Stripe adapter, and a LIVE key or any unrecognized value refuses startup — a typo must
+// never silently fall back to the fake, and this testbed must never hold a live key.
+func pspForKey(key string) (psp.PSP, error) {
+	switch {
+	case key == "" || key == "fake":
+		return psp.NewFake(), nil
+	case strings.HasPrefix(key, "sk_test_"):
+		return psp.NewStripe(key, "https://api.stripe.com", nil), nil
+	case strings.HasPrefix(key, "sk_live_"):
+		return nil, errors.New("STRIPE_SECRET_KEY is a LIVE key; this service only accepts test-mode keys")
+	default:
+		return nil, errors.New("STRIPE_SECRET_KEY unrecognized: expected empty, \"fake\", or an sk_test_ key")
+	}
+}
+
 func signingConfig() (string, []byte, error) {
 	id, secret := os.Getenv("JOURNAL_KEY_ID"), os.Getenv("JOURNAL_SIGNING_KEY")
 	if id == "" || len(secret) < 16 {
@@ -206,6 +226,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	provider, err := pspForKey(os.Getenv("STRIPE_SECRET_KEY"))
+	if err != nil {
+		return err
+	}
 
 	nc, err := nats.Connect(os.Getenv("NATS_URL"),
 		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
@@ -230,7 +254,7 @@ func run() error {
 	)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
-	r.Mount("/", api.New(paymentstore.New(db, keyID, key), internalToken).Router(log))
+	r.Mount("/", api.NewWithPSP(paymentstore.New(db, keyID, key), internalToken, provider).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

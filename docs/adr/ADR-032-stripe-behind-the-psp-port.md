@@ -66,6 +66,10 @@ concrete Stripe mappings. Constraints:
 - **Operations:** `Authorize`, `Capture`, `Void`, `Refund`, `Status`.
 - **Normalized outcomes:** `authorized`, `captured`, `declined`, `timeout` (a status-proven
   no-side-effect), and `unknown` (a transport failure whose side effect is genuinely undetermined).
+  *Amended (TKT-114/S2):* two compensation outcomes added — `voided` (a successful void: the hold is
+  released, nothing moved, terminal-no-side-effect) and `refunded` (a successful refund: money moved
+  and came back — a real side effect, so **not** terminal-no-side-effect; recovery must never read a
+  refund as "no side effect").
   A `Result` additionally carries `Captured`, `Authorized`, `TerminalNoSideEffect` and an opaque
   `ProviderRef`. Recovery may release a claim on `TerminalNoSideEffect`; it must **never** release on
   `unknown` (ADR-016 §Decision 3).
@@ -108,7 +112,11 @@ targeted rollback and current-key compromise remain out of scope (TKT-11).**
   append `payment.refunded`.
 - `Status`: retrieve the known provider object. If the process timed out **before** persisting the
   provider reference, replay the identical creation request under the **same** Stripe idempotency key
-  and the persisted request body — not a freshly generated key. A transport timeout is `unknown`;
+  and the persisted request body — not a freshly generated key. *Amended (TKT-114/S2 review):* this
+  replay contract is bounded by **Stripe's idempotency-key retention (~24h)** — after expiry the same
+  key creates a *new* PaymentIntent, so an operation without a persisted `pi_` must be resolved
+  within that window; older unresolved operations are a manual-reconciliation case, and S3's
+  recovery must treat the retention window as a hard deadline, not a retry budget. A transport timeout is `unknown`;
   only a retrieved/replayed provider result proving no authorization or capture maps to
   `terminal_no_side_effect`.
 - Unknown or future Stripe statuses **fail closed** as `unknown`/error — never silently interpreted
