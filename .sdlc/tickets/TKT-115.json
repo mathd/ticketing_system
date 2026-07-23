@@ -2,9 +2,11 @@
   "key": "TKT-115",
   "type": "Story",
   "summary": "Commerce recovery via PSP status/refund — resolve payment_unknown, refund reconciliation_required (Slice 3 of TKT-56)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [
     {
@@ -120,6 +122,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\n| Item | State | Note |\n|---|---|---|\n| objective | met | close TKT-56's launch-blocking gap (payment_unknown + reconciliation_required) |\n| scope | met | recovery wiring + migration + lease sizing; S4 keyring excluded |\n| uncertainties | deferred | P2-3 (externally-released hold journaling) is a Planning decision, Gate-2 approved; not a shaping blocker |\n| dependencies | met | TKT-114 Done/merged (65e5c3b); zero open blockers |\n| approach | met | drive S2's /internal/psp/{status,refund} from runner.go's two park sites; new migration (never edit applied 0004) |\n| first_slice | met | S3 is the ADR-032 slice; vertical and demoable |\n| success | met | COS1–7, all offline-test-verifiable via the fake-auth-hold testbed |\n| context_memo | met | 6 governing ADRs cited, each verified to resolve at HEAD |\n\n**Concerns:** none structural. Two flags for Gate 1: (1) this is a **money path** — suggest keeping the plan gate (no risk:low); (2) the S2 handoff notes the owner's sk_test_ key transited chat twice and was to be ROLLED — confirm that happened (S3 needs no live key; the gate is offline).\n\n**Verdict:** PASS — ready for Gate 1 (human → Ready)."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed by the agentic SDLC pipeline — FULLY AUTONOMOUS / GATELESS RUN (owner directive, asked fresh 2026-07-23).**\n\n**Process waiver (recorded for board history).** The owner re-confirmed the four-gate waiver for this\nslice (S2's waiver was per-slice and did not carry; this one was asked and granted fresh). Gate\nreplacements, identical to TKT-114's recorded protocol:\n- **Gate 1 (priority):** owner directed the run; agent moved Backlog → Ready.\n- **Gate 2 (plan approval):** orchestrator stands in as Gate-2 judge for the A/B plan arms\n  (ab-stages §plan/6); arm mapping disclosed immediately; every self-made decision + rationale\n  recorded in kind=plan-final.\n- **Gate 3 (review + merge):** after adversarial A/B ai-review converges (same triage / second-pass /\n  churn-cap rules), orchestrator squash-merges and deletes the branch; review-guide posted first.\n- **Gate 4 (PO acceptance):** orchestrator self-validates each COS against test evidence on merged\n  code, posts the validation note, closes with full kind=metrics.\n\nDrive style: gates only (owner, asked fresh). All non-gate invariants in force: config.models routing\n(config now names deepseek-v4-pro directly — no substitution note needed, b45dd3e), cross-model review\nfor plan and code, TDD tests-observed-red, `make check` green before every push and after merge\n(judged from the log body), marker comments at each stage, no AI attribution.\n\n**Selection reason:** sole blocker TKT-114 is Done (merged 65e5c3b, PR #107); TKT-115 is the\ndependency-ordered next slice of the TKT-56 umbrella (launch-blocking gap) and was shaped this\nsession with readiness PASS.\n\n**Preflights green:** Docker up (`docker info` OK); claudex proxy up and serving both arm models\n(deepseek-v4-pro, gpt-5.6-sol); working tree clean on origin/main (b45dd3e).\n\n**Closed loop from S2:** owner confirms the exposed sk_test_ key was ROLLED. S3 needs no live key —\nthe gate is offline against the fake-PSP testbed.\n\nBranch: `TKT-115-commerce-recovery-psp` off origin/main.\nGoverning ADRs (re-resolved at claim, all verified at HEAD b45dd3e): ADR-032 (contract + both S2\namendments), ADR-016 (recovery state machine), ADR-011 (journal canonicity/sole-writer), ADR-022\n(out-of-band migrations), ADR-009 (contract-first APIs); ADR-017 conditional (no event payload\nchange expected). No new ADR landed between shaping and claim (same session, same HEAD).\n"
     }
   ]
 }
