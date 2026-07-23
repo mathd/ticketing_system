@@ -7,10 +7,16 @@
     "localGate": "make check"
   },
   "models": {
-    "plan": ["deepseek-v4-flash:max@claudex", "gpt-5.6-sol:medium@claudex"],
+    "plan": [
+      "deepseek-v4-pro:max@claudex",
+      "gpt-5.6-sol:medium@claudex"
+    ],
     "planReview": "fable-5:medium",
     "implement": "main-agent",
-    "aiReview": ["deepseek-v4-flash:max@claudex", "gpt-5.6-sol:medium@claudex"]
+    "aiReview": [
+      "deepseek-v4-pro:max@claudex",
+      "gpt-5.6-sol:medium@claudex"
+    ]
   },
   "registry": {
     "bindingPath": "docs/adr/",

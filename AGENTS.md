@@ -32,6 +32,9 @@ experiment stays valid.
 - **Money is integer minor units + ISO currency code — floats are banned on money paths.**
 - **Local gate:** `make check` (lint + test + build, Go & TS, plus the gateway smoke suite;
   run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored.
+  **Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate** —
+  `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run
+  (cost two gate runs on TKT-114).
 - **A web-UI ticket isn't verified until a browser has *submitted* its forms.** `make check`'s
   smoke suite exercises the catalog API directly and only *renders* back-office pages — it never
   submits an Astro form, so the whole class of "the SSR layer rejects/mangles the request before
