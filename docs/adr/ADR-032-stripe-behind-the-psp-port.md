@@ -116,7 +116,13 @@ targeted rollback and current-key compromise remain out of scope (TKT-11).**
   replay contract is bounded by **Stripe's idempotency-key retention (~24h)** — after expiry the same
   key creates a *new* PaymentIntent, so an operation without a persisted `pi_` must be resolved
   within that window; older unresolved operations are a manual-reconciliation case, and S3's
-  recovery must treat the retention window as a hard deadline, not a retry budget. A transport timeout is `unknown`;
+  recovery must treat the retention window as a hard deadline, not a retry budget. *Amended
+  (TKT-115/S3):* the deadline is **enforced inside payments** — `/internal/psp/status` answers
+  **409** for an expired ref-less unresolved operation (after the completed-compensation and
+  resolved-operation short-circuits, which keep answering forever), so no caller can replay an
+  expired key; `/internal/operations` exposes `occurred_at` and `status_replay_deadline_at` so
+  commerce parks before ever calling. Retention is a property of the configured adapter (Stripe
+  ~24h; the fake retains forever). A transport timeout is `unknown`;
   only a retrieved/replayed provider result proving no authorization or capture maps to
   `terminal_no_side_effect`.
 - Unknown or future Stripe statuses **fail closed** as `unknown`/error — never silently interpreted
@@ -127,6 +133,25 @@ targeted rollback and current-key compromise remain out of scope (TKT-11).**
 resolution is none of these; recording it as `declined`/`timeout` would make the column lie to its
 reader. The commerce compensation slice adds a distinct value (`no_side_effect`) to the
 `terminal_outcome` CHECK, alongside adding `refunded` to `orders_status_check`.
+*Amended (TKT-115/S3):* the boundary runs the other way too — a provider decline or timeout that
+happens to **arrive via the status path** records its **exact** outcome (`declined`/`timeout`),
+never `no_side_effect`: blurring them would stop the audit column distinguishing a decline from a
+timeout, the exact distinction it exists to keep. `no_side_effect` is reserved for
+released-without-a-provider-decision: a void, an external cancellation, or a replay proving the
+charge was never created.
+
+***Amended (TKT-115/S3) — the externally-released hold.*** A PaymentIntent canceled outside this
+system (dashboard, authorization expiry) surfaces as a `voided` status with no compensation ever
+driven by us. It resolves as `terminal_outcome='no_side_effect'` + inventory release +
+`order.failed`; **no `payment.voided` fact is fabricated**. The journal stays consistent by
+symmetry: on this path no money fact was ever appended for the payment (the operation is
+unresolved; the charge handler journals only terminal outcomes), so there is no dangling
+authorization entry needing a compensating fact — fact-less-ness on both sides. This is
+honest-writer bookkeeping (ADR-021 discipline): our journal records **our actions**; provider-side
+state discovered by a read is operational evidence on `payment_operations`, not a canonical money
+fact. If the product ever needs canonical evidence of an external cancellation, that is a **new,
+distinctly named** payments-owned fact with its own idempotency decision — never an overloaded
+`payment.voided`.
 
 ## Consequences
 

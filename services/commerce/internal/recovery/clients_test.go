@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -106,4 +108,153 @@ func TestLookupOperationDistinguishesAbsenceFromFailure(t *testing.T) {
 			t.Fatal("a 500 must not be reported as 'no operation exists' — that would release a seat whose money may have captured")
 		}
 	})
+}
+
+// The PSP status mapping is the recovery decision table's front door (TKT-115): each
+// non-200 carries a distinct meaning — 404 evidence-of-inconsistency, 409 the expired
+// replay window (park, never retry), 502 still-ambiguous (retry, never terminal). A
+// generic error for any of them would collapse "park" and "retry later" into one path.
+func TestPSPStatusMapping(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"expired replay window parks", http.StatusConflict, `{"error":"status replay window expired"}`, ErrReplayWindowExpired},
+		{"still ambiguous retries", http.StatusBadGateway, `{"error":"provider status unresolved"}`, ErrProviderUnresolved},
+		{"missing operation is inconsistent state", http.StatusNotFound, `{"error":"operation not found"}`, ErrOperationNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+			_, err := c.Status(context.Background(), uuid.New(), "k1")
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("status %d = %v, want %v", tc.status, err, tc.want)
+			}
+		})
+	}
+}
+
+// A decoded 200 carries the full provider-neutral evidence, integer minor units intact.
+func TestPSPStatusDecodesEvidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/psp/status" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if r.Header.Get("X-Internal-Token") != "t" {
+			t.Error("internal token missing")
+		}
+		if r.URL.Query().Get("idempotency_key") != "k1" {
+			t.Errorf("idempotency_key = %q", r.URL.Query().Get("idempotency_key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcome":"captured","terminal_no_side_effect":false,"captured":true,"authorized":true,"authorized_amount":1250,"captured_amount":1250,"currency":"EUR"}`))
+	}))
+	defer srv.Close()
+	c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+	got, err := c.Status(context.Background(), uuid.New(), "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PSPStatus{Outcome: "captured", Captured: true, Authorized: true, AuthorizedAmount: 1250, CapturedAmount: 1250, Currency: "EUR"}
+	if got != want {
+		t.Fatalf("status = %+v, want %+v", got, want)
+	}
+}
+
+// A malformed 200 is a transport failure, not evidence: the caller must get an error it
+// retries on, never a zero-valued PSPStatus it might read as terminal.
+func TestPSPStatusMalformed200IsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{`))
+	}))
+	defer srv.Close()
+	c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+	if _, err := c.Status(context.Background(), uuid.New(), "k1"); err == nil {
+		t.Fatal("a malformed 200 must be an error")
+	}
+}
+
+// Void and refund share the compensation mapping: 409 = wrong compensation for the
+// stored evidence (re-derive, not failure, not success), 502 = bound and recoverable.
+// The POST body carries only the operation identity — amounts live in payments.
+func TestCompensationMapping(t *testing.T) {
+	org := uuid.New()
+	for _, verb := range []string{"void", "refund"} {
+		t.Run(verb, func(t *testing.T) {
+			var gotPath, gotBody string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				b := make([]byte, 1024)
+				n, _ := r.Body.Read(b)
+				gotBody = string(b[:n])
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"status":"` + verb + `ed","fact_id":"` + uuid.NewString() + `","replay":false}`))
+			}))
+			defer srv.Close()
+			c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+			call := c.Void
+			if verb == "refund" {
+				call = c.Refund
+			}
+			res, err := call(context.Background(), org, "k1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Status != verb+"ed" || res.Replay {
+				t.Fatalf("result = %+v", res)
+			}
+			if gotPath != "/internal/psp/"+verb {
+				t.Fatalf("path = %s", gotPath)
+			}
+			if !strings.Contains(gotBody, org.String()) || !strings.Contains(gotBody, `"k1"`) {
+				t.Fatalf("body must carry the operation identity, got %s", gotBody)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		status int
+		want   error
+	}{
+		{http.StatusConflict, ErrWrongCompensation},
+		{http.StatusBadGateway, ErrProviderUnresolved},
+		{http.StatusNotFound, ErrOperationNotFound},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+		}))
+		c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+		if _, err := c.Refund(context.Background(), org, "k1"); !errors.Is(err, tc.want) {
+			t.Fatalf("refund %d = %v, want %v", tc.status, err, tc.want)
+		}
+		srv.Close()
+	}
+}
+
+// LookupOperation now surfaces the durable bind time and, when the provider bounds
+// same-key replay, the deadline — the runner's park-before-call check reads these.
+func TestLookupOperationParsesDeadline(t *testing.T) {
+	occurred := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	deadline := occurred.Add(24 * time.Hour)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resolved":false,"occurred_at":"2026-07-22T12:00:00Z","status_replay_deadline_at":"2026-07-23T12:00:00Z"}`))
+	}))
+	defer srv.Close()
+	c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+	op, found, err := c.LookupOperation(context.Background(), uuid.New(), "k1")
+	if err != nil || !found {
+		t.Fatalf("lookup: found=%v err=%v", found, err)
+	}
+	if !op.OccurredAt.Equal(occurred) {
+		t.Fatalf("occurred_at = %v, want %v", op.OccurredAt, occurred)
+	}
+	if op.StatusReplayDeadlineAt == nil || !op.StatusReplayDeadlineAt.Equal(deadline) {
+		t.Fatalf("deadline = %v, want %v", op.StatusReplayDeadlineAt, deadline)
+	}
 }

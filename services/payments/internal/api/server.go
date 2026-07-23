@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -23,6 +24,11 @@ type Server struct {
 	journal    *store.Journal
 	credential string
 	psp        psp.PSP
+	// statusReplayRetention bounds same-key status replay for ref-less unresolved
+	// operations — a property of the configured provider (Stripe retains idempotency
+	// keys ~24h; the fake retains forever, expressed as 0 = unbounded). See
+	// statusReplayDeadline (psp.go) and ADR-032 §Status/replay amendment (TKT-115).
+	statusReplayRetention time.Duration
 }
 
 // New wires the payments server. The PSP port decides charge outcomes; New(j, cred)
@@ -32,9 +38,16 @@ func New(j *store.Journal, credential string) *Server {
 	return NewWithPSP(j, credential, psp.NewFake())
 }
 
-// NewWithPSP wires the server against an explicit PSP implementation.
+// NewWithPSP wires the server against an explicit PSP implementation with no
+// status-replay bound (correct for the fake; Stripe callers use NewWithPSPRetention).
 func NewWithPSP(j *store.Journal, credential string, provider psp.PSP) *Server {
-	return &Server{journal: j, credential: credential, psp: provider}
+	return NewWithPSPRetention(j, credential, provider, 0)
+}
+
+// NewWithPSPRetention wires the server with the provider's idempotency-key retention,
+// which bounds the status-replay contract (0 = unbounded).
+func NewWithPSPRetention(j *store.Journal, credential string, provider psp.PSP, retention time.Duration) *Server {
+	return &Server{journal: j, credential: credential, psp: provider, statusReplayRetention: retention}
 }
 func (s *Server) Router(log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
@@ -100,11 +113,16 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 		write(w, 404, map[string]string{"error": "operation not found"})
 		return
 	}
-	out := map[string]any{"resolved": op.Resolved}
+	// occurred_at is returned for EVERY found operation (TKT-115): it is the durable
+	// bind time commerce derives the status-replay deadline from — an unresolved
+	// operation is exactly the caller that needs it.
+	out := map[string]any{"resolved": op.Resolved, "occurred_at": op.OccurredAt}
 	if op.Resolved {
 		out["status"] = op.Status
 		out["fact_id"] = op.FactID
-		out["occurred_at"] = op.OccurredAt
+	}
+	if deadline, bounded := statusReplayDeadline(op, s.statusReplayRetention); bounded {
+		out["status_replay_deadline_at"] = deadline
 	}
 	write(w, 200, out)
 }

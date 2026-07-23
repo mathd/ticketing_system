@@ -27,8 +27,10 @@ type StuckOrder struct {
 	Status         string
 	IdempotencyKey string
 	// TerminalOutcome is the result recorded before a release was attempted, and is
-	// what makes the release restartable: 'declined', 'timeout', or 'not_attempted'
-	// (payments never bound a charge). Empty when no answer was ever persisted.
+	// what makes the release restartable: 'declined', 'timeout', 'not_attempted'
+	// (payments never bound a charge), or 'no_side_effect' (PSP status proved the hold
+	// was released without a provider decision — TKT-115). Empty when no answer was
+	// ever persisted.
 	TerminalOutcome string
 	ClaimID         uuid.UUID
 	Attempts        int
@@ -58,9 +60,11 @@ var ErrRecoveryConflict = errors.New("order changed state during recovery")
 // lost). The row alone cannot distinguish them, so the runner resolves it against
 // payments (ADR-016 §Decision 3) rather than guessing.
 //
-// `payment_unknown` is deliberately EXCLUDED: resolving it needs real-PSP status, which
-// is deferred to TKT-56. Claiming it here would let the runner make exactly the
-// unfounded inference this design exists to prevent.
+// `payment_unknown` is claimable since TKT-115: the runner resolves it against real PSP
+// status (GET /internal/psp/status), so the decision still rests on durable provider
+// evidence, never on an inference about a failed transport. `reconciliation_required`
+// is claimable only while UNPARKED — an unparked row is a queued compensation the
+// runner drives through /internal/psp/refund; a parked one awaits a human.
 func ClaimStuckOrders(ctx context.Context, db OutboxDB, limit int, lease time.Duration) ([]StuckOrder, error) {
 	claim := uuid.New()
 	// The claimable set is chosen in a CTE under FOR UPDATE SKIP LOCKED, then joined to
@@ -70,7 +74,7 @@ func ClaimStuckOrders(ctx context.Context, db OutboxDB, limit int, lease time.Du
 	rows, err := db.QueryContext(ctx, `
 		WITH claimable AS (
 			SELECT id FROM orders
-			WHERE status IN ('created','confirmation_pending','release_pending')
+			WHERE status IN ('created','payment_unknown','confirmation_pending','release_pending','reconciliation_required')
 			  AND recovery_parked_at IS NULL
 			  AND recovery_next_attempt_at<=now()
 			  AND (recovery_lease_until IS NULL OR recovery_lease_until<=now())
@@ -142,7 +146,7 @@ func ParkForReconciliation(ctx context.Context, db OutboxDB, orderID, claimID uu
 		    recovery_parked_at=now(),
 		    recovery_last_error=$3,
 		    updated_at=now()
-		WHERE id=$1 AND recovery_claim_id=$2 AND status IN ('created','confirmation_pending','release_pending')`,
+		WHERE id=$1 AND recovery_claim_id=$2 AND status IN ('created','payment_unknown','confirmation_pending','release_pending','reconciliation_required')`,
 		orderID, claimID, reason)
 	if err != nil {
 		return err
@@ -155,10 +159,12 @@ func ParkForReconciliation(ctx context.Context, db OutboxDB, orderID, claimID uu
 
 // releasableOutcome reports whether an outcome PROVES no side effect, which is the only
 // basis on which a claim may be released (ADR-016 §Decision 2): `declined` and `timeout`
-// are the fake PSP's terminal answers, and `not_attempted` means payments never bound a
-// charge at all. A transport failure is not on this list and never becomes one.
+// are provider terminal answers, `not_attempted` means payments never bound a charge at
+// all, and `no_side_effect` is a PSP-status-proven release without a provider decision —
+// a void, an external cancellation, or a replay proving the charge was never created
+// (TKT-115, ADR-032). A transport failure is not on this list and never becomes one.
 func releasableOutcome(o string) bool {
-	return o == "declined" || o == "timeout" || o == "not_attempted"
+	return o == "declined" || o == "timeout" || o == "not_attempted" || o == "no_side_effect"
 }
 
 // TerminalStatus maps a releasable outcome to the order's terminal status. Both
@@ -194,7 +200,7 @@ func RecordTerminalOutcome(ctx context.Context, db OutboxDB, orderID, claimID uu
 	result, err := db.ExecContext(ctx, `
 		UPDATE orders SET terminal_outcome=$2,status='release_pending',updated_at=now()
 		WHERE id=$1 AND recovery_claim_id=$3 AND terminal_outcome IS NULL
-		  AND status IN ('created','release_pending')`,
+		  AND status IN ('created','payment_unknown','release_pending','reconciliation_required')`,
 		orderID, outcome, claimID)
 	if err != nil {
 		return err
@@ -207,6 +213,55 @@ func RecordTerminalOutcome(ctx context.Context, db OutboxDB, orderID, claimID uu
 		return ErrRecoveryConflict
 	}
 	return nil
+}
+
+// QueueForCompensation moves an order to reconciliation_required while KEEPING the
+// recovery claim and staying unparked: the same pass continues into the refund, and a
+// later failure backs off through ReleaseStuckOrder rather than waiting on a human.
+// This is the TKT-115 successor to parking on ErrClaimGone — the compensation exists
+// now, so the row is queued work, not an operator's inbox. Fenced on the claim token.
+func QueueForCompensation(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID, reason string) error {
+	result, err := db.ExecContext(ctx, `
+		UPDATE orders
+		SET status='reconciliation_required',
+		    recovery_last_error=$3,
+		    updated_at=now()
+		WHERE id=$1 AND recovery_claim_id=$2 AND status IN ('created','payment_unknown','confirmation_pending')`,
+		orderID, claimID, reason)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ErrRecoveryConflict
+	}
+	return nil
+}
+
+// MarkRefunded finishes a compensated order: captured money that could not buy its seat
+// has been returned by payments (the runner calls this only after a refund 200 or
+// status-proven refunded evidence — never on 409/502). The order reaches the terminal
+// `refunded` status, the reservation fails, and the claim clears — atomically, fenced
+// on the claim token like every recovery write.
+func MarkRefunded(ctx context.Context, db *sql.DB, s StuckOrder) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE orders SET status='refunded',recovery_lease_until=NULL,recovery_claim_id=NULL,updated_at=now()
+		WHERE id=$1 AND recovery_claim_id=$2 AND status IN ('created','payment_unknown','confirmation_pending','reconciliation_required')`,
+		s.OrderID, s.ClaimID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ErrRecoveryConflict
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE reservations SET status='failed' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, s.ReservationID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // MarkReleased finishes a release-driven failure: the claim is gone, so the order and

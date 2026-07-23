@@ -428,6 +428,21 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, terminalCheckoutCode(orderStatus), map[string]any{"order_id": order, "status": orderStatus, "replay": true})
 		return
 	}
+	if orderStatus == "refunded" {
+		// Recovery refunded this order's captured money (TKT-115). Without this branch a
+		// byte-identical replay would fall through, re-journal order.created and finalize
+		// against a hold recovery already released. order.failed is already journalled by
+		// the recovery pass; replaying nothing is the idempotent answer.
+		write(w, terminalCheckoutCode(orderStatus), map[string]any{"order_id": order, "status": orderStatus, "replay": true})
+		return
+	}
+	if orderStatus == "reconciliation_required" {
+		// Captured money mid-compensation (or awaiting a human). Neither completed nor
+		// terminally failed — falling through would re-drive a checkout whose money is
+		// being reconciled. The distinct message is the buyer-facing state.
+		write(w, 409, map[string]any{"error": "order awaiting payment reconciliation", "order_id": order, "status": orderStatus})
+		return
+	}
 	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
 		write(w, 500, map[string]string{"error": "persist buyer"})
 		return

@@ -137,17 +137,38 @@ func verifyConcurrentAppend() error {
 // offline default — the gate never talks to Stripe), a test-mode secret key selects the
 // Stripe adapter, and a LIVE key or any unrecognized value refuses startup — a typo must
 // never silently fall back to the fake, and this testbed must never hold a live key.
-func pspForKey(key string) (psp.PSP, error) {
+func pspForKey(key string) (psp.PSP, time.Duration, error) {
 	switch {
 	case key == "" || key == "fake":
-		return psp.NewFake(), nil
+		// The fake retains "idempotency keys" forever (its Status is a pure function of
+		// the replayed token), so the status-replay contract is unbounded: retention 0.
+		return psp.NewFake(), 0, nil
 	case strings.HasPrefix(key, "sk_test_"):
-		return psp.NewStripe(key, "https://api.stripe.com", nil), nil
+		// Stripe retains idempotency keys ~24h; past that a same-key replay mints a NEW
+		// PaymentIntent, so status replay is bounded (ADR-032 §Status/replay amendment).
+		return psp.NewStripe(key, "https://api.stripe.com", nil), 24 * time.Hour, nil
 	case strings.HasPrefix(key, "sk_live_"):
-		return nil, errors.New("STRIPE_SECRET_KEY is a LIVE key; this service only accepts test-mode keys")
+		return nil, 0, errors.New("STRIPE_SECRET_KEY is a LIVE key; this service only accepts test-mode keys")
 	default:
-		return nil, errors.New("STRIPE_SECRET_KEY unrecognized: expected empty, \"fake\", or an sk_test_ key")
+		return nil, 0, errors.New("STRIPE_SECRET_KEY unrecognized: expected empty, \"fake\", or an sk_test_ key")
 	}
+}
+
+// statusReplayRetention resolves the effective retention: the provider's own bound,
+// overridable by PAYMENTS_STATUS_REPLAY_RETENTION (a Go duration; "0" = unbounded).
+// The override exists for the offline stack: the fake never expires keys, so proving
+// the deadline path against real predicates needs an injected bound — never a changed
+// default. An unparseable value refuses startup like every other config error here.
+func statusReplayRetention(fallback time.Duration) (time.Duration, error) {
+	raw := os.Getenv("PAYMENTS_STATUS_REPLAY_RETENTION")
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("PAYMENTS_STATUS_REPLAY_RETENTION unparseable: %q", raw)
+	}
+	return d, nil
 }
 
 func signingConfig() (string, []byte, error) {
@@ -226,7 +247,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	provider, err := pspForKey(os.Getenv("STRIPE_SECRET_KEY"))
+	provider, providerRetention, err := pspForKey(os.Getenv("STRIPE_SECRET_KEY"))
+	if err != nil {
+		return err
+	}
+	retention, err := statusReplayRetention(providerRetention)
 	if err != nil {
 		return err
 	}
@@ -254,7 +279,7 @@ func run() error {
 	)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
-	r.Mount("/", api.NewWithPSP(paymentstore.New(db, keyID, key), internalToken, provider).Router(log))
+	r.Mount("/", api.NewWithPSPRetention(paymentstore.New(db, keyID, key), internalToken, provider, retention).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

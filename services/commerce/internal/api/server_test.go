@@ -90,6 +90,11 @@ func TestTerminalCheckoutCode(t *testing.T) {
 	if got := terminalCheckoutCode("timeout"); got != http.StatusRequestTimeout {
 		t.Fatalf("timeout code = %d, want %d", got, http.StatusRequestTimeout)
 	}
+	// A refunded order replays as a payment failure: the charge was captured then
+	// compensated (TKT-115) — from the buyer's side the checkout did not buy a seat.
+	if got := terminalCheckoutCode("refunded"); got != http.StatusPaymentRequired {
+		t.Fatalf("refunded code = %d, want %d", got, http.StatusPaymentRequired)
+	}
 }
 
 func TestPersistenceReadProblem(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -138,5 +139,43 @@ func TestProviderStateResult(t *testing.T) {
 		if err := got.Validate(); err != nil {
 			t.Fatalf("providerStateResult(%q) invalid: %v", state, err)
 		}
+	}
+}
+
+// The status-replay deadline (ADR-032 amendment, TKT-115): an UNRESOLVED operation with
+// NO persisted provider reference can only be status-resolved by replaying the create
+// under the same idempotency key, and the provider bounds that replay (~24h at Stripe —
+// after expiry the same key mints a NEW PaymentIntent). The deadline exists exactly when
+// all three hold: retention configured, unresolved, ref-less. A resolved operation or a
+// persisted pi_ resolves by retrieval forever; a zero retention (the fake) never expires.
+func TestStatusReplayDeadline(t *testing.T) {
+	bound := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	base := store.Operation{OccurredAt: bound}
+	resolved := base
+	resolved.Resolved = true
+	withRef := base
+	withRef.ProviderPaymentRef = "pi_123"
+
+	cases := []struct {
+		name      string
+		op        store.Operation
+		retention time.Duration
+		bounded   bool
+	}{
+		{"ref-less unresolved with retention is bounded", base, 24 * time.Hour, true},
+		{"zero retention (fake PSP) never expires", base, 0, false},
+		{"resolved operation answers from its record", resolved, 24 * time.Hour, false},
+		{"persisted provider ref resolves by retrieval", withRef, 24 * time.Hour, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deadline, bounded := statusReplayDeadline(tc.op, tc.retention)
+			if bounded != tc.bounded {
+				t.Fatalf("bounded = %v, want %v", bounded, tc.bounded)
+			}
+			if bounded && !deadline.Equal(bound.Add(tc.retention)) {
+				t.Fatalf("deadline = %v, want %v", deadline, bound.Add(tc.retention))
+			}
+		})
 	}
 }

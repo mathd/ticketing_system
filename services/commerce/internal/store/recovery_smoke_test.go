@@ -75,9 +75,10 @@ func TestStuckOrdersAreClaimable(t *testing.T) {
 	}
 }
 
-// payment_unknown needs real-PSP status (TKT-56). Claiming it would invite exactly the
-// unfounded inference ADR-016 §Decision 2 forbids.
-func TestPaymentUnknownIsNotClaimed(t *testing.T) {
+// payment_unknown is claimable since TKT-115: the runner resolves it against real PSP
+// status (GET /internal/psp/status), so claiming it no longer invites the unfounded
+// inference ADR-016 §Decision 2 forbids — the resolution IS durable provider evidence.
+func TestPaymentUnknownIsClaimable(t *testing.T) {
 	db, ctx := outboxDB(t)
 	s := seedStuck(t, "payment_unknown")
 	claimed, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
@@ -86,8 +87,36 @@ func TestPaymentUnknownIsNotClaimed(t *testing.T) {
 	}
 	for _, c := range claimed {
 		if c.OrderID == s.OrderID {
-			t.Fatal("payment_unknown must not be claimed: resolving it needs PSP status, deferred to TKT-56")
+			return
 		}
+	}
+	t.Fatal("payment_unknown must be claimable: TKT-115 resolves it via PSP status")
+}
+
+// reconciliation_required splits in two since TKT-115: an UNPARKED row is queued for
+// compensation and claimable; a PARKED one still awaits a human and never is.
+func TestReconciliationRequiredClaimabilityFollowsParking(t *testing.T) {
+	db, ctx := outboxDB(t)
+	actionable := seedStuck(t, "reconciliation_required")
+	parked := seedStuck(t, "reconciliation_required")
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_parked_at=now() WHERE id=$1`, parked.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawActionable bool
+	for _, c := range claimed {
+		if c.OrderID == parked.OrderID {
+			t.Fatal("a parked reconciliation_required order must never be claimed")
+		}
+		if c.OrderID == actionable.OrderID {
+			sawActionable = true
+		}
+	}
+	if !sawActionable {
+		t.Fatal("an unparked reconciliation_required order must be claimable: TKT-115 refunds it via the PSP port")
 	}
 }
 
@@ -217,7 +246,7 @@ func TestOnlyProvenOutcomesAreRecordable(t *testing.T) {
 			t.Fatalf("outcome %q must be refused by the store guard before reaching the database; got %v", bad, err)
 		}
 	}
-	for _, good := range []string{"declined", "timeout", "not_attempted"} {
+	for _, good := range []string{"declined", "timeout", "not_attempted", "no_side_effect"} {
 		s2 := claimStuckOne(t, seedStuck(t, "created").OrderID)
 		if err := RecordTerminalOutcome(ctx, db, s2.OrderID, s2.ClaimID, good); err != nil {
 			t.Fatalf("outcome %q must be recordable: %v", good, err)
@@ -438,6 +467,135 @@ func TestOrderStatusVocabularyIsEnforced(t *testing.T) {
 	s := seedStuck(t, "created")
 	if _, err := db.ExecContext(ctx, `UPDATE orders SET status='not_a_real_status' WHERE id=$1`, s.OrderID); err == nil {
 		t.Fatal("orders.status must reject an unknown value")
+	}
+}
+
+// no_side_effect mirrors not_attempted's presentation: the buyer sees a timed-out
+// checkout (nothing was charged from their side), while the audit column keeps the
+// PSP-status-proven resolution distinct from a genuine timeout (TKT-115, ADR-032).
+func TestNoSideEffectPresentsAsTimeoutButStaysDistinguishable(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := claimStuckOne(t, seedStuck(t, "payment_unknown").OrderID)
+	if err := RecordTerminalOutcome(ctx, db, s.OrderID, s.ClaimID, "no_side_effect"); err != nil {
+		t.Fatalf("no_side_effect must be recordable from payment_unknown: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET updated_at=now()-interval '10 minutes',recovery_lease_until=NULL,recovery_claim_id=NULL WHERE id=$1`, s.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	got := claimStuckOne(t, s.OrderID)
+	got.TerminalOutcome = "no_side_effect"
+	if err := MarkReleased(ctx, db, got); err != nil {
+		t.Fatal(err)
+	}
+	var status, outcome string
+	if err := db.QueryRowContext(ctx, `SELECT status,terminal_outcome FROM orders WHERE id=$1`, s.OrderID).Scan(&status, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if status != "timeout" {
+		t.Fatalf("no_side_effect must present as timeout to the buyer, got %q", status)
+	}
+	if outcome != "no_side_effect" {
+		t.Fatalf("the audit column must keep no_side_effect distinct, got %q", outcome)
+	}
+}
+
+// A terminal answer arriving via PSP status on a reconciliation_required order (e.g. an
+// externally-voided authorization discovered during compensation re-derivation) must be
+// recordable from that status too — the predicate that once knew only created/
+// release_pending would otherwise refuse the write and wedge the row in a conflict loop.
+func TestTerminalOutcomeIsRecordableFromReconciliationRequired(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := claimStuckOne(t, seedStuck(t, "reconciliation_required").OrderID)
+	if err := RecordTerminalOutcome(ctx, db, s.OrderID, s.ClaimID, "no_side_effect"); err != nil {
+		t.Fatalf("no_side_effect must be recordable from reconciliation_required: %v", err)
+	}
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, s.OrderID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "release_pending" {
+		t.Fatalf("recording the outcome must establish release_pending, got %q", status)
+	}
+}
+
+// QueueForCompensation is the ErrClaimGone successor to parking: the order becomes
+// reconciliation_required but KEEPS the claim (the same pass drives the refund) and
+// stays unparked, so a 502 later in the pass leaves it claimable rather than waiting
+// on a human (TKT-115).
+func TestQueueForCompensationKeepsClaimAndStaysActionable(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := claimStuckOne(t, seedStuck(t, "confirmation_pending").OrderID)
+	if err := QueueForCompensation(ctx, db, s.OrderID, s.ClaimID, "captured payment whose claim is gone; refunding via PSP port"); err != nil {
+		t.Fatal(err)
+	}
+	var status, reason string
+	var claim uuid.NullUUID
+	var parked *time.Time
+	if err := db.QueryRowContext(ctx, `SELECT status,recovery_last_error,recovery_claim_id,recovery_parked_at FROM orders WHERE id=$1`, s.OrderID).Scan(&status, &reason, &claim, &parked); err != nil {
+		t.Fatal(err)
+	}
+	if status != "reconciliation_required" {
+		t.Fatalf("status = %q; want reconciliation_required", status)
+	}
+	if !claim.Valid || claim.UUID != s.ClaimID {
+		t.Fatal("queueing for compensation must keep the claim: the same pass drives the refund")
+	}
+	if parked != nil {
+		t.Fatal("a queued compensation is actionable, not parked")
+	}
+	if reason == "" {
+		t.Fatal("the queue reason is the operator's only signal mid-compensation")
+	}
+	// Fenced like every recovery write.
+	if err := QueueForCompensation(ctx, db, s.OrderID, uuid.New(), "stale"); !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("stale claimant queued a row it does not hold: err=%v", err)
+	}
+}
+
+// MarkRefunded is the terminal transition for compensated money: only reachable after
+// payments answered 200 on the refund (the runner enforces the ordering; this pins the
+// SQL's fencing and atomicity — order refunded + reservation failed + claim cleared).
+func TestMarkRefundedIsFencedAndAtomic(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := claimStuckOne(t, seedStuck(t, "reconciliation_required").OrderID)
+
+	// A stale claimant cannot mark the order refunded.
+	stale := s
+	stale.ClaimID = uuid.New()
+	if err := MarkRefunded(ctx, db, stale); !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("stale claimant refunded a row it does not hold: err=%v", err)
+	}
+
+	if err := MarkRefunded(ctx, db, s); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var claim uuid.NullUUID
+	if err := db.QueryRowContext(ctx, `SELECT status,recovery_claim_id FROM orders WHERE id=$1`, s.OrderID).Scan(&status, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if status != "refunded" {
+		t.Fatalf("status = %q; want refunded", status)
+	}
+	if claim.Valid {
+		t.Fatal("a refunded order must not keep a recovery claim")
+	}
+	var resStatus string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM reservations WHERE id=$1`, s.ReservationID).Scan(&resStatus); err != nil {
+		t.Fatal(err)
+	}
+	if resStatus != "failed" {
+		t.Fatalf("reservation status = %q; want failed (the seat obligation is discharged)", resStatus)
+	}
+	// Refunded is terminal: never re-claimed.
+	claimed, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range claimed {
+		if c.OrderID == s.OrderID {
+			t.Fatal("a refunded order is terminal and must never be re-claimed")
+		}
 	}
 }
 

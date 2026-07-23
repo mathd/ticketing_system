@@ -122,10 +122,11 @@ type FactResult struct {
 
 // OperationState defines model for OperationState.
 type OperationState struct {
-	FactId     *openapi_types.UUID `json:"fact_id,omitempty"`
-	OccurredAt *time.Time          `json:"occurred_at,omitempty"`
-	Resolved   bool                `json:"resolved"`
-	Status     *string             `json:"status,omitempty"`
+	FactId                 *openapi_types.UUID `json:"fact_id,omitempty"`
+	OccurredAt             *time.Time          `json:"occurred_at,omitempty"`
+	Resolved               bool                `json:"resolved"`
+	Status                 *string             `json:"status,omitempty"`
+	StatusReplayDeadlineAt *time.Time          `json:"status_replay_deadline_at,omitempty"`
 }
 
 // PSPCompensation defines model for PSPCompensation.

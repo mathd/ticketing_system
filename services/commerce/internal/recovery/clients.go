@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -30,9 +31,26 @@ type HTTPClients struct {
 }
 
 func (c HTTPClients) do(ctx context.Context, method, url string, out any) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	return c.doBody(ctx, method, url, nil, out)
+}
+
+// doBody is do with an optional JSON request body — the compensation POSTs carry the
+// operation identity in the body, everything else stays body-less.
+func (c HTTPClients) doBody(ctx context.Context, method, url string, body, out any) (int, error) {
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return 0, err
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
 		return 0, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("X-Internal-Token", c.Token)
 	resp, err := c.Client.Do(req)
@@ -48,6 +66,76 @@ func (c HTTPClients) do(ctx context.Context, method, url string, out any) (int, 
 	return resp.StatusCode, nil
 }
 
+// Sentinels for the PSP recovery surface (TKT-115). Each carries a distinct decision:
+// ErrWrongCompensation re-derives, ErrProviderUnresolved retries later (the compensation
+// stays bound in payments — never terminal), ErrReplayWindowExpired parks in ONE pass
+// (retrying cannot help: the provider forgot the idempotency key, and a replay would
+// mint a second PaymentIntent), ErrOperationNotFound parks as inconsistent durable
+// state (an order in a PSP-recovery status must have a bound operation).
+var (
+	ErrWrongCompensation   = errors.New("compensation does not match the stored operation evidence")
+	ErrProviderUnresolved  = errors.New("provider state unresolved; compensation stays bound")
+	ErrReplayWindowExpired = errors.New("status replay window expired; manual reconciliation required")
+	ErrOperationNotFound   = errors.New("payment operation not found")
+)
+
+// Status resolves an operation's provider state via payments' provider-neutral
+// GET /internal/psp/status. Only a decoded 200 is evidence; every other answer maps to
+// a sentinel naming the decision it forces.
+func (c HTTPClients) Status(ctx context.Context, org uuid.UUID, key string) (PSPStatus, error) {
+	u := fmt.Sprintf("%s/internal/psp/status?organizer_id=%s&idempotency_key=%s",
+		c.PaymentsURL, org, url.QueryEscape(key))
+	var body PSPStatus
+	code, err := c.do(ctx, http.MethodGet, u, &body)
+	if err != nil {
+		return PSPStatus{}, err
+	}
+	switch code {
+	case http.StatusOK:
+		return body, nil
+	case http.StatusNotFound:
+		return PSPStatus{}, ErrOperationNotFound
+	case http.StatusConflict:
+		return PSPStatus{}, ErrReplayWindowExpired
+	case http.StatusBadGateway:
+		return PSPStatus{}, ErrProviderUnresolved
+	default:
+		return PSPStatus{}, fmt.Errorf("psp status: unexpected status %d", code)
+	}
+}
+
+// Void cancels an authorized, uncaptured operation via POST /internal/psp/void.
+func (c HTTPClients) Void(ctx context.Context, org uuid.UUID, key string) (CompensationResult, error) {
+	return c.compensate(ctx, "void", org, key)
+}
+
+// Refund returns captured money via POST /internal/psp/refund. Amounts come from
+// payments' stored evidence; the request carries only the operation identity.
+func (c HTTPClients) Refund(ctx context.Context, org uuid.UUID, key string) (CompensationResult, error) {
+	return c.compensate(ctx, "refund", org, key)
+}
+
+func (c HTTPClients) compensate(ctx context.Context, kind string, org uuid.UUID, key string) (CompensationResult, error) {
+	var body CompensationResult
+	code, err := c.doBody(ctx, http.MethodPost, c.PaymentsURL+"/internal/psp/"+kind,
+		map[string]any{"organizer_id": org, "idempotency_key": key}, &body)
+	if err != nil {
+		return CompensationResult{}, err
+	}
+	switch code {
+	case http.StatusOK:
+		return body, nil
+	case http.StatusNotFound:
+		return CompensationResult{}, ErrOperationNotFound
+	case http.StatusConflict:
+		return CompensationResult{}, ErrWrongCompensation
+	case http.StatusBadGateway:
+		return CompensationResult{}, ErrProviderUnresolved
+	default:
+		return CompensationResult{}, fmt.Errorf("psp %s: unexpected status %d", kind, code)
+	}
+}
+
 // LookupOperation reads payments' recorded outcome for an idempotency key. Read-only:
 // it never binds an operation, so a recovery pass cannot fabricate one for an order
 // that never charged.
@@ -55,8 +143,10 @@ func (c HTTPClients) LookupOperation(ctx context.Context, org uuid.UUID, key str
 	u := fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=%s",
 		c.PaymentsURL, org, url.QueryEscape(key))
 	var body struct {
-		Resolved bool   `json:"resolved"`
-		Status   string `json:"status"`
+		Resolved               bool       `json:"resolved"`
+		Status                 string     `json:"status"`
+		OccurredAt             time.Time  `json:"occurred_at"`
+		StatusReplayDeadlineAt *time.Time `json:"status_replay_deadline_at"`
 	}
 	code, err := c.do(ctx, http.MethodGet, u, &body)
 	if err != nil {
@@ -64,7 +154,8 @@ func (c HTTPClients) LookupOperation(ctx context.Context, org uuid.UUID, key str
 	}
 	switch code {
 	case http.StatusOK:
-		return Operation{Resolved: body.Resolved, Status: body.Status}, true, nil
+		return Operation{Resolved: body.Resolved, Status: body.Status,
+			OccurredAt: body.OccurredAt, StatusReplayDeadlineAt: body.StatusReplayDeadlineAt}, true, nil
 	case http.StatusNotFound:
 		// No operation: payments never bound a charge for this key.
 		return Operation{}, false, nil
