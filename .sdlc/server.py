@@ -25,7 +25,7 @@ import re
 import subprocess  # noqa: S404 — fixed git commands, validated args only
 import sys
 import time
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -132,42 +132,68 @@ def commit_state(key, message):
 _CACHE = {"head": None, "analysis": {}}
 
 
-def ticket_events(key):
-    """Snapshot the ticket at each commit of its file.
+def all_events():
+    """Snapshot every ticket at each commit of its file, in two git calls.
+
+    One `log --raw` maps commits -> (ticket, blob); one `cat-file --batch` reads
+    all blobs. Per-commit `git show` spawns made cold /board take ~30s at ~100 tickets.
 
     Returns:
-        Chronological list of {ts, status, labels, subject} events.
+        {key: chronological list of {ts, status, labels, subject}}.
     """
-    rel = f".sdlc/tickets/{key}.json"
-    log = git("log", "--reverse", "--format=%H\t%at\t%s", "--", rel, cwd=STATE_WT)
-    events = []
+    log = git(
+        "log", "--reverse", "--format=C\t%H\t%at\t%s", "--raw", "--no-renames",
+        "--no-abbrev", "--", ".sdlc/tickets", cwd=STATE_WT,
+    )
+    commits = []  # (ts, subject, [(blob, key)])
     for line in log.stdout.splitlines():
-        sha, ts, subject = line.split("\t", 2)
-        show = git("show", f"{sha}:{rel}", cwd=STATE_WT)
-        if show.returncode != 0:
-            continue
-        try:
-            snap = json.loads(show.stdout)
-        except ValueError:
-            continue
-        events.append(
-            {
-                "ts": int(ts),
-                "status": snap.get("status"),
-                "labels": snap.get("labels", []),
-                "subject": subject.replace(" [skip ci]", ""),
-            }
-        )
+        if line.startswith("C\t"):
+            _, _sha, ts, subject = line.split("\t", 3)
+            commits.append((int(ts), subject, []))
+        elif line.startswith(":"):
+            meta, _, path = line.partition("\t")
+            blob = meta.split()[3]  # post-image blob; all-zeros on deletion
+            if path.endswith(".json") and blob.strip("0"):
+                commits[-1][2].append((blob, Path(path).stem))
+    blobs = {b for _, _, files in commits for b, _ in files}
+    raw = subprocess.run(  # noqa: S603,S607 — fixed argv, blob shas from git itself
+        ["git", "-C", str(STATE_WT), "cat-file", "--batch"],
+        input="\n".join(blobs).encode(), capture_output=True, check=False,
+    )
+    content, out, i = {}, raw.stdout, 0
+    while i < len(out):
+        nl = out.index(b"\n", i)
+        header = out[i:nl].split()
+        i = nl + 1
+        if len(header) < 3 or header[1] != b"blob":
+            continue  # "<sha> missing" — no payload follows
+        size = int(header[2])
+        content[header[0].decode()] = out[i : i + size]
+        i += size + 1  # skip payload + trailing newline
+    events = {}
+    for ts, subject, files in commits:
+        for blob, key in files:
+            try:
+                snap = json.loads(content.get(blob, b""))
+            except ValueError:
+                continue
+            events.setdefault(key, []).append(
+                {
+                    "ts": ts,
+                    "status": snap.get("status"),
+                    "labels": snap.get("labels", []),
+                    "subject": subject.replace(" [skip ci]", ""),
+                }
+            )
     return events
 
 
-def analyze(key, now):
+def analyze(key, now, ev):
     """Fold a ticket's event timeline into durations.
 
     Returns:
         {key, status, since, created, perStatus, agent, human, total, events} or None.
     """
-    ev = ticket_events(key)
     if not ev:
         return None
     per_status = {}
@@ -205,8 +231,10 @@ def all_analysis():
     head = git("rev-parse", "HEAD", cwd=STATE_WT).stdout.strip()
     if _CACHE["head"] != head:
         now = int(time.time())
+        events = all_events()
         _CACHE["analysis"] = {
-            p.stem: analyze(p.stem, now) for p in TICKETS.glob("*.json")
+            p.stem: analyze(p.stem, now, events.get(p.stem))
+            for p in TICKETS.glob("*.json")
         }
         _CACHE["head"] = head
     return _CACHE["analysis"]
@@ -221,11 +249,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client disconnected (reload/poll abort) before the response landed
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -261,7 +292,10 @@ class Handler(SimpleHTTPRequestHandler):
                 {"now": int(time.time()), "tickets": sorted(rows, key=sort_key)},
             )
             return
-        super().do_GET()
+        try:
+            super().do_GET()
+        except BrokenPipeError:
+            pass  # client disconnected before the static file finished sending
 
     def do_POST(self):
         url = urlparse(self.path)
@@ -350,4 +384,4 @@ if __name__ == "__main__":
     print(
         f"state: {STATE_WT} (tickets committed per change; push when you want to share)"
     )
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
