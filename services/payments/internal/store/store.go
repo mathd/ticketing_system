@@ -107,7 +107,10 @@ func validate(f Fact) error {
 	if f.ID == uuid.Nil || f.OrganizerID == uuid.Nil || f.BuyerID == uuid.Nil || f.Amount < 0 || len(f.Currency) != 3 {
 		return errors.New("invalid journal fact")
 	}
-	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true}
+	// payment.voided / payment.refunded are compensating facts (ADR-016 §Decision 4): a
+	// void or refund is an appended entry, never a mutation of the authorize/capture it
+	// reverses. Added in TKT-56 Slice 1; the compensation slice is what emits them.
+	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
 	if !allowedTypes[f.Type] {
 		return errors.New("unsupported journal fact type")
 	}

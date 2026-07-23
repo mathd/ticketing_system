@@ -26,3 +26,27 @@ func TestCanonicalHashAndPIIGuard(t *testing.T) {
 		t.Fatal("arbitrary payload field accepted")
 	}
 }
+
+// The compensating fact types (ADR-016 §Decision 4) must pass the allowlist so void/
+// refund can be journalled as facts, never as mutations. TKT-56 Slice 1 adds the types;
+// nothing emits them until the compensation slice. A hard-coded expected-accept set keeps
+// this from silently widening — an unrelated new type must still be rejected.
+func TestCompensatingFactTypesAreAccepted(t *testing.T) {
+	base := func(typ string) Fact {
+		return Fact{
+			ID: uuid.New(), OrganizerID: uuid.New(), BuyerID: uuid.New(),
+			Type: typ, Amount: 4200, Currency: "EUR", OccurredAt: time.Now().UTC(),
+			Payload: map[string]string{"order_id": uuid.NewString()},
+		}
+	}
+	for _, typ := range []string{"payment.voided", "payment.refunded"} {
+		if err := validate(base(typ)); err != nil {
+			t.Fatalf("compensating fact type %q must be accepted, got: %v", typ, err)
+		}
+	}
+	// A neighbouring but unlisted type must still be rejected — the allowlist widened by
+	// exactly two, not into a prefix wildcard.
+	if err := validate(base("payment.reversed")); err == nil {
+		t.Fatal("payment.reversed is not an allowed fact type but was accepted")
+	}
+}

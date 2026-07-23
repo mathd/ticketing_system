@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,25 +13,28 @@ import (
 	"github.com/google/uuid"
 
 	apispec "ticketing/services/payments/api"
+	"ticketing/services/payments/internal/psp"
 	"ticketing/services/payments/internal/store"
 	"ticketing/shared/contract"
-	"ticketing/shared/fakepsp"
 	"ticketing/shared/httpx"
-)
-
-const (
-	TokenSuccess = fakepsp.TokenSuccess
-	TokenDecline = fakepsp.TokenDecline
-	TokenTimeout = fakepsp.TokenTimeout
 )
 
 type Server struct {
 	journal    *store.Journal
 	credential string
+	psp        psp.PSP
 }
 
+// New wires the payments server. The PSP port decides charge outcomes; New(j, cred)
+// defaults it to the fake PSP so existing callers and the fact-only tests are unchanged.
+// Callers select a provider with NewWithPSP (main.go picks fake vs Stripe by config).
 func New(j *store.Journal, credential string) *Server {
-	return &Server{journal: j, credential: credential}
+	return NewWithPSP(j, credential, psp.NewFake())
+}
+
+// NewWithPSP wires the server against an explicit PSP implementation.
+func NewWithPSP(j *store.Journal, credential string, provider psp.PSP) *Server {
+	return &Server{journal: j, credential: credential, psp: provider}
 }
 func (s *Server) Router(log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
@@ -163,26 +167,67 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]any{"status": boundStatus, "payment_id": boundID, "replay": true})
 		return
 	}
-	status := "captured"
-	factType := "payment.captured"
-	code := 200
-	switch in.PaymentToken {
-	case TokenDecline:
-		status = "declined"
-		factType = "payment.declined"
-		code = 402
-	case TokenTimeout:
-		status = "timeout"
-		factType = "payment.timeout"
-		code = 408
-	case TokenSuccess:
+	result, err := s.psp.Authorize(r.Context(), psp.AuthorizeRequest{
+		OrganizerID:    in.OrganizerID.String(),
+		OrderID:        in.OrderID.String(),
+		BuyerID:        in.BuyerID.String(),
+		Amount:         in.Amount,
+		Currency:       in.Currency,
+		PaymentToken:   in.PaymentToken,
+		IdempotencyKey: key,
+	})
+	if errors.Is(err, psp.ErrInvalidToken) {
+		// Port-level message, not fake-specific: a Stripe adapter (S2) maps its own
+		// "no such payment method" to ErrInvalidToken, and the caller must not see "fake".
+		write(w, 400, map[string]string{"error": "invalid payment token"})
+		return
+	}
+	if err != nil {
+		// The charge contract declares no gateway-error status (200/400/401/402/408/409/
+		// 500); a provider/transport failure is an internal failure to complete, so it maps
+		// to 500 like the journal-append failures below. The Stripe slice, which actually
+		// calls out to a provider, introduces explicit upstream-failure statuses in the spec.
+		write(w, 500, map[string]string{"error": "payment provider error"})
+		return
+	}
+	// Fail closed on a self-contradictory provider result before writing anything to the
+	// money journal (e.g. a captured outcome that did not capture). The fake always produces
+	// consistent results; a future adapter might not, and the journal must not record an
+	// impossible payment.
+	if err := result.Validate(); err != nil {
+		write(w, 500, map[string]string{"error": "invalid payment outcome"})
+		return
+	}
+	// Derive the journalled fact type, the operation status string and the HTTP code from
+	// the normalized PSP outcome ALONE — a single dispatch point, so the authorize append
+	// and the terminal fact can never be decided from divergent fields. This preserves the
+	// pre-refactor mapping exactly: a captured success appends payment.authorized first,
+	// decline/timeout append a single terminal fact, HTTP codes unchanged (200/402/408).
+	var status, factType string
+	var code int
+	switch result.Outcome {
+	case psp.Captured:
+		// Captured is authorize-then-capture: append payment.authorized first, from this
+		// case, not a separate boolean guard (Validate has proven Authorized && Captured).
 		authorizedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":payment.authorized"))
 		if _, _, err := s.journal.Append(r.Context(), store.Fact{ID: authorizedID, OrganizerID: in.OrganizerID, Type: "payment.authorized", OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}); err != nil {
 			write(w, 500, map[string]string{"error": "journal append failed"})
 			return
 		}
+		status, factType, code = "captured", "payment.captured", 200
+	case psp.Declined:
+		status, factType, code = "declined", "payment.declined", 402
+	case psp.Timeout:
+		status, factType, code = "timeout", "payment.timeout", 408
 	default:
-		write(w, 400, map[string]string{"error": "unknown fake payment token"})
+		// Authorized-only and Unknown are structurally valid (Validate accepts them) but the
+		// charge path only produces captured/declined/timeout today, so they fail closed here.
+		// S2 WARNING: before wiring an adapter that returns Authorized/Unknown on this path,
+		// this default must resolve the already-bound operation (CompleteOperation) — otherwise
+		// each retry re-binds, re-calls the provider (an external side effect already made),
+		// and 500s again with no terminal state. Not reachable in S1 (the fake never returns
+		// these); tracked for the Stripe slice.
+		write(w, 500, map[string]string{"error": "unsupported payment outcome"})
 		return
 	}
 	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":"+factType))
