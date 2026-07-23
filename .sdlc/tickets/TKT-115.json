@@ -1,0 +1,125 @@
+{
+  "key": "TKT-115",
+  "type": "Story",
+  "summary": "Commerce recovery via PSP status/refund — resolve payment_unknown, refund reconciliation_required (Slice 3 of TKT-56)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "child-of",
+      "key": "TKT-56"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-114"
+    }
+  ],
+  "description": "Slice 3 of TKT-56 (parent umbrella). Commerce recovery learns to use the payments /internal/psp/* surface S2 shipped (TKT-114, merged 65e5c3b), closing the launch-blocking gap: payment_unknown orders get automated resolution and reconciliation_required orders holding captured money get an automated refund path.\n\nScope (ADR-032 §Slice 3 + TKT-114 deferred items + S2-review constraints):\n\n1. **Resolve payment_unknown** (runner.go resolveCreated — today parks at runner.go:291-296): call payments GET /internal/psp/status. The endpoint persists learned evidence and answers completed compensations — refunded/voided win over stale terminal status. Statuses come back provider-neutral (outcome + amounts + terminal-no-side-effect). Captured evidence → confirm+complete; terminal-no-side-effect → record terminal outcome (new `no_side_effect` value) + release; still unknown → retry within the deadline (see 3).\n2. **Refund reconciliation_required** (runner.go confirmAndComplete ErrClaimGone park, runner.go:315-326): call POST /internal/psp/refund — re-derive from evidence: refund ONLY if the operation proves captured money (3 distinct populations wear reconciliation_required — S1 fable-5 critique F3). The endpoint enforces this server-side (409 without captured evidence): commerce must treat 409 as \"wrong compensation, re-derive\", not as failure. 502 = recoverable — compensation stays bound, retry later, never terminal.\n3. **The ~24h idempotency-retention DEADLINE** (ADR-032 amendment, S2 finding B2): a ref-less unresolved operation must be status-resolved within Stripe's ~24h idempotency-key retention window; older ones are manual reconciliation (park), never retry fodder — a same-key replay after expiry would mint a second PaymentIntent.\n4. **P2-3 (deferred from S2):** an externally-canceled PI (no compensation ever attempted) has no path to a compensating fact — S3's recovery semantics must decide what an externally-released hold journals. Decision to be pinned in Planning and approved at Gate 2.\n5. **Commerce migration** (new file — goose will not re-run an edited 0004; ADR-022 placement): add `no_side_effect` to the `terminal_outcome` CHECK, `refunded` to `orders_status_check`, recreate the partial claim index as needed, and backfill `recovery_parked_at`/`recovery_attempts` so newly-actionable parked rows become claimable again.\n6. **Lease sizing:** `MaxCallsPerOrder` (runner.go:129) and `LeaseFor` (runner.go:140) grow TOGETHER — status+void/refund chains are longer than the current 3-call bound (ADR-032 §Consequences).\n\nNOT in S3: journal keyring + fault-injection matrix (S4); any Stripe-dialect knowledge in commerce (payments stays the sole PSP boundary, ADR-032 Option 2); UI.\n\nTestbed: the S2 offline path exists — `fake-auth-hold` charge → 500 → unresolved op → status resolves authorized → void (smoke/psp_compensation_test.go drives it; the fake PSP's Status is deterministic on the replayed token). Commerce recovery tests can drive the same seam; `make check` stays 100% offline.\n\n**Conditions of success:**\n- COS1: a payment_unknown order (bound op, unresolved) is auto-resolved end to end: captured evidence → confirmed + completed; status-proven no side effect → released + failed with terminal_outcome `no_side_effect`; completed void/refund compensation evidence wins over stale terminal status.\n- COS2: a reconciliation_required order whose operation proves captured money is refunded via POST /internal/psp/refund; the order reaches a `refunded` terminal status; payments (not commerce) appends payment.refunded; a 409 re-derives the compensation kind; a 502 leaves the row claimable and bound.\n- COS3: a ref-less operation past the ~24h window is parked for manual reconciliation with a self-describing recovery_last_error — never replayed into a second PaymentIntent.\n- COS4: the P2-3 externally-canceled-PI decision is recorded (plan-final + implementation) — an externally-released hold resolves to a defined journal outcome, not a park-forever.\n- COS5: migration extends both CHECKs + backfill; previously-parked \"needs PSP status/needs void-refund (TKT-56)\" rows become claimable and drain through the new paths.\n- COS6: MaxCallsPerOrder and LeaseFor grow together; a test pins the relationship.\n- COS7: `make check` green offline; recovery tests drive the fake-PSP testbed (no live Stripe in the gate).\n\nGoverning: ADR-032 (contract, incl. both S2 amendments), ADR-016, ADR-011, ADR-022, ADR-009; ADR-017 only if any domain-event payload changes (none expected). Read the TKT-114 ai-review summary before touching compensate()/status semantics — eligibility gates only NEW compensations; provider-state writes are monotonic; blocked writes answer from the store.",
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-032-S2-amendment-idempotency",
+        "rule": "this replay contract is bounded by Stripe's idempotency-key retention (~24h) — after expiry the same key creates a new PaymentIntent, so an operation without a persisted pi_ must be resolved within that window; older unresolved operations are a manual-reconciliation case, and S3's recovery must treat the retention window as a hard deadline, not a retry budget",
+        "date": "2026-07-23"
+      },
+      {
+        "id": "ADR-032-S2-amendment-outcomes",
+        "rule": "voided (a successful void: the hold is released, nothing moved, terminal-no-side-effect) and refunded (a successful refund: money moved and came back — a real side effect, so NOT terminal-no-side-effect; recovery must never read a refund as 'no side effect')",
+        "date": "2026-07-23"
+      },
+      {
+        "id": "ADR-016-D3",
+        "rule": "Recovery may release a claim on TerminalNoSideEffect; it must never release on unknown",
+        "date": "2026-07-14"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-032",
+        "why": "THE contract: S3 slice scope; provider-neutral status vocabulary commerce consumes; refunded is NOT terminal-no-side-effect; ~24h retention window is a hard deadline; MaxCallsPerOrder/LeaseFor must grow together"
+      },
+      {
+        "id": "ADR-016",
+        "why": "recovery state machine: terminal-outcome-recorded-BEFORE-release ordering; never release on unknown; compensation is appended facts; the park states this ticket un-parks"
+      },
+      {
+        "id": "ADR-011",
+        "why": "journal is canonical + payments is sole writer — commerce never appends payment.voided/refunded itself; it drives payments endpoints and payments journals"
+      },
+      {
+        "id": "ADR-022",
+        "why": "the CHECK/backfill change is a NEW migration file run by the migrate subcommand as a one-shot Compose job — never edit applied 0004, never migrate at server startup"
+      },
+      {
+        "id": "ADR-009",
+        "why": "commerce→payments calls follow the OpenAPI contract; regenerated client/server code committed BEFORE running the gate (check-generate diffs against HEAD)"
+      },
+      {
+        "id": "ADR-017",
+        "why": "conditional: only if a domain-event payload changes (none expected in S3) — bump on consumer semantics; dispatch on schema before decoding data"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "S2 endpoints + semantics: services/payments/internal/api/psp.go; subtle compensate()/status rules shaped by 3 review passes — read TKT-114 ai-review summary before touching",
+        "link": "board TKT-114 comment ai-review kind=summary"
+      },
+      {
+        "summary": "S3 canvas: services/commerce/internal/recovery/runner.go (parks at :291-296 and :315-326; MaxCallsPerOrder :129, LeaseFor :140); migration precedent services/commerce/internal/store/migrations/0004_deterministic_recovery.sql",
+        "link": "repo"
+      },
+      {
+        "summary": "offline testbed: fake-auth-hold token (shared/go/fakepsp/tokens.go) → unresolved op → deterministic fake Status; driven by smoke/psp_compensation_test.go",
+        "link": "repo"
+      },
+      {
+        "summary": "3 populations wear reconciliation_required — refund only the captured-money one (S1 fable-5 critique F3)",
+        "link": "board TKT-56 thread"
+      }
+    ],
+    "capturedAt": "2026-07-23"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "close the launch-blocking gap: automated resolution for payment_unknown + automated refund for reconciliation_required (captured money)"
+    },
+    "scope": {
+      "state": "met",
+      "note": "in: commerce recovery wiring, new commerce migration, lease sizing; out: keyring/fault-injection (S4), Stripe dialect in commerce, UI"
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "P2-3: what an externally-released hold journals — a design decision Planning must pin and Gate 2 approves; also: exact new MaxCallsPerOrder value derived from the real worst-case chain in Planning"
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-114 — Done, merged 65e5c3b (PR #107); no other blockers"
+    },
+    "approach": {
+      "state": "met",
+      "note": "extend resolveCreated + the ErrClaimGone branch to drive GET /internal/psp/status and POST /internal/psp/refund via the existing Payments port; new migration per ADR-022; testbed = fake-auth-hold seam"
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "S3 IS the slice (ADR-032 §Delivery slices); vertical: migration → runner → tests, demoable by draining a parked order"
+    },
+    "success": {
+      "state": "met",
+      "note": "COS1-7 in description, each test-verifiable offline"
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked; all 6 cited ADRs verified present at HEAD (b45dd3e)"
+    }
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\n| Item | State | Note |\n|---|---|---|\n| objective | met | close TKT-56's launch-blocking gap (payment_unknown + reconciliation_required) |\n| scope | met | recovery wiring + migration + lease sizing; S4 keyring excluded |\n| uncertainties | deferred | P2-3 (externally-released hold journaling) is a Planning decision, Gate-2 approved; not a shaping blocker |\n| dependencies | met | TKT-114 Done/merged (65e5c3b); zero open blockers |\n| approach | met | drive S2's /internal/psp/{status,refund} from runner.go's two park sites; new migration (never edit applied 0004) |\n| first_slice | met | S3 is the ADR-032 slice; vertical and demoable |\n| success | met | COS1–7, all offline-test-verifiable via the fake-auth-hold testbed |\n| context_memo | met | 6 governing ADRs cited, each verified to resolve at HEAD |\n\n**Concerns:** none structural. Two flags for Gate 1: (1) this is a **money path** — suggest keeping the plan gate (no risk:low); (2) the S2 handoff notes the owner's sk_test_ key transited chat twice and was to be ROLLED — confirm that happened (S3 needs no live key; the gate is offline).\n\n**Verdict:** PASS — ready for Gate 1 (human → Ready)."
+    }
+  ]
+}
