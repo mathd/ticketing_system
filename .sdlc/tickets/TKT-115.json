@@ -2,7 +2,7 @@
   "key": "TKT-115",
   "type": "Story",
   "summary": "Commerce recovery via PSP status/refund — resolve payment_unknown, refund reconciliation_required (Slice 3 of TKT-56)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
