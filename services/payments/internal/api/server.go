@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,25 +13,28 @@ import (
 	"github.com/google/uuid"
 
 	apispec "ticketing/services/payments/api"
+	"ticketing/services/payments/internal/psp"
 	"ticketing/services/payments/internal/store"
 	"ticketing/shared/contract"
-	"ticketing/shared/fakepsp"
 	"ticketing/shared/httpx"
-)
-
-const (
-	TokenSuccess = fakepsp.TokenSuccess
-	TokenDecline = fakepsp.TokenDecline
-	TokenTimeout = fakepsp.TokenTimeout
 )
 
 type Server struct {
 	journal    *store.Journal
 	credential string
+	psp        psp.PSP
 }
 
+// New wires the payments server. The PSP port decides charge outcomes; New(j, cred)
+// defaults it to the fake PSP so existing callers and the fact-only tests are unchanged.
+// Callers select a provider with NewWithPSP (main.go picks fake vs Stripe by config).
 func New(j *store.Journal, credential string) *Server {
-	return &Server{journal: j, credential: credential}
+	return NewWithPSP(j, credential, psp.NewFake())
+}
+
+// NewWithPSP wires the server against an explicit PSP implementation.
+func NewWithPSP(j *store.Journal, credential string, provider psp.PSP) *Server {
+	return &Server{journal: j, credential: credential, psp: provider}
 }
 func (s *Server) Router(log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
@@ -163,27 +167,51 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]any{"status": boundStatus, "payment_id": boundID, "replay": true})
 		return
 	}
-	status := "captured"
-	factType := "payment.captured"
-	code := 200
-	switch in.PaymentToken {
-	case TokenDecline:
-		status = "declined"
-		factType = "payment.declined"
-		code = 402
-	case TokenTimeout:
-		status = "timeout"
-		factType = "payment.timeout"
-		code = 408
-	case TokenSuccess:
+	result, err := s.psp.Authorize(r.Context(), psp.AuthorizeRequest{
+		OrganizerID:  in.OrganizerID.String(),
+		OrderID:      in.OrderID.String(),
+		BuyerID:      in.BuyerID.String(),
+		Amount:       in.Amount,
+		Currency:     in.Currency,
+		PaymentToken: in.PaymentToken,
+	})
+	if errors.Is(err, psp.ErrUnknownToken) {
+		write(w, 400, map[string]string{"error": "unknown fake payment token"})
+		return
+	}
+	if err != nil {
+		// The charge contract declares no gateway-error status (200/400/401/402/408/409/
+		// 500); a provider/transport failure is an internal failure to complete, so it maps
+		// to 500 like the journal-append failures below. The Stripe slice, which actually
+		// calls out to a provider, introduces explicit upstream-failure statuses in the spec.
+		write(w, 500, map[string]string{"error": "payment provider error"})
+		return
+	}
+	// Derive the journalled fact type, the operation status string and the HTTP code from
+	// the normalized PSP outcome. This preserves the pre-refactor mapping exactly: captured
+	// success appends payment.authorized first, decline/timeout append a single terminal
+	// fact, and the HTTP codes are unchanged (200/402/408).
+	var status, factType string
+	var code int
+	switch result.Outcome {
+	case psp.Captured:
+		status, factType, code = "captured", "payment.captured", 200
+	case psp.Declined:
+		status, factType, code = "declined", "payment.declined", 402
+	case psp.Timeout:
+		status, factType, code = "timeout", "payment.timeout", 408
+	default:
+		// Authorized-only and Unknown are the compensation/status surface of later slices;
+		// the charge path only produces captured/declined/timeout today.
+		write(w, 500, map[string]string{"error": "unsupported payment outcome"})
+		return
+	}
+	if result.Authorized && result.Captured {
 		authorizedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":payment.authorized"))
 		if _, _, err := s.journal.Append(r.Context(), store.Fact{ID: authorizedID, OrganizerID: in.OrganizerID, Type: "payment.authorized", OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}); err != nil {
 			write(w, 500, map[string]string{"error": "journal append failed"})
 			return
 		}
-	default:
-		write(w, 400, map[string]string{"error": "unknown fake payment token"})
-		return
 	}
 	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":"+factType))
 	e, replay, err := s.journal.Append(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}})
