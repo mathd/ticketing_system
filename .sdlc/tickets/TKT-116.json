@@ -1,0 +1,41 @@
+{
+  "key": "TKT-116",
+  "type": "Task",
+  "summary": "Refund-recovery past idempotency retention + unbounded internal HTTP client (TKT-115 ai-review carry-outs)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "child-of",
+      "key": "TKT-56"
+    }
+  ],
+  "description": "Born from TKT-115's ai-review (arm B finding B2 + a verification byproduct of arm A's A1). Both are PRE-EXISTING surfaces TKT-115's diff did not touch, confirmed real by mechanical verification:\n\n1. **A successful refund with a lost response becomes unrecoverable after Stripe's ~24h idempotency retention** (services/payments/internal/api/psp.go compensate/refund path, shipped in TKT-114). If Stripe settles the refund but the response is lost (transport error, no re_ ref returned), the compensation stays bound with no provider_ref. Within 24h a retry replays fine; past it, the same ProviderKey submits a NEW refund, which fails as already-fully-refunded → payments 502s forever → commerce burns its retry budget and parks an order whose buyer already has their money. Not a money loss — an operational wedge. Candidate fix: on refund failure without a ref, RESOLVE by listing refunds for the payment intent (GET /v1/refunds?payment_intent=pi_) instead of re-submitting, mirroring the pending-refund re_-dispatch shipped for ai-review B3 in TKT-114.\n\n2. **Commerce's internal HTTP client has no timeout** (shared/go/obs/obs.go Client() — plain otelhttp transport over http.DefaultTransport; commerce main passes it to the API server). A hung charge/confirm call can outlive the 2-minute recovery grace period, which is the enabling condition for the checkout-vs-recovery race TKT-115 mitigated response-side (RowsAffected + answerRecovered). Bounding the client (or per-call contexts) closes the window at the root. Check other services using obs.Client() for the same gap.\n\nCOS: (1) a refund whose 200 was lost converges to completed (fact appended exactly once) even when first retried after the retention window — fault-injection test; (2) internal service calls carry a deadline; a hung downstream cannot hold a checkout handler open past the recovery grace period.",
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-032",
+        "why": "the ~24h retention bound and the compensation sequence; the pending-refund re_-dispatch precedent (B3, TKT-114) is the fix shape for item 1"
+      },
+      {
+        "id": "ADR-016",
+        "why": "recovery decides from durable evidence; a wedged-but-refunded order violates the 'compensation stays recoverable' intent"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "item 1 site: services/payments/internal/api/psp.go compensate() default refund branch; item 2 site: shared/go/obs/obs.go Client() + services/commerce/cmd/commerce/main.go:158",
+        "link": "repo"
+      },
+      {
+        "summary": "source review: TKT-115 ai-review comment (arm B finding B2; A1 verification note)",
+        "link": "board TKT-115"
+      }
+    ],
+    "capturedAt": "2026-07-23"
+  },
+  "comments": []
+}
