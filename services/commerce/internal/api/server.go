@@ -342,9 +342,37 @@ func paymentOutcomeProblem(code int) (int, string, bool) {
 	return 0, "", false
 }
 
-func (s *Server) markUnknown(ctx context.Context, reservationID, orderID uuid.UUID) {
+// markUnknown reports whether the guarded order write landed. A zero-row update means
+// the order moved on underneath a slow checkout — since TKT-115 the recovery runner
+// actively transitions rows to reconciliation_required/refunded, so a swallowed miss
+// would answer an optimistic 202 for money that is being reconciled (ai-review A1).
+func (s *Server) markUnknown(ctx context.Context, reservationID, orderID uuid.UUID) bool {
 	_, _ = s.db.ExecContext(ctx, `UPDATE reservations SET status='unknown' WHERE id=$1 AND status IN ('held','finalizing','unknown')`, reservationID)
-	_, _ = s.db.ExecContext(ctx, `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, orderID)
+	res, err := s.db.ExecContext(ctx, `UPDATE orders SET status='payment_unknown',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, orderID)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
+}
+
+// answerRecovered re-reads an order a guarded status write missed and answers the
+// recovery truth when there is one; false means the caller's optimistic answer stands
+// (the miss was a plain write failure, and 202-with-a-hint remains the honest default).
+func (s *Server) answerRecovered(ctx context.Context, w http.ResponseWriter, order uuid.UUID) bool {
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, order).Scan(&status); err != nil {
+		return false
+	}
+	switch status {
+	case "refunded":
+		write(w, terminalCheckoutCode(status), map[string]any{"order_id": order, "status": status, "replay": true})
+		return true
+	case "reconciliation_required":
+		write(w, 409, map[string]any{"error": "order awaiting payment reconciliation", "order_id": order, "status": status})
+		return true
+	}
+	return false
 }
 
 func (s *Server) markTerminalFailure(ctx context.Context, reservationID, orderID uuid.UUID, status string) error {
@@ -431,8 +459,15 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	if orderStatus == "refunded" {
 		// Recovery refunded this order's captured money (TKT-115). Without this branch a
 		// byte-identical replay would fall through, re-journal order.created and finalize
-		// against a hold recovery already released. order.failed is already journalled by
-		// the recovery pass; replaying nothing is the idempotent answer.
+		// against a hold recovery already released. The fact replay mirrors the declined/
+		// timeout branches' defense-in-depth (ai-review A3): recovery journalled
+		// order.failed before MarkRefunded, so this collapses idempotently — but the
+		// symmetry means a future path that sets `refunded` without the fact gets caught
+		// here instead of leaving a journal gap.
+		if err := s.fact(r.Context(), x, order, "order.failed"); err != nil {
+			write(w, 503, map[string]string{"error": "journal unavailable"})
+			return
+		}
 		write(w, terminalCheckoutCode(orderStatus), map[string]any{"order_id": order, "status": orderStatus, "replay": true})
 		return
 	}
@@ -463,7 +498,9 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	charge := map[string]any{"order_id": order, "organizer_id": x.OrganizerID, "buyer_id": x.BuyerID, "amount": x.Amount, "currency": x.Currency, "payment_token": in.PaymentToken}
 	code, body, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/charges", key, charge, true)
 	if err != nil {
-		s.markUnknown(r.Context(), x.ID, order)
+		if !s.markUnknown(r.Context(), x.ID, order) && s.answerRecovered(r.Context(), w, order) {
+			return
+		}
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
@@ -495,13 +532,20 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code != 200 {
-		s.markUnknown(r.Context(), x.ID, order)
+		if !s.markUnknown(r.Context(), x.ID, order) && s.answerRecovered(r.Context(), w, order) {
+			return
+		}
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
 	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 	if err != nil || code != 200 {
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
+		res, execErr := s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
+		if execErr == nil {
+			if n, _ := res.RowsAffected(); n != 1 && s.answerRecovered(r.Context(), w, order) {
+				return
+			}
+		}
 		write(w, 202, map[string]any{"order_id": order, "status": "confirmation_pending"})
 		return
 	}

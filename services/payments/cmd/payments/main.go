@@ -155,10 +155,15 @@ func pspForKey(key string) (psp.PSP, time.Duration, error) {
 }
 
 // statusReplayRetention resolves the effective retention: the provider's own bound,
-// overridable by PAYMENTS_STATUS_REPLAY_RETENTION (a Go duration; "0" = unbounded).
-// The override exists for the offline stack: the fake never expires keys, so proving
-// the deadline path against real predicates needs an injected bound — never a changed
-// default. An unparseable value refuses startup like every other config error here.
+// overridable by PAYMENTS_STATUS_REPLAY_RETENTION (a Go duration). The override exists
+// for the offline stack: the fake never expires keys, so proving the deadline path
+// against real predicates needs an injected bound — never a changed default.
+//
+// Against a BOUNDED provider (Stripe) the override may only SHORTEN the window
+// (ai-review B3): lengthening or disabling it would let the status path replay an
+// idempotency key the provider has already forgotten — minting a second PaymentIntent,
+// the one thing the deadline exists to prevent. An unparseable, negative, or
+// bound-extending value refuses startup like every other config error here.
 func statusReplayRetention(fallback time.Duration) (time.Duration, error) {
 	raw := os.Getenv("PAYMENTS_STATUS_REPLAY_RETENTION")
 	if raw == "" {
@@ -167,6 +172,9 @@ func statusReplayRetention(fallback time.Duration) (time.Duration, error) {
 	d, err := time.ParseDuration(raw)
 	if err != nil || d < 0 {
 		return 0, fmt.Errorf("PAYMENTS_STATUS_REPLAY_RETENTION unparseable: %q", raw)
+	}
+	if fallback > 0 && (d == 0 || d > fallback) {
+		return 0, fmt.Errorf("PAYMENTS_STATUS_REPLAY_RETENTION %q would extend the provider's %s replay bound; it may only shorten it", raw, fallback)
 	}
 	return d, nil
 }

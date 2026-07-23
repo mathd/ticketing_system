@@ -50,12 +50,19 @@ WHERE status = 'reconciliation_required'
 
 -- +goose Down
 -- The vocabulary rollback would silently falsify durable recovery evidence if any row
--- already uses it — fail loudly instead of translating.
+-- already uses it — fail loudly instead of translating. Same for an UNPARKED
+-- reconciliation_required row (a queued compensation this migration's backfill may have
+-- re-opened): the pre-0005 index cannot claim it and the cleared park marker no longer
+-- represents it as awaiting a human, so rolling back would strand it invisibly
+-- (ai-review B4). Re-park such rows explicitly before rolling back.
 -- +goose StatementBegin
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM orders WHERE status='refunded' OR terminal_outcome='no_side_effect') THEN
     RAISE EXCEPTION 'cannot roll back 0005: rows carry refunded/no_side_effect evidence';
+  END IF;
+  IF EXISTS (SELECT 1 FROM orders WHERE status='reconciliation_required' AND recovery_parked_at IS NULL) THEN
+    RAISE EXCEPTION 'cannot roll back 0005: unparked reconciliation_required rows would be stranded; park them first';
   END IF;
 END
 $$;

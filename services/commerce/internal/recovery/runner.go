@@ -398,6 +398,10 @@ func (r *Runner) confirmAndComplete(ctx context.Context, s store.StuckOrder) err
 // the runner parks BEFORE asking (ADR-032 §Status/replay amendment), and a payments-side
 // 409 (defense in depth: another caller may race the same window) parks identically.
 func (r *Runner) resolveWithProviderStatus(ctx context.Context, s store.StuckOrder, op Operation) error {
+	// The deadline was computed by payments' clock; this pre-check reads commerce's.
+	// Skew is conservative in both directions: a fast commerce clock parks an order
+	// payments would still resolve (a human un-parks), a slow one makes a status call
+	// payments answers 409 (one wasted hop, same one-pass park below). Accepted bound.
 	if d := op.StatusReplayDeadlineAt; d != nil && time.Now().After(*d) {
 		return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
 			"status replay window expired; manual reconciliation required")
@@ -560,6 +564,15 @@ func (r *Runner) releaseAndFail(ctx context.Context, s store.StuckOrder) error {
 }
 
 func (r *Runner) fail(ctx context.Context, s store.StuckOrder, cause error) {
+	// Shutdown can be what failed the drive: a cancelled context reaches here, and
+	// reusing it would fail this write too — leaving the current order's claim leased
+	// for the FULL lease (batch×calls×timeout, ~17 min at defaults) on every restart.
+	// Same fresh-bounded-context rule as releaseUndriven (ai-review B5).
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+	}
 	if err := r.store.ReleaseStuckOrder(ctx, s.OrderID, s.ClaimID, cause); err != nil {
 		r.log.ErrorContext(ctx, "release stuck order", "order_id", s.OrderID, "err", err)
 	}

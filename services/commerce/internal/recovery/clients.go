@@ -124,6 +124,14 @@ func (c HTTPClients) compensate(ctx context.Context, kind string, org uuid.UUID,
 	}
 	switch code {
 	case http.StatusOK:
+		// A 200 is proof only when it SAYS the compensation completed. An empty or
+		// unexpected body (version skew, a bug upstream) must read as unresolved — the
+		// callers release seats and mark orders refunded on this answer, so it fails
+		// closed like every other ambiguous provider signal (ai-review B1).
+		if want := kind + "ed"; body.Status != want {
+			return CompensationResult{}, fmt.Errorf("psp %s: 200 with status %q (want %q): %w",
+				kind, body.Status, want, ErrProviderUnresolved)
+		}
 		return body, nil
 	case http.StatusNotFound:
 		return CompensationResult{}, ErrOperationNotFound

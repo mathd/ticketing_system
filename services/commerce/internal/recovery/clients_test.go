@@ -217,6 +217,21 @@ func TestCompensationMapping(t *testing.T) {
 			}
 		})
 	}
+	// A 200 whose body does not SAY the compensation completed is not proof of anything
+	// — an empty or wrong-status answer (version skew, an upstream bug) must fail
+	// closed as unresolved, because callers release seats and mark orders refunded on
+	// this result (ai-review B1).
+	for _, body := range []string{`{}`, `{"status":"pending","replay":false}`, `{"status":"voided","replay":false}`} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+		c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+		if _, err := c.Refund(context.Background(), org, "k1"); !errors.Is(err, ErrProviderUnresolved) {
+			t.Fatalf("refund 200 with body %s = %v, want ErrProviderUnresolved", body, err)
+		}
+		srv.Close()
+	}
 	for _, tc := range []struct {
 		status int
 		want   error

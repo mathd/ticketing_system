@@ -205,6 +205,18 @@ type trace struct {
 
 func (t *trace) add(step string) { t.steps = append(t.steps, step) }
 
+// externalCalls counts the trace steps that leave the process — the calls
+// MaxCallsPerOrder budgets and LeaseFor must outlast. Store writes are local.
+func (t *trace) externalCalls() int {
+	var n int
+	for _, s := range t.steps {
+		if strings.HasPrefix(s, "payments.") || strings.HasPrefix(s, "inventory.") || strings.HasPrefix(s, "journal.") {
+			n++
+		}
+	}
+	return n
+}
+
 func (t *trace) indexOf(step string) int {
 	for i, s := range t.steps {
 		if s == step {
@@ -435,6 +447,11 @@ func TestCapturedOrderWithGoneClaimIsRefundedSamePass(t *testing.T) {
 	p.trace.mustPrecede(t, "payments.Status", "payments.Refund")
 	p.trace.mustPrecede(t, "payments.Refund", "store.MarkRefunded")
 	p.trace.mustPrecede(t, "journal.OrderFailed", "store.MarkRefunded")
+	// The EXECUTED chain must fit the budget the lease is derived from (ai-review B6:
+	// the enumerating test alone is a hand-maintained list; this counts the real trace).
+	if calls := p.trace.externalCalls(); calls > MaxCallsPerOrder {
+		t.Fatalf("refund chain made %d external calls, exceeding MaxCallsPerOrder=%d — the lease no longer covers its own pass", calls, MaxCallsPerOrder)
+	}
 }
 
 // Refund 502: the compensation stays bound in payments and the order stays claimable —
@@ -677,6 +694,9 @@ func TestUnresolvedOperationStatusDecisionTable(t *testing.T) {
 			// and the outcome durable before the seat is released (ADR-016 ordering).
 			p.trace.mustPrecede(t, "payments.Void", "store.RecordTerminalOutcome")
 			p.trace.mustPrecede(t, "store.RecordTerminalOutcome", "inventory.Release")
+			if calls := p.trace.externalCalls(); calls > MaxCallsPerOrder {
+				t.Fatalf("void chain made %d external calls, exceeding MaxCallsPerOrder=%d", calls, MaxCallsPerOrder)
+			}
 		})
 
 		for _, terminal := range []string{"declined", "timeout"} {

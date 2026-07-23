@@ -63,4 +63,19 @@ func TestStatusReplayRetentionOverride(t *testing.T) {
 	if _, err := statusReplayRetention(0); err == nil {
 		t.Fatal("a negative retention must refuse startup")
 	}
+	// Against a bounded provider the override may only SHORTEN the window: extending
+	// (or disabling) it would replay idempotency keys the provider already forgot and
+	// mint a second PaymentIntent (ai-review B3).
+	t.Setenv("PAYMENTS_STATUS_REPLAY_RETENTION", "48h")
+	if _, err := statusReplayRetention(24 * time.Hour); err == nil {
+		t.Fatal("extending a bounded provider retention must refuse startup")
+	}
+	t.Setenv("PAYMENTS_STATUS_REPLAY_RETENTION", "0")
+	if _, err := statusReplayRetention(24 * time.Hour); err == nil {
+		t.Fatal("disabling a bounded provider retention must refuse startup")
+	}
+	t.Setenv("PAYMENTS_STATUS_REPLAY_RETENTION", "1h")
+	if got, err := statusReplayRetention(24 * time.Hour); err != nil || got != time.Hour {
+		t.Fatalf("shortening a bounded retention must be allowed: got %v, %v", got, err)
+	}
 }

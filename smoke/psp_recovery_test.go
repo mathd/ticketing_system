@@ -124,6 +124,85 @@ func TestRecoveryDrainsPaymentUnknownViaStatusAndVoid(t *testing.T) {
 	}
 }
 
+// COS2 composed (ai-review B7): captured money whose inventory claim is gone is
+// REFUNDED by the real runner through the real payments compensation surface — not a
+// fabricated status flip. The mid-protocol crash (commerce died between capture and
+// confirm) is staged by construction: a real reservation + a real captured payments
+// operation under the order's idempotency key + a fabricated confirmation_pending order
+// row + an expired hold. The runner must confirm → ErrClaimGone → queue → status →
+// refund → payment.refunded (payments-owned) → order.failed → refunded.
+func TestRecoveryRefundsCapturedMoneyWithGoneClaim(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, ticketType := setupCheckoutOffer(t, "psprefund")
+	reservation := reserveCheckout(t, ticketType, "psp-refund-reserve-"+uuid.NewString())
+	orderID := uuid.NewString()
+	chargeKey := "psp-refund-order-" + uuid.NewString()
+
+	// The money side really happened: a captured operation with durable evidence.
+	code, body := internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", chargeKey,
+		map[string]any{"order_id": orderID, "organizer_id": organizerID,
+			"buyer_id": reservation["buyer_id"], "amount": 2500, "currency": "EUR",
+			"payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("charge = %d: %s", code, body)
+	}
+
+	// The commerce side died after the capture 200, before confirm: exactly the row
+	// state the crash leaves behind (aged past the grace period).
+	db := commerceDB(t, ctx)
+	if _, err := db.Exec(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,updated_at)
+		VALUES($1,$2,'confirmation_pending',$3,'smoke-crash-fp',now()-interval '10 minutes')`,
+		orderID, reservation["reservation_id"], chargeKey); err != nil {
+		t.Fatalf("stage crashed order: %v", err)
+	}
+	// The seat is gone: the hold expired while the order was stuck.
+	expireInventoryHold(t, fmt.Sprint(reservation["hold_id"]))
+
+	retry(t, 45*time.Second, func() error {
+		code, body, _ := getWithHeaders(t, gatewayURL+"/api/commerce/orders/"+orderID)
+		if code != http.StatusOK {
+			return fmt.Errorf("order state = %d %s", code, body)
+		}
+		var state struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(body, &state); err != nil {
+			return err
+		}
+		if state.Status != "refunded" {
+			return fmt.Errorf("order status = %q, want refunded", state.Status)
+		}
+		return nil
+	})
+
+	// Payments owns the compensating fact: its evidence now answers refunded.
+	statusURL := paymentsURL + "/internal/psp/status?organizer_id=" + organizerID + "&idempotency_key=" + chargeKey
+	code, body = internalJSON(t, http.MethodGet, statusURL, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("psp status = %d: %s", code, body)
+	}
+	var st struct {
+		Outcome              string `json:"outcome"`
+		TerminalNoSideEffect bool   `json:"terminal_no_side_effect"`
+	}
+	if err := json.Unmarshal(body, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Outcome != "refunded" || st.TerminalNoSideEffect {
+		t.Fatalf("psp status = %+v, want refunded and NOT terminal-no-side-effect", st)
+	}
+	// The seat obligation is discharged, never sold.
+	var resStatus string
+	if err := db.QueryRow(ctx, `SELECT status FROM reservations WHERE id=$1`,
+		reservation["reservation_id"]).Scan(&resStatus); err != nil {
+		t.Fatal(err)
+	}
+	if resStatus != "failed" {
+		t.Fatalf("reservation status = %q, want failed", resStatus)
+	}
+}
+
 // COS3: past the provider's idempotency-key retention (injected as 24h for the fake via
 // PAYMENTS_STATUS_REPLAY_RETENTION), a ref-less unresolved operation's status answers
 // 409 — never a replay that could mint a second PaymentIntent — and the operation
