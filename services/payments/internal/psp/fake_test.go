@@ -104,8 +104,8 @@ func TestResultValidateRejectsContradictions(t *testing.T) {
 		{Outcome: Captured, Captured: true, Authorized: true},
 		{Outcome: Declined, TerminalNoSideEffect: true},
 		{Outcome: Timeout, TerminalNoSideEffect: true},
-		{Outcome: Authorized, Authorized: true}, // auth-only: authorized, not captured
-		{Outcome: Unknown},                      // undetermined: not terminal-no-side-effect
+		{Outcome: Authorized, Authorized: true, TerminalNoSideEffect: false}, // auth-only: authorized, not captured, not terminal
+		{Outcome: Unknown}, // undetermined: not captured/authorized/terminal
 	}
 	for _, r := range valid {
 		if err := r.Validate(); err != nil {
@@ -120,7 +120,9 @@ func TestResultValidateRejectsContradictions(t *testing.T) {
 		{"captured outcome but Captured=false", Result{Outcome: Captured, Captured: false, Authorized: true}},
 		{"captured outcome but Authorized=false", Result{Outcome: Captured, Captured: true, Authorized: false}},
 		{"declined but claims capture", Result{Outcome: Declined, Captured: true, TerminalNoSideEffect: true}},
+		{"declined but claims authorization", Result{Outcome: Declined, Authorized: true, TerminalNoSideEffect: true}},
 		{"declined but not terminal-no-side-effect", Result{Outcome: Declined, TerminalNoSideEffect: false}},
+		{"timeout but claims authorization", Result{Outcome: Timeout, Authorized: true, TerminalNoSideEffect: true}},
 		{"timeout but not terminal-no-side-effect", Result{Outcome: Timeout, TerminalNoSideEffect: false}},
 		{"unknown but terminal-no-side-effect", Result{Outcome: Unknown, TerminalNoSideEffect: true}},
 		{"authorized-only but also captured", Result{Outcome: Authorized, Authorized: true, Captured: true}},

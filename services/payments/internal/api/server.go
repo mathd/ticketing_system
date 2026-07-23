@@ -177,7 +177,9 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey: key,
 	})
 	if errors.Is(err, psp.ErrInvalidToken) {
-		write(w, 400, map[string]string{"error": "unknown fake payment token"})
+		// Port-level message, not fake-specific: a Stripe adapter (S2) maps its own
+		// "no such payment method" to ErrInvalidToken, and the caller must not see "fake".
+		write(w, 400, map[string]string{"error": "invalid payment token"})
 		return
 	}
 	if err != nil {
@@ -218,8 +220,13 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 	case psp.Timeout:
 		status, factType, code = "timeout", "payment.timeout", 408
 	default:
-		// Authorized-only and Unknown are the compensation/status surface of later slices;
-		// the charge path only produces captured/declined/timeout today. Fail closed.
+		// Authorized-only and Unknown are structurally valid (Validate accepts them) but the
+		// charge path only produces captured/declined/timeout today, so they fail closed here.
+		// S2 WARNING: before wiring an adapter that returns Authorized/Unknown on this path,
+		// this default must resolve the already-bound operation (CompleteOperation) — otherwise
+		// each retry re-binds, re-calls the provider (an external side effect already made),
+		// and 500s again with no terminal state. Not reachable in S1 (the fake never returns
+		// these); tracked for the Stripe slice.
 		write(w, 500, map[string]string{"error": "unsupported payment outcome"})
 		return
 	}
