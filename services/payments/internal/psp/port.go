@@ -35,6 +35,15 @@ const (
 	// provider answer). Reserved for the Stripe status path (later slice); the fake never
 	// returns it. Present in the contract so recovery is written against the full set.
 	Unknown Outcome = "unknown"
+	// Voided: a successful void of an uncaptured authorization (Stripe cancel). The hold is
+	// released and nothing moved on the ledger, so this is genuinely terminal-no-side-effect
+	// (TKT-114/S2). Distinct from Timeout, which is a status-proven no-side-effect on the
+	// authorize path — Voided is the outcome of a deliberate compensation action.
+	Voided Outcome = "voided"
+	// Refunded: a successful refund of captured money (Stripe refund). Money moved and came
+	// back — there WAS a side effect — so Refunded is NOT terminal-no-side-effect: recovery
+	// must never read a refund as "no side effect" and release a claim on it (TKT-114/S2).
+	Refunded Outcome = "refunded"
 )
 
 // ErrNotImplemented is returned by an implementation for a port operation a given slice
@@ -111,15 +120,40 @@ func (r Result) Validate() error {
 		if r.Captured || r.Authorized || r.TerminalNoSideEffect {
 			return fmt.Errorf("psp: unknown outcome cannot claim capture/authorization or terminal-no-side-effect: %+v", r)
 		}
+	case Voided:
+		// The hold is released; nothing moved on the ledger. Terminal-no-side-effect, and
+		// neither captured nor authorized any longer.
+		if r.Captured || r.Authorized || !r.TerminalNoSideEffect {
+			return fmt.Errorf("psp: voided outcome must release the hold (not captured, not authorized, terminal-no-side-effect): %+v", r)
+		}
+	case Refunded:
+		// Money moved and came back — a real side effect. Not captured/authorized anymore,
+		// and NOT terminal-no-side-effect (a refund is not "no side effect").
+		if r.Captured || r.Authorized || r.TerminalNoSideEffect {
+			return fmt.Errorf("psp: refunded outcome must be not captured/authorized and NOT terminal-no-side-effect: %+v", r)
+		}
 	default:
 		return fmt.Errorf("psp: unrecognized outcome %q", r.Outcome)
 	}
 	return nil
 }
 
-// PSP is the provider-agnostic port. Slice 1 defines all five operations but only
-// Authorize is exercised; the rest are the compensation/status surface later slices wire
-// into recovery. An implementation that has not wired an operation returns ErrNotImplemented.
+// StatusRequest asks a provider for the current state of an operation. It carries both an
+// optional ProviderRef (when the pi_ was persisted) and the durable original request, so
+// Status can resolve an operation whose provider reference was lost to a crash before it was
+// stored: it replays the identical create under the SAME IdempotencyKey (never a fresh key,
+// so no duplicate charge) and reads the outcome. ADR-032 §Status/replay (TKT-114/S2).
+type StatusRequest struct {
+	ProviderRef    string // e.g. "pi_..."; empty when it was never persisted
+	IdempotencyKey string // the ORIGINAL authorize idempotency key, for replay
+	Amount         int64  // original request amount (minor units), for the replay body
+	Currency       string // original request currency (uppercase ISO), for the replay body
+	PaymentToken   string // original opaque payment-method ref, for the replay body
+}
+
+// PSP is the provider-agnostic port. TKT-114/S2 wires the compensation/status surface
+// (Capture/Void/Refund/Status) for the Stripe adapter; the fake implements them too.
+// An implementation that has not wired an operation returns ErrNotImplemented.
 type PSP interface {
 	// Authorize submits a charge. For the immediate-capture flow it authorizes and captures
 	// in one step, reflected in the Result (Authorized && Captured on success).
@@ -130,13 +164,9 @@ type PSP interface {
 	Void(ctx context.Context, providerRef, idempotencyKey string) (Result, error)
 	// Refund refunds a captured charge. Unwired in Slice 1.
 	Refund(ctx context.Context, providerRef, idempotencyKey string, amount int64, currency string) (Result, error)
-	// Status retrieves the provider's current view of an operation. Unwired in Slice 1.
-	//
-	// NOTE (TKT-56 S2): the crash-safe recovery path (ADR-032 §Status/replay) needs Status
-	// to resolve an operation that timed out *before* a ProviderRef was persisted, by
-	// replaying the original request under the same IdempotencyKey. A bare providerRef
-	// cannot express that. The Stripe slice replaces this signature with a request carrying
-	// both an optional providerRef and the durable original request + idempotency key; the
-	// interface is intentionally minimal in S1 (Status is not yet called anywhere).
-	Status(ctx context.Context, providerRef string) (Result, error)
+	// Status retrieves the provider's current view of an operation, resolving via ProviderRef
+	// when known or replaying the original create under the same IdempotencyKey when it was
+	// lost to a crash (ADR-032 §Status/replay). TKT-114/S2 reshaped this from a bare
+	// providerRef to StatusRequest to carry the replay data.
+	Status(ctx context.Context, req StatusRequest) (Result, error)
 }

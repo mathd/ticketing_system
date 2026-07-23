@@ -71,23 +71,36 @@ func TestFakeAuthorizeRejectsUnknownToken(t *testing.T) {
 	}
 }
 
-// Slice 1 wires only Authorize; the compensation/status surface must announce itself as
-// unimplemented rather than silently succeed, so a later slice can't accidentally rely on
-// a fake that pretends to void/refund.
-func TestFakeCompensationSurfaceUnimplementedInSlice1(t *testing.T) {
+// TKT-114/S2 wires the fake's compensation surface: Capture/Void/Refund report deterministic
+// success and Status reports Unknown (no provider to query). Every result must obey the same
+// Validate() invariants Stripe's does — a fake that produced an invalid Result would let an
+// invalid shape reach the money-path boundary in local/gate runs.
+func TestFakeCompensationSurfaceIsDeterministicAndValid(t *testing.T) {
 	f := NewFake()
 	ctx := context.Background()
-	if _, err := f.Capture(ctx, "ref", 1, "EUR"); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Capture: want ErrNotImplemented, got %v", err)
+	checks := []struct {
+		name string
+		call func() (Result, error)
+		want Outcome
+	}{
+		{"capture", func() (Result, error) { return f.Capture(ctx, "ref", 1, "EUR") }, Captured},
+		{"void", func() (Result, error) { return f.Void(ctx, "ref", "idem") }, Voided},
+		{"refund", func() (Result, error) { return f.Refund(ctx, "ref", "idem", 1, "EUR") }, Refunded},
+		{"status", func() (Result, error) { return f.Status(ctx, StatusRequest{ProviderRef: "ref"}) }, Unknown},
 	}
-	if _, err := f.Void(ctx, "ref", "idem"); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Void: want ErrNotImplemented, got %v", err)
-	}
-	if _, err := f.Refund(ctx, "ref", "idem", 1, "EUR"); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Refund: want ErrNotImplemented, got %v", err)
-	}
-	if _, err := f.Status(ctx, "ref"); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Status: want ErrNotImplemented, got %v", err)
+	for _, c := range checks {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := c.call()
+			if err != nil {
+				t.Fatalf("%s: unexpected error %v", c.name, err)
+			}
+			if got.Outcome != c.want {
+				t.Fatalf("%s: want outcome %q, got %+v", c.name, c.want, got)
+			}
+			if err := got.Validate(); err != nil {
+				t.Fatalf("%s: fake produced an invalid Result: %v", c.name, err)
+			}
+		})
 	}
 }
 
@@ -106,6 +119,12 @@ func TestResultValidateRejectsContradictions(t *testing.T) {
 		{Outcome: Timeout, TerminalNoSideEffect: true},
 		{Outcome: Authorized, Authorized: true, TerminalNoSideEffect: false}, // auth-only: authorized, not captured, not terminal
 		{Outcome: Unknown}, // undetermined: not captured/authorized/terminal
+		// Compensation outcomes (TKT-114/S2). Voided: the hold is released, nothing moved
+		// on the ledger — genuinely no side effect. Refunded: money moved and came back —
+		// there WAS a side effect, so it is NOT terminal-no-side-effect (recovery must
+		// never read a refund as "no side effect" and release a claim on it).
+		{Outcome: Voided, TerminalNoSideEffect: true},
+		{Outcome: Refunded, TerminalNoSideEffect: false},
 	}
 	for _, r := range valid {
 		if err := r.Validate(); err != nil {
@@ -126,6 +145,12 @@ func TestResultValidateRejectsContradictions(t *testing.T) {
 		{"timeout but not terminal-no-side-effect", Result{Outcome: Timeout, TerminalNoSideEffect: false}},
 		{"unknown but terminal-no-side-effect", Result{Outcome: Unknown, TerminalNoSideEffect: true}},
 		{"authorized-only but also captured", Result{Outcome: Authorized, Authorized: true, Captured: true}},
+		{"voided but claims capture", Result{Outcome: Voided, Captured: true, TerminalNoSideEffect: true}},
+		{"voided but claims authorization", Result{Outcome: Voided, Authorized: true, TerminalNoSideEffect: true}},
+		{"voided but not terminal-no-side-effect", Result{Outcome: Voided, TerminalNoSideEffect: false}},
+		{"refunded but claims capture", Result{Outcome: Refunded, Captured: true}},
+		{"refunded but claims authorization", Result{Outcome: Refunded, Authorized: true}},
+		{"refunded but claims terminal-no-side-effect", Result{Outcome: Refunded, TerminalNoSideEffect: true}},
 		{"empty/zero outcome", Result{}},
 	}
 	for _, tc := range invalid {

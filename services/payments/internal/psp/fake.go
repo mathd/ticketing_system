@@ -33,18 +33,29 @@ func (f *Fake) Authorize(_ context.Context, req AuthorizeRequest) (Result, error
 	}
 }
 
-// Capture, Void, Refund and Status are the compensation/status surface wired in later
-// slices. Slice 1 exposes them as unimplemented so nothing can silently depend on a fake
-// that pretends to compensate.
+// Capture, Void, Refund and Status are the compensation/status surface. The fake is
+// deterministic and provider-reference-free: it reports success with a Result that obeys
+// the same Validate() invariants Stripe must (TKT-114/S2). Durable operation state lives in
+// the payments store, not the fake.
+
+// Capture reports a successful capture of a prior authorization.
 func (f *Fake) Capture(context.Context, string, int64, string) (Result, error) {
-	return Result{}, ErrNotImplemented
+	return Result{Outcome: Captured, Captured: true, Authorized: true}, nil
 }
+
+// Void reports a successful void of an uncaptured authorization.
 func (f *Fake) Void(context.Context, string, string) (Result, error) {
-	return Result{}, ErrNotImplemented
+	return Result{Outcome: Voided, TerminalNoSideEffect: true}, nil
 }
+
+// Refund reports a successful refund of captured money.
 func (f *Fake) Refund(context.Context, string, string, int64, string) (Result, error) {
-	return Result{}, ErrNotImplemented
+	return Result{Outcome: Refunded}, nil
 }
-func (f *Fake) Status(context.Context, string) (Result, error) {
-	return Result{}, ErrNotImplemented
+
+// Status resolves an operation. The fake has no provider to query, so it reports Unknown
+// (the honest answer for a provider that keeps no state) — recovery treats Unknown as
+// "not resolved", never releasing a claim on it.
+func (f *Fake) Status(context.Context, StatusRequest) (Result, error) {
+	return Result{Outcome: Unknown}, nil
 }
