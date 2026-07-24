@@ -2,10 +2,8 @@
   "key": "TKT-115",
   "type": "Story",
   "summary": "Commerce recovery via PSP status/refund — resolve payment_unknown, refund reconciliation_required (Slice 3 of TKT-56)",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 108,
