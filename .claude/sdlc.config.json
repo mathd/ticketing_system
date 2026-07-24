@@ -8,14 +8,14 @@
   },
   "models": {
     "plan": [
-      "deepseek-v4-pro:max@claudex",
-      "gpt-5.6-sol:medium@claudex"
+      "gpt-5.6-sol",
+      "opus-4.8"
     ],
-    "planReview": "fable-5:medium",
+    "planReview": "fable-5",
     "implement": "main-agent",
     "aiReview": [
-      "deepseek-v4-pro:max@claudex",
-      "gpt-5.6-sol:medium@claudex"
+      "gpt-5.6-sol",
+      "fable-5"
     ]
   },
   "registry": {
