@@ -348,3 +348,39 @@ func TestDrawDownQueuedAcrossSourceExpiryRejects(t *testing.T) {
 		t.Fatalf("public hold after settled expiry: %v", err)
 	}
 }
+
+// A release against an EXPIRED claim is vacuously satisfied: expiry already freed the
+// seats, so the obligation the release discharges is gone either way. Before TKT-115
+// this answered ErrConflict — indistinguishable from `confirmed` (a genuinely sold
+// seat) — so commerce recovery parked refunded orders whose holds had merely expired
+// as "confirmed claim; manual reconciliation". Confirm stays a conflict: an expired
+// claim can never buy a seat.
+func TestReleaseOfExpiredClaimIsVacuouslySatisfied(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	tt := uuid.New()
+	claim, _, err := st.CreateHold(ctx, org, slot, tt, 2, 1250, "EUR", "", "k-expired-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE claims SET expires_at=now()-interval '1 second' WHERE id=$1`, claim.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Transition(ctx, org, claim.ID, "released")
+	if err != nil {
+		t.Fatalf("release of an expired claim must be vacuously satisfied, got %v", err)
+	}
+	if got.Status != "expired" {
+		t.Fatalf("status = %q, want expired (the release changes nothing)", got.Status)
+	}
+	if _, err := st.Transition(ctx, org, claim.ID, "confirmed"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("confirm of an expired claim must stay a conflict, got %v", err)
+	}
+	a, err := st.Availability(ctx, org, slot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Available != 10 {
+		t.Fatalf("available = %d, want 10 (expiry freed the seats; release must not double-free)", a.Available)
+	}
+}

@@ -90,6 +90,7 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 # means a newly added test silently never runs and the gate still passes green — which
 # is exactly what happened to this file's first six tests.
 COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_store_smoke" \
+COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/access"

@@ -7,6 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -89,6 +94,11 @@ func TestTerminalCheckoutCode(t *testing.T) {
 	}
 	if got := terminalCheckoutCode("timeout"); got != http.StatusRequestTimeout {
 		t.Fatalf("timeout code = %d, want %d", got, http.StatusRequestTimeout)
+	}
+	// A refunded order replays as a payment failure: the charge was captured then
+	// compensated (TKT-115) — from the buyer's side the checkout did not buy a seat.
+	if got := terminalCheckoutCode("refunded"); got != http.StatusPaymentRequired {
+		t.Fatalf("refunded code = %d, want %d", got, http.StatusPaymentRequired)
 	}
 }
 
@@ -337,5 +347,92 @@ func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, tc.want, res.Body.String())
 			}
 		})
+	}
+}
+
+// The orders status vocabulary, copied from the CHECK constraint in
+// services/commerce/internal/store/migrations/0005_psp_recovery.sql. Pinned here on
+// purpose: a status added to the constraint without a decision about what checkout tells
+// a buyer whose guarded write lost the race to recovery is the F3 defect returning. The
+// first cut answered only refunded/reconciliation_required and silently told buyers
+// "payment unknown" for orders recovery had already completed or terminally failed.
+func TestClassifyRecoveredCoversTheStatusVocabulary(t *testing.T) {
+	want := map[string]recoveredClass{
+		// Recovery reached a buyer-final answer — checkout must report it.
+		"completed":               recoveredCompleted,
+		"declined":                recoveredTerminal,
+		"timeout":                 recoveredTerminal,
+		"refunded":                recoveredTerminal,
+		"reconciliation_required": recoveredReconciling,
+		// The terminal outcome is already durable here — RecordTerminalOutcome writes it in
+		// the same statement that sets the status — so calling this payment_unknown would
+		// deny evidence the database holds (ai-review pass 3, P3-2).
+		"release_pending": recoveredPending,
+		// Genuinely still unresolved: the optimistic 202 is honest. These are exactly the
+		// statuses the guarded write itself targets.
+		"created":              recoveredOptimistic,
+		"payment_unknown":      recoveredOptimistic,
+		"confirmation_pending": recoveredOptimistic,
+	}
+	for status, class := range want {
+		if got := classifyRecovered(status); got != class {
+			t.Errorf("classifyRecovered(%q) = %d, want %d", status, got, class)
+		}
+	}
+	// Guard the pin itself: if the vocabulary grows, this list must grow with it. Applied
+	// goose migrations are immutable (ADR-022), so the vocabulary can only ever grow in a
+	// NEW file — reading 0005 alone would keep passing forever while 0006 added a status
+	// no one taught checkout to answer (ai-review pass 3, P3-4). Scan every migration in
+	// order and take the LAST constraint definition, which is the one in force.
+	migrations, err := filepath.Glob("../store/migrations/*.sql")
+	if err != nil || len(migrations) == 0 {
+		t.Fatalf("glob migrations: %v (%d found)", err, len(migrations))
+	}
+	// goose applies migrations in NUMERIC version order, so sorting the filenames as
+	// strings would visit an unpadded 10_ before 9_ and read a superseded constraint as
+	// the one in force (ai-review pass 4). Today's names are zero-padded, which hides
+	// that — order by the version goose itself would use.
+	version := func(path string) int {
+		digits := regexp.MustCompile(`^\d+`).FindString(filepath.Base(path))
+		n, _ := strconv.Atoi(digits)
+		return n
+	}
+	sort.Slice(migrations, func(i, j int) bool { return version(migrations[i]) < version(migrations[j]) })
+
+	// Track DROP as well as ADD, in the order they appear: a migration whose Up only drops
+	// the constraint leaves NO vocabulary in force, and remembering the previous one would
+	// validate a schema state the database no longer has (ai-review pass 4).
+	constraint := regexp.MustCompile(`(?s)DROP CONSTRAINT orders_status_check|ADD CONSTRAINT orders_status_check CHECK \((.*?)\);`)
+	var inForce string
+	for _, file := range migrations {
+		sql, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		// Up and Down both redefine the constraint; the Up block is everything before the
+		// `-- +goose Down` marker, and only that is the forward vocabulary.
+		up, _, _ := strings.Cut(string(sql), "-- +goose Down")
+		for _, m := range constraint.FindAllStringSubmatch(up, -1) {
+			if strings.HasPrefix(m[0], "DROP") {
+				inForce = ""
+				continue
+			}
+			inForce = m[1]
+		}
+	}
+	if inForce == "" {
+		t.Fatal("no orders_status_check constraint found in any migration; the guard below would be vacuous")
+	}
+	found := regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(inForce, -1)
+	// Without this the loop below goes vacuous the moment the constraint is renamed,
+	// and a test that cannot fail is worse than no test.
+	if len(found) != len(want) {
+		t.Fatalf("extracted %d statuses from the CHECK constraint in force, want %d", len(found), len(want))
+	}
+	for _, status := range found {
+		if _, ok := want[status[1]]; !ok {
+			t.Errorf("order status %q is in the CHECK constraint but has no checkout answer; "+
+				"decide what a buyer racing recovery is told before adding it", status[1])
+		}
 	}
 }

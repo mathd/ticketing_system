@@ -10,8 +10,18 @@ services:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: inventory } }
   commerce:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: commerce } }
+    environment:
+      # TKT-115 recovery smoke: drive the runner fast enough to observe a drained
+      # order without waiting out the production 30s interval.
+      RECOVERY_INTERVAL: 2s
   payments:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: payments } }
+    environment:
+      # TKT-115: the fake PSP never expires idempotency keys (retention 0), so the
+      # status-replay deadline path would be untestable offline. Inject Stripe's ~24h
+      # bound: a backdated operation proves the 409/park path against real predicates,
+      # while fresh testbed operations stay comfortably inside the window.
+      PAYMENTS_STATUS_REPLAY_RETENTION: 24h
   access:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: access } }
   # The migrate jobs (ADR-022) run the same binaries; override them too, or

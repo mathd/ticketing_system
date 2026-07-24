@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,8 @@ type fakeStore struct {
 
 	outcomes  []string           // RecordTerminalOutcome
 	parked    []string           // ParkForReconciliation reasons
+	queued    []string           // QueueForCompensation reasons
+	refunded  []store.StuckOrder // MarkRefunded
 	cleared   int                // ClearRecoveryClaim
 	released  []store.StuckOrder // MarkReleased
 	failed    []error            // ReleaseStuckOrder causes
@@ -49,6 +52,18 @@ func (f *fakeStore) RecordTerminalOutcome(_ context.Context, _, _ uuid.UUID, out
 func (f *fakeStore) ParkForReconciliation(_ context.Context, _, _ uuid.UUID, reason string) error {
 	f.tr.add("store.ParkForReconciliation")
 	f.parked = append(f.parked, reason)
+	return nil
+}
+
+func (f *fakeStore) QueueForCompensation(_ context.Context, _, _ uuid.UUID, reason string) error {
+	f.tr.add("store.QueueForCompensation")
+	f.queued = append(f.queued, reason)
+	return nil
+}
+
+func (f *fakeStore) MarkRefunded(_ context.Context, s store.StuckOrder) error {
+	f.tr.add("store.MarkRefunded")
+	f.refunded = append(f.refunded, s)
 	return nil
 }
 
@@ -82,12 +97,40 @@ type fakePayments struct {
 	found bool
 	err   error
 	calls int
+
+	status       PSPStatus
+	statusErr    error
+	statusCalls  int
+	voidResult   CompensationResult
+	voidErr      error
+	voidCalls    int
+	refundResult CompensationResult
+	refundErr    error
+	refundCalls  int
 }
 
 func (f *fakePayments) LookupOperation(context.Context, uuid.UUID, string) (Operation, bool, error) {
 	f.tr.add("payments.LookupOperation")
 	f.calls++
 	return f.op, f.found, f.err
+}
+
+func (f *fakePayments) Status(context.Context, uuid.UUID, string) (PSPStatus, error) {
+	f.tr.add("payments.Status")
+	f.statusCalls++
+	return f.status, f.statusErr
+}
+
+func (f *fakePayments) Void(context.Context, uuid.UUID, string) (CompensationResult, error) {
+	f.tr.add("payments.Void")
+	f.voidCalls++
+	return f.voidResult, f.voidErr
+}
+
+func (f *fakePayments) Refund(context.Context, uuid.UUID, string) (CompensationResult, error) {
+	f.tr.add("payments.Refund")
+	f.refundCalls++
+	return f.refundResult, f.refundErr
 }
 
 type fakeInventory struct {
@@ -162,6 +205,18 @@ type trace struct {
 
 func (t *trace) add(step string) { t.steps = append(t.steps, step) }
 
+// externalCalls counts the trace steps that leave the process — the calls
+// MaxCallsPerOrder budgets and LeaseFor must outlast. Store writes are local.
+func (t *trace) externalCalls() int {
+	var n int
+	for _, s := range t.steps {
+		if strings.HasPrefix(s, "payments.") || strings.HasPrefix(s, "inventory.") || strings.HasPrefix(s, "journal.") {
+			n++
+		}
+	}
+	return n
+}
+
 func (t *trace) indexOf(step string) int {
 	for i, s := range t.steps {
 		if s == step {
@@ -229,6 +284,28 @@ func TestLeaseOutlastsTheBatchsWorstCaseIO(t *testing.T) {
 			t.Errorf("LeaseFor(%d, %s) = %s, which does not outlast the worst-case pass of %s",
 				tc.batch, tc.timeout, got, worst)
 		}
+	}
+}
+
+// COS6: MaxCallsPerOrder is pinned by ENUMERATING the longest external-call chain, not
+// by referencing the constant back at itself. The TKT-115 worst case is the compensation
+// re-derivation chain: operation lookup → PSP status → first compensation refused with
+// 409 → status re-derivation → correct compensation (or release) → order.failed journal
+// submission = 6 calls. LeaseFor derives from the same constant, so the two grow
+// together by construction — this test exists so a future shortening of the constant
+// fails loudly against the enumerated chain (ADR-032 §Consequences).
+func TestMaxCallsPerOrderCoversTheLongestChain(t *testing.T) {
+	longestChain := []string{
+		"payments.LookupOperation",
+		"payments.Status",
+		"payments.Refund (409 wrong compensation)",
+		"payments.Status (re-derivation)",
+		"payments.Void or inventory.Release",
+		"journal.OrderFailed",
+	}
+	if MaxCallsPerOrder < len(longestChain) {
+		t.Fatalf("MaxCallsPerOrder = %d cannot cover the %d-call chain %v",
+			MaxCallsPerOrder, len(longestChain), longestChain)
 	}
 }
 
@@ -325,29 +402,141 @@ func TestConfirmationPendingConfirmsAndCompletes(t *testing.T) {
 }
 
 // Row: confirmation_pending + confirm terminally impossible — captured money, no seat.
-func TestCapturedOrderWithGoneClaimIsParkedNotResolved(t *testing.T) {
-	p, resolved := run(t, []store.StuckOrder{stuck("confirmation_pending")}, func(p *ports) {
+// Since TKT-115 the runner refunds in the SAME pass: queue for compensation (keeping
+// the claim), re-derive from PSP status, refund, and only after payments' 200 mark the
+// order refunded. Payments appends payment.refunded; commerce never touches the journal
+// beyond its own order.failed.
+func TestCapturedOrderWithGoneClaimIsRefundedSamePass(t *testing.T) {
+	order := stuck("confirmation_pending")
+	p, resolved := run(t, []store.StuckOrder{order}, func(p *ports) {
 		p.inventory.confirmErr = ErrClaimGone
+		p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+			AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
+		p.payments.refundResult = CompensationResult{Status: "refunded"}
 	})
 
-	// Parking IS the resolution here: the runner did its job by refusing to guess.
 	if resolved != 1 {
-		t.Fatalf("resolved = %d, want 1 (parking is a terminal decision)", resolved)
+		t.Fatalf("resolved = %d, want 1", resolved)
 	}
-	if len(p.store.parked) != 1 {
-		t.Fatalf("parked %d orders, want 1", len(p.store.parked))
+	if len(p.store.queued) != 1 {
+		t.Fatalf("queued %d orders for compensation, want 1", len(p.store.queued))
 	}
-	// Completing would sell a claim that is gone; releasing would strand the buyer's
-	// money. Both are worse than a human looking at it.
+	if p.payments.statusCalls != 1 {
+		t.Fatalf("status calls = %d, want 1: the compensation kind is re-derived from evidence", p.payments.statusCalls)
+	}
+	if p.payments.refundCalls != 1 {
+		t.Fatalf("refund calls = %d, want 1", p.payments.refundCalls)
+	}
+	if len(p.store.refunded) != 1 || p.store.refunded[0].OrderID != order.OrderID {
+		t.Fatalf("MarkRefunded = %v, want exactly this order", p.store.refunded)
+	}
+	if len(p.journal.facts) != 1 {
+		t.Errorf("journalled %d order.failed facts, want 1", len(p.journal.facts))
+	}
 	if len(p.completer.completed) != 0 {
 		t.Error("must not complete an order whose claim is gone")
 	}
-	if p.inventory.releases != 0 {
-		t.Error("must not release the claim of a captured order — that strands the money")
+	if len(p.store.parked) != 0 {
+		t.Error("a refundable order must be refunded, not parked")
 	}
-	if len(p.store.released) != 0 {
-		t.Error("must not mark a captured order released")
+	if len(p.store.outcomes) != 0 {
+		t.Errorf("recorded outcomes %v; refunded money is NOT a no-side-effect outcome (ADR-032)", p.store.outcomes)
 	}
+	// F4 (plan-final): only a payments refund success may precede MarkRefunded, and the
+	// order.failed fact must be durable before the terminal transition.
+	p.trace.mustPrecede(t, "payments.Status", "payments.Refund")
+	p.trace.mustPrecede(t, "payments.Refund", "store.MarkRefunded")
+	p.trace.mustPrecede(t, "journal.OrderFailed", "store.MarkRefunded")
+	// The EXECUTED chain must fit the budget the lease is derived from (ai-review B6:
+	// the enumerating test alone is a hand-maintained list; this counts the real trace).
+	if calls := p.trace.externalCalls(); calls > MaxCallsPerOrder {
+		t.Fatalf("refund chain made %d external calls, exceeding MaxCallsPerOrder=%d — the lease no longer covers its own pass", calls, MaxCallsPerOrder)
+	}
+}
+
+// Refund 502: the compensation stays bound in payments and the order stays claimable —
+// never terminal, never parked, and above all never marked refunded (COS2).
+func TestRefundProviderUnresolvedRetriesLater(t *testing.T) {
+	p, resolved := run(t, []store.StuckOrder{stuck("reconciliation_required")}, func(p *ports) {
+		p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+			AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
+		p.payments.refundErr = ErrProviderUnresolved
+	})
+
+	if resolved != 0 {
+		t.Fatalf("resolved = %d, want 0 (retry later)", resolved)
+	}
+	if len(p.store.failed) != 1 {
+		t.Fatalf("ReleaseStuckOrder calls = %d, want 1 (backoff)", len(p.store.failed))
+	}
+	if len(p.store.refunded) != 0 {
+		t.Fatal("a 502 must never mark the order refunded")
+	}
+	if len(p.store.parked) != 0 {
+		t.Fatal("a recoverable 502 must not park")
+	}
+	if len(p.store.outcomes) != 0 || p.inventory.releases != 0 {
+		t.Fatal("an unresolved compensation proves nothing; no outcome, no release")
+	}
+}
+
+// Refund 409 = wrong compensation for the current evidence: re-derive next pass (the
+// evidence moved between status and refund), never success, never a terminal park.
+func TestRefundWrongCompensationReDerivesNextPass(t *testing.T) {
+	p, resolved := run(t, []store.StuckOrder{stuck("reconciliation_required")}, func(p *ports) {
+		p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+			AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
+		p.payments.refundErr = ErrWrongCompensation
+	})
+
+	if resolved != 0 {
+		t.Fatalf("resolved = %d, want 0", resolved)
+	}
+	if len(p.store.failed) != 1 {
+		t.Fatalf("ReleaseStuckOrder calls = %d, want 1", len(p.store.failed))
+	}
+	if len(p.store.refunded) != 0 || len(p.store.parked) != 0 {
+		t.Fatal("a 409 is neither success nor a terminal park — the next pass re-derives")
+	}
+}
+
+// F1 (plan-final): an operation that predates durable provider evidence reports
+// captured with a ZERO captured amount — a refund against it 409s forever on a zero
+// basis. Recognize the shape and park in ONE pass, without burning the retry budget.
+func TestPreDurableEvidenceOperationParksInOnePass(t *testing.T) {
+	p, resolved := run(t, []store.StuckOrder{stuck("reconciliation_required")}, func(p *ports) {
+		p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+			AuthorizedAmount: 0, CapturedAmount: 0, Currency: "EUR"}
+	})
+
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1 (parking is the decision)", resolved)
+	}
+	if p.payments.refundCalls != 0 {
+		t.Fatal("a zero-evidence operation must not be refunded — the basis would be 0")
+	}
+	if len(p.store.parked) != 1 || !strings.Contains(p.store.parked[0], "predates durable provider evidence") {
+		t.Fatalf("parked = %v, want the self-describing pre-0002 reason", p.store.parked)
+	}
+}
+
+// A reconciliation_required order whose evidence is captured money is refunded (COS2).
+func TestReconciliationRequiredRefundsCapturedMoney(t *testing.T) {
+	order := stuck("reconciliation_required")
+	p, resolved := run(t, []store.StuckOrder{order}, func(p *ports) {
+		p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+			AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
+		p.payments.refundResult = CompensationResult{Status: "refunded"}
+	})
+
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1", resolved)
+	}
+	if p.payments.refundCalls != 1 || len(p.store.refunded) != 1 {
+		t.Fatalf("refund calls = %d, refunded = %v; want the refund driven to MarkRefunded",
+			p.payments.refundCalls, p.store.refunded)
+	}
+	p.trace.mustPrecede(t, "payments.Refund", "store.MarkRefunded")
 }
 
 // Row: created + no operation — payments never bound a charge, so no side effect exists.
@@ -456,34 +645,201 @@ func TestCreatedResolvedTerminalFailureRecordsOutcomeThenReleases(t *testing.T) 
 	}
 }
 
-// Row: created + operation bound but unresolved — this is payment_unknown, and
-// resolving it needs real-PSP status (TKT-56).
-func TestCreatedWithUnresolvedOperationIsParkedForPSPStatus(t *testing.T) {
-	p, resolved := run(t, []store.StuckOrder{stuck("created")}, func(p *ports) {
+// Rows: created/payment_unknown + operation bound but unresolved — resolved against
+// real PSP status since TKT-115. The decision table below is ADR-032's: captured buys
+// the seat; an exact provider decline/timeout records ITSELF (never blurred into
+// no_side_effect — the audit column keeps decline and timeout distinguishable, G1);
+// authorized voids FIRST (an authorization is not terminal-no-side-effect); an already-
+// voided hold records no_side_effect (P2-3: no synthetic payment.voided — commerce never
+// initiated a compensation); refunded finishes as a refunded order; unknown retries.
+func TestUnresolvedOperationStatusDecisionTable(t *testing.T) {
+	for _, status := range []string{"created", "payment_unknown"} {
+		t.Run(status+"/captured confirms and completes", func(t *testing.T) {
+			p, resolved := run(t, []store.StuckOrder{stuck(status)}, func(p *ports) {
+				p.payments.found = true
+				p.payments.op = Operation{Resolved: false}
+				p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+					AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
+			})
+			if resolved != 1 {
+				t.Fatalf("resolved = %d, want 1", resolved)
+			}
+			if p.inventory.confirmed != 1 || len(p.completer.completed) != 1 {
+				t.Fatal("captured money must buy the seat: confirm + complete")
+			}
+			if len(p.store.outcomes) != 0 || p.inventory.releases != 0 {
+				t.Fatal("captured is not a terminal-failure outcome")
+			}
+			p.trace.mustPrecede(t, "payments.Status", "inventory.Confirm")
+		})
+
+		t.Run(status+"/authorized voids before releasing", func(t *testing.T) {
+			p, resolved := run(t, []store.StuckOrder{stuck(status)}, func(p *ports) {
+				p.payments.found = true
+				p.payments.op = Operation{Resolved: false}
+				p.payments.status = PSPStatus{Outcome: "authorized", Authorized: true,
+					AuthorizedAmount: 5000, Currency: "CAD"}
+				p.payments.voidResult = CompensationResult{Status: "voided"}
+			})
+			if resolved != 1 {
+				t.Fatalf("resolved = %d, want 1", resolved)
+			}
+			if p.payments.voidCalls != 1 {
+				t.Fatal("an authorized hold is NOT terminal-no-side-effect: it must be voided first")
+			}
+			if len(p.store.outcomes) != 1 || p.store.outcomes[0] != "no_side_effect" {
+				t.Fatalf("outcomes = %v, want [no_side_effect]", p.store.outcomes)
+			}
+			// The void must be durable at the provider before the outcome is recorded,
+			// and the outcome durable before the seat is released (ADR-016 ordering).
+			p.trace.mustPrecede(t, "payments.Void", "store.RecordTerminalOutcome")
+			p.trace.mustPrecede(t, "store.RecordTerminalOutcome", "inventory.Release")
+			if calls := p.trace.externalCalls(); calls > MaxCallsPerOrder {
+				t.Fatalf("void chain made %d external calls, exceeding MaxCallsPerOrder=%d", calls, MaxCallsPerOrder)
+			}
+		})
+
+		for _, terminal := range []string{"declined", "timeout"} {
+			t.Run(status+"/"+terminal+" records the exact outcome", func(t *testing.T) {
+				p, resolved := run(t, []store.StuckOrder{stuck(status)}, func(p *ports) {
+					p.payments.found = true
+					p.payments.op = Operation{Resolved: false}
+					p.payments.status = PSPStatus{Outcome: terminal, TerminalNoSideEffect: true}
+				})
+				if resolved != 1 {
+					t.Fatalf("resolved = %d, want 1", resolved)
+				}
+				if len(p.store.outcomes) != 1 || p.store.outcomes[0] != terminal {
+					t.Fatalf("outcomes = %v, want [%s]: the provider's exact answer, never blurred", p.store.outcomes, terminal)
+				}
+				if p.payments.voidCalls != 0 || p.payments.refundCalls != 0 {
+					t.Fatal("a terminal provider decision needs no compensation")
+				}
+				p.trace.mustPrecede(t, "store.RecordTerminalOutcome", "inventory.Release")
+			})
+		}
+
+		t.Run(status+"/voided records no_side_effect without compensating", func(t *testing.T) {
+			p, resolved := run(t, []store.StuckOrder{stuck(status)}, func(p *ports) {
+				p.payments.found = true
+				p.payments.op = Operation{Resolved: false}
+				p.payments.status = PSPStatus{Outcome: "voided", TerminalNoSideEffect: true}
+			})
+			if resolved != 1 {
+				t.Fatalf("resolved = %d, want 1", resolved)
+			}
+			if len(p.store.outcomes) != 1 || p.store.outcomes[0] != "no_side_effect" {
+				t.Fatalf("outcomes = %v, want [no_side_effect]", p.store.outcomes)
+			}
+			// P2-3: the hold was released without commerce's involvement. No journal fact
+			// beyond order.failed is fabricated, and no compensation is driven.
+			if p.payments.voidCalls != 0 || p.payments.refundCalls != 0 {
+				t.Fatal("an externally-released hold needs no compensation call")
+			}
+			if len(p.journal.facts) != 1 {
+				t.Errorf("journalled %d order.failed facts, want 1", len(p.journal.facts))
+			}
+		})
+
+		t.Run(status+"/refunded finishes as a refunded order", func(t *testing.T) {
+			p, resolved := run(t, []store.StuckOrder{stuck(status)}, func(p *ports) {
+				p.payments.found = true
+				p.payments.op = Operation{Resolved: false}
+				p.payments.status = PSPStatus{Outcome: "refunded"}
+			})
+			if resolved != 1 {
+				t.Fatalf("resolved = %d, want 1", resolved)
+			}
+			if len(p.store.refunded) != 1 {
+				t.Fatalf("MarkRefunded calls = %d, want 1", len(p.store.refunded))
+			}
+			if len(p.store.outcomes) != 0 {
+				t.Fatalf("outcomes = %v; refunded money moved and came back — never a no-side-effect outcome", p.store.outcomes)
+			}
+			if p.payments.refundCalls != 0 {
+				t.Fatal("the refund already completed; driving another is a duplicate compensation")
+			}
+		})
+
+		t.Run(status+"/unknown retries without acting", func(t *testing.T) {
+			p, resolved := run(t, []store.StuckOrder{stuck(status)}, func(p *ports) {
+				p.payments.found = true
+				p.payments.op = Operation{Resolved: false}
+				p.payments.status = PSPStatus{Outcome: "unknown"}
+			})
+			if resolved != 0 {
+				t.Fatalf("resolved = %d, want 0 (retry later)", resolved)
+			}
+			if len(p.store.failed) != 1 {
+				t.Fatalf("ReleaseStuckOrder calls = %d, want 1", len(p.store.failed))
+			}
+			if len(p.store.outcomes) != 0 || p.inventory.releases != 0 || len(p.store.parked) != 0 {
+				t.Fatal("unknown proves nothing: no outcome, no release, no park")
+			}
+		})
+	}
+}
+
+// COS3: the status-replay deadline. Past it, the runner parks BEFORE calling status —
+// a replay would mint a second PaymentIntent — and a payments-side 409 (defense in
+// depth) parks in one pass too, never burning the retry budget.
+func TestExpiredReplayDeadlineParksWithoutCallingStatus(t *testing.T) {
+	expired := time.Now().Add(-time.Hour)
+	p, resolved := run(t, []store.StuckOrder{stuck("payment_unknown")}, func(p *ports) {
 		p.payments.found = true
-		p.payments.op = Operation{Resolved: false}
+		p.payments.op = Operation{Resolved: false, OccurredAt: expired.Add(-24 * time.Hour), StatusReplayDeadlineAt: &expired}
 	})
 
 	if resolved != 1 {
-		t.Fatalf("resolved = %d, want 1 (parking is a terminal decision)", resolved)
+		t.Fatalf("resolved = %d, want 1 (parking is the decision)", resolved)
 	}
-	if len(p.store.parked) != 1 {
-		t.Fatalf("parked %d orders, want 1", len(p.store.parked))
+	if p.payments.statusCalls != 0 {
+		t.Fatal("an expired replay window must park BEFORE the status call — the call is the hazard")
 	}
-	// The whole point of the design: with the side effect genuinely unknown, the runner
-	// must take NO action that assumes an answer. Not a release, not a completion, and
-	// above all not a recorded outcome — that column may only hold proven results.
-	if len(p.store.outcomes) != 0 {
-		t.Errorf("recorded outcome %v for an unknown payment result — that column may only hold proven outcomes", p.store.outcomes)
+	if len(p.store.parked) != 1 || !strings.Contains(p.store.parked[0], "replay window expired") {
+		t.Fatalf("parked = %v, want the self-describing expired-window reason", p.store.parked)
 	}
-	if len(p.completer.completed) != 0 {
-		t.Error("must not complete an order whose payment result is unknown")
+	if len(p.store.outcomes) != 0 || p.inventory.releases != 0 {
+		t.Fatal("expiry proves nothing about the money: no outcome, no release")
 	}
-	if p.inventory.releases != 0 {
-		t.Error("must not release a claim whose payment might have captured")
+}
+
+func TestStatusReplayExpired409ParksInOnePass(t *testing.T) {
+	p, resolved := run(t, []store.StuckOrder{stuck("payment_unknown")}, func(p *ports) {
+		p.payments.found = true
+		p.payments.op = Operation{Resolved: false}
+		p.payments.statusErr = ErrReplayWindowExpired
+	})
+
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1", resolved)
 	}
-	if len(p.store.released) != 0 {
-		t.Error("must not mark released an order whose payment result is unknown")
+	if len(p.store.parked) != 1 || !strings.Contains(p.store.parked[0], "replay window expired") {
+		t.Fatalf("parked = %v, want the expired-window park", p.store.parked)
+	}
+	if len(p.store.failed) != 0 {
+		t.Fatal("expiry is not retryable — retrying cannot un-expire the idempotency key")
+	}
+}
+
+// A within-window unresolved operation IS resolved via status (the deadline gates the
+// hazard, not the resolution).
+func TestWithinWindowUnresolvedOperationCallsStatus(t *testing.T) {
+	future := time.Now().Add(23 * time.Hour)
+	p, resolved := run(t, []store.StuckOrder{stuck("payment_unknown")}, func(p *ports) {
+		p.payments.found = true
+		p.payments.op = Operation{Resolved: false, OccurredAt: time.Now().Add(-time.Hour), StatusReplayDeadlineAt: &future}
+		p.payments.status = PSPStatus{Outcome: "declined", TerminalNoSideEffect: true}
+	})
+
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1", resolved)
+	}
+	if p.payments.statusCalls != 1 {
+		t.Fatalf("status calls = %d, want 1", p.payments.statusCalls)
+	}
+	if len(p.store.parked) != 0 {
+		t.Fatalf("parked = %v; a within-window operation is resolvable", p.store.parked)
 	}
 }
 
@@ -530,10 +886,10 @@ func TestReleasePendingWithoutOutcomeFailsRatherThanGuess(t *testing.T) {
 }
 
 // An order the runner cannot re-drive must be handed back, not silently dropped. This
-// is the guard that keeps payment_unknown — excluded from the claim query on purpose —
-// from being resolved here if it ever reaches the runner.
+// is the guard that keeps a status outside the decision table (a terminal row that
+// somehow reached the claim set) from being resolved by guesswork.
 func TestUnrecoverableStatusIsHandedBack(t *testing.T) {
-	p, resolved := run(t, []store.StuckOrder{stuck("payment_unknown")}, nil)
+	p, resolved := run(t, []store.StuckOrder{stuck("completed")}, nil)
 
 	if resolved != 0 {
 		t.Fatalf("resolved = %d, want 0", resolved)
@@ -658,7 +1014,7 @@ func TestCompletionFailureLeavesTheClaimForTheNextPass(t *testing.T) {
 
 // Every order in a batch is driven, and one order's failure does not abort the pass.
 func TestBatchContinuesPastAFailedOrder(t *testing.T) {
-	orders := []store.StuckOrder{stuck("payment_unknown"), stuck("confirmation_pending")}
+	orders := []store.StuckOrder{stuck("completed"), stuck("confirmation_pending")}
 	p, resolved := run(t, orders, nil)
 
 	if resolved != 1 {

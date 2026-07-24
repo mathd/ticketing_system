@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -63,6 +64,21 @@ func resolvedResult(op store.Operation) (psp.Result, bool) {
 	}
 }
 
+// statusReplayDeadline reports the instant after which an operation can no longer be
+// status-resolved, and whether such a bound exists at all. The bound exists exactly when
+// resolution would REQUIRE replaying the creation request (unresolved, no persisted
+// provider reference) and the configured provider retains idempotency keys for a limited
+// window (Stripe ~24h; the fake retains forever, retention 0). After the deadline the
+// same-key replay would mint a NEW PaymentIntent — the one thing the replay contract
+// exists to prevent — so the status endpoint refuses with 409 and the operation becomes
+// manual reconciliation (ADR-032 §Status/replay amendment, TKT-115).
+func statusReplayDeadline(op store.Operation, retention time.Duration) (time.Time, bool) {
+	if retention <= 0 || op.Resolved || op.ProviderPaymentRef != "" {
+		return time.Time{}, false
+	}
+	return op.OccurredAt.Add(retention), true
+}
+
 // pspStatus resolves an operation's provider state. A resolved operation answers from
 // its recorded terminal status; an unresolved one asks the provider — retrieve when the
 // provider reference was persisted, replay under the SAME original idempotency key when
@@ -105,6 +121,13 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if result, ok := resolvedResult(op); ok {
 		write(w, 200, statusBody(result, op.AuthorizedAmount, op.CapturedAmount, op.RequestCurrency))
+		return
+	}
+	// Deadline guard — deliberately AFTER the completed-compensation and resolved-
+	// operation short-circuits: an old-but-answerable operation keeps answering from its
+	// stored truth forever; only the replay-dependent path is bounded.
+	if deadline, bounded := statusReplayDeadline(op, s.statusReplayRetention); bounded && time.Now().After(deadline) {
+		write(w, 409, map[string]string{"error": "status replay window expired; manual reconciliation required"})
 		return
 	}
 	result, err := s.psp.Status(r.Context(), psp.StatusRequest{

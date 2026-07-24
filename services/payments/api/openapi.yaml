@@ -55,6 +55,11 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        # The status-replay window expired: the operation is unresolved, has no persisted
+        # provider reference, and is older than the provider's idempotency-key retention —
+        # a same-key replay would mint a NEW PaymentIntent. Manual reconciliation, not a
+        # transient failure (which stays 502) — callers park, never retry.
+        '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
   /internal/psp/void:
@@ -177,4 +182,12 @@ components:
         # Present only when resolved: the terminal result payments recorded.
         status: {type: string}
         fact_id: {type: string, format: uuid}
+        # The durable bind time — present for EVERY found operation (TKT-115): an
+        # unresolved operation's caller derives the status-replay deadline from it.
         occurred_at: {type: string, format: date-time}
+        # Present when the operation is unresolved, has no persisted provider
+        # reference, and the configured provider bounds same-key replay (Stripe ~24h):
+        # past this instant /internal/psp/status answers 409 — the replay would mint a
+        # NEW PaymentIntent — and the operation is manual reconciliation, not retry
+        # fodder (ADR-032 §Status/replay amendment).
+        status_replay_deadline_at: {type: string, format: date-time}
