@@ -4,7 +4,7 @@
   "summary": "Commerce recovery via PSP status/refund — resolve payment_unknown, refund reconciliation_required (Slice 3 of TKT-56)",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
