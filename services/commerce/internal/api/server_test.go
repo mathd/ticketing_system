@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -387,7 +388,21 @@ func TestClassifyRecoveredCoversTheStatusVocabulary(t *testing.T) {
 	if err != nil || len(migrations) == 0 {
 		t.Fatalf("glob migrations: %v (%d found)", err, len(migrations))
 	}
-	sort.Strings(migrations)
+	// goose applies migrations in NUMERIC version order, so sorting the filenames as
+	// strings would visit an unpadded 10_ before 9_ and read a superseded constraint as
+	// the one in force (ai-review pass 4). Today's names are zero-padded, which hides
+	// that — order by the version goose itself would use.
+	version := func(path string) int {
+		digits := regexp.MustCompile(`^\d+`).FindString(filepath.Base(path))
+		n, _ := strconv.Atoi(digits)
+		return n
+	}
+	sort.Slice(migrations, func(i, j int) bool { return version(migrations[i]) < version(migrations[j]) })
+
+	// Track DROP as well as ADD, in the order they appear: a migration whose Up only drops
+	// the constraint leaves NO vocabulary in force, and remembering the previous one would
+	// validate a schema state the database no longer has (ai-review pass 4).
+	constraint := regexp.MustCompile(`(?s)DROP CONSTRAINT orders_status_check|ADD CONSTRAINT orders_status_check CHECK \((.*?)\);`)
 	var inForce string
 	for _, file := range migrations {
 		sql, err := os.ReadFile(file)
@@ -397,8 +412,11 @@ func TestClassifyRecoveredCoversTheStatusVocabulary(t *testing.T) {
 		// Up and Down both redefine the constraint; the Up block is everything before the
 		// `-- +goose Down` marker, and only that is the forward vocabulary.
 		up, _, _ := strings.Cut(string(sql), "-- +goose Down")
-		for _, m := range regexp.MustCompile(`(?s)ADD CONSTRAINT orders_status_check CHECK \((.*?)\);`).
-			FindAllStringSubmatch(up, -1) {
+		for _, m := range constraint.FindAllStringSubmatch(up, -1) {
+			if strings.HasPrefix(m[0], "DROP") {
+				inForce = ""
+				continue
+			}
 			inForce = m[1]
 		}
 	}
