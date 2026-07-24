@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -342,5 +344,51 @@ func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, tc.want, res.Body.String())
 			}
 		})
+	}
+}
+
+// The orders status vocabulary, copied from the CHECK constraint in
+// services/commerce/internal/store/migrations/0005_psp_recovery.sql. Pinned here on
+// purpose: a status added to the constraint without a decision about what checkout tells
+// a buyer whose guarded write lost the race to recovery is the F3 defect returning. The
+// first cut answered only refunded/reconciliation_required and silently told buyers
+// "payment unknown" for orders recovery had already completed or terminally failed.
+func TestClassifyRecoveredCoversTheStatusVocabulary(t *testing.T) {
+	want := map[string]recoveredClass{
+		// Recovery reached a buyer-final answer — checkout must report it.
+		"completed":               recoveredCompleted,
+		"declined":                recoveredTerminal,
+		"timeout":                 recoveredTerminal,
+		"refunded":                recoveredTerminal,
+		"reconciliation_required": recoveredReconciling,
+		// Genuinely still unresolved: the optimistic 202 is honest.
+		"created":              recoveredOptimistic,
+		"payment_unknown":      recoveredOptimistic,
+		"confirmation_pending": recoveredOptimistic,
+		"release_pending":      recoveredOptimistic,
+	}
+	for status, class := range want {
+		if got := classifyRecovered(status); got != class {
+			t.Errorf("classifyRecovered(%q) = %d, want %d", status, got, class)
+		}
+	}
+	// Guard the pin itself: if the vocabulary grows, this list must grow with it.
+	vocabulary, err := os.ReadFile("../store/migrations/0005_psp_recovery.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	found := regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(
+		regexp.MustCompile(`(?s)ADD CONSTRAINT orders_status_check CHECK \((.*?)\);`).
+			FindStringSubmatch(string(vocabulary))[1], -1)
+	// Without this the loop below goes vacuous the moment the constraint is renamed,
+	// and a test that cannot fail is worse than no test.
+	if len(found) != len(want) {
+		t.Fatalf("extracted %d statuses from the CHECK constraint, want %d", len(found), len(want))
+	}
+	for _, status := range found {
+		if _, ok := want[status[1]]; !ok {
+			t.Errorf("order status %q is in the CHECK constraint but has no checkout answer; "+
+				"decide what a buyer racing recovery is told before adding it", status[1])
+		}
 	}
 }

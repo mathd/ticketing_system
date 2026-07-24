@@ -364,15 +364,61 @@ func (s *Server) answerRecovered(ctx context.Context, w http.ResponseWriter, ord
 	if err := s.db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, order).Scan(&status); err != nil {
 		return false
 	}
-	switch status {
-	case "refunded":
+	switch classifyRecovered(status) {
+	case recoveredCompleted:
+		// Recovery resolved the payment as captured and completed the order — the tickets
+		// exist. Answering the optimistic 202 here would tell a buyer their payment is
+		// unknown while their tickets are issued (ai-review pass 2, F3).
+		ref, e := s.guestReference(ctx, order)
+		if e != nil {
+			write(w, 503, map[string]string{"error": "ticket issuance pending; retry checkout"})
+			return true
+		}
+		s.publishOwed(ctx, order)
+		write(w, 200, map[string]any{"order_id": order, "guest_order_ref": ref, "status": "completed"})
+		return true
+	case recoveredTerminal:
+		// Recovery reached a buyer-final outcome and already journalled order.failed; a
+		// later replay re-asserts the fact through the checkout branches above. Report
+		// the terminal truth, not payment_unknown.
 		write(w, terminalCheckoutCode(status), map[string]any{"order_id": order, "status": status, "replay": true})
 		return true
-	case "reconciliation_required":
+	case recoveredReconciling:
 		write(w, 409, map[string]any{"error": "order awaiting payment reconciliation", "order_id": order, "status": status})
 		return true
 	}
 	return false
+}
+
+// The answer a checkout owes a buyer when the recovery runner won the race for its order.
+type recoveredClass int
+
+const (
+	// The optimistic 202 payment_unknown stands.
+	recoveredOptimistic recoveredClass = iota
+	recoveredCompleted
+	recoveredTerminal
+	recoveredReconciling
+)
+
+// classifyRecovered maps an order status a guarded checkout write lost the race to onto the
+// answer the buyer is owed. Every status in the orders CHECK vocabulary must land here
+// deliberately: the first cut answered only refunded/reconciliation_required and silently
+// dropped the rest into the optimistic 202, telling buyers their payment was unknown while
+// recovery had already completed or terminally failed the order (ai-review pass 2, F3).
+func classifyRecovered(status string) recoveredClass {
+	switch status {
+	case "completed":
+		return recoveredCompleted
+	case "declined", "timeout", "refunded":
+		return recoveredTerminal
+	case "reconciliation_required":
+		return recoveredReconciling
+	}
+	// `created`, `payment_unknown` and `confirmation_pending` are what the guarded write
+	// itself targets, and `release_pending` is a recovery state whose outcome is not yet
+	// decided — for all of them the payment genuinely IS unresolved, so 202 is honest.
+	return recoveredOptimistic
 }
 
 func (s *Server) markTerminalFailure(ctx context.Context, reservationID, orderID uuid.UUID, status string) error {

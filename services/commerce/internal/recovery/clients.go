@@ -59,8 +59,16 @@ func (c HTTPClients) doBody(ctx context.Context, method, url string, body, out a
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if out != nil && resp.StatusCode == http.StatusOK {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		// Decode stops at the first complete JSON value, so `{"status":"refunded"}garbage`
+		// and two concatenated bodies both "succeed" — and the callers treat a decoded 200
+		// as proof enough to release seats and mark orders refunded. A body we cannot read
+		// in full is not proof: require exactly one value (ai-review pass 2, F1).
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(out); err != nil {
 			return resp.StatusCode, fmt.Errorf("decode response: %w", err)
+		}
+		if dec.More() {
+			return resp.StatusCode, fmt.Errorf("decode response: trailing content after JSON value")
 		}
 	}
 	return resp.StatusCode, nil
@@ -92,6 +100,16 @@ func (c HTTPClients) Status(ctx context.Context, org uuid.UUID, key string) (PSP
 	}
 	switch code {
 	case http.StatusOK:
+		// A 200 is proof only when the outcome and the money flags AGREE. actOnProviderStatus
+		// dispatches on Outcome alone, so a contradictory body (version skew, an upstream bug)
+		// such as outcome=declined with captured=true would reach recordAndRelease and free
+		// the seats against live money — exactly what ADR-016 §D3 forbids. Fail closed as
+		// unresolved: the compensation stays bound and the next pass re-derives from fresh
+		// evidence, never a terminal decision on a body we do not trust (ai-review pass 2, F2).
+		if !consistentStatus(body) {
+			return PSPStatus{}, fmt.Errorf("psp status: outcome %q contradicts captured=%t authorized=%t terminal_no_side_effect=%t: %w",
+				body.Outcome, body.Captured, body.Authorized, body.TerminalNoSideEffect, ErrProviderUnresolved)
+		}
 		return body, nil
 	case http.StatusNotFound:
 		return PSPStatus{}, ErrOperationNotFound
@@ -102,6 +120,27 @@ func (c HTTPClients) Status(ctx context.Context, org uuid.UUID, key string) (PSP
 	default:
 		return PSPStatus{}, fmt.Errorf("psp status: unexpected status %d", code)
 	}
+}
+
+// consistentStatus reports whether a status body's money flags agree with its outcome, as
+// payments actually emits them (services/payments/internal/api/psp.go statusBody):
+// captured carries the authorization it captured; a refund's money already came back, so
+// `refunded` carries NO live money and is NOT terminal-no-side-effect (ADR-032 amendment).
+// An unrecognized outcome needs no check — actOnProviderStatus already proves nothing from
+// it and retries. This is a boundary check, not a trust decision: it constrains an honest
+// payments that has skewed or regressed, never an adversary with journal access (ADR-021).
+func consistentStatus(s PSPStatus) bool {
+	switch s.Outcome {
+	case "captured":
+		return s.Captured && !s.TerminalNoSideEffect
+	case "authorized":
+		return s.Authorized && !s.Captured && !s.TerminalNoSideEffect
+	case "declined", "timeout", "voided":
+		return s.TerminalNoSideEffect && !s.Captured && !s.Authorized
+	case "refunded":
+		return !s.TerminalNoSideEffect && !s.Captured && !s.Authorized
+	}
+	return true
 }
 
 // Void cancels an authorized, uncaptured operation via POST /internal/psp/void.

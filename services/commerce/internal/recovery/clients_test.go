@@ -273,3 +273,83 @@ func TestLookupOperationParsesDeadline(t *testing.T) {
 		t.Fatalf("deadline = %v, want %v", op.StatusReplayDeadlineAt, deadline)
 	}
 }
+
+// json.Decoder.Decode stops at the first complete value, so a 200 body with trailing
+// bytes decoded cleanly and — since the B1 status check only reads the decoded prefix —
+// was accepted as proof a refund completed. The callers release seats and mark orders
+// refunded on that answer (ai-review pass 2, F1).
+func TestCompensationRejectsTrailingContent(t *testing.T) {
+	for _, body := range []string{
+		`{"status":"refunded"}garbage`,
+		`{"status":"refunded"}{"status":"voided"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+			got, err := c.Refund(context.Background(), uuid.New(), "key")
+			if err == nil {
+				t.Fatalf("Refund accepted a body with trailing content: %+v", got)
+			}
+			if got.Status != "" {
+				t.Fatalf("Refund returned a result alongside the error: %+v", got)
+			}
+		})
+	}
+}
+
+// actOnProviderStatus dispatches on Outcome alone: `declined` goes straight to
+// recordAndRelease. A body whose outcome contradicts its money flags would therefore
+// free the seats against money the same body says is captured — the release-on-unproven
+// case ADR-016 §D3 forbids. Fail closed at the boundary (ai-review pass 2, F2).
+func TestStatusRejectsContradictoryEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		// The dangerous shapes: a terminal answer carrying live money.
+		{"declined but captured", `{"outcome":"declined","terminal_no_side_effect":true,"captured":true}`, false},
+		{"timeout but authorized", `{"outcome":"timeout","terminal_no_side_effect":true,"authorized":true}`, false},
+		{"voided but captured", `{"outcome":"voided","terminal_no_side_effect":true,"captured":true}`, false},
+		{"declined without no-side-effect", `{"outcome":"declined"}`, false},
+		{"captured but flagged no-side-effect", `{"outcome":"captured","captured":true,"terminal_no_side_effect":true}`, false},
+		{"captured without captured money", `{"outcome":"captured"}`, false},
+		{"authorized but captured", `{"outcome":"authorized","authorized":true,"captured":true}`, false},
+		// A refund's money already came back: no live money, NOT no-side-effect.
+		{"refunded flagged no-side-effect", `{"outcome":"refunded","terminal_no_side_effect":true}`, false},
+		// The shapes payments actually emits must keep passing.
+		{"captured", `{"outcome":"captured","captured":true,"authorized":true}`, true},
+		{"authorized", `{"outcome":"authorized","authorized":true}`, true},
+		{"declined", `{"outcome":"declined","terminal_no_side_effect":true}`, true},
+		{"timeout", `{"outcome":"timeout","terminal_no_side_effect":true}`, true},
+		{"voided", `{"outcome":"voided","terminal_no_side_effect":true}`, true},
+		{"refunded", `{"outcome":"refunded"}`, true},
+		// An unknown outcome proves nothing on its own; the runner retries it.
+		{"unknown", `{"outcome":"unknown"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "t"}
+			_, err := c.Status(context.Background(), uuid.New(), "key")
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("Status rejected a body payments emits: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrProviderUnresolved) {
+				t.Fatalf("Status(%s) = %v, want ErrProviderUnresolved", tc.body, err)
+			}
+		})
+	}
+}
