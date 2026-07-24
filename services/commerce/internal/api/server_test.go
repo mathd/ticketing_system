@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -361,29 +363,53 @@ func TestClassifyRecoveredCoversTheStatusVocabulary(t *testing.T) {
 		"timeout":                 recoveredTerminal,
 		"refunded":                recoveredTerminal,
 		"reconciliation_required": recoveredReconciling,
-		// Genuinely still unresolved: the optimistic 202 is honest.
+		// The terminal outcome is already durable here — RecordTerminalOutcome writes it in
+		// the same statement that sets the status — so calling this payment_unknown would
+		// deny evidence the database holds (ai-review pass 3, P3-2).
+		"release_pending": recoveredPending,
+		// Genuinely still unresolved: the optimistic 202 is honest. These are exactly the
+		// statuses the guarded write itself targets.
 		"created":              recoveredOptimistic,
 		"payment_unknown":      recoveredOptimistic,
 		"confirmation_pending": recoveredOptimistic,
-		"release_pending":      recoveredOptimistic,
 	}
 	for status, class := range want {
 		if got := classifyRecovered(status); got != class {
 			t.Errorf("classifyRecovered(%q) = %d, want %d", status, got, class)
 		}
 	}
-	// Guard the pin itself: if the vocabulary grows, this list must grow with it.
-	vocabulary, err := os.ReadFile("../store/migrations/0005_psp_recovery.sql")
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
+	// Guard the pin itself: if the vocabulary grows, this list must grow with it. Applied
+	// goose migrations are immutable (ADR-022), so the vocabulary can only ever grow in a
+	// NEW file — reading 0005 alone would keep passing forever while 0006 added a status
+	// no one taught checkout to answer (ai-review pass 3, P3-4). Scan every migration in
+	// order and take the LAST constraint definition, which is the one in force.
+	migrations, err := filepath.Glob("../store/migrations/*.sql")
+	if err != nil || len(migrations) == 0 {
+		t.Fatalf("glob migrations: %v (%d found)", err, len(migrations))
 	}
-	found := regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(
-		regexp.MustCompile(`(?s)ADD CONSTRAINT orders_status_check CHECK \((.*?)\);`).
-			FindStringSubmatch(string(vocabulary))[1], -1)
+	sort.Strings(migrations)
+	var inForce string
+	for _, file := range migrations {
+		sql, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		// Up and Down both redefine the constraint; the Up block is everything before the
+		// `-- +goose Down` marker, and only that is the forward vocabulary.
+		up, _, _ := strings.Cut(string(sql), "-- +goose Down")
+		for _, m := range regexp.MustCompile(`(?s)ADD CONSTRAINT orders_status_check CHECK \((.*?)\);`).
+			FindAllStringSubmatch(up, -1) {
+			inForce = m[1]
+		}
+	}
+	if inForce == "" {
+		t.Fatal("no orders_status_check constraint found in any migration; the guard below would be vacuous")
+	}
+	found := regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(inForce, -1)
 	// Without this the loop below goes vacuous the moment the constraint is renamed,
 	// and a test that cannot fail is worse than no test.
 	if len(found) != len(want) {
-		t.Fatalf("extracted %d statuses from the CHECK constraint, want %d", len(found), len(want))
+		t.Fatalf("extracted %d statuses from the CHECK constraint in force, want %d", len(found), len(want))
 	}
 	for _, status := range found {
 		if _, ok := want[status[1]]; !ok {

@@ -282,6 +282,12 @@ func TestCompensationRejectsTrailingContent(t *testing.T) {
 	for _, body := range []string{
 		`{"status":"refunded"}garbage`,
 		`{"status":"refunded"}{"status":"voided"}`,
+		// A `}` or `]` trailer is the case dec.More() answered false for, so the first
+		// cut of this fix accepted all three of these — including a whole second value
+		// hiding behind a stray brace (ai-review pass 3, P3-3).
+		`{"status":"refunded"}}`,
+		`{"status":"refunded"}]`,
+		`{"status":"refunded"}} {"status":"voided"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -67,7 +67,12 @@ func (c HTTPClients) doBody(ctx context.Context, method, url string, body, out a
 		if err := dec.Decode(out); err != nil {
 			return resp.StatusCode, fmt.Errorf("decode response: %w", err)
 		}
-		if dec.More() {
+		// Not dec.More(): it reports whether another element follows in the CURRENT array
+		// or object, so it answers false on a `}` or `]` trailer — `{"status":"refunded"}}`
+		// and even `{"status":"refunded"}} {"status":"voided"}` slipped through and were
+		// accepted as proof (ai-review pass 3, P3-3). Only a Token() that reports EOF
+		// proves the body held exactly one value; trailing whitespace still reads as EOF.
+		if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 			return resp.StatusCode, fmt.Errorf("decode response: trailing content after JSON value")
 		}
 	}
