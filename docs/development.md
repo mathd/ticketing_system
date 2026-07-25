@@ -190,6 +190,32 @@ retained-not-read caveat as the other alarm classes applies. Quarantine admissio
 operator-only: they do not surface in `GET /orders/{ref}/tickets` (the §D10 open question,
 answered here).
 
+**Admission conflicts — the third alarm class, and the only phrasing to quote.** When
+reconciliation of a **single-entry** ticket finds an offline admit the authoritative trace would
+have rejected, access appends `duplicate_admit` and owes an alarm on
+`platform.access.admission-conflict.alarm` (**schema 1**), committed in the **same transaction** as
+the append — the admission cannot be recorded without the alarm being owed. This is deliberately
+**not** an ADR-021 integrity alarm: there the chain is broken, here **the chain is valid and the
+world disagreed with it**. Access refuses to boot unless `ACCESS_ADMISSION_CONFLICT_DURABLE` exists
+and filters the subject, and the same **retained-not-read** caveat as the other two classes applies —
+the boot check proves the alarm has somewhere durable to land, never that anyone reads it.
+
+Name the adversary before quoting any of this. Per
+[ADR-025](adr/ADR-025-admission-events-and-offline-reconciliation.md) §Claims, the admission-conflict
+alarm **"bounds operational skew and our bugs; it is visibility, not containment against the database
+adversary."** It makes a double-admit *visible* at reconciliation; it does not prevent the physical
+admission that already happened, and an occurrence that never syncs is not represented at all.
+
+The payload carries bounded identifiers and one boolean only — `alarm_id`, `organizer_id`,
+`ticket_id`, `occurrence_id`, `device_occurred_at`, `skew_flagged` — no PII (ADR-003 §D3), pinned by
+an exact-key-set assertion in `TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm`. There is
+deliberately **no `reason` field**: unlike the policy-conflict class, this class has exactly one
+condition (ADR-025 §D2 scopes `duplicate_admit` to single-entry tickets, where any occurrence beyond
+the one `redeemed` is the conflict), so **the subject is the reason** and a one-valued enum would
+carry no information. If a second condition is ever added to this class, introducing a reason space
+is an [ADR-017](adr/ADR-017-domain-event-schema-evolution.md) §3 decision on this contract — a
+required field fires §3b independently of whether any consumer exists — not a payload tweak.
+
 ## Journal signing key rotation
 
 The payments money journal is signed with HMAC-SHA256 under a **keyring**: one active key that new

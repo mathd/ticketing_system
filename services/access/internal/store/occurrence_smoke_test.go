@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -381,6 +382,48 @@ func TestReconcileRecordsOfflineRedemption(t *testing.T) {
 	}
 }
 
+// assertConflictAlarmPIIFloor pins the PII floor (ADR-025 §D9: bounded
+// identifiers and enums only) on the bytes actually owed to the operator — the
+// persisted outbox envelope, not a struct the producer happens to use today.
+// The envelope's top level is an anonymous inline struct inside
+// oweConflictAlarm, so the persisted row is the only seam that sees both levels.
+//
+// The assertion is equality against hand-written literals, never a subset
+// check: a subset assertion (the shape this test used before TKT-86, three
+// selected fields) cannot fail when a field is ADDED, which is the only
+// direction PII travels. And the expected side is written out here rather than
+// derived from conflictAlarmData on purpose — a fixture built from the type
+// under test encodes the very property it claims to prove (ADR-017).
+func assertConflictAlarmPIIFloor(t *testing.T, envelope []byte) {
+	t.Helper()
+	wantEnvelope := []string{"data", "id", "occurred_at", "schema", "type"}
+	wantData := []string{"alarm_id", "device_occurred_at", "occurrence_id", "organizer_id", "skew_flagged", "ticket_id"}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(envelope, &top); err != nil {
+		t.Fatalf("conflict alarm envelope is not a JSON object: %v", err)
+	}
+	if got := sortedKeys(top); !slices.Equal(got, wantEnvelope) {
+		t.Fatalf("conflict alarm envelope keys = %v, want exactly %v (ADR-009 §5 envelope shape)", got, wantEnvelope)
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(top["data"], &data); err != nil {
+		t.Fatalf("conflict alarm data is not a JSON object: %v", err)
+	}
+	if got := sortedKeys(data); !slices.Equal(got, wantData) {
+		t.Fatalf("conflict alarm data keys = %v, want exactly %v — a new field on this contract is a PII decision (ADR-025 §D9) and a schema decision (ADR-017 §3), not a payload tweak", got, wantData)
+	}
+}
+
+func sortedKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 func TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -430,6 +473,7 @@ func TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm(t *testing.T) {
 	if alarm.Schema != 1 || alarm.Data.TicketID != s.ticketID || alarm.Data.OccurrenceID != occB || alarm.Data.SkewFlagged {
 		t.Fatalf("alarm envelope = %+v, want schema-1 with the conflicting occurrence", alarm)
 	}
+	assertConflictAlarmPIIFloor(t, envelope)
 
 	// Reconcile retry of the conflicting occurrence: synced, single-entry-only
 	// stays single — no second duplicate_admit, no second alarm.
