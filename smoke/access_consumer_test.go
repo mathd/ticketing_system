@@ -168,25 +168,49 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 	// wearing a green badge. Shared by the recovery assertion and the cleanup
 	// fallback deliberately — a safety net held to a weaker standard than the
 	// assertion it backs up is not a safety net (ai-review R1).
-	settled := func(ctx context.Context, within time.Duration) (*jetstream.ConsumerInfo, error) {
+	//
+	// Each sample is BRACKETED by restart counts rather than followed by one.
+	// Reading health first and the count second is not enough (ai-review R5):
+	// if access dies after the healthcheck and before the count, the sample
+	// pairs the old process's health with the new process's count, and the next
+	// sample then matches it — two "consecutive" samples spanning the restart
+	// they exist to detect. Bracketing makes the sample atomic with respect to
+	// restarts: an unequal pair means one happened mid-sample, and the streak
+	// resets.
+	//
+	// The phase deadline is a real context, not just poll's bookkeeping
+	// (ai-review R6): poll only checks `within` between attempts, so with the
+	// parent context passed through, a single attempt could sit in a 15s
+	// healthcheck plus a 15s inspect and blow a 10s phase by 3x. Scoping the
+	// context to `within` bounds the subprocesses too, which is what keeps the
+	// cleanup phases below adding up to less than the cleanup budget.
+	settled := func(parent context.Context, within time.Duration) (*jetstream.ConsumerInfo, error) {
+		ctx, cancel := context.WithTimeout(parent, within)
+		defer cancel()
 		var latest *jetstream.ConsumerInfo
 		seen, at := 0, -1
 		err := poll(within, 500*time.Millisecond, func() error {
+			seen0 := seen
+			seen = 0
+			opened, _, err := restartState(ctx, container)
+			if err != nil {
+				return err
+			}
 			info, err := healthy(ctx)
 			if err != nil {
-				seen = 0
 				return err
 			}
-			restarts, _, err := restartState(ctx, container)
+			closed, _, err := restartState(ctx, container)
 			if err != nil {
-				seen = 0
 				return err
 			}
-			if seen > 0 && restarts != at {
-				seen = 0
-				return fmt.Errorf("access restarted again between samples (%d → %d)", at, restarts)
+			if opened != closed {
+				return fmt.Errorf("access restarted during the health sample (%d → %d)", opened, closed)
 			}
-			latest, seen, at = info, seen+1, restarts
+			if seen0 > 0 && closed != at {
+				return fmt.Errorf("access restarted between samples (%d → %d)", at, closed)
+			}
+			latest, seen, at = info, seen0+1, closed
 			if seen < 2 {
 				return fmt.Errorf("healthy once; want two consecutive samples")
 			}
@@ -225,6 +249,12 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 		// Its own context, not the test's: the test context may already be
 		// expired by the time cleanup runs, and cleanup is the last thing
 		// standing between a failure here and 60-odd failing tests after it.
+		//
+		// The budget is spent as 10s (is it already fine?) + 15s (restart) +
+		// 45s (recover) + 15s (logs) = 85s worst case, and every one of those is a
+		// real deadline now that settled scopes its own context. The 35s of
+		// headroom is what stops the diagnostic logs — the only thing that
+		// explains a failed cleanup — from being the work that gets cancelled.
 		cctx, ccancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer ccancel()
 		if _, err := settled(cctx, 10*time.Second); err == nil {
