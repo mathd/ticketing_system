@@ -1075,6 +1075,32 @@ func TestInternalTicketTypeRequiresCredential(t *testing.T) {
 	}
 }
 
+// TestInternalRoutesRefuseUncredentialedCalls covers every route mounted in the
+// /internal group with one assertion: no credential, no service. The group
+// middleware is what makes this true, so removing it fails all five subtests at
+// once rather than only the routes someone remembered to test individually.
+// A new /internal route belongs in this list.
+func TestInternalRoutesRefuseUncredentialedCalls(t *testing.T) {
+	e := newEnv(t)
+	id := uuid.New().String()
+	for _, tt := range []struct{ method, path string }{
+		{http.MethodGet, "/internal/ticket-types/" + id},
+		{http.MethodGet, "/internal/performances/" + id},
+		{http.MethodGet, "/internal/pools/" + id + "/offer-state"},
+		{http.MethodPost, "/internal/seat-maps/" + id + "/pins"},
+		{http.MethodPost, "/internal/seat-maps/" + id + "/unpins"},
+	} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{}`))
+			res := httptest.NewRecorder()
+			e.handler.ServeHTTP(res, req)
+			if res.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d want 401 — internal route is not guarded: %s", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
 func TestInternalPublishedPerformanceLookup(t *testing.T) {
 	e := newEnv(t)
 	_, performanceID := e.createFixture(true)

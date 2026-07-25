@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -57,6 +58,31 @@ func port() string {
 		return p
 	}
 	return "8080"
+}
+
+// proxyTransport is the shared upstream transport for every proxied route.
+// It clones http.DefaultTransport — keeping its dialer, TLS and HTTP/2
+// settings — and only raises the idle-connection ceilings, which are the two
+// defaults that do not survive an on-sale burst (MaxIdleConnsPerHost is 2).
+// One transport for all routes is deliberate: the pool is per-host inside it,
+// so the five upstreams already get independent pools.
+var proxyTransport = func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = envInt("GATEWAY_MAX_IDLE_CONNS_PER_HOST", 100)
+	t.MaxIdleConns = envInt("GATEWAY_MAX_IDLE_CONNS", 500)
+	return t
+}()
+
+// envInt reads a positive integer override, falling back on any unset,
+// unparseable or non-positive value — a bad tuning value must not silently
+// disable pooling.
+func envInt(name string, fallback int) int {
+	if raw := os.Getenv(name); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			return v
+		}
+	}
+	return fallback
 }
 
 func run() error {
@@ -104,6 +130,12 @@ func run() error {
 			mux.Handle(prefix+"internal/", http.NotFoundHandler())
 		}
 		proxy := &httputil.ReverseProxy{
+			// Explicit transport: http.DefaultTransport caps MaxIdleConnsPerHost
+			// at 2, so past two concurrent requests to an upstream the gateway
+			// opens (and discards) a TCP connection per request — at the front
+			// door of the on-sale path. Sized from the same bounded-resource
+			// policy as the rest of the process (runtimecfg).
+			Transport: proxyTransport,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(u)
 				if stripAPIPrefix {

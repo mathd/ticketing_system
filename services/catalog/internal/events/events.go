@@ -144,40 +144,21 @@ func SeatMapPublishedEventID(m store.SeatMap) string {
 }
 
 func seatMapPublishedEnvelope(m store.SeatMap) ([]byte, error) {
-	occurred := time.Now().UTC()
-	if m.PublishedAt != nil {
-		occurred = m.PublishedAt.UTC()
-	}
-	body, err := json.Marshal(Envelope{
-		ID:         SeatMapPublishedEventID(m),
-		Type:       SubjectSeatMapPublished,
-		OccurredAt: occurred,
-		Schema:     1,
-		Data: SeatMapPublishedData{
+	return marshalEnvelope(SubjectSeatMapPublished, SeatMapPublishedEventID(m), 1, occurredAt(m.PublishedAt),
+		SeatMapPublishedData{
 			SeatMapID:   m.ID,
 			OrganizerID: m.OrganizerID,
 			VenueID:     m.VenueID,
 			Version:     m.Version,
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal seat map envelope: %w", err)
-	}
-	return body, nil
+		})
 }
 
 func (p *JetStream) SeatMapPublished(ctx context.Context, m store.SeatMap) error {
-	id := SeatMapPublishedEventID(m)
 	body, err := seatMapPublishedEnvelope(m)
 	if err != nil {
 		return err
 	}
-	msg := &nats.Msg{Subject: SubjectSeatMapPublished, Data: body}
-	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
-	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
-		return fmt.Errorf("publish %s: %w", SubjectSeatMapPublished, err)
-	}
-	return nil
+	return p.publish(ctx, SubjectSeatMapPublished, SeatMapPublishedEventID(m), body)
 }
 
 // backfillEpoch namespaces the re-emission id (TKT-96). It is a FIXED string,
@@ -225,6 +206,39 @@ func NewJetStream(nc *nats.Conn) (*JetStream, error) {
 	return &JetStream{js: js}, nil
 }
 
+// marshalEnvelope builds the wire body for every catalog subject. The per-subject
+// builders below feed it, so the envelope shape cannot drift between subjects —
+// and they stay separate functions because the golden-byte tests assert against
+// them directly.
+func marshalEnvelope(subject, id string, schema int, occurred time.Time, data any) ([]byte, error) {
+	body, err := json.Marshal(Envelope{ID: id, Type: subject, OccurredAt: occurred, Schema: schema, Data: data})
+	if err != nil {
+		return nil, fmt.Errorf("marshal envelope: %w", err)
+	}
+	return body, nil
+}
+
+// publish is the single emission path. Nats-Msg-Id always carries the envelope
+// id — they are the same dedup key seen from the stream and from a consumer,
+// and binding them here is what stops the two drifting apart per subject.
+func (p *JetStream) publish(ctx context.Context, subject, id string, body []byte) error {
+	msg := &nats.Msg{Subject: subject, Data: body, Header: nats.Header{"Nats-Msg-Id": []string{id}}}
+	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
+		return fmt.Errorf("publish %s: %w", subject, err)
+	}
+	return nil
+}
+
+// occurredAt prefers the persisted transition instant over time.Now(), so a
+// retried emission under the same deterministic id carries a byte-stable
+// payload.
+func occurredAt(at *time.Time) time.Time {
+	if at != nil {
+		return at.UTC()
+	}
+	return time.Now().UTC()
+}
+
 // EventID derives the envelope id deterministically from the publication
 // (performance id + published_at): an emission retried after a failed ack —
 // or raced by a concurrent publish request — carries the SAME id, so
@@ -253,6 +267,9 @@ func (p *JetStream) PerformancePublishedBackfill(ctx context.Context, perf store
 }
 
 func (p *JetStream) publishPerformancePublished(ctx context.Context, perf store.Performance, id string) error {
+	// occurred keeps the stored instant unconverted (not .UTC()) to match the
+	// bytes this path has always emitted; occurredAt is not used here for that
+	// reason.
 	occurred := time.Now().UTC()
 	if perf.PublishedAt != nil {
 		occurred = *perf.PublishedAt
@@ -261,12 +278,7 @@ func (p *JetStream) publishPerformancePublished(ctx context.Context, perf store.
 	if err != nil {
 		return err
 	}
-	msg := &nats.Msg{Subject: SubjectPerformancePublished, Data: body}
-	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
-	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
-		return fmt.Errorf("publish %s: %w", SubjectPerformancePublished, err)
-	}
-	return nil
+	return p.publish(ctx, SubjectPerformancePublished, id, body)
 }
 
 // performancePublishedEnvelope marshals the live-publish envelope, deriving the
@@ -297,12 +309,8 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 	case capacityGroupID != nil:
 		schema = 3
 	}
-	body, err := json.Marshal(Envelope{
-		ID:         id,
-		Type:       SubjectPerformancePublished,
-		OccurredAt: occurred,
-		Schema:     schema,
-		Data: PerformancePublishedData{
+	return marshalEnvelope(SubjectPerformancePublished, id, schema, occurred,
+		PerformancePublishedData{
 			PerformanceID:   perf.ID,
 			EventID:         perf.EventID,
 			OrganizerID:     perf.OrganizerID,
@@ -312,12 +320,7 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 			SharedCapacity:  sharedCapacity,
 			SeatMapID:       perf.SeatMapID,
 			ReEntry:         reEntryData(perf),
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal envelope: %w", err)
-	}
-	return body, nil
+		})
 }
 
 // ClosureEventID derives the closed/reopened envelope id from the slot id and
@@ -338,46 +341,34 @@ func (p *JetStream) SlotReopened(ctx context.Context, perf store.Performance) er
 	return p.publishClosure(ctx, SubjectSlotReopened, perf, perf.Closure.ChangedAt)
 }
 
-func (p *JetStream) publishClosure(ctx context.Context, subject string, perf store.Performance, at *time.Time) error {
-	occurred := time.Now().UTC()
-	if at != nil {
-		occurred = at.UTC()
-	}
-	id := ClosureEventID(subject, perf)
-	body, err := json.Marshal(Envelope{
-		ID: id, Type: subject, OccurredAt: occurred, Schema: 1,
-		Data: SlotClosureData{
+func slotClosureEnvelope(subject string, perf store.Performance, occurred time.Time) ([]byte, error) {
+	return marshalEnvelope(subject, ClosureEventID(subject, perf), 1, occurred,
+		SlotClosureData{
 			PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID,
 			Kind: perf.Kind, Version: perf.Closure.Version, Reason: perf.Closure.Reason,
-		},
-	})
+		})
+}
+
+func (p *JetStream) publishClosure(ctx context.Context, subject string, perf store.Performance, at *time.Time) error {
+	body, err := slotClosureEnvelope(subject, perf, occurredAt(at))
 	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
+		return err
 	}
-	msg := &nats.Msg{Subject: subject, Data: body}
-	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
-	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
-		return fmt.Errorf("publish %s: %w", subject, err)
-	}
-	return nil
+	return p.publish(ctx, subject, ClosureEventID(subject, perf), body)
 }
 
 func (p *JetStream) PerformanceArchived(ctx context.Context, perf store.Performance) error {
+	// occurred keeps the stored instant unconverted, matching the bytes this
+	// path has always emitted.
 	occurred := time.Now().UTC()
 	if perf.ArchivedAt != nil {
 		occurred = *perf.ArchivedAt
 	}
-	id := ArchivedEventID(perf)
 	body, err := performanceArchivedEnvelope(perf, occurred)
 	if err != nil {
 		return err
 	}
-	msg := &nats.Msg{Subject: SubjectPerformanceArchived, Data: body}
-	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}
-	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
-		return fmt.Errorf("publish %s: %w", SubjectPerformanceArchived, err)
-	}
-	return nil
+	return p.publish(ctx, SubjectPerformanceArchived, ArchivedEventID(perf), body)
 }
 
 func performanceArchivedEnvelope(perf store.Performance, occurred time.Time) ([]byte, error) {
@@ -390,12 +381,6 @@ func performanceArchivedEnvelope(perf store.Performance, occurred time.Time) ([]
 	if capacityGroupID != nil {
 		schema = 3
 	}
-	body, err := json.Marshal(Envelope{
-		ID: id, Type: SubjectPerformanceArchived, OccurredAt: occurred, Schema: schema,
-		Data: PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID, CapacityGroupID: capacityGroupID},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal envelope: %w", err)
-	}
-	return body, nil
+	return marshalEnvelope(SubjectPerformanceArchived, id, schema, occurred,
+		PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID, CapacityGroupID: capacityGroupID})
 }
