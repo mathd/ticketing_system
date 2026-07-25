@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -413,6 +414,58 @@ func assertConflictAlarmPIIFloor(t *testing.T, envelope []byte) {
 	if got := sortedKeys(data); !slices.Equal(got, wantData) {
 		t.Fatalf("conflict alarm data keys = %v, want exactly %v — a new field on this contract is a PII decision (ADR-025 §D9) and a schema decision (ADR-017 §3), not a payload tweak", got, wantData)
 	}
+
+	// Keys alone are not the floor: an existing key's VALUE can carry the PII
+	// instead (organizer_id becoming an object with an operator name in it,
+	// device_occurred_at becoming free text). Decode every value into the
+	// scalar it is contracted to be — an object, an array or a prose string
+	// fails here even though the key set is untouched (ai-review K2).
+	for _, key := range []string{"alarm_id", "occurrence_id", "organizer_id", "ticket_id"} {
+		var id uuid.UUID
+		if err := json.Unmarshal(data[key], &id); err != nil {
+			t.Fatalf("conflict alarm data.%s = %s, want a bare UUID: %v", key, data[key], err)
+		}
+	}
+	var deviceOccurredAt time.Time
+	if err := json.Unmarshal(data["device_occurred_at"], &deviceOccurredAt); err != nil {
+		t.Fatalf("conflict alarm data.device_occurred_at = %s, want a bare RFC3339 timestamp: %v", data["device_occurred_at"], err)
+	}
+	var skewFlagged bool
+	if err := json.Unmarshal(data["skew_flagged"], &skewFlagged); err != nil {
+		t.Fatalf("conflict alarm data.skew_flagged = %s, want a bare boolean: %v", data["skew_flagged"], err)
+	}
+
+	assertConflictAlarmDataTagsPinned(t, wantData)
+}
+
+// assertConflictAlarmDataTagsPinned closes the one gap a wire-level key-set
+// assertion structurally cannot see: a `,omitempty` field is ABSENT from the
+// bytes whenever the fixture leaves it zero, so the key set is unchanged and
+// the pin passes green while production envelopes — where the field is
+// populated — carry it. No fixture can catch that, because the fixture is
+// exactly what decides whether the field appears. So check it at the source,
+// where the fixture has no say (ai-review K1).
+//
+// The expected side is still the caller's hand-written literal; only the
+// observed side is derived from the type. That is the ADR-017 fixture trap
+// avoided rather than re-entered — the trap is generating the EXPECTATION from
+// the type under test, which is what makes a test unable to fail.
+func assertConflictAlarmDataTagsPinned(t *testing.T, want []string) {
+	t.Helper()
+	typ := reflect.TypeOf(conflictAlarmData{})
+	tags := make([]string, 0, typ.NumField())
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		name, opts, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if opts != "" {
+			t.Fatalf("conflictAlarmData.%s carries json option %q — a conditionally-emitted field is invisible to the wire-level key pin whenever this fixture leaves it zero, so the PII floor (ADR-025 §D9) would stop being enforced", field.Name, opts)
+		}
+		tags = append(tags, name)
+	}
+	slices.Sort(tags)
+	if !slices.Equal(tags, want) {
+		t.Fatalf("conflictAlarmData json tags = %v, want exactly %v", tags, want)
+	}
 }
 
 func sortedKeys(m map[string]json.RawMessage) []string {
@@ -533,6 +586,10 @@ func TestReconcileFlagsSkewWithoutRejecting(t *testing.T) {
 	if !alarm.Data.SkewFlagged {
 		t.Fatal("conflict alarm does not carry the skew flag")
 	}
+	// The skew-flagged conflict is the class's second emitted variant. Pin the
+	// floor here too: a field populated only on the skew path would otherwise
+	// evade the non-skew test entirely (ai-review K3).
+	assertConflictAlarmPIIFloor(t, envelope)
 }
 
 // Reconciliation of a broken-chain ticket is recording, not deciding (§D2):

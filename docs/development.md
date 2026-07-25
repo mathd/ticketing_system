@@ -194,7 +194,10 @@ answered here).
 reconciliation of a **single-entry** ticket finds an offline admit the authoritative trace would
 have rejected, access appends `duplicate_admit` and owes an alarm on
 `platform.access.admission-conflict.alarm` (**schema 1**), committed in the **same transaction** as
-the append — the admission cannot be recorded without the alarm being owed. This is deliberately
+the append. **Scope that atomicity claim before quoting it:** on the honest Access reconciliation
+path the lifecycle append and the owed outbox row commit together, so our own code cannot record
+the admission and skip the alarm — it says nothing against a writer with database access, who can
+delete the outbox row at leisure (ADR-021 §The trust boundary). This is deliberately
 **not** an ADR-021 integrity alarm: there the chain is broken, here **the chain is valid and the
 world disagreed with it**. Access refuses to boot unless `ACCESS_ADMISSION_CONFLICT_DURABLE` exists
 and filters the subject, and the same **retained-not-read** caveat as the other two classes applies —
@@ -206,10 +209,15 @@ alarm **"bounds operational skew and our bugs; it is visibility, not containment
 adversary."** It makes a double-admit *visible* at reconciliation; it does not prevent the physical
 admission that already happened, and an occurrence that never syncs is not represented at all.
 
-The payload carries bounded identifiers and one boolean only — `alarm_id`, `organizer_id`,
-`ticket_id`, `occurrence_id`, `device_occurred_at`, `skew_flagged` — no PII (ADR-003 §D3), pinned by
-an exact-key-set assertion in `TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm`. There is
-deliberately **no `reason` field**: unlike the policy-conflict class, this class has exactly one
+The payload carries four bounded identifiers, one device-claimed timestamp and one boolean —
+`alarm_id`, `organizer_id`, `ticket_id`, `occurrence_id`, `device_occurred_at`, `skew_flagged` — and
+no PII (ADR-003 §D3). That floor is enforced, not just asserted:
+`TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm` pins the exact key set of the persisted
+envelope at both levels, decodes every value into the scalar it is contracted to be (so PII cannot
+hide inside an existing key), and pins `conflictAlarmData`'s json tags at the source — which is the
+only place a `,omitempty` field can be caught, since such a field is simply absent from any fixture
+that leaves it zero. There is deliberately **no `reason` field**: unlike the policy-conflict class
+(whose payload carries `rule`), this class has exactly one
 condition (ADR-025 §D2 scopes `duplicate_admit` to single-entry tickets, where any occurrence beyond
 the one `redeemed` is the conflict), so **the subject is the reason** and a one-valued enum would
 carry no information. If a second condition is ever added to this class, introducing a reason space
