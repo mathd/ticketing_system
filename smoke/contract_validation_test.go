@@ -158,27 +158,42 @@ func TestCommittedServiceContractsAreComplete(t *testing.T) {
 //     gone and no compatibility alias came back — it is NOT an edge control.
 //
 // Both are 404. Only the first is the security boundary; conflating them is exactly the
-// overclaim docs/learnings/2026-07-15-name-what-a-control-reaches.md warns about.
+// overclaim docs/learnings/2026-07-15-name-what-a-control-reaches.md warns about — so
+// each case asserts the 404's BODY, which says which control produced it. Status alone
+// is a vacuous proof here: an unguarded legacy alias handed a hold id that does not
+// exist would answer 404 from the store (ErrNotFound) and pass a status-only assertion
+// while the public mutation surface was back (ai-review F5).
 func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 	const holdID = "00000000-0000-0000-0000-000000000001"
+	// The gateway's own refusal is net/http's plain-text NotFoundHandler; inventory's
+	// request validator answers JSON. Distinguishing them is the whole point.
+	const byGateway = "404 page not found"
+	const byServiceContract = "no matching operation was found"
 	tests := []struct {
-		method string
-		path   string
+		method   string
+		path     string
+		wantBody string
 	}{
-		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001"},
-		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email"},
-		{http.MethodPost, "/api/payments/internal/facts"},
-		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments"},
+		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001", byGateway},
+		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email", byGateway},
+		{http.MethodPost, "/api/payments/internal/facts", byGateway},
+		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments", byGateway},
 		// The boundary, on the transitions themselves.
-		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/confirm"},
-		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/finalize"},
-		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/release"},
-		// The retired public paths, with a valid organizer_id so that a surviving
-		// route would answer 401/409 rather than a validation 400 — i.e. so this
-		// assertion can actually fail if the surface comes back.
-		{http.MethodPost, "/api/inventory/holds/" + holdID + "/confirm?organizer_id=" + organizerID},
-		{http.MethodPost, "/api/inventory/holds/" + holdID + "/finalize?organizer_id=" + organizerID},
-		{http.MethodPost, "/api/inventory/holds/" + holdID + "/release?organizer_id=" + organizerID},
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/confirm", byGateway},
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/finalize", byGateway},
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/release", byGateway},
+		// An encoded separator must not walk past the boundary either: ServeMux reads
+		// "internal%2Fholds" as one segment and misses the literal "internal" child,
+		// while the proxy forwards the decoded path. Refused by denyEncodedSeparators,
+		// so this is the gateway's own 404 (ai-review F1).
+		{http.MethodPost, "/api/inventory/internal%2Fholds/" + holdID + "/confirm", byGateway},
+		{http.MethodPost, "/api/inventory/internal%2fslots/" + holdID + "/capacity-adjustments", byGateway},
+		// The retired public paths. organizer_id is valid so a surviving route could not
+		// hide behind a validation 400, and the body assertion is what makes this fail if
+		// an alias came back: a restored route answers from the store, not the contract.
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/confirm?organizer_id=" + organizerID, byServiceContract},
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/finalize?organizer_id=" + organizerID, byServiceContract},
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/release?organizer_id=" + organizerID, byServiceContract},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -191,8 +206,12 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = response.Body.Close() }()
+			body, _ := io.ReadAll(response.Body)
 			if response.StatusCode != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404", response.StatusCode)
+				t.Fatalf("status = %d, want 404; body=%s", response.StatusCode, body)
+			}
+			if !strings.Contains(string(body), test.wantBody) {
+				t.Fatalf("404 came from the wrong layer: body=%s, want it to contain %q", body, test.wantBody)
 			}
 		})
 	}

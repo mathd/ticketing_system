@@ -37,6 +37,35 @@ var routes = map[string]string{
 	"/":               "STOREFRONT_URL", // catch-all LAST by construction (longest prefix wins)
 }
 
+// denyEncodedSeparators refuses any request whose path carries an encoded "/".
+//
+// The route table is the security boundary (ADR-002): /api/<svc>/internal/ is
+// registered to a NotFoundHandler so internal routes are unreachable from the edge by
+// construction. That construction rests on ServeMux agreeing with the upstream service
+// about where the segment boundaries are, and it does not: ServeMux matches escaped
+// paths segment by segment, so "internal%2Fholds" is a single segment that misses the
+// literal "internal" child and falls through to the broader proxy registration — while
+// the proxy's Rewrite reads the already-decoded r.URL.Path and hands the upstream an
+// ordinary /internal/holds/... . One spelling of a path, two opinions about its shape.
+//
+// Nothing this gateway fronts takes a path parameter containing a slash — they are
+// UUIDs and fixed words — so an encoded separator has no legitimate meaning here and is
+// refused for every route rather than normalized. Refusing beats normalizing: a
+// normalizer has to agree with three routers about the canonical form, which is the
+// assumption that failed in the first place.
+//
+// RawPath is set only when the escaped form differs from the decoded Path, so this
+// costs a substring check on the rare requests that carry any escaping at all.
+func denyEncodedSeparators(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if raw := r.URL.RawPath; raw != "" && (strings.Contains(raw, "%2f") || strings.Contains(raw, "%2F")) {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		client := &http.Client{Timeout: 2 * time.Second}
@@ -122,7 +151,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
-		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, mux)),
+		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, denyEncodedSeparators(mux))),
 	}
 	httpConfig.Apply(srv)
 
