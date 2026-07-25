@@ -1,0 +1,101 @@
+{
+  "key": "TKT-125",
+  "type": "Task",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "complex",
+  "summary": "OpenAPI response validation runs unconditionally on every response, hot path included — gate it and amend ADR-028",
+  "description": "### Finding (architecture review R1, 2026-07-25)\n\n`shared/go/contract.responseValidated` wraps **every** handler in all five services. For each request it:\n\n1. buffers the whole response into an `httptest.ResponseRecorder`,\n2. re-routes the request against the OpenAPI document (`router.FindRoute`),\n3. re-parses the recorded body and walks it against the response schema (`openapi3filter.ValidateResponse`),\n4. copies headers and body out to the real `ResponseWriter`.\n\nThere is no toggle. This runs on `POST /holds` and the three transitions under on-sale load, i.e. exactly the path `smoke/onsale_load_test.go` holds to a p99 ≤ 1s SLO. It is the largest self-inflicted cost standing against the project's stated scalability assumption, and it is one config knob away from being paid only where it earns its keep.\n\nTwo smaller defects in the same function:\n\n- it calls `context.Background()` for validation, so a drift error is logged **outside** the request trace — the one place you would want `trace_id`;\n- the recorder discards `http.Flusher`/`http.Hijacker`, so no handler behind it can ever stream.\n\n### Not in scope\n\n**Request** validation stays unconditional. It is a trust boundary and its cost is bounded by the request body, which is small on these routes. Only the response side moves.\n\n### Acceptance Criteria\n\n- [ ] Response validation is switchable via `runtimecfg` (with the rest of the bounded-resource policy), defaulted **on** for dev/CI/smoke.\n- [ ] ADR-028 is amended to state where fail-closed applies and why the placement changed. Semantics where enabled are untouched.\n- [ ] `smoke/onsale_load_test.go` is run with validation on and off; the p99 delta for hold/finalize/confirm is **recorded as a number** in `docs/evidence/`. If the delta is negligible, say so and keep validation everywhere — that outcome closes the ticket honestly.\n- [ ] With validation enabled, TKT-108's mask-body detection still passes.\n- [ ] The validator runs on the request context, so a drift log carries `trace_id`.\n- [ ] `make check` green.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "OpenAPI response validation currently runs unconditionally on every response in every service, including inventory's claim path under on-sale load. Make it configurable so the contract guarantee is paid for where it has value (dev/CI/smoke) and not on the production hot path."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: an explicit enable/sample switch for response validation in shared/go/contract, defaulted on for dev/CI/smoke; the ADR-028 amendment saying where fail-closed applies; passing the request context into the validator instead of context.Background(); a measured before/after on the on-sale load test. OUT: request validation (stays unconditional — it is a trust boundary); removing the guarantee anywhere it is currently proven; any change to the drift semantics where validation IS enabled."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether production runs it fully off or sampled at a low rate. Sampling keeps a live drift signal at a fraction of the cost but complicates the fail-closed contract (a sampled request fails closed, an unsampled one does not — two behaviours for one endpoint). The plan decides against the measured delta; both satisfy the COS."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. shared/go/contract is consumed by all five services but the change is additive (a config knob with the current behaviour as the dev/CI default)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Config through runtimecfg, alongside the other bounded-resource policy, not a bespoke env read per service. Keep ADR-028's fail-closed semantics EXACTLY as they are wherever validation is enabled — this ticket changes where it runs, not what it does. The evidence for the change is the load test, not reasoning: measure with it on and off."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The knob + the ADR-028 amendment + the measurement. If the measured delta turns out to be negligible, that is a valid outcome — record it in the ADR and keep validation on everywhere; the ticket is then a documentation and context-propagation fix. Do not force the change against the measurement."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) response validation is switchable, defaulted on in dev/CI/smoke; (2) ADR-028 states where fail-closed applies and why the placement changed; (3) smoke/onsale_load_test.go is run in both configurations and the p99 delta is recorded in the ticket and in docs/evidence — a number, not an estimate; (4) with validation enabled, TKT-108's mask-body detection still passes (the laundered-status learning still holds); (5) the validator runs on the request context so drift errors carry trace_id; (6) make check green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-028 (the decision being amended — placement, not semantics), ADR-009 (contract-first is the reason the guarantee exists at all), ADR-004 (the read path this sits in front of). Learning: docs/learnings/2026-07-21-test-validator-downstream-of-production-wrap-sees-laundered-statuses.md — the mask body is the detectable artifact, not the status; and docs/learnings/2026-07-25-coarse-observables-pass-the-broken-build.md — a coarse observable will not show this delta, the load test's p99 will."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-028",
+        "date": "2026-07-12",
+        "rule": "A response that drifts from the served OpenAPI contract fails closed: the drifted payload never reaches the client, and the violation is logged with the operation coordinates."
+      },
+      {
+        "id": "ADR-009",
+        "date": "2026-07-12",
+        "rule": "APIs are contract-first: the OpenAPI spec is the source of truth, served by the service at /openapi.yaml and checked for drift in the gate; domain events use a versioned platform envelope (id, type==subject, occurred_at, schema, data) published to JetStream with acks (never fire-and-forget), with a deterministic envelope id so retried/raced emissions de-duplicate."
+      },
+      {
+        "id": "ADR-004",
+        "date": "2026-07-12",
+        "rule": "Public reads declare volatility-tiered TTLs; the read path is cache-first, and each tier has exactly one cache owner so staleness never stacks."
+      },
+      {
+        "id": "ADR-010",
+        "date": "2026-07-12",
+        "rule": "Reservation claims are decided inside a single Postgres transaction under a row lock; no external lock manager. Oversell is bounded by the database, not by application coordination."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Architecture review R1 — the finding and the call sites",
+        "link": "docs/reviews/2026-07-25-architecture.md"
+      },
+      {
+        "summary": "The function under change",
+        "link": "shared/go/contract/http.go"
+      },
+      {
+        "summary": "The measurement harness and the p99 SLOs this must not regress",
+        "link": "smoke/onsale_load_test.go"
+      },
+      {
+        "summary": "A test validator downstream of the production wrap sees laundered statuses (TKT-108)",
+        "link": "docs/learnings/2026-07-21-test-validator-downstream-of-production-wrap-sees-laundered-statuses.md"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  },
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from the 2026-07-25 architecture review, recommendation **R1** ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)). The review's largest performance finding. Note the honest-outcome clause in the COS: the load test decides, and \"measured, negligible, kept on\" is a passing result — this ticket must not be implemented as a foregone conclusion. Code pointers: shared/go/contract/http.go (responseValidated, requestValidator), the five services/*/internal/api/server.go call sites, docs/adr/ADR-028-response-drift-fail-closed.md."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-125 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review's code-seam survey; `shared/go/contract/http.go` was read in full. **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Whether production runs it fully off or sampled at a low rate. Sampling keeps a live drift signal at a fraction of the cost but complicates the fail-closed contract (a sampled request fails closed, an unsampled one does not — two behaviours for one endpoint). The plan decides against the measured delta; both satisfy the COS.\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    }
+  ]
+}
