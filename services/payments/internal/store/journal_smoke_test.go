@@ -459,20 +459,21 @@ func TestJournalVerificationFailsWhenHistoricalKeyIsRetired(t *testing.T) {
 	// test having run first: an order dependency between tests is a test that passes
 	// for a reason its name does not state, and it silently becomes vacuous the day
 	// someone runs this one with -run.
-	org := uuid.New()
-	if _, _, err := New(db, onlyV1(t)).Append(ctx, fact(org)); err != nil {
+	if _, _, err := New(db, onlyV1(t)).Append(ctx, fact(uuid.New())); err != nil {
 		t.Fatal(err)
 	}
 
 	// A ring holding ONLY the post-rotation key: v1's era is now unverifiable, and that
 	// must surface as an explicit failure naming the missing key — never a skipped entry.
 	//
-	// Assert the ORGANIZER too. Verify scans the whole table ordered by organizer_id over
-	// random UUIDs, so in a full-suite run the row that trips the failure is as likely to
-	// be the rotation test's v1 entry as this test's own — and then this would be passing
-	// on someone else's fixture while claiming to be self-contained.
+	// Assert the KEY, not the organizer. Verify returns on the FIRST unrecognized row in
+	// an organizer_id-ordered scan, and the organizers here are random UUIDs, so which v1
+	// row trips it is a coin flip between this test's entry and the rotation test's. An
+	// earlier revision asserted the organizer as well and was nondeterministic for exactly
+	// that reason. Nothing is lost: the claim under test is "a v1-era entry is unverifiable
+	// under a ring without v1", which is about the key. Self-containment comes from the
+	// append above — under -run this test's entry is the only one that can trip it.
 	assertVerifyFails(t, New(db, onlyV2(t)), ctx, `unknown key id "`+smokeKIDv1+`"`)
-	assertVerifyFails(t, New(db, onlyV2(t)), ctx, "organizer="+org.String())
 }
 
 // --- restart ----------------------------------------------------------------

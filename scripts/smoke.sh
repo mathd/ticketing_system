@@ -149,6 +149,12 @@ cd "$ROOT"
 # misdiagnoses the real cause. Assert the fixture directly instead.
 mixed_kids=$(docker exec "$(compose ps -q postgres)" psql -U postgres -d payments_store_smoke -tAc \
   "SELECT count(DISTINCT key_id) FROM journal_entries")
+# Validate before comparing. Inside an `if` condition set -e is suspended, and
+# `[ "$x" -lt 2 ]` on empty or non-numeric input prints an error and evaluates FALSE — so
+# a broken psql invocation would sail past a guard whose whole purpose is to fail closed.
+case "$mixed_kids" in
+  ''|*[!0-9]*) echo "smoke: could not count key ids in payments_store_smoke (got: '$mixed_kids')" >&2; exit 1 ;;
+esac
 if [ "$mixed_kids" -lt 2 ]; then
   echo "smoke: payments_store_smoke holds $mixed_kids key id(s); the rotation test's mixed-key fixture is missing" >&2
   exit 1

@@ -56,6 +56,9 @@ func TestNewKeyringRejectsInvalidConfiguration(t *testing.T) {
 		{name: "trailing comma", activeKID: "v2", activeKey: good, historical: "v1=MDEyMzQ1Njc4OWFiY2RlZmc,", wantErr: "empty entry"},
 		{name: "doubled comma", activeKID: "v2", activeKey: good, historical: "v1=MDEyMzQ1Njc4OWFiY2RlZmc,,v0=MDEyMzQ1Njc4OWFiY2RlZmg", wantErr: "empty entry"},
 		{name: "comma only", activeKID: "v2", activeKey: good, historical: ",", wantErr: "empty entry"},
+		// Whitespace-only is NOT "unset": treating it as such would let a typo boot a
+		// single-key ring and leave pre-rotation history unverifiable, with no error.
+		{name: "whitespace-only historical value", activeKID: "v2", activeKey: good, historical: "   ", wantErr: "empty entry"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ring, err := NewKeyring(tc.activeKID, []byte(tc.activeKey), tc.historical)

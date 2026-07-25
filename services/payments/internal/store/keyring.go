@@ -70,10 +70,12 @@ func NewKeyring(activeKID string, activeKey []byte, historical string) (*Keyring
 	material := map[string]string{string(effectiveHMACKey(activeKey)): activeKID}
 
 	// An entirely empty variable means "no historical keys" — the single-key
-	// configuration. Inside a NON-empty list, though, an empty segment is malformed
-	// input, and the contract here is fail-closed: silently skipping it would accept
-	// "v1=...,," and ",".
-	if strings.TrimSpace(historical) != "" {
+	// configuration. Everything else is parsed, including a whitespace-only value:
+	// treating "   " as unset would let an operator typo boot a single-key ring and
+	// leave pre-rotation history unverifiable with no startup error. Inside a non-empty
+	// list an empty segment is malformed input, and the contract is fail-closed:
+	// silently skipping it would accept "v1=...,," and ",".
+	if historical != "" {
 		for _, item := range strings.Split(historical, ",") {
 			item = strings.TrimSpace(item)
 			if item == "" {
