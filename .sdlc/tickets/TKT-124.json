@@ -1,0 +1,97 @@
+{
+  "key": "TKT-124",
+  "type": "Task",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "complex",
+  "summary": "Inventory hold transitions (confirm/finalize/release) are guarded only by a gateway path-suffix denylist — make the boundary structural",
+  "description": "### Finding (architecture review R2, 2026-07-25)\n\n`services/inventory/internal/api/server.go:49-51` mounts the three hold transitions **unwrapped**:\n\n```go\nr.Post(\"/holds/{id}/confirm\",  s.transition(\"confirmed\"))\nr.Post(\"/holds/{id}/finalize\", s.transition(\"finalizing\"))\nr.Post(\"/holds/{id}/release\", s.transition(\"released\"))\n```\n\nEvery `/internal/*` route directly beneath them is wrapped in `s.internalOnly(...)`. These three are not. The only thing keeping a public caller off them is a denylist in the gateway's `/api/inventory/` arm (`gateway/cmd/gateway/main.go`):\n\n```go\nfor _, transition := range []string{\"/finalize\", \"/confirm\", \"/release\"} {\n    if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, \"/\"), transition) { http.NotFound(w, r); return }\n}\n```\n\nThat control is string matching on a request path that crosses three components which each normalize paths differently — net/http `ServeMux`, `httputil.ReverseProxy`, and chi. No claim is made here that a bypass exists today; the point is that whether one exists is a property of three libraries' normalization agreeing, and it is the *sole* control on a money-relevant transition. `internalOnly` on the handler makes it a property of the code instead.\n\nNote the inconsistency this creates: the gateway blocks `/api/inventory/internal/` **by construction** (an explicit `NotFoundHandler` registration on the prefix) and then blocks these three **by string suffix**. Two mechanisms, same boundary.\n\n### Acceptance Criteria\n\n- [ ] A direct public `POST` through the gateway to `/api/inventory/holds/{id}/finalize`, `.../confirm` and `.../release` is refused — proven by a smoke test that goes through the gateway, not the service directly.\n- [ ] The refusal does not rely on path-suffix matching: the `strings.HasSuffix` denylist in `gateway/cmd/gateway/main.go` is **deleted**, not kept as belt-and-braces.\n- [ ] The three handlers themselves reject a request arriving without the internal credential, matching the `internalOnly` precedent beside them.\n- [ ] Commerce's legitimate call path is unchanged and the existing checkout smoke stays green.\n- [ ] Regenerated code (`openapi_gen.go`, `api-types.gen.ts`) is committed **before** the gate run if the route surface moves.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The only control stopping a public caller from driving an inventory hold to confirmed/finalizing/released without going through commerce is a `strings.HasSuffix` denylist in the gateway. Replace it with a structural boundary."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: making /holds/{id}/confirm|finalize|release unreachable from the public edge by construction; an in-service credential check on those three handlers (defence in depth, matching the existing internalOnly precedent); deleting the gateway suffix denylist; the OpenAPI/spec/regen and smoke changes that follow. OUT: any change to what the transitions DO (ADR-010 claim semantics untouched); staff RBAC (TKT-22); the /internal/* routes that are already guarded."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the three routes move under /internal/ (which the gateway already blocks by construction via the prefix+\"internal/\" NotFound registration) or stay in place and get wrapped with internalOnly. Both satisfy the COS; the plan picks on how much OpenAPI/commerce-client churn each costs."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Commerce is the only legitimate caller of these three transitions and already holds INTERNAL_SERVICE_TOKEN, so no new credential distribution is needed."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror the pattern inventory already uses for its /internal/* routes (s.internalOnly wrapper) rather than inventing a new mechanism. Name the adversary explicitly (ADR-021 discipline): this closes an UNAUTHENTICATED public caller, not a party holding the internal token. Do not describe the result as tamper-proof."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The boundary change + the in-service check + a smoke test that a direct public call is refused + the existing checkout smoke staying green. Small; no ADR expected unless the route move changes the published contract shape."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) a direct public POST to /api/inventory/holds/{id}/finalize (and confirm, release) is refused, proven by a smoke test hitting the gateway; (2) the refusal does not depend on path-suffix string matching — the denylist block in gateway/cmd/gateway/main.go is deleted; (3) the three handlers reject a call arriving without the internal credential even if the edge is bypassed; (4) commerce's checkout path still completes end-to-end (existing checkout smoke green); (5) make check green with regenerated code committed."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-002 (the gateway is the only public surface, explicit registration), ADR-010 (what these transitions decide — do not change the claim semantics), ADR-021 (name the adversary; this is an unauthenticated-caller control, not tamper-evidence), ADR-009 (any route move is a contract change, regenerate and commit before the gate). Learning: docs/learnings/2026-07-15-name-what-a-control-reaches.md."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-002",
+        "date": "2026-07-12",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only. The gateway is the only public surface, with explicit route registration."
+      },
+      {
+        "id": "ADR-010",
+        "date": "2026-07-12",
+        "rule": "Reservation claims are decided inside a single Postgres transaction under a row lock; no external lock manager. Oversell is bounded by the database, not by application coordination."
+      },
+      {
+        "id": "ADR-021",
+        "date": "2026-07-12",
+        "rule": "Say which adversary you mean before claiming an integrity or audit guarantee. State inside the database cannot constrain an adversary who writes to the database."
+      },
+      {
+        "id": "ADR-009",
+        "date": "2026-07-12",
+        "rule": "APIs are contract-first: the OpenAPI spec is the source of truth, served by the service at /openapi.yaml and checked for drift in the gate; domain events use a versioned platform envelope (id, type==subject, occurred_at, schema, data) published to JetStream with acks (never fire-and-forget), with a deterministic envelope id so retried/raced emissions de-duplicate."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Architecture review R2 — the finding, with the exact call sites",
+        "link": "docs/reviews/2026-07-25-architecture.md"
+      },
+      {
+        "summary": "Name what a control reaches — the discipline this ticket applies",
+        "link": "docs/learnings/2026-07-15-name-what-a-control-reaches.md"
+      },
+      {
+        "summary": "The internalOnly precedent to mirror (inventory's /internal/* routes)",
+        "link": "services/inventory/internal/api/server.go"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  },
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from the 2026-07-25 architecture review, recommendation **R2** ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)). Highest-priority item of the six: it is the only finding in the review with a money-relevant blast radius. Code pointers: services/inventory/internal/api/server.go:49-51 (the unwrapped mounts), gateway/cmd/gateway/main.go (the denylist, in the /api/inventory/ arm of the route loop), services/catalog/internal/api/server.go (the same class of issue in its inline form — see TKT-125's sibling note; catalog's inline token checks are being fixed in place, not here)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-124 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review's code-seam survey. The finding is a read of the two call sites, not an inference — both were read in full. **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Whether the three routes move under /internal/ (which the gateway already blocks by construction via the prefix+\"internal/\" NotFound registration) or stay in place and get wrapped with internalOnly. Both satisfy the COS; the plan picks on how much OpenAPI/commerce-client churn each costs.\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    }
+  ]
+}
