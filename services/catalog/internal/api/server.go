@@ -71,14 +71,20 @@ func NewRouter(s *Server) (http.Handler, error) {
 		},
 	})
 	r := chi.NewRouter()
-	r.Get("/internal/ticket-types/{id}", s.getTicketType)
-	r.Get("/internal/performances/{id}", s.getPublishedPerformance)
-	r.Get("/internal/pools/{id}/offer-state", s.getPoolOfferState)
-	// TKT-80: inventory pins/unpins a seat-hold's seats here (ADR-029 contract). Hand-mounted
-	// internal routes, like the reads above — service-to-service, not part of the public
-	// OpenAPI contract; the response validator skips undeclared paths.
-	r.Post("/internal/seat-maps/{id}/pins", s.pinSeats)
-	r.Post("/internal/seat-maps/{id}/unpins", s.unpinSeats)
+	// Hand-mounted internal routes (service-to-service, not part of the public
+	// OpenAPI contract; the response validator skips undeclared paths). The
+	// credential check is a group middleware, not a line inside each handler:
+	// a route added to this group is guarded by construction, so it cannot be
+	// mounted un-credentialed by forgetting to copy the check.
+	r.Route("/internal", func(ir chi.Router) {
+		ir.Use(s.internalOnly)
+		ir.Get("/ticket-types/{id}", s.getTicketType)
+		ir.Get("/performances/{id}", s.getPublishedPerformance)
+		ir.Get("/pools/{id}/offer-state", s.getPoolOfferState)
+		// TKT-80: inventory pins/unpins a seat-hold's seats here (ADR-029 contract).
+		ir.Post("/seat-maps/{id}/pins", s.pinSeats)
+		ir.Post("/seat-maps/{id}/unpins", s.unpinSeats)
+	})
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -98,11 +104,20 @@ func NewRouter(s *Server) (http.Handler, error) {
 	return contract.ResponseValidator(apispec.Spec, handler, s.log)
 }
 
+// internalOnly guards the /internal group. An empty configured credential
+// never authenticates: a service started without INTERNAL_SERVICE_TOKEN must
+// refuse every internal call, not accept a caller that also sends nothing.
+func (s *Server) internalOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+			writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
-		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
-		return
-	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid ticket type id"})
@@ -120,10 +135,6 @@ func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
-		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
-		return
-	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid performance id"})
@@ -147,10 +158,6 @@ func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request)
 // the published-only lookup above 404s those by design), or a festival capacity
 // group, which inventory skips rather than mistakes for a dead slot.
 func (s *Server) getPoolOfferState(w http.ResponseWriter, r *http.Request) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
-		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
-		return
-	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid pool id"})
@@ -181,10 +188,6 @@ type batchPinRequest struct {
 }
 
 func (s *Server) decodeBatchPin(w http.ResponseWriter, r *http.Request) (store.BatchPinInput, bool) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
-		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
-		return store.BatchPinInput{}, false
-	}
 	seatMapID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid seat map id"})
