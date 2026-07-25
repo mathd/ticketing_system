@@ -79,11 +79,25 @@ type accessFailureEvent struct {
 // is an idempotent projection upsert (store.UpsertSlotPolicy, keyed by envelope
 // id) instead of re-running signed lifecycle issuance.
 //
-// Source position is operationally significant: this file sorts first in the
-// package, so the stream holds no publications yet and the replay is empty.
-// That is a cost optimisation, not a correctness requirement — the replay is
-// idempotent and the recovery postcondition below waits for it to drain either
-// way.
+// Source position is LOAD-BEARING, not a cost optimisation — an earlier draft
+// of this comment claimed the latter and was wrong (ai-review R3). This file
+// sorts first in the package, so the stream holds no performance.published
+// history and the replay on recreation is empty. Two things depend on that:
+//
+// The benign one is speed. The one that matters is that access's policy
+// consumer only latches ready TRUE once its replay reaches zero pending
+// (consumer/policy.go). A single parked message in that history — an unknown or
+// future schema, which ADR-017 §5b′ says to park rather than drop — is never
+// acked, so pending never reaches zero, so access never becomes ready again
+// after the restart this test forces. Recovery and its cleanup fallback would
+// both fail and the rest of the package would run against a dead service.
+//
+// That is latent today (nothing sorts before this file, and nothing publishes a
+// parked policy event), which is exactly why it is written down: the failure
+// would appear as sixty unrelated tests breaking. If you add a test file
+// alphabetically before this one, or teach an earlier test to publish a
+// performance.published event, re-read this. The "replay still draining" error
+// below is the symptom to grep for.
 func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 	// 90s is a backstop, not the bound: the 15s and 20s ceilings below are what
 	// the assertions are written against and what must fire first. A context
@@ -135,13 +149,50 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 			return nil, fmt.Errorf("recreated durable drifted: %+v", info.Config)
 		}
 		if info.NumPending != 0 || info.NumAckPending != 0 {
-			return nil, fmt.Errorf("replay still draining: pending=%d ack_pending=%d",
+			// If this never converges, suspect a parked message in the replayed
+			// history rather than slowness — see the file-ordering note on the
+			// test above.
+			return nil, fmt.Errorf("replay still draining: pending=%d ack_pending=%d "+
+				"(if this never converges, a parked performance.published event is blocking readiness)",
 				info.NumPending, info.NumAckPending)
 		}
-		if out, err := dockerRun("exec", container, "/app", "healthcheck"); err != nil {
+		if out, err := dockerRun(ctx, "exec", container, "/app", "healthcheck"); err != nil {
 			return nil, fmt.Errorf("access healthcheck: %v: %s", err, out)
 		}
 		return info, nil
+	}
+
+	// settled requires TWO consecutive healthy samples with no restart between
+	// them. One sample is not enough: a crash-looping container is healthy at
+	// intervals, and "healthy twice with a restart in between" is a crash loop
+	// wearing a green badge. Shared by the recovery assertion and the cleanup
+	// fallback deliberately — a safety net held to a weaker standard than the
+	// assertion it backs up is not a safety net (ai-review R1).
+	settled := func(ctx context.Context, within time.Duration) (*jetstream.ConsumerInfo, error) {
+		var latest *jetstream.ConsumerInfo
+		seen, at := 0, -1
+		err := poll(within, 500*time.Millisecond, func() error {
+			info, err := healthy(ctx)
+			if err != nil {
+				seen = 0
+				return err
+			}
+			restarts, _, err := restartState(ctx, container)
+			if err != nil {
+				seen = 0
+				return err
+			}
+			if seen > 0 && restarts != at {
+				seen = 0
+				return fmt.Errorf("access restarted again between samples (%d → %d)", at, restarts)
+			}
+			latest, seen, at = info, seen+1, restarts
+			if seen < 2 {
+				return fmt.Errorf("healthy once; want two consecutive samples")
+			}
+			return nil
+		})
+		return latest, err
 	}
 
 	if _, err := healthy(ctx); err != nil {
@@ -155,11 +206,14 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseRestarts, baseStart := restartState(t, container)
+	baseRestarts, baseStart, err := restartState(ctx, container)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Count occurrences rather than test for presence: a later run of this test,
 	// or any earlier termination, would leave the message in the log and make a
 	// presence check pass without access having done anything.
-	baseDiagnostics, err := accessLogCount(policyTermination)
+	baseDiagnostics, err := accessLogCount(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,19 +222,19 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 	// intentional RED mutation that stops access self-healing — still leaves a
 	// working stack for the rest of the package.
 	t.Cleanup(func() {
-		cctx, ccancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// Its own context, not the test's: the test context may already be
+		// expired by the time cleanup runs, and cleanup is the last thing
+		// standing between a failure here and 60-odd failing tests after it.
+		cctx, ccancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer ccancel()
-		if _, err := healthy(cctx); err == nil {
+		if _, err := settled(cctx, 10*time.Second); err == nil {
 			return
 		}
-		if out, err := dockerRun("restart", container); err != nil {
+		if out, err := dockerRun(cctx, "restart", container); err != nil {
 			t.Errorf("forced restart of %s failed: %v: %s", container, err, out)
 		}
-		if err := poll(45*time.Second, time.Second, func() error {
-			_, err := healthy(cctx)
-			return err
-		}); err != nil {
-			logs, _ := dockerRun("compose", "-p", project, "logs", "--no-color", "--tail", "50", "access")
+		if _, err := settled(cctx, 45*time.Second); err != nil {
+			logs, _ := dockerRun(cctx, "compose", "-p", project, "logs", "--no-color", "--tail", "50", "access")
 			t.Errorf("access did not recover after a forced restart: %v\n%s", err, logs)
 		}
 	})
@@ -196,14 +250,17 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 	// timeout. Anyone tempted to raise this because it flaked should find out
 	// why that path stopped being prompt instead.
 	if err := poll(15*time.Second, 250*time.Millisecond, func() error {
-		diagnostics, err := accessLogCount(policyTermination)
+		diagnostics, err := accessLogCount(ctx)
 		if err != nil {
 			return err
 		}
 		if diagnostics <= baseDiagnostics {
 			return fmt.Errorf("termination diagnostic count still %d (want > %d)", diagnostics, baseDiagnostics)
 		}
-		restarts, start := restartState(t, container)
+		restarts, start, err := restartState(ctx, container)
+		if err != nil {
+			return err
+		}
 		if restarts <= baseRestarts {
 			return fmt.Errorf("restart count still %d (want > %d)", restarts, baseRestarts)
 		}
@@ -212,74 +269,73 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		logs, _ := dockerRun("compose", "-p", project, "logs", "--no-color", "--tail", "50", "access")
+		logs, _ := dockerRun(ctx, "compose", "-p", project, "logs", "--no-color", "--tail", "50", "access")
 		t.Fatalf("access did not terminate on durable deletion: %v\n%s", err, logs)
 	}
 
 	// Recovery is a hard postcondition, not politeness: every later test in this
 	// package needs access issuing tickets, and a half-recovered stack would
 	// fail them with the blame pointing anywhere but here.
-	stable, stableRestarts := 0, 0
-	if err := poll(20*time.Second, 500*time.Millisecond, func() error {
-		info, err := healthy(ctx)
-		if err != nil {
-			stable = 0
-			return err
-		}
-		if !info.Created.After(beforeInfo.Created) {
-			stable = 0
-			return fmt.Errorf("durable created at %s is not newer than %s — deletion never took",
-				info.Created, beforeInfo.Created)
-		}
-		restarts, _ := restartState(t, container)
-		if stable > 0 && restarts != stableRestarts {
-			// Healthy twice with a restart in between is a crash loop wearing a
-			// green badge.
-			stable = 0
-			return fmt.Errorf("access restarted again between samples (%d → %d)", stableRestarts, restarts)
-		}
-		stable, stableRestarts = stable+1, restarts
-		if stable < 2 {
-			return fmt.Errorf("healthy once; want two consecutive samples")
-		}
-		return nil
-	}); err != nil {
-		logs, _ := dockerRun("compose", "-p", project, "logs", "--no-color", "--tail", "50", "access")
+	info, err := settled(ctx, 20*time.Second)
+	if err != nil {
+		logs, _ := dockerRun(ctx, "compose", "-p", project, "logs", "--no-color", "--tail", "50", "access")
 		t.Fatalf("access did not recover after the durable was recreated: %v\n%s", err, logs)
+	}
+	if !info.Created.After(beforeInfo.Created) {
+		t.Fatalf("durable created at %s is not newer than %s — deletion never took",
+			info.Created, beforeInfo.Created)
 	}
 }
 
-// dockerRun shells out to docker and returns combined output. Unlike the
-// package's inspect helper it returns an error instead of calling Fatal, because
-// every caller here is either polling or running inside t.Cleanup, where Fatal
-// is not allowed.
-func dockerRun(args ...string) (string, error) {
-	out, err := exec.Command("docker", args...).CombinedOutput()
+// dockerRun shells out to docker and returns combined output. Two departures
+// from the package's inspect helper, both deliberate:
+//
+// It returns an error instead of calling Fatal, because every caller here is
+// either polling or running inside t.Cleanup, where Fatal is not allowed.
+//
+// It takes a context AND imposes its own per-command ceiling. Without one, every
+// deadline in this test is fiction: a wedged Docker daemon blocks inside
+// CombinedOutput, the enclosing poll only checks its deadline after the
+// subprocess returns, and a single hung call can eat the whole budget — or hang
+// the cleanup that is supposed to hand a working stack to the next 60 tests
+// (ai-review R2). 15s is well above any healthy docker inspect/exec/logs call
+// and well below the phase budgets, so it only ever fires on a sick daemon.
+func dockerRun(ctx context.Context, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
-// accessLogCount counts occurrences of a line in the access container's log.
-// Container restarts do not truncate it, which is what makes a before/after
-// count meaningful across the restart this test causes.
-func accessLogCount(want string) (int, error) {
-	out, err := dockerRun("compose", "-p", project, "logs", "--no-color", "access")
+// accessLogCount counts occurrences of the termination diagnostic in the access
+// container's log. Container restarts do not truncate it, which is what makes a
+// before/after count meaningful across the restart this test causes.
+func accessLogCount(ctx context.Context) (int, error) {
+	out, err := dockerRun(ctx, "compose", "-p", project, "logs", "--no-color", "access")
 	if err != nil {
 		return 0, fmt.Errorf("compose logs access: %v: %s", err, out)
 	}
-	return strings.Count(out, want), nil
+	return strings.Count(out, policyTermination), nil
 }
 
-func restartState(t *testing.T, container string) (int, time.Time) {
-	t.Helper()
-	restarts, err := strconv.Atoi(inspect(t, container, "{{.RestartCount}}"))
+func restartState(ctx context.Context, container string) (int, time.Time, error) {
+	out, err := dockerRun(ctx, "inspect", "-f", "{{.RestartCount}} {{.State.StartedAt}}", container)
 	if err != nil {
-		t.Fatalf("parse restart count: %v", err)
+		return 0, time.Time{}, fmt.Errorf("docker inspect %s: %v: %s", container, err, out)
 	}
-	started, err := time.Parse(time.RFC3339Nano, inspect(t, container, "{{.State.StartedAt}}"))
+	count, at, found := strings.Cut(out, " ")
+	if !found {
+		return 0, time.Time{}, fmt.Errorf("docker inspect %s: unparseable %q", container, out)
+	}
+	restarts, err := strconv.Atoi(count)
 	if err != nil {
-		t.Fatalf("parse container start time: %v", err)
+		return 0, time.Time{}, fmt.Errorf("parse restart count %q: %w", count, err)
 	}
-	return restarts, started
+	started, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("parse container start time %q: %w", at, err)
+	}
+	return restarts, started, nil
 }
 
 // poll retries fn until it succeeds or the deadline passes, returning fn's last
