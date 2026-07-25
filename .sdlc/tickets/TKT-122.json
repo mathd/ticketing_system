@@ -1,0 +1,36 @@
+{
+  "key": "TKT-122",
+  "type": "Task",
+  "status": "Backlog",
+  "summary": "access shutdown drains only already-arrived consumer errors; a failure during teardown still exits 0",
+  "description": "Deferred from TKT-98 ai-review pass 2 (finding R3, [high] as reported, triaged incidental). PRE-EXISTING and unchanged by TKT-98 -- verified against origin/main.\n\nOn SIGTERM, `awaitShutdown` (services/access/cmd/access/main.go) drains `consumerErr` for errors that have ALREADY arrived, then shuts the HTTP server down and returns. On the common path both consumer goroutines are still unwinding at that instant, so the channel is empty, the drain finds nothing, and any genuine consumer failure that materialises during teardown (durable deleted, subscription terminated, a NATS fault) is published to a channel nobody is reading any more. The process exits 0 while a consumer really did break.\n\nNot a TKT-98 regression. Pre-fix, `origin/main`'s select had the same empty-channel state at SIGTERM, took the `ctx.Done()` branch, and returned `srv.Shutdown`'s nil result identically. TKT-98 neither introduced nor worsened this; it only removed the coin flip on errors that HAD already arrived. The code comment at the drain states the residual explicitly.\n\nWhat closing it takes (the reviewer's recommendation, and why it is its own ticket): collect one terminal result from EACH consumer within a bounded grace period after cancellation, rather than snapshotting a shared channel. That is explicit consumer-lifecycle coordination -- `awaitShutdown` would have to know how many producers exist and wait on them, and every shutdown would then carry a grace period a wedged consumer can burn.\n\nThe trade to decide at shaping time: how much should an operator-requested stop pay, in shutdown latency and in lifecycle coupling, to report a consumer failure it noticed on the way out? A defensible answer is \"nothing\" -- in which case this ticket closes as won't-fix WITH the reasoning recorded, which is worth more than an undocumented gap. Note the sibling constraint: whatever shape is chosen should also fit inventory (TKT-121), or the two services drift.\n\nTest note: any fix needs a delayed-send test -- a producer that sends only AFTER awaitShutdown has entered its drain. TKT-98's tests queue values before the call and by construction cannot express this.",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-98's SECOND ai-review pass (gpt-5.6-sol), finding R3, reported [high] and triaged **incidental** on the ground that it is pre-existing and out of TKT-98's scope -- TKT-98 is \"a clean shutdown must not report a consumer error\", not \"a shutdown must detect consumer errors\", which is a capability the service has never had.\n\nThe pre-existing claim is verified, not asserted: `git show origin/main:services/access/cmd/access/main.go` shows the same select reaching `ctx.Done()` with an empty `consumerErr` and returning `srv.Shutdown`'s nil.\n\nRecording the disagreement honestly: the reviewer rated this **high** and said \"do not ship\". It shipped, with the residual documented at the call site and here. If that judgement was wrong, this ticket is where it gets corrected -- which is the point of filing it rather than only rejecting it.\n\nNeeds shaping (COS + the 8-item DoR) before Gate 1."
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [],
+    "reference": [
+      {
+        "summary": "originating ticket + the drain it documents",
+        "link": "TKT-98 / PR #111"
+      },
+      {
+        "summary": "the drain",
+        "link": "services/access/cmd/access/main.go awaitShutdown"
+      },
+      {
+        "summary": "sibling service with the same shape",
+        "link": "TKT-121"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  }
+}
