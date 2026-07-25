@@ -288,14 +288,47 @@ func run() error {
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
 
+	return awaitShutdown(ctx, errCh, consumerErr, srv.Shutdown)
+}
+
+// awaitShutdown blocks until the server fails, a consumer fails, or the signal
+// context is canceled, and returns the error the process should exit with.
+// Split out of run() so the both-branches-ready case is testable at all: run()
+// itself needs Postgres, NATS and a bound port.
+func awaitShutdown(ctx context.Context, srvErr, consumerErr <-chan error, shutdown func(context.Context) error) error {
 	select {
-	case err := <-errCh:
+	case err := <-srvErr:
 		return err
 	case err := <-consumerErr:
-		return err
+		// A Run tail that unwound because we asked it to is not a failure.
+		// Reporting it exited non-zero on roughly half of clean shutdowns,
+		// since this branch and ctx.Done() go ready together on SIGTERM and
+		// select picks between them at random (TKT-98).
+		if !isShutdownConsumerError(ctx, err) {
+			return err
+		}
 	case <-ctx.Done():
-		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(sctx)
+		// The other side of that same coin flip: drain an already-waiting
+		// consumer error so a genuine failure landing at the signal instant
+		// still takes the process down, whichever branch happened to win.
+		select {
+		case err := <-consumerErr:
+			if !isShutdownConsumerError(ctx, err) {
+				return err
+			}
+		default:
+		}
 	}
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return shutdown(sctx)
+}
+
+// isShutdownConsumerError reports whether err is a consumer's Run unwinding
+// because this process's signal context was canceled. errors.Is rather than a
+// match on the "consumer stopped" prefix: the policy projector has a third
+// cancellation exit — cons.Info during the initial backlog drain — that returns
+// a nats-wrapped context.Canceled carrying no prefix at all.
+func isShutdownConsumerError(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
