@@ -29,7 +29,9 @@ import (
 //
 // Verify() scans the WHOLE table, so these tests are sequential by construction (no
 // t.Parallel) and anything that corrupts a row restores it before returning. Two tests
-// deliberately leave state behind — see TestJournalRotationKeepsHistoryVerifiable.
+// deliberately leave state behind: TestJournalRotationKeepsHistoryVerifiable (its mixed-key
+// chain is smoke.sh's fixture for the packaged verify-journal) and
+// TestJournalVerificationFailsWhenHistoricalKeyIsRetired (it appends a fresh v1-era entry).
 
 const (
 	// Fixed literal keys. The rotation test leaves a genuinely mixed-kid journal
@@ -271,7 +273,11 @@ func TestJournalVerifyRejectsRowTampering(t *testing.T) {
 		{"signature", "signature", make([]byte, 32), "invalid signature"},
 		// key_id is not inside canonical v1, so relabelling it does not change the
 		// entry hash — it fails because the ring resolves a different (or no) key.
+		// BOTH halves of that matter, and only the first was pinned at first: a kid the
+		// ring does not hold, and a kid it DOES hold under a different secret. The
+		// second is the case the whole widening turns on, so it is not optional.
 		{"key id relabelled to a key not in the ring", "key_id", "smoke-vX", "unknown key id"},
+		{"key id relabelled to another ring member", "key_id", smokeKIDv1, "invalid signature"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			restore := tamper(t, db, ctx, f.ID, tc.column, tc.value)
@@ -314,8 +320,20 @@ func tamper(t *testing.T, db *sql.DB, ctx context.Context, factID uuid.UUID, col
 	exec(t, db, ctx, `ALTER TABLE journal_entries DISABLE TRIGGER USER`)
 	exec(t, db, ctx, `UPDATE journal_entries SET `+column+`=$1 WHERE fact_id=$2`, value, factID)
 	return func() {
-		exec(t, db, ctx, `UPDATE journal_entries SET `+column+`=$1 WHERE fact_id=$2`, original, factID)
-		exec(t, db, ctx, `ALTER TABLE journal_entries ENABLE TRIGGER USER`)
+		// The triggers must come back even if the restoring UPDATE fails. Leaving
+		// production triggers disabled would make every later test in this file — and
+		// smoke.sh's packaged verify-journal — fail for a reason that has nothing to do
+		// with what they assert. The UPDATE has to run first: the trigger being restored
+		// is precisely the one that would reject it. t.Errorf, not t.Fatalf, so a failed
+		// restore reports itself without skipping the re-enable.
+		defer func() {
+			if _, err := db.ExecContext(ctx, `ALTER TABLE journal_entries ENABLE TRIGGER USER`); err != nil {
+				t.Errorf("re-enable append-only triggers: %v", err)
+			}
+		}()
+		if _, err := db.ExecContext(ctx, `UPDATE journal_entries SET `+column+`=$1 WHERE fact_id=$2`, original, factID); err != nil {
+			t.Errorf("restore %s: %v", column, err)
+		}
 	}
 }
 
@@ -441,21 +459,32 @@ func TestJournalVerificationFailsWhenHistoricalKeyIsRetired(t *testing.T) {
 	// test having run first: an order dependency between tests is a test that passes
 	// for a reason its name does not state, and it silently becomes vacuous the day
 	// someone runs this one with -run.
-	if _, _, err := New(db, onlyV1(t)).Append(ctx, fact(uuid.New())); err != nil {
+	org := uuid.New()
+	if _, _, err := New(db, onlyV1(t)).Append(ctx, fact(org)); err != nil {
 		t.Fatal(err)
 	}
 
 	// A ring holding ONLY the post-rotation key: v1's era is now unverifiable, and that
 	// must surface as an explicit failure naming the missing key — never a skipped entry.
+	//
+	// Assert the ORGANIZER too. Verify scans the whole table ordered by organizer_id over
+	// random UUIDs, so in a full-suite run the row that trips the failure is as likely to
+	// be the rotation test's v1 entry as this test's own — and then this would be passing
+	// on someone else's fixture while claiming to be self-contained.
 	assertVerifyFails(t, New(db, onlyV2(t)), ctx, `unknown key id "`+smokeKIDv1+`"`)
+	assertVerifyFails(t, New(db, onlyV2(t)), ctx, "organizer="+org.String())
 }
 
 // --- restart ----------------------------------------------------------------
 
-// C6 "restarts". A new process over the same database must continue the committed
-// chain rather than restart it: sequence continues, the link is intact, and the whole
-// chain still verifies. Modelled as a fresh pool + fresh Journal, which is what a
-// restarted container is from the database's point of view.
+// C6 "restarts". A new process over the same database must continue the committed chain
+// rather than restart it: sequence continues, the link is intact, and the chain verifies.
+//
+// Be honest about the strength of this one. Journal holds no in-memory sequence or head
+// state, so a fresh pool is today indistinguishable from the original by construction and
+// this cannot fail for the reason its name suggests. Its value is as a REGRESSION PIN: it
+// goes red the day Append starts caching a head or a sequence in process memory, which is
+// the change that would make a real restart lose or duplicate a sequence number.
 func TestJournalRestartContinuesCommittedChain(t *testing.T) {
 	dsn := testDSN(t)
 	db, ctx := journalDB(t)
@@ -535,9 +564,14 @@ func TestJournalBackendTerminationRollsBackPartialAppend(t *testing.T) {
 	defer dropDelayTrigger(t, observer, ctx)
 
 	doomed := fact(org)
+	// Build the ring on THIS goroutine: mustRing calls t.Fatal, which is only legal from
+	// the test goroutine. Called inside the goroutine below, a construction failure would
+	// Goexit the wrong goroutine, never write to appendErr, and surface as a timeout with
+	// an unrelated message.
+	victimJournal := New(victim, fullRing(t))
 	appendErr := make(chan error, 1)
 	go func() {
-		_, _, err := New(victim, fullRing(t)).Append(context.Background(), doomed)
+		_, _, err := victimJournal.Append(context.Background(), doomed)
 		appendErr <- err
 	}()
 
@@ -551,9 +585,17 @@ func TestJournalBackendTerminationRollsBackPartialAppend(t *testing.T) {
 		if err == nil {
 			t.Fatal("Append returned success after its backend was terminated")
 		}
-	case <-time.After(90 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Append did not return after its backend was terminated")
 	}
+
+	// A budget of its own for the post-kill assertions. The shared journalDB context is
+	// 120s and this test can already have spent 30s waiting for the backend plus 30s
+	// waiting for Append to unwind; on a slow machine the assertions below would then
+	// fail with "context deadline exceeded" and report a deadline as if it were a
+	// journal invariant.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	// The entry must be gone WITH the head advance — both or neither.
 	var rows int
@@ -601,6 +643,9 @@ BEGIN PERFORM pg_sleep(60); RETURN NEW; END $$`)
 func dropDelayTrigger(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
 	exec(t, db, ctx, `DROP TRIGGER IF EXISTS tkt56_delay_head_trigger ON journal_heads`)
+	// Drop the function too: a trigger function left behind in the database is what makes
+	// a later CREATE TRIGGER silently reuse a sleep nobody remembers installing.
+	exec(t, db, ctx, `DROP FUNCTION IF EXISTS tkt56_delay_head()`)
 }
 
 // awaitBackendInHeadUpdate finds the append's backend while it is blocked INSIDE the

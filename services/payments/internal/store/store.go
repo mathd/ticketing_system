@@ -83,6 +83,12 @@ func loadExistingFact(ctx context.Context, tx *sql.Tx, f Fact) (Entry, bool, err
 // single-key constructor: it would keep the pre-rotation model (one key, all
 // history invalid the moment it changes) constructible for no caller that exists.
 func New(db *sql.DB, keys *Keyring) *Journal {
+	if keys == nil {
+		// Fail here rather than on the first Append: a nil ring otherwise surfaces as a
+		// nil-map panic deep inside a money write, where the stack says nothing about
+		// the actual mistake (a caller that skipped NewKeyring).
+		panic("store.New: journal keyring is required")
+	}
 	return &Journal{db: db, keys: keys}
 }
 

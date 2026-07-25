@@ -112,12 +112,25 @@ form, so it cannot create canonical ambiguity. `,` and `=` are excluded because 
 list.
 
 The ring is validated at startup and a malformed one refuses to boot: missing active material, a
-secret under 16 bytes, an unparseable or padded base64 value, a duplicate key id, or **two key ids
-sharing the same secret**. That last rule is not tidiness. Because the key id is written unsigned
+secret under 16 bytes, an unparseable or padded base64 value, a stray or doubled comma, a duplicate
+key id, or **two key ids that resolve to the same HMAC key**. That last rule is not tidiness.
+
+Note what "the same HMAC key" has to mean, because the obvious reading is wrong. HMAC does not sign
+with the key as configured: RFC 2104 zero-pads a key shorter than the hash block size and replaces
+one longer than it with its digest. So `"…abcdef"` and `"…abcdef\0"` are **byte-distinct
+configuration that signs identically**, as is a 65-byte key and its SHA-256. Comparing raw bytes
+would therefore miss precisely the aliases this rule exists to reject; the comparison is on the
+*effective* (preprocessed) key. Because the key id is written unsigned
 and is not inside the canonical form, two ids over one secret would let a database writer **holding
 no secret at all** relabel an entry's key id between them with verification still passing. The
-damage is **era misattribution** — it corrupts retirement accounting and the unknown-key contract —
-**not** content forgery, and it should not be described as if it were. Binding the key id into the
+damage depends on which kind of alias it is, and the two are not equally bad. For ids over
+*byte-distinct but unrelated* secrets the answer is **era misattribution** — corrupted retirement
+accounting and a broken unknown-key contract — **not** content forgery, and it should not be
+described as if it were. For ids that resolve to the **same effective HMAC key**, it is worse and
+worth stating plainly: **the rotation never happened.** Retiring the alias does not make its era
+unverifiable, and a compromised "retired" secret still forges entries that verify under the active
+id. That is the reason this is enforced at construction rather than deferred to a
+canonical-version change. Binding the key id into the
 signature would be the stronger fix; that is a canonical-version change and stays outside this
 slice.
 

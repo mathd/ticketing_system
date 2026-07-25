@@ -204,14 +204,20 @@ JOURNAL_HISTORICAL_KEYS  retired keys: kid=<secret>,kid=<secret> — secrets bas
 
 **To rotate**, in one deployment (never two):
 
-1. Encode the **outgoing** secret: `printf %s "$OLD_SECRET" | base64 | tr -d '='`
-   (unpadded standard alphabet — `base64.RawStdEncoding`; a padded value is rejected).
+1. Encode the **outgoing** secret: `printf %s "$OLD_SECRET" | base64 | tr -d '=\n'`
+   (unpadded standard alphabet — `base64.RawStdEncoding`; a padded value is rejected. Keep the
+   `\n` in `tr`: GNU `base64` wraps at 76 columns, so a secret over 57 bytes otherwise carries an
+   embedded newline. `openssl base64 -A` avoids the wrapping entirely.)
 2. Set `JOURNAL_HISTORICAL_KEYS` to `"<old-kid>=<that value>"`, appending to any existing list.
-3. Set `JOURNAL_KEY_ID`/`JOURNAL_SIGNING_KEY` to the new key.
+3. Set `JOURNAL_KEY_ID`/`JOURNAL_SIGNING_KEY` to the new key. **`JOURNAL_SIGNING_KEY` is RAW — do
+   not base64 it.** The asymmetry is deliberate (historical keys share one delimited variable and
+   need an encoding; the active key does not), and it is the one step here that fails *silently*:
+   a base64 blob is over 16 bytes and passes every check, so the service boots and signs real money
+   facts under a key nobody wrote down. Nothing detects it until the next `verify-journal`.
 4. Deploy, then run `verify-journal` — it must pass over the now mixed-key chain.
 
-Both steps must land together: a new active key without the old one in the ring makes every
-pre-rotation entry fail verification.
+Steps 2 and 3 must land in the **same** deployment: a new active key without the old one in the
+ring makes every pre-rotation entry fail verification.
 
 **To retire** a key, drop its entry from `JOURNAL_HISTORICAL_KEYS` — but only once **no retained
 entry references it**, including backups and archives expected to stay auditable. Retiring a key

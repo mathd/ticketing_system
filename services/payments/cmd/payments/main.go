@@ -182,7 +182,7 @@ func statusReplayRetention(fallback time.Duration) (time.Duration, error) {
 // signingConfig builds the journal keyring: the active key stays in the variables it
 // has always used, and JOURNAL_HISTORICAL_KEYS optionally carries retired keys as
 // "kid=<base64.RawStdEncoding secret>,..." so their era stays verifiable after a
-// rotation (ADR-016 §Decision 8, ADR-032 §Decision). Unset historical keys reproduce
+// rotation (ADR-016 §Decision 8; ADR-032 §Keyring configuration, rotation and retirement).
 // the previous single-key behaviour exactly, so no deployed configuration changes.
 //
 // Fail-fast, like every other config reader here: a malformed ring refuses startup

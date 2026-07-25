@@ -1,6 +1,9 @@
 package store
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -40,7 +43,19 @@ func TestNewKeyringRejectsInvalidConfiguration(t *testing.T) {
 		// therefore does not bind it. That is era misattribution, not content forgery —
 		// it corrupts retirement accounting and the unknown-key contract. Rejected at
 		// construction because that is the only place kids are resolved.
-		{name: "duplicate secret material under two kids", activeKID: "v2", activeKey: good, historical: "v1=MDEyMzQ1Njc4OWFiY2RlZg", wantErr: "material"},
+		{name: "duplicate secret material under two kids", activeKID: "v2", activeKey: good, historical: "v1=MDEyMzQ1Njc4OWFiY2RlZg", wantErr: "same HMAC key"},
+		// HMAC does not sign with the key you configured: RFC 2104 zero-pads a short key
+		// up to the block size and replaces an oversized one with its digest. So these
+		// two configurations LOOK distinct byte-for-byte and sign identically — which is
+		// the alias the rule above exists to reject. A raw-bytes duplicate check passes
+		// them both, leaving key_id relabelling possible under a valid-looking config.
+		// "0123456789abcdef" + a trailing NUL:
+		{name: "trailing-NUL alias of the active key", activeKID: "v2", activeKey: good, historical: "v1=MDEyMzQ1Njc4OWFiY2RlZgA", wantErr: "same HMAC key"},
+		// Stray and doubled commas are malformed input, not whitespace to be skipped:
+		// the stated contract is that a malformed ring refuses startup.
+		{name: "trailing comma", activeKID: "v2", activeKey: good, historical: "v1=MDEyMzQ1Njc4OWFiY2RlZmc,", wantErr: "empty entry"},
+		{name: "doubled comma", activeKID: "v2", activeKey: good, historical: "v1=MDEyMzQ1Njc4OWFiY2RlZmc,,v0=MDEyMzQ1Njc4OWFiY2RlZmg", wantErr: "empty entry"},
+		{name: "comma only", activeKID: "v2", activeKey: good, historical: ",", wantErr: "empty entry"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ring, err := NewKeyring(tc.activeKID, []byte(tc.activeKey), tc.historical)
@@ -115,5 +130,31 @@ func TestNewKeyringCopiesSecrets(t *testing.T) {
 	}
 	if string(after) != stored {
 		t.Fatal("mutating the caller's slice changed the ring's key material")
+	}
+}
+
+// An oversized key is replaced by its SHA-256 before signing, so a >block-size key and
+// its digest are the same key to HMAC. Separate from the table because the alias has to
+// be computed rather than written as a literal.
+func TestNewKeyringRejectsOversizedKeyAliasingItsDigest(t *testing.T) {
+	long := make([]byte, sha256.BlockSize+1)
+	for i := range long {
+		long[i] = byte('a' + i%26)
+	}
+	digest := sha256.Sum256(long)
+
+	// Sanity: the two really do sign identically. If this ever stops holding, the
+	// rejection below is guarding nothing and should be revisited, not deleted.
+	msg := []byte("entry hash stand-in")
+	if !hmac.Equal(sign(long, msg), sign(digest[:], msg)) {
+		t.Fatal("premise broken: an oversized key no longer signs as its digest")
+	}
+
+	_, err := NewKeyring("v2", long, "v1="+base64.RawStdEncoding.EncodeToString(digest[:]))
+	if err == nil {
+		t.Fatal("a historical key that is the active key's HMAC-equivalent digest was accepted")
+	}
+	if !strings.Contains(err.Error(), "same HMAC key") {
+		t.Fatalf("error %q does not identify the alias", err)
 	}
 }

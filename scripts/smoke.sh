@@ -142,6 +142,17 @@ cd "$ROOT"
 # a library call — the gate's own journal is signed under one key forever, and
 # verify-concurrent-append cannot append under a second (its fact id is a literal, so a
 # re-run replays 8/8 and fails its own new==1 guard).
+# Guard the fixture both checks below depend on. The mixed-key chain is left behind by
+# TestJournalRotationKeepsHistoryVerifiable; if that test is ever renamed, skipped or given
+# a cleanup, the positive check still passes — a single-key journal verifies fine under a
+# superset ring — and the negative one then fails with a retired-key message that
+# misdiagnoses the real cause. Assert the fixture directly instead.
+mixed_kids=$(docker exec "$(compose ps -q postgres)" psql -U postgres -d payments_store_smoke -tAc \
+  "SELECT count(DISTINCT key_id) FROM journal_entries")
+if [ "$mixed_kids" -lt 2 ]; then
+  echo "smoke: payments_store_smoke holds $mixed_kids key id(s); the rotation test's mixed-key fixture is missing" >&2
+  exit 1
+fi
 compose exec -T \
   -e DATABASE_URL=postgres://payments:payments@postgres:5432/payments_store_smoke \
   -e JOURNAL_KEY_ID=smoke-v2 \
@@ -151,14 +162,24 @@ compose exec -T \
 # ...and the retirement consequence is real: the same journal with v1 dropped from the
 # ring must FAIL, or "an unknown key id is a verification failure" is untested at the
 # CLI where operators actually meet it.
-if compose exec -T \
+#
+# Assert the DIAGNOSTIC, not merely a non-zero exit. "It failed" is satisfied by a typo'd
+# flag, an unreachable database, a missing binary, or an unrelated pre-existing
+# corruption — every one of which would let this check pass while proving nothing about
+# retirement. Only the unknown-key message proves the retired key is why.
+retired_out=$(compose exec -T \
   -e DATABASE_URL=postgres://payments:payments@postgres:5432/payments_store_smoke \
   -e JOURNAL_KEY_ID=smoke-v2 \
   -e JOURNAL_SIGNING_KEY=smoke-journal-key-v2-0123456789 \
-  payments /app verify-journal >/dev/null 2>&1; then
+  payments /app verify-journal 2>&1) && {
   echo "smoke: verify-journal accepted a journal signed under a retired key" >&2
   exit 1
-fi
+}
+case "$retired_out" in
+  *'unknown key id "smoke-v1"'*) ;;
+  *) echo "smoke: verify-journal failed, but not because of the retired key: $retired_out" >&2
+     exit 1 ;;
+esac
 
 cd "$ROOT/smoke"
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
