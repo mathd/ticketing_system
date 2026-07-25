@@ -1,0 +1,83 @@
+{
+  "key": "TKT-129",
+  "type": "Task",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "standard",
+  "summary": "Eight Go modules for one deploy unit, with visible dependency drift — collapse or gate on it",
+  "description": "### Finding (architecture review R9, 2026-07-25)\n\nThe repo has eight `go.mod` files (five services, gateway, shared, smoke) under one `go.work`, one repo, one deploy unit. Nothing here is independently versioned or independently consumed. The cost is already visible as drift:\n\n| Dependency | Pinned by |\n|---|---|\n| `go.opentelemetry.io/otel` | access, shared — **not** catalog, inventory, commerce, payments |\n| `github.com/getkin/kin-openapi` | catalog, shared, smoke — the other three take shared's copy transitively |\n\nSo three services run whatever otel and kin-openapi versions `shared` happens to resolve, and a bump in one module silently changes behaviour in three others. Nothing in the gate notices.\n\n### Two acceptable end states\n\n1. **One `go.mod`.** Simplest to live with; touches every Dockerfile, `go.work` and CI job.\n2. **Keep eight, add a drift check to `make check`** that fails when two modules pin different versions of a shared dependency. Smaller diff, ongoing maintenance.\n\nThe plan picks after measuring the Dockerfile/CI blast radius. Either satisfies the COS.\n\n### Acceptance Criteria\n\n- [ ] The shared dependency set (otel, kin-openapi, pgx, nats.go, chi, uuid) is identical across every module — or there is exactly one module.\n- [ ] A future divergence **fails the gate**: by construction if collapsed, by an explicit check if not.\n- [ ] CI and `make check` stay mirrored.\n- [ ] No dependency major is bumped in the same diff.\n- [ ] `make check` and a full `docker compose up` both green, with regenerated code committed **before** the gate run.\n\n**Sequencing note:** do not land concurrently with TKT-126 (which edits `shared/go`).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Eight Go modules in one repo with one deploy unit have produced visible dependency version drift. Either collapse them or make drift fail the gate — silently diverging shared dependencies across services is the failure mode to close."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: making the shared dependency set consistent across modules, by collapsing to one go.mod or by adding a drift check to make check; whichever path is taken, the go.work/Dockerfile/CI consequences are carried through and CI stays mirrored with the local gate. OUT: upgrading any dependency to a new major; changing service boundaries (the modules are a build-layout question, not an architecture one)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Collapse to one module vs keep eight and gate on drift. Collapse is simpler to live with (one dependency set, no check to maintain) but touches every Dockerfile, go.work and CI job; the drift check is a smaller diff that leaves the maintenance. The plan picks after measuring the Dockerfile/CI blast radius. Both satisfy the COS."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Should not land concurrently with TKT-126 (shared/go changes) to avoid a needless conflict — sequencing note, not a blocker."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Whatever path is chosen, the gate is the proof: CI and make check must stay mirrored (working agreement), and regenerated code is committed before the gate run — check-generate diffs against HEAD, so an uncommitted regen reads as drift and burns a gate run. Do not take the opportunity to bump majors; a version-alignment change that also upgrades is unreviewable."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "If the drift check is chosen it is the whole ticket. If collapse is chosen, the first slice is the module merge with go.work removed and every Dockerfile/CI path updated in the same PR — a half-collapsed build is worse than either end state, so this one does not split."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) the shared dependency set (otel, kin-openapi, pgx, nats.go, chi, uuid) is identical across every module, or there is exactly one module; (2) a future divergence fails make check — by construction if collapsed, by an explicit check if not; (3) CI and make check remain mirrored; (4) no dependency major is bumped in the same diff; (5) make check and a full docker compose up both green, with regenerated code committed BEFORE the gate run."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-001 (the Go/TypeScript stack and the single-deploy-unit assumption that makes eight modules unnecessary), ADR-022 (each binary carries a migrate subcommand — a module collapse must not disturb the per-binary entrypoints or the one-shot Compose jobs). Working agreement: make check and CI stay mirrored; commit regenerated code before running the gate (cost two gate runs on TKT-114)."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-002",
+        "date": "2026-07-12",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only. The gateway is the only public surface, with explicit route registration."
+      },
+      {
+        "id": "ADR-022",
+        "date": "2026-07-12",
+        "rule": "Migrations run out-of-band: each binary's `migrate` subcommand, as a one-shot Compose job the service waits on. The server path never migrates."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Architecture review R9 — the finding with the drift table",
+        "link": "docs/reviews/2026-07-25-architecture.md"
+      },
+      {
+        "summary": "The gate that must stay mirrored with CI",
+        "link": "Makefile"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  },
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from the 2026-07-25 architecture review, recommendation **R9** ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)). Lowest-urgency of the six but the one that quietly compounds. Note the explicit no-major-bumps clause: a version-alignment diff that also upgrades is unreviewable."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-129 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review; the drift table was produced by reading all eight go.mod files. **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Collapse to one module vs keep eight and gate on drift. Collapse is simpler to live with (one dependency set, no check to maintain) but touches every Dockerfile, go.work and CI job; the drift check is a smaller diff that leaves the maintenance. The plan picks after measuring the Dockerfile/CI blast radius. Both satisfy the COS.\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    }
+  ]
+}
