@@ -165,10 +165,14 @@ func TestCommittedServiceContractsAreComplete(t *testing.T) {
 // while the public mutation surface was back (ai-review F5).
 func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 	const holdID = "00000000-0000-0000-0000-000000000001"
-	// The gateway's own refusal is net/http's plain-text NotFoundHandler; inventory's
-	// request validator answers JSON. Distinguishing them is the whole point.
-	const byGateway = "404 page not found"
-	const byServiceContract = "no matching operation was found"
+	// The gateway emits a refusal body only it emits; inventory's request validator
+	// emits the contract error. Distinguishing them is the whole point, and it only
+	// works because the gateway's body is NOT http.NotFound's generic "404 page not
+	// found" — which chi and every service can also produce, so asserting it would have
+	// looked like provenance and proved nothing (ai-review pass 2, F1).
+	// Kept in sync by gateway/cmd/gateway/main.go's edgeDeniedBody.
+	const byGateway = `{"error":"refused at the gateway edge"}`
+	const byServiceContract = `{"error":"no matching operation was found"}`
 	tests := []struct {
 		method   string
 		path     string
@@ -210,8 +214,13 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 			if response.StatusCode != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404; body=%s", response.StatusCode, body)
 			}
-			if !strings.Contains(string(body), test.wantBody) {
-				t.Fatalf("404 came from the wrong layer: body=%s, want it to contain %q", body, test.wantBody)
+			// Exact, not substring: the point is which layer answered, and a
+			// substring match would accept a body that merely embeds the marker.
+			if got := strings.TrimSpace(string(body)); got != test.wantBody {
+				t.Fatalf("404 came from the wrong layer: body=%q, want exactly %q", got, test.wantBody)
+			}
+			if got := response.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+				t.Fatalf("content-type=%q, want application/json — a refusal from an unexpected layer", got)
 			}
 		})
 	}
