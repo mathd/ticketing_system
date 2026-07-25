@@ -176,7 +176,11 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 	// sample then matches it — two "consecutive" samples spanning the restart
 	// they exist to detect. Bracketing makes the sample atomic with respect to
 	// restarts: an unequal pair means one happened mid-sample, and the streak
-	// resets.
+	// resets. The bracket compares the start TIME as well as the count
+	// (ai-review R7) — RestartCount alone is not a process identity, since it
+	// resets when the container is recreated, and two samples either side of
+	// such a reset would compare equal. StartedAt is already in hand, so this
+	// costs one comparison.
 	//
 	// The phase deadline is a real context, not just poll's bookkeeping
 	// (ai-review R6): poll only checks `within` between attempts, so with the
@@ -188,11 +192,12 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 		ctx, cancel := context.WithTimeout(parent, within)
 		defer cancel()
 		var latest *jetstream.ConsumerInfo
+		var atStart time.Time
 		seen, at := 0, -1
 		err := poll(within, 500*time.Millisecond, func() error {
 			seen0 := seen
 			seen = 0
-			opened, _, err := restartState(ctx, container)
+			opened, openedAt, err := restartState(ctx, container)
 			if err != nil {
 				return err
 			}
@@ -200,17 +205,19 @@ func TestAccessDurableDeletionTerminatesAndRecovers(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			closed, _, err := restartState(ctx, container)
+			closed, closedAt, err := restartState(ctx, container)
 			if err != nil {
 				return err
 			}
-			if opened != closed {
-				return fmt.Errorf("access restarted during the health sample (%d → %d)", opened, closed)
+			if opened != closed || !openedAt.Equal(closedAt) {
+				return fmt.Errorf("access restarted during the health sample (%d@%s → %d@%s)",
+					opened, openedAt, closed, closedAt)
 			}
-			if seen0 > 0 && closed != at {
-				return fmt.Errorf("access restarted between samples (%d → %d)", at, closed)
+			if seen0 > 0 && (closed != at || !closedAt.Equal(atStart)) {
+				return fmt.Errorf("access restarted between samples (%d@%s → %d@%s)",
+					at, atStart, closed, closedAt)
 			}
-			latest, seen, at = info, seen0+1, closed
+			latest, seen, at, atStart = info, seen0+1, closed, closedAt
 			if seen < 2 {
 				return fmt.Errorf("healthy once; want two consecutive samples")
 			}
