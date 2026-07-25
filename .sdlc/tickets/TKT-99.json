@@ -1,9 +1,9 @@
 {
   "key": "TKT-99",
   "type": "Task",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent:claude-code",
   "pr": null,
