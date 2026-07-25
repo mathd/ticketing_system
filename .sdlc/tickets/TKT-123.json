@@ -1,0 +1,30 @@
+{
+  "key": "TKT-123",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "waitConsume's termination diagnostic can't distinguish durable deletion from any other subscription failure (TKT-99 ai-review R4)",
+  "description": "TKT-99's broker-level test asserts the exact waitConsume diagnostic, but that message covers every async termination (\"durable deleted or subscription terminated\"). The test therefore proves deletion happened and that something terminated the consume context — not that the first caused the second. jetstream distinguishes them (ErrConsumerDeleted, pull.go:722); access does not surface it. Fix is a production diagnostic/readiness-surface change, so it was split out of the test-only ticket.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nSplit out of TKT-99's ai-review as an incidental finding (R4, medium) — real, but its fix is a\nproduction change that a test-only ticket had no business making.\n\n**The finding.** TKT-99's smoke test proves durable deletion terminates the access consumer by\nasserting the exact diagnostic access writes:\n\n> `access: access-slot-policy: consume context closed (durable deleted or subscription terminated)`\n\nThat message is produced by `consumer.waitConsume` for *any* async termination. So the test proves\n(a) we deleted the durable and (b) *something* terminated the consume context — not that (a) caused\n(b). A coincident NATS connection or subscription failure inside the 15s window would satisfy both\ncounters even if durable deletion had stopped closing `ConsumeContext.Closed()` entirely. The\nstrongest form of the test is currently unreachable from outside the process.\n\n**Why it is small in practice, and still worth closing.** The window is 15s, the smoke stack is a\nsingle-node hermetic broker, and a broker failure would break the rest of the suite loudly. But the\ntest's whole value is causal, and it is one indistinguishable log line away from being decorative.\n\n**Shape of the fix.** `waitConsume` receives only a closed channel, so it cannot name the cause.\n`jetstream` exposes it: `ErrConsumerDeleted` is what `pull.go:722` treats as terminal. Surfacing\nthe terminal error — via the consume error handler, or by having the caller record the last\nterminal error alongside the latch — would let both the log line and the test say *deleted*\nspecifically. That is a change to ADR-017's readiness/termination surface and to a diagnostic\noperators read, so it wants its own plan and its own review.\n\n**Also worth deciding in the same ticket:** whether the two `waitConsume` callers should report\ndistinguishable reasons at all, or whether \"terminated, and here is the underlying error\" is\nenough. TKT-97 deliberately kept the message coarse; this is a revisit of that call, not a bug in it.\n\nCode pointers: `services/access/internal/consumer/run.go` (`waitConsume`),\n`services/access/internal/consumer/policy.go:212`, `consumer.go:429`,\n`smoke/access_consumer_test.go` (`policyTermination`, the assertion that would tighten).\nGoverning ADR: ADR-017 §5b (§236-241).\n"
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      "ADR-017"
+    ],
+    "reference": [
+      {
+        "summary": "consumer/run.go waitConsume; smoke/access_consumer_test.go policyTermination",
+        "link": "TKT-99 ai-review R4"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  }
+}
