@@ -1,15 +1,15 @@
 {
   "key": "TKT-124",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 114,
     "url": "https://github.com/mathd/ticketing_system/pull/114",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "complex",
   "summary": "Inventory hold transitions (confirm/finalize/release) are guarded only by a gateway path-suffix denylist — make the boundary structural",
