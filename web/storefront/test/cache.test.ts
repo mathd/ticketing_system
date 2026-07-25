@@ -46,6 +46,25 @@ describe('PageDataCache', () => {
     expect(result.ageSeconds).toBe(0);
   });
 
+  it('sweeps expired entries on insert so the map cannot grow unbounded', async () => {
+    const fetchSpy = vi.fn(async () => jsonResponse({ ok: true }, 'public, max-age=300'));
+    let nowMs = 0;
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => nowMs);
+
+    // A crawl over pages that are each read exactly once.
+    for (let i = 0; i < 50; i++) {
+      await cache.get(`http://gw/api/catalog/public/events/${i}`);
+    }
+    expect(cache.size).toBe(50);
+
+    nowMs = 300_000; // every entry above is now expired
+    await cache.get('http://gw/api/catalog/public/events/fresh');
+
+    // Without the sweep this would be 51: the 50 stale entries are never
+    // revisited, so nothing would ever release them.
+    expect(cache.size).toBe(1);
+  });
+
   it('keys by the FULL url — /events/A never serves /events/B (plan-review finding 1)', async () => {
     const fetchSpy = vi.fn(async (url: string) =>
       jsonResponse({ id: new URL(url).pathname }, 'public, max-age=300'),

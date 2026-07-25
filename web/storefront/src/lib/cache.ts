@@ -50,6 +50,11 @@ export class PageDataCache {
     this.#now = now;
   }
 
+  /** Live entry count. Exposed so the sweep is observable in tests. */
+  get size(): number {
+    return this.#entries.size;
+  }
+
   /** Fetch-through cache: one upstream call per URL per max-age window. */
   async get<T>(url: string): Promise<CachedResult<T>> {
     const nowMs = this.#now();
@@ -72,6 +77,21 @@ export class PageDataCache {
     return flight;
   }
 
+  /**
+   * Drop every expired entry. Without this the map only ever loses an entry
+   * when that exact URL is read again, so a long-lived SSR process over a
+   * large catalog grows monotonically — pages read once during a crawl are
+   * never revisited and never released. Called on insert, which is the only
+   * moment the map grows.
+   */
+  #sweep(nowMs: number): void {
+    for (const [key, entry] of this.#entries) {
+      if ((nowMs - entry.fetchedAtMs) / 1000 >= entry.maxAgeSeconds) {
+        this.#entries.delete(key);
+      }
+    }
+  }
+
   async #fetchThrough<T>(url: string, nowMs: number): Promise<CachedResult<T>> {
     const response = await this.#fetch(url, { headers: { accept: 'application/json' } });
     if (!response.ok) {
@@ -80,6 +100,7 @@ export class PageDataCache {
     const maxAgeSeconds = parseMaxAge(response.headers.get('cache-control'));
     const data = (await response.json()) as T;
     if (maxAgeSeconds > 0) {
+      this.#sweep(this.#now());
       this.#entries.set(url, { data, fetchedAtMs: nowMs, maxAgeSeconds });
     }
     return { data, ageSeconds: 0, maxAgeSeconds };
