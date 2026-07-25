@@ -1,0 +1,97 @@
+{
+  "key": "TKT-126",
+  "type": "Task",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "complex",
+  "summary": "One domain-event envelope in shared/go — the type and ADR-017's decode rules are re-implemented at 6+ sites",
+  "description": "### Finding (architecture review R3, 2026-07-25)\n\nThe platform envelope is declared independently at:\n\n| Site | Form |\n|---|---|\n| `services/catalog/internal/events/events.go:32` | full `Envelope` struct |\n| `services/commerce/internal/events/events.go:17` | full `Envelope` struct |\n| `services/access/internal/consumer/consumer.go` | 3 partial decode structs (`:50`, `:159`, `:174`) |\n| `services/inventory/internal/consumer/consumer.go` | 2 partial decode structs (`:66`, `:178`) |\n| `services/access/internal/store/{scan,lifecycle,reconcile}.go` | inline anonymous structs |\n\nADR-017's two load-bearing rules — **dispatch on `schema` before decoding `data`**, and **`schema <= 0` is a broken envelope, not the future** — are therefore re-derived at each decode site. AGENTS.md already records the consequence: TKT-61 shipped the ordering bug **twice**, past a mutation-checked test suite and a full review pass. Duplication is the mechanism.\n\nThis is the one place where the review recommends *adding* to `shared/go` despite the thin-kernel rule. The rule is right; this and TKT-127 are what earned their way in.\n\n### The trap this ticket must not fall into\n\nADR-017 names it: **a fixture built from the type under test cannot fail** — it encodes the compatibility it claims to prove. The golden bytes proving the wire is unchanged must be captured from the **current** emitters *before* the refactor and pinned as literals. Regenerating them from the new shared type proves nothing.\n\n### Acceptance Criteria\n\n- [ ] One `Envelope` declaration remains repo-wide; per-subject payload types stay in their owning service.\n- [ ] `DecodeEnvelope` enforces `schema`-first dispatch and rejects `schema <= 0` as a broken envelope (terminate; must not touch readiness). Both have tests.\n- [ ] Golden literals captured from the pre-refactor emitters prove every published subject is byte-for-byte identical afterwards.\n- [ ] An ADR records the `shared/go` addition — the working agreement requires one, and it lands in this ticket, not a follow-up.\n- [ ] `make check` green with the existing event/consumer suites unmodified.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The domain-event envelope and ADR-017's decode rules are re-implemented at 6+ independent sites. TKT-61 shipped the same ordering bug twice past a mutation-checked suite and a full review pass; duplicated rules are why. Collapse them to one implementation."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: an Envelope type and a DecodeEnvelope helper in shared/go that enforce ADR-017 §5b′ (dispatch on `schema` before decoding `data`) and the bottom end (`schema <= 0` is a broken envelope, terminate — do not let it touch readiness); replacing the local declarations in catalog/events, commerce/events, access/consumer (x3), inventory/consumer (x2) and the inline structs in access/store/{scan,lifecycle,reconcile}.go; the ADR recording the shared/go addition. OUT: the per-subject payload types (they stay in their owning service); the consumer run-loop skeleton (TKT-127); any wire change."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the deterministic-id / dedup-key helpers move with the envelope or stay per-service. Catalog derives ids five different ways (live, backfill, closure, archive, seat-map) with domain-specific keys; the shared piece may be only the SHA1-over-key primitive. A plan-time call, no impact on the COS."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Blocks TKT-127 (the consumer skeleton, which needs this type to exist first) — linked."
+    },
+    "approach": {
+      "state": "met",
+      "note": "The working agreement requires an ADR for any shared/go addition; write it as part of this ticket, not after. The critical safety property is that the wire is byte-identical afterwards — prove it with golden literals over real emitted bytes. ADR-017's own trap applies directly here: a fixture built from the type under test cannot fail. The golden bytes must be captured from the CURRENT emitters before the refactor and pinned as literals, not regenerated from the new shared type."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The shared type + DecodeEnvelope + the ADR + migrating the two publisher sites (catalog, commerce) with byte-identical golden proof. The consumer-side decode sites can follow in the same PR if the diff stays inside the ~400-line budget; if not, split the consumer migration out."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) one Envelope declaration remains in the repo — a grep for `json:\"schema\"` finds the shared type and per-subject payloads, not competing envelopes; (2) DecodeEnvelope refuses `schema <= 0` as a broken envelope and dispatches on `schema` before decoding `data`, with tests for both; (3) golden literals captured from the pre-refactor emitters prove the wire is byte-for-byte unchanged, and those literals are NOT generated from the new type; (4) an ADR records the shared/go addition per the working agreement; (5) make check green, including the existing event and consumer suites unmodified."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-017 (the rules being centralized — §5b′ dispatch order, the `schema <= 0` bottom end, the fixture-built-from-the-type-under-test trap, and the TKT-61 history of shipping the ordering bug twice), ADR-009 (the envelope shape is contract, id/type/occurred_at/schema/data), ADR-002 (shared/go additions require an ADR — that requirement is why the ADR is in scope here, not a follow-up)."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-017",
+        "date": "2026-07-12",
+        "rule": "Domain event schema evolution: bump on consumer semantics, not parse compatibility. A consumer must dispatch on `schema` before decoding `data`. The poison/skew line has a bottom end (`schema <= 0` is a broken envelope, not the future). A fixture built from the type under test cannot fail."
+      },
+      {
+        "id": "ADR-009",
+        "date": "2026-07-12",
+        "rule": "APIs are contract-first: the OpenAPI spec is the source of truth, served by the service at /openapi.yaml and checked for drift in the gate; domain events use a versioned platform envelope (id, type==subject, occurred_at, schema, data) published to JetStream with acks (never fire-and-forget), with a deterministic envelope id so retried/raced emissions de-duplicate."
+      },
+      {
+        "id": "ADR-002",
+        "date": "2026-07-12",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only. The gateway is the only public surface, with explicit route registration."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Architecture review R3 — the finding with every call site enumerated",
+        "link": "docs/reviews/2026-07-25-architecture.md"
+      },
+      {
+        "summary": "ADR-017 — the rules being centralized, and the traps",
+        "link": "docs/adr/ADR-017-domain-event-schema-evolution.md"
+      },
+      {
+        "summary": "The largest publisher site, with five id-derivation variants",
+        "link": "services/catalog/internal/events/events.go"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  },
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-127"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from the 2026-07-25 architecture review, recommendation **R3** ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)). Blocks TKT-127 (the consumer skeleton). The ADR is IN scope — the working agreement gates shared/go additions on one. Code pointers are enumerated in the description table."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-126 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review's code-seam survey; the call sites were enumerated by grep and the two publisher packages read in full. **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Whether the deterministic-id / dedup-key helpers move with the envelope or stay per-service. Catalog derives ids five different ways (live, backfill, closure, archive, seat-map) with domain-specific keys; the shared piece may be only the SHA1-over-key primitive. A plan-time call, no impact on the COS.\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    }
+  ]
+}
