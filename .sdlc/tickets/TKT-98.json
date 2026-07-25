@@ -1,9 +1,9 @@
 {
   "key": "TKT-98",
   "type": "Task",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "claude-opus-5",
   "pr": null,
