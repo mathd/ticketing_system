@@ -46,10 +46,10 @@ func (s *Server) Router(log *slog.Logger) http.Handler {
 	})
 	r.Post("/holds", s.create)
 	r.Post("/holds/seats", s.createSeatHold)
-	r.Post("/holds/{id}/confirm", s.transition("confirmed"))
-	r.Post("/holds/{id}/finalize", s.transition("finalizing"))
-	r.Post("/holds/{id}/release", s.transition("released"))
 	r.Get("/slots/{id}/availability", s.availability)
+	r.Post("/internal/holds/{id}/confirm", s.internalOnly(s.transition("confirmed")))
+	r.Post("/internal/holds/{id}/finalize", s.internalOnly(s.transition("finalizing")))
+	r.Post("/internal/holds/{id}/release", s.internalOnly(s.transition("released")))
 	r.Post("/internal/operational-holds", s.internalOnly(s.opPlace))
 	r.Post("/internal/operational-holds/{id}/release", s.internalOnly(s.opRelease))
 	r.Post("/internal/operational-holds/{id}/convert", s.internalOnly(s.opConvert))
@@ -204,12 +204,10 @@ func (s *Server) createSeatHold(w http.ResponseWriter, r *http.Request) {
 	write(w, code, seatHoldResponse{Claim: sh.Claim, Seats: sh.Seats})
 }
 
+// transition is mounted behind internalOnly (TKT-124) — it does not re-check the
+// credential itself. Mount it anywhere else and it is unguarded.
 func (s *Server) transition(target string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.credential == "" || r.Header.Get("X-Internal-Token") != s.credential {
-			write(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
 		id, err := parseUUID(chi.URLParam(r, "id"))
 		if err != nil {
 			write(w, 400, map[string]string{"error": "invalid hold id"})

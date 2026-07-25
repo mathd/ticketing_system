@@ -88,7 +88,7 @@ func TestInventoryStopsOfferingArchivedAndClosedSlots(t *testing.T) {
 
 	// The pre-closure hold still finalizes and confirms: closure revokes nothing.
 	for _, step := range []string{"finalize", "confirm"} {
-		if code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/holds/%s/%s?organizer_id=%s", inventoryURL, live.ID, step, organizerID), "", nil); code != 200 {
+		if code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/%s?organizer_id=%s", inventoryURL, live.ID, step, organizerID), "", nil); code != 200 {
 			t.Fatalf("%s pre-closure hold: %d %s", step, code, body)
 		}
 	}

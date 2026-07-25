@@ -478,12 +478,10 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	// released and the full capacity can be reacquired.
 	_ = reserveCheckout(t, timeoutTicketType, "reserve-after-timeout")
 
-	for _, transition := range []string{"confirm", "finalize", "release"} {
-		transitionCode, _ := postWithKey(t, gatewayURL+"/api/inventory/holds/"+fmt.Sprint(reservation["hold_id"])+"/"+transition+"?organizer_id="+organizerID, "", nil)
-		if transitionCode != http.StatusNotFound {
-			t.Fatalf("public inventory %s status = %d, want 404", transition, transitionCode)
-		}
-	}
+	// The public-denial assertion for the hold transitions lives in
+	// TestGatewayDeniesGenericInternalRoutes (TKT-124): it needs raw http.Client,
+	// because postWithKey contract-validates every /api/<svc>/ response and the
+	// retired paths have no operation left in inventory's spec to validate against.
 	// Released claims are terminal, so retry means reacquiring a fresh hold.
 	_ = reserveCheckout(t, ticketType, "reserve-retry")
 }

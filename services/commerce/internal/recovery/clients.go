@@ -217,7 +217,7 @@ func (c HTTPClients) LookupOperation(ctx context.Context, org uuid.UUID, key str
 }
 
 func (c HTTPClients) Confirm(ctx context.Context, org, hold uuid.UUID) error {
-	u := fmt.Sprintf("%s/holds/%s/confirm?organizer_id=%s", c.InventoryURL, hold, org)
+	u := fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", c.InventoryURL, hold, org)
 	code, err := c.do(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return err
@@ -241,7 +241,7 @@ func (c HTTPClients) Confirm(ctx context.Context, org, hold uuid.UUID) error {
 var ErrClaimNotReleasable = errors.New("inventory claim cannot be released")
 
 func (c HTTPClients) Release(ctx context.Context, org, hold uuid.UUID) error {
-	u := fmt.Sprintf("%s/holds/%s/release?organizer_id=%s", c.InventoryURL, hold, org)
+	u := fmt.Sprintf("%s/internal/holds/%s/release?organizer_id=%s", c.InventoryURL, hold, org)
 	code, err := c.do(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return err

@@ -64,13 +64,6 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	if status == http.StatusNotFound && strings.HasPrefix(path, "internal/") {
 		return
 	}
-	if service == "inventory" && status == http.StatusNotFound {
-		for _, suffix := range []string{"/confirm", "/finalize", "/release"} {
-			if strings.HasSuffix(strings.TrimSuffix(request.URL.Path, "/"), suffix) {
-				return
-			}
-		}
-	}
 	contract := loadContract(service)
 	if contract.err != nil {
 		t.Fatalf("load %s contract: %v", service, contract.err)
@@ -149,7 +142,25 @@ func TestCommittedServiceContractsAreComplete(t *testing.T) {
 	}
 }
 
+// TestGatewayDeniesGenericInternalRoutes drives raw http.Client on purpose: these
+// responses are refusals, not service responses, so they must not go through
+// validateServiceResponse (a path the gateway refuses has no operation to validate
+// against, and the helper would fail on the contract lookup rather than on the status).
+//
+// Two different controls are asserted here and they prove different things (TKT-124):
+//
+//   - /api/<svc>/internal/... — refused AT THE EDGE by the gateway's explicit
+//     prefix+"internal/" NotFoundHandler registration, before any proxying. This is the
+//     boundary. It holds for routes that exist and are simply not public.
+//   - the retired /api/inventory/holds/{id}/<transition> paths — refused because the
+//     route no longer exists: the gateway proxies them, and inventory's OpenAPI request
+//     validator 404s a path absent from its spec. This proves the old public surface is
+//     gone and no compatibility alias came back — it is NOT an edge control.
+//
+// Both are 404. Only the first is the security boundary; conflating them is exactly the
+// overclaim docs/learnings/2026-07-15-name-what-a-control-reaches.md warns about.
 func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
+	const holdID = "00000000-0000-0000-0000-000000000001"
 	tests := []struct {
 		method string
 		path   string
@@ -158,6 +169,16 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email"},
 		{http.MethodPost, "/api/payments/internal/facts"},
 		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments"},
+		// The boundary, on the transitions themselves.
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/confirm"},
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/finalize"},
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/release"},
+		// The retired public paths, with a valid organizer_id so that a surviving
+		// route would answer 401/409 rather than a validation 400 — i.e. so this
+		// assertion can actually fail if the surface comes back.
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/confirm?organizer_id=" + organizerID},
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/finalize?organizer_id=" + organizerID},
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/release?organizer_id=" + organizerID},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {

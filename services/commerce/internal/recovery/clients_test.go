@@ -35,7 +35,15 @@ func TestInventoryStatusMapping(t *testing.T) {
 		{"confirm of a missing claim", "confirm", http.StatusNotFound, ErrClaimGone},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			org, hold := uuid.New(), uuid.New()
+			// Pin the request line, not just the status mapping. Inventory answers 404 on
+			// an unknown path, and 404 is a *meaningful* status to both verbs — so a stale
+			// URL here reads as "the claim is gone" and silently discharges an obligation
+			// that was never discharged. Without this assertion the fake answers any path,
+			// and no unit test in the repo would notice the transitions moving (TKT-124).
+			var gotPath, gotQuery, gotToken string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotQuery, gotToken = r.URL.Path, r.URL.RawQuery, r.Header.Get("X-Internal-Token")
 				w.WriteHeader(tc.status)
 			}))
 			defer srv.Close()
@@ -43,9 +51,19 @@ func TestInventoryStatusMapping(t *testing.T) {
 			c := HTTPClients{Client: srv.Client(), InventoryURL: srv.URL, Token: "t"}
 			var err error
 			if tc.verb == "release" {
-				err = c.Release(context.Background(), uuid.New(), uuid.New())
+				err = c.Release(context.Background(), org, hold)
 			} else {
-				err = c.Confirm(context.Background(), uuid.New(), uuid.New())
+				err = c.Confirm(context.Background(), org, hold)
+			}
+
+			if want := "/internal/holds/" + hold.String() + "/" + tc.verb; gotPath != want {
+				t.Fatalf("path = %q, want %q", gotPath, want)
+			}
+			if want := "organizer_id=" + org.String(); gotQuery != want {
+				t.Fatalf("query = %q, want %q", gotQuery, want)
+			}
+			if gotToken != "t" {
+				t.Fatalf("X-Internal-Token = %q, want %q", gotToken, "t")
 			}
 
 			if tc.want == nil {

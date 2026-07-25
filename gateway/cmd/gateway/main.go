@@ -117,19 +117,7 @@ func run() error {
 				pr.SetXForwarded()
 			},
 		}
-		var handler http.Handler = proxy
-		if prefix == "/api/inventory/" {
-			handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				for _, transition := range []string{"/finalize", "/confirm", "/release"} {
-					if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), transition) {
-						http.NotFound(w, r)
-						return
-					}
-				}
-				proxy.ServeHTTP(w, r)
-			})
-		}
-		mux.Handle(prefix, handler)
+		mux.Handle(prefix, proxy)
 	}
 
 	srv := &http.Server{

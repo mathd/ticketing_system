@@ -28,21 +28,6 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
-  /holds/{id}/confirm:
-    post:
-      operationId: confirmHold
-      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
-      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
-  /holds/{id}/finalize:
-    post:
-      operationId: finalizeHold
-      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
-      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
-  /holds/{id}/release:
-    post:
-      operationId: releaseHold
-      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
-      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
   /slots/{id}/availability:
     get:
       operationId: getAvailability
@@ -56,6 +41,25 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  # The hold transitions are service-to-service only: commerce drives them, never a
+  # public caller. They sit under /internal/ so the gateway refuses them at the edge by
+  # the same explicit prefix registration that covers every other internal route, rather
+  # than by matching path suffixes (TKT-124).
+  /internal/holds/{id}/confirm:
+    post:
+      operationId: confirmHold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
+  /internal/holds/{id}/finalize:
+    post:
+      operationId: finalizeHold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
+  /internal/holds/{id}/release:
+    post:
+      operationId: releaseHold
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
   /internal/operational-holds:
     post:
       operationId: placeOperationalHold
