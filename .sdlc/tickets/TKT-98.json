@@ -1,10 +1,8 @@
 {
   "key": "TKT-98",
   "type": "Task",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "claude-opus-5",
   "pr": {
     "number": 111,
