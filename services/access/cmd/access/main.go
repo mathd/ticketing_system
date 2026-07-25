@@ -237,7 +237,10 @@ func run() error {
 		return err
 	}
 	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log, consumerOptions)
-	consumerErr := make(chan error, 1)
+	// One slot per producer below. At capacity 1 the second consumer to fail
+	// blocks on the send, and its error — which may be a genuine failure, not a
+	// shutdown cancellation — is never observable by awaitShutdown (ai-review R1).
+	consumerErr := make(chan error, 2)
 	go func() { consumerErr <- cons.Run(ctx) }()
 	// The slot-policy projector (TKT-87): its DeliverAll durable replays the
 	// publication history, so pass policies backfill on first boot for free.
@@ -288,14 +291,58 @@ func run() error {
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
 
+	return awaitShutdown(ctx, errCh, consumerErr, srv.Shutdown)
+}
+
+// awaitShutdown blocks until the server fails, a consumer fails, or the signal
+// context is canceled, and returns the error the process should exit with.
+// Split out of run() so the both-branches-ready case is testable at all: run()
+// itself needs Postgres, NATS and a bound port.
+func awaitShutdown(ctx context.Context, srvErr, consumerErr <-chan error, shutdown func(context.Context) error) error {
 	select {
-	case err := <-errCh:
+	case err := <-srvErr:
 		return err
 	case err := <-consumerErr:
-		return err
+		// A Run tail that unwound because we asked it to is not a failure.
+		// Reporting it exited non-zero on roughly half of clean shutdowns,
+		// since this branch and ctx.Done() go ready together on SIGTERM and
+		// select picks between them at random (TKT-98).
+		if !isShutdownConsumerError(ctx, err) {
+			return err
+		}
 	case <-ctx.Done():
-		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(sctx)
 	}
+	// Both paths above arrive here on a shutdown-caused exit, and either can
+	// leave a second consumer's error still queued — consumerErr is shared and
+	// a select takes one value. Drain everything that has arrived so a genuine
+	// failure racing the signal still takes the process down, whichever branch
+	// won the flip (ai-review R1).
+	//
+	// A snapshot, deliberately: it cannot see an error that arrives after the
+	// drain. Closing that last window means blocking shutdown until both
+	// consumers have terminated, which trades a missed exit code on an
+	// operator-requested stop for a stop a wedged consumer can delay.
+drained:
+	for {
+		select {
+		case err := <-consumerErr:
+			if !isShutdownConsumerError(ctx, err) {
+				return err
+			}
+		default:
+			break drained
+		}
+	}
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return shutdown(sctx)
+}
+
+// isShutdownConsumerError reports whether err is a consumer's Run unwinding
+// because this process's signal context was canceled. errors.Is rather than a
+// match on the "consumer stopped" prefix: the policy projector has a third
+// cancellation exit — cons.Info during the initial backlog drain — that returns
+// a nats-wrapped context.Canceled carrying no prefix at all.
+func isShutdownConsumerError(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
