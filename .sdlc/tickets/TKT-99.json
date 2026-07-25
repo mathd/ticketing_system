@@ -1,8 +1,10 @@
 {
   "key": "TKT-99",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent:claude-code",
   "pr": null,
   "summary": "access smoke: broker-level proof that durable deletion flips /readyz (or exits) — end-to-end for TKT-97",
