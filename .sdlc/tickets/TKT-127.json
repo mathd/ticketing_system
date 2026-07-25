@@ -1,0 +1,97 @@
+{
+  "key": "TKT-127",
+  "type": "Task",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "complex",
+  "summary": "Lift the shared durable-consumer skeleton — inventory and access implement the same protocol twice",
+  "description": "### Finding (architecture review R13, 2026-07-25)\n\n`services/inventory/internal/consumer` and `services/access/internal/consumer` independently implement the same durable-consumer protocol:\n\n- the consume loop and its termination handling (`waitConsume` and its equivalent),\n- the readiness latch, including the serialization inventory added in TKT-90 to close the quarantine/latch race,\n- quarantine-on-unknown-schema,\n- backoff and `MaxDeliver` policy,\n- envelope dedup on the deterministic id.\n\nSame protocol, different code, different bugs — and the open backlog already shows it: TKT-121 (inventory's shutdown reports a clean exit as a consumer error), TKT-122 (access drains only already-arrived consumer errors) and TKT-123 (waitConsume's diagnostic can't distinguish causes) are three tickets against two copies of one loop.\n\n### The constraint that matters\n\nThis is a refactor **behind existing tests**. The guarantees proven by TKT-90, TKT-97 and TKT-99 — and ADR-017's rule that termination is loudly unready and never self-heals — must survive. A test that has to be rewritten to pass is not a chore; it means a guarantee moved, and it gets investigated before anything is edited.\n\n### Acceptance Criteria\n\n- [ ] The consume loop, termination handling and readiness latch exist once and are consumed by both services.\n- [ ] Each service keeps only its per-subject handlers and its own quarantine store behind an interface.\n- [ ] TKT-90, TKT-97 and TKT-99's tests pass **unmodified**.\n- [ ] The `schema <= 0` bottom-end rule and the must-not-touch-readiness clause survive verbatim.\n- [ ] `make check` green.\n\n**Blocked by TKT-126** — the skeleton decodes envelopes, so the shared envelope lands first.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "inventory and access each implement the same durable-consumer protocol — readiness latching, quarantine on unknown schema, backoff policy, envelope dedup, consume-context termination — as independent code with independent bugs. Lift the skeleton so one fix reaches both."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: lifting the consume loop, waitConsume/termination handling, the readiness latch and its serialization, backoff/MaxDeliver policy parsing, and envelope dedup into shared/go/events; leaving the per-subject handlers and the per-service quarantine store behind an interface. OUT: the envelope type itself (TKT-126); changing any readiness or termination GUARANTEE; the quarantine table schemas (they stay per-service)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "How much of the quarantine contract generalizes. The two services quarantine into different tables with different columns, and inventory additionally latches readiness off pending quarantine while access does not. The shared piece may be an interface plus the latch, with the store contract staying per-service. Plan-time call; the COS holds either way."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-126 — the skeleton decodes envelopes, so the shared envelope type must exist first. Linked."
+    },
+    "approach": {
+      "state": "met",
+      "note": "This is a refactor behind existing tests, not a redesign. Every guarantee currently proven — TKT-90's readiness/skew reorder, TKT-97's reaction to ConsumeContext.Closed(), TKT-99's broker-level durable-deletion proof, ADR-017's loudly-unready-on-termination rule — must still be proven by its existing test, ideally unmodified. A test that needs rewriting to pass is a signal the guarantee moved, and must be treated as a finding, not a chore."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Lift the smallest genuinely-identical piece first: waitConsume plus the readiness latch (already near-identical between the two services). Quarantine and backoff follow only if the first slice shows the interface holds. If the two quarantine paths turn out not to generalize, stopping after the first slice is an acceptable close — record why in the ticket."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) the consume loop, termination handling and readiness latch exist once, consumed by both inventory and access; (2) each service retains only per-subject handlers and its own quarantine store; (3) TKT-90, TKT-97 and TKT-99's tests pass UNMODIFIED — any test that needs editing is investigated as a moved guarantee before it is edited; (4) the `schema <= 0` bottom-end rule and the must-not-touch-readiness clause survive verbatim; (5) make check green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-017 (§ the loudly-unready-on-durable-deletion guarantee, the poison/skew line and its bottom end, the readiness clause), ADR-009 (acked publishes, deterministic ids, dedup), ADR-022 (out-of-band migrations — the quarantine tables stay per-service and keep their own migration ownership). Prior work whose guarantees must survive: TKT-90 (readiness/skew reorder race), TKT-97 (waitConsume reaction), TKT-99 (broker-level durable-deletion proof)."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-017",
+        "date": "2026-07-12",
+        "rule": "Domain event schema evolution: bump on consumer semantics, not parse compatibility. A consumer must dispatch on `schema` before decoding `data`. The poison/skew line has a bottom end (`schema <= 0` is a broken envelope, not the future). A fixture built from the type under test cannot fail."
+      },
+      {
+        "id": "ADR-009",
+        "date": "2026-07-12",
+        "rule": "APIs are contract-first: the OpenAPI spec is the source of truth, served by the service at /openapi.yaml and checked for drift in the gate; domain events use a versioned platform envelope (id, type==subject, occurred_at, schema, data) published to JetStream with acks (never fire-and-forget), with a deterministic envelope id so retried/raced emissions de-duplicate."
+      },
+      {
+        "id": "ADR-022",
+        "date": "2026-07-12",
+        "rule": "Migrations run out-of-band: each binary's `migrate` subcommand, as a one-shot Compose job the service waits on. The server path never migrates."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Architecture review R13 — the finding",
+        "link": "docs/reviews/2026-07-25-architecture.md"
+      },
+      {
+        "summary": "The two implementations",
+        "link": "services/inventory/internal/consumer/"
+      },
+      {
+        "summary": "The termination guarantee whose test must survive unmodified",
+        "link": "services/access/internal/consumer/run.go"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-126"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from the 2026-07-25 architecture review, recommendation **R13** ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)). Follow-on to TKT-126. Worth noting for whoever plans it: TKT-121, TKT-122 and TKT-123 are all open bugs in these two duplicated loops — landing this may absorb or reshape them, and the planner should check before treating them as independent."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-127 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review's code-seam survey; both consumer packages were read. **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — How much of the quarantine contract generalizes. The two services quarantine into different tables with different columns, and inventory additionally latches readiness off pending quarantine while access does not. The shared piece may be an interface plus the latch, with the store contract staying per-service. Plan-time call; the COS holds either way.\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    }
+  ]
+}
