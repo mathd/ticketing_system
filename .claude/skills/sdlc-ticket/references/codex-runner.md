@@ -31,7 +31,11 @@ node "$CODEX" adversarial-review --base origin/main --scope branch "<focus: what
   `review`/`adversarial-review` unconditionally call `runForegroundCommand`; only `task` honours
   it). `status`/`result` polling does **not** work for review jobs, and a stalled review blocks
   the caller. Instead: background the review through the harness
-  (`Bash(..., run_in_background: true)`) or wrap it in `timeout` so a hang is caught. `--wait`
+  (`Bash(..., run_in_background: true)`) or wrap it in `timeout` so a hang is caught — but note
+  **`timeout` is not on macOS** (it is GNU coreutils; `gtimeout` only if the user installed it), and
+  a missing binary makes the whole call exit 127 having never reached the model. Prefer harness
+  backgrounding, which works everywhere; that is a harness failure, not a rung failure, so re-launch
+  rather than escalating the ladder (TKT-99). `--wait`
   is equally redundant — foreground is the only mode.
 
 ## Prompt files — materialized, never interpolated

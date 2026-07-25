@@ -123,3 +123,9 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   declared). Both TKT-80 plan drafts over-scoped the catalog pin endpoint as an OpenAPI change —
   check the target service's existing `/internal/*` routes before planning. See
   `docs/learnings/2026-07-21-catalog-internal-routes-are-hand-mounted-outside-openapi.md`. (TKT-80, PR #86)
+- [**A coarse observable can be produced by the broken version too**](./learnings/2026-07-25-coarse-observables-pass-the-broken-build.md) —
+  a test asserting a downstream consequence (process exited, container restarted) may be satisfied by
+  the very defect it exists to catch. Mutating `waitConsume` to swallow its error still restarted the
+  container; only the durable-named diagnostic stayed red. Pair a coarse signal with one only the
+  correct path emits — and you find this by *running* the mutation, not by reading the test.
+  (TKT-99, PR #112)
