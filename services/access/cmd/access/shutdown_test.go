@@ -81,6 +81,45 @@ func TestAwaitShutdownReturnsRealConsumerFailure(t *testing.T) {
 	}
 }
 
+// The topology run() actually has: two consumers sharing one channel. When one
+// unwinds on cancellation and the other dies of something real, the real one
+// must decide the exit code — whichever order they land in, and whichever
+// branch select happens to take. This is why consumerErr has a slot per
+// producer: at capacity 1 the second failure blocks on the send and nothing can
+// observe it (ai-review R1).
+func TestAwaitShutdownPrefersRealFailureOverCancellation(t *testing.T) {
+	durableGone := errors.New("access-slot-policy: consume context closed (durable deleted or subscription terminated)")
+	canceled := fmt.Errorf("consumer stopped: %w", context.Canceled)
+
+	orders := map[string][]error{
+		"cancellation queued first": {canceled, durableGone},
+		"real failure queued first": {durableGone, canceled},
+	}
+
+	for name, queued := range orders {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < races; i++ {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+
+				// Capacity 2 — one slot per producer, matching run().
+				consumerErr := make(chan error, len(queued))
+				for _, err := range queued {
+					consumerErr <- err
+				}
+				shutdown := func(context.Context) error {
+					t.Errorf("exited clean while a consumer had really failed (iteration %d)", i)
+					return nil
+				}
+
+				if err := awaitShutdown(ctx, make(chan error, 1), consumerErr, shutdown); !errors.Is(err, durableGone) {
+					t.Fatalf("awaitShutdown returned %v, want %v (iteration %d)", err, durableGone, i)
+				}
+			}
+		})
+	}
+}
+
 // Pins the branch the fix does not touch, so the extraction out of run() is
 // shown to be behavior-preserving rather than assumed to be.
 func TestAwaitShutdownReturnsServerError(t *testing.T) {

@@ -237,7 +237,10 @@ func run() error {
 		return err
 	}
 	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log, consumerOptions)
-	consumerErr := make(chan error, 1)
+	// One slot per producer below. At capacity 1 the second consumer to fail
+	// blocks on the send, and its error — which may be a genuine failure, not a
+	// shutdown cancellation — is never observable by awaitShutdown (ai-review R1).
+	consumerErr := make(chan error, 2)
 	go func() { consumerErr <- cons.Run(ctx) }()
 	// The slot-policy projector (TKT-87): its DeliverAll durable replays the
 	// publication history, so pass policies backfill on first boot for free.
@@ -308,15 +311,26 @@ func awaitShutdown(ctx context.Context, srvErr, consumerErr <-chan error, shutdo
 			return err
 		}
 	case <-ctx.Done():
-		// The other side of that same coin flip: drain an already-waiting
-		// consumer error so a genuine failure landing at the signal instant
-		// still takes the process down, whichever branch happened to win.
+	}
+	// Both paths above arrive here on a shutdown-caused exit, and either can
+	// leave a second consumer's error still queued — consumerErr is shared and
+	// a select takes one value. Drain everything that has arrived so a genuine
+	// failure racing the signal still takes the process down, whichever branch
+	// won the flip (ai-review R1).
+	//
+	// A snapshot, deliberately: it cannot see an error that arrives after the
+	// drain. Closing that last window means blocking shutdown until both
+	// consumers have terminated, which trades a missed exit code on an
+	// operator-requested stop for a stop a wedged consumer can delay.
+drained:
+	for {
 		select {
 		case err := <-consumerErr:
 			if !isShutdownConsumerError(ctx, err) {
 				return err
 			}
 		default:
+			break drained
 		}
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
