@@ -2,9 +2,9 @@
   "key": "TKT-56",
   "type": "Story",
   "summary": "PSP port, compensation and journal keyring (UMBRELLA — S1 done as TKT-113; S2-S4 remain)",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "sdlc-agent",
   "pr": null,
