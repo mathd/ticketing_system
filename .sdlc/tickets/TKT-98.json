@@ -1,9 +1,11 @@
 {
   "key": "TKT-98",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "claude-opus-5",
   "pr": null,
   "summary": "access main: clean shutdown may exit with a non-nil consumer error (~50% select race)",
   "description": "TKT-97 ai-review incidental (kimi-k3:medium@claudex arm, Finding 3). PRE-EXISTING, not introduced by TKT-97 — verified against origin/main. In cmd/access/main.go the final select (main.go:291-300) races <-consumerErr against <-ctx.Done(). On SIGTERM both become ready together: consumerErr carries fmt.Errorf(\"consumer stopped: %w\", context.Canceled) (non-nil) from each Run's tail, so ~50% of clean shutdowns the process exits reporting the consumer's cancellation error instead of the clean srv.Shutdown result. Cosmetic today (Compose ignores exit code on stop) but pollutes exit codes / logs and would mislead an orchestrator that treats non-zero exit as a crash. Fix: on ctx-cancellation, coalesce context.Canceled-wrapped Run errors to a clean exit (or have Run return nil on ctx.Done() — but that loses the 'why stopped' log line, so prefer filtering in main). Small, isolated; candidate risk:low.",
@@ -12,6 +14,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from TKT-97 PR #75 ai-review triage (Finding 3, incidental — pre-existing). Code pointer: cmd/access/main.go:291-300 (the shutdown select) and each Run's `return fmt.Errorf(\"...stopped: %w\", ctx.Err())` tail. Suspected governing ADRs: none specific. Not a regression from TKT-97 — the identical non-nil error existed on origin/main."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claim — TKT-98\n\n**Selection reason:** owner directive — run TKT-98 Ready→Done in one continuous autonomous run. Ticket was already in `Ready` (Gate 1 satisfied), zero blockers on the card (`links` empty, no open `blocked-by`).\n\n**⚠️ Gate waiver — recorded for board history.** The repo owner explicitly waived **all four human gates** for this ticket as a process experiment. This ticket ran **gateless**:\n\n| Gate | Normally | This run |\n|---|---|---|\n| 1 — priority | human moves Backlog→Ready | pre-satisfied (ticket already in Ready) |\n| 2 — plan approval | human approves plan | **waived** — orchestrator resolves open decisions: prefer the critique's recommendation; absent one, the most reversible option. Every self-made decision + rationale recorded in `kind=plan-final`. |\n| 3 — review + merge | human reviews PR + squash-merges | **waived** — orchestrator squash-merges and deletes the branch after the adversarial ai-review converges (same triage / second-pass / churn-cap rules). Review-guide still posted on the PR **first**, as the audit record. |\n| 4 — PO acceptance | PO validates COS | **waived** — orchestrator self-validates each COS against test evidence on the merged code, posts the validation note, closes with full metrics. |\n\nThis is an **owner-authorized deviation from the skill's hard rule \"never merge for the human\"**, scoped to this ticket only. It does not generalize: the next ticket runs gated unless the owner waives again.\n\n**Non-negotiables held unchanged:** `config.models` routing (no substitutions), cross-model review for both plan and code, TDD with tests observed red first, `make check` green before every push and after the merge, all marker comments, no AI attribution in commits/PRs.\n\n**Stop conditions retained** (agent halts and reports instead of proceeding): gate/CI failing twice on the same cause with no clear fix; implementation touching auth / money paths / data migrations / CI-deploy config unanticipated by ticket+plan; a blocking review finding surviving the churn cap; a configured model unreachable after the escalation ladder; an ambiguous destructive/irreversible action.\n\n**Backend:** local tracker (`config.tracker: \"local\"`), state on `sdlc-state`.\n**Branch:** `TKT-98-access-shutdown-exit-code` off `origin/main` @ `d812d05`.\n\n**Model routing for this run** (read from `.claude/sdlc.config.json` working tree — note the file has an *uncommitted* edit narrowing the earlier multi-arm config; the working-tree value is the live config and is what this run uses):\n\n- `plan`: `[\"gpt-5.6-sol\"]` — single-arm array, so no A/B comparison is produced (`ab-stages.md` cost note: the stage comment must say an array ran and with how many arms — one).\n- `planReview`: `main-agent` (this session, Opus 5) — cross-model invariant holds: planner (codex/gpt-5.6-sol) ≠ plan-reviewer.\n- `implement`: `main-agent`.\n- `aiReview`: `[\"gpt-5.6-sol\"]` — single-arm; implementer (main-agent) ≠ reviewer. Invariant holds.\n\n**risk:low?** The ticket suggested it as a candidate. **Not applying it** — and the reason matters for the audit: with Gate 2 waived, `risk:low` would change nothing about the flow (both skip the same gate), but it *would* suppress the plan A/B and weaken the record. Running the full Planning stage costs one extra step and produces the plan-review evidence this gateless run needs more than a gated one would.\n"
     }
   ],
   "context": {
