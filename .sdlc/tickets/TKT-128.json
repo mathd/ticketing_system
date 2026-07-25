@@ -1,0 +1,94 @@
+{
+  "key": "TKT-128",
+  "type": "Task",
+  "status": "Ready",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "classification": "simple",
+  "summary": "ADR-004 declares a cache-first read path with no cache above the storefront — amend the ADR to what exists",
+  "description": "### Finding (architecture review R4, 2026-07-25)\n\nADR-004 declares volatility-tiered TTLs with one cache owner per tier. Verified against the code:\n\n- **The only cache that exists** is `web/storefront/src/lib/cache.ts` — an in-process Astro SSR page-data map with single-flight coalescing. It is correct, and it does honor the tier (the middleware derives the outgoing `Cache-Control` from *remaining* freshness, so staleness does not stack).\n- **The gateway does not cache.** `gateway/cmd/gateway/main.go` builds a bare `httputil.ReverseProxy` per route. Nothing between it and the services caches anything.\n- **Back-office, scanner and service-to-service reads honor no cache at all.** They receive `Cache-Control: public, max-age=300` and discard it.\n\nSo `Cache-Control` on the service side is presently a declaration with no consumer outside SSR. That is a defensible position — the headers are exactly the contract a future tier needs — but the ADR does not say so, and a reader reasonably concludes a cache tier is deployed.\n\n### Scope discipline\n\n**Docs only.** Building the tier is TKT-31's epic (Read-path caching & hot-event serving). This ticket must not grow a code diff — a source change in the PR is a scope failure, not a bonus.\n\n### Acceptance Criteria\n\n- [ ] ADR-004 states which readers honor the volatility tiers today (SSR page-data cache, with single-flight) and which honor nothing (gateway, service-to-service, back-office, scanner).\n- [ ] It states that the TTL declarations are a contract for future caches, so the next reader does not mistake them for a deployed tier.\n- [ ] The gap is linked to TKT-31, not left implicit.\n- [ ] `docs/architecture.md`'s caching line matches.\n- [ ] The diff contains **no source changes**.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "ADR-004 reads as if a cache tier exists. It does not: the only cache honoring the TTL declarations is the Astro SSR page-data cache in one process. Make the ADR describe what is true, and route the actual gap to the epic that owns it."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: amending ADR-004 to state exactly which readers honor the volatility tiers today and which do not; correcting the caching line in docs/architecture.md; linking the gap to TKT-31. OUT: building any cache (that is TKT-31); changing any Cache-Control header or TTL value; any code change at all."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None. This is a documentation correction against read code; the facts were verified in this review (gateway/cmd/gateway/main.go has no cache; web/storefront/src/lib/cache.ts is the only implementation)."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Relates to TKT-31 (Epic: Read-path caching & hot-event serving), which owns the actual tier — linked, not blocking."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Amend, do not rewrite: the TTL tiers and the single-cache-owner rule are still the right decisions and stay. What changes is the ADR saying plainly that the tiers are today a contract for future caches and bind only the SSR tier. Docs and ADR only — no source changes (this ticket must not grow a code diff)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice: the ADR-004 amendment plus the architecture.md line. Small enough for risk:low."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) ADR-004 states which readers honor the volatility tiers today — the Astro SSR page-data cache, with single-flight — and that gateway, service-to-service, back-office and scanner reads honor nothing; (2) it says the TTL declarations are a contract for future caches, so no future reader mistakes them for an existing tier; (3) the gap is linked to TKT-31 rather than left implicit; (4) docs/architecture.md's caching line matches; (5) zero source changes in the diff."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked: ADR-004 (the decision being amended — the tiers and the single-owner rule survive, only the claim about coverage changes), ADR-006 (the storefront shell owns the minutes tier — the one place the rule IS implemented, and the model for how the ADR should read). Related epic: TKT-31 read-path caching & hot-event serving."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-004",
+        "date": "2026-07-12",
+        "rule": "Public reads declare volatility-tiered TTLs; the read path is cache-first, and each tier has exactly one cache owner so staleness never stacks."
+      },
+      {
+        "id": "ADR-002",
+        "date": "2026-07-12",
+        "rule": "We build five Go services (catalog, inventory, commerce, payments, access) behind an API gateway, with an event bus for the domain event stream; every entity carries a tenant/organizer id from day one. Docker Compose only. The gateway is the only public surface, with explicit route registration."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Architecture review R4 — the finding, with the three verified read paths",
+        "link": "docs/reviews/2026-07-25-architecture.md"
+      },
+      {
+        "summary": "The one cache that exists",
+        "link": "web/storefront/src/lib/cache.ts"
+      },
+      {
+        "summary": "ADR-004 — the decision being amended",
+        "link": "docs/adr/ADR-004-cache-first-read-path.md"
+      }
+    ],
+    "capturedAt": "2026-07-25"
+  },
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-31"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nBorn from the 2026-07-25 architecture review, recommendation **R4** ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)). Docs-only, risk:low. The review split R4 deliberately: the ADR correction is this ticket, the actual gateway cache tier already has an epic (TKT-31) and was NOT duplicated into a new ticket."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-128 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review; all three claims were verified by reading the code (gateway main.go, storefront cache.ts, the per-service Cache-Control call sites). **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | met |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    }
+  ]
+}
