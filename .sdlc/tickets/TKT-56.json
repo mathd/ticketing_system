@@ -2,15 +2,15 @@
   "key": "TKT-56",
   "type": "Story",
   "summary": "PSP port, compensation and journal keyring (UMBRELLA — S1 done as TKT-113; S2-S4 remain)",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "sdlc-agent",
   "pr": {
     "number": 109,
     "url": "https://github.com/mathd/ticketing_system/pull/109",
-    "state": "open"
+    "state": "merged"
   },
   "description": "Deferred remainder of TKT-43, gated on a real payment processor being chosen (human decision, 2026-07-14). TKT-43 shipped the recovery state machine (ADR-016), the commerce completion outbox and deterministic recovery for the paths that need no PSP port. This ticket carries what only makes sense against a real provider: the PSP port (authorize/capture/void/refund/status) with a durable operation model (provider reference identity, void/refund idempotency keys, captured-vs-authorized, normalized terminal-no-side-effect outcome); payment.voided/payment.refunded journal fact types; payment_unknown recovery via PSP status; compensation for reconciliation_required orders (captured money whose confirm proved impossible); the journal signing keyring (sign active / verify historical / retirement policy) with the access ACCESS_QR_KID keyring as the in-repo precedent; and journal-specific PostgreSQL fault injection (concurrent appends, conflicting replay, tampering, head consistency, key rotation, restarts, crash boundaries). Blocked until the processor is chosen: provider reference identity, status semantics, void-vs-refund rules and the error taxonomy are all provider-specific, so an abstraction built over the fake PSP would be rewritten on contact with a real one. LAUNCH-BLOCKING: while deferred, payment_unknown orders have no automated resolution and reconciliation_required orders hold captured money with no automated refund path. Both are safe only while the PSP is fake and no real money moves. See ADR-016 for the state machine and the tamper boundary this completes.",
   "comments": [
