@@ -83,7 +83,7 @@ func migrate() error {
 }
 
 func verifyConcurrentAppend() error {
-	id, key, err := signingConfig()
+	keys, err := signingConfig()
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func verifyConcurrentAppend() error {
 		return err
 	}
 	defer func() { _ = db.Close() }()
-	j := paymentstore.New(db, id, key)
+	j := paymentstore.New(db, keys)
 	f := paymentstore.Fact{
 		ID:          uuid.MustParse("00000000-0000-0000-0000-000000000901"),
 		OrganizerID: uuid.MustParse("00000000-0000-0000-0000-000000000902"),
@@ -179,15 +179,23 @@ func statusReplayRetention(fallback time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-func signingConfig() (string, []byte, error) {
+// signingConfig builds the journal keyring: the active key stays in the variables it
+// has always used, and JOURNAL_HISTORICAL_KEYS optionally carries retired keys as
+// "kid=<base64.RawStdEncoding secret>,..." so their era stays verifiable after a
+// rotation (ADR-016 §Decision 8, ADR-032 §Decision). Unset historical keys reproduce
+// the previous single-key behaviour exactly, so no deployed configuration changes.
+//
+// Fail-fast, like every other config reader here: a malformed ring refuses startup
+// rather than surfacing as a verification failure long after the fact.
+func signingConfig() (*paymentstore.Keyring, error) {
 	id, secret := os.Getenv("JOURNAL_KEY_ID"), os.Getenv("JOURNAL_SIGNING_KEY")
-	if id == "" || len(secret) < 16 {
-		return "", nil, errors.New("JOURNAL_KEY_ID and JOURNAL_SIGNING_KEY (>=16 bytes) required")
+	if id == "" || secret == "" {
+		return nil, errors.New("JOURNAL_KEY_ID and JOURNAL_SIGNING_KEY (>=16 bytes) required")
 	}
-	return id, []byte(secret), nil
+	return paymentstore.NewKeyring(id, []byte(secret), os.Getenv("JOURNAL_HISTORICAL_KEYS"))
 }
 func verifyJournal() error {
-	id, key, err := signingConfig()
+	keys, err := signingConfig()
 	if err != nil {
 		return err
 	}
@@ -196,7 +204,7 @@ func verifyJournal() error {
 		return err
 	}
 	defer func() { _ = db.Close() }()
-	return paymentstore.New(db, id, key).Verify(context.Background())
+	return paymentstore.New(db, keys).Verify(context.Background())
 }
 
 // healthcheck is the container health probe: distroless images have no
@@ -251,7 +259,7 @@ func run() error {
 	defer func() { _ = db.Close() }()
 	dbConfig.Apply(db)
 	// Migrations ran out-of-band before this process started (ADR-022).
-	keyID, key, err := signingConfig()
+	keys, err := signingConfig()
 	if err != nil {
 		return err
 	}
@@ -287,7 +295,7 @@ func run() error {
 	)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
-	r.Mount("/", api.NewWithPSPRetention(paymentstore.New(db, keyID, key), internalToken, provider, retention).Router(log))
+	r.Mount("/", api.NewWithPSPRetention(paymentstore.New(db, keys), internalToken, provider, retention).Router(log))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

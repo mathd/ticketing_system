@@ -219,6 +219,12 @@ services:
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments
       JOURNAL_KEY_ID: local-v1
       JOURNAL_SIGNING_KEY: ${JOURNAL_SIGNING_KEY:-local-development-journal-key}
+      # Retired journal signing keys, "kid=<base64.RawStdEncoding secret>,..." — kept so
+      # entries signed before a rotation stay verifiable (ADR-016 §Decision 8). Empty is
+      # the single-key configuration this stack has always run. These are SECRETS, not
+      # public keys: holding the ring is holding the power to forge under every kid in
+      # it. Rotation runbook: docs/development.md §Journal signing key rotation.
+      JOURNAL_HISTORICAL_KEYS: ${JOURNAL_HISTORICAL_KEYS:-}
       # Offline by default: the fake PSP. An sk_test_ key selects the Stripe test-mode
       # adapter; sk_live_ is rejected at startup (ADR-032). Never commit a real key.
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-fake}

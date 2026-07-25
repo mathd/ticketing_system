@@ -53,9 +53,8 @@ type Entry struct {
 }
 
 type Journal struct {
-	db    *sql.DB
-	key   []byte
-	keyID string
+	db   *sql.DB
+	keys *Keyring
 }
 
 func loadExistingFact(ctx context.Context, tx *sql.Tx, f Fact) (Entry, bool, error) {
@@ -80,8 +79,11 @@ func loadExistingFact(ctx context.Context, tx *sql.Tx, f Fact) (Entry, bool, err
 	return existing, true, nil
 }
 
-func New(db *sql.DB, keyID string, key []byte) *Journal {
-	return &Journal{db: db, key: key, keyID: keyID}
+// New builds a journal over an already-validated keyring. There is deliberately no
+// single-key constructor: it would keep the pre-rotation model (one key, all
+// history invalid the moment it changes) constructible for no caller that exists.
+func New(db *sql.DB, keys *Keyring) *Journal {
+	return &Journal{db: db, keys: keys}
 }
 
 func canonical(f Fact, seq int64) ([]byte, error) {
@@ -177,8 +179,8 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 		return Entry{}, false, err
 	}
 	sum := hash(prev, canon)
-	sig := sign(j.key, sum)
-	_, err = tx.ExecContext(ctx, `INSERT INTO journal_entries(fact_id,organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, f.ID, f.OrganizerID, seq, f.Type, f.OccurredAt, f.BuyerID, f.Amount, f.Currency, f.Payload, prev, sum, j.keyID, sig)
+	sig := j.keys.sign(sum)
+	_, err = tx.ExecContext(ctx, `INSERT INTO journal_entries(fact_id,organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, f.ID, f.OrganizerID, seq, f.Type, f.OccurredAt, f.BuyerID, f.Amount, f.Currency, f.Payload, prev, sum, j.keys.ActiveKeyID(), sig)
 	if err != nil {
 		return Entry{}, false, err
 	}
@@ -186,7 +188,7 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 	if err != nil {
 		return Entry{}, false, err
 	}
-	return Entry{Fact: f, Sequence: seq, PreviousHash: prev, EntryHash: sum, KeyID: j.keyID, Signature: sig}, false, tx.Commit()
+	return Entry{Fact: f, Sequence: seq, PreviousHash: prev, EntryHash: sum, KeyID: j.keys.ActiveKeyID(), Signature: sig}, false, tx.Commit()
 }
 
 func (j *Journal) Verify(ctx context.Context) error {
@@ -213,13 +215,17 @@ func (j *Journal) Verify(ctx context.Context) error {
 		if e.Sequence != seqByOrg[e.OrganizerID]+1 || !hmac.Equal(prev, e.PreviousHash) {
 			return fmt.Errorf("broken chain organizer=%s sequence=%d", e.OrganizerID, e.Sequence)
 		}
-		if e.KeyID != j.keyID {
-			return fmt.Errorf("unknown key id %q", e.KeyID)
-		}
 		c, _ := canonical(e.Fact, e.Sequence)
 		sum := hash(prev, c)
-		if !hmac.Equal(sum, e.EntryHash) || !hmac.Equal(sign(j.key, sum), e.Signature) {
-			return fmt.Errorf("invalid hash/signature organizer=%s sequence=%d", e.OrganizerID, e.Sequence)
+		if !hmac.Equal(sum, e.EntryHash) {
+			return fmt.Errorf("invalid hash organizer=%s sequence=%d", e.OrganizerID, e.Sequence)
+		}
+		// Resolve the key the entry itself names, so a journal spanning a rotation
+		// verifies end to end (ADR-016 §Decision 8). An entry naming a key the ring
+		// does not hold fails here — that is the retirement consequence made visible,
+		// never a skipped entry.
+		if err := j.keys.verify(e.KeyID, sum, e.Signature); err != nil {
+			return fmt.Errorf("%w organizer=%s sequence=%d", err, e.OrganizerID, e.Sequence)
 		}
 		prevByOrg[e.OrganizerID] = sum
 		seqByOrg[e.OrganizerID] = e.Sequence

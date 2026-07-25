@@ -99,6 +99,45 @@ The integrity claim is bounded precisely: **modification and insertion by a data
 not hold the HMAC keys are evident; a holder of any historical key can forge history under it, and
 targeted rollback and current-key compromise remain out of scope (TKT-11).**
 
+#### Keyring configuration, rotation and retirement (amended, Slice 4 / TKT-56)
+
+The active key stays in the variables it has always used — `JOURNAL_KEY_ID` and
+`JOURNAL_SIGNING_KEY` — and retired keys are carried by an optional `JOURNAL_HISTORICAL_KEYS`, a
+comma-separated list of `kid=<secret>` where the secret is encoded with **`base64.RawStdEncoding`**
+(unpadded standard alphabet; the same encoding the access lifecycle keyring uses). Unset historical
+keys reproduce the single-key behaviour exactly, so no deployed configuration has to change. The
+active key is always a member of its own ring. A key id is a bounded printable token; it needs no
+namespace prefix, because — unlike the access lifecycle kid — it is **not** part of the canonical
+form, so it cannot create canonical ambiguity. `,` and `=` are excluded because they delimit the
+list.
+
+The ring is validated at startup and a malformed one refuses to boot: missing active material, a
+secret under 16 bytes, an unparseable or padded base64 value, a duplicate key id, or **two key ids
+sharing the same secret**. That last rule is not tidiness. Because the key id is written unsigned
+and is not inside the canonical form, two ids over one secret would let a database writer **holding
+no secret at all** relabel an entry's key id between them with verification still passing. The
+damage is **era misattribution** — it corrupts retirement accounting and the unknown-key contract —
+**not** content forgery, and it should not be described as if it were. Binding the key id into the
+signature would be the stronger fix; that is a canonical-version change and stays outside this
+slice.
+
+**Rotation** promotes a new active key and moves the outgoing key into `JOURNAL_HISTORICAL_KEYS` in
+the same deployment, before anything is signed under the new key. **Retirement:** a key may be
+dropped only once no retained entry references it — including any backup or archive expected to stay
+auditable. Removing a still-referenced key deliberately makes that era unverifiable, and
+`verify-journal` fails naming the unknown key id.
+
+Enforcement is by **detection, not prevention**, and the honest statement of where that detection
+happens matters: startup validates the ring's *structure*, not the journal's *contents* — it does
+not scan for referenced key ids, because that would put a full-table scan on every boot. So an
+operator **can** start a service after dropping a still-referenced key. It surfaces at the next
+`verify-journal` run **against that environment's own journal**, and nothing schedules that
+automatically in a deployed environment. The gate proves the *mechanism* (a retired key makes
+verification fail), never a real environment's retirement mistake — the gate's journal is signed
+under its own keys.
+
+Operator runbook: `docs/development.md` §Journal signing key rotation.
+
 **Stripe mappings** (pinned so the adapter is not re-derived per reader):
 
 - `Authorize`: confirm a PaymentIntent with **manual capture**, integer minor-unit amount, ISO
