@@ -120,6 +120,73 @@ cd "$ROOT/services/inventory"
 INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/...
 
+cd "$ROOT/services/payments"
+# The journal fault-injection matrix (TKT-56 Slice 4). Its own database, for the same
+# reason commerce has one and then some: the packaged-binary checks further down
+# deliberately CORRUPT the live payments journal, so sharing it would make these tests
+# race a fixture that is being broken on purpose.
+# ./internal/... rather than ./internal/store: package-scoping strands a newly added
+# test exactly the way a -run filter does, which is the defect the four blocks above
+# each record.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS payments_store_smoke" \
+  -c "CREATE DATABASE payments_store_smoke OWNER payments" >/dev/null
+PAYMENTS_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_store_smoke" \
+go test -tags smoke -count=1 ./internal/...
+
+cd "$ROOT"
+# ADR-016 §Decision 8 / COS C3: the PACKAGED binary verifies a journal whose entries
+# span TWO signing keys. The rotation test above leaves exactly such a chain behind in
+# payments_store_smoke; this runs the real CLI over it with v2 active and v1 retired.
+# Without this, "verify-journal verifies a multi-key journal" would be an argument about
+# a library call — the gate's own journal is signed under one key forever, and
+# verify-concurrent-append cannot append under a second (its fact id is a literal, so a
+# re-run replays 8/8 and fails its own new==1 guard).
+# Guard the fixture both checks below depend on. The mixed-key chain is left behind by
+# TestJournalRotationKeepsHistoryVerifiable; if that test is ever renamed, skipped or given
+# a cleanup, the positive check still passes — a single-key journal verifies fine under a
+# superset ring — and the negative one then fails with a retired-key message that
+# misdiagnoses the real cause. Assert the fixture directly instead.
+mixed_kids=$(docker exec "$(compose ps -q postgres)" psql -U postgres -d payments_store_smoke -tAc \
+  "SELECT count(DISTINCT key_id) FROM journal_entries")
+# Validate before comparing. Inside an `if` condition set -e is suspended, and
+# `[ "$x" -lt 2 ]` on empty or non-numeric input prints an error and evaluates FALSE — so
+# a broken psql invocation would sail past a guard whose whole purpose is to fail closed.
+case "$mixed_kids" in
+  ''|*[!0-9]*) echo "smoke: could not count key ids in payments_store_smoke (got: '$mixed_kids')" >&2; exit 1 ;;
+esac
+if [ "$mixed_kids" -lt 2 ]; then
+  echo "smoke: payments_store_smoke holds $mixed_kids key id(s); the rotation test's mixed-key fixture is missing" >&2
+  exit 1
+fi
+compose exec -T \
+  -e DATABASE_URL=postgres://payments:payments@postgres:5432/payments_store_smoke \
+  -e JOURNAL_KEY_ID=smoke-v2 \
+  -e JOURNAL_SIGNING_KEY=smoke-journal-key-v2-0123456789 \
+  -e JOURNAL_HISTORICAL_KEYS=smoke-v1=c21va2Utam91cm5hbC1rZXktdjEtMDEyMzQ1Njc4OQ \
+  payments /app verify-journal
+# ...and the retirement consequence is real: the same journal with v1 dropped from the
+# ring must FAIL, or "an unknown key id is a verification failure" is untested at the
+# CLI where operators actually meet it.
+#
+# Assert the DIAGNOSTIC, not merely a non-zero exit. "It failed" is satisfied by a typo'd
+# flag, an unreachable database, a missing binary, or an unrelated pre-existing
+# corruption — every one of which would let this check pass while proving nothing about
+# retirement. Only the unknown-key message proves the retired key is why.
+retired_out=$(compose exec -T \
+  -e DATABASE_URL=postgres://payments:payments@postgres:5432/payments_store_smoke \
+  -e JOURNAL_KEY_ID=smoke-v2 \
+  -e JOURNAL_SIGNING_KEY=smoke-journal-key-v2-0123456789 \
+  payments /app verify-journal 2>&1) && {
+  echo "smoke: verify-journal accepted a journal signed under a retired key" >&2
+  exit 1
+}
+case "$retired_out" in
+  *'unknown key id "smoke-v1"'*) ;;
+  *) echo "smoke: verify-journal failed, but not because of the retired key: $retired_out" >&2
+     exit 1 ;;
+esac
+
 cd "$ROOT/smoke"
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \

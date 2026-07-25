@@ -190,6 +190,50 @@ retained-not-read caveat as the other alarm classes applies. Quarantine admissio
 operator-only: they do not surface in `GET /orders/{ref}/tickets` (the §D10 open question,
 answered here).
 
+## Journal signing key rotation
+
+The payments money journal is signed with HMAC-SHA256 under a **keyring**: one active key that new
+entries are signed with, plus retired keys retained so their era stays verifiable (ADR-016 §Decision
+8, ADR-032 §Keyring configuration, rotation and retirement).
+
+```
+JOURNAL_KEY_ID           active key id, e.g. local-v2
+JOURNAL_SIGNING_KEY      active secret, >=16 bytes, raw (not base64)
+JOURNAL_HISTORICAL_KEYS  retired keys: kid=<secret>,kid=<secret> — secrets base64.RawStdEncoding
+```
+
+**To rotate**, in one deployment (never two):
+
+1. Encode the **outgoing** secret: `printf %s "$OLD_SECRET" | base64 | tr -d '=\n'`
+   (unpadded standard alphabet — `base64.RawStdEncoding`; a padded value is rejected. Keep the
+   `\n` in `tr`: GNU `base64` wraps at 76 columns, so a secret over 57 bytes otherwise carries an
+   embedded newline. `openssl base64 -A` avoids the wrapping entirely.)
+2. Set `JOURNAL_HISTORICAL_KEYS` to `"<old-kid>=<that value>"`, appending to any existing list.
+3. Set `JOURNAL_KEY_ID`/`JOURNAL_SIGNING_KEY` to the new key. **`JOURNAL_SIGNING_KEY` is RAW — do
+   not base64 it.** The asymmetry is deliberate (historical keys share one delimited variable and
+   need an encoding; the active key does not), and it is the one step here that fails *silently*:
+   a base64 blob is over 16 bytes and passes every check, so the service boots and signs real money
+   facts under a key nobody wrote down. Nothing detects it until the next `verify-journal`.
+4. Deploy, then run `verify-journal` — it must pass over the now mixed-key chain.
+
+Steps 2 and 3 must land in the **same** deployment: a new active key without the old one in the
+ring makes every pre-rotation entry fail verification.
+
+**To retire** a key, drop its entry from `JOURNAL_HISTORICAL_KEYS` — but only once **no retained
+entry references it**, including backups and archives expected to stay auditable. Retiring a key
+that is still referenced deliberately makes that era permanently unverifiable; `verify-journal`
+then fails naming the unknown key id. Nothing prevents this at startup (validating the ring's
+structure is not scanning the journal's contents), and nothing runs `verify-journal` for you in a
+deployed environment — so run it after any retirement.
+
+**What the ring is, said plainly.** These are **secrets**, not public keys. This is the opposite of
+the access lifecycle keyring (§Access ticket lifecycle trail operations), where a verifier holds
+only public keys and genuinely cannot rewrite history. Here **anyone holding the ring can forge
+under every key id in it**. Rotation buys one thing: retiring a key no longer invalidates its
+history. It does not produce a verifier that lacks signing power, and `verify-journal` must never be
+described to an auditor as if it did. Modification and insertion by a database writer who holds no
+key are evident; targeted rollback and current-key compromise are not, and remain TKT-11's.
+
 ## Conventions
 
 - Money: integer minor units + ISO currency code; floats banned on money paths (ADR-001).

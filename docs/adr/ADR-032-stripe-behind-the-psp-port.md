@@ -99,6 +99,58 @@ The integrity claim is bounded precisely: **modification and insertion by a data
 not hold the HMAC keys are evident; a holder of any historical key can forge history under it, and
 targeted rollback and current-key compromise remain out of scope (TKT-11).**
 
+#### Keyring configuration, rotation and retirement (amended, Slice 4 / TKT-56)
+
+The active key stays in the variables it has always used — `JOURNAL_KEY_ID` and
+`JOURNAL_SIGNING_KEY` — and retired keys are carried by an optional `JOURNAL_HISTORICAL_KEYS`, a
+comma-separated list of `kid=<secret>` where the secret is encoded with **`base64.RawStdEncoding`**
+(unpadded standard alphabet; the same encoding the access lifecycle keyring uses). Unset historical
+keys reproduce the single-key behaviour exactly, so no deployed configuration has to change. The
+active key is always a member of its own ring. A key id is a bounded printable token; it needs no
+namespace prefix, because — unlike the access lifecycle kid — it is **not** part of the canonical
+form, so it cannot create canonical ambiguity. `,` and `=` are excluded because they delimit the
+list.
+
+The ring is validated at startup and a malformed one refuses to boot: missing active material, a
+secret under 16 bytes, an unparseable or padded base64 value, a stray or doubled comma, a duplicate
+key id, or **two key ids that resolve to the same HMAC key**. That last rule is not tidiness.
+
+Note what "the same HMAC key" has to mean, because the obvious reading is wrong. HMAC does not sign
+with the key as configured: RFC 2104 zero-pads a key shorter than the hash block size and replaces
+one longer than it with its digest. So `"…abcdef"` and `"…abcdef\0"` are **byte-distinct
+configuration that signs identically**, as is a 65-byte key and its SHA-256. Comparing raw bytes
+would therefore miss precisely the aliases this rule exists to reject; the comparison is on the
+*effective* (preprocessed) key. Because the key id is written unsigned
+and is not inside the canonical form, two ids over one secret would let a database writer **holding
+no secret at all** relabel an entry's key id between them with verification still passing. The
+damage depends on which kind of alias it is, and the two are not equally bad. For ids over
+*byte-distinct but unrelated* secrets the answer is **era misattribution** — corrupted retirement
+accounting and a broken unknown-key contract — **not** content forgery, and it should not be
+described as if it were. For ids that resolve to the **same effective HMAC key**, it is worse and
+worth stating plainly: **the rotation never happened.** Retiring the alias does not make its era
+unverifiable, and a compromised "retired" secret still forges entries that verify under the active
+id. That is the reason this is enforced at construction rather than deferred to a
+canonical-version change. Binding the key id into the
+signature would be the stronger fix; that is a canonical-version change and stays outside this
+slice.
+
+**Rotation** promotes a new active key and moves the outgoing key into `JOURNAL_HISTORICAL_KEYS` in
+the same deployment, before anything is signed under the new key. **Retirement:** a key may be
+dropped only once no retained entry references it — including any backup or archive expected to stay
+auditable. Removing a still-referenced key deliberately makes that era unverifiable, and
+`verify-journal` fails naming the unknown key id.
+
+Enforcement is by **detection, not prevention**, and the honest statement of where that detection
+happens matters: startup validates the ring's *structure*, not the journal's *contents* — it does
+not scan for referenced key ids, because that would put a full-table scan on every boot. So an
+operator **can** start a service after dropping a still-referenced key. It surfaces at the next
+`verify-journal` run **against that environment's own journal**, and nothing schedules that
+automatically in a deployed environment. The gate proves the *mechanism* (a retired key makes
+verification fail), never a real environment's retirement mistake — the gate's journal is signed
+under its own keys.
+
+Operator runbook: `docs/development.md` §Journal signing key rotation.
+
 **Stripe mappings** (pinned so the adapter is not re-derived per reader):
 
 - `Authorize`: confirm a PaymentIntent with **manual capture**, integer minor-unit amount, ISO
