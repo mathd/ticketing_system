@@ -213,10 +213,11 @@ The payload carries four bounded identifiers, one device-claimed timestamp and o
 `alarm_id`, `organizer_id`, `ticket_id`, `occurrence_id`, `device_occurred_at`, `skew_flagged` — and
 no PII (ADR-003 §D3). That floor is enforced, not just asserted:
 `TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm` pins the exact key set of the persisted
-envelope at both levels, decodes every value into the scalar it is contracted to be (so PII cannot
-hide inside an existing key), and pins `conflictAlarmData`'s json tags at the source — which is the
-only place a `,omitempty` field can be caught, since such a field is simply absent from any fixture
-that leaves it zero. There is deliberately **no `reason` field**: unlike the policy-conflict class
+envelope at both levels, decodes every value at both levels into the scalar it is contracted to be —
+rejecting `null` explicitly, which every one of those decodes otherwise accepts — so PII cannot hide
+inside an existing key; and it pins `conflictAlarmData`'s json tags **and field types** at the
+source, which is the only place a `,omitempty` field can be caught, since such a field is simply
+absent from any fixture that leaves it zero. There is deliberately **no `reason` field**: unlike the policy-conflict class
 (whose payload carries `rule`), this class has exactly one
 condition (ADR-025 §D2 scopes `duplicate_admit` to single-entry tickets, where any occurrence beyond
 the one `redeemed` is the conflict), so **the subject is the reason** and a one-valued enum would

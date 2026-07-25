@@ -398,7 +398,7 @@ func TestReconcileRecordsOfflineRedemption(t *testing.T) {
 func assertConflictAlarmPIIFloor(t *testing.T, envelope []byte) {
 	t.Helper()
 	wantEnvelope := []string{"data", "id", "occurred_at", "schema", "type"}
-	wantData := []string{"alarm_id", "device_occurred_at", "occurrence_id", "organizer_id", "skew_flagged", "ticket_id"}
+	wantData := sortedContractKeys(conflictAlarmContract)
 
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(envelope, &top); err != nil {
@@ -417,25 +417,72 @@ func assertConflictAlarmPIIFloor(t *testing.T, envelope []byte) {
 
 	// Keys alone are not the floor: an existing key's VALUE can carry the PII
 	// instead (organizer_id becoming an object with an operator name in it,
-	// device_occurred_at becoming free text). Decode every value into the
-	// scalar it is contracted to be — an object, an array or a prose string
-	// fails here even though the key set is untouched (ai-review K2).
-	for _, key := range []string{"alarm_id", "occurrence_id", "organizer_id", "ticket_id"} {
-		var id uuid.UUID
-		if err := json.Unmarshal(data[key], &id); err != nil {
-			t.Fatalf("conflict alarm data.%s = %s, want a bare UUID: %v", key, data[key], err)
+	// device_occurred_at becoming free text). Decode every value — envelope
+	// level too, not just data — into the scalar it is contracted to be, so an
+	// object, an array or a prose string fails even though the key set is
+	// untouched (ai-review K2, second pass P2).
+	var alarmID, ticketID uuid.UUID
+	decodeAlarmScalar(t, "id", top["id"], &alarmID)
+	decodeAlarmScalar(t, "occurred_at", top["occurred_at"], new(time.Time))
+	decodeAlarmScalar(t, "schema", top["schema"], new(int))
+	var subject string
+	decodeAlarmScalar(t, "type", top["type"], &subject)
+	if subject != SubjectAdmissionConflictAlarm {
+		t.Fatalf("conflict alarm type = %q, want %q (ADR-009 §5: type is stable across variants)", subject, SubjectAdmissionConflictAlarm)
+	}
+	for _, key := range wantData {
+		raw := data[key]
+		switch conflictAlarmContract[key] {
+		case reflect.TypeOf(uuid.UUID{}):
+			decodeAlarmScalar(t, "data."+key, raw, &ticketID)
+		case reflect.TypeOf(time.Time{}):
+			decodeAlarmScalar(t, "data."+key, raw, new(time.Time))
+		default:
+			decodeAlarmScalar(t, "data."+key, raw, new(bool))
 		}
-	}
-	var deviceOccurredAt time.Time
-	if err := json.Unmarshal(data["device_occurred_at"], &deviceOccurredAt); err != nil {
-		t.Fatalf("conflict alarm data.device_occurred_at = %s, want a bare RFC3339 timestamp: %v", data["device_occurred_at"], err)
-	}
-	var skewFlagged bool
-	if err := json.Unmarshal(data["skew_flagged"], &skewFlagged); err != nil {
-		t.Fatalf("conflict alarm data.skew_flagged = %s, want a bare boolean: %v", data["skew_flagged"], err)
 	}
 
 	assertConflictAlarmDataTagsPinned(t, wantData)
+}
+
+// decodeAlarmScalar decodes one alarm value into the scalar it is contracted to
+// be, rejecting JSON null explicitly. The explicit null check is load-bearing:
+// encoding/json treats null as "leave the target untouched" for every type used
+// here, so a null sails through uuid.UUID, time.Time and bool alike and the
+// decode proves nothing (second-pass finding P1). A nulled value is also how a
+// pointer-to-struct field would look in this fixture while carrying a populated
+// object in production.
+func decodeAlarmScalar(t *testing.T, label string, raw json.RawMessage, into any) {
+	t.Helper()
+	if len(raw) == 0 || string(raw) == "null" {
+		t.Fatalf("conflict alarm %s is %q — a null value is not a bounded identifier and defeats every scalar decode (ADR-025 §D9)", label, string(raw))
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatalf("conflict alarm %s = %s, want a bare %T: %v", label, raw, into, err)
+	}
+}
+
+// conflictAlarmContract is the hand-written contract for the admission-conflict
+// alarm's data payload: every field the schema-1 payload may carry, and the
+// scalar Go type it must carry it as. Hand-written on purpose — derived from
+// conflictAlarmData it would encode the very property it exists to prove
+// (ADR-017), which is what makes a fixture unable to fail.
+var conflictAlarmContract = map[string]reflect.Type{
+	"alarm_id":           reflect.TypeOf(uuid.UUID{}),
+	"organizer_id":       reflect.TypeOf(uuid.UUID{}),
+	"ticket_id":          reflect.TypeOf(uuid.UUID{}),
+	"occurrence_id":      reflect.TypeOf(uuid.UUID{}),
+	"device_occurred_at": reflect.TypeOf(time.Time{}),
+	"skew_flagged":       reflect.TypeOf(false),
+}
+
+func sortedContractKeys(m map[string]reflect.Type) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // assertConflictAlarmDataTagsPinned closes the one gap a wire-level key-set
@@ -450,6 +497,12 @@ func assertConflictAlarmPIIFloor(t *testing.T, envelope []byte) {
 // observed side is derived from the type. That is the ADR-017 fixture trap
 // avoided rather than re-entered — the trap is generating the EXPECTATION from
 // the type under test, which is what makes a test unable to fail.
+// It also pins each field's Go TYPE against the same hand-written contract.
+// Without that, a field could be re-typed to a pointer-to-struct carrying its
+// own `,omitempty` members: nil in this fixture it marshals as null, sails past
+// the wire pin and the scalar decode, and carries a populated object in
+// production. Pinning the top-level types forbids nested types outright, which
+// is why this walk does not need to recurse (second-pass finding P1).
 func assertConflictAlarmDataTagsPinned(t *testing.T, want []string) {
 	t.Helper()
 	typ := reflect.TypeOf(conflictAlarmData{})
@@ -459,6 +512,9 @@ func assertConflictAlarmDataTagsPinned(t *testing.T, want []string) {
 		name, opts, _ := strings.Cut(field.Tag.Get("json"), ",")
 		if opts != "" {
 			t.Fatalf("conflictAlarmData.%s carries json option %q — a conditionally-emitted field is invisible to the wire-level key pin whenever this fixture leaves it zero, so the PII floor (ADR-025 §D9) would stop being enforced", field.Name, opts)
+		}
+		if want, ok := conflictAlarmContract[name]; ok && field.Type != want {
+			t.Fatalf("conflictAlarmData.%s is %s, want %s — this contract carries bounded scalars only; a composite type can hide fields the wire pin never sees (ADR-025 §D9)", field.Name, field.Type, want)
 		}
 		tags = append(tags, name)
 	}
