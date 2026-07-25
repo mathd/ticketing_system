@@ -1,9 +1,11 @@
 {
   "key": "TKT-125",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "classification": "complex",
   "summary": "OpenAPI response validation runs unconditionally on every response, hot path included — gate it and amend ADR-028",
@@ -96,6 +98,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-125 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review's code-seam survey; `shared/go/contract/http.go` was read in full. **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — Whether production runs it fully off or sampled at a low rate. Sampling keeps a live drift signal at a fraction of the cost but complicates the fail-closed contract (a sampled request fails closed, an unsampled one does not — two behaviours for one endpoint). The plan decides against the measured delta; both satisfy the COS.\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-125 — branch `TKT-125-gate-response-validation`\n\n**Selection reason:** highest-impact item in the Ready column and the architecture review's largest\nperformance finding (R1). No blockers (`links: []`), all 8 DoR items met/deferred, Gate 1 granted by\nthe owner on 2026-07-25. The single deferred item (`uncertainties` — full-off vs sampled) is a\nPlanning decision, not a redesign.\n\n### ⚠️ Process experiment — this ticket runs GATELESS\n\nThe repo owner has **deliberately waived all four human gates** for this run as a process\nexperiment, and asked that the waiver be recorded here so the board history shows it. The\nreplacements, in the owner's words:\n\n| Gate | Normally | This run |\n|---|---|---|\n| 1 — priority | human moves Backlog → Ready | already granted (ticket was in Ready) |\n| 2 — plan approval | human moves Planning → Building | agent resolves open decisions itself after the cross-model critique: **prefer the option the critique recommends; absent a recommendation, pick the most reversible option.** Every self-made decision + rationale recorded in `kind=plan-final`. |\n| 3 — review + merge | human reviews the PR and squash-merges | agent squash-merges and deletes the branch **after** the adversarial ai-review converges (same triage, second-pass and churn-cap rules). The review-guide is still posted on the PR first — it becomes the audit record. |\n| 4 — PO acceptance | PO validates COS, moves to Done | agent self-validates each COS against test evidence on the merged code, posts the validation note, closes with the full metrics comment. |\n\n**Everything else in the skill applies unchanged**, in particular: `config.models` routing with no\nsubstitutions, cross-model review for both plan and code, TDD with tests observed red first,\n`make check` green before every push and after the merge, all marker comments at each stage, and no\nAI attribution in commits or PRs.\n\n**Stop conditions the owner set** (report instead of proceeding): gate/CI failing twice on the same\ncause with no clear fix; work touching auth, money paths, data migrations or CI/deploy config in a\nway the ticket and plan did not anticipate; a blocking review finding surviving the churn cap; a\nconfigured model unreachable after the documented escalation ladder; a destructive or ambiguous\nirreversible action.\n\n### Routing for this run (from `.claude/sdlc.config.json`)\n\n| Stage | Model |\n|---|---|\n| `plan` | `gpt-5.6-sol` (codex) |\n| `planReview` | `main-agent` |\n| `implement` | `main-agent` |\n| `aiReview` | `gpt-5.6-sol` (codex) |\n\nCross-model invariant checked: `plan` ≠ `planReview` ✅, `implement` ≠ `aiReview` ✅.\n\n**`risk:low` is not set and must not be** — this changes a middleware wrapping all five services'\nhandlers, on the path a p99 SLO is held against.\n\nBranch cut from `origin/main` @ `56b8984`.\n"
     }
   ]
 }
