@@ -1,0 +1,17 @@
+{
+  "key": "TKT-120",
+  "type": "Task",
+  "summary": "ADR-025 §D9 says alarm payloads are \"identifiers and enums only\" — the shipped payload also carries a timestamp",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "ADR-025 §D9 (docs/adr/ADR-025-admission-events-and-offline-reconciliation.md:193) reads: \"Occurrence ids and alarm payloads carry bounded identifiers and enums only — no buyer, no guest reference, no raw scanner-operator identity (ADR-003 §D3).\"\n\nThe shipped admission-conflict payload carries `device_occurred_at` (a timestamp) and `skew_flagged` (a boolean) alongside its four UUIDs — services/access/internal/store/reconcile.go:297-304. A timestamp is neither an identifier nor an enum. The policy-conflict payload likewise carries `version` (an int) and `revisable` (a bool) — scan.go:305-315.\n\nNothing is wrong with the code: §D5 REQUIRES the device-claimed time to be recorded, so device_occurred_at is mandated by the same ADR whose §D9 wording excludes it. The defect is in the decision record.\n\nWhy it matters rather than being pedantry: §D9 is the PII contract a future consumer or reviewer implements from. A strict reading rejects every schema-1 alarm we emit today, and a reviewer applying §D9 literally to a new field would reach the wrong verdict. The wording should name what the floor actually is — bounded identifiers, enums, and operational scalars (timestamps/flags) that are not attributable to a person — while keeping the prohibition (buyer, guest reference, raw operator identity) unchanged.\n\nThis is an ADR amendment, so per the sdlc skill it could go straight to the default branch — EXCEPT that settling what the PII floor admits is a decision, not a transcription, and the plan gate is where a wrong recommendation gets reversed. Hence a ticket.\n\nSource: TKT-86 ai-review second pass (gpt-5.6-sol), finding P3 — triaged INCIDENTAL. Pre-existing: the timestamp shipped with TKT-85, and §D9's wording predates it.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned from TKT-86's ai-review second pass (incidental, deferred out of PR #110). Deliverable is likely an ADR-025 §D9 amendment; needs the 8-item DoR bake before Gate 1."
+    }
+  ]
+}
