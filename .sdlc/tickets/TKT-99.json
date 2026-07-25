@@ -1,7 +1,7 @@
 {
   "key": "TKT-99",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -9,7 +9,7 @@
   "pr": {
     "number": 112,
     "url": "https://github.com/mathd/ticketing_system/pull/112",
-    "state": "open"
+    "state": "merged"
   },
   "summary": "access smoke: broker-level proof that durable deletion flips /readyz (or exits) — end-to-end for TKT-97",
   "description": "TKT-97 planning decision #4 (deferred to follow-up, owner-waived gateless run). TKT-97 unit-tested the *reaction* to ConsumeContext.Closed() firing (waitConsume) but not that the nats.go library actually fires Closed() on durable deletion — that needs a live NATS. Add a smoke test in the smoke/ module: start the access consumer against a real JetStream, delete the durable (access-ticket-issuer and/or access-slot-policy) via the NATS API, assert /readyz flips to 503 (or the process exits) within a bound. Larger harness than make check's unit gate (compose orchestration + durable manipulation), which is why it was split out of TKT-97. Confidence today rests on the library's documented Closed() contract (pull.go:803-808) + TKT-97's unit reaction test; this closes the loop end-to-end.",
