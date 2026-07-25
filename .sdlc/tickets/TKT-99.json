@@ -1,10 +1,8 @@
 {
   "key": "TKT-99",
   "type": "Task",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent:claude-code",
   "pr": {
     "number": 112,
