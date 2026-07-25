@@ -3,7 +3,7 @@
   "type": "Task",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent:claude-code",
   "pr": {
