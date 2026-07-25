@@ -64,13 +64,6 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	if status == http.StatusNotFound && strings.HasPrefix(path, "internal/") {
 		return
 	}
-	if service == "inventory" && status == http.StatusNotFound {
-		for _, suffix := range []string{"/confirm", "/finalize", "/release"} {
-			if strings.HasSuffix(strings.TrimSuffix(request.URL.Path, "/"), suffix) {
-				return
-			}
-		}
-	}
 	contract := loadContract(service)
 	if contract.err != nil {
 		t.Fatalf("load %s contract: %v", service, contract.err)
@@ -149,15 +142,62 @@ func TestCommittedServiceContractsAreComplete(t *testing.T) {
 	}
 }
 
+// TestGatewayDeniesGenericInternalRoutes drives raw http.Client on purpose: these
+// responses are refusals, not service responses, so they must not go through
+// validateServiceResponse (a path the gateway refuses has no operation to validate
+// against, and the helper would fail on the contract lookup rather than on the status).
+//
+// Two different controls are asserted here and they prove different things (TKT-124):
+//
+//   - /api/<svc>/internal/... — refused AT THE EDGE by the gateway's explicit
+//     prefix+"internal/" NotFoundHandler registration, before any proxying. This is the
+//     boundary. It holds for routes that exist and are simply not public.
+//   - the retired /api/inventory/holds/{id}/<transition> paths — refused because the
+//     route no longer exists: the gateway proxies them, and inventory's OpenAPI request
+//     validator 404s a path absent from its spec. This proves the old public surface is
+//     gone and no compatibility alias came back — it is NOT an edge control.
+//
+// Both are 404. Only the first is the security boundary; conflating them is exactly the
+// overclaim docs/learnings/2026-07-15-name-what-a-control-reaches.md warns about — so
+// each case asserts the 404's BODY, which says which control produced it. Status alone
+// is a vacuous proof here: an unguarded legacy alias handed a hold id that does not
+// exist would answer 404 from the store (ErrNotFound) and pass a status-only assertion
+// while the public mutation surface was back (ai-review F5).
 func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
+	const holdID = "00000000-0000-0000-0000-000000000001"
+	// The gateway emits a refusal body only it emits; inventory's request validator
+	// emits the contract error. Distinguishing them is the whole point, and it only
+	// works because the gateway's body is NOT http.NotFound's generic "404 page not
+	// found" — which chi and every service can also produce, so asserting it would have
+	// looked like provenance and proved nothing (ai-review pass 2, F1).
+	// Kept in sync by gateway/cmd/gateway/main.go's edgeDeniedBody.
+	const byGateway = `{"error":"refused at the gateway edge"}`
+	const byServiceContract = `{"error":"no matching operation was found"}`
 	tests := []struct {
-		method string
-		path   string
+		method   string
+		path     string
+		wantBody string
 	}{
-		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001"},
-		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email"},
-		{http.MethodPost, "/api/payments/internal/facts"},
-		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments"},
+		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001", byGateway},
+		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email", byGateway},
+		{http.MethodPost, "/api/payments/internal/facts", byGateway},
+		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments", byGateway},
+		// The boundary, on the transitions themselves.
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/confirm", byGateway},
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/finalize", byGateway},
+		{http.MethodPost, "/api/inventory/internal/holds/" + holdID + "/release", byGateway},
+		// An encoded separator must not walk past the boundary either: ServeMux reads
+		// "internal%2Fholds" as one segment and misses the literal "internal" child,
+		// while the proxy forwards the decoded path. Refused by denyEncodedSeparators,
+		// so this is the gateway's own 404 (ai-review F1).
+		{http.MethodPost, "/api/inventory/internal%2Fholds/" + holdID + "/confirm", byGateway},
+		{http.MethodPost, "/api/inventory/internal%2fslots/" + holdID + "/capacity-adjustments", byGateway},
+		// The retired public paths. organizer_id is valid so a surviving route could not
+		// hide behind a validation 400, and the body assertion is what makes this fail if
+		// an alias came back: a restored route answers from the store, not the contract.
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/confirm?organizer_id=" + organizerID, byServiceContract},
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/finalize?organizer_id=" + organizerID, byServiceContract},
+		{http.MethodPost, "/api/inventory/holds/" + holdID + "/release?organizer_id=" + organizerID, byServiceContract},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -170,8 +210,17 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = response.Body.Close() }()
+			body, _ := io.ReadAll(response.Body)
 			if response.StatusCode != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404", response.StatusCode)
+				t.Fatalf("status = %d, want 404; body=%s", response.StatusCode, body)
+			}
+			// Exact, not substring: the point is which layer answered, and a
+			// substring match would accept a body that merely embeds the marker.
+			if got := strings.TrimSpace(string(body)); got != test.wantBody {
+				t.Fatalf("404 came from the wrong layer: body=%q, want exactly %q", got, test.wantBody)
+			}
+			if got := response.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+				t.Fatalf("content-type=%q, want application/json — a refusal from an unexpected layer", got)
 			}
 		})
 	}

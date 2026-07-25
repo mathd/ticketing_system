@@ -37,6 +37,52 @@ var routes = map[string]string{
 	"/":               "STOREFRONT_URL", // catch-all LAST by construction (longest prefix wins)
 }
 
+// denyEncodedSeparators refuses any request whose path carries an encoded "/".
+//
+// The route table is the security boundary (ADR-002): /api/<svc>/internal/ is
+// registered to a NotFoundHandler so internal routes are unreachable from the edge by
+// construction. That construction rests on ServeMux agreeing with the upstream service
+// about where the segment boundaries are, and it does not: ServeMux matches escaped
+// paths segment by segment, so "internal%2Fholds" is a single segment that misses the
+// literal "internal" child and falls through to the broader proxy registration — while
+// the proxy's Rewrite reads the already-decoded r.URL.Path and hands the upstream an
+// ordinary /internal/holds/... . One spelling of a path, two opinions about its shape.
+//
+// Nothing this gateway fronts takes a path parameter containing a slash — they are
+// UUIDs and fixed words — so an encoded separator has no legitimate meaning here and is
+// refused for every route rather than normalized. Refusing beats normalizing: a
+// normalizer has to agree with three routers about the canonical form, which is the
+// assumption that failed in the first place.
+//
+// RawPath is set only when the escaped form differs from the decoded Path, so this
+// costs a substring check on the rare requests that carry any escaping at all.
+func denyEncodedSeparators(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if raw := r.URL.RawPath; raw != "" && (strings.Contains(raw, "%2f") || strings.Contains(raw, "%2F")) {
+			edgeDenied(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// edgeDeniedBody is the gateway's own refusal. It is deliberately distinguishable from
+// `http.NotFound`'s generic "404 page not found", which chi and the services also emit:
+// a test that wants to prove WHICH layer refused cannot do it with a body every layer
+// can produce. Asserting a shared string would have looked like provenance and proved
+// nothing — the failure this whole ticket is about (ai-review pass 2, F1).
+//
+// It says only that the edge refused, never which route table entry or why: enumerating
+// the internal surface is the caller's problem to solve, not ours to help with.
+const edgeDeniedBody = `{"error":"refused at the gateway edge"}`
+
+func edgeDenied(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(edgeDeniedBody + "\n"))
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		client := &http.Client{Timeout: 2 * time.Second}
@@ -101,40 +147,15 @@ func run() error {
 		// scanner at /scanner/) are built to serve under their public path.
 		stripAPIPrefix := strings.HasPrefix(prefix, "/api/")
 		if stripAPIPrefix {
-			mux.Handle(prefix+"internal/", http.NotFoundHandler())
+			mux.Handle(prefix+"internal/", http.HandlerFunc(edgeDenied))
 		}
-		proxy := &httputil.ReverseProxy{
-			Rewrite: func(pr *httputil.ProxyRequest) {
-				pr.SetURL(u)
-				if stripAPIPrefix {
-					pr.Out.URL.Path = strings.TrimPrefix(pr.In.URL.Path, strings.TrimSuffix(prefix, "/"))
-					if pr.Out.URL.Path == "" {
-						pr.Out.URL.Path = "/"
-					}
-				} else {
-					pr.Out.URL.Path = pr.In.URL.Path
-				}
-				pr.SetXForwarded()
-			},
-		}
-		var handler http.Handler = proxy
-		if prefix == "/api/inventory/" {
-			handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				for _, transition := range []string{"/finalize", "/confirm", "/release"} {
-					if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), transition) {
-						http.NotFound(w, r)
-						return
-					}
-				}
-				proxy.ServeHTTP(w, r)
-			})
-		}
-		mux.Handle(prefix, handler)
+		proxy := apiProxy(u, prefix, stripAPIPrefix)
+		mux.Handle(prefix, proxy)
 	}
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
-		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, mux)),
+		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, denyEncodedSeparators(mux))),
 	}
 	httpConfig.Apply(srv)
 
@@ -149,6 +170,26 @@ func run() error {
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(sctx)
+	}
+}
+
+// apiProxy builds the reverse proxy for one route-table entry. Extracted from run so
+// the rewrite can be exercised against a real upstream — what the upstream actually
+// receives is the only thing that settles whether an edge refusal held.
+func apiProxy(u *url.URL, prefix string, stripAPIPrefix bool) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(u)
+			if stripAPIPrefix {
+				pr.Out.URL.Path = strings.TrimPrefix(pr.In.URL.Path, strings.TrimSuffix(prefix, "/"))
+				if pr.Out.URL.Path == "" {
+					pr.Out.URL.Path = "/"
+				}
+			} else {
+				pr.Out.URL.Path = pr.In.URL.Path
+			}
+			pr.SetXForwarded()
+		},
 	}
 }
 

@@ -399,21 +399,6 @@ type CreateSeatHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
-// ConfirmHoldParams defines parameters for ConfirmHold.
-type ConfirmHoldParams struct {
-	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
-}
-
-// FinalizeHoldParams defines parameters for FinalizeHold.
-type FinalizeHoldParams struct {
-	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
-}
-
-// ReleaseHoldParams defines parameters for ReleaseHold.
-type ReleaseHoldParams struct {
-	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
-}
-
 // PlaceGroupReservationParams defines parameters for PlaceGroupReservation.
 type PlaceGroupReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -426,6 +411,21 @@ type DrawDownGroupReservationParams struct {
 
 // GetGroupReservationHistoryParams defines parameters for GetGroupReservationHistory.
 type GetGroupReservationHistoryParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// ConfirmHoldParams defines parameters for ConfirmHold.
+type ConfirmHoldParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// FinalizeHoldParams defines parameters for FinalizeHold.
+type FinalizeHoldParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// ReleaseHoldParams defines parameters for ReleaseHold.
+type ReleaseHoldParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 

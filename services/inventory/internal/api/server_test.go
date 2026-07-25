@@ -30,16 +30,54 @@ func TestCreateHoldRejectsNonStrictJSON(t *testing.T) {
 	}
 }
 
-func TestTransitionsRequireInternalCredential(t *testing.T) {
-	s := New(nil, "secret", nil)
-	for _, token := range []string{"", "wrong"} {
-		req := httptest.NewRequest(http.MethodPost, "/holds/00000000-0000-0000-0000-000000000001/finalize?organizer_id=00000000-0000-0000-0000-000000000002", nil)
-		req.Header.Set("X-Internal-Token", token)
-		res := httptest.NewRecorder()
-		s.Router(nil).ServeHTTP(res, req)
-		if res.Code != http.StatusUnauthorized {
-			t.Fatalf("token %q: status=%d want=%d", token, res.Code, http.StatusUnauthorized)
-		}
+// The three hold transitions live under /internal/ so the gateway refuses them at the
+// edge by construction — the same explicit prefix registration that covers every other
+// internal route — instead of by matching path suffixes (TKT-124). This test pins the
+// service half of that boundary: the handlers reject an uncredentialed call on their own,
+// and the pre-TKT-124 public paths are gone rather than merely blocked.
+func TestInternalTransitionsRequireInternalCredential(t *testing.T) {
+	const (
+		holdID = "00000000-0000-0000-0000-000000000001"
+		orgID  = "00000000-0000-0000-0000-000000000002"
+	)
+	query := "?organizer_id=" + orgID
+	for _, verb := range []string{"confirm", "finalize", "release"} {
+		t.Run(verb, func(t *testing.T) {
+			// A configured credential, presented wrongly or not at all.
+			for _, token := range []string{"", "wrong"} {
+				req := httptest.NewRequest(http.MethodPost, "/internal/holds/"+holdID+"/"+verb+query, nil)
+				req.Header.Set("X-Internal-Token", token)
+				res := httptest.NewRecorder()
+				New(nil, "secret", nil).Router(nil).ServeHTTP(res, req)
+				if res.Code != http.StatusUnauthorized {
+					t.Fatalf("token %q: status=%d want=%d body=%s", token, res.Code, http.StatusUnauthorized, res.Body.String())
+				}
+				if got := strings.TrimSpace(res.Body.String()); got != `{"error":"unauthorized"}` {
+					t.Fatalf("token %q: body=%s want=%s", token, got, `{"error":"unauthorized"}`)
+				}
+			}
+			// An unset credential fails closed: it must not turn every caller into an
+			// authorized one, and it must not match a caller who sends no header either.
+			for _, token := range []string{"", "anything"} {
+				req := httptest.NewRequest(http.MethodPost, "/internal/holds/"+holdID+"/"+verb+query, nil)
+				req.Header.Set("X-Internal-Token", token)
+				res := httptest.NewRecorder()
+				New(nil, "", nil).Router(nil).ServeHTTP(res, req)
+				if res.Code != http.StatusUnauthorized {
+					t.Fatalf("unset credential, token %q: status=%d want=%d", token, res.Code, http.StatusUnauthorized)
+				}
+			}
+			// The pre-TKT-124 public path is retired, not aliased: the OpenAPI request
+			// validator no longer knows it, so it never reaches a handler at all. A 401
+			// here would mean a compatibility route came back.
+			req := httptest.NewRequest(http.MethodPost, "/holds/"+holdID+"/"+verb+query, nil)
+			req.Header.Set("X-Internal-Token", "secret")
+			res := httptest.NewRecorder()
+			New(nil, "secret", nil).Router(nil).ServeHTTP(res, req)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("legacy path: status=%d want=%d body=%s", res.Code, http.StatusNotFound, res.Body.String())
+			}
+		})
 	}
 }
 

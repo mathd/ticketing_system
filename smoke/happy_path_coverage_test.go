@@ -28,7 +28,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		return m
 	}
 
-	// inventory: public hold place + release through the gateway.
+	// inventory: hold placed publicly through the gateway, then released internally.
 	code, body := postWithKey(t, gatewayURL+"/api/inventory/holds", "cov-hold-"+slot,
 		map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 	if code != http.StatusCreated {
@@ -40,9 +40,10 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if err := json.Unmarshal(body, &hold); err != nil {
 		t.Fatal(err)
 	}
-	// Hold transitions are 404 at the gateway by design; the service seam is
-	// the committed surface (same path the offering-state test drives).
-	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/holds/%s/release?organizer_id=%s", inventoryURL, hold.HoldID, organizerID), "", nil); code != http.StatusOK {
+	// Hold transitions are internal-only (TKT-124): 404 at the gateway by the
+	// /internal/ prefix registration, driven service-direct with the credential
+	// (same path the offering-state test drives).
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/release?organizer_id=%s", inventoryURL, hold.HoldID, organizerID), "", nil); code != http.StatusOK {
 		t.Fatalf("release hold: %d %s", code, body)
 	}
 

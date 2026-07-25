@@ -551,7 +551,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 503, map[string]string{"error": "journal unavailable"})
 		return
 	}
-	code, _, err := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/finalize?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
+	code, _, err := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/finalize?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 	if err != nil || code != 200 {
 		write(w, 409, map[string]string{"error": "hold expired"})
 		return
@@ -574,7 +574,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code == 402 || code == 408 {
-		releaseCode, _, releaseErr := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/release?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
+		releaseCode, _, releaseErr := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/release?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 		if releaseErr != nil || releaseCode != 200 {
 			write(w, 202, map[string]any{"order_id": order, "status": "release_pending"})
 			return
@@ -603,7 +603,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
-	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
+	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 	if err != nil || code != 200 {
 		res, execErr := s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
 		if execErr == nil {

@@ -116,7 +116,7 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			name, target string
 			dst          *time.Duration
 		}{{"finalize", "finalizing", &out.Finalize}, {"confirm", "confirmed", &out.Confirm}} {
-			url := fmt.Sprintf("%s/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
+			url := fmt.Sprintf("%s/internal/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
 			code, rbody, d, err := timedPost(url, hdr, nil)
 			switch {
 			case err != nil && code == 0:
