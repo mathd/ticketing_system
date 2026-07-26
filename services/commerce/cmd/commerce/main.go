@@ -101,6 +101,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
 	}
+	validateResponses, err := runtimecfg.ResponseValidationFromEnv()
+	if err != nil {
+		return fmt.Errorf("response validation configuration: %w", err)
+	}
 	dbConfig, err := runtimecfg.DatabaseFromEnv()
 	if err != nil {
 		return fmt.Errorf("database configuration: %w", err)
@@ -155,7 +159,7 @@ func run() error {
 	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" {
 		return errors.New("CATALOG_URL, INVENTORY_URL and PAYMENTS_URL required")
 	}
-	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).Router(log))
+	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

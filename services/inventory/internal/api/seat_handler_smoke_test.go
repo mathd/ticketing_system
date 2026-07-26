@@ -100,7 +100,7 @@ func postSeatHoldTT(t *testing.T, srv http.Handler, org, slot, ticketType uuid.U
 func TestCreateSeatHoldHappyPathPins(t *testing.T) {
 	st, org, slot := seatAPIStore(t)
 	pin := &recordingPinner{}
-	srv := New(st, "", pin).Router(nil)
+	srv := New(st, "", pin).Router(nil, true)
 
 	res := postSeatHold(t, srv, org, slot, []string{"A/1/1", "A/1/2"}, "k1")
 	if res.Code != http.StatusCreated {
@@ -127,7 +127,7 @@ func TestCreateSeatHoldHappyPathPins(t *testing.T) {
 func TestCreateSeatHoldDeterministicRejectReleasesAndBlocksReplay(t *testing.T) {
 	st, org, slot := seatAPIStore(t)
 	pin := &recordingPinner{pinErr: fmt.Errorf("nope: %w", consumer.ErrSeatPinRejected)}
-	srv := New(st, "", pin).Router(nil)
+	srv := New(st, "", pin).Router(nil, true)
 	tt := uuid.New()
 
 	res := postSeatHoldTT(t, srv, org, slot, tt, []string{"A/1/1"}, "k1")
@@ -149,7 +149,7 @@ func TestCreateSeatHoldDeterministicRejectReleasesAndBlocksReplay(t *testing.T) 
 func TestCreateSeatHoldTransientFailKeepsHoldForRetry(t *testing.T) {
 	st, org, slot := seatAPIStore(t)
 	pin := &recordingPinner{pinErr: errors.New("connection reset")}
-	srv := New(st, "", pin).Router(nil)
+	srv := New(st, "", pin).Router(nil, true)
 	tt := uuid.New()
 
 	res := postSeatHoldTT(t, srv, org, slot, tt, []string{"A/1/1"}, "k1")
@@ -173,7 +173,7 @@ func TestCreateSeatHoldTransientFailKeepsHoldForRetry(t *testing.T) {
 // canonicalSeats and must surface as 400, not 500.
 func TestCreateSeatHoldWhitespaceSeatIs400(t *testing.T) {
 	st, org, slot := seatAPIStore(t)
-	srv := New(st, "", &recordingPinner{}).Router(nil)
+	srv := New(st, "", &recordingPinner{}).Router(nil, true)
 	res := postSeatHold(t, srv, org, slot, []string{" "}, "k1")
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("whitespace seat = %d body=%s want 400", res.Code, res.Body.String())
@@ -183,7 +183,7 @@ func TestCreateSeatHoldWhitespaceSeatIs400(t *testing.T) {
 func TestCreateSeatHoldReplayRepins(t *testing.T) {
 	st, org, slot := seatAPIStore(t)
 	pin := &recordingPinner{}
-	srv := New(st, "", pin).Router(nil)
+	srv := New(st, "", pin).Router(nil, true)
 
 	tt := uuid.New()
 	if res := postSeatHoldTT(t, srv, org, slot, tt, []string{"A/1/1"}, "same"); res.Code != http.StatusCreated {

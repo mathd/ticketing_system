@@ -44,6 +44,9 @@ x-go-service: &go-service
     DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-10}
     DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
     DB_CONN_MAX_IDLE_TIME: ${DB_CONN_MAX_IDLE_TIME:-5m}
+    # ADR-028 runtime enforcement (TKT-125). Default on: dev, CI and the smoke
+    # gate keep the guarantee without configuring anything.
+    OPENAPI_RESPONSE_VALIDATION_ENABLED: ${OPENAPI_RESPONSE_VALIDATION_ENABLED:-true}
   # Merged into each service's own depends_on (which adds its migrate job).
   # A plain `depends_on:` override would replace this map wholesale, not extend
   # it — hence the anchor.

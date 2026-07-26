@@ -27,7 +27,7 @@ func TestFactRejectsNonStrictJSON(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("X-Internal-Token", "secret")
 			recorder := httptest.NewRecorder()
-			server.Router(nil).ServeHTTP(recorder, request)
+			server.Router(nil, true).ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 			}

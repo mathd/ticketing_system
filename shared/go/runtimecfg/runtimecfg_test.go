@@ -3,6 +3,7 @@ package runtimecfg
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,7 +46,39 @@ func TestDatabaseDefaultsAndApply(t *testing.T) {
 	}
 }
 
+// Response validation is a cost paid on every response (ADR-028 as amended by
+// TKT-125): dev, CI and smoke keep it, so absence of the variable means on.
+func TestResponseValidationDefaultsOnAndCanBeDisabled(t *testing.T) {
+	enabled, err := ResponseValidationFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("response validation must default on — dev/CI/smoke rely on the default")
+	}
+
+	t.Setenv("OPENAPI_RESPONSE_VALIDATION_ENABLED", "false")
+	enabled, err = ResponseValidationFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("OPENAPI_RESPONSE_VALIDATION_ENABLED=false must disable response validation")
+	}
+}
+
 func TestInvalidConfiguration(t *testing.T) {
+	t.Run("boolean", func(t *testing.T) {
+		t.Setenv("OPENAPI_RESPONSE_VALIDATION_ENABLED", "sometimes")
+		_, err := ResponseValidationFromEnv()
+		if err == nil {
+			t.Fatal("expected invalid boolean error")
+		}
+		// Never echo the value: the same rule the token reader follows.
+		if got := err.Error(); !strings.Contains(got, "OPENAPI_RESPONSE_VALIDATION_ENABLED") || strings.Contains(got, "sometimes") {
+			t.Fatalf("error must name the variable and not its value: %q", got)
+		}
+	})
 	t.Run("duration", func(t *testing.T) {
 		t.Setenv("HTTP_IDLE_TIMEOUT", "0s")
 		if _, err := HTTPFromEnv(); err == nil {

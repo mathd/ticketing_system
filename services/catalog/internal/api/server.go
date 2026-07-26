@@ -56,7 +56,7 @@ func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalC
 
 // NewRouter mounts the generated routes wrapped in spec request validation
 // (ADR-009 §3) on a fresh chi router. /healthz stays outside, in main.
-func NewRouter(s *Server) (http.Handler, error) {
+func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	loader := openapi3.NewLoader()
 	doc, err := loader.LoadFromData(apispec.Spec)
 	if err != nil {
@@ -95,7 +95,7 @@ func NewRouter(s *Server) (http.Handler, error) {
 	})
 	// Response drift fails closed (ADR-028): hand-built payloads are checked
 	// against the committed spec at runtime, same as the non-codegen services.
-	return contract.ResponseValidator(apispec.Spec, handler, s.log)
+	return contract.ResponseValidator(apispec.Spec, handler, s.log, validateResponses)
 }
 
 func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {

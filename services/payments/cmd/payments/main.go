@@ -235,6 +235,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
 	}
+	validateResponses, err := runtimecfg.ResponseValidationFromEnv()
+	if err != nil {
+		return fmt.Errorf("response validation configuration: %w", err)
+	}
 	dbConfig, err := runtimecfg.DatabaseFromEnv()
 	if err != nil {
 		return fmt.Errorf("database configuration: %w", err)
@@ -295,7 +299,7 @@ func run() error {
 	)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
-	r.Mount("/", api.NewWithPSPRetention(paymentstore.New(db, keys), internalToken, provider, retention).Router(log))
+	r.Mount("/", api.NewWithPSPRetention(paymentstore.New(db, keys), internalToken, provider, retention).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

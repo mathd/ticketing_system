@@ -107,6 +107,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
 	}
+	validateResponses, err := runtimecfg.ResponseValidationFromEnv()
+	if err != nil {
+		return fmt.Errorf("response validation configuration: %w", err)
+	}
 	dbConfig, err := runtimecfg.DatabaseFromEnv()
 	if err != nil {
 		return fmt.Errorf("database configuration: %w", err)
@@ -186,7 +190,7 @@ func run() error {
 			return nil
 		})).ServeHTTP(w, req)
 	}))
-	r.Mount("/", api.New(st, credential, catalog).Router(log))
+	r.Mount("/", api.New(st, credential, catalog).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

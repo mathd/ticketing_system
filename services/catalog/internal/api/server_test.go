@@ -1031,7 +1031,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	st := newFakeStore()
 	pub := &fakePublisher{}
-	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token"))
+	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token"), true)
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
@@ -1050,7 +1050,7 @@ func newEnv(t *testing.T) *env {
 func TestInternalTicketTypeRequiresCredential(t *testing.T) {
 	st := newFakeStore()
 	pub := &fakePublisher{}
-	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret"))
+	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret"), true)
 	if err != nil {
 		t.Fatal(err)
 	}

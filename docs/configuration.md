@@ -14,6 +14,7 @@ no config files in the services.
 | `DB_MAX_IDLE_CONNS` | maximum idle database connections; must not exceed open | `10` |
 | `DB_CONN_MAX_LIFETIME` | maximum lifetime of a pooled connection | `30m` |
 | `DB_CONN_MAX_IDLE_TIME` | maximum time a pooled connection remains idle | `5m` |
+| `OPENAPI_RESPONSE_VALIDATION_ENABLED` | enforce ADR-028 response-drift fail-closed at runtime; off skips the response buffer and schema walk, and drifted payloads reach the client unchecked (TKT-125) | `true` |
 | `ACCESS_EVENT_RETRY_BACKOFF` | Access-only comma-separated event retry intervals | `1s,5s,30s,2m,5m,10m` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | collector (lgtm container) | SDK default |
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY` | export cadence (tightened locally) | SDK defaults |

@@ -22,27 +22,35 @@ import (
 // RequestValidator validates every documented service request. The served
 // source document is deliberately bypassed because it is checked byte-for-byte
 // by the smoke gate and is not part of the service's JSON operation surface.
-// Response drift fails closed with 500 (ADR-028) and is logged through log
-// (nil falls back to slog.Default()).
-func RequestValidator(spec []byte, next http.Handler, log *slog.Logger) (http.Handler, error) {
-	return requestValidator(spec, next, log, nil)
+// Requests are validated unconditionally — they are a trust boundary. When
+// validateResponses is set, response drift additionally fails closed with 500
+// (ADR-028) and is logged through log (nil falls back to slog.Default());
+// where it is not set, the handler's response reaches the client untouched.
+// Callers get the flag from runtimecfg.ResponseValidationFromEnv, which
+// defaults it on (TKT-125).
+func RequestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool) (http.Handler, error) {
+	return requestValidator(spec, next, log, validateResponses, nil)
 }
 
 // RequestValidatorWithErrorHandler lets a service preserve an established
 // error representation for requests rejected before its handler runs.
-func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, log *slog.Logger, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
-	return requestValidator(spec, next, log, errorHandler)
+func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
+	return requestValidator(spec, next, log, validateResponses, errorHandler)
 }
 
 // ResponseValidator wraps next in response-drift enforcement only, for routers
 // that already run their own request validation (catalog). Routes absent from
-// the spec pass through untouched.
-func ResponseValidator(spec []byte, next http.Handler, log *slog.Logger) (http.Handler, error) {
+// the spec pass through untouched. The spec is loaded and validated either
+// way: validateResponses governs enforcement, not whether the contract parses.
+func ResponseValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool) (http.Handler, error) {
 	_, router, err := load(spec)
 	if err != nil {
 		return nil, err
 	}
-	validated := responseValidated(router, next, log)
+	if !validateResponses {
+		return next, nil
+	}
+	validated := responseValidated(router, next, log, openapi3filter.ValidateResponse)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/openapi.yaml" {
 			next.ServeHTTP(w, r)
@@ -68,10 +76,18 @@ func load(spec []byte) (*openapi3.T, routers.Router, error) {
 	return doc, router, nil
 }
 
+// validateResponse is openapi3filter.ValidateResponse in production. It is a
+// parameter so a test can observe which context the validator actually runs
+// on — the drift log already carried the request's trace, so asserting on the
+// log could not have caught the background context (TKT-125).
+type validateResponse func(context.Context, *openapi3filter.ResponseValidationInput) error
+
 // responseValidated buffers next's response and fails closed on contract
 // drift: the drifted payload never reaches the client, and the violation is
 // logged with the operation coordinates so the 500 is diagnosable (ADR-028).
-func responseValidated(router routers.Router, next http.Handler, log *slog.Logger) http.Handler {
+// Buffering is why a handler behind this wrap can never stream: the response
+// has to be withheld until the validator has accepted it.
+func responseValidated(router routers.Router, next http.Handler, log *slog.Logger, validate validateResponse) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := httptest.NewRecorder()
 		next.ServeHTTP(recorder, r)
@@ -86,7 +102,7 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 				// allows it unless told otherwise.
 				Options: &openapi3filter.Options{IncludeResponseStatus: true},
 			}
-			if validationErr := openapi3filter.ValidateResponse(context.Background(), input); validationErr != nil {
+			if validationErr := validate(r.Context(), input); validationErr != nil {
 				logger := log
 				if logger == nil {
 					logger = slog.Default()
@@ -110,7 +126,7 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 	})
 }
 
-func requestValidator(spec []byte, next http.Handler, log *slog.Logger, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
+func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
 	doc, router, err := load(spec)
 	if err != nil {
 		return nil, err
@@ -124,7 +140,11 @@ func requestValidator(spec []byte, next http.Handler, log *slog.Logger, errorHan
 			writeValidationError(w, status, map[string]string{"error": message})
 		},
 	})
-	validatedHandler := validator(responseValidated(router, next, log))
+	inner := next
+	if validateResponses {
+		inner = responseValidated(router, next, log, openapi3filter.ValidateResponse)
+	}
+	validatedHandler := validator(inner)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/openapi.yaml" {
 			next.ServeHTTP(w, r)
