@@ -120,6 +120,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
 	}
+	validateResponses, err := runtimecfg.ResponseValidationFromEnv()
+	if err != nil {
+		return fmt.Errorf("response validation configuration: %w", err)
+	}
 	dbConfig, err := runtimecfg.DatabaseFromEnv()
 	if err != nil {
 		return fmt.Errorf("database configuration: %w", err)
@@ -279,7 +283,7 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
-	r.Mount("/", accessapi.New(st, verifier).Router(log))
+	r.Mount("/", accessapi.New(st, verifier).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

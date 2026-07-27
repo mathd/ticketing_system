@@ -22,7 +22,7 @@ func TestCreateHoldRejectsNonStrictJSON(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Idempotency-Key", "strict-json")
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, req)
+			s.Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d", res.Code, http.StatusBadRequest)
 			}
@@ -48,7 +48,7 @@ func TestInternalTransitionsRequireInternalCredential(t *testing.T) {
 				req := httptest.NewRequest(http.MethodPost, "/internal/holds/"+holdID+"/"+verb+query, nil)
 				req.Header.Set("X-Internal-Token", token)
 				res := httptest.NewRecorder()
-				New(nil, "secret", nil).Router(nil).ServeHTTP(res, req)
+				New(nil, "secret", nil).Router(nil, true).ServeHTTP(res, req)
 				if res.Code != http.StatusUnauthorized {
 					t.Fatalf("token %q: status=%d want=%d body=%s", token, res.Code, http.StatusUnauthorized, res.Body.String())
 				}
@@ -62,7 +62,7 @@ func TestInternalTransitionsRequireInternalCredential(t *testing.T) {
 				req := httptest.NewRequest(http.MethodPost, "/internal/holds/"+holdID+"/"+verb+query, nil)
 				req.Header.Set("X-Internal-Token", token)
 				res := httptest.NewRecorder()
-				New(nil, "", nil).Router(nil).ServeHTTP(res, req)
+				New(nil, "", nil).Router(nil, true).ServeHTTP(res, req)
 				if res.Code != http.StatusUnauthorized {
 					t.Fatalf("unset credential, token %q: status=%d want=%d", token, res.Code, http.StatusUnauthorized)
 				}
@@ -73,7 +73,7 @@ func TestInternalTransitionsRequireInternalCredential(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/holds/"+holdID+"/"+verb+query, nil)
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			New(nil, "secret", nil).Router(nil).ServeHTTP(res, req)
+			New(nil, "secret", nil).Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusNotFound {
 				t.Fatalf("legacy path: status=%d want=%d body=%s", res.Code, http.StatusNotFound, res.Body.String())
 			}
@@ -113,7 +113,7 @@ func TestOperationalEndpointsRequireInternalCredential(t *testing.T) {
 				r.Header.Set("X-Internal-Token", token)
 			}
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, r)
+			s.Router(nil, true).ServeHTTP(res, r)
 			if res.Code != http.StatusUnauthorized {
 				t.Fatalf("%s token %q: status=%d want=%d", name, token, res.Code, http.StatusUnauthorized)
 			}
@@ -123,7 +123,7 @@ func TestOperationalEndpointsRequireInternalCredential(t *testing.T) {
 	open := New(nil, "", nil)
 	req := httptest.NewRequest(http.MethodGet, "/internal/slots/"+id+"/availability?organizer_id="+id, nil)
 	res := httptest.NewRecorder()
-	open.Router(nil).ServeHTTP(res, req)
+	open.Router(nil, true).ServeHTTP(res, req)
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("empty credential: status=%d want=%d", res.Code, http.StatusUnauthorized)
 	}
@@ -144,7 +144,7 @@ func TestOperationalPlaceRejectsBadShapes(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, req)
+			s.Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 			}
@@ -177,7 +177,7 @@ func TestGroupReservationEndpointsRequireInternalCredential(t *testing.T) {
 				r.Header.Set("X-Internal-Token", token)
 			}
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, r)
+			s.Router(nil, true).ServeHTTP(res, r)
 			if res.Code != http.StatusUnauthorized {
 				t.Fatalf("%s token %q: status=%d want=%d", name, token, res.Code, http.StatusUnauthorized)
 			}
@@ -205,7 +205,7 @@ func TestGroupReservationPlaceRejectsBadShapes(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, req)
+			s.Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 			}
@@ -216,7 +216,7 @@ func TestGroupReservationPlaceRejectsBadShapes(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Token", "secret")
 	res := httptest.NewRecorder()
-	s.Router(nil).ServeHTTP(res, req)
+	s.Router(nil, true).ServeHTTP(res, req)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("missing key: status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 	}
@@ -233,7 +233,7 @@ func TestChannelAllocationEndpointRequiresInternalCredential(t *testing.T) {
 			req.Header.Set("X-Internal-Token", token)
 		}
 		res := httptest.NewRecorder()
-		s.Router(nil).ServeHTTP(res, req)
+		s.Router(nil, true).ServeHTTP(res, req)
 		if res.Code != http.StatusUnauthorized {
 			t.Fatalf("token %q: status=%d want=%d", token, res.Code, http.StatusUnauthorized)
 		}
@@ -256,7 +256,7 @@ func TestChannelAllocationRejectsBadShapes(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, req)
+			s.Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 			}
@@ -276,7 +276,7 @@ func TestCreateHoldRejectsBadChannel(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Idempotency-Key", "bad-channel")
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, req)
+			s.Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 			}
@@ -330,7 +330,7 @@ func TestCapacityAdjustmentEndpointsRequireInternalCredential(t *testing.T) {
 				r.Header.Set("X-Internal-Token", token)
 			}
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, r)
+			s.Router(nil, true).ServeHTTP(res, r)
 			if res.Code != http.StatusUnauthorized {
 				t.Fatalf("%s token %q: status=%d want=%d", name, token, res.Code, http.StatusUnauthorized)
 			}
@@ -355,7 +355,7 @@ func TestCapacityAdjustmentRejectsBadShapes(t *testing.T) {
 			req.Header.Set("Idempotency-Key", "k")
 			req.Header.Set("X-Internal-Token", "secret")
 			res := httptest.NewRecorder()
-			s.Router(nil).ServeHTTP(res, req)
+			s.Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 			}
@@ -366,7 +366,7 @@ func TestCapacityAdjustmentRejectsBadShapes(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Token", "secret")
 	res := httptest.NewRecorder()
-	s.Router(nil).ServeHTTP(res, req)
+	s.Router(nil, true).ServeHTTP(res, req)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("missing key: status=%d want=%d body=%s", res.Code, http.StatusBadRequest, res.Body.String())
 	}

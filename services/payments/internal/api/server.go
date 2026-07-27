@@ -49,7 +49,7 @@ func NewWithPSP(j *store.Journal, credential string, provider psp.PSP) *Server {
 func NewWithPSPRetention(j *store.Journal, credential string, provider psp.PSP, retention time.Duration) *Server {
 	return &Server{journal: j, credential: credential, psp: provider, statusReplayRetention: retention}
 }
-func (s *Server) Router(log *slog.Logger) http.Handler {
+func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
@@ -62,7 +62,7 @@ func (s *Server) Router(log *slog.Logger) http.Handler {
 	r.Get("/internal/psp/status", s.pspStatus)
 	r.Post("/internal/psp/void", s.pspVoid)
 	r.Post("/internal/psp/refund", s.pspRefund)
-	validated, err := contract.RequestValidator(apispec.Spec, r, log)
+	validated, err := contract.RequestValidator(apispec.Spec, r, log, validateResponses)
 	if err != nil {
 		panic(err)
 	}

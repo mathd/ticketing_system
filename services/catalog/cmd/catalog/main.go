@@ -107,6 +107,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
 	}
+	validateResponses, err := runtimecfg.ResponseValidationFromEnv()
+	if err != nil {
+		return fmt.Errorf("response validation configuration: %w", err)
+	}
 	dbConfig, err := runtimecfg.DatabaseFromEnv()
 	if err != nil {
 		return fmt.Errorf("database configuration: %w", err)
@@ -146,7 +150,7 @@ func run() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
-	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken))
+	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken), validateResponses)
 	if err != nil {
 		return fmt.Errorf("api router: %w", err)
 	}

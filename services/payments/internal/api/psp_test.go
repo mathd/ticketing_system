@@ -86,7 +86,7 @@ func TestPSPEndpointsRequireInternalToken(t *testing.T) {
 	for _, request := range requests {
 		request.Header.Set("Content-Type", "application/json")
 		recorder := httptest.NewRecorder()
-		server.Router(nil).ServeHTTP(recorder, request)
+		server.Router(nil, true).ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusUnauthorized {
 			t.Fatalf("%s %s = %d, want 401", request.Method, request.URL.Path, recorder.Code)
 		}

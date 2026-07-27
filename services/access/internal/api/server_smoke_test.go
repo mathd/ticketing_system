@@ -115,7 +115,7 @@ func TestScanReplayMarkerOnTheWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	srv, st, qr := newSmokeServer(t, ctx)
-	router := srv.Router(nil)
+	router := srv.Router(nil, true)
 	payload := issueSmokeTicket(t, ctx, st, qr)
 	occ := uuid.NewString()
 	body := `{"qr_payload":` + mustJSON(t, payload) + `,"occurrence_id":"` + occ + `","occurred_at":"2026-07-17T09:00:00Z"}`
@@ -137,7 +137,7 @@ func TestReconcileResultsOnTheWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	srv, st, qr := newSmokeServer(t, ctx)
-	router := srv.Router(nil)
+	router := srv.Router(nil, true)
 	payload := issueSmokeTicket(t, ctx, st, qr)
 	occA, occB := uuid.NewString(), uuid.NewString()
 
@@ -189,7 +189,7 @@ func TestPassScanFlowOnTheWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	srv, st, qr := newSmokeServer(t, ctx)
-	router := srv.Router(nil)
+	router := srv.Router(nil, true)
 
 	ticketID, orderID := uuid.New(), uuid.New()
 	organizerID, slotID := uuid.New(), uuid.New()

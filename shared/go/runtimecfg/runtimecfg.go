@@ -102,6 +102,16 @@ func InternalTokenFromEnv() (string, error) {
 	return token, nil
 }
 
+// ResponseValidationFromEnv reports whether a service enforces ADR-028
+// response-drift fail-closed at runtime. It defaults to on, so dev, CI and the
+// smoke gate keep the guarantee without configuring anything; only a
+// deployment that has measured the cost turns it off. It is deliberately not
+// part of HTTP: that policy is applied to an http.Server, and the gateway
+// reads it while running no OpenAPI validation at all (TKT-125).
+func ResponseValidationFromEnv() (bool, error) {
+	return boolean("OPENAPI_RESPONSE_VALIDATION_ENABLED", true)
+}
+
 func duration(name string, fallback time.Duration) (time.Duration, error) {
 	raw, ok := os.LookupEnv(name)
 	if !ok {
@@ -110,6 +120,18 @@ func duration(name string, fallback time.Duration) (time.Duration, error) {
 	value, err := time.ParseDuration(raw)
 	if err != nil || value <= 0 {
 		return 0, fmt.Errorf("%s must be a positive duration", name)
+	}
+	return value, nil
+}
+
+func boolean(name string, fallback bool) (bool, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", name)
 	}
 	return value, nil
 }
