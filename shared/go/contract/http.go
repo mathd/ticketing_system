@@ -79,7 +79,9 @@ func load(spec []byte) (*openapi3.T, routers.Router, error) {
 // validateResponse is openapi3filter.ValidateResponse in production. It is a
 // parameter so a test can observe which context the validator actually runs
 // on — the drift log already carried the request's trace, so asserting on the
-// log could not have caught the background context (TKT-125).
+// log could not have caught the background context (TKT-125). Note kin-openapi
+// v0.142.0 accepts the ctx and never reads it, so passing the request context
+// buys nothing observable today; it is correctness against a future version.
 type validateResponse func(context.Context, *openapi3filter.ResponseValidationInput) error
 
 // responseValidated buffers next's response and fails closed on contract

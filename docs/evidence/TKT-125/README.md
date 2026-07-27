@@ -87,6 +87,18 @@ Closing the gap needs a one-line harness change (`defer writeReport(t, report)`)
 this ticket's plan — the plan explicitly recorded that `smoke/onsale_load_test.go` would not be
 modified. Filed as a follow-up rather than taken here.
 
+## A second overclaim, caught by review
+
+The PR originally said the `context.Background()` fix made validation "observe the request's
+cancellation and deadline". **It does not.** `openapi3filter.ValidateResponse` at kin-openapi
+v0.142.0 accepts a `ctx` parameter and never reads it — not in `decodeBody`, not in `VisitJSON`,
+nowhere in the function body (verified in the module source after the ai-review raised it).
+
+Passing the request context is therefore correct-in-principle and future-proof, and buys **nothing
+observable today**. This is the same failure the ticket's own `trace_id` premise made, repeated one
+step down; it is recorded here rather than quietly corrected, because a ticket that opens by
+debunking an unmeasured claim has no licence to ship one of its own.
+
 ## Discarded runs
 
 Recorded so the discards cannot be mistaken for selection:

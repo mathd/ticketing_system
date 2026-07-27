@@ -136,10 +136,14 @@ func TestBrokenSpecFailsConstructionWithValidationDisabled(t *testing.T) {
 	}
 }
 
-// TKT-125: the validator ran on context.Background(), so it could not observe
-// the request's cancellation or deadline. Asserting on the log alone would
-// pass against the pre-fix code — the log line already used r.Context() — so
-// the assertion has to be on what the validator itself received.
+// TKT-125: the validator ran on context.Background(). Passing r.Context()
+// changes no behaviour at kin-openapi v0.142.0 — ValidateResponse accepts a
+// ctx and never reads it (verified in the module source; ai-review finding) —
+// so this is hygiene against a future version that does honour it, not a fix
+// for observable cancellation today. Claim it as nothing more.
+// The assertion is on what the validator received, not on the log: the log
+// line already used r.Context(), so a log-based test would pass against the
+// pre-fix code.
 func TestResponseValidationUsesRequestContext(t *testing.T) {
 	type ctxKey struct{}
 	_, router, err := load(testSpec)
