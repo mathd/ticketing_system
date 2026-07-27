@@ -6,9 +6,11 @@ Date: 2026-07-17
 
 Accepted (TKT-47; decision taken under the owner-waived plan gate of that run, recorded on the ticket)
 
-**Amended by TKT-125 (2026-07-25)** — *placement only*, under that run's owner-waived gates. The
+**Amended by TKT-125 (2026-07-27)** — *placement only*, under that run's owner-waived gates. The
 fail-closed **semantics** below are unchanged wherever validation runs; what changed is that
-"wherever" is now a deployment choice rather than "always". See § Amendment (TKT-125).
+"wherever" is now a deployment choice rather than "always" — and the measurement that prompted the
+change found no cost worth paying it for, so every environment still runs it. See
+§ Amendment (TKT-125).
 
 ## Context
 
@@ -96,21 +98,33 @@ path `smoke/onsale_load_test.go` holds to a p99 SLO.
 now selects it. **Request** validation is untouched and remains unconditional: it is a trust
 boundary, and its cost is bounded by the request body.
 
-### The measurement — NOT YET TAKEN
+### The measurement — taken, and it found nothing
 
-> **⚠ This section is incomplete and this amendment is NOT ready to merge.** The
-> before/after p99 on `smoke/onsale_load_test.go` (`nfr-3000pm` stage, hold / finalize / confirm)
-> could not be taken: the only available host was 12–35× oversubscribed (load average 150–415 on
-> 12 cores) across three attempts, and the harness's own generator guard correctly refused to
-> return a server verdict under those conditions. A p99 measured there would be host noise
-> presented as a decision.
->
-> The materiality bar was **pre-registered before any run**, and stands: **material = validation-on
-> p99 exceeds validation-off p99 by ≥10% or ≥50 ms on any of hold / finalize / confirm at
-> `nfr-3000pm`**. Below both bars on all three ⇒ negligible ⇒ the default stays on everywhere and
-> this amendment records that the placement was measured and deliberately retained.
->
-> Until the numbers exist, this ADR must not claim a production setting.
+`smoke/onsale_load_test.go` at the `nfr-3000pm` stage (3,000 attempts/min × 180 s = 9,000
+lifecycles per run), validation on vs off, on a quiet host, with the off arm's setting verified
+inside the running container:
+
+| Run | Validation | hold p99 | lifecycle p99 |
+|---|---|---|---|
+| A | on | 4.7 ms | 9.1 ms |
+| B | on | 8.1 ms | 17.0 ms |
+| C | **off** | 5.1 ms | 10.6 ms |
+
+**The off run falls between the two on runs.** Two runs of the same configuration differ by +72% on
+hold p99, so the off arm's 5.1 ms is 8.5% slower than one on-run and 37% faster than the other — the
+sign of the "effect" depends on which same-configuration run you compare against. Against the
+materiality bar pre-registered before any run (≥10% or ≥50 ms), the result is **not material**.
+
+So the placement change ships as a **lever, not a remedy**. `OPENAPI_RESPONSE_VALIDATION_ENABLED`
+defaults to `true` and **no environment sets it to false**, including production: this ADR records
+no measured justification for disabling response validation anywhere. The switch exists so a future
+topology that *does* measure a cost has somewhere to turn it off, and so ADR-028's runtime scope is
+an explicit decision rather than an accident of where the middleware was mounted.
+
+Full method, the discarded runs, and a stated flaw in the pre-registered bar (its 10% relative arm
+is unusable when the whole p99 is under 10 ms): `docs/evidence/TKT-125/README.md`. Per-mutation
+finalize/confirm p99 are not reported separately there — the harness emits them only in a JSON
+report that a late-stage abort makes unreachable; lifecycle p99 covers them in aggregate.
 
 ### What is and is not guaranteed — and against whom
 
