@@ -1,0 +1,20 @@
+{
+  "key": "TKT-131",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Streaming and http.Hijacker behind the enabled response-validation wrap",
+  "description": "### Finding (architecture review R1, carried forward from TKT-125)\n\n`shared/go/contract.responseValidated` buffers the response into an `httptest.ResponseRecorder`, which does not implement `http.Flusher` or `http.Hijacker`. No handler behind the wrap can stream or hijack its connection — today, in all five services, whenever response validation is enabled.\n\n### Why TKT-125 split this out rather than fixing it\n\nIt is a **policy** decision, not an adapter fix. ADR-028's fail-closed guarantee *requires* withholding the response until the validator has accepted it; a handler that flushed would have already sent bytes the validator might reject. Exposing `Flush` through the recorder would not stream to the client and would break fail-closed ordering. So the real question is which of the two properties a streaming route gives up — and that only needs answering when such a route exists.\n\nNote TKT-125 made this **conditional**: with `OPENAPI_RESPONSE_VALIDATION_ENABLED=false` the handler receives the real `ResponseWriter` and the optional interfaces are restored.\n\n### Acceptance Criteria\n\n- [ ] A decision (ADR amendment) on how a streaming route coexists with ADR-028: route-level exclusion, a different validation contract, or streaming stays unsupported\n- [ ] If a mechanism is adopted: a test proving fail-closed still holds on non-streaming routes\n\n### Not urgent\n\nNo streaming or hijacking route exists in the repo today. This is a placeholder for when one is proposed.",
+  "readiness": {},
+  "context": {},
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nSplit from TKT-125 at plan time with a stated justification (draft §4, accepted at plan-review). Not shaped: no DoR, no context-mémo bake — do both before this is Gate-1 eligible."
+    }
+  ]
+}
