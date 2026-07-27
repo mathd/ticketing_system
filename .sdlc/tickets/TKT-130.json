@@ -1,0 +1,22 @@
+{
+  "key": "TKT-130",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "summary": "onsaleFull discards all evidence when any stage aborts — defer writeReport",
+  "description": "### Finding (TKT-125 measurement, 2026-07-27)\n\n`writeReport(t, report)` is the **last statement** of `onsaleFull` (`smoke/onsale_load_test.go`). Every `generatorHealthy` check is a `t.Fatalf`, so a single aborted stage discards the whole accumulated `report` — including stages that completed cleanly minutes earlier.\n\nThis cost TKT-125 its COS: on a single-host setup the ceiling sweep's `sweep-600` stage trips the generator guard **every time** (3 runs of 3, on 4-9 client-side transport errors at 600 attempts/s), so no JSON was ever emitted, even though the `nfr-3000pm` stage the ticket actually needed had completed 9,000/9,000 clean. `finalize_p99_ms` and `confirm_p99_ms` exist only in that report, so they could not be recorded.\n\n### Scope\n\n`defer writeReport(t, report)` (or equivalent) so a partial run still emits what it measured. The report already carries per-stage entries appended as they complete, so partial output is meaningful, not misleading — but consider marking the report `partial: true` so a reader cannot mistake an aborted run for a complete one.\n\n### Acceptance Criteria\n\n- [ ] An `onsaleFull` run whose sweep aborts still writes `ONSALE_REPORT` containing every completed stage\n- [ ] The report distinguishes complete from partial runs\n- [ ] TKT-125's missing `finalize_p99_ms` / `confirm_p99_ms` are obtainable by re-running the two arms\n- [ ] `make check` green",
+  "readiness": {},
+  "context": {},
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFrom TKT-125's measurement. The one-line fix was deliberately **not** taken in TKT-125 because that ticket's plan explicitly recorded that `smoke/onsale_load_test.go` would not be modified — filing rather than widening scope. See `docs/evidence/TKT-125/README.md` § Known gap."
+    }
+  ]
+}
