@@ -25,11 +25,13 @@
 //     quarantines and acks (TKT-68), access parks outstanding (it has no
 //     quarantine store). A library that returned a disposition would be
 //     inventing policy for services whose constraints it does not know.
-//   - The `id`/`type` checks. Every consumer makes them, but their logging and
-//     failure records differ; folding them in would flatten distinctions the
-//     services depend on. They are a candidate for the consumer skeleton
-//     (TKT-127), which is where shared *behaviour* belongs — this package is
-//     shared *contract*.
+//   - The `id`/`type` checks, which are NOT uniform across consumers. All three
+//     check `id`; only access's two check `type` against the subject they
+//     expect. Inventory dispatches on the NATS subject and ignores the field
+//     entirely (pre-existing; TKT-133). Their logging and failure records differ
+//     too, so folding them in would flatten distinctions the services depend on.
+//     They are a candidate for the consumer skeleton (TKT-127), which is where
+//     shared *behaviour* belongs — this package is shared *contract*.
 //
 // The dividing line: this package says what the envelope IS and what is
 // unreadable by anyone. What to DO about it stays with the service.

@@ -165,9 +165,13 @@ not an acceptable price for a type change.
   Only the owning service knows a subject's first variant.
 - **Disposition stays in the service.** Term, park, quarantine, NAK-with-delay, and whether
   readiness latches are policy, and they legitimately differ between inventory and access.
-- **The `id`/`type` checks stay in the service.** Every consumer makes them, but their logging and
-  failure records differ. They are a candidate for TKT-127, which is where shared *behaviour*
-  belongs.
+- **The `id`/`type` checks stay in the service, and they are *not* uniform.** All three consumers
+  check `id`. Only access's two check `type` against the subject they expect; **inventory does not
+  check `type` at all** — it dispatches on the NATS subject and ignores the field. That predates
+  this ADR and is not changed here (tracked as TKT-133), but it must be stated rather than papered
+  over: an earlier draft of this section claimed every consumer performs both checks, which was
+  simply false, and the adversarial review caught it. Their logging and failure records differ too.
+  Unifying them is a candidate for TKT-127, which is where shared *behaviour* belongs.
 
 **Byte-for-byte identity is proven by goldens captured before the refactor.** 13 literals covering
 every published subject were captured from the **pre-refactor** emitters and committed in a
