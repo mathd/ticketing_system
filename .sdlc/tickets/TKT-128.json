@@ -1,7 +1,7 @@
 {
   "key": "TKT-128",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "risk:low",
     "needs:human"
@@ -10,7 +10,7 @@
   "pr": {
     "number": 118,
     "url": "https://github.com/mathd/ticketing_system/pull/118",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "simple",
   "summary": "ADR-004 declares a cache-first read path with no cache above the storefront — amend the ADR to what exists",
