@@ -85,8 +85,10 @@ flowchart TB
   immutable ticket lifecycle trace. M1 deliberately exposes this endpoint without staff
   authentication and has no expiry, revocation, or admission-window policy; staff RBAC and
   lifecycle policy are later TKT-22/TKT-19 work.
-- Public reads declare volatility-tiered TTLs (ADR-004); one claim primitive for all
-  admission inventory (ADR-005).
+- Public reads declare volatility-tiered TTLs (ADR-004) — but only catalog's contract declares them,
+  only the storefront's SSR page-data cache honors them, and inventory's availability read emits a
+  tier its contract omits. See ADR-004 § Amendment (TKT-128): the deployment gap is TKT-31's, the
+  contract gap TKT-137's. One claim primitive for all admission inventory (ADR-005).
 - All cross-service calls propagate W3C trace context (`obs.Client`); all servers emit
   structured JSON logs with `trace_id`.
 
