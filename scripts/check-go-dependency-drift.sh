@@ -25,22 +25,37 @@ if [ "$#" -eq 0 ]; then
 fi
 
 # "<dependency> <version> <module>", one line per require tuple.
-records=$(
-  for m in "$@"; do
-    go mod edit -json "$m/go.mod" | awk -v mod="$m" '
-      /"Require": \[/       { req = 1; next }
-      req && /^\t\]/        { req = 0 }
-      req && /"Path": "/    { p = $0; sub(/^.*"Path": "/, "", p);    sub(/".*$/, "", p); next }
-      req && /"Version": "/ { v = $0; sub(/^.*"Version": "/, "", v); sub(/".*$/, "", v)
-                              if (p != "") { print p, v, mod; p = "" } }
-    '
-  done | LC_ALL=C sort -u
-)
+#
+# Each module is read into a file and its status checked explicitly. Do NOT fold
+# this loop into a pipeline (`for ...; done | sort`): the loop then runs as a
+# pipeline component, `errexit` does not stop it, and the pipeline reports the
+# *last* command's status — so a module whose `go mod edit` failed is silently
+# skipped and the run still exits 0. A checker that reports "none" for a module
+# it never read passes forever, which is worse than having no checker at all.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT INT TERM
+: > "$work/records"
 
-if [ -z "$records" ]; then
+for m in "$@"; do
+  if ! go mod edit -json "$m/go.mod" > "$work/module.json"; then
+    echo "check-go-dependency-drift: cannot read $m/go.mod — refusing to report a verdict" >&2
+    exit 2
+  fi
+  awk -v mod="$m" '
+    /"Require": \[/       { req = 1; next }
+    req && /^\t\]/        { req = 0 }
+    req && /"Path": "/    { p = $0; sub(/^.*"Path": "/, "", p);    sub(/".*$/, "", p); next }
+    req && /"Version": "/ { v = $0; sub(/^.*"Version": "/, "", v); sub(/".*$/, "", v)
+                            if (p != "") { print p, v, mod; p = "" } }
+  ' "$work/module.json" >> "$work/records"
+done
+
+if [ ! -s "$work/records" ]; then
   echo "check-go-dependency-drift: no require declarations found in: $*" >&2
   exit 2
 fi
+
+records=$(LC_ALL=C sort -u "$work/records")
 
 # A dependency path that survives `sort -u` on (path, version) more than once is
 # declared at more than one version.

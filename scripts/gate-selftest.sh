@@ -104,6 +104,13 @@ expect_pass "go dependency drift (clean baseline)" check-dep-drift
 (cd services/access && go mod edit -require=go.opentelemetry.io/otel@v1.43.0)
 expect_fail "go dependency drift" check-dep-drift
 
+# 8. An unreadable module must not be silently skipped. shared/go is FIRST in
+#    GO_MODULES, and the checker's original piped-loop form reported "none" and
+#    exited 0 whenever a non-final module failed to parse — a checker that never
+#    read a module still passing is worse than no checker.
+printf 'this is not a go.mod\n' > shared/go/go.mod
+expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
+
 if [ "$fail_count" -gt 0 ]; then
   echo "gate-selftest: $fail_count seeded error(s) were NOT caught"
   exit 1
