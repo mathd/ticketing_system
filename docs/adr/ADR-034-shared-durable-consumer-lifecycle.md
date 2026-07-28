@@ -1,0 +1,182 @@
+# ADR-034: A shared durable-consumer lifecycle primitive — and where it stops
+
+Date: 2026-07-27
+
+## Status
+
+Accepted
+
+## Context
+
+`docs/architecture.md` describes `shared/go` as a **shared kernel** whose additions **require an
+ADR**. ADR-033 set the bar and, in passing, wrote this ADR's assignment. Its rejected
+**Option 4 — "a shared consumer framework: envelope, dispatch, disposition, readiness"** — said:
+
+> Wrong scope and wrong shape *today*. Dispositions genuinely differ: inventory quarantines and
+> acks (TKT-68); access has no quarantine store and parks outstanding (ADR-017 §5b′, TKT-74). A
+> framework would have to encode both, or flatten a difference the services depend on. **The
+> run-loop half is TKT-127's subject, and it is shared *behaviour*, not shared *contract* — a
+> different kind of kernel entry, deserving its own argument.**
+
+This is that argument.
+
+The concrete finding (architecture review R13) was that inventory and access implement the same
+durable-consumer protocol twice. **Read against the code at the time, most of that was not true**,
+and the difference matters for where the line lands:
+
+| Claimed duplicated | Actually, at the time of this ADR |
+|---|---|
+| Termination handling | `waitConsume` existed in **access only** (`run.go`, two call sites). Inventory's `Run` blocked on `<-ctx.Done()` and **never observed `cc.Closed()`**. |
+| Readiness latch | Three `ready atomic.Bool` fields — three instances of one stdlib type, not duplicated code. Only inventory had serialization (`readinessMu`, TKT-90). |
+| Quarantine on unknown schema | Inventory quarantines to a bounded table and **acks**; access **parks** with a delayed NAK and has no quarantine store at all. |
+| Backoff / `MaxDeliver` policy | One implementation (access's order consumer). Inventory has none; access's policy projector uses hardcoded delays. |
+| Envelope dedup | Store-owned SQL in both, not consumer-loop logic. |
+
+So there was **one** duplication to remove, and it was not a duplication of code between two
+services — it was a **guarantee present in one service and absent from the other**. Access had
+had, since TKT-97, the rule ADR-017 §236-241 states: async termination goes **loudly unready and
+never self-heals**, latching `/readyz` false *and* returning an error that exits the process.
+Inventory ran the same kind of loop with no such protection: delete its durable underneath it and
+the process stayed up, reporting **ready**, consuming nothing.
+
+The constraint on any fix was unusually sharp. TKT-127's COS required that TKT-90's, TKT-97's and
+TKT-99's tests pass **unmodified** — a test needing an edit was to be treated as a moved guarantee
+and investigated, not edited. Three of those pin things a move can silently break:
+
+- TKT-97's four tests call the **unexported** `waitConsume` symbol directly, in `package consumer`.
+- TKT-99's broker-level smoke test asserts the diagnostic **verbatim** —
+  `access: access-slot-policy: consume context closed (durable deleted or subscription terminated)`
+  — and its own comment calls that literal "the whole discriminator", assembled from three separate
+  pieces of production code.
+- TKT-90's tests reach directly into the struct field (`c.ready.Store(false)`).
+
+## Possible Solutions
+
+- **Option 1: Do nothing — leave `waitConsume` in access.**
+    - Pros:
+        - Zero risk. No kernel growth. No behaviour change anywhere.
+        - Honest that only one service had written the helper.
+    - Cons:
+        - Leaves inventory **without the guarantee entirely** — the real defect. A deleted durable
+          stays invisible: process up, `/readyz` green, nothing consuming.
+        - The next consumer starts by copying or, worse, by not copying.
+
+- **Option 2: Copy `waitConsume` into inventory.**
+    - Pros:
+        - Smallest diff. No kernel entry, no ADR.
+        - Fixes inventory's missing guarantee immediately.
+    - Cons:
+        - Makes the reviewed finding literally true for the first time: two copies of one
+          protocol, free to drift. TKT-123 (the diagnostic cannot distinguish causes) would then
+          need two coordinated edits instead of one.
+        - The verbatim TKT-99 contract string would exist in two places with nothing tying them.
+
+- **Option 3: A shared `Wait`, plus a shared serialized `Readiness` type.**
+    - Pros:
+        - Would also absorb inventory's `readinessMu` and satisfy the most literal reading of
+          "the readiness latch exists once".
+    - Cons:
+        - **Downgrades the guarantee it claims to centralize.** `readinessMu` is an unexported
+          field in the same package as its only two writers: unbypassable *by construction*. An
+          exported kernel type with a public `Store` that skips the mutex replaces that with a
+          documented convention — and TKT-90 is one of the guarantees TKT-127 was told to preserve.
+        - Serves two call sites in one service. Access has no check-then-latch race, because it has
+          no quarantine state to check. Speculative generality at the kernel's highest bar.
+        - The latch needs no lifting: it is `sync/atomic.Bool`, which already exists exactly once.
+
+- **Option 4: The full framework** — durable config, `Consume`, dispatch, disposition, backoff,
+  quarantine, dedup.
+    - Pros:
+        - Largest apparent code reduction; a starting point for future consumers.
+    - Cons:
+        - Already rejected by ADR-033, and the table above is why: it would encode a union of
+          unrelated policies or flatten differences the services depend on.
+        - Would move TKT-97's guarantee off its package-local production seam.
+        - Would put NATS and service policy into the kernel.
+
+## Decision
+
+We adopt **Option 3 minus its readiness half** — that is, the narrowest form that removes the
+defect: `ticketing/shared/durableconsumer` exports exactly **one function**.
+
+```go
+func Wait(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string) error
+```
+
+It distinguishes parent cancellation from asynchronous consume-context termination, returns `nil`
+and touches nothing on the former, and on the latter latches `ready` false **and** returns the
+diagnostic. It never stores `true`: termination does not self-heal. The package imports `context`,
+`fmt` and `sync/atomic` — no JetStream, no `domainevent`, no database.
+
+**Each service keeps an unexported `waitConsume` delegating to it.** This is load-bearing, not a
+compatibility shim: TKT-97's tests and both access call sites go through that one symbol, so the
+guarantee is tested on the path that ships. Point the call sites straight at `durableconsumer.Wait`
+and the tests still pass while testing a façade.
+
+**Inventory adopts it** — a deliberate behaviour addition, not a refactor, with its own test. Clean
+shutdown is unchanged (`Wait` returns `nil`, and `Run`'s existing tail returns the same
+context-cancellation error).
+
+**The error string is a contract.** `TestWaitTerminationDiagnosticIsExact` pins it as a
+**hand-written literal** — not built from the format string, because a fixture derived from the
+code under test encodes the property it claims to prove and cannot fail (ADR-017's trap). This
+moves TKT-99's verbatim contract from a docker-only smoke assertion into a unit test that fails in
+milliseconds.
+
+### The line this package does not cross
+
+Everything below stays with the owning service:
+
+- **Durable configuration, stream lookup, handler registration and dispatch.** The two
+  `consumerConfig`s differ in filter subjects, `MaxAckPending` and `BackOff`, and inventory deletes
+  an orphaned durable on the way in.
+- **Disposition** — term, park, quarantine, NAK-with-delay, and whether readiness latches. Service
+  policy, and it differs (ADR-033).
+- **Envelope decoding, per-subject known schema ranges, retry schedules, quarantine persistence,
+  dedup.**
+- **Readiness serialization.** Inventory's `readinessMu` stays inventory's, for the Option 3 reason
+  above. This is the boundary a future ticket is most likely to be tempted to cross, so it is
+  written down rather than left to be re-derived: *the reason to lift a mutex is that two services
+  need it, and only one does.*
+- **Startup readiness gates.** Inventory's `startupConverge` and access's backlog-drain loop decide
+  when a consumer *becomes* ready. This package only ever makes one unready.
+
+The dividing line: **this package owns when a consumer stops and what it says about it. What a
+consumer does stays with the service.**
+
+## Consequences
+
+- **Positive:**
+    - Inventory gains the ADR-017 §236-241 guarantee it never had: a deleted durable now latches
+      unready and exits instead of stalling silently while reporting healthy.
+    - The termination diagnostic has **one** producer. TKT-123's future fix has a single owner and
+      a single place to renegotiate the TKT-99 smoke contract.
+    - TKT-99's verbatim string is now pinned by a unit test as well as a broker test.
+    - No `go.mod` changes anywhere — `go.work` already wires all eight modules.
+    - Every pinned test (TKT-90, TKT-97, TKT-99) passes byte-for-byte unmodified, so the guarantees
+      are proven by the same assertions as before the move rather than by rewritten ones.
+
+- **Negative:**
+    - `shared/go` gains a second domain-adjacent package, and the kernel now holds *behaviour* as
+      well as *contract*. The boundary section above is the whole defence, and it is prose, not a
+      compiler check.
+    - Inventory can now exit on durable deletion where before it stayed up. That is the point, but
+      it is a new production exit path, and it interacts with TKT-121 (inventory's `main` does not
+      filter cancellation-caused consumer errors) which remains open.
+    - The delegate indirection means a reader of `Run` must follow one more hop to find the
+      behaviour. The alternative — testing a façade — is worse.
+    - The reviewed finding's other four claims are **not** addressed, because they were not true.
+      Anyone re-reading R13 will find it broader than what shipped; this ADR's Context table is the
+      record of why.
+
+## References
+
+- TKT-127 (this decision), TKT-126 / ADR-033 (the envelope, and the option that handed this here)
+- TKT-97 (the reaction to `ConsumeContext.Closed()`), TKT-99 (the broker-level proof), TKT-90 (the
+  readiness/skew serialization left in place)
+- Still open, deliberately: TKT-121 (inventory `main`'s cancellation race), TKT-122 (access's drain
+  snapshot), TKT-123 (the diagnostic cannot distinguish causes), TKT-133 (inventory does not
+  validate `type` against the subject)
+- [ADR-033: One domain-event envelope in the shared kernel](ADR-033-shared-domain-event-envelope.md)
+- [ADR-017: Domain event schema evolution](ADR-017-domain-event-schema-evolution.md) §5b, §5b′, §236-241
+- [ADR-009: Contract-first APIs and the platform envelope](ADR-009-contract-first-apis.md) §5

@@ -503,6 +503,15 @@ func (c *Consumer) Run(ctx context.Context) error {
 	if err := c.startupConverge(ctx); err != nil {
 		return err
 	}
-	<-ctx.Done()
+	// TKT-127: observe async termination, not just cancellation. Blocking on
+	// <-ctx.Done() alone left a deleted durable invisible — the process stayed up
+	// and READY with nothing consuming (ADR-017 §236-241 forbids exactly that
+	// silent stall). waitConsume returns nil on clean shutdown, so the tail below
+	// is unchanged for an ordinary stop; on termination it latches unready and
+	// returns, and main exits. Arbitrating that error against a cancellation race
+	// in main is TKT-121, still open and untouched here.
+	if err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering"); err != nil {
+		return err
+	}
 	return fmt.Errorf("consumer stopped: %w", ctx.Err())
 }
