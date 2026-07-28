@@ -510,6 +510,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// is unchanged for an ordinary stop; on termination it latches unready and
 	// returns, and main exits. Arbitrating that error against a cancellation race
 	// in main is TKT-121, still open and untouched here.
+	//
+	// The observation starts HERE, not at Consume above, so a durable deleted
+	// while startupConverge is still running is not noticed until the pass ends —
+	// and that pass retries up to reconcileAttempts times with retryBackoff
+	// between them. Readiness is false throughout it (refreshStartupReadiness
+	// stores true as its last act, immediately below), so the service is honestly
+	// unready rather than falsely ready; the cost is a late process exit, not a
+	// wrong answer. Closing that window means racing termination against the pass,
+	// which entangles the pass's error with shutdown cancellation and so with
+	// TKT-121 — deliberately deferred to TKT-135 rather than done here
+	// (TKT-127 ai-review, triaged incidental).
 	if err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering"); err != nil {
 		return err
 	}

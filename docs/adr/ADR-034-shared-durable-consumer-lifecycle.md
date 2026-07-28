@@ -148,7 +148,8 @@ consumer does stays with the service.**
 
 - **Positive:**
     - Inventory gains the ADR-017 §236-241 guarantee it never had: a deleted durable now latches
-      unready and exits instead of stalling silently while reporting healthy.
+      unready and exits instead of stalling silently while reporting healthy. **Bounded, not
+      absolute** — see the matching Negative below.
     - The termination diagnostic has **one** producer. TKT-123's future fix has a single owner and
       a single place to renegotiate the TKT-99 smoke contract.
     - TKT-99's verbatim string is now pinned by a unit test as well as a broker test.
@@ -163,6 +164,17 @@ consumer does stays with the service.**
     - Inventory can now exit on durable deletion where before it stayed up. That is the point, but
       it is a new production exit path, and it interacts with TKT-121 (inventory's `main` does not
       filter cancellation-caused consumer errors) which remains open.
+    - **Inventory's adoption has a startup-shaped hole, and this ADR should not be read as
+      claiming otherwise.** `Run` begins observing `cc.Closed()` only after `startupConverge`
+      returns, and that pass retries up to three times with a 5s backoff, making a serial catalog
+      call per pool. A durable deleted during it is not noticed until the pass ends. Readiness is
+      `false` throughout — `refreshStartupReadiness` stores `true` as its last act — so the service
+      is honestly unready rather than falsely ready, and the cost is a late exit, not a wrong
+      answer. Closing the window means racing termination against the pass, which makes the pass's
+      error indistinguishable from a shutdown cancellation and therefore collides with TKT-121.
+      That is a design decision, so it is **TKT-135**, not a line in this refactor. The adversarial
+      review of TKT-127 raised this and it was triaged incidental on the reasoning above; recorded
+      here rather than only on the board, because the gap is invisible from the code.
     - The delegate indirection means a reader of `Run` must follow one more hop to find the
       behaviour. The alternative — testing a façade — is worse.
     - The reviewed finding's other four claims are **not** addressed, because they were not true.
@@ -174,7 +186,8 @@ consumer does stays with the service.**
 - TKT-127 (this decision), TKT-126 / ADR-033 (the envelope, and the option that handed this here)
 - TKT-97 (the reaction to `ConsumeContext.Closed()`), TKT-99 (the broker-level proof), TKT-90 (the
   readiness/skew serialization left in place)
-- Still open, deliberately: TKT-121 (inventory `main`'s cancellation race), TKT-122 (access's drain
+- Still open, deliberately: TKT-135 (the startup-window gap in inventory's adoption, raised by this
+  ticket's ai-review), TKT-121 (inventory `main`'s cancellation race), TKT-122 (access's drain
   snapshot), TKT-123 (the diagnostic cannot distinguish causes), TKT-133 (inventory does not
   validate `type` against the subject)
 - [ADR-033: One domain-event envelope in the shared kernel](ADR-033-shared-domain-event-envelope.md)
