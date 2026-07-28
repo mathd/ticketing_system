@@ -10,17 +10,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"ticketing/shared/domainevent"
 )
 
 const SubjectOrderCompleted = "platform.commerce.order.completed"
-
-type Envelope struct {
-	ID         uuid.UUID `json:"id"`
-	Type       string    `json:"type"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Schema     int       `json:"schema"`
-	Data       any       `json:"data"`
-}
 
 type OrderCompletedData struct {
 	OrderID       uuid.UUID `json:"order_id"`
@@ -53,11 +47,14 @@ func EventID(orderID uuid.UUID) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(SubjectOrderCompleted+":"+orderID.String()))
 }
 
-// orderCompletedEnvelope marshals the order.completed envelope at a caller-supplied
-// instant. Extracted from OrderCompleted so the wire bytes have a pure seam that a
-// golden test can pin without racing time.Now.
-func orderCompletedEnvelope(id uuid.UUID, data OrderCompletedData, occurred time.Time) ([]byte, error) {
-	body, err := json.Marshal(Envelope{ID: id, Type: SubjectOrderCompleted, OccurredAt: occurred, Schema: 1, Data: data})
+// OrderCompletedEnvelope marshals the order.completed envelope at a
+// caller-supplied instant. It is the ONE definition of these bytes: the outbox
+// path (store.completionEnvelope) freezes what it returns, and OrderCompleted
+// publishes it directly. Exported so the outbox shares it rather than
+// re-declaring the envelope a seventh time (TKT-126); the caller-supplied
+// instant is what lets the golden pin it without racing time.Now.
+func OrderCompletedEnvelope(id uuid.UUID, data OrderCompletedData, occurred time.Time) ([]byte, error) {
+	body, err := json.Marshal(domainevent.Envelope[OrderCompletedData]{ID: id, Type: SubjectOrderCompleted, OccurredAt: occurred, Schema: 1, Data: data})
 	if err != nil {
 		return nil, fmt.Errorf("marshal order completed: %w", err)
 	}
@@ -66,7 +63,7 @@ func orderCompletedEnvelope(id uuid.UUID, data OrderCompletedData, occurred time
 
 func (p *JetStream) OrderCompleted(ctx context.Context, data OrderCompletedData) error {
 	id := EventID(data.OrderID)
-	body, err := orderCompletedEnvelope(id, data, time.Now().UTC())
+	body, err := OrderCompletedEnvelope(id, data, time.Now().UTC())
 	if err != nil {
 		return err
 	}

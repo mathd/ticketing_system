@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -62,19 +61,16 @@ type OutboxMessage struct {
 const MaxOutboxAttempts = 10
 
 // completionEnvelope builds the canonical ADR-009 envelope for a completed order.
-// Completion and backfill share it so the frozen bytes have exactly one definition.
+// Completion and backfill share it so the frozen bytes have exactly one definition
+// -- and since TKT-126 that definition lives in the events package, which is where
+// the subject and its payload type already live. This function is now only the
+// Completion-to-payload mapping; it no longer re-declares the envelope.
 func completionEnvelope(c Completion, guestRef uuid.UUID, occurredAt time.Time) (uuid.UUID, []byte, error) {
 	id := events.EventID(c.OrderID)
-	body, err := json.Marshal(events.Envelope{
-		ID:         id,
-		Type:       events.SubjectOrderCompleted,
-		OccurredAt: occurredAt.UTC(),
-		Schema:     1,
-		Data: events.OrderCompletedData{
-			OrderID: c.OrderID, GuestOrderRef: guestRef, OrganizerID: c.OrganizerID,
-			BuyerID: c.BuyerID, SlotID: c.SlotID, TicketTypeID: c.TicketTypeID, Quantity: c.Quantity,
-		},
-	})
+	body, err := events.OrderCompletedEnvelope(id, events.OrderCompletedData{
+		OrderID: c.OrderID, GuestOrderRef: guestRef, OrganizerID: c.OrganizerID,
+		BuyerID: c.BuyerID, SlotID: c.SlotID, TicketTypeID: c.TicketTypeID, Quantity: c.Quantity,
+	}, occurredAt.UTC())
 	return id, body, err
 }
 

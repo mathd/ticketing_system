@@ -33,7 +33,7 @@ func TestWireGoldenOrderCompleted(t *testing.T) {
 	}
 	occurred := time.Date(2026, 7, 20, 12, 34, 56, 123456789, time.UTC)
 
-	body, err := orderCompletedEnvelope(EventID(orderID), data, occurred)
+	body, err := OrderCompletedEnvelope(EventID(orderID), data, occurred)
 	if err != nil {
 		t.Fatal(err)
 	}

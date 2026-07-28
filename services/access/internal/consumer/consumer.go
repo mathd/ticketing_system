@@ -21,6 +21,7 @@ import (
 
 	"ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
+	"ticketing/shared/domainevent"
 )
 
 const (
@@ -43,13 +44,11 @@ const (
 	ReasonDeliveryExhausted = "delivery_retries_exhausted"
 )
 
-type FailureEvent struct {
-	ID         uuid.UUID   `json:"id"`
-	Type       string      `json:"type"`
-	OccurredAt time.Time   `json:"occurred_at"`
-	Schema     int         `json:"schema"`
-	Data       FailureData `json:"data"`
-}
+// FailureEvent is an emitted envelope, not a consumed one: access publishes it
+// on platform.access.ticket-issuance.failed. It is an alias rather than a
+// declaration so the platform envelope has exactly one definition (ADR-033) --
+// callers keep using FailureEvent{ID: ..., Data: ...} unchanged.
+type FailureEvent = domainevent.Envelope[FailureData]
 
 type FailureData struct {
 	SourceEventID      string       `json:"source_event_id,omitempty"`

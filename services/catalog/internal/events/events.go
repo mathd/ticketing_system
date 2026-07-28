@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"ticketing/services/catalog/internal/store"
+	"ticketing/shared/domainevent"
 )
 
 const (
@@ -26,16 +27,6 @@ const (
 	// emit-after-commit + deterministic-id discipline as the performance events.
 	SubjectSeatMapPublished = "platform.catalog.seat_map.published"
 )
-
-// Envelope is the platform domain-event envelope (ADR-009 §5): minimal
-// identifying payload, versioned shape, type == subject.
-type Envelope struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Schema     int       `json:"schema"`
-	Data       any       `json:"data"`
-}
 
 type PerformancePublishedData struct {
 	PerformanceID uuid.UUID `json:"performance_id"`
@@ -135,12 +126,18 @@ type Publisher interface {
 // SeatMapPublishedEventID derives the seat_map.published envelope id from the
 // map id and its publication instant, so a retried emission carries the same id
 // and de-duplicates at the stream (mirrors EventID for performances).
-func SeatMapPublishedEventID(m store.SeatMap) string {
+func SeatMapPublishedEventID(m store.SeatMap) string { return seatMapPublishedEventUUID(m).String() }
+
+// seatMapPublishedEventUUID is the same derivation before the string
+// conversion. The envelope's id is a uuid.UUID (ADR-033), and going
+// uuid -> string -> uuid to fill it would mean parsing on a publish path for
+// no reason; the exported helper keeps its string signature for its callers.
+func seatMapPublishedEventUUID(m store.SeatMap) uuid.UUID {
 	key := SubjectSeatMapPublished + ":" + m.ID.String()
 	if m.PublishedAt != nil {
 		key += ":" + m.PublishedAt.UTC().Format(time.RFC3339Nano)
 	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key))
 }
 
 func seatMapPublishedEnvelope(m store.SeatMap) ([]byte, error) {
@@ -148,8 +145,8 @@ func seatMapPublishedEnvelope(m store.SeatMap) ([]byte, error) {
 	if m.PublishedAt != nil {
 		occurred = m.PublishedAt.UTC()
 	}
-	body, err := json.Marshal(Envelope{
-		ID:         SeatMapPublishedEventID(m),
+	body, err := json.Marshal(domainevent.Envelope[SeatMapPublishedData]{
+		ID:         seatMapPublishedEventUUID(m),
 		Type:       SubjectSeatMapPublished,
 		OccurredAt: occurred,
 		Schema:     1,
@@ -195,20 +192,24 @@ const backfillEpoch = "reentry-backfill-1"
 // payload rides the unchanged (type,schema) 2/3). The ":backfill:" segment sits
 // in a fixed position so the derivation can never collide with the live EventID
 // domain; the id stays deterministic on (slot, published_at) so re-runs converge.
-func BackfillEventID(perf store.Performance) string {
+func BackfillEventID(perf store.Performance) string { return backfillEventUUID(perf).String() }
+
+func backfillEventUUID(perf store.Performance) uuid.UUID {
 	key := SubjectPerformancePublished + ":backfill:" + backfillEpoch + ":" + perf.ID.String()
 	if perf.PublishedAt != nil {
 		key += ":" + perf.PublishedAt.UTC().Format(time.RFC3339Nano)
 	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key))
 }
 
-func ArchivedEventID(perf store.Performance) string {
+func ArchivedEventID(perf store.Performance) string { return archivedEventUUID(perf).String() }
+
+func archivedEventUUID(perf store.Performance) uuid.UUID {
 	key := SubjectPerformanceArchived + ":" + perf.ID.String()
 	if perf.ArchivedAt != nil {
 		key += ":" + perf.ArchivedAt.UTC().Format(time.RFC3339Nano)
 	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key))
 }
 
 // JetStream publishes with acks (js.Publish), never fire-and-forget core
@@ -230,12 +231,14 @@ func NewJetStream(nc *nats.Conn) (*JetStream, error) {
 // or raced by a concurrent publish request — carries the SAME id, so
 // consumers de-duplicate on it and JetStream's Nats-Msg-Id window drops
 // exact re-publishes at the stream.
-func EventID(perf store.Performance) string {
+func EventID(perf store.Performance) string { return eventUUID(perf).String() }
+
+func eventUUID(perf store.Performance) uuid.UUID {
 	key := SubjectPerformancePublished + ":" + perf.ID.String()
 	if perf.PublishedAt != nil {
 		key += ":" + perf.PublishedAt.UTC().Format(time.RFC3339Nano)
 	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key))
 }
 
 func (p *JetStream) PerformancePublished(ctx context.Context, perf store.Performance) error {
@@ -282,6 +285,14 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 	if err != nil {
 		return nil, err
 	}
+	// The id arrives as a string because that is what the exported EventID
+	// family returns and what callers pass. The envelope holds a uuid.UUID
+	// (ADR-033), so it converts here -- once, returning an error rather than
+	// panicking, since a publish path is no place for a MustParse.
+	envelopeID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("envelope id %q is not a uuid: %w", id, err)
+	}
 	// Schema is chosen from the payload's own shape (ADR-017 §4): 2 = plain GA,
 	// 3 = grouped festival, 4 = seated (TKT-103). Seated and grouped are mutually
 	// exclusive — a grouped festival day is shared-capacity GA — so a slot that
@@ -297,8 +308,8 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 	case capacityGroupID != nil:
 		schema = 3
 	}
-	body, err := json.Marshal(Envelope{
-		ID:         id,
+	body, err := json.Marshal(domainevent.Envelope[PerformancePublishedData]{
+		ID:         envelopeID,
 		Type:       SubjectPerformancePublished,
 		OccurredAt: occurred,
 		Schema:     schema,
@@ -324,8 +335,12 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 // the monotonic closure version: re-emitting one transition carries the same
 // id (de-dup at the stream), a new toggle a new id.
 func ClosureEventID(subject string, perf store.Performance) string {
+	return closureEventUUID(subject, perf).String()
+}
+
+func closureEventUUID(subject string, perf store.Performance) uuid.UUID {
 	key := fmt.Sprintf("%s:%s:%d", subject, perf.ID, perf.Closure.Version)
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key))
 }
 
 func (p *JetStream) SlotClosed(ctx context.Context, perf store.Performance) error {
@@ -342,8 +357,8 @@ func (p *JetStream) SlotReopened(ctx context.Context, perf store.Performance) er
 // subjects already had a pure byte seam; this one was inline in publishClosure,
 // so it is extracted to give every published subject the same testable shape.
 func closureEnvelope(subject string, perf store.Performance, occurred time.Time) ([]byte, error) {
-	body, err := json.Marshal(Envelope{
-		ID: ClosureEventID(subject, perf), Type: subject, OccurredAt: occurred, Schema: 1,
+	body, err := json.Marshal(domainevent.Envelope[SlotClosureData]{
+		ID: closureEventUUID(subject, perf), Type: subject, OccurredAt: occurred, Schema: 1,
 		Data: SlotClosureData{
 			PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID,
 			Kind: perf.Kind, Version: perf.Closure.Version, Reason: perf.Closure.Reason,
@@ -392,7 +407,7 @@ func (p *JetStream) PerformanceArchived(ctx context.Context, perf store.Performa
 }
 
 func performanceArchivedEnvelope(perf store.Performance, occurred time.Time) ([]byte, error) {
-	id := ArchivedEventID(perf)
+	id := archivedEventUUID(perf)
 	capacityGroupID, _, err := festivalCapacity(perf)
 	if err != nil {
 		return nil, err
@@ -401,7 +416,7 @@ func performanceArchivedEnvelope(perf store.Performance, occurred time.Time) ([]
 	if capacityGroupID != nil {
 		schema = 3
 	}
-	body, err := json.Marshal(Envelope{
+	body, err := json.Marshal(domainevent.Envelope[PerformanceArchivedData]{
 		ID: id, Type: SubjectPerformanceArchived, OccurredAt: occurred, Schema: schema,
 		Data: PerformanceArchivedData{PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID, CapacityGroupID: capacityGroupID},
 	})
