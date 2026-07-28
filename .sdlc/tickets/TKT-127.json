@@ -1,9 +1,11 @@
 {
   "key": "TKT-127",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "classification": "complex",
   "summary": "Lift the shared durable-consumer skeleton — inventory and access implement the same protocol twice",
@@ -92,6 +94,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ DoR shaped — TKT-127 — all 8 items met/deferred (Gate 1 unblocked)\n\nShaped from the architecture review's code-seam survey; both consumer packages were read. **No `open owner:human` items remain.**\n\n| DoR item | State |\n|---|---|\n| `objective` | met |\n| `scope` | met |\n| `uncertainties` | deferred |\n| `dependencies` | met |\n| `approach` | met |\n| `first_slice` | met |\n| `success` | met |\n| `context_memo` | met |\n\n**Deferred (safely resolved in Planning, no major redesign):**\n- `uncertainties` — How much of the quarantine contract generalizes. The two services quarantine into different tables with different columns, and inventory additionally latches readiness off pending quarantine while access does not. The shared piece may be an interface plus the latch, with the store contract staying per-service. Plan-time call; the COS holds either way.\n\n**Gate 1 granted by the owner on 2026-07-25** — the architecture review ([docs/reviews/2026-07-25-architecture.md](docs/reviews/2026-07-25-architecture.md)) was the prioritization pass; owner instruction was \"create new tickets and move them directly to Ready\".\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### 🤖 Claimed — TKT-127\n\n**Branch:** `TKT-127-shared-consumer-skeleton` off `origin/main` @ `07d1fd4`.\n**Backend:** local tracker (`.sdlc/`). **Assignee:** agent (Claude Code, Opus 5).\n\n**Selection reason.** Owner-directed run. Gate 1 was granted at shaping (2026-07-25, architecture-review prioritization pass). The only blocker — **TKT-126** (shared `domainevent` envelope) — is **Done** and merged (`ff89e69`), which was the stated precondition: the skeleton decodes envelopes, so the envelope had to land first. DoR is 8/8 met-or-deferred, and the one `deferred` item (how much of the quarantine contract generalizes) is an explicit plan-time call, not a shaping gap.\n\n---\n\n### ⚠️ Process experiment — this ticket runs **gateless**\n\nThe repo owner, acting as both the human reviewer and the PO, has **deliberately waived all four human gates** for this run as a process experiment, and asked that the waiver be recorded here so the board history shows it. Recorded:\n\n| Gate | Normally | This run |\n|---|---|---|\n| 1 — priority (`Backlog → Ready`) | human transitions | **already granted** at shaping (2026-07-25) |\n| 2 — plan approval (`Planning → Building`) | human transitions | **waived** — the agent resolves open decisions itself after the cross-model critique, preferring the critique's recommendation, else the most reversible option. Every self-made decision + rationale is recorded in `kind=plan-final`. |\n| 3 — review + merge (`Building → PO Review`) | human reviews the PR and squash-merges; **agents never merge** | **waived** — after the adversarial ai-review converges under the usual triage / second-pass / churn-cap rules, the agent posts the review-guide (it becomes the audit record) and then squash-merges and deletes the branch itself. |\n| 4 — PO acceptance (`PO Review → Done`) | PO validates COS | **waived** — the agent self-validates each COS against test evidence on the merged code and posts the validation note before the `kind=metrics` closeout. |\n\n**Explicitly *not* waived** (unchanged from the skill, and the reason this stays a valid experiment rather than a shortcut): `config.models` routing with no substitutions (plan `gpt-5.6-sol`, planReview `main-agent`, implement `main-agent`, aiReview `gpt-5.6-sol` — both cross-model pairs verified distinct); cross-model review for *both* the plan and the code; TDD with tests observed red first; `make check` green before every push **and after the merge**; every marker comment posted at its stage; no AI attribution in any commit or PR.\n\n**Stop conditions the owner set** (the run halts and reports instead of proceeding): the gate or CI failing twice on one cause with no clear fix; implementation reaching auth, money paths, data migrations or CI/deploy config in a way the ticket and plan did not anticipate; a blocking review finding surviving the churn cap; a configured model unreachable after the documented escalation ladder; or a destructive/hard-to-reverse action whose right answer is ambiguous.\n\n---\n\n**Note for the planner** (carried forward from the `kind=summary` backlog comment): TKT-121, TKT-122 and TKT-123 are three open bugs against these two loops. Landing this may absorb or reshape them; the plan is expected to say which, rather than treating them as independent.\n"
     }
   ]
 }
