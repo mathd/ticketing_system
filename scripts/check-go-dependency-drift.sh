@@ -33,12 +33,24 @@ fi
 # skipped and the run still exits 0. A checker that reports "none" for a module
 # it never read passes forever, which is worse than having no checker at all.
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT INT TERM
+# Cleanup on EXIT only. Bash *resumes* after an INT/TERM handler that does not
+# itself exit, so a cleanup-only handler on those signals would delete the work
+# directory and then let the run continue to print a verdict and exit 0.
+trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 : > "$work/records"
 
 for m in "$@"; do
   if ! go mod edit -json "$m/go.mod" > "$work/module.json"; then
     echo "check-go-dependency-drift: cannot read $m/go.mod — refusing to report a verdict" >&2
+    exit 2
+  fi
+  # A zero exit does not prove the JSON arrived whole. Emptiness cannot be the
+  # signal — `gateway` legitimately reports "Require": null — so check for the
+  # closing brace instead. A partially read module must never reach a verdict.
+  if [ "$(tail -n 1 "$work/module.json")" != "}" ]; then
+    echo "check-go-dependency-drift: truncated go mod edit output for $m/go.mod — refusing to report a verdict" >&2
     exit 2
   fi
   awk -v mod="$m" '
