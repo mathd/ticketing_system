@@ -1,0 +1,27 @@
+{
+  "key": "TKT-135",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Inventory observes durable termination only after startupConverge — a deleted durable goes unnoticed for the length of the startup pass (TKT-127 ai-review)",
+  "description": "### Finding (TKT-127 adversarial ai-review, `gpt-5.6-sol`, 2026-07-27)\n\nTKT-127 gave inventory the ADR-017 §236-241 termination guarantee access has had since TKT-97:\n`Run` now calls `waitConsume(ctx, cc.Closed(), ...)`, so a deleted durable latches unready and\nexits the process instead of stalling silently.\n\nBut it is observed **only after `startupConverge` returns**\n(`services/inventory/internal/consumer/consumer.go`, `Run`), and `startupConverge` can run long:\n`reconcileAttempts = 3` passes, `retryBackoff = 5s` between them, and each pass makes a serial\ncatalog HTTP call per published pool. A durable deleted during that window is not noticed until\nthe pass finishes.\n\n### What this is, and what it is not\n\nTriaged **incidental** at TKT-127's review, deliberately — recording the reasoning so this ticket\ndoes not get re-argued from scratch:\n\n- It is **not a regression**. Before TKT-127 inventory never observed `cc.Closed()` at all; the\n  same deletion left it up and reporting **ready** forever. TKT-127 strictly improves this.\n- It is **not a false-ready lie**. `refreshStartupReadiness` stores `true` as the *last* statement\n  of `startupConverge`, immediately before `waitConsume`. Throughout the reconciliation window\n  readiness is `false`, which is honest. The ready-true-then-immediately-false window that follows\n  is nanoseconds.\n- What it **is**: a detection-latency gap. The process stays alive but unready, consuming nothing,\n  for up to the length of the startup pass. Compose does not restart an unhealthy container\n  (ADR-017 §236-238), so the process exit is the signal that matters, and it is late.\n\n### Why it was not fixed in TKT-127\n\nThe obvious fix — race termination against `startupConverge` and cancel the pass on closure —\nrequires a goroutine and cancellation plumbing in a startup path that sits directly beside the\nTKT-90 readiness serialization, inside a ticket whose stated constraint was \"a refactor behind\nexisting tests\". Worse, cancelling `startupConverge` via a derived context makes its returned\nerror indistinguishable from a shutdown cancellation, which would make **TKT-121** (inventory's\n`main` does not filter cancellation-caused consumer errors) actively harder to fix.\n\nSo this needs a design decision, which means a plan gate. Hence a ticket.\n\n### Acceptance Criteria\n\n- [ ] A durable deleted while `startupConverge` is running is observed promptly, not after the pass.\n- [ ] The termination error remains distinguishable from a shutdown cancellation at `main` — this\n      must not regress TKT-121's premise.\n- [ ] `refreshStartupReadiness` can never store `true` after the consume context has closed.\n- [ ] A `Consumer.Run`-level test (not a direct `waitConsume` call) with reconciliation blocked and\n      the consume context closing: asserts prompt return, the exact diagnostic, and that readiness\n      never becomes true. The TKT-127 tests call `waitConsume` directly and cannot catch this.\n- [ ] TKT-90's serialization guarantee still holds; its tests still pass unmodified.\n- [ ] `make check` green.\n\n**Consider taking TKT-121 with it** — the two meet at the same error channel and the fixes interact.\n",
+  "links": [
+    {
+      "type": "relates-to",
+      "key": "TKT-127"
+    },
+    {
+      "type": "relates-to",
+      "key": "TKT-121"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nRaised by the **TKT-127 adversarial ai-review** (`gpt-5.6-sol`), which returned\n`verdict: needs-attention` on exactly this point and recommended racing termination against the\nstartup pass.\n\nTriaged **incidental** rather than blocking at TKT-127, per `quality-practices.md` §2: it is real,\nbut it is not a defect *in that diff* — it is a residual gap in a guarantee that diff created,\nand the pre-existing behaviour was strictly worse. Fixing it properly is a concurrency change to a\nstartup path with a live interaction with TKT-121, which earns its own plan gate.\n\nThe reviewer's other point is worth carrying over verbatim: *\"The new tests invoke `waitConsume`\ndirectly and therefore pass despite this production ordering defect.\"* That is correct, and it is\nwhy the COS above requires a `Run`-level test rather than another helper-level one.\n\nRelated: TKT-121 (inventory `main`'s cancellation race — likely wants doing together), ADR-034\n(§Consequences names this gap explicitly), TKT-123 (the diagnostic cannot distinguish causes).\n"
+    }
+  ]
+}
