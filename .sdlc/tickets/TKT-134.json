@@ -1,0 +1,18 @@
+{
+  "key": "TKT-134",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "simple",
+  "summary": "Flaky: TestScheduledReleaseIsLazyAndObservable — channel and public reads disagree across the release boundary",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nIncidental finding from TKT-126's post-merge gate run. Confirmed flaky: identical tree failed once and passed on re-run, and TKT-126 touched no file in that package. Possibly related to TKT-132."
+    }
+  ],
+  "description": "### Finding (TKT-126 post-merge gate, 2026-07-27)\n\n`TestScheduledReleaseIsLazyAndObservable`\n(`services/inventory/internal/store/channel_allocations_smoke_test.go:217`) failed once on merged\n`main` and passed on an immediate re-run of the **identical tree**:\n\n```\nchannel_allocations_smoke_test.go:217: public after release: <nil> available=10 want 8 (unsold 4 returned)\n```\n\n### Why it is a flake, not a regression\n\n- The same tree passed the gate **before** the merge (`dd4e121`) and **again after** (`ff89e69`,\n  second run). `git diff dd4e121 ff89e69` is empty.\n- TKT-126 changed **no file** under `services/inventory/internal/store/`.\n- The test is wall-clock and DB-clock dependent by construction: it polls `Availability` against a\n  10-second deadline waiting to cross `release_at`, with the comment *\"Cross release_at by DB time.\n  Reads only — no mutation, no sweeper.\"*\n\nThe channel side had already released (`ch.Available == 0` passed); the **public** projection still\nread the pre-release figure, so the two derived reads observed different sides of the release\nboundary within one test run. That points at the lazy/derived read path being evaluated against a\nclock that can move between the two calls, under load.\n\n### Acceptance Criteria\n\n- [ ] Root-caused: identify why the channel read and the public read can disagree about whether\n      `release_at` has been crossed, within one test run.\n- [ ] The fix is in the **test's synchronization or the read path**, not a `time.Sleep` bump — a\n      longer sleep hides the disagreement rather than removing it.\n- [ ] Fails deterministically before the fix (e.g. by pinning or skewing the clock), passes after.\n- [ ] If the disagreement is possible in production and not only in the test, say so explicitly and\n      link the resulting ticket — a lazy release that two readers see differently is a real\n      availability bug, not a test-harness artifact.\n\n### Notes\n\nSame class as TKT-132 (flaky recovery-sweep race). Worth checking whether both share a root cause in\nhow derived/lazy reads observe a moving boundary.\n"
+}
