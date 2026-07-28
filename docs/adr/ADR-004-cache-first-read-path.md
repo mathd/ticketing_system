@@ -107,11 +107,13 @@ availability counters. Catalog's public reads and inventory's availability read 
 Postgres store and then set `Cache-Control` on the way out. Rule 2 is not obsolete, optional, or
 superseded by the SSR cache — it is simply not built.
 
-**Ownership of the gap: [TKT-31](../product/prd-v1.md) — read-path caching & hot-event serving**, which
-already owns the shared/gateway tier, the service-side in-memory structures, invalidation, the
-incident kill-switch, staleness tests, and the on-sale read-load evidence this ADR's Consequences
-anticipated. This amendment routes the gap there rather than leaving it implicit; it opens no new work
-of its own.
+**Ownership — two gaps, two owners.** The **deployment** gap is
+[TKT-31](../product/prd-v1.md)'s — read-path caching & hot-event serving, which already owns the
+shared/gateway tier, the service-side in-memory structures (rule 2), invalidation, the incident
+kill-switch, staleness tests, and the on-sale read-load evidence this ADR's Consequences anticipated.
+The **contract** gap is TKT-137's: declaring inventory's seconds-tier availability header in its
+OpenAPI document, which is a source change and so could not be made here. This amendment routes both
+rather than leaving either implicit.
 
 ## References
 
