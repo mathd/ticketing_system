@@ -57,11 +57,25 @@ reader could reasonably plan against a cache that does not exist. **Nothing belo
 decision** — the three rules remain the target and remain binding on new endpoints. What is recorded
 is the distance between them and the running system as of this date.
 
-**The TTL declarations are a contract, not evidence of a cache.** The tiers are committed in each
-service's OpenAPI document, which [ADR-009](./ADR-009-contract-first-apis.md) makes the authoritative
-source and the gate diffs on every run — so they are a live, reviewed artifact, not incidental
-headers. They are exactly the contract a future cache owner must honor. They are not proof that such
-an owner is deployed, and emitting `Cache-Control` must never be read as one.
+**The TTL declarations are a contract, not evidence of a cache — but only where they are declared.**
+Where a tier is committed in a service's OpenAPI document, [ADR-009](./ADR-009-contract-first-apis.md)
+makes that document authoritative and the gate diffs it on every run, so the TTL is a live, reviewed
+artifact rather than an incidental header, and it is exactly the contract a future cache owner must
+honor. It is still not proof that such an owner is deployed, and emitting `Cache-Control` must never
+be read as one.
+
+**Only catalog has made that commitment.** Catalog's contract declares `Cache-Control` on its public
+reads (minutes tier for events/seasons/festivals, hours tier for venues and seat maps) and its handlers
+emit it through named constants. **Inventory's public availability read is the exception that matters**:
+`GET /slots/{id}/availability` emits `public, max-age=5, s-maxage=5` — rule 1's seconds tier — from the
+handler alone, and `services/inventory/api/openapi.yaml` declares no `Cache-Control` on that response.
+The header is real and undeclared, so the contract gate cannot review it or detect drift in it, and a
+future cache owner reading the contract would not find the tier at all. That is this ADR's own defect
+in the opposite direction — a real behaviour with no declaration, rather than a declaration with no
+behaviour — and closing it is a source change, tracked as TKT-137. Commerce, payments and access
+declare no tiers and emit none on their domain reads; their `no-store` default stands. (Four services
+do set `public, max-age=300` on their `/openapi.yaml` **spec document** endpoint. That is a static-asset
+TTL, not an ADR-004 data tier; do not read it as tier participation.)
 
 **What honors a tier today — one cache, three reads, two of them end-to-end.**
 The single implementation of rule 1's consumer side is the storefront's SSR page-data cache
@@ -106,4 +120,7 @@ of its own.
   [ADR-009](./ADR-009-contract-first-apis.md) (the TTLs as contract);
   `web/storefront/src/lib/cache.ts` (`PageDataCache`), `web/storefront/src/lib/api.ts` (`pageRead`),
   `web/storefront/src/middleware.ts` (`EVENT_PAGE`), `gateway/cmd/gateway/main.go` (`apiProxy`),
-  `web/backoffice/src/lib/api.ts` (`getVenues`, `listVenueSeatMaps`), `compose.yaml`
+  `web/backoffice/src/lib/api.ts` (`getVenues`, `listVenueSeatMaps`), `compose.yaml`;
+  `services/catalog/api/openapi.yaml` (the declared tiers) vs
+  `services/inventory/internal/api/server.go` (`availability`) and `services/inventory/api/openapi.yaml`
+  (`getAvailability`) — the emitted-but-undeclared seconds tier
