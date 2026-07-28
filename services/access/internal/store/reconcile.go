@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -308,18 +307,9 @@ type conflictAlarmData struct {
 // duplicate_admit append and the owed alarm land in one transaction.
 func (p *Postgres) oweConflictAlarm(ctx context.Context, tx *sql.Tx, organizerID, ticketID, occurrenceID uuid.UUID, deviceOccurredAt time.Time, skewFlagged bool) error {
 	id := uuid.New()
-	envelope, err := json.Marshal(struct {
-		ID         uuid.UUID         `json:"id"`
-		Type       string            `json:"type"`
-		OccurredAt time.Time         `json:"occurred_at"`
-		Schema     int               `json:"schema"`
-		Data       conflictAlarmData `json:"data"`
-	}{
-		ID: id, Type: SubjectAdmissionConflictAlarm, OccurredAt: p.now(), Schema: 1,
-		Data: conflictAlarmData{
-			AlarmID: id, OrganizerID: organizerID, TicketID: ticketID,
-			OccurrenceID: occurrenceID, DeviceOccurredAt: deviceOccurredAt, SkewFlagged: skewFlagged,
-		},
+	envelope, err := admissionConflictAlarmEnvelope(id, p.now(), conflictAlarmData{
+		AlarmID: id, OrganizerID: organizerID, TicketID: ticketID,
+		OccurrenceID: occurrenceID, DeviceOccurredAt: deviceOccurredAt, SkewFlagged: skewFlagged,
 	})
 	if err != nil {
 		return err

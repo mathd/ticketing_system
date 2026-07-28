@@ -53,11 +53,22 @@ func EventID(orderID uuid.UUID) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(SubjectOrderCompleted+":"+orderID.String()))
 }
 
+// orderCompletedEnvelope marshals the order.completed envelope at a caller-supplied
+// instant. Extracted from OrderCompleted so the wire bytes have a pure seam that a
+// golden test can pin without racing time.Now.
+func orderCompletedEnvelope(id uuid.UUID, data OrderCompletedData, occurred time.Time) ([]byte, error) {
+	body, err := json.Marshal(Envelope{ID: id, Type: SubjectOrderCompleted, OccurredAt: occurred, Schema: 1, Data: data})
+	if err != nil {
+		return nil, fmt.Errorf("marshal order completed: %w", err)
+	}
+	return body, nil
+}
+
 func (p *JetStream) OrderCompleted(ctx context.Context, data OrderCompletedData) error {
 	id := EventID(data.OrderID)
-	body, err := json.Marshal(Envelope{ID: id, Type: SubjectOrderCompleted, OccurredAt: time.Now().UTC(), Schema: 1, Data: data})
+	body, err := orderCompletedEnvelope(id, data, time.Now().UTC())
 	if err != nil {
-		return fmt.Errorf("marshal order completed: %w", err)
+		return err
 	}
 	return p.PublishRaw(ctx, SubjectOrderCompleted, id, body)
 }

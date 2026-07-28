@@ -338,21 +338,32 @@ func (p *JetStream) SlotReopened(ctx context.Context, perf store.Performance) er
 	return p.publishClosure(ctx, SubjectSlotReopened, perf, perf.Closure.ChangedAt)
 }
 
-func (p *JetStream) publishClosure(ctx context.Context, subject string, perf store.Performance, at *time.Time) error {
-	occurred := time.Now().UTC()
-	if at != nil {
-		occurred = at.UTC()
-	}
-	id := ClosureEventID(subject, perf)
+// closureEnvelope marshals the closed/reopened envelope. The other three
+// subjects already had a pure byte seam; this one was inline in publishClosure,
+// so it is extracted to give every published subject the same testable shape.
+func closureEnvelope(subject string, perf store.Performance, occurred time.Time) ([]byte, error) {
 	body, err := json.Marshal(Envelope{
-		ID: id, Type: subject, OccurredAt: occurred, Schema: 1,
+		ID: ClosureEventID(subject, perf), Type: subject, OccurredAt: occurred, Schema: 1,
 		Data: SlotClosureData{
 			PerformanceID: perf.ID, EventID: perf.EventID, OrganizerID: perf.OrganizerID,
 			Kind: perf.Kind, Version: perf.Closure.Version, Reason: perf.Closure.Reason,
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
+		return nil, fmt.Errorf("marshal envelope: %w", err)
+	}
+	return body, nil
+}
+
+func (p *JetStream) publishClosure(ctx context.Context, subject string, perf store.Performance, at *time.Time) error {
+	occurred := time.Now().UTC()
+	if at != nil {
+		occurred = at.UTC()
+	}
+	id := ClosureEventID(subject, perf)
+	body, err := closureEnvelope(subject, perf, occurred)
+	if err != nil {
+		return err
 	}
 	msg := &nats.Msg{Subject: subject, Data: body}
 	msg.Header = nats.Header{"Nats-Msg-Id": []string{id}}

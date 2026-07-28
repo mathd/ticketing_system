@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -365,18 +364,9 @@ type alarmData struct {
 func (p *Postgres) oweAlarm(ctx context.Context, tx *sql.Tx, organizerID, ticketID uuid.UUID, reason string, disposition Decision, mode Mode) error {
 	id := uuid.New()
 	occurredAt := p.now()
-	envelope, err := json.Marshal(struct {
-		ID         uuid.UUID `json:"id"`
-		Type       string    `json:"type"`
-		OccurredAt time.Time `json:"occurred_at"`
-		Schema     int       `json:"schema"`
-		Data       alarmData `json:"data"`
-	}{
-		ID: id, Type: SubjectIntegrityAlarm, OccurredAt: occurredAt, Schema: 1,
-		Data: alarmData{
-			AlarmID: id, OrganizerID: organizerID, TicketID: ticketID,
-			Reason: reason, Disposition: string(disposition), Mode: string(mode), OccurredAt: occurredAt,
-		},
+	envelope, err := integrityAlarmEnvelope(id, occurredAt, alarmData{
+		AlarmID: id, OrganizerID: organizerID, TicketID: ticketID,
+		Reason: reason, Disposition: string(disposition), Mode: string(mode), OccurredAt: occurredAt,
 	})
 	if err != nil {
 		return err

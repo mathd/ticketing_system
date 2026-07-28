@@ -274,10 +274,20 @@ func (c *Consumer) consumerConfig(durable string) jetstream.ConsumerConfig {
 	}
 }
 
-func (c *Consumer) publishFailure(ctx context.Context, event FailureEvent) error {
+// failureEnvelope marshals the failure record's wire bytes. Extracted from
+// publishFailure so a golden test can pin them without a broker.
+func failureEnvelope(event FailureEvent) ([]byte, error) {
 	body, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("marshal failed-event record: %w", err)
+		return nil, fmt.Errorf("marshal failed-event record: %w", err)
+	}
+	return body, nil
+}
+
+func (c *Consumer) publishFailure(ctx context.Context, event FailureEvent) error {
+	body, err := failureEnvelope(event)
+	if err != nil {
+		return err
 	}
 	if _, err := c.js.Publish(ctx, SubjectFailure, body, jetstream.WithMsgID(event.ID.String())); err != nil {
 		return fmt.Errorf("publish failed-event record: %w", err)

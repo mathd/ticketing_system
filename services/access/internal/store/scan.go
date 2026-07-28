@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -363,19 +362,10 @@ func (p *Postgres) evaluatePolicyAlarms(ctx context.Context, tx *sql.Tx, ticketI
 		}
 		conflictID := policyConflictID(ticketID, c)
 		alarmID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(conflictID.String()+":"+fmt.Sprint(version)))
-		envelope, err := json.Marshal(struct {
-			ID         uuid.UUID               `json:"id"`
-			Type       string                  `json:"type"`
-			OccurredAt time.Time               `json:"occurred_at"`
-			Schema     int                     `json:"schema"`
-			Data       policyConflictAlarmData `json:"data"`
-		}{
-			ID: alarmID, Type: SubjectAdmissionPolicyConflictAlarm, OccurredAt: p.now(), Schema: 1,
-			Data: policyConflictAlarmData{
-				AlarmID: alarmID, ConflictID: conflictID, OrganizerID: id.OrganizerID, TicketID: ticketID,
-				SlotID: id.SlotID, Rule: string(c.Rule), OccurrenceID: c.OccurrenceID,
-				Status: status, Version: version, Revisable: true,
-			},
+		envelope, err := policyConflictAlarmEnvelope(alarmID, p.now(), policyConflictAlarmData{
+			AlarmID: alarmID, ConflictID: conflictID, OrganizerID: id.OrganizerID, TicketID: ticketID,
+			SlotID: id.SlotID, Rule: string(c.Rule), OccurrenceID: c.OccurrenceID,
+			Status: status, Version: version, Revisable: true,
 		})
 		if err != nil {
 			return err
