@@ -1,0 +1,24 @@
+{
+  "key": "TKT-136",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "classification": "simple",
+  "summary": "ADR-033 cites docs/reviews/2026-07-25-architecture.md, which does not exist (TKT-128 incidental)",
+  "description": "### Finding (incidental, surfaced during TKT-128 implementation)\n\n`docs/adr/ADR-033-shared-domain-event-envelope.md:237` cites:\n\n```\n- `docs/reviews/2026-07-25-architecture.md` — recommendation R3, the originating finding\n```\n\n**That file does not exist.** Not on `main`, not on the `arch-review-in-place` branch, not anywhere\nin history (`git log --all --diff-filter=A -- 'docs/reviews/*'` is empty; `docs/reviews/` is not a\ndirectory in this repo). The 2026-07-25 architecture review was conducted in-session and its\nrecommendations were written straight into tickets (R3 → TKT-126/ADR-033, R4 → TKT-128), never into\na review file.\n\nSo an ADR's References section points a reader at provenance they cannot open. AGENTS.md says\ndocumentation is 100% in-repo; a dead in-repo path is worse than no path, because it reads as if the\nevidence exists somewhere.\n\n### Why this is a separate ticket\n\nFound while implementing TKT-128, which had the *same* dead link in its own ticket references.\nTKT-128 avoided reproducing it (its ADR-004 amendment cites TKT-128/TKT-31 instead), but fixing\nADR-033 was outside its COS and would have been scope creep in a docs-only PR whose COS 5 pins the\ndiff to two files.\n\n### Two ways to close it — decide, don't assume\n\n1. **Re-point the citation** (smallest): ADR-033 cites TKT-126 for provenance, as ADR-004 now does\n   for TKT-128. Reversible, no new artifact.\n2. **Write the review file** the citations assume: reconstruct `docs/reviews/2026-07-25-architecture.md`\n   from the R1–Rn findings now living on the board. Bigger, and only worth it if the review has\n   standing value beyond the tickets it spawned.\n\nRecommendation: option 1 unless the owner wants the review preserved as a document.\n\n### Acceptance Criteria\n\n- [ ] No ADR references a path that does not exist in the repo.\n- [ ] `grep -rn \"docs/reviews\" docs/` either returns nothing, or every hit resolves to a real file.\n- [ ] Docs-only; no source changes.\n",
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-128"
+    },
+    {
+      "type": "relates",
+      "key": "TKT-126"
+    }
+  ],
+  "comments": []
+}
