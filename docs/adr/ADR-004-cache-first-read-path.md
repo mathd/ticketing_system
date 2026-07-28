@@ -11,6 +11,10 @@ read costs when the cache **hits**. ADR-019 covers the **miss** path for catalog
 subset — the filter needs an index behind it, and proving so takes a plan assertion, not an
 output assertion.*
 
+**Amended by TKT-128 (2026-07-28)** — *coverage only*, under that run's owner-waived gates. The three
+rules stay accepted and unweakened; the amendment records which of them are **implemented today** and
+which are still only declared. See § Amendment (TKT-128).
+
 ## Context
 
 High-contention on-sales are a core v1 requirement (brief). Correct atomic claims (ADR-002's inventory hot path) solve oversell, but an on-sale's load is overwhelmingly **reads** — event lists, event pages, price displays, remaining-capacity checks — and an uncached read path melts the database long before the write path is stressed. The owner directed (2026-07-12): endpoints should be cacheable wherever possible with TTLs matched to data volatility, hot events should be served from in-memory structures to shed database reads, and the web frontends should minimize API calls and refresh on TTL-appropriate cadences.
@@ -46,6 +50,60 @@ Correctness stays at checkout: a stale "available" display is acceptable and res
     - Every read endpoint review now includes "what's the TTL and why" — a standing tax (added to quality gates).
     - In-memory hot-event structures introduce cache-invalidation bugs as a real failure class; needs staleness tests and a kill-switch to bypass caches during incidents.
 
+## Amendment (2026-07-28, TKT-128) — declared coverage vs deployed coverage
+
+This ADR read as though a cache tier were deployed. It is not, and the gap is wide enough that a
+reader could reasonably plan against a cache that does not exist. **Nothing below weakens the
+decision** — the three rules remain the target and remain binding on new endpoints. What is recorded
+is the distance between them and the running system as of this date.
+
+**The TTL declarations are a contract, not evidence of a cache.** The tiers are committed in each
+service's OpenAPI document, which [ADR-009](./ADR-009-contract-first-apis.md) makes the authoritative
+source and the gate diffs on every run — so they are a live, reviewed artifact, not incidental
+headers. They are exactly the contract a future cache owner must honor. They are not proof that such
+an owner is deployed, and emitting `Cache-Control` must never be read as one.
+
+**What honors a tier today — one cache, three reads, two of them end-to-end.**
+The single implementation of rule 1's consumer side is the storefront's SSR page-data cache
+(`web/storefront/src/lib/cache.ts`, `PageDataCache`), held as one module-level instance in the Astro
+SSR process (`web/storefront/src/lib/api.ts`). It is process-local, URL-keyed, fetch-through, governed
+by the upstream response's `max-age`, and it coalesces concurrent misses for the same URL through a
+single upstream call — so an expiring hot-event page cannot stampede the catalog. Exactly three reads
+pass through it (`pageRead`): the public event list, public event detail, and public festival detail.
+
+One qualification, because the difference matters to anyone reasoning about total staleness:
+`web/storefront/src/middleware.ts` derives the page's outgoing `Cache-Control` from the **remaining**
+freshness of the entry it rendered from, so page-layer and data-layer staleness cannot stack — but its
+route test (`EVENT_PAGE`) covers the two `events` routes only. The **festival** page's data is cached
+while its HTML response is `no-store`. So of the three cached reads, two propagate a positive tier to
+the page response and one stops at the data layer. Ownership of the minutes tier is
+[ADR-006](./ADR-006-astro-storefront-shell.md)'s caching-ownership rule, and this is its whole extent.
+
+**What honors nothing.** The gateway is a bare `httputil.ReverseProxy` per route
+(`gateway/cmd/gateway/main.go`, `apiProxy`) — it forwards responses and caches none of them. The back
+office reads through plain `fetch` (`web/backoffice/src/lib/api.ts`) and discards the hours-tier
+`Cache-Control` its venue and seat-map reads receive; that is the clearest instance of a declared tier
+with no consumer. Service-to-service HTTP clients neither cache nor read TTLs. The Compose topology
+(`compose.yaml`) contains no CDN, reverse-proxy cache, or shared cache of any kind. **The scanner is
+not in this list as a gap:** it honors no cache, but its scan and reconcile calls are transactional
+`POST`s, which rule 1 already places in the never-cached tier — correct behaviour, not missing coverage.
+
+**Rule 2 is accepted and unimplemented.** No service keeps in-memory hot-event snapshots or
+availability counters. Catalog's public reads and inventory's availability read both go to their
+Postgres store and then set `Cache-Control` on the way out. Rule 2 is not obsolete, optional, or
+superseded by the SSR cache — it is simply not built.
+
+**Ownership of the gap: [TKT-31](../product/prd-v1.md) — read-path caching & hot-event serving**, which
+already owns the shared/gateway tier, the service-side in-memory structures, invalidation, the
+incident kill-switch, staleness tests, and the on-sale read-load evidence this ADR's Consequences
+anticipated. This amendment routes the gap there rather than leaving it implicit; it opens no new work
+of its own.
+
 ## References
 
 - [brief](../product/brief.md) · [PRD](../product/prd-v1.md) (TKT-31) · [ADR-002](./ADR-002-services-from-day-one.md)
+- Amendment (TKT-128) evidence — [ADR-006](./ADR-006-astro-storefront-shell.md) (minutes-tier ownership),
+  [ADR-009](./ADR-009-contract-first-apis.md) (the TTLs as contract);
+  `web/storefront/src/lib/cache.ts` (`PageDataCache`), `web/storefront/src/lib/api.ts` (`pageRead`),
+  `web/storefront/src/middleware.ts` (`EVENT_PAGE`), `gateway/cmd/gateway/main.go` (`apiProxy`),
+  `web/backoffice/src/lib/api.ts` (`getVenues`, `listVenueSeatMaps`), `compose.yaml`
