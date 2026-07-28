@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"ticketing/services/inventory/internal/store"
+	"ticketing/shared/domainevent"
 )
 
 const (
@@ -61,18 +62,19 @@ func New(js jetstream.JetStream, st catalogStore, resolver PerformanceResolver, 
 }
 func (c *Consumer) Ready() bool { return c.ready.Load() }
 
-type publication struct {
-	ID     uuid.UUID `json:"id"`
-	Schema int       `json:"schema"`
-	Data   struct {
-		PerformanceID   uuid.UUID  `json:"performance_id"`
-		OrganizerID     uuid.UUID  `json:"organizer_id"`
-		Capacity        int32      `json:"capacity"`
-		CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
-		SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
-		SeatMapID       *uuid.UUID `json:"seat_map_id,omitempty"`
-	} `json:"data"`
+// publicationData is the per-subject payload — inventory's own, and it stays
+// here (ADR-033 puts only the envelope in the kernel). publication is the
+// envelope carrying it, decoded once the schema arm is known.
+type publicationData struct {
+	PerformanceID   uuid.UUID  `json:"performance_id"`
+	OrganizerID     uuid.UUID  `json:"organizer_id"`
+	Capacity        int32      `json:"capacity"`
+	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
+	SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
+	SeatMapID       *uuid.UUID `json:"seat_map_id,omitempty"`
 }
+
+type publication = domainevent.Envelope[publicationData]
 
 type provisionInput struct {
 	organizerID uuid.UUID
@@ -168,16 +170,13 @@ var knownSchemas = map[string]struct{ min, max int }{
 	subjectReopened:  {1, 1},
 }
 
-// envelope is the part of an event that does not change across schema versions (ADR-009 §5).
-// `data` stays raw on purpose: dispatch has to happen on `schema` alone, before anything reads
-// `data`, because a variant this binary does not know may reshape `data` arbitrarily — that is
-// what a bump *means* (ADR-017 §3). Decoding a future variant against today's struct would reject
-// it as malformed and terminate it, dropping precisely what TKT-61 exists to preserve.
-type envelope struct {
-	ID     uuid.UUID       `json:"id"`
-	Schema int             `json:"schema"`
-	Data   json.RawMessage `json:"data"`
-}
+// envelope is the shared platform decode view (ADR-033). `data` stays raw on purpose: dispatch has
+// to happen on `schema` alone, before anything reads `data`, because a variant this binary does not
+// know may reshape `data` arbitrarily — that is what a bump *means* (ADR-017 §3). Decoding a future
+// variant against today's struct would reject it as malformed and terminate it, dropping precisely
+// what TKT-61 exists to preserve. The shared type makes that structural: there is nothing typed to
+// decode into until this consumer has chosen an arm.
+type envelope = domainevent.Raw
 
 // handle is the message handler, split out of Run's Consume closure so the disposition it actually
 // ships can be tested against a fake jetstream.Msg (the shape services/access already uses). The
@@ -189,9 +188,13 @@ type envelope struct {
 func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	// Read the envelope only. Dispatch on (subject, `schema`) before `data` is decoded — see
 	// envelope's doc comment for why the ordering is the whole fix and not a style choice.
-	var env envelope
-	if err := json.Unmarshal(msg.Data(), &env); err != nil {
-		c.log.Error("invalid catalog event", "subject", msg.Subject(), "err", err)
+	// The bottom-end rule (`schema <= 0`) is the shared one; everything below it here — the
+	// subject registry, this subject's minimum, the disposition — is inventory's own (ADR-033).
+	// decodeErr is held rather than acted on immediately so the question order is unchanged:
+	// an unknown subject is still answered before a broken schema.
+	env, decodeErr := domainevent.DecodeEnvelope(msg.Data())
+	if decodeErr != nil && !errors.Is(decodeErr, domainevent.ErrInvalidSchema) {
+		c.log.Error("invalid catalog event", "subject", msg.Subject(), "err", decodeErr)
 		_ = msg.Term()
 		return
 	}
@@ -203,7 +206,7 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		_ = msg.Term()
 		return
 	}
-	if env.Schema <= 0 {
+	if decodeErr != nil {
 		// Not a variant from the future: an envelope with no usable schema, which ADR-009 §5
 		// requires. No binary will ever apply it — poison, so terminate. Readiness is
 		// deliberately untouched: a broken producer must not be able to take inventory down.

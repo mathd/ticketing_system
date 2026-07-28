@@ -152,12 +152,7 @@ func (c *Consumer) Ready() bool { return c.ready.Load() }
 // means (ADR-017 §3, §5b′). Decoding a future variant against today's struct
 // would reject it as malformed and terminate it, never issuing tickets for an
 // order that was paid for.
-type envelope struct {
-	ID     uuid.UUID       `json:"id"`
-	Type   string          `json:"type"`
-	Schema int             `json:"schema"`
-	Data   json.RawMessage `json:"data"`
-}
+type envelope = domainevent.Raw
 
 // maxKnownCompletedSchema is the highest order.completed variant this binary
 // can read. Above it is the future (park + latch unready); at or below zero
@@ -167,20 +162,20 @@ type envelope struct {
 // they fail the moment a bump puts them under this binary's judgment.
 const maxKnownCompletedSchema = 1
 
-type completed struct {
-	ID     uuid.UUID `json:"id"`
-	Type   string    `json:"type"`
-	Schema int       `json:"schema"`
-	Data   struct {
-		OrderID       uuid.UUID `json:"order_id"`
-		GuestOrderRef uuid.UUID `json:"guest_order_ref"`
-		OrganizerID   uuid.UUID `json:"organizer_id"`
-		BuyerID       uuid.UUID `json:"buyer_id"`
-		SlotID        uuid.UUID `json:"slot_id"`
-		TicketTypeID  uuid.UUID `json:"ticket_type_id"`
-		Quantity      int32     `json:"quantity"`
-	} `json:"data"`
+// completedData is the schema-1 order.completed payload — commerce's contract,
+// decoded by access, and access's to own here (ADR-033 puts only the envelope in
+// the shared kernel).
+type completedData struct {
+	OrderID       uuid.UUID `json:"order_id"`
+	GuestOrderRef uuid.UUID `json:"guest_order_ref"`
+	OrganizerID   uuid.UUID `json:"organizer_id"`
+	BuyerID       uuid.UUID `json:"buyer_id"`
+	SlotID        uuid.UUID `json:"slot_id"`
+	TicketTypeID  uuid.UUID `json:"ticket_type_id"`
+	Quantity      int32     `json:"quantity"`
 }
+
+type completed = domainevent.Envelope[completedData]
 
 func (c *Consumer) issue(ctx context.Context, e completed) error {
 	now := time.Now().UTC()
@@ -353,13 +348,17 @@ func (c *Consumer) reject(ctx context.Context, msg jetstream.Msg, event FailureE
 // never written for it — the TKT-61 bug, present here as TKT-74.
 func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	attempts := c.deliveryCount(msg)
-	var env envelope
-	if err := json.Unmarshal(msg.Data(), &env); err != nil {
+	// The `schema <= 0` half of the broken-envelope judgment is the shared rule
+	// (ADR-033); the type and id halves stay here, because their failure record
+	// and disposition are access's. Both still land on invalid_contract, exactly
+	// as before — a malformed body is the only thing that is invalid_json.
+	env, decodeErr := domainevent.DecodeEnvelope(msg.Data())
+	if decodeErr != nil && !errors.Is(decodeErr, domainevent.ErrInvalidSchema) {
 		c.log.Error("invalid completed order event", "reason", ReasonInvalidJSON)
 		c.reject(ctx, msg, failureRecord(msg.Data(), uuid.Nil, StageContract, ReasonInvalidJSON, attempts))
 		return
 	}
-	if env.Type != SubjectOrderCompleted || env.ID == uuid.Nil || env.Schema <= 0 {
+	if decodeErr != nil || env.Type != SubjectOrderCompleted || env.ID == uuid.Nil {
 		// Broken envelope: id, type and schema are stable across every variant
 		// (ADR-009 §5), so their absence is poison even when schema claims to
 		// be from the future — parking it would NAK forever and latch
