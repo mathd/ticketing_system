@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"ticketing/services/access/internal/store"
+	"ticketing/shared/domainevent"
 )
 
 // SubjectPerformancePublished is catalog's publication subject. Access
@@ -61,33 +62,38 @@ func NewPolicyConsumer(js jetstream.JetStream, st PolicyStore, log *slog.Logger)
 
 func (c *PolicyConsumer) Ready() bool { return c.ready.Load() }
 
-// publication is the known-schema shape of the fields this projector reads.
-// Everything else in the payload is deliberately ignored — this consumer must
-// not grow opinions about capacity fields it does not use.
-type publication struct {
-	Data struct {
-		PerformanceID uuid.UUID `json:"performance_id"`
-		OrganizerID   uuid.UUID `json:"organizer_id"`
-		ReEntry       *struct {
-			Mode         string `json:"mode"`
-			MaxEntries   *int32 `json:"max_entries"`
-			RequiresExit bool   `json:"requires_exit"`
-		} `json:"re_entry"`
-	} `json:"data"`
+// publicationData is the slice of performance.published this projector reads —
+// re_entry and the identifiers it keys on, nothing else. The seat-map fields of
+// schema 4 are ignored by construction, which is why the schema-4 bump needed no
+// new arm (TKT-103).
+type publicationData struct {
+	PerformanceID uuid.UUID `json:"performance_id"`
+	OrganizerID   uuid.UUID `json:"organizer_id"`
+	ReEntry       *struct {
+		Mode         string `json:"mode"`
+		MaxEntries   *int32 `json:"max_entries"`
+		RequiresExit bool   `json:"requires_exit"`
+	} `json:"re_entry"`
 }
+
+type publication = domainevent.Decoded[publicationData]
 
 // handle asks the three questions strictly from the outside in — envelope
 // readable, variant ours to judge, payload valid (ADR-017 §5b′). Decoding a
 // future variant against today's struct would reject it as malformed and
 // terminate it, silently disenforcing every pass slot it described.
 func (c *PolicyConsumer) handle(ctx context.Context, msg jetstream.Msg) {
-	var env envelope
-	if err := json.Unmarshal(msg.Data(), &env); err != nil {
-		c.log.Error("invalid publication event", "err", err)
+	// `schema <= 0` is the shared bottom-end rule (ADR-033); this subject's own
+	// minimum stays here, because only catalog's owner knows where the subject
+	// started. Today they coincide at 1 — the check is kept separate so that
+	// stays a fact about this subject and not an accident.
+	env, decodeErr := domainevent.DecodeEnvelope(msg.Data())
+	if decodeErr != nil && !errors.Is(decodeErr, domainevent.ErrInvalidSchema) {
+		c.log.Error("invalid publication event", "err", decodeErr)
 		_ = msg.TermWithReason("invalid_json")
 		return
 	}
-	if env.Type != SubjectPerformancePublished || env.ID == uuid.Nil || env.Schema < publicationSchemaMin {
+	if decodeErr != nil || env.Type != SubjectPerformancePublished || env.ID == uuid.Nil || env.Schema < publicationSchemaMin {
 		// Broken envelope: poison, not the future. Readiness is deliberately
 		// untouched — a broken producer must not take access down.
 		c.log.Error("invalid publication event", "event_id", env.ID, "schema", env.Schema)
