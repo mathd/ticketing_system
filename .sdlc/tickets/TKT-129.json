@@ -1,8 +1,10 @@
 {
   "key": "TKT-129",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "classification": "standard",
