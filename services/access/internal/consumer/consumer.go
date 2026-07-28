@@ -145,14 +145,13 @@ func New(js jetstream.JetStream, st *store.Postgres, signer *ticket.Signer, clie
 }
 func (c *Consumer) Ready() bool { return c.ready.Load() }
 
-// envelope is the part of an order.completed event that does not change
-// across schema versions (ADR-009 §5). Data stays raw on purpose: dispatch
-// happens on schema alone, before anything reads data, because a variant this
-// binary does not know may reshape data arbitrarily — that is what a bump
-// means (ADR-017 §3, §5b′). Decoding a future variant against today's struct
-// would reject it as malformed and terminate it, never issuing tickets for an
-// order that was paid for.
-type envelope = domainevent.Raw
+// The local `envelope` type is gone: handle decodes through
+// domainevent.DecodeEnvelope, which returns the shared decode view with `data`
+// left raw (ADR-033). That rawness is the whole point — dispatch happens on
+// schema alone, before anything reads data, because a variant this binary does
+// not know may reshape data arbitrarily (ADR-017 §3, §5b′). Decoding a future
+// variant against today's struct would reject it as malformed and terminate it,
+// never issuing tickets for an order that was paid for.
 
 // maxKnownCompletedSchema is the highest order.completed variant this binary
 // can read. Above it is the future (park + latch unready); at or below zero
