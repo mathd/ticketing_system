@@ -1,0 +1,22 @@
+{
+  "key": "TKT-137",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "classification": "simple",
+  "summary": "Inventory's availability read emits a seconds-tier Cache-Control its OpenAPI contract never declares (TKT-128 ai-review)",
+  "description": "### Finding (TKT-128 ai-review, confirmed against the code)\n\nInventory's public availability read emits an ADR-004 **seconds-tier** TTL that its OpenAPI contract\ndoes not declare:\n\n- `services/inventory/internal/api/server.go:249` (`availability`) sets\n  `Cache-Control: public, max-age=5, s-maxage=5`.\n- `services/inventory/api/openapi.yaml` — the `getAvailability` `'200'` response declares **no**\n  `Cache-Control` header. `grep -ci cache-control` over that file returns **0**.\n\nCatalog is the only service whose contract declares its tiers (17 hits, minutes + hours). Commerce,\npayments and access declare none and emit none on domain reads (`no-store` default), which is\nconsistent. Inventory is the only mismatch: **real behaviour, no declaration.**\n\n### Why it matters\n\n[ADR-009](docs/adr/ADR-009-contract-first-apis.md) makes the OpenAPI document authoritative and the\ngate diffs it, so an undeclared header is outside the gate's reach — nothing detects drift if that\n`max-age=5` changes, disappears, or is copied wrong onto another route. And a future cache owner\n(TKT-31) reading the contract to learn the tiers **will not find the seconds tier at all** — the one\ntier where staleness is most load-bearing during an on-sale.\n\nIt is the inverse of the defect TKT-128 fixed in ADR-004: that was a declaration with no behaviour;\nthis is a behaviour with no declaration.\n\n### Why it is not fixed in TKT-128\n\nTKT-128's COS 5 forbids **any** source change in its diff, and this needs one (`openapi.yaml` plus a\nregenerated `openapi_gen.go`). TKT-128 recorded the gap in ADR-004's amendment instead; this ticket\ncloses it.\n\n### Scope\n\nDeclare the header on the `getAvailability` `'200'` response, matching how catalog declares its tiers\n(`services/catalog/api/openapi.yaml`, the `CacheControl` response header component). Then\n`make generate` and commit the regenerated `openapi_gen.go` **before** running the gate —\n`check-generate` diffs against HEAD, so an uncommitted regen reads as drift.\n\nWorth checking in the same pass whether the seconds-tier value belongs in a named constant the way\ncatalog's `CacheControlPublicReads` / `CacheControlPublicVenueReads` are, rather than a literal at the\ncall site.\n\n### Acceptance Criteria\n\n- [ ] `getAvailability`'s `'200'` response declares `Cache-Control` in `services/inventory/api/openapi.yaml`.\n- [ ] The declared value matches what the handler emits (`public, max-age=5, s-maxage=5`).\n- [ ] `openapi_gen.go` regenerated and committed; `make check` green.\n- [ ] ADR-004 § Amendment (TKT-128)'s sentence recording this as an open gap is updated to say it is closed.\n",
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-128"
+    },
+    {
+      "type": "relates",
+      "key": "TKT-31"
+    }
+  ],
+  "comments": []
+}
