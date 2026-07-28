@@ -65,14 +65,52 @@ type Envelope[T any] struct {
 	Data       T         `json:"data"`
 }
 
-// Raw is the decode-side envelope: everything stable across schema versions,
-// with `data` left as bytes.
+// Raw is the decode-side view. It is deliberately NOT Envelope[json.RawMessage]:
+// it is a strict subset, and the subset is load-bearing.
 //
-// The raw Data is the whole point and not an implementation detail. A consumer
-// holding a Raw physically cannot judge `data` before it has looked at `schema`,
-// because there is nothing typed to judge yet. ADR-017 §5b′ states the rule;
-// this type is the rule made structural.
-type Raw = Envelope[json.RawMessage]
+// The raw Data is the first half of the point. A consumer holding a Raw
+// physically cannot judge `data` before it has looked at `schema`, because there
+// is nothing typed to judge yet. ADR-017 §5b′ states the rule; this type is the
+// rule made structural.
+//
+// The ABSENCE of OccurredAt is the second half, and it is the less obvious one.
+// ADR-017 §5b′ names the minimal stable envelope as `{id, schema, data}` for a
+// reason: every field the first pass decodes is a field whose FORMAT can reject
+// the message before `schema` has been looked at. `occurred_at` decodes into a
+// time.Time, and time.Time parsing is strict — so an envelope carrying a
+// malformed timestamp would fail the first-pass decode and be terminated as
+// unreadable, even at a schema this binary has never seen. That is precisely the
+// TKT-61 failure: discarding a well-formed future variant on the authority of
+// the one binary that provably cannot read it. No consumer dispatches on
+// `occurred_at`, so decoding it here buys nothing and risks exactly that.
+//
+// Type stays because two consumers check it as a contract precondition, and
+// because a string field cannot fail to parse the way a timestamp can: any JSON
+// string decodes. A NON-string `type` is a violation of ADR-009 §5's envelope
+// contract itself rather than a schema variation, and it is terminated — see
+// TestDecodeEnvelopeRejectsNonStringType, which pins that consequence.
+type Raw = Decoded[json.RawMessage]
+
+// Decoded is the decode-side envelope, generic over the payload so the SAME
+// declaration serves both passes: `Raw` (data still bytes) for the schema
+// dispatch, and `Decoded[SomePayload]` for the second pass once an arm is known.
+//
+// It is a separate declaration from Envelope, and the difference is exactly one
+// field: Decoded has no OccurredAt. That asymmetry is the design, not an
+// oversight — emitters MUST write `occurred_at` (ADR-009 §5 requires it), and
+// consumers must NOT parse it, because parsing it is what lets a malformed
+// timestamp reject a message that no consumer's disposition depends on.
+//
+// The second pass needs this as much as the first. Access and inventory both
+// decode the full message into a typed envelope once the variant is known, so a
+// Decoded carrying OccurredAt would terminate an otherwise valid, known-schema
+// event over a field nothing reads.
+type Decoded[T any] struct {
+	ID     uuid.UUID `json:"id"`
+	Type   string    `json:"type"`
+	Schema int       `json:"schema"`
+	Data   T         `json:"data"`
+}
 
 // ErrInvalidSchema reports an envelope with no usable schema.
 //

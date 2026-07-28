@@ -130,3 +130,56 @@ func TestEnvelopeMarshalsInADR009FieldOrder(t *testing.T) {
 		t.Fatalf("envelope wire shape changed\n got: %s\nwant: %s", body, want)
 	}
 }
+
+// Regression for the ai-review finding (blocking, high): the decode view must
+// not parse a field whose FORMAT can reject the message before `schema` has been
+// looked at.
+//
+// `occurred_at` decodes into a time.Time, whose parsing is strict. While the
+// decode view carried it, an envelope with a malformed timestamp failed the
+// first-pass decode -- so a well-formed FUTURE variant was terminated as
+// unreadable instead of being parked or quarantined for a newer binary. That is
+// the TKT-61 failure exactly: discarding a recoverable event on the authority of
+// the one binary that provably cannot read it.
+//
+// These fixtures are hand-written, and they are the shape the emitter goldens
+// structurally cannot express -- the goldens prove what this repo WRITES, and
+// this proves what it must tolerate READING.
+func TestDecodeEnvelopeIgnoresOccurredAtEntirely(t *testing.T) {
+	cases := map[string]string{
+		"malformed timestamp at a future schema": `{"id":"11111111-1111-4111-8111-111111111111","type":"t","occurred_at":"invalid","schema":99,"data":{}}`,
+		"malformed timestamp at a known schema":  `{"id":"11111111-1111-4111-8111-111111111111","type":"t","occurred_at":"invalid","schema":1,"data":{}}`,
+		"occurred_at is a number":                `{"id":"11111111-1111-4111-8111-111111111111","type":"t","occurred_at":1750000000,"schema":99,"data":{}}`,
+		"occurred_at is an object":               `{"id":"11111111-1111-4111-8111-111111111111","type":"t","occurred_at":{"secs":1},"schema":99,"data":{}}`,
+		"occurred_at absent":                     `{"id":"11111111-1111-4111-8111-111111111111","type":"t","schema":99,"data":{}}`,
+		"occurred_at null":                       `{"id":"11111111-1111-4111-8111-111111111111","type":"t","occurred_at":null,"schema":99,"data":{}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			env, err := domainevent.DecodeEnvelope([]byte(body))
+			if err != nil {
+				t.Fatalf("occurred_at must not be able to reject an envelope: %v", err)
+			}
+			if env.Schema == 0 {
+				t.Fatal("schema was not decoded")
+			}
+		})
+	}
+}
+
+// The flip side, stated so it is a decision rather than an accident: `type` IS
+// decoded, because two consumers check it as a contract precondition and any
+// JSON string parses. A non-string `type` therefore fails the decode. That is a
+// violation of ADR-009 §5's envelope contract rather than a schema variation, so
+// terminating it is correct -- but it IS a tightening for inventory, which
+// previously ignored the field, and it is pinned here rather than left implicit.
+func TestDecodeEnvelopeRejectsNonStringType(t *testing.T) {
+	body := `{"id":"11111111-1111-4111-8111-111111111111","type":123,"schema":99,"data":{}}`
+	_, err := domainevent.DecodeEnvelope([]byte(body))
+	if err == nil {
+		t.Fatal("a non-string type is not a valid platform envelope")
+	}
+	if errors.Is(err, domainevent.ErrInvalidSchema) {
+		t.Fatalf("err = %v, want a decode error, not ErrInvalidSchema", err)
+	}
+}

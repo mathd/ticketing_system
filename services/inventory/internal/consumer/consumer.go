@@ -74,7 +74,7 @@ type publicationData struct {
 	SeatMapID       *uuid.UUID `json:"seat_map_id,omitempty"`
 }
 
-type publication = domainevent.Envelope[publicationData]
+type publication = domainevent.Decoded[publicationData]
 
 type provisionInput struct {
 	organizerID uuid.UUID

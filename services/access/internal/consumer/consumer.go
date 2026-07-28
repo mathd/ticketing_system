@@ -174,7 +174,7 @@ type completedData struct {
 	Quantity      int32     `json:"quantity"`
 }
 
-type completed = domainevent.Envelope[completedData]
+type completed = domainevent.Decoded[completedData]
 
 func (c *Consumer) issue(ctx context.Context, e completed) error {
 	now := time.Now().UTC()

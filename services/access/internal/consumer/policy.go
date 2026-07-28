@@ -62,9 +62,6 @@ func NewPolicyConsumer(js jetstream.JetStream, st PolicyStore, log *slog.Logger)
 
 func (c *PolicyConsumer) Ready() bool { return c.ready.Load() }
 
-// publication is the known-schema shape of the fields this projector reads.
-// Everything else in the payload is deliberately ignored — this consumer must
-// not grow opinions about capacity fields it does not use.
 // publicationData is the slice of performance.published this projector reads —
 // re_entry and the identifiers it keys on, nothing else. The seat-map fields of
 // schema 4 are ignored by construction, which is why the schema-4 bump needed no
@@ -79,7 +76,7 @@ type publicationData struct {
 	} `json:"re_entry"`
 }
 
-type publication = domainevent.Envelope[publicationData]
+type publication = domainevent.Decoded[publicationData]
 
 // handle asks the three questions strictly from the outside in — envelope
 // readable, variant ours to judge, payload valid (ADR-017 §5b′). Decoding a

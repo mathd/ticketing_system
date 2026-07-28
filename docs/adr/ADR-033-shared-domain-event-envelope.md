@@ -100,6 +100,7 @@ We adopt **Option 3**. `shared/go/domainevent` declares the platform envelope on
 over the payload type, plus `DecodeEnvelope` and the `ErrInvalidSchema` sentinel:
 
 ```go
+// emit
 type Envelope[T any] struct {
     ID         uuid.UUID `json:"id"`
     Type       string    `json:"type"`
@@ -108,17 +109,44 @@ type Envelope[T any] struct {
     Data       T         `json:"data"`
 }
 
-type Raw = Envelope[json.RawMessage]
+// decode — one field shorter, deliberately
+type Decoded[T any] struct {
+    ID     uuid.UUID `json:"id"`
+    Type   string    `json:"type"`
+    Schema int       `json:"schema"`
+    Data   T         `json:"data"`
+}
+
+type Raw = Decoded[json.RawMessage]
 
 var ErrInvalidSchema = errors.New("domain event envelope has no usable schema")
 
 func DecodeEnvelope(data []byte) (Raw, error)
 ```
 
-The generic is what lets **one** declaration serve both directions: emitters instantiate it with
-their per-subject payload type, consumers with `json.RawMessage`. Field declaration order is
-contract — `encoding/json` emits in declaration order — so those five lines are the wire for every
-service at once.
+Each is generic over the payload, which is what lets one declaration serve every subject: emitters
+instantiate `Envelope` with their per-subject payload type, consumers instantiate `Decoded` with
+`json.RawMessage` for the schema dispatch and with a typed payload for the second pass. Field
+declaration order is contract — `encoding/json` emits in declaration order — so those lines are the
+wire for every service at once.
+
+**Emit and decode are two types, and the difference is exactly `occurred_at`.** That asymmetry is
+the decision, not an oversight, and it was not in the first draft of this ADR — the adversarial
+review caught it (see Consequences). **Every field the decode path parses is a field whose *format*
+can reject a message before `schema` has been looked at.** `occurred_at` decodes into a `time.Time`,
+whose parsing is strict, so a malformed timestamp made the decode fail — and a failed decode is
+"unreadable", which terminates. At a schema the binary has never seen, that means **discarding a
+well-formed future variant on the authority of the binary that provably cannot read it**: TKT-61
+exactly, reintroduced by the very refactor meant to prevent it. No consumer dispatches on
+`occurred_at`, so parsing it bought nothing.
+
+ADR-017 §5b′ already named the minimal stable envelope as `{id, schema, data}`. This is why.
+
+`type` stays on the decode side because two consumers check it as a contract precondition and
+because **a string field cannot fail to parse the way a timestamp can** — any JSON string decodes.
+A *non-string* `type` violates ADR-009 §5's envelope contract itself rather than being a schema
+variation, and it terminates. That is a tightening for inventory, which previously ignored the
+field; it is pinned by a test rather than left implicit.
 
 **`ID` is `uuid.UUID`, not `string`.** Both marshal to the same JSON, so the choice looks cosmetic;
 it is not. A `uuid.UUID` field **rejects a malformed id at decode time**, which is how a garbage
@@ -174,6 +202,17 @@ legitimate future wire change means updating a literal deliberately, in an ADR o
       down*, not *what may change independently*.
     - The goldens are deliberately brittle. That friction is the intended contract-review gate, and
       it will occasionally be mistaken for a flaky test by someone who has not read this ADR.
+    - **The goldens prove what this repo WRITES, and are structurally incapable of proving what it
+      must tolerate READING.** This is worth stating because it already cost a blocking bug: the
+      first implementation reused the emit type as the decode view, which added `occurred_at`
+      parsing to all three consumers and turned a malformed timestamp into a termination — at known
+      schemas it dropped valid events, and at future schemas it dropped recoverable ones. Thirteen
+      byte-exact goldens were green throughout, because no fixture built from an emitter can express
+      an input an emitter would never produce. The adversarial review found it; the parity tests in
+      `envelope_tolerance_test.go` (inventory and access) now pin the disposition for every
+      unparseable-metadata shape, at both known and future schemas. **Any future change to the
+      decode view's field set must come with the same parity evidence — the goldens will not catch
+      it.**
     - **This ADR does not make the envelope tamper-evident.** Naming the adversary as ADR-021
       requires: this is honest-writer consistency only. A writer with database or broker access can
       still author whatever envelope it likes; nothing here constrains one. `DecodeEnvelope` rejects
