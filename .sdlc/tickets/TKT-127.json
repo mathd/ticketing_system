@@ -1,7 +1,7 @@
 {
   "key": "TKT-127",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -9,7 +9,7 @@
   "pr": {
     "number": 117,
     "url": "https://github.com/mathd/ticketing_system/pull/117",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "complex",
   "summary": "Lift the shared durable-consumer skeleton — inventory and access implement the same protocol twice",
