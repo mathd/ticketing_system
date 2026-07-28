@@ -1,6 +1,6 @@
 # Testing
 
-The gate is `make check` = **lint → test → build → smoke**; CI runs exactly the same target
+The gate is `make check` = **dep-drift → lint → test → build → smoke**; CI runs exactly the same target
 (`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
 §Quality gates (contract tests per touched boundary from US-002; journal invariants from US-004;
 browser evidence on UI stories).
@@ -10,6 +10,7 @@ browser evidence on UI stories).
 | Stage | Go | TS |
 |---|---|---|
 | deps | — | `pnpm install --frozen-lockfile` |
+| dep-drift | one version per dependency across the eight modules ([ADR-035](adr/ADR-035-go-module-dependency-declarations.md)) | — |
 | lint | golangci-lint (pinned) per module (`--build-tags smoke`) | `oxlint --deny-warnings` |
 | test | `go test` per module | `vitest run` (jsdom + testing-library) |
 | build | `go build` + `go vet` per module | `tsc -b && vite build` |
