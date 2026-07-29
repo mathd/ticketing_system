@@ -9,14 +9,66 @@
   "pr": null,
   "summary": "onsaleFull discards all evidence when any stage aborts — defer writeReport",
   "description": "### Finding (TKT-125 measurement, 2026-07-27)\n\n`writeReport(t, report)` is the **last statement** of `onsaleFull` (`smoke/onsale_load_test.go`). Every `generatorHealthy` check is a `t.Fatalf`, so a single aborted stage discards the whole accumulated `report` — including stages that completed cleanly minutes earlier.\n\nThis cost TKT-125 its COS: on a single-host setup the ceiling sweep's `sweep-600` stage trips the generator guard **every time** (3 runs of 3, on 4-9 client-side transport errors at 600 attempts/s), so no JSON was ever emitted, even though the `nfr-3000pm` stage the ticket actually needed had completed 9,000/9,000 clean. `finalize_p99_ms` and `confirm_p99_ms` exist only in that report, so they could not be recorded.\n\n### Scope\n\n`defer writeReport(t, report)` (or equivalent) so a partial run still emits what it measured. The report already carries per-stage entries appended as they complete, so partial output is meaningful, not misleading — but consider marking the report `partial: true` so a reader cannot mistake an aborted run for a complete one.\n\n### Acceptance Criteria\n\n- [ ] An `onsaleFull` run whose sweep aborts still writes `ONSALE_REPORT` containing every completed stage\n- [ ] The report distinguishes complete from partial runs\n- [ ] TKT-125's missing `finalize_p99_ms` / `confirm_p99_ms` are obtainable by re-running the two arms\n- [ ] `make check` green",
-  "readiness": {},
-  "context": {},
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "An aborted stage discards every stage that already completed; TKT-125 lost finalize_p99_ms/confirm_p99_ms to it."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: defer writeReport + a partial marker in smoke/onsale_load_test.go. OUT: re-running the ceiling sweep to harvest TKT-125s numbers, and any change to the generatorHealthy guard itself."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Only whether a partial report can mislead a reader — closed by the partial marker (AC 2). t.Fatalf runs deferred functions, so defer is sufficient; no goroutine-exit path in onsaleFull bypasses it."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. smoke/onsale_load_test.go is untouched by anything in flight."
+    },
+    "approach": {
+      "state": "met",
+      "note": "defer writeReport(t, report) at the top of onsaleFull (currently the last statement, :519) + report.partial set true unless the run reaches the end."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One function, one defer, one field. Whole ticket is the slice."
+    },
+    "success": {
+      "state": "met",
+      "note": "AC 3 resolved to mechanism-only (see readiness comment) — an injected abort proves the completed stages survive; harvesting TKT-125s numbers is a separate run, not this diff."
+    },
+    "context_memo": {
+      "state": "deferred",
+      "note": "No ADR governs the smoke load harness reporting format — checked all of docs/adr/ at HEAD. ADR-030 is the catalog coverage gate, not this. Recorded as a finding, not an omission."
+    }
+  },
+  "context": {
+    "binding": [],
+    "governingAdrs": [],
+    "reference": [
+      {
+        "summary": "the report writer, last statement of onsaleFull",
+        "link": "smoke/onsale_load_test.go:519"
+      },
+      {
+        "summary": "the run that lost its numbers to this",
+        "link": "docs/evidence/TKT-125/README.md"
+      }
+    ],
+    "capturedAt": "2026-07-28"
+  },
   "links": [],
   "comments": [
     {
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFrom TKT-125's measurement. The one-line fix was deliberately **not** taken in TKT-125 because that ticket's plan explicitly recorded that `smoke/onsale_load_test.go` would not be modified — filing rather than widening scope. See `docs/evidence/TKT-125/README.md` § Known gap."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### DoR — 8/8 (1 deferred). Shaped 2026-07-28.\n\n**Decision taken at shaping (owner call, delegated):** AC 3 is **mechanism-only**. The ticket\ndelivers \"a partial report survives an aborted sweep\"; it does **not** require re-running the\nceiling sweep to actually record TKT-125's `finalize_p99_ms` / `confirm_p99_ms`. Reason: on a\nsingle-host setup `sweep-600` trips the generator guard every time (3/3 runs), so binding this\ndiff to a green full run binds it to a host it cannot have. Rewrite AC 3 as: *an `onsaleFull`\nrun aborted at `sweep-600` writes a report containing the `nfr-3000pm` stage's\n`finalize_p99_ms` and `confirm_p99_ms`* — provable by an injected abort in seconds.\n\n`context_memo` is `deferred`, not skipped: no ADR governs the load harness's reporting. Checked\ndocs/adr/ at HEAD; the nearest candidate (ADR-030) is the catalog coverage gate.\n\n**Verdict: READY.** `risk:low` stands — one `defer`, one bool, no source outside `smoke/`.\n"
     }
   ]
 }
