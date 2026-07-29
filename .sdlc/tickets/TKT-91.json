@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFrom TKT-79 ai-review (gpt-5.6-sol, finding 1, triaged incidental/pre-existing): the ADR-023 staff-sale seam (operational convert AND group draw-down) repairs a crash between the inventory commit and the commerce reservation insert by replaying the same request, reconstructing the inventory fingerprint from *live catalog data*. Today ticket-type price/slot are create-only, so reconstruction is stable and the repair always works. If catalog pricing ever becomes mutable (TKT-5/TKT-17 territory), an intervening price change makes the replay fingerprint mismatch (409) and strands a committed carve with no commerce reservation. Options sketched by the reviewer: persist the catalog snapshot/intent before calling inventory, or add an inventory replay-by-key lookup that does not require reconstructed inputs. Gate this ticket on (or fold it into) whichever pricing ticket introduces mutability. Not shaped; DoR pending."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — NOT promoted (backlog drain, HEAD `ac2952b`)\n\n**Held — blocking precondition still does not exist.** The ticket's own trigger is catalog price mutability. Verified at HEAD: price is a create-only field on `ticket_types` (`services/catalog/internal/store/migrations/0001_catalog_schema.sql:46-56`), there is no pricing engine, and commerce reconstructs the fingerprint from live catalog data that cannot change. The replay is stable, so there is nothing to harden yet. Wire this as `blocks`-linked to TKT-5 and pull it in with that epic."
     }
   ],
   "description": "Harden the shared commerce staff-sale seam against mutable catalog inputs during crash repair. Pre-existing behavior shipped with TKT-77 (ADR-023); TKT-79 clones it. Blocking precondition in the wild: catalog price mutability, which does not exist yet."
