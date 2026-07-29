@@ -1,7 +1,7 @@
 {
   "key": "TKT-121",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "summary": "inventory main: clean shutdown may exit with a non-nil consumer error (same select race as TKT-98)",
   "description": "Deferred from TKT-98 (plan-review decision D2). `services/inventory/cmd/inventory/main.go:201-210` has the identical racing shutdown select that TKT-98 fixes in access: `consumerErr` (fed by `cons.Run(ctx)`, whose tail returns a `context.Canceled`-wrapped error) races `<-ctx.Done()`, so ~50% of clean SIGTERM shutdowns exit non-zero reporting the consumer's cancellation instead of the clean `srv.Shutdown` result.\n\nSame defect, same cost profile as TKT-98: cosmetic under Compose (exit code ignored on stop), misleading to any orchestrator that reads a non-zero exit as a crash.\n\nFix: apply the pattern TKT-98 ships in `services/access/cmd/access/main.go` -- an `awaitShutdown` helper that classifies a consumer error as shutdown-caused (`ctx.Err() != nil && errors.Is(err, context.Canceled)`) and falls through to the graceful-shutdown block, plus a non-blocking drain of `consumerErr` in the signal branch so both ready branches reach the same answer. Copy the test shape too (`services/access/cmd/access/shutdown_test.go`): pre-fill both channels, loop ~200 iterations, assert one answer.\n\nExplicitly NOT a shared-package extraction. TKT-98 D2: one 3-line predicate used twice does not justify a `shared/` abstraction; revisit only if a third service adopts the same lifecycle contract. Inventory carries its own copy.\n\nNote: inventory has a single `consumerErr` producer (access has two), so the buffered-1 two-producer wrinkle TKT-98 left alone (D1) does not apply here.",
   "labels": [],
