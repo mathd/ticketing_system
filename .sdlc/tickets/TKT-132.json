@@ -3,7 +3,7 @@
   "type": "Task",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "claude-opus-5",
   "pr": null,
