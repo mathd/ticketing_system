@@ -1,7 +1,7 @@
 {
   "key": "TKT-132",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -9,8 +9,9 @@
   "pr": {
     "number": 123,
     "url": "https://github.com/mathd/ticketing_system/pull/123",
-    "state": "open",
-    "branch": "TKT-132-psp-recovery-refund-race"
+    "state": "merged",
+    "branch": "TKT-132-psp-recovery-refund-race",
+    "mergeCommit": "406fe45"
   },
   "summary": "Flaky: TestRecoveryRefundsCapturedMoneyWithGoneClaim races the recovery sweep and lands terminal-completed",
   "description": "### Finding (TKT-125 post-merge gate, 2026-07-27)\n\n`smoke/psp_recovery_test.go` `TestRecoveryRefundsCapturedMoneyWithGoneClaim` fails intermittently — **5 passes at ~2.0s, 2 failures at ~46s across 7 observed runs**, with nothing in between.\n\nThe bimodality is the tell: it is a **stuck** condition, not a slow one. The failure message is\n\n```\ncondition not met within 45s: order status = \"completed\", want refunded\n```\n\n`completed`, not `confirmation_pending` — so the recovery runner **successfully confirmed** the order rather than hitting `ErrClaimGone`. Once the order is `completed` it is terminal, so the 45s retry can never converge; the remaining wait is pure dead time.\n\n### The race\n\nThe test stages its order with `updated_at = now() - interval '10 minutes'`, making it **immediately** eligible for the recovery sweep, and only *afterwards* calls `expireInventoryHold`, which is a bare `UPDATE claims SET expires_at = now()-interval '1 second'` (`smoke/checkout_test.go:114`) that returns as soon as the statement commits. Nothing sequences the two. If the runner picks the order up in that window it confirms against a still-live hold, and the scenario the test means to exercise (confirm → ErrClaimGone → refund) never happens.\n\n### Not caused by TKT-125\n\nThe file is untouched by that diff and predates it (authored in `5c1af4d`, TKT-115 S3). Both configurations of TKT-125's knob produced both outcomes. Raised as an **incidental** finding under the triage rules — real, out of scope, ticketed rather than fixed in that PR.\n\n### Suggested fix\n\nExpire the hold **before** the order row becomes sweep-eligible — either stage the order at its real age and age it after expiring the hold, or expire the hold first and assert the claim is observably gone before inserting the aged row.\n\n### Acceptance Criteria\n\n- [ ] The test stages its preconditions in an order the sweep cannot interleave\n- [ ] A wrong-terminal-state outcome fails fast with a diagnostic instead of burning the full 45s\n- [ ] 20 consecutive smoke runs green\n",
