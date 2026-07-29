@@ -3,7 +3,7 @@ module ticketing/shared
 go 1.26.5
 
 require (
-	github.com/getkin/kin-openapi v0.142.0
+	github.com/getkin/kin-openapi v0.145.0
 	github.com/google/uuid v1.6.0
 	github.com/oapi-codegen/nethttp-middleware v1.1.2
 	go.opentelemetry.io/contrib/bridges/otelslog v0.19.0
