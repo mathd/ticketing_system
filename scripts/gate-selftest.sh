@@ -33,6 +33,20 @@ expect_fail() {
   git checkout -- . && git clean -fdq --exclude=node_modules --exclude=bin
 }
 
+# Positive control for a stage whose seed mutates an existing file rather than
+# adding one: a checker that always fails would satisfy its own expect_fail.
+expect_pass() {
+  local name="$1" target="$2"
+  echo "=== selftest: $name (expect: make $target passes) ==="
+  if make "$target" >/dev/null 2>&1; then
+    echo "ok: make $target passed on the clean baseline"
+  else
+    echo "FAIL: make $target FAILED on the clean baseline ($name)"
+    fail_count=$((fail_count + 1))
+  fi
+  git checkout -- . && git clean -fdq --exclude=node_modules --exclude=bin
+}
+
 # 1. Go lint violation (govet printf)
 cat > shared/go/httpx/seeded.go <<'EOF'
 package httpx
@@ -82,6 +96,20 @@ cat > web/scanner/src/seeded.ts <<'EOF'
 export const seeded: number = 'not a number'
 EOF
 expect_fail "ts build" build-ts
+
+# 7. Go dependency-declaration drift (TKT-129). access and shared/go both declare
+#    otel directly; dropping access to v1.43.0 diverges them. `go mod edit` rewrites
+#    the manifest without touching the network or the workspace build list.
+expect_pass "go dependency drift (clean baseline)" check-dep-drift
+(cd services/access && go mod edit -require=go.opentelemetry.io/otel@v1.43.0)
+expect_fail "go dependency drift" check-dep-drift
+
+# 8. An unreadable module must not be silently skipped. shared/go is FIRST in
+#    GO_MODULES, and the checker's original piped-loop form reported "none" and
+#    exited 0 whenever a non-final module failed to parse — a checker that never
+#    read a module still passing is worse than no checker.
+printf 'this is not a go.mod\n' > shared/go/go.mod
+expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
 
 if [ "$fail_count" -gt 0 ]; then
   echo "gate-selftest: $fail_count seeded error(s) were NOT caught"

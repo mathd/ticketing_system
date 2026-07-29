@@ -12,9 +12,9 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift up down clean
 
-check: deps check-generate lint test build smoke
+check: deps check-generate check-dep-drift lint test build smoke
 
 ## ---- deps (self-contained gate: clean clone needs nothing pre-installed) ----
 deps:
@@ -34,6 +34,12 @@ generate:
 check-generate: generate
 	@git diff --exit-code -- services/*/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts web/backoffice/src/lib/api-types.gen.ts \
 		|| { echo "generated code drifted from the OpenAPI spec — commit the output of 'make generate'" >&2; exit 1; }
+
+## ---- dependency declarations (TKT-129, ADR-035: one version per shared dep) ----
+# Manifest-only parse, offline, ~0.2s. `go mod tidy` is a no-op on a drifted tree,
+# so nothing else in the gate would ever notice.
+check-dep-drift:
+	@./scripts/check-go-dependency-drift.sh $(GO_MODULES)
 
 ## ---- lint ----
 lint: lint-go lint-ts

@@ -24,6 +24,17 @@ matching immutable digest or SHA. Verify the pair against the upstream project's
 or release before merging; do not copy a digest between architecture-specific and multi-platform
 manifests.
 
+## One version per shared Go dependency (TKT-129, [ADR-035](../adr/ADR-035-go-module-dependency-declarations.md))
+
+The eight Go modules ship as one deploy unit, so any dependency declared by two or more of them
+declares **one** version. `make check` enforces it (`check-dep-drift`); a dependency only one module
+imports is exempt. Realign with `go work sync` and commit the resulting `go.mod`/`go.sum` changes —
+`go mod tidy` will not do it, having been measured as a no-op on a drifted tree.
+
+Dependabot opens one PR per module directory, so a bump to a shared dependency lands in one module
+at a time and **will fail the gate** until the siblings are raised. That is the check working: add
+a `go work sync` commit to the PR.
+
 ## Go HTTP conventions (TKT-25 plan gate, 2026-07-12)
 
 - **Services route with chi** (v5+): net/http-compatible, stdlib handlers, standard middleware
