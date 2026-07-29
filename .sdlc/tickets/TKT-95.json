@@ -2,9 +2,12 @@
   "key": "TKT-95",
   "type": "Task",
   "summary": "Unify smoke HTTP helpers on contract-validating variants, then drive the 5 uncovered catalog ops through them",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning",
+    "risk:low"
+  ],
+  "assignee": "agent",
   "pr": null,
   "classification": "standard",
   "description": "Follow-up from TKT-47 retro. The smoke suite has validating helpers (postJSON, getWithHeaders, get, internalJSON) and raw ones (holdRequest, postScan) — the split means the per-operation coverage gate only sees traffic through the former, and its scope comment has to disclaim the rest. Unify on validating helpers (raw helpers keep their concurrency-safe shape but report through a chokepoint the gate can see), then delete the scope disclaimers.\n\nConditions of Success:\n- All smoke HTTP traffic to the five services flows through helpers that validate against the committed contracts\n- holdRequest/postScan callers keep their concurrency semantics (no t.Fatal from non-test goroutines)\n- The scope disclaimers in smoke/coverage_test.go shrink accordingly\n- make check passes\n\n---\n\n## Absorbed TKT-111 — the 5 smoke-uncovered catalog ops (TKT-105 surface)\n\nOrigin: TKT-109 closeout, ADR-030's named negative consequence. Driving these through smoke has\nreal-stack coverage value independent of which layer owns the gate:\n\n- `getPublicSeatMapGeometry`, `listVenueSeatMaps`, `listSeatMapVersions` — trivial GETs against the\n  seat-map fixture smoke already builds (`smoke/catalog_publication_test.go`, seat-map section)\n- `updateVenueGaCapacity` — venue GA capacity write\n- `editSeatMap` — write fixture; surfaces ADR-029 pin semantics (**read ADR-029 first**)\n\n**Not** a gate change: `smokeCoverageGatedServices` stays as pinned by\n`TestCatalogCoverageGateIsDeliberatelyUnitScoped` (ADR-030). Flipping catalog into the gate is a\nseparate ADR-030 amendment ticket — see the ADR's recorded flip-cost.\n\n## Why these are one ticket, and in this order\n\nThey compose: unifying the helpers first means the 5 new ops route through validating helpers by\nconstruction and land inside the gate's view. Done the other way round, the new smoke traffic is\nwritten against raw helpers and then rewritten. Both halves are **test-only, no runtime code** —\n`risk:low`, one PR, one gate run.\n",
@@ -28,6 +31,75 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged TKT-111 into this ticket (backlog drain, 2026-07-29)\n\nWas: *Unify smoke HTTP helpers on contract-validating variants*\n\nTKT-111 is now **Drive the 5 smoke-uncovered catalog ops (TKT-105 surface) through smoke happy-paths** — absorbed above, and moved back to Backlog marked MERGED so it cannot be claimed twice. Its own thread stays readable on the board for the full filing history and review lineage.\n\nRationale: a plan gate + ai-review + PO gate on each half costs more than the work. See the *Why these are one ticket* section in the description."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-95\n\n**Branch:** `TKT-95-unify-smoke-validating-helpers` off `origin/main` @ `ac2952b`.\n**Backend:** local tracker (`.sdlc/`), state on `sdlc-state`.\n\n**Selection reason:** the ticket was already in Ready with a re-verified Gate 1 readiness comment\n(the raw helpers and the disclaimer are still present at HEAD), and it carries the absorbed\nTKT-111 half. Zero open blockers — its two links are `found-in TKT-47` and `absorbs TKT-111`,\nneither of which blocks.\n\n### ⚠ Human gates waived for this run — process experiment\n\nThe repo owner has **deliberately waived all four human gates** for this ticket and asked for a\nsingle continuous Ready → Done run in fully autonomous mode. Recording it here so the board\nhistory shows this ticket ran **gateless**:\n\n| Gate | Normally | This run |\n|---|---|---|\n| 1 — priority | human moves Backlog → Ready | already given (ticket was in Ready) |\n| 2 — plan approval | human moves Planning → Building | **waived** — agent resolves open decisions after the cross-model critique (prefer the critique's recommendation; else the most reversible option) and records each in `kind=plan-final` |\n| 3 — review + merge | human reviews the PR and squash-merges | **waived** — agent squash-merges and deletes the branch after the ai-review converges; the review-guide is still posted first, as the audit record |\n| 4 — PO acceptance | PO validates COS and moves to Done | **waived** — agent self-validates each COS against test evidence on the merged code |\n\nEverything else in the skill applies unchanged: `config.models` routing with no substitutions,\ncross-model review for both plan and code, TDD with tests observed red first, `make check` green\nbefore every push and after the merge, all marker comments at every stage, no AI attribution in\ncommits or PRs. The owner listed five stop-and-report conditions (gate/CI failing twice on the\nsame cause, unanticipated auth/money/migration/CI scope, a blocking finding surviving the churn\ncap, an unreachable configured model, an ambiguous destructive action); none apply so far.\n\n**`risk:low` claimed and justified** (per the invariant that the label is challengeable): both\nhalves are **test-only** — `smoke/` and nothing else. No runtime code, no auth, no money path, no\nmigration, no CI/deploy config. It touches ~6 files, over the >5-file trigger, but every one of\nthem is a `//go:build smoke` test file, so the risk the trigger exists to catch (blast radius into\nshipped code) is structurally absent. If implementation turns out to need a change under\n`services/` or `shared/`, the label comes off and this run stops for the owner.\nNote the label changes nothing about the flow here anyway — the waiver already covers Gate 2, and\nthe full plan draft + cross-model critique runs regardless.\n\n### DoR baked at claim time\nAll 8 items `met` (the Gate 1 comment deferred the bake to claim time, per the owner's\ndrain-the-debt call). The context-mémo is on the ticket; its `governingAdrs` were re-resolved\nagainst `docs/adr/` at HEAD rather than reused from a shaping-time snapshot — **ADR-028**\n(why smoke validates at all), **ADR-030** (catalog is deliberately outside the smoke coverage\ngate — this ticket adds catalog traffic but must not touch `smokeCoverageGatedServices`), and\n**ADR-029** (`editSeatMap` = new published version, orphaning edits hard-rejected). All three\nresolve to real files at HEAD."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Smoke HTTP traffic splits between contract-validating helpers and raw ones; the per-operation coverage gate only sees the former, so its scope comment carries a disclaimer. Unify on validation, then use the unified surface to drive the 5 smoke-uncovered catalog ops."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: smoke/ test helpers + the 5 catalog ops (getPublicSeatMapGeometry, listVenueSeatMaps, listSeatMapVersions, updateVenueGaCapacity, editSeatMap) + the coverage_test.go disclaimer. OUT: any runtime/service code; any change to smokeCoverageGatedServices (ADR-030 pin stays)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The one real unknown is how to validate from a non-test goroutine: validateServiceResponse takes *testing.T and t.Fatalf's, which is illegal off the test goroutine. Resolved by design at Planning (error-returning chokepoint + collected violations), not by a spike."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. links: found-in TKT-47 (origin), absorbs TKT-111 (merged, parked in Backlog as MERGED)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Refactor validateServiceResponse/validateDirectServiceResponse into an error-returning core; keep the *testing.T wrappers for the sequential callers; give holdRequest/postScan a goroutine-safe path that records coverage and accumulates violations for the test body to assert. Then add the 5 catalog ops onto the existing seat-map + venue fixtures."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice: test-only, one PR, one gate run (see the description's 'Why these are one ticket, and in this order')."
+    },
+    "success": {
+      "state": "met",
+      "note": "4 COS in the description + the absorbed TKT-111 half: the 5 named catalog ops driven through validating helpers."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below at claim time (governingAdrs re-resolved against docs/adr/ at HEAD ac2952b)."
+    }
+  },
+  "context": {
+    "area": "smoke/ end-to-end suite (Go, build tag `smoke`), package smoke_test",
+    "governingAdrs": [
+      {
+        "adr": "ADR-028-response-drift-fail-closed.md",
+        "constrains": "Why the smoke suite contract-validates at all: responses fail closed on schema drift in the running services. The smoke chokepoints are the test-side mirror of that decision — widening validation coverage is the point of this ticket, so no helper may be made 'validating' by weakening what a violation does (it must still fail the test)."
+      },
+      {
+        "adr": "ADR-030-catalog-coverage-gate-scope.md",
+        "constrains": "Catalog is deliberately OUT of the smoke coverage gate; its per-operation gate lives in services/catalog/internal/api. `smokeCoverageGatedServices` = [inventory commerce payments access] is pinned exactly and ordered by TestCatalogCoverageGateIsDeliberatelyUnitScoped (smoke/coverage_test.go:44). This ticket adds catalog smoke traffic but MUST NOT add catalog to the gate — that is a separate ADR-030 amendment ticket."
+      },
+      {
+        "adr": "ADR-029-seat-identity-pinning-contract.md",
+        "constrains": "editSeatMap produces a NEW published version, the old one stays immutable; an edit that would orphan a pinned seat identity is hard-rejected, and the edit-vs-sale race is closed by a family-scoped advisory lock. The smoke happy-path for editSeatMap must exercise a non-orphaning edit on a fixture with no conflicting pins, and must not assert tamper-evidence (honest-writer consistency only)."
+      }
+    ],
+    "keyFiles": {
+      "smoke/contract_validation_test.go": "validateServiceResponse (gateway paths, :50) and validateDirectServiceResponse (direct service URLs, :94) — both *testing.T-bound, both call recordSmokeCoverage then openapi3filter.ValidateResponse and t.Fatalf on violation.",
+      "smoke/coverage_test.go": "the coverage map + recordSmokeCoverage (:65), the scope disclaimer comment (:16-21), the ADR-030 pin test (:44), uncovered2xxOps + TestMain enforcement (:119).",
+      "smoke/catalog_publication_test.go": "postJSON (:32), getWithHeaders (:48), created (:60), postSeatHold (:660); TestSeatedPublicationCoexistsWithGA (:407) builds the venue + seat-map + section/row/seat + published-map fixture the 5 new catalog ops attach to.",
+      "smoke/smoke_test.go": "get (:60) + retry (:47).",
+      "smoke/operational_holds_test.go": "internalJSON (:30) + directService (url -> contract name).",
+      "smoke/inventory_contention_test.go": "holdRequest (:19) — RAW; called from goroutines at :67, :144, :266 and sequentially at :56, :79, :83, :247, :317.",
+      "smoke/checkout_test.go": "postScan (:95) — RAW; all 4 callers (:194, :205, :218, :244) are sequential, and it returns an error rather than t.Fatal-ing."
+    },
+    "rawHelperCallSites": "holdRequest: inventory_contention_test.go x8, group_reservations_test.go x3 (:115, :157, :256 — :256 in a goroutine), inventory_offering_state_test.go x4, operational_holds_test.go x2 (:139 in a goroutine). postScan: checkout_test.go x4, all sequential.",
+    "theHardPart": "validateServiceResponse/validateDirectServiceResponse take *testing.T and t.Fatalf. t.Fatalf from a non-test goroutine is illegal (runtime.Goexit on the wrong goroutine); that is exactly why holdRequest is raw. Any unification must give the concurrent callers a path that records coverage + detects violations WITHOUT calling t.Fatalf/t.Fatal off the test goroutine.",
+    "notInScope": "No runtime/service code. No change to smokeCoverageGatedServices or to coverageAllowlist. No new e2e harness.",
+    "gate": "make check (mirrors CI). The smoke suite runs under scripts/smoke.sh with SMOKE_INTERNAL_TOKEN generated per invocation."
+  }
 }
