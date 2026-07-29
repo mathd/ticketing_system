@@ -1,7 +1,7 @@
 {
   "key": "TKT-118",
   "type": "Task",
-  "status": "Ready",
+  "status": "Backlog",
   "labels": [
     "risk:low"
   ],
@@ -12,8 +12,19 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `scripts/smoke.sh:165-166,179` still hard-codes the key ids and secrets with no compile-time link to the Go constants.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged into TKT-117 — do not claim\n\nThis ticket's scope now lives in **TKT-117** (Journal keyring operability: startup key fingerprint + link the smoke key literals to their Go constants), which carries it verbatim under an *Absorbed TKT-118* section. Moved out of Ready so it cannot be picked up in parallel. Nothing was dropped — reopen this only if the merge is reversed at plan time."
     }
   ],
-  "summary": "Link the smoke journal key literals to their Go constants (TKT-56/S4 ai-review)",
-  "description": "Incidental finding from TKT-56 Slice 4's adversarial review (fable-5).\n\nscripts/smoke.sh hard-codes the v1/v2 journal key ids and secrets (and the base64 of the v1 secret) for the packaged-binary verify-journal checks; journal_smoke_test.go declares the same values as smokeKIDv1/smokeKIDv2/smokeKeyv1/smokeKeyv2. There is no compile-time link between them.\n\nCosmetic today: drift fails LOUDLY (the positive packaged check fails, or the fixture guard trips), so this is maintainability, not correctness — which is exactly why it was not fixed inside the TKT-56 diff. Options: have the Go test emit the values to a file smoke.sh sources, or a tiny subcommand that prints them."
+  "summary": "[MERGED into TKT-117] Link the smoke journal key literals to their Go constants (TKT-56/S4 ai-review)",
+  "description": "Incidental finding from TKT-56 Slice 4's adversarial review (fable-5).\n\nscripts/smoke.sh hard-codes the v1/v2 journal key ids and secrets (and the base64 of the v1 secret) for the packaged-binary verify-journal checks; journal_smoke_test.go declares the same values as smokeKIDv1/smokeKIDv2/smokeKeyv1/smokeKeyv2. There is no compile-time link between them.\n\nCosmetic today: drift fails LOUDLY (the positive packaged check fails, or the fixture guard trips), so this is maintainability, not correctness — which is exactly why it was not fixed inside the TKT-56 diff. Options: have the Go test emit the values to a file smoke.sh sources, or a tiny subcommand that prints them.",
+  "links": [
+    {
+      "type": "absorbed-by",
+      "key": "TKT-117"
+    }
+  ]
 }
