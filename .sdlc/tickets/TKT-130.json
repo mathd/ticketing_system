@@ -4,7 +4,7 @@
   "status": "Planning",
   "labels": [
     "risk:low",
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent",
   "pr": null,
