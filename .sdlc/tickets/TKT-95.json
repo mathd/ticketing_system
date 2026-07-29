@@ -1,17 +1,21 @@
 {
   "key": "TKT-95",
   "type": "Task",
-  "summary": "Unify smoke HTTP helpers on contract-validating variants",
+  "summary": "Unify smoke HTTP helpers on contract-validating variants, then drive the 5 uncovered catalog ops through them",
   "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
   "classification": "standard",
-  "description": "Follow-up from TKT-47 retro. The smoke suite has validating helpers (postJSON, getWithHeaders, get, internalJSON) and raw ones (holdRequest, postScan) — the split means the per-operation coverage gate only sees traffic through the former, and its scope comment has to disclaim the rest. Unify on validating helpers (raw helpers keep their concurrency-safe shape but report through a chokepoint the gate can see), then delete the scope disclaimers.\n\nConditions of Success:\n- All smoke HTTP traffic to the five services flows through helpers that validate against the committed contracts\n- holdRequest/postScan callers keep their concurrency semantics (no t.Fatal from non-test goroutines)\n- The scope disclaimers in smoke/coverage_test.go shrink accordingly\n- make check passes",
+  "description": "Follow-up from TKT-47 retro. The smoke suite has validating helpers (postJSON, getWithHeaders, get, internalJSON) and raw ones (holdRequest, postScan) — the split means the per-operation coverage gate only sees traffic through the former, and its scope comment has to disclaim the rest. Unify on validating helpers (raw helpers keep their concurrency-safe shape but report through a chokepoint the gate can see), then delete the scope disclaimers.\n\nConditions of Success:\n- All smoke HTTP traffic to the five services flows through helpers that validate against the committed contracts\n- holdRequest/postScan callers keep their concurrency semantics (no t.Fatal from non-test goroutines)\n- The scope disclaimers in smoke/coverage_test.go shrink accordingly\n- make check passes\n\n---\n\n## Absorbed TKT-111 — the 5 smoke-uncovered catalog ops (TKT-105 surface)\n\nOrigin: TKT-109 closeout, ADR-030's named negative consequence. Driving these through smoke has\nreal-stack coverage value independent of which layer owns the gate:\n\n- `getPublicSeatMapGeometry`, `listVenueSeatMaps`, `listSeatMapVersions` — trivial GETs against the\n  seat-map fixture smoke already builds (`smoke/catalog_publication_test.go`, seat-map section)\n- `updateVenueGaCapacity` — venue GA capacity write\n- `editSeatMap` — write fixture; surfaces ADR-029 pin semantics (**read ADR-029 first**)\n\n**Not** a gate change: `smokeCoverageGatedServices` stays as pinned by\n`TestCatalogCoverageGateIsDeliberatelyUnitScoped` (ADR-030). Flipping catalog into the gate is a\nseparate ADR-030 amendment ticket — see the ADR's recorded flip-cost.\n\n## Why these are one ticket, and in this order\n\nThey compose: unifying the helpers first means the 5 new ops route through validating helpers by\nconstruction and land inside the gate's view. Done the other way round, the new smoke traffic is\nwritten against raw helpers and then rewritten. Both halves are **test-only, no runtime code** —\n`risk:low`, one PR, one gate run.\n",
   "links": [
     {
       "type": "found-in",
       "key": "TKT-47"
+    },
+    {
+      "type": "absorbs",
+      "key": "TKT-111"
     }
   ],
   "comments": [
@@ -19,6 +23,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `smoke/inventory_contention_test.go:19` (`holdRequest`) and `smoke/checkout_test.go:95` (`postScan`) are still raw, and the disclaimer is still there at `smoke/coverage_test.go:17` (\"like holdRequest/postScan are invisible to the gate\"). Unchanged since filing.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged TKT-111 into this ticket (backlog drain, 2026-07-29)\n\nWas: *Unify smoke HTTP helpers on contract-validating variants*\n\nTKT-111 is now **Drive the 5 smoke-uncovered catalog ops (TKT-105 surface) through smoke happy-paths** — absorbed above, and moved back to Backlog marked MERGED so it cannot be claimed twice. Its own thread stays readable on the board for the full filing history and review lineage.\n\nRationale: a plan gate + ai-review + PO gate on each half costs more than the work. See the *Why these are one ticket* section in the description."
     }
   ]
 }
