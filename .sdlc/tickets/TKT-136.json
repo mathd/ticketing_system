@@ -1,16 +1,16 @@
 {
   "key": "TKT-136",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "risk:low",
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 124,
     "url": "https://github.com/mathd/ticketing_system/pull/124",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "simple",
   "summary": "ADR-033 cites docs/reviews/2026-07-25-architecture.md, which does not exist (TKT-128 incidental)",
