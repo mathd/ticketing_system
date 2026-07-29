@@ -15,6 +15,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSplit from TKT-125 at plan time with a stated justification (draft §4, accepted at plan-review). Not shaped: no DoR, no context-mémo bake — do both before this is Gate-1 eligible."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — NOT promoted (backlog drain, HEAD `ac2952b`)\n\n**Held — no trigger exists.** The ticket says it plainly: \"No streaming or hijacking route exists in the repo today. This is a placeholder for when one is proposed.\" Verified still true. Moving it to Ready would queue a decision about a route that nobody has asked for. Leave it as the tripwire it is."
     }
   ]
 }
