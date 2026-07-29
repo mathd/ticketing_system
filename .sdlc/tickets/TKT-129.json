@@ -1,7 +1,7 @@
 {
   "key": "TKT-129",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -9,7 +9,7 @@
   "pr": {
     "number": 119,
     "url": "https://github.com/mathd/ticketing_system/pull/119",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "standard",
   "summary": "Eight Go modules for one deploy unit, with visible dependency drift — collapse or gate on it",
