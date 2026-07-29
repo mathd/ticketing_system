@@ -5,8 +5,8 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "summary": "waitConsume's termination diagnostic can't distinguish durable deletion from any other subscription failure (TKT-99 ai-review R4)",
-  "description": "TKT-99's broker-level test asserts the exact waitConsume diagnostic, but that message covers every async termination (\"durable deleted or subscription terminated\"). The test therefore proves deletion happened and that something terminated the consume context — not that the first caused the second. jetstream distinguishes them (ErrConsumerDeleted, pull.go:722); access does not surface it. Fix is a production diagnostic/readiness-surface change, so it was split out of the test-only ticket.",
+  "summary": "Shared durable-consumer contract checks: distinguish durable deletion, validate envelope type against subject",
+  "description": "TKT-99's broker-level test asserts the exact waitConsume diagnostic, but that message covers every async termination (\"durable deleted or subscription terminated\"). The test therefore proves deletion happened and that something terminated the consume context — not that the first caused the second. jetstream distinguishes them (ErrConsumerDeleted, pull.go:722); access does not surface it. Fix is a production diagnostic/readiness-surface change, so it was split out of the test-only ticket.\n\n---\n\n## Absorbed TKT-133 — inventory never validates the envelope `type` against the subject\n\nInventory's catalog consumer dispatches purely on the NATS subject\n(`knownSchemas[msg.Subject()]`, `services/inventory/internal/consumer/consumer.go:201`) and ignores\n`type` entirely. Access checks it in both consumers (`consumer.go:360`, `policy.go:96`).\nPre-existing at `origin/main`; TKT-126 preserved the behaviour deliberately and recorded the\nasymmetry in ADR-033 rather than silently fixing it.\n\nADR-009 §5 makes `type == subject` part of the envelope contract, so inventory currently accepts\nenvelopes that violate it. And TKT-126 introduced an inconsistency, deliberately and with a test\n(`TestDecodeEnvelopeRejectsNonStringType`): a **non-string** `type` fails the shared decode and\nterminates, while a **wrong-string** `type` is accepted — disposition depends on the JSON\nrepresentation of the same contract violation.\n\nSub-scope:\n- [ ] Inventory validates `env.Type` against `msg.Subject()` before schema dispatch, **or** the\n      decision not to is recorded with a reason (the broker, not the payload, may be the deliberate\n      routing authority)\n- [ ] Missing / mismatched / non-string `type` reach the **same** disposition class, not three\n- [ ] Consumer-level tests pin the chosen behaviour for all three shapes, at a known and a future\n      schema, asserting the exact action sequence and the readiness outcome\n- [ ] ADR-033's \"what deliberately does not live here\" section and the `domainevent` package doc match\n\n## Why these are one ticket\n\nBoth belong to `shared/go/durableconsumer` — TKT-133's own text says the `id`/`type` checks belong in\nthe skeleton, and TKT-127 (which built it) is now **Done**, so this is where they land. TKT-123's\ndiagnostic moved there too when TKT-127 lifted `waitConsume`\n(`shared/go/durableconsumer/wait.go:83`), which means fixing it once now covers access *and*\ninventory instead of only access as originally scoped.\n\nBoth halves are the same question asked at two layers: **what does this consumer actually verify\nbefore it acts, and can it tell you which thing went wrong?** One plan gate.\n",
   "comments": [
     {
       "stage": "backlog",
@@ -17,6 +17,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real, path moved.** The undifferentiated diagnostic now lives in `shared/go/durableconsumer/wait.go:83` (lifted by TKT-127), not in access. No `ErrConsumerDeleted` reference anywhere in `services/`. Fixing it in the shared package now covers access and inventory at once — scope grew in the ticket's favour.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged TKT-133 into this ticket (backlog drain, 2026-07-29)\n\nWas: *waitConsume's termination diagnostic can't distinguish durable deletion from any other subscription failure (TKT-99 ai-review R4)*\n\nTKT-133 is now **Inventory never validates the envelope `type` against the subject (TKT-126 ai-review)** — absorbed above, and moved back to Backlog marked MERGED so it cannot be claimed twice. Its own thread stays readable on the board for the full filing history and review lineage.\n\nRationale: a plan gate + ai-review + PO gate on each half costs more than the work. See the *Why these are one ticket* section in the description."
     }
   ],
   "context": {
@@ -31,5 +36,11 @@
       }
     ],
     "capturedAt": "2026-07-25"
-  }
+  },
+  "links": [
+    {
+      "type": "absorbs",
+      "key": "TKT-133"
+    }
+  ]
 }
