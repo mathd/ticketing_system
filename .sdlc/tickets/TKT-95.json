@@ -2,7 +2,7 @@
   "key": "TKT-95",
   "type": "Task",
   "summary": "Unify smoke HTTP helpers on contract-validating variants",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -14,5 +14,11 @@
       "key": "TKT-47"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `smoke/inventory_contention_test.go:19` (`holdRequest`) and `smoke/checkout_test.go:95` (`postScan`) are still raw, and the disclaimer is still there at `smoke/coverage_test.go:17` (\"like holdRequest/postScan are invisible to the gate\"). Unchanged since filing.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    }
+  ]
 }
