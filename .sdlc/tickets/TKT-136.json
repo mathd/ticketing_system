@@ -1,11 +1,12 @@
 {
   "key": "TKT-136",
   "type": "Task",
-  "status": "Ready",
+  "status": "Planning",
   "labels": [
-    "risk:low"
+    "risk:low",
+    "agent:planning"
   ],
-  "assignee": null,
+  "assignee": "agent",
   "pr": null,
   "classification": "simple",
   "summary": "ADR-033 cites docs/reviews/2026-07-25-architecture.md, which does not exist (TKT-128 incidental)",
@@ -25,6 +26,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### DoR — 8/8. Shaped 2026-07-28.\n\n**Decision taken at shaping (owner call, delegated): option 1 — re-point the citation at\nTKT-126.** The ticket's own recommendation, and ADR-004 already sets the precedent after\nTKT-128. Option 2 (reconstructing `docs/reviews/2026-07-25-architecture.md`) is only worth it if\nthe review has standing value beyond the tickets it spawned — it does not; R1–Rn all live on the\nboard with fuller context than the review had.\n\nThis mattered because the ticket is **`risk:low`**, which skips Gate 2 — an undecided approach\non a gate-skipping ticket gets decided unilaterally by the coding agent, with no human ever\nseeing the choice. Decided here instead, so `risk:low` stays honest.\n\nVerified at HEAD: `grep -rn \"docs/reviews\" docs/` returns exactly one hit, ADR-033:237.\n\n**Verdict: READY.**\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — branch `TKT-136-adr-033-dead-citation` off `origin/main` @ 8789b1c\n\n**Selection reason:** the owner named this ticket for a fully autonomous end-to-end run. It is the\nright shape for one: docs-only, `risk:low`, one AC that a grep decides, and the single design\ndecision (option 1 vs option 2) was already taken at shaping — so an autonomous run makes no\nproduct choice a human hasn't already made.\n\n**Blockers:** none. Both links are `relates` (TKT-126, TKT-128); no `blocks` edge exists.\n\n**Finding re-verified at claim time**, not trusted from the ticket: `grep -rn \"docs/reviews\" docs/`\nat `origin/main` (8789b1c) returns exactly one hit —\n`docs/adr/ADR-033-shared-domain-event-envelope.md:237`. `docs/reviews/` is not a directory in the\nrepo. The ticket was shaped against a stale local checkout of `main`; ADR-033 itself only landed in\n8789b1c, so the citation and the ADR arrived together.\n\n---\n\n### ⚠️ Gate waiver — this ticket ran gateless, by explicit owner instruction\n\nThe repo owner waived **all four human gates** for this run as a deliberate process experiment, and\nasked that the waiver be recorded here so the board history shows it. Recorded verbatim in effect:\n\n| Gate | Normally | This run |\n|---|---|---|\n| 1 — priority | human moves Backlog → Ready | already satisfied; the ticket was in `Ready` at claim |\n| 2 — plan approval | human moves Planning → Building | **waived** — also already skipped by `risk:low`. Open decisions resolved by the agent: prefer the plan-critique's recommendation, else the most reversible option. Every self-made decision is recorded in `kind=plan-final`. |\n| 3 — review + merge | human reviews the PR and squash-merges | **waived** — the agent squash-merges after the adversarial ai-review converges (same triage, second-pass and churn-cap rules). The review-guide is still posted on the PR first, as the audit record. |\n| 4 — PO acceptance | PO validates COS and moves to Done | **waived** — the agent self-validates each COS against test evidence on the merged code, posts the validation note, and closes with the full metrics comment. |\n\n**Unchanged and non-negotiable for this run:** `config.models` routing with no substitutions\n(plan → `gpt-5.6-sol`, planReview → main-agent, implement → main-agent, aiReview → `gpt-5.6-sol`);\ncross-model review for both the plan and the code; TDD with tests observed red first; `make check`\ngreen before every push and again after the merge; every marker comment posted at its stage; no AI\nattribution in any commit or PR.\n\n**Standing stop conditions** (agent halts and reports instead of proceeding): the gate or CI fails\ntwice on the same cause with no clear fix; the work would touch auth, money paths, data migrations\nor CI/deploy config in a way the plan did not anticipate; a blocking review finding survives the\nchurn cap; a configured model is unreachable after the escalation ladder; or a destructive,\nhard-to-reverse action with an ambiguous right answer.\n\n**What the waiver does not change:** the risk that gates exist to catch. `risk:low` is\nchallengeable — if this stops being a docs-only one-line diff, the label comes off and the run\nstops for a human.\n\n→ `Ready` → `Planning`, label `agent:planning`.\n"
     }
   ],
   "readiness": {
