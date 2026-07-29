@@ -326,6 +326,22 @@ type Report struct {
 	CeilingHighestStable  float64       `json:"ceiling_highest_stable_per_s"`
 	CeilingFirstUnstable  float64       `json:"ceiling_first_unstable_per_s"`
 	CeilingLowerBoundOnly bool          `json:"ceiling_lower_bound_only"`
+	// Partial marks a run that did not reach the end of its profile (TKT-130).
+	//
+	// Two limits, stated because both are easy to misread:
+	//
+	// It records reach, not correctness. A run whose t.Errorf SLO assertion
+	// failed still finishes, and is complete evidence of a failure.
+	//
+	// It cannot identify a report written before this field existed. No
+	// omitempty, so a complete run serializes "partial": false and a legacy
+	// report has no key at all — but that difference survives only for a reader
+	// inspecting the raw JSON. Decoded into this struct both arrive as false,
+	// because a bool has no absent state. docs/evidence/TKT-82/full-profile.json
+	// is exactly such a report. A typed reader that must not mistake legacy
+	// evidence for a verified-complete run has to check the key's presence
+	// itself; this field will not do it.
+	Partial bool `json:"partial"`
 }
 
 // MaxConnsPerHost bounds the shared transport (TKT-92): without it a 3,000/s

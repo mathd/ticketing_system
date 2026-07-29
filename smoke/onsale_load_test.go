@@ -262,6 +262,28 @@ func writeReport(t *testing.T, r *loadtest.Report) {
 	t.Logf("report written to %s", path)
 }
 
+// beginReport arms the report writer up front and returns the func that marks
+// the run complete. Call it once, right after NewReport; call the returned func
+// as the profile's last statement.
+//
+// TKT-130: writeReport used to be the profile's own last statement, so a single
+// aborted stage discarded every stage that had completed before it — every
+// generatorHealthy check is a t.Fatalf, and TKT-125 lost its finalize/confirm
+// p99 to exactly that (the sweep-600 stage trips the generator guard every time
+// on a single-host setup, minutes after the stage the run actually needed had
+// completed 9,000/9,000 clean).
+//
+// The report is marked partial up front and cleared only on the normal path, so
+// any exit that is not the end of the profile leaves it partial without anyone
+// having to enumerate the exits. t.Cleanup rather than defer because the writer
+// has to outlive the profile function, and it runs after a t.Fatalf for the
+// same reason a defer does: FailNow is runtime.Goexit on the test goroutine.
+func beginReport(t *testing.T, r *loadtest.Report) (complete func()) {
+	r.Partial = true
+	t.Cleanup(func() { writeReport(t, r) })
+	return func() { r.Partial = false }
+}
+
 func gitSHA() string {
 	b, err := os.ReadFile(filepath.Join("..", ".git", "HEAD"))
 	if err != nil {
@@ -291,13 +313,18 @@ func TestOnsaleLoadProof(t *testing.T) {
 func onsaleGate(t *testing.T) {
 	const capacity = 500
 	runID := uuid.NewString()[:8]
+	// Armed before any fallible setup: publishedSlot, the admin connection and
+	// statStatementsSetup can all t.Fatalf, and a run that dies there must still
+	// overwrite the configured path. Otherwise a previous run's file survives
+	// and reads as this run's output.
+	report := loadtest.NewReport("TKT-82", "gate", gitSHA())
+	complete := beginReport(t, report)
+	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
+
 	slot, _ := publishedSlot(t, "Onsale Load Hall "+runID, capacity)
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
 	attempt := checkoutAttempt(runID, slot, 1)
-
-	report := loadtest.NewReport("TKT-82", "gate", gitSHA())
-	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 	loadStart := time.Now()
 
 	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 5, Duration: 2 * time.Second, Quantity: 1}, 64, attempt)
@@ -388,7 +415,7 @@ func onsaleGate(t *testing.T) {
 	}
 	t.Logf("claim_history INSERT: %.3fms/mutation mean (min %.3f max %.3f stddev %.3f), %d calls, %.1fms total — pg_stat_statements over the measured window",
 		stats.MeanMs, stats.MinMs, stats.MaxMs, stats.StddevMs, stats.Calls, stats.TotalMs)
-	writeReport(t, report)
+	complete()
 }
 
 // Full NFR profile (ONSALE_PROFILE=full, `make onsale-load-full`): the
@@ -397,12 +424,14 @@ func onsaleGate(t *testing.T) {
 // p99 ≤ 1s, lifecycle p99 ≤ 3s at the NFR window.
 func onsaleFull(t *testing.T) {
 	runID := uuid.NewString()[:8]
-	conn := inventoryAdminConn(t)
-	statStatementsSetup(t, conn)
+	// Armed before any fallible setup — see onsaleGate.
 	report := loadtest.NewReport("TKT-82", "full", gitSHA())
+	complete := beginReport(t, report)
 	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 	report.Notes = "local compose topology; DB_MAX_OPEN_CONNS=25; single-host client+server — see docs/verification/on-sale-load/README.md"
 
+	conn := inventoryAdminConn(t)
+	statStatementsSetup(t, conn)
 	slot, _ := publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
 	attempt := checkoutAttempt(runID, slot, 1)
 
@@ -516,5 +545,5 @@ func onsaleFull(t *testing.T) {
 	if ta.PoolConfirmed != 50000 {
 		t.Errorf("oversell tail pool confirmed %d, want exactly 50000 — the boundary must be reached", ta.PoolConfirmed)
 	}
-	writeReport(t, report)
+	complete()
 }

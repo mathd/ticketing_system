@@ -351,4 +351,12 @@ func TestReportJSONCarriesRequiredMetadata(t *testing.T) {
 	if s.ClientErrors != 1 || s.ServerErrors != 2 || s.Errors != 3 || s.MaxInFlight != 512 || s.PeakInFlight != 40 {
 		t.Fatalf("stage bounds/split lost in JSON round-trip: %+v", s)
 	}
+	if back.Partial {
+		t.Fatalf("a fresh report must not be marked partial: %+v", back)
+	}
+	// Explicitly, not via omitempty (TKT-130): a complete run and a report
+	// written before the field existed must not both present as an absent key.
+	if !strings.Contains(string(b), `"partial": false`) {
+		t.Fatalf(`complete report must serialize "partial": false explicitly: %s`, b)
+	}
 }
