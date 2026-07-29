@@ -1,12 +1,12 @@
 {
   "key": "TKT-133",
   "type": "Task",
-  "status": "Ready",
+  "status": "Backlog",
   "labels": [],
   "assignee": null,
   "pr": null,
   "classification": "simple",
-  "summary": "Inventory never validates the envelope `type` against the subject (TKT-126 ai-review)",
+  "summary": "[MERGED into TKT-123] Inventory never validates the envelope `type` against the subject (TKT-126 ai-review)",
   "comments": [
     {
       "stage": "backlog",
@@ -17,7 +17,18 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `services/inventory/internal/consumer/consumer.go:201` still dispatches on `knownSchemas[msg.Subject()]` with no `env.Type` check; access checks it in both consumers (`consumer.go:360`, `policy.go:96`). Note the ticket suggests folding this into TKT-127 — TKT-127 is now **Done**, so this is standalone.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged into TKT-123 — do not claim\n\nThis ticket's scope now lives in **TKT-123** (Shared durable-consumer contract checks: distinguish durable deletion, validate envelope type against subject), which carries it verbatim under an *Absorbed TKT-133* section. Moved out of Ready so it cannot be picked up in parallel. Nothing was dropped — reopen this only if the merge is reversed at plan time."
     }
   ],
-  "description": "### Finding (TKT-126 ai-review, second pass, 2026-07-27)\n\nInventory's catalog consumer **never validates the envelope's `type` field**. It dispatches purely\non the NATS subject (`knownSchemas[msg.Subject()]`, `services/inventory/internal/consumer/consumer.go`)\nand ignores `type` entirely. Access's two consumers both check it\n(`env.Type != SubjectOrderCompleted`, `env.Type != SubjectPerformancePublished`).\n\n**This is pre-existing** — it is true at `origin/main` before TKT-126, whose decode types carried no\n`type` field for inventory at all. TKT-126 left the behaviour unchanged by design (its whole safety\nproperty was disposition parity), and recorded the asymmetry in ADR-033 rather than silently fixing it.\n\n### Why it matters\n\nAn event published on `platform.catalog.performance.published` carrying\n`\"type\":\"platform.catalog.performance.archived\"` — or no `type` at all — is provisioned and acked.\nADR-009 §5 makes `type == subject` part of the envelope contract, so inventory currently accepts\nenvelopes that violate it.\n\nThere is also an inconsistency TKT-126 introduced, deliberately and with a test\n(`TestDecodeEnvelopeRejectsNonStringType`): a **non-string** `type` now fails the shared decode and\nterminates, while a **wrong-string** `type` is still accepted. Inventory's disposition therefore\ndepends on the JSON representation of the same contract violation.\n\n### Acceptance Criteria\n\n- [ ] Inventory validates `env.Type` against `msg.Subject()` before schema dispatch, or the decision\n      not to is recorded with a reason (dispatching on the subject may be the deliberate design —\n      the broker, not the payload, is the routing authority).\n- [ ] Whatever is decided, missing / mismatched / non-string `type` reach the **same** disposition\n      class rather than three different ones.\n- [ ] Consumer-level tests pin the chosen behaviour for all three shapes, at a known and a future\n      schema, asserting the exact action sequence and the readiness outcome.\n- [ ] ADR-033's \"what deliberately does not live here\" section and the `domainevent` package doc are\n      updated to match whatever is decided.\n\n### Notes\n\nConsider doing this **inside TKT-127** (the shared durable-consumer skeleton), which is where the\n`id`/`type` checks are already flagged as belonging — this may be a slice of that rather than a\nstandalone change.\n"
+  "description": "### Finding (TKT-126 ai-review, second pass, 2026-07-27)\n\nInventory's catalog consumer **never validates the envelope's `type` field**. It dispatches purely\non the NATS subject (`knownSchemas[msg.Subject()]`, `services/inventory/internal/consumer/consumer.go`)\nand ignores `type` entirely. Access's two consumers both check it\n(`env.Type != SubjectOrderCompleted`, `env.Type != SubjectPerformancePublished`).\n\n**This is pre-existing** — it is true at `origin/main` before TKT-126, whose decode types carried no\n`type` field for inventory at all. TKT-126 left the behaviour unchanged by design (its whole safety\nproperty was disposition parity), and recorded the asymmetry in ADR-033 rather than silently fixing it.\n\n### Why it matters\n\nAn event published on `platform.catalog.performance.published` carrying\n`\"type\":\"platform.catalog.performance.archived\"` — or no `type` at all — is provisioned and acked.\nADR-009 §5 makes `type == subject` part of the envelope contract, so inventory currently accepts\nenvelopes that violate it.\n\nThere is also an inconsistency TKT-126 introduced, deliberately and with a test\n(`TestDecodeEnvelopeRejectsNonStringType`): a **non-string** `type` now fails the shared decode and\nterminates, while a **wrong-string** `type` is still accepted. Inventory's disposition therefore\ndepends on the JSON representation of the same contract violation.\n\n### Acceptance Criteria\n\n- [ ] Inventory validates `env.Type` against `msg.Subject()` before schema dispatch, or the decision\n      not to is recorded with a reason (dispatching on the subject may be the deliberate design —\n      the broker, not the payload, is the routing authority).\n- [ ] Whatever is decided, missing / mismatched / non-string `type` reach the **same** disposition\n      class rather than three different ones.\n- [ ] Consumer-level tests pin the chosen behaviour for all three shapes, at a known and a future\n      schema, asserting the exact action sequence and the readiness outcome.\n- [ ] ADR-033's \"what deliberately does not live here\" section and the `domainevent` package doc are\n      updated to match whatever is decided.\n\n### Notes\n\nConsider doing this **inside TKT-127** (the shared durable-consumer skeleton), which is where the\n`id`/`type` checks are already flagged as belonging — this may be a slice of that rather than a\nstandalone change.\n",
+  "links": [
+    {
+      "type": "absorbed-by",
+      "key": "TKT-123"
+    }
+  ]
 }
