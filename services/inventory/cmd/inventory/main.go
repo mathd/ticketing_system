@@ -202,14 +202,70 @@ func run() error {
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
 
+	return awaitShutdown(ctx, errCh, consumerErr, srv.Shutdown)
+}
+
+// awaitShutdown blocks until the server fails, the consumer fails, or the signal
+// context is canceled, and returns the error the process should exit with.
+// Split out of run() so the both-branches-ready case is testable at all: run()
+// itself needs Postgres, NATS and a bound port.
+func awaitShutdown(ctx context.Context, srvErr, consumerErr <-chan error, shutdown func(context.Context) error) error {
 	select {
-	case err := <-errCh:
+	case err := <-srvErr:
 		return err
 	case err := <-consumerErr:
-		return err
+		// A Run tail that unwound because we asked it to is not a failure.
+		// Reporting it exited non-zero on roughly half of clean shutdowns,
+		// since this branch and ctx.Done() go ready together on SIGTERM and
+		// select picks between them at random (TKT-121, the twin of TKT-98).
+		if !isShutdownConsumerError(ctx, err) {
+			return err
+		}
 	case <-ctx.Done():
-		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(sctx)
+		// The signal branch can win with a consumer error already queued, so
+		// take a non-blocking look before shutting down cleanly — otherwise a
+		// genuine failure racing the signal (a deleted durable, which ADR-017
+		// §236-241 says must take the process down) loses the coin flip and
+		// the process exits 0.
+		//
+		// ONE receive, not access's drain loop: inventory has a single
+		// consumerErr producer (main.go's lone `go func()`) on a buffered-1
+		// channel, so at most one value can ever exist and a loop's second
+		// iteration is unreachable. Access loops because it has two producers
+		// sharing the channel. This is a deliberate divergence from that
+		// reference implementation, not an incomplete copy of it — the loop
+		// comes back if and when a second producer does.
+		//
+		// A snapshot, deliberately: it cannot see an error that arrives after
+		// the receive. Closing that window means blocking shutdown until the
+		// consumer has terminated, which trades a missed exit code on an
+		// operator-requested stop for a stop a wedged consumer can delay.
+		select {
+		case err := <-consumerErr:
+			if !isShutdownConsumerError(ctx, err) {
+				return err
+			}
+		default:
+		}
 	}
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return shutdown(sctx)
+}
+
+// isShutdownConsumerError reports whether err is the consumer's Run unwinding
+// because this process's signal context was canceled. ctx is run()'s
+// signal.NotifyContext, so ctx.Err() != nil means precisely "we were asked to
+// stop" — without that conjunct a cancellation arriving while the process is
+// otherwise running would be silently ignored.
+//
+// errors.Is rather than a match on the "consumer stopped" prefix: Run has five
+// guarded exits before its tail, and a SIGTERM during startupConverge surfaces
+// cancellation from a catalog HTTP call or a retry wait carrying no prefix at
+// all. The filter stays narrow at the other end because
+// durableconsumer.Wait's termination diagnostic is built with %s, not %w
+// (shared/go/durableconsumer/wait.go:83) — it does not wrap context.Canceled,
+// so it is never classified as shutdown-caused.
+func isShutdownConsumerError(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
