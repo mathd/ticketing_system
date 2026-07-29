@@ -69,6 +69,17 @@ func TestAwaitShutdownReturnsRealConsumerFailure(t *testing.T) {
 		// Both branches ready. This is the case that pins the non-blocking
 		// receive in the signal branch: without it, ctx.Done() wins the flip
 		// about half the time and the process exits 0 on a deleted durable.
+		//
+		// It pins the ALREADY-ARRIVED error only — the value is queued before
+		// awaitShutdown is called, so the inner receive is guaranteed to see
+		// it. The late-arrival window (consumerErr empty at the receive, the
+		// failure published while srv.Shutdown is still running) is NOT
+		// covered here and is not closed by this ticket: it is the documented
+		// snapshot residual, identical in access, and it belongs to TKT-122,
+		// which must pick one shape for both services. Closing it needs a
+		// delayed-send test this table cannot express by construction.
+		// Spelled out because TKT-121's ai-review read this case as claiming
+		// the wider guarantee.
 		{"real failure landing during shutdown", true, durableGone},
 		{"real failure while running", false, durableGone},
 		{"cancellation not caused by our shutdown", false, fmt.Errorf("consumer stopped: %w", context.Canceled)},
