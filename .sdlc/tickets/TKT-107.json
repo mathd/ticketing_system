@@ -1,7 +1,7 @@
 {
   "key": "TKT-107",
   "type": "Story",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -13,5 +13,11 @@
       "key": "TKT-102"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Half actionable now, half still blocked.** Publish shipped (TKT-103 Done), so the draft-vs-published tier split is decidable today: seat-map geometry still returns `CacheControlPublicVenueReads` (hours) at `services/catalog/internal/api/server.go:1198,1314` with no draft/published distinction. The tenant-scoping half still waits on admin auth, which does not exist (`web/backoffice/src/lib/api.ts:34` still says \"when admin auth lands\"). Plan should scope to part 1 and re-defer part 2.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    }
+  ]
 }
