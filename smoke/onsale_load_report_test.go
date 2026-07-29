@@ -54,16 +54,19 @@ func TestOnsaleReportSurvivesAnAbortedStage(t *testing.T) {
 	}
 	// The stage that completed before the abort must survive with the numbers
 	// that only exist in this JSON — the whole point of the ticket.
+	//
+	// Not asserted here: that the *aborting* stage is absent. That property is
+	// real — each profile calls generatorHealthy before appending, so an
+	// inconclusive stage is never published as a server measurement — but it
+	// lives in the profile bodies, which this fixture does not run. An
+	// assertion here would pass because the child never appends a sweep stage,
+	// not because the ordering holds, and would keep passing if that ordering
+	// were inverted. Covering it for real means running the guard-and-append
+	// path, which is the profile, which needs the stack.
 	var nfr *loadtest.StageReport
 	for i := range got.Stages {
 		if got.Stages[i].Name == "nfr-3000pm" {
 			nfr = &got.Stages[i]
-		}
-		// The aborting stage tripped the generator guard before it was
-		// appended, so publishing it would be publishing inconclusive
-		// evidence as a server measurement.
-		if got.Stages[i].Name == "sweep-600" {
-			t.Errorf("aborted stage sweep-600 must not appear in the report: %s", b)
 		}
 	}
 	if nfr == nil {

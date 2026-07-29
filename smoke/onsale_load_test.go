@@ -313,14 +313,18 @@ func TestOnsaleLoadProof(t *testing.T) {
 func onsaleGate(t *testing.T) {
 	const capacity = 500
 	runID := uuid.NewString()[:8]
+	// Armed before any fallible setup: publishedSlot, the admin connection and
+	// statStatementsSetup can all t.Fatalf, and a run that dies there must still
+	// overwrite the configured path. Otherwise a previous run's file survives
+	// and reads as this run's output.
+	report := loadtest.NewReport("TKT-82", "gate", gitSHA())
+	complete := beginReport(t, report)
+	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
+
 	slot, _ := publishedSlot(t, "Onsale Load Hall "+runID, capacity)
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
 	attempt := checkoutAttempt(runID, slot, 1)
-
-	report := loadtest.NewReport("TKT-82", "gate", gitSHA())
-	complete := beginReport(t, report)
-	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 	loadStart := time.Now()
 
 	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 5, Duration: 2 * time.Second, Quantity: 1}, 64, attempt)
@@ -420,13 +424,14 @@ func onsaleGate(t *testing.T) {
 // p99 ≤ 1s, lifecycle p99 ≤ 3s at the NFR window.
 func onsaleFull(t *testing.T) {
 	runID := uuid.NewString()[:8]
-	conn := inventoryAdminConn(t)
-	statStatementsSetup(t, conn)
+	// Armed before any fallible setup — see onsaleGate.
 	report := loadtest.NewReport("TKT-82", "full", gitSHA())
 	complete := beginReport(t, report)
 	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 	report.Notes = "local compose topology; DB_MAX_OPEN_CONNS=25; single-host client+server — see docs/verification/on-sale-load/README.md"
 
+	conn := inventoryAdminConn(t)
+	statStatementsSetup(t, conn)
 	slot, _ := publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
 	attempt := checkoutAttempt(runID, slot, 1)
 
