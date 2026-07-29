@@ -1,13 +1,19 @@
 {
   "key": "TKT-117",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [
     "risk:low"
   ],
   "assignee": null,
   "pr": null,
-  "comments": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** No signing-key fingerprint is logged at payments startup — the only `fingerprint` in the service is the request fingerprint (`services/payments/internal/api/server.go:174`), unrelated.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    }
+  ],
   "summary": "Log a journal signing-key fingerprint at payments startup (TKT-56/S4 ai-review)",
   "description": "Incidental finding from TKT-56 Slice 4's adversarial review (fable-5), deferred to keep that PR's diff honest.\n\nJOURNAL_SIGNING_KEY is RAW while JOURNAL_HISTORICAL_KEYS entries are base64 — and the rotation runbook teaches the base64 encoding one step before setting the raw active key. An operator who mirrors step 1 and pastes a base64 blob into JOURNAL_SIGNING_KEY gets NO error: the value is over 16 bytes and passes every validation, so the service boots and signs real money facts under a key nobody recorded. TKT-56 made the asymmetry loud in docs/development.md, which is mitigation by documentation only.\n\nProposal: emit a short non-reversible fingerprint of the active key at startup — e.g. the first 8 hex chars of HMAC(activeKey, \"journal-keyring-fingerprint-v1\") — alongside JOURNAL_KEY_ID, so a wrong key is visible in one log line instead of at the next verify-journal (which nothing schedules in a deployed environment).\n\nMust not log key material, and the fingerprint domain string must be distinct from anything the journal signs so the log line can never be mistaken for a signature. Governing: ADR-032 §Keyring configuration, rotation and retirement."
 }
