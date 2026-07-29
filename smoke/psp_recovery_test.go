@@ -148,6 +148,18 @@ func TestRecoveryRefundsCapturedMoneyWithGoneClaim(t *testing.T) {
 		t.Fatalf("charge = %d: %s", code, body)
 	}
 
+	// The seat is gone: the hold expired while the order was stuck.
+	//
+	// This has to commit BEFORE the order row exists — do not restore the production
+	// chronology here (TKT-132). The row below is staged already past the recovery
+	// grace period, so it is sweep-eligible the instant it lands; if the expiry is
+	// still in flight the 2s runner confirms a live claim, completes the order, and
+	// the confirm → ErrClaimGone → refund path this test exists to pin never runs.
+	// `completed` is terminal, so the poll below then burns its whole deadline.
+	// Expiry is lazy in inventory (evaluated on read, no reaper), so nothing observes
+	// the expired claim in the window this opens.
+	expireInventoryHold(t, fmt.Sprint(reservation["hold_id"]))
+
 	// The commerce side died after the capture 200, before confirm: exactly the row
 	// state the crash leaves behind (aged past the grace period).
 	db := commerceDB(t, ctx)
@@ -156,8 +168,6 @@ func TestRecoveryRefundsCapturedMoneyWithGoneClaim(t *testing.T) {
 		orderID, reservation["reservation_id"], chargeKey); err != nil {
 		t.Fatalf("stage crashed order: %v", err)
 	}
-	// The seat is gone: the hold expired while the order was stuck.
-	expireInventoryHold(t, fmt.Sprint(reservation["hold_id"]))
 
 	retry(t, 45*time.Second, func() error {
 		code, body, _ := getWithHeaders(t, gatewayURL+"/api/commerce/orders/"+orderID)
@@ -169,6 +179,17 @@ func TestRecoveryRefundsCapturedMoneyWithGoneClaim(t *testing.T) {
 		}
 		if err := json.Unmarshal(body, &state); err != nil {
 			return err
+		}
+		// A terminal status other than refunded can never converge, so polling on is
+		// dead time: fail now and say which branch recovery took. The terminal set is
+		// the complement of orders_recovery_claimable_idx (commerce migration 0005) —
+		// `reconciliation_required` is NOT terminal, it is the queued compensation this
+		// test expects to pass through (TKT-132).
+		switch state.Status {
+		case "completed", "declined", "timeout":
+			t.Fatalf("order status = %q is terminal, want refunded: recovery resolved this order "+
+				"without hitting ErrClaimGone, so the captured-money-with-gone-claim path never ran",
+				state.Status)
 		}
 		if state.Status != "refunded" {
 			return fmt.Errorf("order status = %q, want refunded", state.Status)
