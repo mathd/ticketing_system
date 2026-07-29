@@ -1,7 +1,7 @@
 {
   "key": "TKT-137",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -18,5 +18,11 @@
       "key": "TKT-31"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `grep -ci cache-control services/inventory/api/openapi.yaml` = 0, while `services/inventory/internal/api/server.go:249` still emits `public, max-age=5, s-maxage=5`. Behaviour with no declaration, unchanged.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    }
+  ]
 }
