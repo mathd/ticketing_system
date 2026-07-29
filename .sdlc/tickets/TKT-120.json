@@ -2,7 +2,7 @@
   "key": "TKT-120",
   "type": "Task",
   "summary": "ADR-025 §D9 says alarm payloads are \"identifiers and enums only\" — the shipped payload also carries a timestamp",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned from TKT-86's ai-review second pass (incidental, deferred out of PR #110). Deliverable is likely an ADR-025 §D9 amendment; needs the 8-item DoR bake before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `docs/adr/ADR-025:193` still reads \"bounded identifiers and enums only\"; `services/access/internal/store/reconcile.go:301` still ships `device_occurred_at`. ADR wording vs shipped payload still disagree.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
     }
   ]
 }
