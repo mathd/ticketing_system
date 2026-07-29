@@ -1,7 +1,7 @@
 {
   "key": "TKT-135",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -22,6 +22,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nRaised by the **TKT-127 adversarial ai-review** (`gpt-5.6-sol`), which returned\n`verdict: needs-attention` on exactly this point and recommended racing termination against the\nstartup pass.\n\nTriaged **incidental** rather than blocking at TKT-127, per `quality-practices.md` §2: it is real,\nbut it is not a defect *in that diff* — it is a residual gap in a guarantee that diff created,\nand the pre-existing behaviour was strictly worse. Fixing it properly is a concurrency change to a\nstartup path with a live interaction with TKT-121, which earns its own plan gate.\n\nThe reviewer's other point is worth carrying over verbatim: *\"The new tests invoke `waitConsume`\ndirectly and therefore pass despite this production ordering defect.\"* That is correct, and it is\nwhy the COS above requires a `Run`-level test rather than another helper-level one.\n\nRelated: TKT-121 (inventory `main`'s cancellation race — likely wants doing together), ADR-034\n(§Consequences names this gap explicitly), TKT-123 (the diagnostic cannot distinguish causes).\n"
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `services/inventory/internal/consumer/consumer.go:503` runs `startupConverge` before `waitConsume` at :524; the residual is documented in the code comment at :515-517. Its stated companion TKT-121 is now **Done**, which removes the \"makes TKT-121 harder\" objection — and TKT-122 now covers the same error channel in access. Sequence 122/135 together.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
     }
   ]
 }
