@@ -60,7 +60,7 @@ func TestInventoryStopsOfferingArchivedAndClosedSlots(t *testing.T) {
 	}
 
 	// A live hold taken before the closure — the buyer already in checkout.
-	code, body := holdRequest(holds, "offering-live-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 2})
+	code, body := postWithKey(t, holds, "offering-live-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 2})
 	if code != 201 {
 		t.Fatalf("pre-closure hold: %d %s", code, body)
 	}
@@ -81,7 +81,7 @@ func TestInventoryStopsOfferingArchivedAndClosedSlots(t *testing.T) {
 	}
 
 	// A NEW hold is refused with the distinguishable reason — not "sold out".
-	code, body = holdRequest(holds, "offering-closed-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+	code, body = postWithKey(t, holds, "offering-closed-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 	if code != 409 || conflictCode(t, body) != "slot_closed" {
 		t.Fatalf("hold on closed slot: %d %s, want 409/slot_closed", code, body)
 	}
@@ -98,7 +98,7 @@ func TestInventoryStopsOfferingArchivedAndClosedSlots(t *testing.T) {
 		t.Fatalf("reopen: %d %s", code, body)
 	}
 	waitForOffering(t, slot, "open")
-	if code, body := holdRequest(holds, "offering-reopened-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1}); code != 201 {
+	if code, body := postWithKey(t, holds, "offering-reopened-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1}); code != 201 {
 		t.Fatalf("hold on reopened slot: %d %s", code, body)
 	}
 
@@ -107,7 +107,7 @@ func TestInventoryStopsOfferingArchivedAndClosedSlots(t *testing.T) {
 		t.Fatalf("archive: %d %s", code, body)
 	}
 	waitForOffering(t, slot, "archived")
-	code, body = holdRequest(holds, "offering-archived-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+	code, body = postWithKey(t, holds, "offering-archived-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 	if code != 409 || conflictCode(t, body) != "slot_archived" {
 		t.Fatalf("hold on archived slot: %d %s, want 409/slot_archived", code, body)
 	}

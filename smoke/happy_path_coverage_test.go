@@ -140,7 +140,12 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("operation lookup: %d %s", code, body)
 	}
 
-	// access: live scan and offline reconciliation on the issued tickets.
+	// access: offline reconciliation on an issued ticket. The live scan (scanTicket)
+	// used to be driven here too, purely to make it visible to the coverage gate —
+	// checkout_test.go exercised it through the raw postScan helper, which never
+	// reached a chokepoint. TKT-95 removed that helper, so the feature test's own
+	// scans now record coverage and this duplicate driver is gone. reconcileScans has
+	// no other driver and stays.
 	var bundle struct {
 		Tickets []struct {
 			QRPayload string `json:"qr_payload"`
@@ -159,10 +164,6 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		}
 		return nil
 	})
-	if code, body = postWithKey(t, gatewayURL+"/api/access/scans", "cov-scan-"+slot,
-		map[string]any{"qr_payload": bundle.Tickets[0].QRPayload}); code != http.StatusOK {
-		t.Fatalf("scan: %d %s", code, body)
-	}
 	if code, body = postWithKey(t, gatewayURL+"/api/access/scans/reconciliations", "cov-reconcile-"+slot,
 		map[string]any{"occurrences": []map[string]any{{
 			"qr_payload":    bundle.Tickets[1].QRPayload,

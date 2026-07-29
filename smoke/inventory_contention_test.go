@@ -3,10 +3,8 @@
 package smoke_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -15,20 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
-
-func holdRequest(url, key string, body any) (int, []byte) {
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", key)
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		return 0, []byte(err.Error())
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, out
-}
 
 func TestInventoryContentionSafeHolds(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
@@ -53,7 +37,7 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 	})
 
 	knownKey := "known-" + slot
-	code, body := holdRequest(inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+	code, body := postWithKey(t, inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 	if code != http.StatusCreated {
 		t.Fatalf("known hold %d %s", code, body)
 	}
@@ -64,7 +48,7 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			code, _ := holdRequest(inventory+"/holds", fmt.Sprintf("parallel-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+			code, _ := postWithKeyAsync(t, inventory+"/holds", fmt.Sprintf("parallel-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 			if code == 201 {
 				granted.Add(1)
 			} else if code != 409 {
@@ -76,11 +60,11 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 	if got := granted.Load(); got != 10 {
 		t.Fatalf("granted %d, want exact capacity 10", got)
 	}
-	code, body = holdRequest(inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+	code, body = postWithKey(t, inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 	if code != 200 {
 		t.Fatalf("idempotent replay %d %s", code, body)
 	}
-	code, _ = holdRequest(inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 2})
+	code, _ = postWithKey(t, inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 2})
 	if code != 409 {
 		t.Fatalf("changed replay want 409 got %d", code)
 	}
@@ -141,7 +125,7 @@ func TestChannelAllocationContention(t *testing.T) {
 				body["channel"] = "presale"
 				counter = &presale
 			}
-			code, _ := holdRequest(inventory+"/holds", fmt.Sprintf("chan-%s-%d", slot, i), body)
+			code, _ := postWithKeyAsync(t, inventory+"/holds", fmt.Sprintf("chan-%s-%d", slot, i), body)
 			if code == 201 {
 				counter.Add(1)
 			} else if code != 409 {
@@ -191,7 +175,7 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	})
 
 	// Committed demand of 3 before anything queues.
-	if code, body := holdRequest(inventory+"/holds", "adjq-base-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 3}); code != 201 {
+	if code, body := postWithKey(t, inventory+"/holds", "adjq-base-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 3}); code != 201 {
 		t.Fatalf("base hold %d %s", code, body)
 	}
 
@@ -244,14 +228,14 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 
 	holdDone := make(chan int, 1)
 	go func() {
-		code, _ := holdRequest(inventory+"/holds", "adjq-first-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+		code, _ := postWithKeyAsync(t, inventory+"/holds", "adjq-first-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 		holdDone <- code
 	}()
 	waitQueued(holdLike, 1)
 
 	adjustDone := make(chan []byte, 1)
 	go func() {
-		_, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/slots/%s/capacity-adjustments", inventoryURL, slot), "adjq-cut-"+slot,
+		_, body := internalJSONAsync(t, http.MethodPost, fmt.Sprintf("%s/internal/slots/%s/capacity-adjustments", inventoryURL, slot), "adjq-cut-"+slot,
 			map[string]any{"organizer_id": organizerID, "capacity": 2, "actor": "staff:amy", "reason": "storm damage"})
 		adjustDone <- body
 	}()
@@ -263,7 +247,7 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 		burst.Add(1)
 		go func(i int) {
 			defer burst.Done()
-			code, _ := holdRequest(inventory+"/holds", fmt.Sprintf("adjq-burst-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+			code, _ := postWithKeyAsync(t, inventory+"/holds", fmt.Sprintf("adjq-burst-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 			if code == 409 {
 				rejected.Add(1)
 			} else {
@@ -314,7 +298,7 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	if a.Capacity != 4 || a.Held != 4 || a.Confirmed != 0 || a.Available != 0 {
 		t.Fatalf("post-adjustment accounting %+v", a)
 	}
-	if code, _ := holdRequest(inventory+"/holds", "adjq-after-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1}); code != 409 {
+	if code, _ := postWithKey(t, inventory+"/holds", "adjq-after-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1}); code != 409 {
 		t.Fatalf("hold above target admitted: %d", code)
 	}
 }

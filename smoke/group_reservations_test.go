@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -19,35 +18,6 @@ import (
 // Group/agency reservations (TKT-79 / ADR-027): staff surface off the gateway, like the
 // operational holds it is built on.
 
-// internalValidated performs an internal service-to-service request and validates the
-// response against that service's committed OpenAPI contract (internal routes never pass
-// through the gateway, so validateServiceResponse cannot see them).
-func internalValidated(t *testing.T, service, method, url, key string, body any) (int, []byte) {
-	t.Helper()
-	var rd io.Reader
-	if body != nil {
-		b, _ := json.Marshal(body)
-		rd = bytes.NewReader(b)
-	}
-	req, err := http.NewRequest(method, url, rd)
-	if err != nil {
-		t.Fatalf("bad request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", internalToken)
-	if key != "" {
-		req.Header.Set("Idempotency-Key", key)
-	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, url, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, _ := io.ReadAll(resp.Body)
-	validateDirectServiceResponse(t, service, resp.Request, resp.StatusCode, resp.Header, out)
-	return resp.StatusCode, out
-}
-
 type grpStaffView struct {
 	BuyerHeld       int32 `json:"buyer_held"`
 	OperationalHeld int32 `json:"operational_held"`
@@ -59,7 +29,7 @@ type grpStaffView struct {
 
 func grpStaff(t *testing.T, slot string) grpStaffView {
 	t.Helper()
-	code, body := internalValidated(t, "inventory", http.MethodGet, fmt.Sprintf("%s/internal/slots/%s/availability?organizer_id=%s", inventoryURL, slot, organizerID), "", nil)
+	code, body := internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/slots/%s/availability?organizer_id=%s", inventoryURL, slot, organizerID), "", nil)
 	if code != 200 {
 		t.Fatalf("staff availability %d %s", code, body)
 	}
@@ -76,7 +46,7 @@ func grpStaff(t *testing.T, slot string) grpStaffView {
 func TestGroupReservationDrawDownAndCheckout(t *testing.T) {
 	slot, tt := publishedSlot(t, "Agency Block Hall", 200)
 
-	code, body := internalValidated(t, "inventory", http.MethodPost, inventoryURL+"/internal/group-reservations", "grp-place-"+slot,
+	code, body := internalJSON(t, http.MethodPost, inventoryURL+"/internal/group-reservations", "grp-place-"+slot,
 		map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 200, "counterparty": "Acme Travel", "expires_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339), "actor": "staff:smoke", "reason": "contract allotment"})
 	if code != 201 {
 		t.Fatalf("place reservation: %d %s", code, body)
@@ -96,7 +66,7 @@ func TestGroupReservationDrawDownAndCheckout(t *testing.T) {
 		wantAmount int64
 	}{{10, 190, 25000}, {50, 140, 125000}} {
 		key := fmt.Sprintf("grp-draw-%s-%d", slot, i)
-		code, body = internalValidated(t, "commerce", http.MethodPost, drawURL, key,
+		code, body = internalJSON(t, http.MethodPost, drawURL, key,
 			map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": draw.qty, "actor": "staff:smoke", "reason": "agency batch"})
 		if code != 201 {
 			t.Fatalf("draw %d: %d %s", draw.qty, code, body)
@@ -112,14 +82,14 @@ func TestGroupReservationDrawDownAndCheckout(t *testing.T) {
 		if conv.Amount != draw.wantAmount || conv.SourceRemaining != draw.remaining {
 			t.Fatalf("draw %d result %+v, want amount %d remaining %d", draw.qty, conv, draw.wantAmount, draw.remaining)
 		}
-		code, body = holdRequest(gatewayURL+"/api/commerce/orders", fmt.Sprintf("grp-order-%s-%d", slot, i),
+		code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", fmt.Sprintf("grp-order-%s-%d", slot, i),
 			map[string]any{"reservation_id": conv.ReservationID, "name": "Acme Group Lead", "email": "groups@acme.test", "payment_token": "fake-ok"})
 		if code != 200 || !bytes.Contains(body, []byte(`"completed"`)) {
 			t.Fatalf("checkout of draw %d: %d %s", draw.qty, code, body)
 		}
 		// Replay after checkout returns the original outcome (child confirmed), never a
 		// second carve.
-		if code, body = internalValidated(t, "commerce", http.MethodPost, drawURL, key,
+		if code, body = internalJSON(t, http.MethodPost, drawURL, key,
 			map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": draw.qty, "actor": "staff:smoke", "reason": "agency batch"}); code != 200 {
 			t.Fatalf("draw replay after checkout: %d %s", code, body)
 		}
@@ -129,7 +99,7 @@ func TestGroupReservationDrawDownAndCheckout(t *testing.T) {
 		t.Fatalf("accounting after draws: %+v, want confirmed=60 reservation_held=140 available=0", a)
 	}
 	// The audit trail records the reservation and each draw.
-	code, body = internalValidated(t, "inventory", http.MethodGet, fmt.Sprintf("%s/internal/group-reservations/%s/history?organizer_id=%s", inventoryURL, res.ID, organizerID), "", nil)
+	code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/group-reservations/%s/history?organizer_id=%s", inventoryURL, res.ID, organizerID), "", nil)
 	if code != 200 {
 		t.Fatalf("history: %d %s", code, body)
 	}
@@ -154,7 +124,7 @@ func TestGroupReservationDrawDownAndCheckout(t *testing.T) {
 	if tag, err := db.Exec(ctx, `UPDATE claims SET expires_at=now()-interval '1 second' WHERE id=$1::uuid`, res.ID); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("force expiry: %v (%d rows)", err, tag.RowsAffected())
 	}
-	if code, body = holdRequest(gatewayURL+"/api/inventory/holds", "grp-giveback-"+slot,
+	if code, body = postWithKey(t, gatewayURL+"/api/inventory/holds", "grp-giveback-"+slot,
 		map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 50}); code != 201 {
 		t.Fatalf("public hold after reservation expiry: %d %s", code, body)
 	}
@@ -185,7 +155,7 @@ func TestGroupReservationDrawDownAndCheckout(t *testing.T) {
 func TestGroupReservationDrawDownRacesPublicHolds(t *testing.T) {
 	slot, tt := publishedSlot(t, "Agency Race Hall", 10)
 
-	code, body := internalValidated(t, "inventory", http.MethodPost, inventoryURL+"/internal/group-reservations", "grp-race-place-"+slot,
+	code, body := internalJSON(t, http.MethodPost, inventoryURL+"/internal/group-reservations", "grp-race-place-"+slot,
 		map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 10, "counterparty": "Acme Travel", "expires_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339), "actor": "staff:smoke", "reason": "race test"})
 	if code != 201 {
 		t.Fatalf("place reservation: %d %s", code, body)
@@ -239,7 +209,7 @@ func TestGroupReservationDrawDownRacesPublicHolds(t *testing.T) {
 
 	drawDone := make(chan int, 1)
 	go func() {
-		code, _ := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/group-reservations/%s/draw-down", commerceURL, res.ID), "grp-race-draw-"+slot,
+		code, _ := internalJSONAsync(t, http.MethodPost, fmt.Sprintf("%s/internal/group-reservations/%s/draw-down", commerceURL, res.ID), "grp-race-draw-"+slot,
 			map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 3, "actor": "staff:smoke", "reason": "race draw"})
 		drawDone <- code
 	}()
@@ -253,7 +223,7 @@ func TestGroupReservationDrawDownRacesPublicHolds(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			code, _ := holdRequest(gatewayURL+"/api/inventory/holds", fmt.Sprintf("grp-race-%s-%d", slot, i),
+			code, _ := postWithKeyAsync(t, gatewayURL+"/api/inventory/holds", fmt.Sprintf("grp-race-%s-%d", slot, i),
 				map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 			if code == 201 {
 				publicGrants.Add(1)

@@ -35,7 +35,7 @@ import (
 // classification, never as a followed hop that could re-send X-Internal-Token.
 var loadClient = loadtest.NewClient()
 
-func timedPost(url string, headers map[string]string, body any) (int, []byte, time.Duration, error) {
+func timedPost(t *testing.T, url string, headers map[string]string, body any) (int, []byte, time.Duration, error) {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -57,6 +57,19 @@ func timedPost(url string, headers map[string]string, body any) (int, []byte, ti
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, rerr := io.ReadAll(resp.Body)
+	// TKT-95: contract-validate the delivered response, AFTER d is measured so no
+	// local schema-walking time enters the latency evidence (TKT-82/TKT-125), and
+	// only when the body arrived whole — validating a truncated body would
+	// manufacture a contract violation out of a client-side symptom, inverting
+	// TKT-92's conservative direction. Async (t.Error): a stage must still join its
+	// in-flight attempts.
+	if rerr == nil {
+		if service := directService(url); service != "" {
+			validateDirectServiceResponseAsync(t, service, resp.Request, resp.StatusCode, resp.Header, out)
+		} else {
+			validateServiceResponseAsync(t, resp.Request, resp.StatusCode, resp.Header, out)
+		}
+	}
 	if rerr != nil {
 		// Surface a truncated/reset body as err with the delivered status:
 		// callers classify — a forbidden status is server evidence on its own;
@@ -71,11 +84,11 @@ func timedPost(url string, headers map[string]string, body any) (int, []byte, ti
 // unexpected instability otherwise; the caller decides which via stage
 // bookkeeping. Latency samples cover mutations only (ADR-004: availability is a
 // cached read and never appears here).
-func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int) loadtest.Outcome {
+func checkoutAttempt(t *testing.T, runID, slot string, quantity int) func(loadtest.Stage, int) loadtest.Outcome {
 	holds := gatewayURL + "/api/inventory/holds"
 	return func(stage loadtest.Stage, seq int) loadtest.Outcome {
 		key := fmt.Sprintf("onsale:%s:%s:%d", runID, stage.Name, seq)
-		code, body, holdD, err := timedPost(holds, map[string]string{"Idempotency-Key": key},
+		code, body, holdD, err := timedPost(t, holds, map[string]string{"Idempotency-Key": key},
 			map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": quantity})
 		// Classification precedence (TKT-92): a delivered status decides on its
 		// own wherever it can — a forbidden status is server evidence even if
@@ -117,7 +130,7 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			dst          *time.Duration
 		}{{"finalize", "finalizing", &out.Finalize}, {"confirm", "confirmed", &out.Confirm}} {
 			url := fmt.Sprintf("%s/internal/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
-			code, rbody, d, err := timedPost(url, hdr, nil)
+			code, rbody, d, err := timedPost(t, url, hdr, nil)
 			switch {
 			case err != nil && code == 0:
 				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
@@ -324,7 +337,7 @@ func onsaleGate(t *testing.T) {
 	slot, _ := publishedSlot(t, "Onsale Load Hall "+runID, capacity)
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
-	attempt := checkoutAttempt(runID, slot, 1)
+	attempt := checkoutAttempt(t, runID, slot, 1)
 	loadStart := time.Now()
 
 	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 5, Duration: 2 * time.Second, Quantity: 1}, 64, attempt)
@@ -352,7 +365,7 @@ func onsaleGate(t *testing.T) {
 	measuredLifecycles := sustained.OK
 	for remaining := capacity - grantedUnits; remaining > 0; {
 		q := min(remaining, 50)
-		out := checkoutAttempt(runID+"-fill", slot, q)(loadtest.Stage{Name: fmt.Sprintf("fill-%d", remaining)}, remaining)
+		out := checkoutAttempt(t, runID+"-fill", slot, q)(loadtest.Stage{Name: fmt.Sprintf("fill-%d", remaining)}, remaining)
 		if out.Kind == loadtest.KindClientError {
 			t.Fatalf("fill attempt (qty %d) hit a client-side transport error — run inconclusive, not server instability: %s", q, out.Note)
 		}
@@ -433,7 +446,7 @@ func onsaleFull(t *testing.T) {
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
 	slot, _ := publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
-	attempt := checkoutAttempt(runID, slot, 1)
+	attempt := checkoutAttempt(t, runID, slot, 1)
 
 	// A stage's claims are only meaningful if the generator itself was healthy:
 	// a sustained schedule (nominal lag p99 is ~2ms; 1s means the offered rate
@@ -502,7 +515,7 @@ func onsaleFull(t *testing.T) {
 	var sweep []loadtest.StageResult
 	for _, rate := range []int{75, 150, 300, 600, 1200, 2400, 3000} {
 		s, _ := publishedSlot(t, fmt.Sprintf("Onsale Sweep %s %d", runID, rate), 100000)
-		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, min(max(512, rate*4), loadtest.MaxConnsPerHost), checkoutAttempt(runID, s, 1))
+		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, min(max(512, rate*4), loadtest.MaxConnsPerHost), checkoutAttempt(t, runID, s, 1))
 		generatorHealthy(r)
 		report.Stages = append(report.Stages, logStage(t, r))
 		report.Accounting = append(report.Accounting, assertAccounting(t, conn, s, r.OK, r.OK))
@@ -523,7 +536,7 @@ func onsaleFull(t *testing.T) {
 	// 1,000 can succeed; the rest must be clean 409s. Correctness evidence only —
 	// excluded from the ceiling.
 	tailSlot, _ := publishedSlot(t, "Onsale Tail "+runID, 50000)
-	tail := loadtest.RunStage(loadtest.Stage{Name: "oversell-tail", Rate: 275, Duration: 4 * time.Second, Quantity: 50}, 512, checkoutAttempt(runID, tailSlot, 50))
+	tail := loadtest.RunStage(loadtest.Stage{Name: "oversell-tail", Rate: 275, Duration: 4 * time.Second, Quantity: 50}, 512, checkoutAttempt(t, runID, tailSlot, 50))
 	generatorHealthy(tail)
 	report.Stages = append(report.Stages, logStage(t, tail))
 	ta := assertAccounting(t, conn, tailSlot, tail.OK*50, tail.OK)

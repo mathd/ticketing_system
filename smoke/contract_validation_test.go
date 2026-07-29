@@ -5,8 +5,10 @@ package smoke_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -47,26 +49,44 @@ func loadContract(service string) loadedContract {
 	return actual.(loadedContract)
 }
 
-func validateServiceResponse(t *testing.T, request *http.Request, status int, header http.Header, body []byte) {
-	t.Helper()
+// The chokepoints come in three layers (TKT-95):
+//
+//	checkServiceResponse / checkDirectServiceResponse  — testing.T-free cores; record
+//	  coverage and RETURN the violation. Callable from any goroutine.
+//	validateServiceResponse / validateDirectServiceResponse — test-goroutine wrappers:
+//	  t.Fatal, which is what every sequential helper wants.
+//	validateServiceResponseAsync / validateDirectServiceResponseAsync — goroutine-safe
+//	  wrappers: t.Error. T.FailNow (and so t.Fatal) must run on the test goroutine;
+//	  T.Error must not, which is why the concurrent helpers report through these.
+//
+// The split exists so concurrent helpers can validate at all: before TKT-95 the
+// hold/scan helpers skipped validation entirely — the only way to stay legal in a
+// goroutine was to not call a t.Fatal-ing validator — and that raw traffic was
+// therefore invisible to the coverage gate.
+//
+// Coverage is recorded BEFORE response validation, deliberately: a drifted response
+// counts as covered and is then reported as a violation by the caller, so it can
+// never produce a green run. Flipping the order would report a violating response as
+// *uncovered*, pointing the reader at a missing driver instead of at the drift.
+func checkServiceResponse(request *http.Request, status int, header http.Header, body []byte) error {
 	marker := "/api/"
 	index := strings.Index(request.URL.Path, marker)
 	if index < 0 {
-		return
+		return nil
 	}
 	remainder := request.URL.Path[index+len(marker):]
 	service, path, found := strings.Cut(remainder, "/")
 	if !found || !strings.Contains(" catalog inventory commerce payments access ", " "+service+" ") || path == "openapi.yaml" {
-		return
+		return nil
 	}
 	// These 404s are the gateway security boundary, not service responses:
 	// the gateway NotFounds every /api/<svc>/internal/* by construction.
 	if status == http.StatusNotFound && strings.HasPrefix(path, "internal/") {
-		return
+		return nil
 	}
 	contract := loadContract(service)
 	if contract.err != nil {
-		t.Fatalf("load %s contract: %v", service, contract.err)
+		return fmt.Errorf("load %s contract: %w", service, contract.err)
 	}
 	copyRequest := request.Clone(request.Context())
 	copyURL := *request.URL
@@ -74,42 +94,69 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	copyRequest.URL = &copyURL
 	route, params, err := contract.router.FindRoute(copyRequest)
 	if err != nil {
-		t.Fatalf("%s %s is not committed in the %s contract: %v", request.Method, copyURL.Path, service, err)
+		return fmt.Errorf("%s %s is not committed in the %s contract: %w", request.Method, copyURL.Path, service, err)
 	}
 	recordSmokeCoverage(service, route.Operation.OperationID, status)
-	input := &openapi3filter.ResponseValidationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: copyRequest, PathParams: params, Route: route},
-		Status:                 status,
-		Header:                 header,
-		Body:                   io.NopCloser(bytes.NewReader(body)),
+	if err := validateAgainstRoute(copyRequest, route, params, status, header, body); err != nil {
+		return fmt.Errorf("%s %s response %d violates the %s contract: %w; body=%s", request.Method, copyURL.Path, status, service, err, body)
 	}
-	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
-		t.Fatalf("%s %s response %d violates the %s contract: %v; body=%s", request.Method, copyURL.Path, status, service, err, body)
-	}
+	return nil
 }
 
-// validateDirectServiceResponse validates a response obtained by calling a service
+// checkDirectServiceResponse validates a response obtained by calling a service
 // directly (not through the gateway): internal routes are deliberately 404 at the edge,
-// so validateServiceResponse's gateway-path parsing never sees them.
-func validateDirectServiceResponse(t *testing.T, service string, request *http.Request, status int, header http.Header, body []byte) {
-	t.Helper()
+// so checkServiceResponse's gateway-path parsing never sees them.
+func checkDirectServiceResponse(service string, request *http.Request, status int, header http.Header, body []byte) error {
 	contract := loadContract(service)
 	if contract.err != nil {
-		t.Fatalf("load %s contract: %v", service, contract.err)
+		return fmt.Errorf("load %s contract: %w", service, contract.err)
 	}
 	route, params, err := contract.router.FindRoute(request)
 	if err != nil {
-		t.Fatalf("%s %s is not committed in the %s contract: %v", request.Method, request.URL.Path, service, err)
+		return fmt.Errorf("%s %s is not committed in the %s contract: %w", request.Method, request.URL.Path, service, err)
 	}
 	recordSmokeCoverage(service, route.Operation.OperationID, status)
-	input := &openapi3filter.ResponseValidationInput{
+	if err := validateAgainstRoute(request, route, params, status, header, body); err != nil {
+		return fmt.Errorf("%s %s response %d violates the %s contract: %w; body=%s", request.Method, request.URL.Path, status, service, err, body)
+	}
+	return nil
+}
+
+func validateAgainstRoute(request *http.Request, route *routers.Route, params map[string]string, status int, header http.Header, body []byte) error {
+	return openapi3filter.ValidateResponse(context.Background(), &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: request, PathParams: params, Route: route},
 		Status:                 status,
 		Header:                 header,
 		Body:                   io.NopCloser(bytes.NewReader(body)),
+	})
+}
+
+func validateServiceResponse(t *testing.T, request *http.Request, status int, header http.Header, body []byte) {
+	t.Helper()
+	if err := checkServiceResponse(request, status, header, body); err != nil {
+		t.Fatal(err)
 	}
-	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
-		t.Fatalf("%s %s response %d violates the %s contract: %v; body=%s", request.Method, request.URL.Path, status, service, err, body)
+}
+
+// There is deliberately no t.Fatal wrapper for the direct path: internalRequest is the
+// only caller and it takes its reporter (t.Fatalf or t.Errorf) as a parameter, so it
+// calls checkDirectServiceResponse itself. A wrapper would be dead code.
+//
+// The Async pair is for helpers called from inside a `go func` in this suite. No
+// t.Helper(): the caller is not the test goroutine, so the helper-frame skip would
+// attribute the failure to the wrong line. t.Error marks the test failed and returns,
+// which is what a contention test needs — its remaining goroutines still have to be
+// joined. Every such goroutine MUST be joined (WaitGroup or channel receive) before its
+// test function returns: t.Error after the test completes panics.
+func validateServiceResponseAsync(t *testing.T, request *http.Request, status int, header http.Header, body []byte) {
+	if err := checkServiceResponse(request, status, header, body); err != nil {
+		t.Error(err)
+	}
+}
+
+func validateDirectServiceResponseAsync(t *testing.T, service string, request *http.Request, status int, header http.Header, body []byte) {
+	if err := checkDirectServiceResponse(service, request, status, header, body); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -223,5 +270,82 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 				t.Fatalf("content-type=%q, want application/json — a refusal from an unexpected layer", got)
 			}
 		})
+	}
+}
+
+// TestConcurrentPostValidatesAndRecordsCoverage pins the TKT-95 half that is not
+// observable from any feature test: traffic sent by a helper called from INSIDE a
+// goroutine reaches the contract chokepoint, so it is contract-validated and counted by
+// the coverage gate.
+//
+// Before TKT-95 it could not: the chokepoints only came in a t.Fatal flavour, T.FailNow
+// is illegal off the test goroutine, and so the concurrent hold/scan helpers sent raw
+// unvalidated traffic. coverage_test.go's scope comment had to disclaim exactly that.
+//
+// Stack-free on purpose (httptest.Server, no compose stack): the property under test is
+// "the async path reaches the chokepoint", which needs a response, not a service. The
+// arrangement mirrors TestValidateServiceResponseCoversCatalog — snapshot, clear, act,
+// assert *this call* re-recorded, restore — for the same reason: another test may already
+// have recorded the operation, which would make a plain "is it present" check pass
+// vacuously.
+//
+// What this does NOT prove: that a *violating* concurrent response fails the suite.
+// Asserting that would need a test that fails itself or a child test binary. The guard
+// there is that validateServiceResponseAsync is four lines wrapping the same
+// checkServiceResponse this test exercises, differing only in t.Error vs t.Fatal.
+func TestConcurrentPostValidatesAndRecordsCoverage(t *testing.T) {
+	const op = "inventory createHold"
+
+	// A contract-valid inventory createHold 201: every required Hold field present
+	// (hold_id, organizer_id, slot_id, quantity, status, expires_at, server_time), and
+	// the schema is additionalProperties:false, so nothing extra.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"hold_id":"11111111-1111-1111-1111-111111111111",` +
+			`"organizer_id":"00000000-0000-0000-0000-000000000001",` +
+			`"slot_id":"22222222-2222-2222-2222-222222222222",` +
+			`"quantity":1,"status":"held",` +
+			`"expires_at":"2026-07-29T20:00:00Z","server_time":"2026-07-29T19:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	smokeCoverageMu.Lock()
+	prior := smokeCoverage[op]
+	delete(smokeCoverage, op)
+	smokeCoverageMu.Unlock()
+	defer func() {
+		if prior {
+			smokeCoverageMu.Lock()
+			smokeCoverage[op] = true
+			smokeCoverageMu.Unlock()
+		}
+	}()
+
+	// The call under test runs in a goroutine and is joined before this test returns —
+	// the invariant every async helper depends on (t.Error after the test completes
+	// panics).
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var code int
+	go func() {
+		defer wg.Done()
+		code, _ = postWithKeyAsync(t, server.URL+"/api/inventory/holds", "tkt95-async", map[string]any{
+			"organizer_id": "00000000-0000-0000-0000-000000000001",
+			"slot_id":      "22222222-2222-2222-2222-222222222222",
+			"quantity":     1,
+		})
+	}()
+	wg.Wait()
+
+	if code != http.StatusCreated {
+		t.Fatalf("fixture served %d, want 201", code)
+	}
+	smokeCoverageMu.Lock()
+	recorded := smokeCoverage[op]
+	smokeCoverageMu.Unlock()
+	if !recorded {
+		t.Fatalf("a goroutine-issued request did not reach the contract chokepoint: %q not recorded by this call. "+
+			"postWithKeyAsync must validate through validateServiceResponseAsync (TKT-95).", op)
 	}
 }
