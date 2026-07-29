@@ -1,7 +1,7 @@
 {
   "key": "TKT-123",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSplit out of TKT-99's ai-review as an incidental finding (R4, medium) — real, but its fix is a\nproduction change that a test-only ticket had no business making.\n\n**The finding.** TKT-99's smoke test proves durable deletion terminates the access consumer by\nasserting the exact diagnostic access writes:\n\n> `access: access-slot-policy: consume context closed (durable deleted or subscription terminated)`\n\nThat message is produced by `consumer.waitConsume` for *any* async termination. So the test proves\n(a) we deleted the durable and (b) *something* terminated the consume context — not that (a) caused\n(b). A coincident NATS connection or subscription failure inside the 15s window would satisfy both\ncounters even if durable deletion had stopped closing `ConsumeContext.Closed()` entirely. The\nstrongest form of the test is currently unreachable from outside the process.\n\n**Why it is small in practice, and still worth closing.** The window is 15s, the smoke stack is a\nsingle-node hermetic broker, and a broker failure would break the rest of the suite loudly. But the\ntest's whole value is causal, and it is one indistinguishable log line away from being decorative.\n\n**Shape of the fix.** `waitConsume` receives only a closed channel, so it cannot name the cause.\n`jetstream` exposes it: `ErrConsumerDeleted` is what `pull.go:722` treats as terminal. Surfacing\nthe terminal error — via the consume error handler, or by having the caller record the last\nterminal error alongside the latch — would let both the log line and the test say *deleted*\nspecifically. That is a change to ADR-017's readiness/termination surface and to a diagnostic\noperators read, so it wants its own plan and its own review.\n\n**Also worth deciding in the same ticket:** whether the two `waitConsume` callers should report\ndistinguishable reasons at all, or whether \"terminated, and here is the underlying error\" is\nenough. TKT-97 deliberately kept the message coarse; this is a revisit of that call, not a bug in it.\n\nCode pointers: `services/access/internal/consumer/run.go` (`waitConsume`),\n`services/access/internal/consumer/policy.go:212`, `consumer.go:429`,\n`smoke/access_consumer_test.go` (`policyTermination`, the assertion that would tighten).\nGoverning ADR: ADR-017 §5b (§236-241).\n"
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real, path moved.** The undifferentiated diagnostic now lives in `shared/go/durableconsumer/wait.go:83` (lifted by TKT-127), not in access. No `ErrConsumerDeleted` reference anywhere in `services/`. Fixing it in the shared package now covers access and inventory at once — scope grew in the ticket's favour.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
     }
   ],
   "context": {
