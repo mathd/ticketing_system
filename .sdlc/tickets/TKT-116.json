@@ -2,7 +2,7 @@
   "key": "TKT-116",
   "type": "Task",
   "summary": "Refund-recovery past idempotency retention, unbounded internal HTTP client, release_pending replay gap (TKT-115 ai-review carry-outs)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -37,5 +37,11 @@
     ],
     "capturedAt": "2026-07-23"
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**All three sub-items still open at HEAD.** (1) `services/payments/internal/psp/stripe.go:286` resolves a pending refund by `GET /v1/refunds/{ref}` — that is the TKT-114 re_-dispatch, and it needs a ref; the no-ref case the ticket describes has no list-by-payment_intent path. (2) `shared/go/obs/obs.go:55` `Client()` still returns an `http.Client` with no `Timeout`. (3) the top-of-checkout replay branches are `completed` (:500), `declined||timeout` (:513), `refunded` (:524), `reconciliation_required` (:539) — **no `release_pending`**. The `release_pending` case at :432 is `classifyRecovered`, the lost-the-race path, which is exactly the narrowing the ticket says does not close the gap. Item 3 is the money-path one; consider slicing it out and taking it first.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    }
+  ]
 }
