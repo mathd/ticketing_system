@@ -1,10 +1,8 @@
 {
   "key": "TKT-129",
   "type": "Task",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 119,
