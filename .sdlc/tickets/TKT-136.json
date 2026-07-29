@@ -20,5 +20,64 @@
       "key": "TKT-126"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### DoR — 8/8. Shaped 2026-07-28.\n\n**Decision taken at shaping (owner call, delegated): option 1 — re-point the citation at\nTKT-126.** The ticket's own recommendation, and ADR-004 already sets the precedent after\nTKT-128. Option 2 (reconstructing `docs/reviews/2026-07-25-architecture.md`) is only worth it if\nthe review has standing value beyond the tickets it spawned — it does not; R1–Rn all live on the\nboard with fuller context than the review had.\n\nThis mattered because the ticket is **`risk:low`**, which skips Gate 2 — an undecided approach\non a gate-skipping ticket gets decided unilaterally by the coding agent, with no human ever\nseeing the choice. Decided here instead, so `risk:low` stays honest.\n\nVerified at HEAD: `grep -rn \"docs/reviews\" docs/` returns exactly one hit, ADR-033:237.\n\n**Verdict: READY.**\n"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "ADR-033:237 cites docs/reviews/2026-07-25-architecture.md, which has never existed in this repo. AGENTS.md puts documentation 100% in-repo; a dead in-repo path reads as if evidence exists."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the ADR-033 References line, plus any other docs/reviews citation grep finds. OUT: reconstructing the 2026-07-25 review as a document (option 2, declined at shaping)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None left — the option-1/option-2 decision was the only one, taken at shaping."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Docs-only; relates to TKT-126 (the work ADR-033 records) and TKT-128 (which hit the same dead link and avoided reproducing it)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Option 1: re-point the citation at TKT-126, mirroring what ADR-004 now does for TKT-128. One line, reversible, no new artifact."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One line in one file."
+    },
+    "success": {
+      "state": "met",
+      "note": "AC already crisp and grep-verifiable; grep -rn docs/reviews docs/ returns exactly the one hit today."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "ADR-033 is the artifact edited, not a constraint on the edit; no decision governs how an ADR cites provenance. Recorded as a reference rather than a governingAdr."
+    }
+  },
+  "context": {
+    "binding": [],
+    "governingAdrs": [],
+    "reference": [
+      {
+        "summary": "the dead citation",
+        "link": "docs/adr/ADR-033-shared-domain-event-envelope.md:237"
+      },
+      {
+        "summary": "the pattern to copy — ADR-004 cites its ticket, not a review file",
+        "link": "TKT-128"
+      },
+      {
+        "summary": "the work ADR-033 records, and the citation target",
+        "link": "TKT-126"
+      }
+    ],
+    "capturedAt": "2026-07-28"
+  }
 }
