@@ -1,7 +1,7 @@
 {
   "key": "TKT-139",
   "type": "Task",
-  "status": "Backlog",
+  "status": "Ready",
   "summary": "docs/reviews/ is gitignored but holds a real architecture review — decide whether it belongs in-repo (TKT-136 incidental)",
   "description": "### Finding (incidental, surfaced during TKT-136 planning)\n\nTKT-136 was filed because `ADR-033:237` cited `docs/reviews/2026-07-25-architecture.md` and \"that\nfile does not exist.\" It does exist:\n\n```\n$ ls -la docs/reviews/2026-07-25-architecture.md\n.rw-r--r--@ 10.0k matdupui 25 Jul 11:26 2026-07-25-architecture.md\n\n$ git check-ignore -v docs/reviews/2026-07-25-architecture.md\n.gitignore:15:docs/reviews/\tdocs/reviews/2026-07-25-architecture.md\n\n$ git ls-tree -r HEAD --name-only | grep -c docs/reviews\n0\n```\n\nIt is a finished ~10k architecture review of the whole codebase at the 75-ticket mark — service\nboundaries, the shared-kernel drift that produced ADR-033/ADR-034, the cache-first and\ncontract-enforcement assessments, and the R1–Rn recommendations that became TKT-126, TKT-128 and\nothers. It is absent from the repo because `.gitignore:15` excludes `docs/reviews/`, not because it\nwas never written.\n\nTKT-136 fixed the citation (it no longer points at an unopenable path) and deliberately did **not**\ntouch this, because it is a decision, not a typo.\n\n### The decision to take\n\n`AGENTS.md` states **\"Documentation is 100% in-repo\"** — PRDs in `docs/product/`, ADRs in\n`docs/adr/`, learnings in `docs/learnings/`. A gitignored architecture review is in tension with\nthat rule. Either:\n\n1. **Commit it** (drop `docs/reviews/` from `.gitignore`), and the house rule holds without\n   exception. ADR-033's reference could then cite it directly again.\n2. **Keep it ignored deliberately**, and record *why* — `.gitignore:15` currently sits inside the\n   \"build artifacts & dependencies\" block with no comment, unlike `spike/` and `.plan-brief.*`,\n   which each explain themselves. Whatever the reason, it is not written down anywhere, so the next\n   person to trip over this re-runs TKT-136's investigation from scratch.\n\nOnly the repo owner can decide this — it is their file and their ignore rule.\n\n### Secondary: any future docs-link checker must resolve against `git ls-files`\n\nTKT-136 measured the ADR corpus two ways: a naive matcher flags 35 \"unresolved\" citations across 36\nADRs (almost all bare filenames used as prose — `consumer.go`, `store.go` — not repo paths), while a\nrepo-rooted matcher flags 0. So a checker is buildable but must be repo-rooted to be worth anything.\n\nThe trap worth recording: a checker resolving paths against the **filesystem** would have gone\n**green on this very defect** on the owner's machine (the file is present but ignored) and red only\nin CI or a fresh clone. Resolve against `git ls-files`, never `os.path.exists`. TKT-136 used exactly\nthis to prove its COS 1.\n\nNo checker is proposed here — that is a third decision, and it needs the first one settled to know\nwhat \"correct\" even is.\n\n### Acceptance Criteria\n\n- [ ] A decision is recorded: `docs/reviews/` is either tracked, or ignored with a written reason at\n      `.gitignore:15`.\n- [ ] If kept ignored, `AGENTS.md`'s \"documentation is 100% in-repo\" states the exception, so the\n      rule and the repo agree.\n- [ ] No behaviour change required: docs/config only.\n",
   "labels": [],
@@ -17,5 +17,11 @@
       "key": "TKT-126"
     }
   ],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `git check-ignore -v` confirms `.gitignore:15` excludes `docs/reviews/2026-07-25-architecture.md`, and the file is present on disk but untracked. Owner decision, unchanged.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    }
+  ]
 }
