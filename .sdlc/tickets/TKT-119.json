@@ -2,7 +2,7 @@
   "key": "TKT-119",
   "type": "Task",
   "summary": "RequireAlarmRoute's missing-durable error names ACCESS_LIFECYCLE_ALARM_DURABLE for all three alarm classes",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -12,6 +12,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nSpawned from TKT-86's ai-review triage (incidental finding, deferred out of PR #110). Not shaped yet: needs the 8-item DoR bake before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `services/access/internal/lifecyclejob/publisher.go:61` still hardcodes \"ACCESS_LIFECYCLE_ALARM_DURABLE is required\", and :65/:69/:73/:84 still say \"integrity alarm\" for all three classes.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
     }
   ]
 }
