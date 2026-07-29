@@ -129,3 +129,10 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   container; only the durable-named diagnostic stayed red. Pair a coarse signal with one only the
   correct path emits — and you find this by *running* the mutation, not by reading the test.
   (TKT-99, PR #112)
+- [**Force the interleaving — repetition cannot falsify a race fix**](./learnings/2026-07-29-force-the-interleaving-repetition-cannot-falsify-a-race-fix.md) —
+  `-count=N` cannot tell a *closed* race from a *narrowed* one, and on a quiet stack it usually
+  cannot produce the red at all (TKT-132's flake: reported 2-in-7 on CI, measured **10/10 green**
+  locally). Make the losing interleaving deterministic — a temporary sleep at the seam, longer than
+  the runner's tick — and run the same forcing against both versions: old **FAIL 51.17s** with the
+  verbatim reported message, new **PASS 3/3**. The forcing is scaffolding and is not committed.
+  Measure the baseline *before* designing the red. (TKT-132, PR #123)
