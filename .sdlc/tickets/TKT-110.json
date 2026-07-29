@@ -2,10 +2,16 @@
   "key": "TKT-110",
   "type": "Task",
   "summary": "Declare 400 request-validation responses on catalog lifecycle operations (or record the carve-out)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
   "description": "### Incidental finding spun out of TKT-108 ai-review (gpt-5.6-luna:high@claudex, finding B2 — confirmed against HEAD)\n\nLifecycle operations (publish/archive/close/reopen for performances, series, festivals, seat maps) declare no `'400'` response, yet the generated request middleware returns 400 for malformed path UUIDs before the handler runs. Production is safe by ADR-028's explicit carve-out (request-rejection short-circuits sit outside the response validator wrap), but the catalog handler-test validator (aligned in TKT-108) WOULD reject such a 400 as undocumented if a test ever drives malformed input through `e.do` — a latent test trap.\n\nOptions to settle at plan time: declare `400: BadRequest` on the ops the request validator can reject; or codify the carve-out in the test helper; or both. Repo-wide consistency question, same shape as TKT-108's 500 work.\n\nGoverning: ADR-028 (carve-out is explicit in Consequences), ADR-009 (any spec change ⇒ regen).",
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real, one correction.** `publishPerformance`, `archivePerformance`, `publishSeatMap` and `editSeatMap` all declare no `'400'` in `services/catalog/api/openapi.yaml`. The ticket also names `closePerformance` / `reopenPerformance` — no such operationIds exist; drop them from scope.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    }
+  ]
 }
