@@ -1,17 +1,28 @@
 {
   "key": "TKT-110",
   "type": "Task",
-  "summary": "Declare 400 request-validation responses on catalog lifecycle operations (or record the carve-out)",
+  "summary": "Declare the responses catalog and inventory actually emit (lifecycle 400s + the availability cache tier)",
   "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "### Incidental finding spun out of TKT-108 ai-review (gpt-5.6-luna:high@claudex, finding B2 — confirmed against HEAD)\n\nLifecycle operations (publish/archive/close/reopen for performances, series, festivals, seat maps) declare no `'400'` response, yet the generated request middleware returns 400 for malformed path UUIDs before the handler runs. Production is safe by ADR-028's explicit carve-out (request-rejection short-circuits sit outside the response validator wrap), but the catalog handler-test validator (aligned in TKT-108) WOULD reject such a 400 as undocumented if a test ever drives malformed input through `e.do` — a latent test trap.\n\nOptions to settle at plan time: declare `400: BadRequest` on the ops the request validator can reject; or codify the carve-out in the test helper; or both. Repo-wide consistency question, same shape as TKT-108's 500 work.\n\nGoverning: ADR-028 (carve-out is explicit in Consequences), ADR-009 (any spec change ⇒ regen).",
+  "description": "### Incidental finding spun out of TKT-108 ai-review (gpt-5.6-luna:high@claudex, finding B2 — confirmed against HEAD)\n\nLifecycle operations (publish/archive/close/reopen for performances, series, festivals, seat maps) declare no `'400'` response, yet the generated request middleware returns 400 for malformed path UUIDs before the handler runs. Production is safe by ADR-028's explicit carve-out (request-rejection short-circuits sit outside the response validator wrap), but the catalog handler-test validator (aligned in TKT-108) WOULD reject such a 400 as undocumented if a test ever drives malformed input through `e.do` — a latent test trap.\n\nOptions to settle at plan time: declare `400: BadRequest` on the ops the request validator can reject; or codify the carve-out in the test helper; or both. Repo-wide consistency question, same shape as TKT-108's 500 work.\n\nGoverning: ADR-028 (carve-out is explicit in Consequences), ADR-009 (any spec change ⇒ regen).\n\n---\n\n## Absorbed TKT-137 — inventory's availability read emits an undeclared seconds tier\n\n`services/inventory/internal/api/server.go:249` sets `Cache-Control: public, max-age=5, s-maxage=5`;\n`services/inventory/api/openapi.yaml` declares no `Cache-Control` header on `getAvailability`\n(`grep -ci cache-control` = 0). Behaviour with no declaration — the inverse of the defect TKT-128\nfixed in ADR-004. A future cache owner (TKT-31) reading the contract will not find the seconds tier\nat all, and it is the tier where staleness is most load-bearing during an on-sale.\n\nSub-scope:\n- [ ] `getAvailability`'s `'200'` declares `Cache-Control`, value matching the handler\n      (`public, max-age=5, s-maxage=5`), following catalog's `CacheControl` response-header component\n- [ ] Consider a named constant at the call site, the way catalog has\n      `CacheControlPublicReads` / `CacheControlPublicVenueReads`\n- [ ] ADR-004 § Amendment (TKT-128)'s sentence recording this as an open gap is updated to say closed\n\n## Why these are one ticket\n\nSame act in both halves: edit `openapi.yaml`, `make generate`, **commit the regen before running the\ngate** (`check-generate` diffs against HEAD — an uncommitted regen reads as drift and costs two gate\nruns, per AGENTS.md / TKT-114). Two services, one regen pass, one plan gate. Splitting them buys\nnothing and pays the pipeline overhead twice.\n\n**Correction carried from Gate-1 validation:** this ticket's original text names `closePerformance`\nand `reopenPerformance` — no such operationIds exist in the catalog spec. The ops that really lack a\n`'400'` are `publishPerformance`, `archivePerformance`, `publishSeatMap`, `editSeatMap`.\n",
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real, one correction.** `publishPerformance`, `archivePerformance`, `publishSeatMap` and `editSeatMap` all declare no `'400'` in `services/catalog/api/openapi.yaml`. The ticket also names `closePerformance` / `reopenPerformance` — no such operationIds exist; drop them from scope.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged TKT-137 into this ticket (backlog drain, 2026-07-29)\n\nWas: *Declare 400 request-validation responses on catalog lifecycle operations (or record the carve-out)*\n\nTKT-137 is now **Inventory's availability read emits a seconds-tier Cache-Control its OpenAPI contract never declares (TKT-128 ai-review)** — absorbed above, and moved back to Backlog marked MERGED so it cannot be claimed twice. Its own thread stays readable on the board for the full filing history and review lineage.\n\nRationale: a plan gate + ai-review + PO gate on each half costs more than the work. See the *Why these are one ticket* section in the description."
+    }
+  ],
+  "links": [
+    {
+      "type": "absorbs",
+      "key": "TKT-137"
     }
   ]
 }
