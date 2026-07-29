@@ -1,8 +1,8 @@
 {
   "key": "TKT-120",
   "type": "Task",
-  "summary": "ADR-025 §D9 says alarm payloads are \"identifiers and enums only\" — the shipped payload also carries a timestamp",
-  "status": "Ready",
+  "summary": "[MERGED into TKT-119] ADR-025 §D9 says alarm payloads are \"identifiers and enums only\" — the shipped payload also carries a timestamp",
+  "status": "Backlog",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -17,6 +17,17 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** `docs/adr/ADR-025:193` still reads \"bounded identifiers and enums only\"; `services/access/internal/store/reconcile.go:301` still ships `device_occurred_at`. ADR wording vs shipped payload still disagree.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged into TKT-119 — do not claim\n\nThis ticket's scope now lives in **TKT-119** (Make the access alarm surface say the true thing: per-class durable error + ADR-025 §D9 PII wording), which carries it verbatim under an *Absorbed TKT-120* section. Moved out of Ready so it cannot be picked up in parallel. Nothing was dropped — reopen this only if the merge is reversed at plan time."
+    }
+  ],
+  "links": [
+    {
+      "type": "absorbed-by",
+      "key": "TKT-119"
     }
   ]
 }
