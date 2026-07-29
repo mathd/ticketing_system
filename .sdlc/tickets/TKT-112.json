@@ -1,7 +1,7 @@
 {
   "key": "TKT-112",
   "type": "Story",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -18,6 +18,11 @@
       "stage": "backlog",
       "kind": "note",
       "body": "Created by the TKT-80 autonomous run to record the deferred leaked-pin reconciliation (ADR-031 §Consequences). Not shaped for Ready yet."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** Leaked-pin reconciliation is unimplemented — no `reconcile-pins` subcommand in either binary. Description carries scope + COS; the \"not shaped for Ready\" note predates this validation pass.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
     }
   ]
 }
