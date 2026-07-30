@@ -79,13 +79,14 @@ func TestSeatMapAuthoringChain(t *testing.T) {
 		t.Fatalf("seat identity must be composed section/row/seat, got %q", seat.SeatIdentity)
 	}
 
-	// Geometry read: nested + hours tier.
+	// Geometry read: nested + no-store, because this map is still a draft
+	// (TKT-107: draft geometry is mutable, so it never gets a shared-cache tier).
 	rec := e.do("GET", "/public/seat-maps/"+m.Id.String(), nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("geometry read: %d %s", rec.Code, rec.Body.String())
 	}
-	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=3600, s-maxage=3600" {
-		t.Fatalf("geometry read must be ADR-004 hours tier, got %q", cc)
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("draft geometry read must be no-store (TKT-107), got %q", cc)
 	}
 	g := decode[SeatMapGeometry](t, rec)
 	if g.Map.Id != m.Id || len(g.Sections) != 1 {
@@ -405,8 +406,11 @@ func TestListVenueSeatMaps(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
 	}
-	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=3600, s-maxage=3600" {
-		t.Fatalf("list must be hours tier, got %q", cc)
+	// Every map in this fixture is a draft, so the whole response is no-store
+	// (TKT-107). The status-driven tier itself is proven by
+	// TestSeatMapReadCacheTierByStatus.
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("draft-only list must be no-store (TKT-107), got %q", cc)
 	}
 	out := decode[SeatMapList](t, rec)
 	if len(out.SeatMaps) != 2 {
@@ -417,4 +421,125 @@ func TestListVenueSeatMaps(t *testing.T) {
 			t.Fatalf("scoping leak: %+v", sm)
 		}
 	}
+}
+
+// addDraftSuccessor seeds a draft version into an existing map's family, which no
+// public write path can produce: publish moves draft -> published, and an ADR-029
+// edit inserts a *published* successor. A mixed-status version history is
+// nonetheless reachable in principle (nothing forbids the row), so TKT-107's
+// least-cacheable-member rule has to hold for it — hence the fixture.
+func addDraftSuccessor(t *testing.T, e *env, anyVersionID openapi_types.UUID) {
+	t.Helper()
+	successor, ok := e.store.seatMaps[anyVersionID]
+	if !ok {
+		t.Fatalf("addDraftSuccessor: %s is not a seeded map", anyVersionID)
+	}
+	successor.ID = uuid.New()
+	successor.Version++
+	successor.Status = "draft"
+	successor.PublishedAt = nil
+	successor.CreatedAt = time.Now().UTC()
+	e.store.seatMaps[successor.ID] = successor
+	e.store.families[successor.ID] = e.store.families[anyVersionID]
+}
+
+// TestSeatMapReadCacheTierByStatus is TKT-107's whole rule, across all three
+// public seat-map reads: a response gets the ADR-004 hours tier only when it is
+// non-empty and every seat map in it is published; anything else is no-store.
+// Draft geometry is mutable, so an hour of shared-cache lifetime would make an
+// authoring write look lost; published versions are immutable by ADR-029, which
+// is what makes the hours branch correct rather than merely inherited.
+func TestSeatMapReadCacheTierByStatus(t *testing.T) {
+	const hoursTier = "public, max-age=3600, s-maxage=3600" // ADR-004
+
+	// -- GET /public/seat-maps/{id} : one map, so draft or published, never mixed --
+	t.Run("geometry/published", func(t *testing.T) {
+		e := newEnv(t)
+		m := seedPublishedMap(t, e, seedVenue(t, e, "Hall"), "Floor")
+		rec := e.do("GET", "/public/seat-maps/"+m.Id.String(), nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("geometry: %d %s", rec.Code, rec.Body.String())
+		}
+		if g := decode[SeatMapGeometry](t, rec); g.Map.Status != "published" {
+			t.Fatalf("fixture must be published, got %q", g.Map.Status)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != hoursTier {
+			t.Fatalf("published geometry must keep the hours tier, got %q", cc)
+		}
+	})
+	t.Run("geometry/draft", func(t *testing.T) {
+		e := newEnv(t)
+		m := seedDraftMap(t, e, seedVenue(t, e, "Hall"), "Floor")
+		rec := e.do("GET", "/public/seat-maps/"+m.Id.String(), nil)
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("draft geometry must be no-store, got %q", cc)
+		}
+	})
+
+	// -- GET /public/venues/{id}/seat-maps : the mixed and empty cases live here --
+	t.Run("venue-list/published-only", func(t *testing.T) {
+		e := newEnv(t)
+		venueID := seedVenue(t, e, "Hall")
+		_ = seedPublishedMap(t, e, venueID, "Floor 1")
+		_ = seedPublishedMap(t, e, venueID, "Floor 2")
+		rec := e.do("GET", "/public/venues/"+venueID.String()+"/seat-maps", nil)
+		out := decode[SeatMapList](t, rec)
+		if len(out.SeatMaps) != 2 {
+			t.Fatalf("fixture must list 2 maps, got %d", len(out.SeatMaps))
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != hoursTier {
+			t.Fatalf("all-published list must keep the hours tier, got %q", cc)
+		}
+	})
+	t.Run("venue-list/mixed", func(t *testing.T) {
+		e := newEnv(t)
+		venueID := seedVenue(t, e, "Hall")
+		_ = seedPublishedMap(t, e, venueID, "Floor 1")
+		_ = seedDraftMap(t, e, venueID, "Floor 2")
+		rec := e.do("GET", "/public/venues/"+venueID.String()+"/seat-maps", nil)
+		out := decode[SeatMapList](t, rec)
+		if len(out.SeatMaps) != 2 {
+			t.Fatalf("mixed fixture must list both maps, got %d", len(out.SeatMaps))
+		}
+		// One response carries one header, so the least-cacheable member decides.
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("one draft row must make the whole list no-store, got %q", cc)
+		}
+	})
+	t.Run("venue-list/empty", func(t *testing.T) {
+		e := newEnv(t)
+		venueID := seedVenue(t, e, "Empty hall")
+		rec := e.do("GET", "/public/venues/"+venueID.String()+"/seat-maps", nil)
+		if out := decode[SeatMapList](t, rec); len(out.SeatMaps) != 0 {
+			t.Fatalf("fixture must be empty, got %d", len(out.SeatMaps))
+		}
+		// Fail closed: no published row justifies caching, and caching "no maps"
+		// for an hour would hide the venue's first seat map.
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("empty list must be no-store, got %q", cc)
+		}
+	})
+
+	// -- GET /public/seat-maps/{id}/versions : never empty (404s instead) --
+	t.Run("versions/draft-only", func(t *testing.T) {
+		e := newEnv(t)
+		m := seedDraftMap(t, e, seedVenue(t, e, "Hall"), "Floor")
+		rec := e.do("GET", "/public/seat-maps/"+m.Id.String()+"/versions", nil)
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("draft-only history must be no-store, got %q", cc)
+		}
+	})
+	t.Run("versions/mixed", func(t *testing.T) {
+		e := newEnv(t)
+		m := seedPublishedMap(t, e, seedVenue(t, e, "Hall"), "Floor")
+		addDraftSuccessor(t, e, m.Id)
+		rec := e.do("GET", "/public/seat-maps/"+m.Id.String()+"/versions", nil)
+		out := decode[SeatMapVersionHistory](t, rec)
+		if len(out.Versions) != 2 {
+			t.Fatalf("mixed history must carry both versions, got %d", len(out.Versions))
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("a draft version must make the whole history no-store, got %q", cc)
+		}
+	})
 }

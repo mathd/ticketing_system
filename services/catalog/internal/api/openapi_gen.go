@@ -792,16 +792,16 @@ type ServerInterface interface {
 	// Aggregated public season detail (minutes tier)
 	// (GET /public/seasons/{seasonId})
 	GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonId SeasonId, params GetPublicSeasonParams)
-	// A seat map's full geometry (hours tier)
+	// A seat map's full geometry (status-driven cache tier)
 	// (GET /public/seat-maps/{seatMapId})
 	GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
-	// A seat map family's version history (hours tier, TKT-105)
+	// A seat map family's version history (status-driven cache tier, TKT-105)
 	// (GET /public/seat-maps/{seatMapId}/versions)
 	ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId)
 	// Organizer-scoped venue list (hours tier)
 	// (GET /public/venues)
 	ListPublicVenues(w http.ResponseWriter, r *http.Request, params ListPublicVenuesParams)
-	// A venue's seat-map summaries (hours tier)
+	// A venue's seat-map summaries (status-driven cache tier)
 	// (GET /public/venues/{venueId}/seat-maps)
 	ListVenueSeatMaps(w http.ResponseWriter, r *http.Request, venueId VenueId)
 	// Create a localized season
@@ -948,13 +948,13 @@ func (_ Unimplemented) GetPublicSeason(w http.ResponseWriter, r *http.Request, s
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// A seat map's full geometry (hours tier)
+// A seat map's full geometry (status-driven cache tier)
 // (GET /public/seat-maps/{seatMapId})
 func (_ Unimplemented) GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// A seat map family's version history (hours tier, TKT-105)
+// A seat map family's version history (status-driven cache tier, TKT-105)
 // (GET /public/seat-maps/{seatMapId}/versions)
 func (_ Unimplemented) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -966,7 +966,7 @@ func (_ Unimplemented) ListPublicVenues(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// A venue's seat-map summaries (hours tier)
+// A venue's seat-map summaries (status-driven cache tier)
 // (GET /public/venues/{venueId}/seat-maps)
 func (_ Unimplemented) ListVenueSeatMaps(w http.ResponseWriter, r *http.Request, venueId VenueId) {
 	w.WriteHeader(http.StatusNotImplemented)
