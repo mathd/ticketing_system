@@ -2,9 +2,9 @@
   "key": "TKT-119",
   "type": "Task",
   "summary": "Make the access alarm surface say the true thing: per-class durable error + ADR-025 §D9 PII wording",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
