@@ -2,9 +2,9 @@
   "key": "TKT-116",
   "type": "Task",
   "summary": "Refund-recovery past idempotency retention, unbounded internal HTTP client, release_pending replay gap (TKT-115 ai-review carry-outs)",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
