@@ -1,0 +1,17 @@
+{
+  "key": "TKT-149",
+  "type": "Task",
+  "summary": "Flaky: TestOnsaleLoadProof fails on a single 5xx in 250 requests (observed during TKT-134)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-134"
+    }
+  ],
+  "description": "Observed during TKT-134's gate runs, on a tree whose only change was a test file in a different Go module (`services/inventory/internal/store`), so it cannot have been caused by that work.\n\n```\nonsale_load_test.go:283: stage sustained  offered=250 started=250 dropped=0 ok=249 rejected=0\n                         client-err=0 server-err=1 inflight max/peak=64/1\n                         hold p50/p95/p99=2.7/3.9/4.5ms lifecycle p50/p95/p99=5.8/8.1/10.4ms\n                         lag p99=2.2ms achieved=25.0 ok/s\nonsale_load_test.go:385: 1 attempts hit server-side errors before the fill (5xx/unexpected status/malformed body)\n--- FAIL: TestOnsaleLoadProof (11.81s)\n```\n\nPassed on an immediate re-run of the identical tree (`EXIT=0`, `PASS: TestOnsaleLoadProof (12.80s)`).\n\n**What to establish:**\n- [ ] What the single 5xx actually was. The assertion reports a count, not the response — so the test proves \"something 5xx'd\" and cannot say what, which is the first thing to fix regardless of the outcome.\n- [ ] Whether a lone server error in 250 attempts should fail the proof at all. TKT-92/93 set this harness's error taxonomy; a zero-tolerance threshold on a load test that shares a machine with the rest of the gate may be the wrong bar — or may be exactly right, in which case the 5xx is a real defect and this is not a flake ticket.\n- [ ] Same discipline as TKT-132/134: no `-count=N`. Either capture the failing response to identify it, or force the condition deterministically.\n\n**Note the pattern.** This is the third flake in this area (TKT-132 recovery sweep, TKT-134 lazy release, this). All three are timing-sensitive assertions over a shared, loaded stack. Worth asking once whether the gate's smoke stage needs isolation guarantees it does not currently have, rather than fixing them one at a time.",
+  "comments": []
+}
