@@ -1,0 +1,17 @@
+{
+  "key": "TKT-148",
+  "type": "Task",
+  "summary": "Buyer hold TTLs anchor to transaction-start now(), so a lock-delayed hold can be born already expired (TKT-134 investigation)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-134"
+    }
+  ],
+  "description": "Found while root-causing TKT-134's flake. **Not** what that flake hit — TKT-134 needed a whole minute to elapse and this mechanism cannot supply that on its own — and deliberately filed separately rather than claimed as its cause.\n\nEvery buyer-claim creation path sets the hold's expiry as `now() + ttl`:\n\n- `services/inventory/internal/store/store.go:286` (GA `CreateHold`)\n- `services/inventory/internal/store/operational.go:309` (operational conversion)\n- `services/inventory/internal/store/reservations.go:218` (reservation draw-down)\n- `services/inventory/internal/store/seat_claims.go:228` (seated claims)\n\nIn PostgreSQL `now()` is **transaction start** time, not insert time. These inserts happen inside a transaction that first takes the pool row lock (ADR-010). Under contention — an on-sale, a long sweep, a slow catalog call inside the same transaction — that lock wait sits **between** the transaction's start and the insert.\n\nSo the TTL is consumed by the wait. A hold created after a wait longer than the TTL is returned to the buyer **already expired**: `liveClaims` (`store.go:62`) evaluates `expires_at > now()` and will not count it, the buyer holds nothing, and the seat they think they have is available to someone else. The window is real on the exact path that matters most — high contention is when holds matter.\n\n`clock_timestamp()` (real time, advancing within the transaction) is the correct anchor for a *duration granted to a buyer*. Note the codebase already uses it where decision time is meant: `activeAllocation` (`channel_allocations.go:24`).\n\n**Scope:**\n- [ ] Anchor new buyer TTLs to insert time (`clock_timestamp() + ttl`) on all four creation paths\n- [ ] Deterministic proof: force a pool-lock wait longer than a short TTL using the existing lock-wait handshake in `channel_allocations_smoke_test.go`, then assert the returned hold still carries a full TTL post-commit\n- [ ] Re-check ADR-024's mixed-clock independence argument before changing semantics — the two clocks are used deliberately in places and this must not flatten that\n- [ ] Consider whether `liveClaims`' own `now()` should stay transaction-start (it probably should: a *read* wants a consistent snapshot; a *grant* wants real time)\n\n**Severity:** availability-path, contention-triggered. A buyer can be issued a dead hold and the seat resold under them.\n\n**Source:** TKT-134's plan draft (`gpt-5.6-sol`), confirmed at plan review. Not fixed in TKT-134 because that ticket's fix is test-only and folding a four-path production change into it would have hidden a real defect inside a flake repair.",
+  "comments": []
+}
