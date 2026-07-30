@@ -1,0 +1,17 @@
+{
+  "key": "TKT-146",
+  "type": "Task",
+  "summary": "No operator path to resolve or unpark a parked recovery order (TKT-116 ai-review incidental)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-116"
+    }
+  ],
+  "description": "Raised by TKT-116's adversarial ai-review (finding F2's second half). **Pre-existing** — TKT-116 did not create it, and closed only the buyer-facing half.\n\n`ReleaseStuckOrder` (`services/commerce/internal/store/recovery.go:122`) sets `recovery_parked_at=now()` once `recovery_attempts >= MaxRecoveryAttempts`, and deliberately leaves `status` alone. `ClaimStuckOrders` requires `recovery_parked_at IS NULL`, so a parked row is permanently excluded from the claimable set. `ParkForReconciliation` also parks, but that one at least moves the status to `reconciliation_required`.\n\nTKT-116 stopped a parked `release_pending` order from telling the buyer 202 forever (it now answers 409, the same as `reconciliation_required`). **The order still cannot be resolved by anything in this repo**: there is no unpark endpoint, no operator command, and no surface listing parked orders. A human is told to act and given nothing to act with.\n\nWanted:\n- a way to LIST parked orders with `recovery_last_error` and `recovery_parked_at` (an operator read, not a buyer one);\n- a guarded unpark/resolve action that clears `recovery_parked_at` and resets `recovery_attempts`, with an audit trail;\n- a decision on whether parked orders should alarm.\n\nCompare `inventory reconcile-pins` (TKT-112), which is the shape of an operator command that already exists in this repo.\n\n**Reviewer's words:** *\"the repository exposes no unpark/resolution path... Provide and test an operator-controlled resolution/unpark path before claiming convergence.\"* TKT-116 does not claim convergence for parked orders — it explicitly answers 409 instead.",
+  "comments": []
+}
