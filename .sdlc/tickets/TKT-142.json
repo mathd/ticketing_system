@@ -1,0 +1,37 @@
+{
+  "key": "TKT-142",
+  "type": "Task",
+  "summary": "TestUUIDPathOperationsDeclareBadRequest closes only the path-param subset — body/query/header 400 sources are still unguarded (TKT-110 follow-up)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### Incidental finding spun out of TKT-110 (agent's own post-review verification, not the ai-review)\n\nTKT-110 added `TestUUIDPathOperationsDeclareBadRequest`\n(`services/catalog/internal/api/lifecycle_badrequest_test.go`), which closes a *class*: every catalog\noperation with a `format: uuid` **path** parameter must declare `'400'`, because the oapi-codegen\nbinder can always reject one.\n\n**That is one subset of the class, not the class.** The generated binder and the kin-openapi request\nvalidator can also emit a 400 from:\n\n- a **required `requestBody`** that is absent or schema-invalid (measured on TKT-110: invalid JSON,\n  wrong property type, `minLength` violation, and a wrong `Content-Type` all produce 400 from the\n  request validator),\n- a **query parameter** that fails to bind or violates its schema,\n- a **required header** parameter, same.\n\n`getOpenAPISpec` is correctly outside this (it is served before validation).\n\n**No current gap** — verified at TKT-110's merge: every catalog operation with a request body or a\nconstrained query/header parameter already declares `'400'`, and the nine that did not have one now do.\nSo this is latent, not live. But the invariant test's name and failure message speak only of path\nparameters, and a future operation with a required body and no uuid path parameter would slip through\nexactly the way these nine did — which is the failure mode ADR-028's corrected Consequences now\ndescribe: *any status the binder or the request validator can write must be declared.*\n\n**Scope to settle at plan time**\n\n- [ ] Broaden the invariant to every rejection source the request layer has, or add a second invariant\n      test per source — decide which reads better as a failure message\n- [ ] Decide whether the same invariant belongs in the four non-codegen services. Their request\n      validator does **not** reject malformed UUIDs today (`format: uuid` is unenforced repo-wide — no\n      `EnableFormatValidation` / `DefineStringFormat` call exists), and their hand-rolled `parseUUID`\n      400s *are* declared, so the answer may legitimately be no\n- [ ] Related but separable: whether to enable `openapi3.EnableFormatValidation` at all. TKT-110\n      explicitly rejected it as out of scope — it changes request-validation behaviour on every\n      operation in all five services and could turn currently-succeeding requests into 400s. If that\n      is ever adopted, this invariant's shape changes, so sequence them\n\n**Governing:** ADR-028 (fail-closed on undeclared statuses, and its TKT-110 correction that the\ncarve-out does not hold for catalog), ADR-009 (spec is authoritative; any spec change ⇒ regen).\n\n**Not urgent.** Nothing is broken today; this raises the ceiling on a test that currently prevents a\nrecurrence of nine real production defects.\n",
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-028",
+        "why": "Its TKT-110-corrected Consequences state the rule this ticket would enforce more completely: for catalog, any status the binder or request validator can write must be declared, because response validation is the outermost wrap."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Spec-authoritative: if the outcome adds declarations, `make generate` runs and the regen is committed before the gate."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The test to broaden, and TKT-110's measurements of every 400 source it does not yet cover.",
+        "link": "services/catalog/internal/api/lifecycle_badrequest_test.go"
+      },
+      {
+        "summary": "Source ticket with the full probe evidence (binder vs request validator, and why format:uuid is unenforced).",
+        "link": "board: TKT-110"
+      }
+    ],
+    "capturedAt": "2026-07-29",
+    "note": "Minimal mémo baked at creation — born from a review-time finding, so it bypasses normal shaping (per decomposition.md)."
+  },
+  "comments": [],
+  "links": []
+}
