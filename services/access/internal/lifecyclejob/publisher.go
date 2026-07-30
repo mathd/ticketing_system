@@ -35,7 +35,7 @@ func (p *JetStreamPublisher) PublishRaw(ctx context.Context, subject string, eve
 //
 // # What this proves, and what it does not
 //
-// It proves an integrity alarm has somewhere durable to land: the subject is
+// It proves this class's alarm has somewhere durable to land: the subject is
 // bound to a consumer, so an alarm is RETAINED for an operator to collect rather
 // than published into a void and dropped.
 //
@@ -56,21 +56,41 @@ func (p *JetStreamPublisher) PublishRaw(ctx context.Context, subject string, eve
 // healthcheck probes /readyz, so a continuous check here would let a broker
 // hiccup take every turnstile offline — denying real customers, which is the
 // exact failure §D6 chose fail-open to avoid.
-func RequireAlarmRoute(ctx context.Context, js jetstream.JetStream, stream, durable, subject string) error {
+// AlarmRoute names one alarm class's boot-checked route.
+//
+// A struct rather than more positional strings: this helper serves THREE classes, each
+// with its own durable, subject and environment variable, and the signature already
+// carried three adjacent strings. A fourth would be a swap the compiler cannot catch, and
+// the whole point of TKT-119 is that these values were being reported wrongly. Named
+// fields make the class/env/subject association reviewable at each call site.
+//
+// DurableEnv is the variable an operator must set — it belongs in the "is required"
+// sentence, which is the only message that asks for an action. Class names the alarm class
+// for the broker-lookup failures, which need to say WHICH route is broken.
+type AlarmRoute struct {
+	Stream     string
+	Durable    string
+	Subject    string
+	DurableEnv string
+	Class      string
+}
+
+func RequireAlarmRoute(ctx context.Context, js jetstream.JetStream, route AlarmRoute) error {
+	stream, durable, subject := route.Stream, route.Durable, route.Subject
 	if durable == "" {
-		return fmt.Errorf("ACCESS_LIFECYCLE_ALARM_DURABLE is required: fail-open (ADR-021 §D6) needs somewhere durable for integrity alarms to land")
+		return fmt.Errorf("%s is required: fail-open (ADR-021 §D6) needs somewhere durable for %s alarms to land", route.DurableEnv, route.Class)
 	}
 	s, err := js.Stream(ctx, stream)
 	if err != nil {
-		return fmt.Errorf("integrity alarm stream %q: %w", stream, err)
+		return fmt.Errorf("%s alarm stream %q: %w", route.Class, stream, err)
 	}
 	c, err := s.Consumer(ctx, durable)
 	if err != nil {
-		return fmt.Errorf("integrity alarm durable %q on stream %q: %w", durable, stream, err)
+		return fmt.Errorf("%s alarm durable %q on stream %q: %w", route.Class, durable, stream, err)
 	}
 	info, err := c.Info(ctx)
 	if err != nil {
-		return fmt.Errorf("integrity alarm durable %q: %w", durable, err)
+		return fmt.Errorf("%s alarm durable %q: %w", route.Class, durable, err)
 	}
 	filters := info.Config.FilterSubjects
 	if info.Config.FilterSubject != "" {
@@ -81,7 +101,7 @@ func RequireAlarmRoute(ctx context.Context, js jetstream.JetStream, stream, dura
 			return nil
 		}
 	}
-	return fmt.Errorf("integrity alarm durable %q does not filter %q (filters: %v)", durable, subject, filters)
+	return fmt.Errorf("%s alarm durable %q does not filter %q (filters: %v)", route.Class, durable, subject, filters)
 }
 
 // ObserveAlarmRoute registers the operator durable's pending depth.
@@ -98,7 +118,7 @@ func RequireAlarmRoute(ctx context.Context, js jetstream.JetStream, stream, dura
 // turnstile on paying customers.
 func ObserveAlarmRoute(meter metric.Meter, js jetstream.JetStream, stream, durable string) error {
 	pending, err := meter.Int64ObservableGauge("access.lifecycle.alarm.durable_pending",
-		metric.WithDescription("Alarms sitting unread in an operator durable, per the durable attribute (integrity and admission-conflict classes). Sustained non-zero means nobody is collecting them: alarms are retained but unmonitored, which ADR-021 §D6 forbids for a fail-open deployment."))
+		metric.WithDescription("Alarms sitting unread in an operator durable, per the durable attribute (integrity, admission-conflict and policy-conflict classes). Sustained non-zero means nobody is collecting them: alarms are retained but unmonitored, which ADR-021 §D6 forbids for a fail-open deployment."))
 	if err != nil {
 		return err
 	}
@@ -115,9 +135,9 @@ func ObserveAlarmRoute(meter metric.Meter, js jetstream.JetStream, stream, durab
 		if err != nil {
 			return nil
 		}
-		// The durable is a series attribute: two alarm classes (integrity,
-		// admission-conflict) each register this gauge, and without it the
-		// second callback's observation would collide with the first's.
+		// The durable is a series attribute: three alarm classes (integrity,
+		// admission-conflict, policy-conflict) each register this gauge, and
+		// without it their observations would collide.
 		o.ObserveInt64(pending, int64(info.NumPending), metric.WithAttributes(attribute.String("durable", durable)))
 		return nil
 	}, pending)

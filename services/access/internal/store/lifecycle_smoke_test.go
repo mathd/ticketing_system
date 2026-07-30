@@ -884,8 +884,8 @@ func TestAlarmOutboxClaimPublishCycle(t *testing.T) {
 	if claimed[0].Subject != SubjectIntegrityAlarm {
 		t.Fatalf("alarm subject = %q", claimed[0].Subject)
 	}
-	// The payload carries bounded identifiers only: no QR payload, no buyer, no
-	// guest reference (ADR-003 §D3).
+	// The payload carries bounded identifiers, enums and the occurrence time: no QR
+	// payload, no buyer, no guest reference (ADR-025 §D9 amended TKT-119; ADR-003 §D3).
 	body := string(claimed[0].Envelope)
 	for _, forbidden := range []string{"qr_payload", "guest_order_ref", "buyer_id", "signed-credential"} {
 		if contains(body, forbidden) {

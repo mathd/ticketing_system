@@ -18,7 +18,8 @@ import (
 //
 // These rows land in `lifecycle_integrity_alarm_outbox` and are part of the
 // access integrity surface (ADR-021), so "byte-for-byte identical" has to hold
-// here too. ADR-025 §D9 constrains the alarm PAYLOAD to identifiers and enums;
+// here too. ADR-025 §D9 (amended TKT-119) constrains the alarm PAYLOAD to bounded
+// identifiers, enums and operational scalars;
 // this ticket changes only the envelope wrapper, and these goldens are what
 // makes that claim checkable rather than asserted.
 

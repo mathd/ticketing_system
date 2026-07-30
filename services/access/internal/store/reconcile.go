@@ -292,7 +292,8 @@ func (p *Postgres) reconcileReplay(ctx context.Context, tx *sql.Tx, ticketID, oc
 }
 
 // conflictAlarmData is the admission-conflict alarm payload. Bounded
-// identifiers and enums only (ADR-025 §D9).
+// bounded identifiers plus operational scalars — the device-claimed time §D5 requires
+// and a skew boolean; no free text, no nested objects (ADR-025 §D9, amended TKT-119).
 type conflictAlarmData struct {
 	AlarmID          uuid.UUID `json:"alarm_id"`
 	OrganizerID      uuid.UUID `json:"organizer_id"`

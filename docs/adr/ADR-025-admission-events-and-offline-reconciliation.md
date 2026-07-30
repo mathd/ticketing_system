@@ -190,8 +190,20 @@ conflicts. Together every physical admission that Access learns about is represe
    unchanged (see Context) — no gate identity or conflict reason enters the canonical form;
    reasons live in the alarm payload. Structured, signed gate provenance would be a
    canonical-version design and is out of scope.
-9. **PII.** Occurrence ids and alarm payloads carry bounded identifiers and enums only — no
-   buyer, no guest reference, no raw scanner-operator identity (ADR-003 §D3).
+9. **PII.** *Amended (TKT-119):* Occurrence ids and alarm payloads carry bounded identifiers,
+   enums drawn from fixed vocabularies, and operational scalars that are not themselves direct
+   person identifiers — timestamps, counters, booleans and version numbers — but **no free text,
+   no nested objects**, no buyer, no guest reference and no raw scanner-operator identity
+   (ADR-003 §D3). This is a producer-schema constraint on honest application changes; it is
+   **not** a privacy or non-linkability guarantee, and **not** containment against an adversary
+   with write access to the Access database (ADR-021 §The trust boundary). In particular
+   `device_occurred_at` is device-*claimed* and correlates with a physical gate event.
+
+   *The original wording said "bounded identifiers and enums only", which no shipped payload has
+   ever satisfied — not even the integrity class this clause was written for, whose `alarmData`
+   has always carried `occurred_at`. §D5 REQUIRES the device-claimed time, so the clause
+   contradicted its own ADR. The amendment describes what is emitted and keeps the prohibition
+   unchanged; it does not widen what is allowed to identify a person.*
 10. **Contracts.** The verified inventory at HEAD, NATS side: redemption emits **no**
     cross-service domain event; the lifecycle alarm outbox carries exactly one subject
     (`platform.access.lifecycle-integrity.alarm`); Access separately publishes

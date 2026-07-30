@@ -194,18 +194,27 @@ func run() error {
 	if alarmStream == "" {
 		alarmStream = defaultAlarmStreamValue
 	}
-	if err := lifecyclejob.RequireAlarmRoute(ctx, js, alarmStream, os.Getenv(envAlarmDurable), accessstore.SubjectIntegrityAlarm); err != nil {
+	if err := lifecyclejob.RequireAlarmRoute(ctx, js, lifecyclejob.AlarmRoute{
+		Stream: alarmStream, Durable: os.Getenv(envAlarmDurable), Subject: accessstore.SubjectIntegrityAlarm,
+		DurableEnv: envAlarmDurable, Class: "integrity",
+	}); err != nil {
 		return fmt.Errorf("integrity alarm route: %w", err)
 	}
 	// The admission-conflict class (ADR-025 §D6) gets the same fail-closed boot
 	// guard: reconciliation owes a durable alarm per conflict, which is only
 	// meaningful while the subject has somewhere durable to land.
-	if err := lifecyclejob.RequireAlarmRoute(ctx, js, alarmStream, os.Getenv(envConflictDurable), accessstore.SubjectAdmissionConflictAlarm); err != nil {
+	if err := lifecyclejob.RequireAlarmRoute(ctx, js, lifecyclejob.AlarmRoute{
+		Stream: alarmStream, Durable: os.Getenv(envConflictDurable), Subject: accessstore.SubjectAdmissionConflictAlarm,
+		DurableEnv: envConflictDurable, Class: "admission conflict",
+	}); err != nil {
 		return fmt.Errorf("admission conflict alarm route: %w", err)
 	}
 	// The derived policy-conflict class (ADR-025 §D2, TKT-87) is revisable —
 	// raise/withdraw pairs — but no less owed: same fail-closed boot guard.
-	if err := lifecyclejob.RequireAlarmRoute(ctx, js, alarmStream, os.Getenv(envPolicyDurable), accessstore.SubjectAdmissionPolicyConflictAlarm); err != nil {
+	if err := lifecyclejob.RequireAlarmRoute(ctx, js, lifecyclejob.AlarmRoute{
+		Stream: alarmStream, Durable: os.Getenv(envPolicyDurable), Subject: accessstore.SubjectAdmissionPolicyConflictAlarm,
+		DurableEnv: envPolicyDurable, Class: "policy conflict",
+	}); err != nil {
 		return fmt.Errorf("policy conflict alarm route: %w", err)
 	}
 	interval, err := checkpointInterval()

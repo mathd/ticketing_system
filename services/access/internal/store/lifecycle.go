@@ -346,8 +346,11 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 	return nil
 }
 
-// alarmData is the integrity alarm payload. Bounded identifiers and enums only:
-// no QR payload, no buyer, no guest reference, no raw event body (ADR-003 §D3).
+// alarmData is the integrity alarm payload: bounded identifiers, enums and the
+// occurrence time — no QR payload, no buyer, no guest reference, no raw event body
+// (ADR-025 §D9, amended TKT-119; ADR-003 §D3). This payload is why §D9 was amended:
+// it has carried a timestamp since the class shipped, so "identifiers and enums only"
+// never described it.
 type alarmData struct {
 	AlarmID     uuid.UUID `json:"alarm_id"`
 	OrganizerID uuid.UUID `json:"organizer_id"`

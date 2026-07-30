@@ -266,12 +266,12 @@ admission that already happened, and an occurrence that never syncs is not repre
 
 The payload carries four bounded identifiers, one device-claimed timestamp and one boolean —
 `alarm_id`, `organizer_id`, `ticket_id`, `occurrence_id`, `device_occurred_at`, `skew_flagged` — and
-no PII (ADR-003 §D3). That floor is enforced, not just asserted:
-`TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm` pins the exact key set of the persisted
-envelope at both levels, decodes every value at both levels into the scalar it is contracted to be —
-rejecting `null` explicitly, which every one of those decodes otherwise accepts — so PII cannot hide
-inside an existing key; and it pins `conflictAlarmData`'s json tags **and field types** at the
-source, which is the only place a `,omitempty` field can be caught, since such a field is simply
+no buyer, guest reference or raw scanner-operator identity (ADR-025 §D9 as amended by TKT-119;
+ADR-003 §D3). Be precise about what is enforced: `TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm`
+pins the exact key set of the persisted envelope at both levels, decodes every value at both levels
+into the scalar it is contracted to be — rejecting `null` explicitly, which every one of those
+decodes otherwise accepts — so a new field or a nested object cannot arrive unnoticed; and it pins
+`conflictAlarmData`'s json tags **and field types** at the source, which is the only place a `,omitempty` field can be caught, since such a field is simply
 absent from any fixture that leaves it zero. There is deliberately **no `reason` field**: unlike the policy-conflict class
 (whose payload carries `rule`), this class has exactly one
 condition (ADR-025 §D2 scopes `duplicate_admit` to single-entry tickets, where any occurrence beyond
@@ -279,6 +279,11 @@ the one `redeemed` is the conflict), so **the subject is the reason** and a one-
 carry no information. If a second condition is ever added to this class, introducing a reason space
 is an [ADR-017](adr/ADR-017-domain-event-schema-evolution.md) §3 decision on this contract — a
 required field fires §3b independently of whether any consumer exists — not a payload tweak.
+
+What that test is **not**: proof that the payload contains no PII, and not a constraint on anyone
+who can write to the Access database. It is a producer-schema check against honest application
+changes (ADR-021 §The trust boundary). `device_occurred_at` is device-*claimed* and correlates with
+a physical gate event, so the payload is bounded, not anonymous.
 
 ## Journal signing key rotation
 

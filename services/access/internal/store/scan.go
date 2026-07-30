@@ -299,7 +299,8 @@ func policyConflictID(ticketID uuid.UUID, c PolicyConflict) uuid.UUID {
 }
 
 // policyConflictAlarmData is the derived-conflict alarm payload. Bounded
-// identifiers and enums only (ADR-003 §D3). Revisable is always true: this
+// bounded identifiers, enums and operational scalars; no free text, no nested
+// objects (ADR-025 §D9, amended TKT-119). Revisable is always true: this
 // class is a projection that can be withdrawn, never trail evidence.
 type policyConflictAlarmData struct {
 	AlarmID      uuid.UUID `json:"alarm_id"`

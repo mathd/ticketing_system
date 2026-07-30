@@ -383,9 +383,16 @@ func TestReconcileRecordsOfflineRedemption(t *testing.T) {
 	}
 }
 
-// assertConflictAlarmPIIFloor pins the PII floor (ADR-025 §D9: bounded
-// identifiers and enums only) on the bytes actually owed to the operator — the
+// assertConflictAlarmPIIFloor pins the payload-schema constraint (ADR-025 §D9,
+// amended TKT-119: bounded identifiers, enums and operational scalars — no free
+// text, no nested objects) on the bytes actually owed to the operator — the
 // persisted outbox envelope, not a struct the producer happens to use today.
+//
+// What this can and cannot prove: it pins the exact key set and decodes every value
+// into the scalar it is contracted to be, so a new field or a nested object cannot
+// arrive unnoticed. It is a producer-schema check on honest changes. It cannot prove
+// the absence of PII in general, and it constrains no one with write access to the
+// database (ADR-021 §The trust boundary).
 // The envelope's top level is an anonymous inline struct inside
 // oweConflictAlarm, so the persisted row is the only seam that sees both levels.
 //
