@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -109,16 +110,32 @@ func NewKeyring(activeKID string, activeKey []byte, historical string) (*Keyring
 			// key nobody recorded, undetected until a verify-journal no deployment
 			// schedules.
 			//
-			// If the active key is byte-for-byte the base64 of a key in this same list,
-			// that is what happened. Refuse to start: an operator reading one error beats
-			// an operator remembering to compare a value, and unlike a logged fingerprint
-			// this reveals nothing about any key to anyone who can read logs.
+			// If the active key is the base64 of a key in this same list, that is what
+			// happened. Refuse to start: an operator reading one error beats an operator
+			// remembering to compare a value, and unlike a logged fingerprint this reveals
+			// nothing about any key to anyone who can read logs.
 			//
-			// Bound, stated rather than implied: this catches the mistake the runbook can
-			// actually produce. Base64 of some key that is not in the ring is not
-			// detectable here, and no check in this package can make a wrong-but-plausible
-			// secret detectable.
-			if hmac.Equal(activeKey, []byte(encoded)) {
+			// Compare against the CANONICAL re-encoding of the decoded secret, never
+			// against `encoded` as received (ai-review pass 2). RawStdEncoding is
+			// non-strict: it accepts a final quantum with non-zero unused bits, so two
+			// different texts decode to identical bytes — verified, not assumed. A
+			// historical entry stored in such a form would decode fine while its text
+			// differed from what step 1 prints, and comparing texts would wave the paste
+			// straight through. Re-encoding collapses every accepted representation to one.
+			//
+			// Two bounds, stated rather than implied:
+			//   - It catches base64 of a key IN the ring — the mistake the runbook can
+			//     actually produce. Base64 of some other key, or any other
+			//     wrong-but-plausible secret, is undetectable, and nothing in this package
+			//     can make it detectable.
+			//   - It is SOUND for the mistake but not for intent: a raw key deliberately
+			//     chosen to equal a ring member's base64 is indistinguishable from the
+			//     error and is rejected too. That false positive is accepted on purpose —
+			//     it needs a key that is both arbitrary and exactly 22+ base64 characters
+			//     of a secret already in the ring, the error says exactly what to change,
+			//     and an override switch on a fail-closed check is worth less than the
+			//     case it would serve.
+			if subtle.ConstantTimeCompare(activeKey, []byte(base64.RawStdEncoding.EncodeToString(secret))) == 1 {
 				return nil, fmt.Errorf("journal keyring: the active key is the base64 encoding of historical key %q — JOURNAL_SIGNING_KEY is RAW (see docs/development.md; you likely pasted step 1's output into step 3)", kid)
 			}
 			// Two kids that SIGN THE SAME would let a database writer who holds NO secret

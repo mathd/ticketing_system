@@ -197,3 +197,41 @@ func TestNewKeyringRejectsBase64PastedActiveKey(t *testing.T) {
 		t.Fatalf("a correct rotation must still build: %v", err)
 	}
 }
+
+// The guard compares against the CANONICAL re-encoding of the decoded secret, not against
+// the text the entry happened to carry (ai-review pass 2). base64.RawStdEncoding is
+// NON-STRICT: a final quantum with non-zero unused bits decodes fine, so two different
+// texts yield identical secrets. A historical entry stored in such a form would decode
+// normally while its text differed from what the runbook's step 1 prints — and a
+// text-to-text comparison would wave the resulting paste straight through, recreating the
+// exact silent failure this guard exists to stop.
+func TestNewKeyringCatchesBase64PasteAcrossNonCanonicalHistoricalEncoding(t *testing.T) {
+	const outgoing = "retired-journal-secret-v1-abcdef"
+	canonical := base64.RawStdEncoding.EncodeToString([]byte(outgoing))
+
+	// A non-canonical but ACCEPTED encoding of the same secret: flip the unused trailing
+	// bits by advancing the final character.
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	last := canonical[len(canonical)-1]
+	noncanonical := canonical[:len(canonical)-1] + string(alphabet[(strings.IndexByte(alphabet, last)+1)%64])
+
+	// Guard the premise: if Go ever makes this strict, this test must fail loudly rather
+	// than silently stop exercising the bypass it was written for.
+	decoded, err := base64.RawStdEncoding.DecodeString(noncanonical)
+	if err != nil || string(decoded) != outgoing {
+		t.Skipf("RawStdEncoding no longer accepts non-canonical trailing bits (err=%v); the bypass this covers is gone", err)
+	}
+	if noncanonical == canonical {
+		t.Fatal("failed to construct a distinct non-canonical encoding")
+	}
+
+	// The operator pastes the CANONICAL text (what step 1 prints) while the ring holds the
+	// non-canonical one. Text comparison misses this; canonical comparison catches it.
+	_, err = NewKeyring("local-v2", []byte(canonical), "local-v1="+noncanonical)
+	if err == nil {
+		t.Fatal("base64 paste went undetected because the historical entry used a different accepted encoding")
+	}
+	if !strings.Contains(err.Error(), "RAW") {
+		t.Fatalf("error must tell the operator which variable is raw, got: %v", err)
+	}
+}

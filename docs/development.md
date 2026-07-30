@@ -319,6 +319,10 @@ Two honest bounds:
 
 - It catches base64 of a key **in the ring**. Base64 of some other key, or any other
   wrong-but-plausible secret, is not detectable — nothing in this package can make that detectable.
+- It cannot tell the mistake from intent. A raw key deliberately chosen to equal a ring member's
+  base64 is rejected too. That needs a key that is both arbitrary and exactly the base64 of a secret
+  already in the ring; the error names what to change, and there is deliberately no override — an
+  escape hatch on a fail-closed check is worth less than the case it would serve.
 - It is not a security control. This ring is secret material and every holder can forge under every
   kid in it (ADR-021 §the trust boundary). It catches an honest operator's paste error.
 
