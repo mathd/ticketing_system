@@ -1,9 +1,11 @@
 {
   "key": "TKT-134",
   "type": "Task",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "classification": "simple",
   "summary": "Flaky: TestScheduledReleaseIsLazyAndObservable — channel and public reads disagree across the release boundary",
