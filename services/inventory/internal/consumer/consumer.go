@@ -37,10 +37,14 @@ type catalogStore interface {
 }
 
 type Consumer struct {
-	js       jetstream.JetStream
-	st       catalogStore
-	resolver PerformanceResolver
-	ready    atomic.Bool
+	// terminated latches once the consume context has closed. Separate from
+	// ready because it is one-way: readiness is a running assessment, this is a
+	// fact about the consumer's lifetime (TKT-122).
+	terminated atomic.Bool
+	js         jetstream.JetStream
+	st         catalogStore
+	resolver   PerformanceResolver
+	ready      atomic.Bool
 	// readinessMu serializes the two writers that can decide readiness once
 	// consumption is running (TKT-90 reorder): handle's skew latch and
 	// refreshStartupReadiness. Without it, the startup check can read the
@@ -60,7 +64,20 @@ type Consumer struct {
 func New(js jetstream.JetStream, st catalogStore, resolver PerformanceResolver, log *slog.Logger) *Consumer {
 	return &Consumer{js: js, st: st, resolver: resolver, log: log, retryBackoff: 5 * time.Second}
 }
-func (c *Consumer) Ready() bool { return c.ready.Load() }
+
+// Ready is false once termination has been observed, whatever the latch says.
+//
+// ready alone is not enough (TKT-122 ai-review). durableconsumer.Wait stores
+// false through a plain atomic, WITHOUT readinessMu — it is a third readiness
+// writer that TKT-90's mutex never contemplated, since that mutex was introduced
+// to serialize handle's skew latch against refreshStartupReadiness. So a startup
+// pass that checked "not cancelled" and then stored true could overwrite a false
+// Wait had just latched, and /readyz would report healthy for a terminated
+// consumer until Run's deferred store ran. Serializing the re-assert would only
+// SHRINK that window to a mutex handoff; a terminal flag closes it, because
+// termination never self-heals (ADR-017 §240-241) and so a latch that outlives
+// the flag can never be right.
+func (c *Consumer) Ready() bool { return c.ready.Load() && !c.terminated.Load() }
 
 // publicationData is the per-subject payload — inventory's own, and it stays
 // here (ADR-033 puts only the envelope in the kernel). publication is the
@@ -469,13 +486,18 @@ func (c *Consumer) refreshStartupReadiness(ctx context.Context) error {
 		c.log.Error("unresolved quarantined catalog events; staying unready until reprocess-quarantine + restart")
 		return nil
 	}
-	// TKT-122: never latch true under a cancelled context, checked HERE while
-	// readinessMu is still held. Termination cancels the startup context and
-	// durableconsumer.Wait latches ready false; a true stored afterwards would
-	// self-heal that latch and report a terminated consumer as healthy — the
-	// silent stall ADR-017 §236-241 forbids. Inside the mutex because that is
-	// what makes it atomic against handle's skew latch (TKT-90): outside it, a
-	// cancellation landing between the check and the Store reopens the window.
+	// TKT-122: never latch true once termination has been observed, or under a
+	// cancelled context. Both checked HERE while readinessMu is still held, so
+	// they are atomic against handle's skew latch (TKT-90).
+	//
+	// The terminated flag is the load-bearing one and Ready() consults it too:
+	// this check alone is a TOCTOU, because Wait's false latch does not take this
+	// mutex and can land between the check and the Store below (ai-review). The
+	// context check stays because it also covers an ordinary shutdown, where
+	// there is no termination to flag.
+	if c.terminated.Load() {
+		return errors.New("startup readiness abandoned: consumer terminated")
+	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("startup readiness abandoned: %w", err)
 	}
@@ -522,6 +544,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 	consumeDone := make(chan error, 1)
 	go func() {
 		err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering")
+		if err != nil {
+			// BEFORE the cancellation, so a startup pass that is about to publish
+			// readiness cannot observe "not cancelled yet" and then store true
+			// over the false Wait has already latched.
+			c.terminated.Store(true)
+		}
 		cancelStartup()
 		consumeDone <- err
 	}()
@@ -541,8 +569,23 @@ func (c *Consumer) Run(ctx context.Context) error {
 		// cannot filter it away. Returning startupConverge's context.Canceled
 		// instead would be filtered as a clean shutdown and the process would exit
 		// 0 with nothing consuming.
-		if startupCtx.Err() != nil && ctx.Err() == nil {
-			return <-consumeDone
+		if startupCtx.Err() != nil {
+			// Block, do not peek: startupCtx is cancelled, so either the observer
+			// cancelled it (and has sent, or is about to) or the parent did (and
+			// Wait's ctx.Done() arm returns promptly). Either way the send happens,
+			// so this is bounded — and a non-blocking peek would take the default
+			// branch in the window between cancelStartup and the send, losing the
+			// verdict it exists to read.
+			//
+			// The observer's answer wins whenever it has one, WITHOUT consulting
+			// ctx.Err() (ai-review): a durable that died and a SIGTERM that landed
+			// a moment later both leave ctx cancelled, and gating on that returned
+			// startupConverge's context.Canceled — which both mains classify as a
+			// clean stop and neither logs. A real termination would have vanished
+			// entirely, which is precisely what ADR-034 now promises cannot happen.
+			if observed := <-consumeDone; observed != nil {
+				return observed
+			}
 		}
 		return err
 	}

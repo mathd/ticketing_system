@@ -171,8 +171,14 @@ consumer does stays with the service.**
       termination `Run` returns `waitConsume`'s durable-named diagnostic rather than
       `startupConverge`'s `context.Canceled`, which is what keeps `main`'s
       `isShutdownConsumerError` from filtering a real failure away as a clean stop.
-      `refreshStartupReadiness` additionally refuses to latch `true` under a cancelled context,
-      checked while `readinessMu` is held so it stays atomic against TKT-90's skew latch. The
+      `refreshStartupReadiness` additionally refuses to latch `true` once termination has been
+      observed. That check hangs off a one-way `terminated` flag which `Ready()` also consults, not
+      off the context alone: `durableconsumer.Wait` stores `false` through a plain atomic **without**
+      `readinessMu`, so it is a third readiness writer TKT-90's mutex never contemplated, and a
+      context-only check is a TOCTOU that lets a startup pass overwrite the false Wait just latched.
+      Serializing the store would merely shrink that window to a mutex handoff; a terminal flag
+      closes it, because termination never self-heals (§240-241) and so a latch outliving the flag
+      can never be right. The
       original text is kept below because the reasoning for deferring it is still the record of why
       it waited.
       **Inventory's adoption had a startup-shaped hole, and this ADR should not be read as

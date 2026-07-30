@@ -64,11 +64,22 @@ func (f *fakeConsumeContext) Closed() <-chan struct{} { return f.closed }
 type blockingResolver struct {
 	entered chan struct{}
 	once    sync.Once
+	// cancelled/release let a test hold the pass INSIDE its unwind, after its
+	// context died but before it returns. That window is the only place a
+	// simultaneous parent cancellation can be injected deterministically; a sleep
+	// after closing the durable lands far too late, because the pass has already
+	// returned by then.
+	cancelled chan struct{}
+	release   chan struct{}
 }
 
 func (r *blockingResolver) PoolOfferState(ctx context.Context, _ uuid.UUID) (PoolOfferState, error) {
 	r.once.Do(func() { close(r.entered) })
 	<-ctx.Done()
+	if r.cancelled != nil {
+		close(r.cancelled)
+		<-r.release
+	}
 	return PoolOfferState{}, ctx.Err()
 }
 
@@ -161,5 +172,106 @@ func TestRefreshStartupReadinessNeverStoresTrueAfterCancellation(t *testing.T) {
 	}
 	if c.Ready() {
 		t.Fatal("readiness stored true after its context was cancelled; a terminated consumer would report healthy")
+	}
+}
+
+// ai-review [high]. The ctx.Err() guard alone was a TOCTOU: durableconsumer.Wait
+// latches ready false through a plain atomic WITHOUT readinessMu, so a startup
+// pass could check "not cancelled", have Wait latch false underneath it, and then
+// store true over that latch. /readyz would report healthy for a terminated
+// consumer until Run's deferred store ran.
+//
+// Serializing the re-assert under the mutex would only SHRINK that window to a
+// mutex handoff. The terminal flag closes it: termination never self-heals
+// (ADR-017 §240-241), so a readiness latch that outlives the flag can never be
+// correct, and Ready() consults both.
+//
+// Deterministic on purpose — it asserts the invariant, not an interleaving, so it
+// cannot flake and cannot pass by winning a race.
+func TestReadyIsFalseOnceTerminatedRegardlessOfTheLatch(t *testing.T) {
+	c := &Consumer{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	c.ready.Store(true)
+	if !c.Ready() {
+		t.Fatal("a consumer that has not terminated must report its latch")
+	}
+
+	// Exactly the state the race produces: the latch says true, termination has
+	// been observed. The latch must not win.
+	c.terminated.Store(true)
+	if c.Ready() {
+		t.Fatal("readiness reported true after termination; /readyz would call a dead consumer healthy")
+	}
+
+	// And the startup pass must refuse to publish readiness at all in that state,
+	// so the flag is not the only thing standing between a terminated consumer and
+	// a true latch.
+	c.ready.Store(false)
+	c.st = &fakeCatalogStore{}
+	if err := c.refreshStartupReadiness(context.Background()); err == nil {
+		t.Fatal("startup readiness must refuse to complete after termination")
+	}
+	if c.ready.Load() {
+		t.Fatal("startup readiness stored true after termination was observed")
+	}
+}
+
+// ai-review [medium]. A durable that dies and a SIGTERM that lands a moment later
+// both leave the parent context cancelled. Gating the observer's verdict on
+// ctx.Err()==nil made Run return startupConverge's context.Canceled in that case —
+// which both mains classify as a clean stop and neither logs, so a real
+// termination vanished entirely, exit 0 and silent.
+func TestTerminationWinsOverASimultaneousParentCancellation(t *testing.T) {
+	cc := &fakeConsumeContext{closed: make(chan struct{})}
+	resolver := &blockingResolver{
+		entered:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	st := &fakeCatalogStore{pools: []store.PoolOffering{{SlotID: uuid.New(), ClosureStatus: "open"}}}
+
+	c := &Consumer{
+		js:           fakeJS{stream: fakeStream{cons: fakeConsumer{cc: cc}}},
+		st:           st,
+		resolver:     resolver,
+		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		retryBackoff: time.Hour,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- c.Run(ctx) }()
+
+	select {
+	case <-resolver.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconciliation never started")
+	}
+	close(cc.closed) // the durable dies...
+
+	// ...and the operator stops the service while the pass is still unwinding, so
+	// that by the time Run picks an error BOTH contexts are cancelled. Injected
+	// here rather than after a sleep: the pass returns the instant its context
+	// dies, so anything later misses the window entirely and the test passes
+	// against the defect (confirmed by mutation).
+	select {
+	case <-resolver.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the pass never observed its cancellation")
+	}
+	cancel()
+	close(resolver.release)
+
+	var err error
+	select {
+	case err = <-errc:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	if err == nil || !strings.Contains(err.Error(), "inventory-catalog-offering") {
+		t.Fatalf("the durable diagnostic must survive a simultaneous shutdown, got %v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("a termination reported as a cancellation is filtered by main and exits 0: %v", err)
 	}
 }
