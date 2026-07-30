@@ -1,0 +1,12 @@
+{
+  "key": "TKT-141",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Seat-map list reads: hours tier hides membership changes (TKT-107 follow-up)",
+  "description": "### An all-published seat-map list still carries hour-long membership staleness\n\nRaised in TKT-107's plan-review as an internal inconsistency in the draft, resolved there by\n**keeping** the hours tier and documenting the gap (TKT-107 §D3, most-reversible rule). This ticket\nowns closing it.\n\nTKT-107 made the three public seat-map reads emit `no-store` unless the payload is non-empty and\nevery seat map in it is `published` (`cacheControlForSeatMaps`,\n`services/catalog/internal/api/server.go`). That fixes staleness of draft **content**. It does not\nfix staleness of list **membership**:\n\n- `GET /public/venues/{venueId}/seat-maps` — an all-published response is hours-tier. Author a new\n  seat map a minute later and it stays invisible for up to an hour, which is the same \"an authoring\n  write looks lost\" failure TKT-107 was filed for.\n- `GET /public/seat-maps/{id}/versions` — same shape: an all-published family is hours-tier, and an\n  ADR-029 edit inserts a new published version that a cached history cannot show.\n\nTKT-107 deliberately did not close this: demoting the list tier would retire ADR-004's hours tier for\nthe only reads that use it, on a judgement no second model reviewed, and it is not observable today\n(no CDN or shared cache exists anywhere in the stack — see ADR-004 § Amendment TKT-128).\n\n**Decide between** (a) demote both *list* reads to a shorter tier (minutes, or `no-store`) and leave\nonly by-id published geometry hours-tier, since a single published version genuinely is immutable\n(ADR-029); or (b) keep the tier and make it TKT-31's problem — a cache deployment must invalidate the\nvenue and family URLs on every seat-map authoring write. (b) is only credible with an invalidation\nmechanism actually specified.\n\n**Governing:** ADR-004 (rule 1 tier table + the TKT-107 amendment, which states this gap explicitly\nand points here), ADR-029 (published-version immutability), ADR-009 (a tier change is a contract\nchange — the `SeatMapCacheControl` enum would need a third value). **Revisit with:** TKT-31\n(read-path caching & hot-event serving), which owns the shared-cache tier and invalidation.\n\nThis is a decision ticket (which tier, and who owns invalidation), so it goes through the pipeline\nrather than a direct commit.\n",
+  "links": [],
+  "comments": []
+}
