@@ -143,3 +143,14 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   **still live in inventory, commerce, payments and access**, whose unit tests run through the same
   validator with no such guard. Assert the status alongside the header. Settled by running the
   mutation, not reading the code. (TKT-107, PR #126)
+- [**`format: uuid` is unenforced, and catalog validates its own rejections**](./learnings/2026-07-29-format-uuid-is-unenforced-and-catalog-validates-its-own-rejections.md) —
+  kin-openapi checks string `format` only if you enable it, and nothing here does, so a
+  `format: uuid` param constrains nothing. Catalog's 400 for a bad UUID comes from the **codegen
+  binder**; the other four services' come from hand-rolled `parseUUID`. And catalog wraps
+  `ResponseValidator` **outermost**, so ADR-028 checks the binder's 400 too — nine lifecycle ops
+  that declared no `'400'` therefore returned **500 in production** for pure caller error. The
+  ticket named the wrong layer *and* called it latent; one throwaway probe at claim time changed
+  the severity, the option set and the scope. Probe the stated **mechanism**, not just the symptom.
+  Also: a declared response header *is* enforced (enum + `required`), so pin it by feeding the test
+  the production constant — a hardcoded wrong value passes no matter what the constant says.
+  (TKT-110, PR #127)
