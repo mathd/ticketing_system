@@ -136,6 +136,15 @@ against our own bugs and against concurrent honest writers. A writer with catalo
 can insert or delete pins at will and nothing here detects it; a writer with inventory database
 access can forge the claims the verdict is derived from. It is not tamper-evidence.
 
+**Known limitation (TKT-143).** A pin whose `seat_identity` or `pinned_by` is megabyte-scale can
+stop a run at that row. The command pages the pin table and shrinks the page on overflow, but a
+single row that exceeds the 4 MiB response cap cannot be read, and the keyset cursor cannot
+advance past a row it never read — so later pins stay unreclaimed until the offending pin is
+removed by hand. Nothing this system writes can produce such a row (`pinned_by` is `hold:` plus a
+uuid; identities are composed server-side from labels), and catalog enforces no length limit on
+those columns, which is what TKT-143 is for. The failure is loud and names the cursor; no pin is
+wrongly removed.
+
 ## Access ticket lifecycle trail operations
 
 The trail is chained per ticket and checkpointed per organizer
