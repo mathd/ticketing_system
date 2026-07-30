@@ -584,8 +584,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * A venue's seat-map summaries (hours tier)
-         * @description The seat maps authored under a venue — summaries only, no geometry — for the back-office venue page (US-019). Seat-map geometry is long-lived, so this read uses the ADR-004 hours tier: Cache-Control: public, max-age=3600, s-maxage=3600. Scoped to the venue, backed by seat_maps_by_venue (ADR-019).
+         * A venue's seat-map summaries (status-driven cache tier)
+         * @description The seat maps authored under a venue — summaries only, no geometry — for the back-office venue page (US-019). Cache tier follows the payload's statuses (TKT-107): the ADR-004 hours tier (public, max-age=3600, s-maxage=3600) only when the list is non-empty and every map is published; no-store for a draft-bearing, mixed, or empty list. Scoped to the venue, backed by seat_maps_by_venue (ADR-019).
          */
         get: operations["listVenueSeatMaps"];
         put?: never;
@@ -604,8 +604,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * A seat map's full geometry (hours tier)
-         * @description The full nested geometry (sections -> rows -> seats, each ordered by position) of one seat map, for the back-office authoring page (US-019). Hours tier: Cache-Control: public, max-age=3600, s-maxage=3600.
+         * A seat map's full geometry (status-driven cache tier)
+         * @description The full nested geometry (sections -> rows -> seats, each ordered by position) of one seat map, for the back-office authoring page (US-019). Cache tier follows the map's status (TKT-107): a published version is immutable (ADR-029) and keeps the ADR-004 hours tier, Cache-Control: public, max-age=3600, s-maxage=3600; a draft is mutable and is no-store.
          */
         get: operations["getPublicSeatMapGeometry"];
         put?: never;
@@ -624,8 +624,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * A seat map family's version history (hours tier, TKT-105)
-         * @description Every version of the seat-map family that seatMapId belongs to (any version resolves the family), newest first, each carrying its published_at. current_version is the highest published version — the one an edit targets — and is absent for a draft-only family. Seat-map geometry is long-lived, so this read uses the ADR-004 hours tier: Cache-Control: public, max-age=3600, s-maxage=3600. Catalog-owned; the back office does not keep a version store of its own.
+         * A seat map family's version history (status-driven cache tier, TKT-105)
+         * @description Every version of the seat-map family that seatMapId belongs to (any version resolves the family), newest first, each carrying its published_at. current_version is the highest published version — the one an edit targets — and is absent for a draft-only family. Cache tier follows the payload's statuses (TKT-107): the ADR-004 hours tier (public, max-age=3600, s-maxage=3600) only when every version listed is published, no-store as soon as one is a draft. Catalog-owned; the back office does not keep a version store of its own.
          */
         get: operations["listSeatMapVersions"];
         put?: never;
@@ -1159,6 +1159,8 @@ export interface components {
     headers: {
         /** @description ADR-004 volatility tier, explicit on every public read */
         CacheControl: string;
+        /** @description ADR-004 volatility tier for a seat-map read, driven by the payload's statuses (TKT-107): the hours tier only when the response is non-empty and every seat map in it is published, otherwise no-store. Draft geometry is mutable, so an hour of shared-cache lifetime would make an authoring write look lost; a published version is immutable (ADR-029), which is what makes the hours branch correct. One response carries one header, so a list takes its least-cacheable member's tier, and an empty list fails closed. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. no-store closes the shared-cache vector only — it is not access control. */
+        SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
     };
     pathItems: never;
 }
@@ -2176,7 +2178,7 @@ export interface operations {
             /** @description The venue's seat maps */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["SeatMapCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2201,7 +2203,7 @@ export interface operations {
             /** @description The seat map geometry */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["SeatMapCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2227,7 +2229,7 @@ export interface operations {
             /** @description The family's versions, newest first */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["SeatMapCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {

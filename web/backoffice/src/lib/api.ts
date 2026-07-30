@@ -131,7 +131,11 @@ export function addSeatMapSeat(
   });
 }
 
-/** A venue's seat-map summaries (hours tier), for the venue page. */
+/**
+ * A venue's seat-map summaries, for the venue page. Cache tier is status-driven
+ * (TKT-107): hours only when every map listed is published, else no-store. This
+ * read goes through plain uncached fetch, so the header is informational here.
+ */
 export async function listVenueSeatMaps(venueId: string): Promise<SeatMap[]> {
   const res = await fetch(catalog(`/public/venues/${encodeURIComponent(venueId)}/seat-maps`));
   if (!res.ok) {
@@ -140,7 +144,10 @@ export async function listVenueSeatMaps(venueId: string): Promise<SeatMap[]> {
   return ((await res.json()) as SeatMapList).seat_maps;
 }
 
-/** One seat map's full geometry (hours tier). */
+/**
+ * One seat map's full geometry. Cache tier is status-driven (TKT-107): a
+ * published version is hours-tier, a draft is no-store.
+ */
 export async function getSeatMapGeometry(seatMapId: string): Promise<SeatMapGeometry> {
   const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}`));
   if (!res.ok) {
@@ -168,7 +175,10 @@ export function editSeatMap(seatMapId: string, edit: SeatMapEdit): Promise<SeatM
   return postCatalog<SeatMap>(`/seat-maps/${encodeURIComponent(seatMapId)}/edit`, edit);
 }
 
-/** A seat-map family's version history (hours tier); resolves from any version id. */
+/**
+ * A seat-map family's version history; resolves from any version id. Cache tier is
+ * status-driven (TKT-107): hours only when every version listed is published.
+ */
 export async function listSeatMapVersions(seatMapId: string): Promise<SeatMapVersionHistory> {
   const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}/versions`));
   if (!res.ok) {

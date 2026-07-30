@@ -15,6 +15,11 @@ output assertion.*
 rules stay accepted and unweakened; the amendment records which of them are **implemented today** and
 which are still only declared. See § Amendment (TKT-128).
 
+**Amended by TKT-107 (2026-07-29)** — *rule 1's seat-map tier only*, under that run's owner-waived
+gates. Splits the seat-map row of rule 1's tier table on publication status: a seat-map read earns
+the hours tier only when its payload is entirely published. No other tier changes and the three
+rules stay unweakened. See § Amendment (TKT-107).
+
 ## Context
 
 High-contention on-sales are a core v1 requirement (brief). Correct atomic claims (ADR-002's inventory hot path) solve oversell, but an on-sale's load is overwhelmingly **reads** — event lists, event pages, price displays, remaining-capacity checks — and an uncached read path melts the database long before the write path is stressed. The owner directed (2026-07-12): endpoints should be cacheable wherever possible with TTLs matched to data volatility, hot events should be served from in-memory structures to shed database reads, and the web frontends should minimize API calls and refresh on TTL-appropriate cadences.
@@ -35,7 +40,7 @@ High-contention on-sales are a core v1 requirement (brief). Correct atomic claim
 
 We design the read path cache-first, on three rules:
 
-1. **Every public read endpoint declares a TTL tiered by data volatility.** Responses carry explicit `Cache-Control`/`s-maxage` (CDN-ready even though v1 is local) and are cacheable by construction: no session-varying content on public reads, buyer-specific data on separate endpoints. Indicative tiers — venue/seat-map geometry: hours; event lists & event detail: minutes; price display: ~1 min; remaining capacity/availability level: seconds; hold/order/scan state: **never cached**.
+1. **Every public read endpoint declares a TTL tiered by data volatility.** Responses carry explicit `Cache-Control`/`s-maxage` (CDN-ready even though v1 is local) and are cacheable by construction: no session-varying content on public reads, buyer-specific data on separate endpoints. Indicative tiers — venue geometry: hours; **published** seat-map geometry: hours, **draft-bearing, mixed or empty** seat-map responses: never cached (TKT-107 amendment); event lists & event detail: minutes; price display: ~1 min; remaining capacity/availability level: seconds; hold/order/scan state: **never cached**.
 2. **Hot events are served from memory.** Services keep in-memory read structures (availability counters, event snapshots) for designated hot events — refreshed/invalidated from the write path, so buyer-facing reads during an on-sale do not touch the database. The write path (claims, ADR-002) is never served from cache.
 3. **Frontends are call-frugal.** Storefront pages consume few, aggregated endpoints (one call per page view, not per widget); each response's TTL drives the client refresh cadence (e.g. availability re-polled every few seconds, event detail not re-fetched at all). No polling faster than the endpoint's TTL.
 
@@ -115,6 +120,76 @@ The **contract** gap is TKT-137's: declaring inventory's seconds-tier availabili
 OpenAPI document, which is a source change and so could not be made here. This amendment routes both
 rather than leaving either implicit.
 
+## Amendment (2026-07-29, TKT-107) — the seat-map tier splits on publication status
+
+Rule 1's tier table said *"venue/seat-map geometry: hours"* without qualification, and catalog's three
+public seat-map reads emitted the hours tier unconditionally. That was written before publishing
+existed. Once it shipped (TKT-103), the same tier covered two data classes with opposite volatility:
+an immutable published version and a **mutable draft** an author is actively editing. This amendment
+splits them. **Nothing below weakens the three rules** — it narrows one row of rule 1's indicative
+table and records why.
+
+**The rule, as shipped.** A seat-map response carries the hours tier
+(`public, max-age=3600, s-maxage=3600`) **only when it is non-empty and every seat map in it is
+`published`**; otherwise `no-store`. One function decides for all three reads
+(`cacheControlForSeatMaps`, `services/catalog/internal/api/server.go`), applied by
+`getPublicSeatMapGeometry`, `listVenueSeatMaps` and `listSeatMapVersions`.
+
+- **A draft is mutable, so an hour of shared-cache lifetime makes an authoring write look lost.**
+  That is the defect, and it is a *staleness* defect on an authoring surface, not a load problem.
+- **A published version is immutable**, which is what makes the hours branch correct rather than
+  merely inherited: by [ADR-029](./ADR-029-seat-identity-pinning-contract.md) an edit *inserts a new
+  published version* and leaves its predecessor untouched, so a cached published payload cannot go
+  stale by editing — only by being superseded, and the successor has a different id.
+- **A list takes its least-cacheable member's tier.** One HTTP response carries one `Cache-Control`,
+  so a single draft row makes the whole response `no-store`. Conservative and unavoidable.
+- **An empty list fails closed.** Not because emptiness is volatile in itself, but because no
+  published row is present to justify caching — and caching "this venue has no seat maps" for an hour
+  would hide the venue's first map. The guard exists for `listVenueSeatMaps`, the only one of the
+  three that can return zero rows; `listSeatMapVersions` returns 404 instead.
+- **Any other status fails closed.** Migration `0009_seat_maps.sql` constrains the column to
+  `draft | published | archived`; only the literal `published` earns the tier, so `archived` and any
+  future status get `no-store` without another code change.
+
+**`no-store` chosen over a short private tier.** These responses carry no validator — the handlers set
+`Cache-Control` and nothing else, no `ETag` or `Last-Modified` — so `private, max-age=0` costs the same
+full round trip and buys nothing, and any positive `public` TTL keeps the exact defect. The only
+consumer today reads through plain uncached `fetch` (`web/backoffice/src/lib/api.ts`), so nothing loses
+a cache it was using.
+
+**Declared, not just emitted.** The TKT-128 amendment established that an emitted-but-undeclared header
+is a defect in its own right, so the tier is committed in the contract:
+`services/catalog/api/openapi.yaml` gains a `SeatMapCacheControl` response-header component whose
+schema is an `enum` of exactly the two permitted values, referenced by all three 200 responses. This is
+**enforced at runtime, not only by the gate**: catalog wraps every response in
+[ADR-028](./ADR-028-response-drift-fail-closed.md)'s validator (`contract.ResponseValidator`), which
+validates response *headers* and turns a third value into a 500 with the drifted payload withheld. A
+future ticket that adds a seat-map tier without extending the enum gets 500s rather than a wrong
+header — the correct fail-closed direction, and a real constraint on whoever comes next.
+
+**Two limits, stated plainly, because the ticket that produced this amendment was framed as an exposure
+fix and it is not one.**
+
+1. **This is not access control.** `no-store` forbids *storing* a response; it does nothing about
+   *retrieving* one. A reader who knows a draft map's UUID still gets the draft, exactly as before —
+   these routes live under `/public/` and are unauthenticated. Naming the adversary, per
+   [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s rule: this change closes the
+   **shared-cache** vector (a CDN or proxy retaining and re-serving unpublished geometry to third
+   parties) and closes nothing against a direct reader. Organizer-scoping the by-id reads is the other
+   half of TKT-107 and remains **deferred pending admin auth**, which does not exist in this codebase.
+2. **An all-published list still carries hour-long membership staleness.** The tier is decided from the
+   rows a response *contains*; a seat map created a minute after the response was cached is invisible
+   until the TTL expires. That is the same "authoring write looks lost" failure this amendment fixes
+   for draft *content*, left open for list *membership*. It is not closed here: doing so would demote
+   the hours tier for the only reads that use it, on a judgement no second model reviewed. A future
+   cache deployment must invalidate the venue and family URLs on authoring writes, or the list tier
+   must be demoted. Tracked as TKT-141.
+
+**Still true, unchanged by this amendment:** no CDN or shared cache exists anywhere in the stack, so
+this change has **no observable runtime effect today** beyond the emitted header. That is the point —
+ADR-004 chose Option 3 precisely to avoid Option 2's retrofit trap, and a tier is cheap to correct
+before a cache honors it and expensive after.
+
 ## References
 
 - [brief](../product/brief.md) · [PRD](../product/prd-v1.md) (TKT-31) · [ADR-002](./ADR-002-services-from-day-one.md)
@@ -126,3 +201,11 @@ rather than leaving either implicit.
   `services/catalog/api/openapi.yaml` (the declared tiers) vs
   `services/inventory/internal/api/server.go` (`availability`) and `services/inventory/api/openapi.yaml`
   (`getAvailability`) — the emitted-but-undeclared seconds tier
+- Amendment (TKT-107) evidence — `services/catalog/internal/api/server.go` (`cacheControlForSeatMaps`
+  and its three call sites), `services/catalog/api/openapi.yaml`
+  (`components/headers/SeatMapCacheControl`), `services/catalog/internal/store/migrations/0009_seat_maps.sql`
+  (the `draft | published | archived` CHECK), `shared/go/contract/http.go` (the header-validating
+  fail-closed wrap), `services/catalog/internal/api/seatmap_test.go`
+  (`TestSeatMapReadCacheTierByStatus`); [ADR-029](./ADR-029-seat-identity-pinning-contract.md)
+  (published-version immutability), [ADR-028](./ADR-028-response-drift-fail-closed.md),
+  [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) (name the adversary)

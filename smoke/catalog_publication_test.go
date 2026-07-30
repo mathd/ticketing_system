@@ -1266,6 +1266,15 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 	created(t, catalog+"/seat-maps/"+v1ID+"/seats", map[string]any{
 		"organizer_id": organizerID, "row_id": row["id"], "label": "1", "position": 1,
 	})
+	// -- TKT-107: while v1 is still a draft, the geometry read is no-store. This is
+	// the one real-stack proof that the status-driven tier survives the gateway and
+	// real Postgres; the draft/published/mixed/empty branches themselves are covered
+	// at the handler seam (TestSeatMapReadCacheTierByStatus), which runs through the
+	// same ADR-028 response validator.
+	if _, body, hdr := getWithHeaders(t, catalog+"/public/seat-maps/"+v1ID); hdr.Get("Cache-Control") != "no-store" {
+		t.Fatalf("draft geometry cache tier %q, want no-store; body=%s", hdr.Get("Cache-Control"), body)
+	}
+
 	if code, body := postJSON(t, catalog+"/seat-maps/"+v1ID+"/publish", nil); code != http.StatusOK {
 		t.Fatalf("publish seat map: %d %s", code, body)
 	}

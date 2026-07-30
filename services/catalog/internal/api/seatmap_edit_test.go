@@ -111,7 +111,10 @@ func TestEditSeatMapEmitFailureReturns500(t *testing.T) {
 
 // TestListSeatMapVersionsHistoryAndCurrent is COS-3: the version-history read
 // returns every version of the family newest-first, each with published_at, and
-// current_version = the highest published version. Hours tier.
+// current_version = the highest published version. It keeps the hours tier under
+// TKT-107 because both versions here are published: an ADR-029 edit inserts a
+// *published* successor, so this family never holds a draft row. The status-driven
+// tier is proven by TestSeatMapReadCacheTierByStatus.
 func TestListSeatMapVersionsHistoryAndCurrent(t *testing.T) {
 	e := newEnv(t)
 	venueID := seedVenue(t, e, "La Grande Salle")

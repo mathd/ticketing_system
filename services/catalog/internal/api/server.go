@@ -40,8 +40,37 @@ const CacheControlPublicReads = "public, max-age=300, s-maxage=300"
 
 // CacheControlPublicVenueReads is the ADR-004 hours tier: venue/seat-map
 // geometry is long-lived, so the back-office venue read (US-018) is cacheable
-// far longer than the events minutes tier.
+// far longer than the events minutes tier. Seat-map reads earn it only when the
+// whole payload is published — see cacheControlForSeatMaps (TKT-107).
 const CacheControlPublicVenueReads = "public, max-age=3600, s-maxage=3600"
+
+// cacheControlForSeatMaps is TKT-107's tier rule for the three public seat-map
+// reads: the hours tier only when the response is non-empty and every seat map in
+// it is published, otherwise no-store. Draft geometry is mutable, so an hour of
+// shared-cache lifetime would make an authoring write look lost; published
+// versions are immutable (ADR-029 — an edit inserts a new version rather than
+// mutating one), which is what makes the hours branch correct rather than merely
+// inherited. One response carries one header, so for a list the least-cacheable
+// member decides. Any other status ('archived', or a future one — migration 0009
+// constrains the column to draft/published/archived) fails closed to no-store.
+//
+// The emptiness guard is for ListVenueSeatMaps, the only one of the three that can
+// return zero rows; ListSeatMapVersions returns ErrNotFound instead. Caching "this
+// venue has no seat maps" for an hour would hide the venue's first map.
+//
+// no-store closes the *shared-cache* vector only. It is not access control: a
+// reader who knows the id still gets the draft (ADR-004 § TKT-107 amendment).
+func cacheControlForSeatMaps(maps ...store.SeatMap) string {
+	if len(maps) == 0 {
+		return "no-store"
+	}
+	for _, m := range maps {
+		if m.Status != "published" {
+			return "no-store"
+		}
+	}
+	return CacheControlPublicVenueReads
+}
 
 type Server struct {
 	store              store.Store
@@ -1178,8 +1207,8 @@ func editInput(seatMapID SeatMapId, in SeatMapEdit) store.EditSeatMapInput {
 }
 
 // ListSeatMapVersions is the TKT-105 version-history read (COS-3): the family's
-// versions newest-first, current_version = highest published. Hours tier
-// (ADR-004: geometry is long-lived), catalog-owned.
+// versions newest-first, current_version = highest published. Status-driven cache
+// tier (cacheControlForSeatMaps, TKT-107), catalog-owned.
 func (s *Server) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
 	versions, err := s.store.ListSeatMapVersions(r.Context(), seatMapId)
 	if err != nil {
@@ -1195,7 +1224,7 @@ func (s *Server) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, sea
 			out.CurrentVersion = &cv
 		}
 	}
-	w.Header().Set("Cache-Control", CacheControlPublicVenueReads)
+	w.Header().Set("Cache-Control", cacheControlForSeatMaps(versions...))
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1311,7 +1340,7 @@ func (s *Server) GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request
 			Id: sec.ID, Name: sec.Name, Position: sec.Position, Rows: &rows,
 		})
 	}
-	w.Header().Set("Cache-Control", CacheControlPublicVenueReads)
+	w.Header().Set("Cache-Control", cacheControlForSeatMaps(g.Map))
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1325,6 +1354,6 @@ func (s *Server) ListVenueSeatMaps(w http.ResponseWriter, r *http.Request, venue
 	for _, m := range maps {
 		out.SeatMaps = append(out.SeatMaps, seatMapPayload(m))
 	}
-	w.Header().Set("Cache-Control", CacheControlPublicVenueReads)
+	w.Header().Set("Cache-Control", cacheControlForSeatMaps(maps...))
 	writeJSON(w, http.StatusOK, out)
 }
