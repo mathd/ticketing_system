@@ -2,7 +2,7 @@
   "key": "TKT-95",
   "type": "Task",
   "summary": "Unify smoke HTTP helpers on contract-validating variants, then drive the 5 uncovered catalog ops through them",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human",
     "risk:low"
@@ -11,7 +11,7 @@
   "pr": {
     "number": 125,
     "url": "https://github.com/mathd/ticketing_system/pull/125",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "standard",
   "description": "Follow-up from TKT-47 retro. The smoke suite has validating helpers (postJSON, getWithHeaders, get, internalJSON) and raw ones (holdRequest, postScan) — the split means the per-operation coverage gate only sees traffic through the former, and its scope comment has to disclaim the rest. Unify on validating helpers (raw helpers keep their concurrency-safe shape but report through a chokepoint the gate can see), then delete the scope disclaimers.\n\nConditions of Success:\n- All smoke HTTP traffic to the five services flows through helpers that validate against the committed contracts\n- holdRequest/postScan callers keep their concurrency semantics (no t.Fatal from non-test goroutines)\n- The scope disclaimers in smoke/coverage_test.go shrink accordingly\n- make check passes\n\n---\n\n## Absorbed TKT-111 — the 5 smoke-uncovered catalog ops (TKT-105 surface)\n\nOrigin: TKT-109 closeout, ADR-030's named negative consequence. Driving these through smoke has\nreal-stack coverage value independent of which layer owns the gate:\n\n- `getPublicSeatMapGeometry`, `listVenueSeatMaps`, `listSeatMapVersions` — trivial GETs against the\n  seat-map fixture smoke already builds (`smoke/catalog_publication_test.go`, seat-map section)\n- `updateVenueGaCapacity` — venue GA capacity write\n- `editSeatMap` — write fixture; surfaces ADR-029 pin semantics (**read ADR-029 first**)\n\n**Not** a gate change: `smokeCoverageGatedServices` stays as pinned by\n`TestCatalogCoverageGateIsDeliberatelyUnitScoped` (ADR-030). Flipping catalog into the gate is a\nseparate ADR-030 amendment ticket — see the ADR's recorded flip-cost.\n\n## Why these are one ticket, and in this order\n\nThey compose: unifying the helpers first means the 5 new ops route through validating helpers by\nconstruction and land inside the gate's view. Done the other way round, the new smoke traffic is\nwritten against raw helpers and then rewritten. Both halves are **test-only, no runtime code** —\n`risk:low`, one PR, one gate run.\n",
