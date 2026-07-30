@@ -162,6 +162,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SeatMap' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -311,6 +312,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Performance'
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -341,6 +343,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Performance'
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -376,6 +379,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Performance'
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -403,6 +407,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Performance'
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -470,6 +475,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SeriesLifecycleResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Empty series or a member cannot publish
@@ -490,6 +496,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SeriesLifecycleResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Empty series, draft member, or member with an owed closure event
@@ -626,6 +633,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FestivalLifecycleResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Empty festival or a member cannot publish
@@ -646,6 +654,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FestivalLifecycleResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Empty festival, draft member, or member with an owed closure event
