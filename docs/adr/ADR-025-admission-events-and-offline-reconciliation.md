@@ -227,9 +227,13 @@ conflicts. Together every physical admission that Access learns about is represe
    - **Relaxed** — the word "only". Operational scalars (timestamps, counters, booleans, version
      numbers) and one free-text diagnostic `reason` were prohibited by it and are now admitted,
      because they already ship and §D5 mandates one of them.
-   - **Added** — prohibitions the original did not state: no device- or user-supplied free text,
-     and no nested objects. These are what stop "operational scalars" from becoming a licence for
-     arbitrary payload growth.
+   - **Preserved and made explicit** — no device- or user-supplied free text, and no nested
+     objects. These are *not* new: "identifiers and enums only" already entailed them, since
+     anything that is neither an identifier nor an enum was excluded. The original never
+     enumerated them, so the amendment spells them out — they are the surviving boundary of the
+     original rule, retained in full except for the single service-produced `reason` carve-out
+     above, and they are what stop "operational scalars" from becoming a licence for arbitrary
+     payload growth.
 
 10. **Contracts.** The verified inventory at HEAD, NATS side: redemption emits **no**
     cross-service domain event; the lifecycle alarm outbox carries exactly one subject
