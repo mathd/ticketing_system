@@ -1,9 +1,9 @@
 {
   "key": "TKT-134",
   "type": "Task",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:planning"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
