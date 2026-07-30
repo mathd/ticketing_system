@@ -176,3 +176,18 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   commits, where fix and test land together and the red phase is skipped by construction: run the
   mutation instead of asserting it's obvious — one gate cycle turns "obviously it would fail" into
   one dead test with the intended message. (TKT-116, PR #129)
+- [**A fingerprint of a symmetric secret is an oracle**](./learnings/2026-07-30-a-fingerprint-of-a-symmetric-secret-is-an-oracle.md) —
+  a ticket asked for a logged HMAC "fingerprint" of the journal signing key so operators could spot a
+  mis-paste; the plan gate accepted it and the **code review refuted the premise**. Domain separation
+  was proven (30-byte domain vs an always-32-byte signing input), the output was truncated, and a
+  test asserted the secret was absent — all true, none of it the risk. A deterministic function of a
+  secret over a fixed public message is an **offline verification oracle**; the only defence is key
+  entropy, and nothing required any (`minSecretLen` checks length; the default key is the readable
+  `local-development-journal-key`). Public-key intuitions — SSH fingerprints, JWK thumbprints — do
+  not transfer to symmetric material. Prefer **rejecting** a mistake to reporting it: the replacement
+  refuses startup when the active key *decodes* to a ring key, which is smaller and stronger.
+  Second lesson from the same ticket: three passes each closed one base64 **representation** (text as
+  received → unpadded canonical → padded) before the fix became "compare decoded bytes". When
+  successive fixes each close one instance of a class — individually valid, individually shrinking,
+  all the same shape — that is enumeration, not convergence. Change the question, and state the
+  boundary (URL-safe is excluded *out loud*). (TKT-117, PR #130)
