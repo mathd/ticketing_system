@@ -333,3 +333,126 @@ func TestCheckoutReplayAgainstRecoveredOrders(t *testing.T) {
 		t.Fatalf("replay against reconciliation_required = %d %s, want 409", code, body)
 	}
 }
+
+// TKT-116 item 3. A checkout retry that arrives at `release_pending` after the recovery
+// lease has lapsed used to fall straight through to the normal order.created -> finalize
+// orchestration: `claimOrder` returns errRecoveryInProgress only while the lease is LIVE,
+// and the top-of-checkout replay branches covered completed / declined|timeout / refunded /
+// reconciliation_required but not this one. So the buyer's retry could re-finalize a claim
+// recovery was concurrently releasing — or, once inventory had released it, collect a
+// misleading 409 "hold expired".
+//
+// `release_pending` is not ambiguous: RecordTerminalOutcome writes terminal_outcome and the
+// status in ONE statement, so the outcome is already decided and only the inventory release
+// is outstanding. Checkout must answer from that durable evidence and orchestrate nothing.
+//
+// It answers 202 (not 402/408) deliberately: from release_pending the release can still
+// find a CONFIRMED claim and park the order for reconciliation (runner.releaseAndFail), so
+// the buyer-visible outcome is not yet final. 202 is also exactly what answerRecovered
+// already returns for this state, so both paths agree without changing either.
+func TestCheckoutReplayAtReleasePendingAnswersPendingWithoutFinalize(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, ticketType := setupCheckoutOffer(t, "pendingreplay")
+	reservation := reserveCheckout(t, ticketType, "release-pending-reserve-"+uuid.NewString())
+	checkoutKey := "release-pending-order-" + uuid.NewString()
+	checkoutBody := map[string]any{"reservation_id": reservation["reservation_id"], "name": "Pending Buyer",
+		"email": "pending@example.test", "payment_token": "fake-decline"}
+
+	// A declined checkout releases the hold and marks the order terminal — which leaves the
+	// claim genuinely released, so a fall-through finalize below hits a real released claim
+	// rather than a fabricated one.
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", checkoutKey, checkoutBody)
+	if code != 402 {
+		t.Fatalf("declined checkout = %d %s, want 402", code, body)
+	}
+	var declined struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &declined); err != nil {
+		t.Fatal(err)
+	}
+
+	// The faithful residue of an ambiguous release: outcome decided and durable, lease
+	// lapsed, release outstanding. recovery_next_attempt_at is pushed out so the live runner
+	// (RECOVERY_INTERVAL=2s in the smoke override) holds still while the CHECKOUT path is
+	// what is under test — checkout never reads that column, so this cannot mask the bug.
+	db := commerceDB(t, ctx)
+	if _, err := db.Exec(ctx, `UPDATE orders SET status='release_pending', terminal_outcome='declined',
+		recovery_lease_until=NULL, recovery_claim_id=NULL,
+		recovery_next_attempt_at=now()+interval '1 hour',
+		updated_at=now()-interval '10 minutes' WHERE id=$1`, declined.OrderID); err != nil {
+		t.Fatalf("stage release_pending order: %v", err)
+	}
+	var before time.Time
+	if err := db.QueryRow(ctx, `SELECT updated_at FROM orders WHERE id=$1`, declined.OrderID).Scan(&before); err != nil {
+		t.Fatalf("read staged updated_at: %v", err)
+	}
+
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", checkoutKey, checkoutBody)
+	if code != 202 {
+		t.Fatalf("replay against release_pending = %d %s, want 202 (409 means it fell through to inventory finalize)", code, body)
+	}
+	var replay struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.Status != "release_pending" {
+		t.Fatalf("replay = %+v, want the durable status echoed back", replay)
+	}
+
+	// Load-bearing for convergence: recovery only claims orders whose updated_at is older
+	// than its 2-minute grace period. If a retry refreshed updated_at, every buyer retry
+	// would postpone eligibility and the order would sit at 202 forever.
+	var after time.Time
+	if err := db.QueryRow(ctx, `SELECT updated_at FROM orders WHERE id=$1`, declined.OrderID).Scan(&after); err != nil {
+		t.Fatalf("re-read updated_at: %v", err)
+	}
+	if !after.Equal(before) {
+		t.Fatalf("retry refreshed updated_at (%s -> %s): recovery eligibility is postponed by every retry and the order never drains", before, after)
+	}
+}
+
+// ai-review F2 (TKT-116). The 202 above promises that something will advance the order.
+// That promise is false once recovery has PARKED it: ReleaseStuckOrder sets
+// recovery_parked_at when recovery_attempts hits MaxRecoveryAttempts and deliberately
+// leaves the status alone, and ClaimStuckOrders excludes parked rows — so no worker will
+// ever pick it up again. Answering 202 forever would be a pending state with no path out
+// of it. Parked means a human must act, which is exactly what reconciliation_required
+// already tells buyers, so it gets the same 409.
+func TestCheckoutReplayAtParkedReleasePendingIsNotPending(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, ticketType := setupCheckoutOffer(t, "parkedpending")
+	reservation := reserveCheckout(t, ticketType, "parked-pending-reserve-"+uuid.NewString())
+	checkoutKey := "parked-pending-order-" + uuid.NewString()
+	checkoutBody := map[string]any{"reservation_id": reservation["reservation_id"], "name": "Parked Buyer",
+		"email": "parked@example.test", "payment_token": "fake-decline"}
+
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", checkoutKey, checkoutBody)
+	if code != 402 {
+		t.Fatalf("declined checkout = %d %s, want 402", code, body)
+	}
+	var declined struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &declined); err != nil {
+		t.Fatal(err)
+	}
+
+	db := commerceDB(t, ctx)
+	// Same residue as the test above, plus the park: attempts exhausted, recovery_parked_at
+	// set, status still release_pending — exactly what ReleaseStuckOrder leaves behind.
+	if _, err := db.Exec(ctx, `UPDATE orders SET status='release_pending', terminal_outcome='declined',
+		recovery_lease_until=NULL, recovery_claim_id=NULL, recovery_parked_at=now(),
+		updated_at=now()-interval '10 minutes' WHERE id=$1`, declined.OrderID); err != nil {
+		t.Fatalf("stage parked release_pending order: %v", err)
+	}
+
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", checkoutKey, checkoutBody)
+	if code != 409 {
+		t.Fatalf("replay against a PARKED release_pending = %d %s, want 409 — 202 would promise progress no worker can make", code, body)
+	}
+}

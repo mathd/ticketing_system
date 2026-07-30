@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace"
 
@@ -78,5 +79,19 @@ func TestClientInjectsTraceparent(t *testing.T) {
 
 	if !strings.HasPrefix(got, "00-") || len(strings.Split(got, "-")) != 4 {
 		t.Errorf("traceparent = %q, want W3C traceparent header", got)
+	}
+}
+
+// Every cross-service call goes through Client(), so its deadline is the platform's only
+// backstop against a hung downstream. Unbounded, a stuck charge call could hold a checkout
+// handler open past commerce's 2-minute recovery grace period — the window that lets a
+// live checkout and the recovery runner both act on one order (TKT-116).
+func TestClientHasBoundedTimeout(t *testing.T) {
+	c := obs.Client()
+	if c.Timeout <= 0 {
+		t.Fatal("obs.Client() has no timeout; a hung downstream can hold a handler open forever")
+	}
+	if c.Timeout >= 2*time.Minute {
+		t.Fatalf("timeout %s does not bound below the 2-minute recovery grace period", c.Timeout)
 	}
 }

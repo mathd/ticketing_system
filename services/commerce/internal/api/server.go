@@ -263,32 +263,36 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 	return nil
 }
 
-func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string) (uuid.UUID, string, error) {
+// claimOrder returns the order id, its current status, and whether recovery has PARKED it.
+// Parked is read here rather than re-queried because this is the only place that already
+// holds the row lock, and a replay branch that answers from durable evidence needs to know
+// whether any worker can still act on that evidence (ai-review F2).
+func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string) (uuid.UUID, string, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil, "", false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, x.ID.String()); err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil, "", false, err
 	}
 	var id uuid.UUID
 	var storedKey, storedFingerprint, status string
 	var recoveryClaim uuid.NullUUID
-	var recoveryLease sql.NullTime
+	var recoveryLease, recoveryParked sql.NullTime
 	// FOR UPDATE, and the recovery columns are read here rather than ignored: the
 	// recovery runner decides from a payments lookup that is only durable evidence while
 	// no one else can charge this order. Reading the row without locking it would let
 	// this replay bind a charge in the window between recovery's lookup and its release.
-	err = tx.QueryRowContext(ctx, `SELECT id,idempotency_key,request_fingerprint,status,recovery_claim_id,recovery_lease_until FROM orders WHERE reservation_id=$1 FOR UPDATE`, x.ID).
-		Scan(&id, &storedKey, &storedFingerprint, &status, &recoveryClaim, &recoveryLease)
+	err = tx.QueryRowContext(ctx, `SELECT id,idempotency_key,request_fingerprint,status,recovery_claim_id,recovery_lease_until,recovery_parked_at FROM orders WHERE reservation_id=$1 FOR UPDATE`, x.ID).
+		Scan(&id, &storedKey, &storedFingerprint, &status, &recoveryClaim, &recoveryLease, &recoveryParked)
 	if errors.Is(err, sql.ErrNoRows) {
 		id = uuid.NewSHA1(uuid.NameSpaceOID, []byte("order:"+x.OrganizerID.String()+":"+key))
 		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint) VALUES($1,$2,'created',$3,$4)`, id, x.ID, key, fingerprint)
 		status = "created"
 	} else if err == nil {
 		if storedKey != key || storedFingerprint != fingerprint {
-			return uuid.Nil, "", errCheckoutConflict
+			return uuid.Nil, "", false, errCheckoutConflict
 		}
 		// A recovery pass holds this order under an unexpired lease. It may already have
 		// asked payments whether a charge exists and been told no; binding one now would
@@ -296,24 +300,31 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// under a captured payment. Recovery's decision is bounded by its lease, so the
 		// buyer can retry once it lapses.
 		if recoveryClaim.Valid && recoveryLease.Valid && recoveryLease.Time.After(time.Now()) {
-			return uuid.Nil, "", errRecoveryInProgress
+			return uuid.Nil, "", false, errRecoveryInProgress
 		}
 		// Reopening an existing order is fresh activity on it. Without this the row keeps
 		// the timestamp of the checkout that died, stays past recovery's grace period,
 		// and recovery can claim it while this request is live — the grace period only
 		// protects orders whose updated_at actually moves.
-		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1`, id); err != nil {
-			return uuid.Nil, "", err
+		//
+		// Scoped to the statuses that actually RESUME orchestration (TKT-116). A retry
+		// landing on release_pending or reconciliation_required returns from a replay
+		// branch below without touching anything downstream, so there is no in-flight work
+		// to protect — while refreshing updated_at would push the order back inside
+		// recovery's 2-minute grace window on every retry, leaving the release that IS
+		// outstanding permanently unclaimable and the buyer looping on the same answer.
+		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, id); err != nil {
+			return uuid.Nil, "", false, err
 		}
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return uuid.Nil, "", errCheckoutConflict
+		return uuid.Nil, "", false, errCheckoutConflict
 	}
 	if err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil, "", false, err
 	}
-	return id, status, tx.Commit()
+	return id, status, recoveryParked.Valid, tx.Commit()
 }
 
 func checkoutClaimProblem(err error) (int, string) {
@@ -488,7 +499,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
-	order, orderStatus, err := s.claimOrder(r.Context(), x, key, fingerprint)
+	order, orderStatus, recoveryParked, err := s.claimOrder(r.Context(), x, key, fingerprint)
 	if err != nil {
 		code, message := checkoutClaimProblem(err)
 		if code == http.StatusInternalServerError {
@@ -534,6 +545,35 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		write(w, terminalCheckoutCode(orderStatus), map[string]any{"order_id": order, "status": orderStatus, "replay": true})
+		return
+	}
+	if orderStatus == "release_pending" {
+		// A terminal outcome is already decided and durable: RecordTerminalOutcome writes
+		// terminal_outcome and this status in ONE statement, and the runner treats a
+		// release_pending row without an outcome as a bug. Only the inventory release is
+		// outstanding. Falling through would re-journal order.created and finalize a claim
+		// recovery is concurrently releasing — or, once inventory had released it, hand the
+		// buyer a misleading 409 "hold expired" (TKT-116). claimOrder narrows this but
+		// cannot close it: errRecoveryInProgress fires only while the lease is LIVE.
+		//
+		// 202 echoing the durable status, not 402/408 from terminal_outcome: from here the
+		// release can still find a CONFIRMED claim and park the order for reconciliation
+		// (recovery.releaseAndFail), so the buyer-visible outcome is not final yet. It is
+		// also exactly what answerRecovered already returns for this state, so the guarded
+		// -write loser and this replay agree without either changing. terminal_outcome does
+		// prove no money was captured, and 202-with-status says that without over-claiming.
+		//
+		// Unless recovery has PARKED the row (ai-review F2). 202 promises that something
+		// will advance this order, and once ReleaseStuckOrder has exhausted its attempts
+		// that promise is false: it sets recovery_parked_at and deliberately leaves the
+		// status alone, and ClaimStuckOrders excludes parked rows, so no worker will ever
+		// pick it up again. Parked means a human must act — the same thing
+		// reconciliation_required tells buyers, so it gets the same answer.
+		if recoveryParked {
+			write(w, 409, map[string]any{"error": "order awaiting payment reconciliation", "order_id": order, "status": orderStatus})
+			return
+		}
+		write(w, 202, map[string]any{"order_id": order, "status": orderStatus})
 		return
 	}
 	if orderStatus == "reconciliation_required" {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Stripe is the test-mode Stripe adapter behind the psp.PSP port (ADR-032). It talks to the
@@ -22,10 +23,17 @@ type Stripe struct {
 	client    *http.Client
 }
 
+// stripeCallTimeout bounds a provider call when the caller supplies no client. It was
+// http.DefaultClient — no timeout at all — on the outermost leg of the money path, so a
+// hung Stripe call could outlive commerce's 2-minute recovery grace period and let a live
+// checkout and the recovery runner act on the same order (TKT-116). It nests inside the
+// 30s obs.Client() bound its callers sit behind, and outside recovery's stricter 10s.
+const stripeCallTimeout = 15 * time.Second
+
 // NewStripe builds the adapter. secretKey is the Basic-auth username (password empty).
 func NewStripe(secretKey, baseURL string, client *http.Client) *Stripe {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: stripeCallTimeout}
 	}
 	return &Stripe{secretKey: secretKey, baseURL: strings.TrimRight(baseURL, "/"), client: client}
 }
@@ -42,7 +50,44 @@ type stripePI struct {
 type stripeRefund struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
+	// The fields below identify a refund found by listing (TKT-116). Metadata carries the
+	// compensation key we stamp at creation — it is what distinguishes a refund THIS system
+	// issued from one someone made in the Stripe dashboard.
+	Amount        int64             `json:"amount"`
+	Currency      string            `json:"currency"`
+	PaymentIntent string            `json:"payment_intent"`
+	Metadata      map[string]string `json:"metadata"`
 }
+
+// stripeRefundList is a Stripe list response. has_more drives cursor pagination.
+//
+// Data and HasMore are POINTERS on purpose (ai-review F1). Go zero values make a missing
+// `has_more` read as false and a missing `data` read as empty — which is precisely the
+// shape of "this PaymentIntent has no refunds", the one answer that licenses submitting a
+// new one. A page that merely decodes without error is not evidence of absence; presence
+// has to be checked, not inferred.
+type stripeRefundList struct {
+	Object  string          `json:"object"`
+	Data    *[]stripeRefund `json:"data"`
+	HasMore *bool           `json:"has_more"`
+}
+
+// complete reports whether the page carries the fields a conclusive answer needs.
+func (l stripeRefundList) complete() bool {
+	return l.Object == "list" && l.Data != nil && l.HasMore != nil
+}
+
+// refundMatch is the verdict on one listed refund. Three outcomes, not two: see classify.
+type refundMatch int
+
+const (
+	// refundMatchNo — somebody else's refund. Says nothing about ours.
+	refundMatchNo refundMatch = iota
+	// refundMatchYes — ours, corroborated.
+	refundMatchYes
+	// refundMatchInconclusive — carries our stamp but the evidence disagrees or is absent.
+	refundMatchInconclusive
+)
 
 type stripeError struct {
 	Err struct {
@@ -237,11 +282,23 @@ func (s *Stripe) Void(ctx context.Context, providerRef, idempotencyKey string) (
 // "pending" or "failed" refund is a non-terminal error so the caller keeps the compensation
 // bound and does not append payment.refunded to the append-only journal — plan-final A7).
 func (s *Stripe) Refund(ctx context.Context, providerRef, idempotencyKey string, amount int64, currency string) (Result, error) {
+	// RESOLVE before submitting. A refund Stripe settled whose response we lost leaves no
+	// re_ reference to retrieve, so the recorded-ref dispatch cannot help. Within Stripe's
+	// ~24h idempotency retention a same-key POST replays the original; past it the SAME key
+	// submits a SECOND refund, which fails as already-fully-refunded — payments 502s
+	// forever and commerce parks an order whose buyer already has their money (TKT-116).
+	// ADR-032 §Status/replay: the retention window is a hard deadline, not a retry budget.
+	if res, done, err := s.resolveRefund(ctx, providerRef, idempotencyKey, amount, currency); done {
+		return res, err
+	}
 	form := url.Values{}
 	form.Set("payment_intent", providerRef)
 	if amount > 0 {
 		form.Set("amount", strconv.FormatInt(amount, 10))
 	}
+	// The stamp that makes this refund recognizable as ours on a later resolution pass.
+	// Without it the convergence above cannot tell our refund from a dashboard one.
+	form.Set("metadata["+compensationKeyMetadata+"]", idempotencyKey)
 	status, raw, se, err := s.do(ctx, http.MethodPost, "/v1/refunds", idempotencyKey, form)
 	if err != nil {
 		return unknown(err)
@@ -254,6 +311,108 @@ func (s *Stripe) Refund(ctx context.Context, providerRef, idempotencyKey string,
 		return unknown(err)
 	}
 	return mapRefundStatus(rf)
+}
+
+// compensationKeyMetadata is the Stripe refund metadata key carrying the compensation's
+// idempotency key. Stripe does not echo the Idempotency-Key header on the refund object,
+// so this stamp is the only way a later listing can identify a refund as ours.
+const compensationKeyMetadata = "compensation_key"
+
+// refundListPages bounds cursor pagination. A PaymentIntent has a handful of refunds at
+// most; the bound exists so a provider that never clears has_more cannot spin forever.
+const refundListPages = 10
+
+// resolveRefund searches the PaymentIntent's refunds for one THIS system already created
+// under idempotencyKey.
+//
+// done=true means Refund must return (res, err) WITHOUT submitting — either a match was
+// found, or the listing did not conclusively prove that no refund exists. The second case
+// is the important one: a transport failure, a provider error or a malformed page proves
+// nothing, and submitting on it is how you refund twice. Fail closed; the compensation
+// stays bound and recoverable, which is what a 502 upstream already means.
+//
+// done=false — the only path that licenses a POST — requires a complete, successful
+// listing with no match.
+func (s *Stripe) resolveRefund(ctx context.Context, providerRef, idempotencyKey string, amount int64, currency string) (Result, bool, error) {
+	q := url.Values{}
+	q.Set("payment_intent", providerRef)
+	q.Set("limit", "100")
+	for page := 0; page < refundListPages; page++ {
+		status, raw, se, err := s.do(ctx, http.MethodGet, "/v1/refunds?"+q.Encode(), "", nil)
+		if err != nil {
+			res, e := unknown(err)
+			return res, true, e
+		}
+		if se != nil {
+			res, e := classifyError(status, se)
+			return res, true, e
+		}
+		var list stripeRefundList
+		if err := json.Unmarshal(raw, &list); err != nil {
+			res, e := unknown(err)
+			return res, true, e
+		}
+		if !list.complete() {
+			res, e := unknown(errors.New("stripe refund list page is missing object/data/has_more"))
+			return res, true, e
+		}
+		data := *list.Data
+		for _, rf := range data {
+			switch rf.classify(providerRef, idempotencyKey, amount, currency) {
+			case refundMatchYes:
+				// Including a FAILED refund: the money did not come back, so this is not
+				// resolved — but re-submitting would be a fresh money movement chosen by a
+				// heuristic. mapRefundStatus keeps it a non-terminal error carrying the
+				// re_, which is the evidence a human reconciles from.
+				res, e := mapRefundStatus(rf)
+				return res, true, e
+			case refundMatchInconclusive:
+				res, e := unknown(fmt.Errorf("stripe refund %q carries this compensation key with evidence that does not corroborate it", rf.ID))
+				return res, true, e
+			}
+		}
+		if !*list.HasMore {
+			return Result{}, false, nil // conclusively absent: submitting is safe
+		}
+		if len(data) == 0 {
+			// More pages exist but this one carries no id to advance the cursor past, so
+			// no further page can be reached: absence is unprovable.
+			res, e := unknown(errors.New("stripe refund list reports more pages but returned none"))
+			return res, true, e
+		}
+		q.Set("starting_after", data[len(data)-1].ID)
+	}
+	res, e := unknown(errors.New("stripe refund list did not terminate"))
+	return res, true, e
+}
+
+// classify decides whether a listed refund is the one this compensation created.
+//
+// Three verdicts, not two (ai-review F1). The metadata stamp is the identity: a refund
+// without it is somebody else's action — a dashboard refund — and adopting it would
+// fabricate a payments-owned fact for money we did not move, the same rule ADR-032 applies
+// to an externally released hold. That is a clean NO.
+//
+// The third verdict exists for the dangerous middle: a refund carrying OUR key whose
+// corroborating evidence is absent or disagrees. Calling that NO would license a second
+// refund on top of one that probably is ours; calling it YES would append a money fact on
+// evidence that does not confirm it. Neither is defensible, so it fails closed and a human
+// looks. An earlier revision folded this case into NO — the reviewer was right that the
+// leniency quietly broke the fail-closed rule the rest of this function exists to keep.
+func (rf stripeRefund) classify(providerRef, idempotencyKey string, amount int64, currency string) refundMatch {
+	if idempotencyKey == "" || rf.Metadata == nil || rf.Metadata[compensationKeyMetadata] != idempotencyKey {
+		return refundMatchNo
+	}
+	if rf.ID == "" || rf.PaymentIntent != providerRef || rf.Currency != lc(currency) {
+		return refundMatchInconclusive
+	}
+	// amount is the compensation's durable basis and is always the stored captured amount,
+	// which compensationAllowed guarantees is positive. A non-positive one cannot
+	// corroborate anything, so it does not get to license adoption either.
+	if amount <= 0 || rf.Amount != amount {
+		return refundMatchInconclusive
+	}
+	return refundMatchYes
 }
 
 // mapRefundStatus maps a refund object to a Result. pending is ErrRefundPending so the

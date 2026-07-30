@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -50,11 +51,21 @@ func (h *traceHandler) WithGroup(name string) slog.Handler {
 	return &traceHandler{Handler: h.Handler.WithGroup(name)}
 }
 
+// clientTimeout bounds every cross-service call. Unbounded, a hung downstream could hold a
+// checkout handler open past commerce's 2-minute recovery grace period — the window in
+// which a live checkout and the recovery runner can both act on one order (TKT-116). It
+// sits above the 15s payments->Stripe bound and below the 120s grace, and callers needing
+// something stricter still pass a per-request context (the gateway's health fan-out does).
+const clientTimeout = 30 * time.Second
+
 // Client returns an http.Client that injects the W3C traceparent header
 // from the request context. All cross-service calls go through this.
 func Client() *http.Client {
-	return &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport,
-		otelhttp.WithPropagators(propagator))}
+	return &http.Client{
+		Timeout: clientTimeout,
+		Transport: otelhttp.NewTransport(http.DefaultTransport,
+			otelhttp.WithPropagators(propagator)),
+	}
 }
 
 // Middleware wraps an http.Handler with OTel server instrumentation
