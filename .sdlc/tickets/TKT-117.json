@@ -4,10 +4,14 @@
   "status": "Building",
   "labels": [
     "risk:low",
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 130,
+    "url": "https://github.com/mathd/ticketing_system/pull/130",
+    "state": "open"
+  },
   "comments": [
     {
       "stage": "backlog",
