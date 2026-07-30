@@ -1,0 +1,18 @@
+{
+  "key": "TKT-143",
+  "type": "Story",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Bound seat identity and pin reference lengths — no maxLength exists anywhere in the catalog contract",
+  "description": "Surfaced as an incidental finding by TKT-112's ai-review pass 3 (deliberately not fixed there — it is a public-contract change, outside that ticket's scope).\n\n**The gap.** Nothing bounds the length of a seat identity or a pin reference anywhere in the stack:\n\n- `seat_map_pins.seat_identity` and `seat_map_pins.pinned_by` are unbounded `text` (`services/catalog/internal/store/migrations/0011_seat_map_edit_pinning.sql:58,62`). Same for the seat/row/section labels the identity is composed from (`0009_seat_maps.sql`).\n- `services/catalog/api/openapi.yaml` contains **zero** `maxLength` constraints — not on seat-map authoring fields, not anywhere.\n- The only bound in play is `http.MaxBytesReader(..., 1<<20)` on whole request bodies (`services/catalog/internal/api/server.go:119,273`), so a single seat identity can approach 1 MiB on its own.\n\n**Why it matters.** Any consumer that has to size a response has no contract to size it against. TKT-112's `reconcile-pins` hit this directly: it caps a pin page at 4 MiB and, because no producer bound exists, has to treat an overflow as retryable and halve the page rather than rely on a computed worst case. That works, but the cap is a guess. The same guess will have to be re-made by every future reader of these fields.\n\n**Decide, then implement.** The decision is what the limits should be and where they are enforced — probably `maxLength` in the OpenAPI schema plus matching `CHECK` constraints, but a length limit on an already-populated authoring field is a behaviour change for existing seat maps, so it needs a migration story. Once the bound exists, derive the reconciliation page cap from it and replace TKT-112's shrink-on-overflow retry with a computed worst case (or keep the retry as belt-and-suspenders and say so).\n\n**Not urgent.** No correctness or security consequence today: TKT-112 fails safe (it never deletes a pin it could not fully read) and can always make progress by shrinking. This is about replacing a guessed constant with a contract.",
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "note",
+      "body": "<!-- sdlc:stage=backlog kind=note -->\nCreated by TKT-112's autonomous run from ai-review pass 3's incidental finding. Triaged as incidental rather than blocking: real, but fixing it inside TKT-112 would have meant changing the public OpenAPI contract and the seat-map authoring validation, which the ticket and plan did not anticipate.\n\nMinimal mémo for whoever picks this up:\n- **Source ticket:** TKT-112 (PR #128), ai-review pass 3, finding `[medium]`.\n- **Code pointers:** `services/catalog/internal/store/migrations/0011_seat_map_edit_pinning.sql:58,62` · `0009_seat_maps.sql` (labels) · `services/catalog/api/openapi.yaml` (no maxLength at all) · `services/catalog/internal/api/server.go:119,273` (the 1 MiB request bounds) · `services/inventory/internal/consumer/catalog.go` (`maxSeatPinPageBytes`, the guessed constant this would replace).\n- **Suspected governing ADRs:** ADR-009 (contract-first — the spec is where a length bound belongs), ADR-022/ADR-008 (a CHECK constraint on populated columns needs a migration story), ADR-019 (if any read is re-shaped).\n- **It is a decision, not just an edit** — what the limits are, and whether existing over-long data is rejected, truncated, or grandfathered. So it needs the plan gate."
+    }
+  ]
+}
