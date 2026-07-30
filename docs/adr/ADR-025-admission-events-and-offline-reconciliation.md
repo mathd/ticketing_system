@@ -210,12 +210,26 @@ conflicts. Together every physical admission that Access learns about is represe
      from scanner, device or buyer input. Replacing it with a fixed reason-code vocabulary is the
      stronger fix and is a payload change (ADR-017 §3 / ADR-033), tracked separately.
 
-   *The original wording said "bounded identifiers and enums only", which no shipped payload has
-   ever satisfied — not even the integrity class this clause was written for. That payload has
-   carried BOTH `occurred_at` and the free-text `reason` since it shipped, and §D5 REQUIRES the
-   device-claimed time the admission-conflict payload carries; the clause contradicted its own ADR
-   in three places. The amendment describes what is emitted and keeps every prohibition; it does not
-   widen what may identify a person.*
+   *Why this changed, stated as a delta rather than as a tidy-up.* The original wording —
+   "bounded identifiers and enums **only**" — was never satisfied by any shipped payload. Six
+   fields across all three classes fall outside "identifiers and enums": `alarmData.occurred_at`
+   and `alarmData.reason`; `conflictAlarmData.device_occurred_at` and
+   `conflictAlarmData.skew_flagged`; `policyConflictAlarmData.version` and
+   `policyConflictAlarmData.revisable`. §D5 *requires* the device-claimed time, so the clause
+   contradicted its own ADR.
+
+   So this amendment is **not purely a correction — it is also a deliberate relaxation**, and
+   recording it otherwise would let a future reviewer treat the reason exception and the scalar
+   expansion as pre-existing policy instead of an accepted risk. Precisely:
+
+   - **Preserved** — all three original identity exclusions: no buyer, no guest reference, no raw
+     scanner-operator identity.
+   - **Relaxed** — the word "only". Operational scalars (timestamps, counters, booleans, version
+     numbers) and one free-text diagnostic `reason` were prohibited by it and are now admitted,
+     because they already ship and §D5 mandates one of them.
+   - **Added** — prohibitions the original did not state: no device- or user-supplied free text,
+     and no nested objects. These are what stop "operational scalars" from becoming a licence for
+     arbitrary payload growth.
 
 10. **Contracts.** The verified inventory at HEAD, NATS side: redemption emits **no**
     cross-service domain event; the lifecycle alarm outbox carries exactly one subject
