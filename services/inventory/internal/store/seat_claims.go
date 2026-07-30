@@ -318,10 +318,9 @@ const (
 // the opposite order is safe: a reconciler that queues across the boundary judges with
 // stale-early time and reports the claim live, which errs toward keeping the pin.
 //
-// "Live" means the claim still consumes its seats: a live `claim_seats` row plus a claim in
-// held-unexpired, finalizing, or confirmed. Confirmed is spelled out because `liveClaims`
-// deliberately excludes it while confirm/finalize deliberately KEEP the catalog pin (the seat
-// is sold, ADR-031 §3) — dropping it here would unpin every sold seat.
+// "Live" is any non-terminal claim status — held, finalizing, or confirmed. Confirmed is in
+// that list because confirm/finalize deliberately KEEP the catalog pin (the seat is sold,
+// ADR-031 §3), so treating it as anything else would unpin every sold seat.
 func (p *Postgres) ReconcileSeatClaimStates(ctx context.Context, claimIDs []uuid.UUID) (map[uuid.UUID]SeatClaimState, error) {
 	out := make(map[uuid.UUID]SeatClaimState, len(claimIDs))
 	if len(claimIDs) == 0 {
@@ -375,19 +374,36 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 	}
 	verdicts := map[uuid.UUID]SeatClaimState{}
 	for _, id := range ids {
-		var live bool
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM claim_seats cs WHERE cs.claim_id=c.id AND cs.released_at IS NULL)
-			AND (c.status='confirmed' OR `+liveClaims+`) FROM claims c WHERE c.id=$1 AND c.pool_id=$2`, id, pool).Scan(&live)
+		var status string
+		err = tx.QueryRowContext(ctx, `SELECT status FROM claims WHERE id=$1 AND pool_id=$2`, id, pool).Scan(&status)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // stays unknown
 		}
 		if err != nil {
 			return fmt.Errorf("classify claim %s: %w", id, err)
 		}
-		if live {
+		// Dead is established POSITIVELY, from a terminal status — never inferred from a
+		// failure to prove liveness (ai-review F1). The first cut derived dead as the inverse
+		// of "has a live claim_seats row AND has a live status", which classified any live
+		// claim with missing or already-released seat rows as dead and deleted its pin.
+		// Nothing in the schema couples claim status to claim_seats.released_at, so that shape
+		// is representable — a `hold:` pin naming a GA claim has no seat rows at all — and
+		// those are the same degraded-data cases the unknown verdict deliberately fails closed
+		// for. Failing open here contradicted that rule.
+		//
+		// The terminal statuses are safe to call dead without re-checking the child rows
+		// because sweepExpired ran above in THIS transaction and its releaseSeatsForTerminal
+		// releases every terminal claim's seats pool-wide. A held claim past its expiry has
+		// already been flipped by that same sweep, so it cannot still be sitting here as
+		// "held"; if one ever did, calling it live keeps the pin, which is the safe direction.
+		switch status {
+		case "held", "finalizing", "confirmed":
 			verdicts[id] = SeatClaimLive
-		} else {
+		case "expired", "released":
 			verdicts[id] = SeatClaimDead
+		default:
+			// A status this binary does not know is not permission to delete.
+			verdicts[id] = SeatClaimUnknown
 		}
 	}
 	if err = tx.Commit(); err != nil {

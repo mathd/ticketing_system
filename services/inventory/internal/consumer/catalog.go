@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -109,6 +110,10 @@ type SeatPin struct {
 	PinnedBy     string
 }
 
+// maxSeatPinPageBytes bounds a pin page's response body. A full page of 500 rows is well under
+// 200 KiB; the cap exists so a runaway or hostile body cannot be read into memory at all.
+const maxSeatPinPageBytes = 1 << 20
+
 // ListSeatPins reads one bounded, keyset-ordered page of catalog's pin table (TKT-112).
 //
 // It fails closed on anything it cannot fully trust — a short field, a nil id, a duplicate, a
@@ -147,8 +152,16 @@ func (r *CatalogResolver) ListSeatPins(ctx context.Context, after uuid.UUID, lim
 			PinnedBy     string    `json:"pinned_by"`
 		} `json:"pins"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	// Bounded before decoding, and required to be EXACTLY one JSON value: json.Decode happily
+	// accepts a valid first value followed by trailing garbage or a truncated second one, so a
+	// spliced or half-written 200 body would otherwise pass every field check below and go on
+	// to drive a delete (ai-review F2).
+	dec := json.NewDecoder(io.LimitReader(resp.Body, maxSeatPinPageBytes))
+	if err := dec.Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode catalog seat pin list: %w", err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("catalog seat pin list: response is not exactly one JSON value (%v)", err)
 	}
 	// A pointer, so an absent "pins" key is distinguishable from an empty page — the empty
 	// page is the drain's termination signal and must never be inferred from a typo.

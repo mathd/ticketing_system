@@ -448,3 +448,67 @@ func TestReconcileSeatClaimStatesSerializesWithFinalize(t *testing.T) {
 		t.Fatalf("live verdict for a claim that is now expired (finalizeErr=%v)", finalizeErr)
 	}
 }
+
+// TestReconcileSeatClaimStatesKeepsLiveClaimsWithInconsistentSeatRows closes the fail-open hole
+// ai-review F1 found. The first cut derived "dead" as the INVERSE of "has a live claim_seats row
+// AND has a live status", so any live claim whose seat rows were missing or already released came
+// out dead and had its catalog pin deleted. Nothing in the schema couples claim status to
+// claim_seats.released_at, so that shape is representable — by a `hold:` pin naming a GA claim
+// (no seat rows at all, and the batch-pin endpoint is manually callable), or by restore skew or an
+// earlier defect. Those are exactly the degraded-data cases the unknown verdict fails closed for,
+// so failing OPEN here was inconsistent with the design's own safety rule.
+//
+// Dead is now established positively from a terminal status. A live status is live whatever its
+// child rows look like.
+func TestReconcileSeatClaimStatesKeepsLiveClaimsWithInconsistentSeatRows(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	hold := func(key, seat string) uuid.UUID {
+		t.Helper()
+		sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat}, 0, "EUR", key)
+		if err != nil {
+			t.Fatalf("hold %s: %v", key, err)
+		}
+		return sh.Claim.ID
+	}
+
+	// Held, with its seat row released out from under it.
+	heldReleased := hold("k-held-released", "A/2/1")
+	if _, err := db.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1`, heldReleased); err != nil {
+		t.Fatal(err)
+	}
+	// Finalizing, with its seat row deleted entirely.
+	finalizingGone := hold("k-finalizing-gone", "A/2/2")
+	if _, err := st.Transition(ctx, org, finalizingGone, "finalizing"); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM claim_seats WHERE claim_id=$1`, finalizingGone); err != nil {
+		t.Fatal(err)
+	}
+	// Confirmed — a SOLD seat — with its seat row released.
+	confirmedReleased := hold("k-confirmed-released", "A/2/3")
+	if _, err := st.Transition(ctx, org, confirmedReleased, "confirmed"); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1`, confirmedReleased); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.ReconcileSeatClaimStates(ctx, []uuid.UUID{heldReleased, finalizingGone, confirmedReleased})
+	if err != nil {
+		t.Fatalf("reconcile states: %v", err)
+	}
+	for _, c := range []struct {
+		id   uuid.UUID
+		what string
+	}{
+		{heldReleased, "held claim whose seat row was released"},
+		{finalizingGone, "finalizing claim whose seat row is missing"},
+		{confirmedReleased, "CONFIRMED (sold) claim whose seat row was released"},
+	} {
+		if got[c.id] != SeatClaimLive {
+			t.Fatalf("%s: verdict = %q want %q — a live status must never be reclaimable", c.what, got[c.id], SeatClaimLive)
+		}
+	}
+}

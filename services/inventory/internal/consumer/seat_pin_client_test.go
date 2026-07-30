@@ -142,6 +142,10 @@ func TestListSeatPinsFailsClosedOnBadPage(t *testing.T) {
 		{"blank seat identity", `{"pins":[{"id":"00000000-0000-0000-0000-000000000001","organizer_id":"11111111-1111-1111-1111-111111111111","seat_map_id":"22222222-2222-2222-2222-222222222222","seat_identity":"","pinned_by":"hold:h"}]}`},
 		{"blank pinned_by", `{"pins":[{"id":"00000000-0000-0000-0000-000000000001","organizer_id":"11111111-1111-1111-1111-111111111111","seat_map_id":"22222222-2222-2222-2222-222222222222","seat_identity":"A/1","pinned_by":""}]}`},
 		{"duplicate id", `{"pins":[` + p1 + `,` + p1 + `]}`},
+		// ai-review F2: a single json.Decode accepts a valid first value followed by anything.
+		// A truncated or spliced 200 body must never reach a delete decision.
+		{"trailing garbage after a valid page", `{"pins":[` + p1 + `]} not-json-at-all`},
+		{"truncated second value", `{"pins":[` + p1 + `]}{"pins":[`},
 		{"out of order", `{"pins":[` + p2 + `,` + p1 + `]}`},
 		{"oversized page", `{"pins":[` + p1 + `,` + p2 + `]}`},
 	} {
