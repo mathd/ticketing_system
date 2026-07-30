@@ -161,7 +161,29 @@ Operator runbook: `docs/development.md` §Journal signing key rotation.
   is durable.
 - `Refund`: refund the captured charge under a stable **compensation** idempotency key; the refund
   amount/currency come from the **durable stored operation**, never from a caller-supplied value;
-  append `payment.refunded`.
+  append `payment.refunded`. *Amended (TKT-116):* the refund path **resolves before it submits**.
+  Idempotency alone does not survive the retention bound above: a refund Stripe settled whose
+  response was lost leaves **no `re_` reference to retrieve**, so the recorded-ref dispatch cannot
+  help, and past ~24h the same key submits a *second* refund that fails as already-fully-refunded —
+  payments 502s forever while the buyer already has their money. So `Refund` first lists
+  `GET /v1/refunds?payment_intent=…` and adopts its own refund if one is there.
+  Three rules make that safe, and they are the reason this is a resolution and not a guess:
+  1. **Identity is a stamp we wrote, not a shape we recognize.** Stripe does not echo the
+     `Idempotency-Key` header on the refund object, so refund creation sets
+     `metadata[compensation_key]` and resolution matches on it (corroborated by PaymentIntent,
+     amount and currency). A refund without the stamp is somebody else's action — a dashboard
+     refund — and adopting it would fabricate a payments-owned fact for money we did not move, the
+     same rule this ADR already applies to an externally released hold.
+  2. **Only a conclusive listing licenses a submit.** A transport failure, a provider error, a
+     malformed page or unterminated pagination proves nothing about whether a refund exists, and
+     submitting on that is how you refund twice. Fail closed: the compensation stays bound and
+     recoverable (502), which is what the caller already does with an unresolved refund.
+  3. **A matched refund whose status is `failed` does not license a resubmit either.** The money did
+     not come back, so the compensation is genuinely unresolved — but re-submitting is a *fresh
+     money movement chosen by a heuristic*. It stays a non-terminal error carrying the `re_`, and a
+     human reconciles from it.
+  Bound: refunds created before this amendment carry no stamp and therefore do not resolve. That is
+  the pre-existing behaviour, not a regression — and not a fix.
 - `Status`: retrieve the known provider object. If the process timed out **before** persisting the
   provider reference, replay the identical creation request under the **same** Stripe idempotency key
   and the persisted request body — not a freshly generated key. *Amended (TKT-114/S2 review):* this
