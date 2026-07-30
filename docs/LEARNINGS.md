@@ -205,3 +205,17 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   adversarial passes toward governing prose, not away from it. And when sweeping restatements,
   distinguish them from *citations*: a pointer to a clause stays correct after an amendment and
   editing it is churn. (TKT-119, PR #131)
+- [**You cannot classify an event you caused**](./learnings/2026-07-30-you-cannot-classify-an-event-you-caused.md) —
+  `durableconsumer.Wait` had to choose, when a cancelled context and a closed subscription were both
+  ready, which to report. "Termination wins" is the obvious answer, was implemented, verified,
+  documented — and **reverted**: both mains `defer nc.Close()` without joining consumers, so an
+  ordinary stop routinely closes the subscription itself, and `Closed()` does not encode its cause.
+  Preferring termination emits durable-death alarms on **clean shutdowns**, destroying the evidence
+  channel the same ticket had just added. **Before writing an arbitration, ask whether your own
+  shutdown path can produce the signal.** If it can, and the signal doesn't say who produced it, the
+  safe direction is the one that cannot fire spuriously — false alarms on the common path cost more
+  than missed detections on the rare one. Two smaller rules from the same ticket: **a mutex only
+  serializes writers that take it** (a `ctx.Err()` guard inside `readinessMu` was a TOCTOU because
+  `Wait` latches readiness through a plain atomic outside it — a one-way flag closes what
+  re-asserting only shrinks); and **say what each accepted residual costs** — two were called "the
+  same" when one gives up an exit code and the other the whole signal. (TKT-122, PR #132)
