@@ -1,0 +1,17 @@
+{
+  "key": "TKT-145",
+  "type": "Task",
+  "summary": "Should a release_pending checkout answer 202 forever, or eventually assert the terminal outcome? (TKT-116 incidental)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-116"
+    }
+  ],
+  "description": "Deferred from TKT-116's plan-final (decision D4). A **product** question, not a correctness one — TKT-116 is correct either way.\n\nTKT-116 added a top-of-checkout branch for `release_pending` answering **202** with the durable status. It rejected the ticket's original candidate (402/408 derived from `terminal_outcome`) because from `release_pending` the release can still find a CONFIRMED claim and park the order for reconciliation (`recovery.releaseAndFail`), so the buyer-visible outcome is not final yet. 202 also matches what `answerRecovered` already returns for this state, so both paths agree without either changing.\n\nThe cost: while recovery is draining the order (~one or two 30s cycles), a retrying buyer sees 202 rather than the \"your payment was declined\" they will get moments later. `terminal_outcome` DOES prove no money was captured, so a terminal answer would not be a lie about the money — only about the order's final state.\n\nWorth deciding deliberately rather than by default:\n- keep 202 everywhere (current, most conservative);\n- assert 402/408 from `terminal_outcome` once the release has been outstanding beyond some bound;\n- or answer 202 with a richer buyer-facing hint.\n\nWhatever is chosen must keep the two paths (`answerRecovered` and the top-of-checkout replay) in agreement — the inconsistency is what TKT-116 was careful to avoid creating.\n\n**Sites:** `services/commerce/internal/api/server.go` — the `release_pending` replay branch and `classifyRecovered`/`answerRecovered`'s `recoveredPending` case.",
+  "comments": []
+}
