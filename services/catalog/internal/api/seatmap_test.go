@@ -471,6 +471,12 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		e := newEnv(t)
 		m := seedDraftMap(t, e, seedVenue(t, e, "Hall"), "Floor")
 		rec := e.do("GET", "/public/seat-maps/"+m.Id.String(), nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("geometry: %d %s", rec.Code, rec.Body.String())
+		}
+		if g := decode[SeatMapGeometry](t, rec); g.Map.Status != "draft" {
+			t.Fatalf("fixture must be draft, got %q", g.Map.Status)
+		}
 		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 			t.Fatalf("draft geometry must be no-store, got %q", cc)
 		}
@@ -483,6 +489,9 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		_ = seedPublishedMap(t, e, venueID, "Floor 1")
 		_ = seedPublishedMap(t, e, venueID, "Floor 2")
 		rec := e.do("GET", "/public/venues/"+venueID.String()+"/seat-maps", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+		}
 		out := decode[SeatMapList](t, rec)
 		if len(out.SeatMaps) != 2 {
 			t.Fatalf("fixture must list 2 maps, got %d", len(out.SeatMaps))
@@ -497,6 +506,9 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		_ = seedPublishedMap(t, e, venueID, "Floor 1")
 		_ = seedDraftMap(t, e, venueID, "Floor 2")
 		rec := e.do("GET", "/public/venues/"+venueID.String()+"/seat-maps", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+		}
 		out := decode[SeatMapList](t, rec)
 		if len(out.SeatMaps) != 2 {
 			t.Fatalf("mixed fixture must list both maps, got %d", len(out.SeatMaps))
@@ -510,6 +522,12 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		e := newEnv(t)
 		venueID := seedVenue(t, e, "Empty hall")
 		rec := e.do("GET", "/public/venues/"+venueID.String()+"/seat-maps", nil)
+		// The status assertion is load-bearing here and not decoration: an error
+		// body unmarshals into SeatMapList as a nil slice, so "empty" alone would
+		// also be satisfied by a 500 (which carries no-store as well).
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+		}
 		if out := decode[SeatMapList](t, rec); len(out.SeatMaps) != 0 {
 			t.Fatalf("fixture must be empty, got %d", len(out.SeatMaps))
 		}
@@ -525,6 +543,13 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		e := newEnv(t)
 		m := seedDraftMap(t, e, seedVenue(t, e, "Hall"), "Floor")
 		rec := e.do("GET", "/public/seat-maps/"+m.Id.String()+"/versions", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("versions: %d %s", rec.Code, rec.Body.String())
+		}
+		out := decode[SeatMapVersionHistory](t, rec)
+		if len(out.Versions) != 1 || out.Versions[0].Status != "draft" || out.CurrentVersion != nil {
+			t.Fatalf("fixture must be one draft version with no current_version, got %+v", out)
+		}
 		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 			t.Fatalf("draft-only history must be no-store, got %q", cc)
 		}
@@ -534,6 +559,9 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		m := seedPublishedMap(t, e, seedVenue(t, e, "Hall"), "Floor")
 		addDraftSuccessor(t, e, m.Id)
 		rec := e.do("GET", "/public/seat-maps/"+m.Id.String()+"/versions", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("versions: %d %s", rec.Code, rec.Body.String())
+		}
 		out := decode[SeatMapVersionHistory](t, rec)
 		if len(out.Versions) != 2 {
 			t.Fatalf("mixed history must carry both versions, got %d", len(out.Versions))
