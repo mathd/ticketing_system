@@ -2,10 +2,8 @@
   "key": "TKT-119",
   "type": "Task",
   "summary": "Make the access alarm surface say the true thing: per-class durable error + ADR-025 §D9 PII wording",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 131,
