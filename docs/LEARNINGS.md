@@ -219,3 +219,14 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   `Wait` latches readiness through a plain atomic outside it — a one-way flag closes what
   re-asserting only shrinks); and **say what each accepted residual costs** — two were called "the
   same" when one gives up an exit code and the other the whole signal. (TKT-122, PR #132)
+- [**When a new check fails 27 tests, ask which side is wrong**](./learnings/2026-07-30-ask-whether-the-fixtures-or-production-are-wrong.md) —
+  enforcing ADR-009 §5's `type == subject` in inventory broke 27 subtests whose fixtures omitted the
+  field. "Stale fixtures, update them" was right, and **from inside the suite it is indistinguishable
+  from "the producer omits it too", where the same check terminates every real event**. Both worlds
+  show N tests failing on one absent field, because fixtures inherit the assumptions of the code they
+  were written against. One grep at the producer settles it (`events.go` sets `Type` for all four
+  consumed subjects). Signals you are in this situation: the check is a contract/schema assertion,
+  the failures are broad and uniform, and the fixtures predate the contract. Corollary on the repair:
+  stamp the missing field at the few construction sites rather than editing every literal — it was
+  not those tests' variable — and leave the one test where it *is* the variable unstamped.
+  (TKT-123, PR #133)
