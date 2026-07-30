@@ -46,3 +46,11 @@ a `go work sync` commit to the PR.
   no added value over OpenAPI codegen).
 - All cross-service calls go through `obs.Client()` (W3C trace propagation); all servers wrap
   `obs.Middleware` + `obs.RequestLogger`.
+- **Every outbound client is bounded, and the bounds nest** (TKT-116). Innermost first:
+  recovery → payments **10s** (`services/commerce/cmd/commerce/main.go`), payments → Stripe **15s**
+  (`psp.NewStripe`'s default), any service → peer **30s** (`obs.Client()`), and commerce's recovery
+  grace period **120s** (`services/commerce/internal/store/recovery.go`). The grace period is the
+  one that matters: an internal call that outlives it lets a live checkout and the recovery runner
+  act on the same order. A call site needing something stricter still passes a per-request context —
+  the gateway's health fan-out uses 2s. Never hand a money-path adapter `http.DefaultClient`; it has
+  no timeout.
