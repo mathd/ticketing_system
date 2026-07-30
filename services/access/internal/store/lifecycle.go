@@ -346,8 +346,18 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 	return nil
 }
 
-// alarmData is the integrity alarm payload. Bounded identifiers and enums only:
-// no QR payload, no buyer, no guest reference, no raw event body (ADR-003 §D3).
+// alarmData is the integrity alarm payload: bounded identifiers, enums, the occurrence
+// time, and a service-produced diagnostic Reason — no QR payload, no buyer, no guest
+// reference, no raw event body (ADR-025 §D9, amended TKT-119; ADR-003 §D3).
+//
+// This payload is why §D9 was amended: it has carried BOTH a timestamp and a free-text
+// Reason since the class shipped, so "identifiers and enums only" never described it —
+// and the amendment is a deliberate relaxation of that "only", not just a correction.
+//
+// Reason is the one unbounded field in any alarm payload — it is cause.Error(). Nothing
+// enforces its content, so §D9's constraint on it is a discipline: build it from THIS
+// service's errors, never from scanner, device or buyer input. A fixed reason-code
+// vocabulary would be the stronger fix and is a payload change (ADR-017 §3).
 type alarmData struct {
 	AlarmID     uuid.UUID `json:"alarm_id"`
 	OrganizerID uuid.UUID `json:"organizer_id"`

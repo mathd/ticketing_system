@@ -190,8 +190,51 @@ conflicts. Together every physical admission that Access learns about is represe
    unchanged (see Context) — no gate identity or conflict reason enters the canonical form;
    reasons live in the alarm payload. Structured, signed gate provenance would be a
    canonical-version design and is out of scope.
-9. **PII.** Occurrence ids and alarm payloads carry bounded identifiers and enums only — no
-   buyer, no guest reference, no raw scanner-operator identity (ADR-003 §D3).
+9. **PII.** *Amended (TKT-119):* Occurrence ids and alarm payloads carry bounded identifiers,
+   enums drawn from fixed vocabularies, operational scalars that are not themselves direct person
+   identifiers (timestamps, counters, booleans, version numbers), and — on the integrity class
+   only — a **service-produced diagnostic reason string**. They carry **no device- or user-supplied
+   free text and no nested objects**, no buyer, no guest reference and no raw scanner-operator
+   identity (ADR-003 §D3).
+
+   This is a producer-schema constraint on honest application changes; it is **not** a privacy or
+   non-linkability guarantee, and **not** containment against an adversary with write access to the
+   Access database (ADR-021 §The trust boundary). Two specifics, because both have already caught
+   this clause out:
+
+   - `device_occurred_at` is device-*claimed* and correlates with a physical gate event. Bounded is
+     not anonymous.
+   - `reason` (`alarmData`) is the **one unbounded field** in any alarm payload: it is an internal
+     error string (`cause.Error()`). Nothing enforces its content, so this clause is a **discipline
+     on the producer** — a diagnostic reason must be built from this service's own errors and never
+     from scanner, device or buyer input. Replacing it with a fixed reason-code vocabulary is the
+     stronger fix and is a payload change (ADR-017 §3 / ADR-033), tracked separately.
+
+   *Why this changed, stated as a delta rather than as a tidy-up.* The original wording —
+   "bounded identifiers and enums **only**" — was never satisfied by any shipped payload. Six
+   fields across all three classes fall outside "identifiers and enums": `alarmData.occurred_at`
+   and `alarmData.reason`; `conflictAlarmData.device_occurred_at` and
+   `conflictAlarmData.skew_flagged`; `policyConflictAlarmData.version` and
+   `policyConflictAlarmData.revisable`. §D5 *requires* the device-claimed time, so the clause
+   contradicted its own ADR.
+
+   So this amendment is **not purely a correction — it is also a deliberate relaxation**, and
+   recording it otherwise would let a future reviewer treat the reason exception and the scalar
+   expansion as pre-existing policy instead of an accepted risk. Precisely:
+
+   - **Preserved** — all three original identity exclusions: no buyer, no guest reference, no raw
+     scanner-operator identity.
+   - **Relaxed** — the word "only". Operational scalars (timestamps, counters, booleans, version
+     numbers) and one free-text diagnostic `reason` were prohibited by it and are now admitted,
+     because they already ship and §D5 mandates one of them.
+   - **Preserved and made explicit** — no device- or user-supplied free text, and no nested
+     objects. These are *not* new: "identifiers and enums only" already entailed them, since
+     anything that is neither an identifier nor an enum was excluded. The original never
+     enumerated them, so the amendment spells them out — they are the surviving boundary of the
+     original rule, retained in full except for the single service-produced `reason` carve-out
+     above, and they are what stop "operational scalars" from becoming a licence for arbitrary
+     payload growth.
+
 10. **Contracts.** The verified inventory at HEAD, NATS side: redemption emits **no**
     cross-service domain event; the lifecycle alarm outbox carries exactly one subject
     (`platform.access.lifecycle-integrity.alarm`); Access separately publishes
