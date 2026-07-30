@@ -1,0 +1,17 @@
+{
+  "key": "TKT-144",
+  "type": "Task",
+  "summary": "A failed compensation refund has no automated path forward (TKT-116 incidental)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-116"
+    }
+  ],
+  "description": "Deferred from TKT-116's plan-final (decision D2) and re-raised by its ai-review.\n\nTKT-116 made `Stripe.Refund` resolve before submitting. When resolution finds a refund carrying this compensation's `metadata[compensation_key]` whose status is **`failed`**, the adapter deliberately stays UNRESOLVED: `mapRefundStatus` returns a non-terminal error carrying the `re_`, payments answers 502, the compensation stays bound, and commerce keeps retrying forever.\n\nThat is the correct FAIL-CLOSED choice and it was made on purpose — the money did not come back, so the compensation genuinely is unresolved, but re-submitting would be a *fresh money movement chosen by a heuristic*. TKT-116 was not the ticket to decide that.\n\n**But there is now no path forward at all.** A failed refund never settles by itself, so the compensation retries until a human notices. Decide what should happen:\n- surface it as a distinct operational state (not just \"502 unresolved\") so it is findable;\n- decide whether a failed refund may be re-submitted under a NEW compensation key, and under what evidence;\n- or route it to the same manual-reconciliation surface as a parked order (see TKT-146).\n\nNote Stripe refunds fail for real reasons (closed/expired card, disputed charge), so this is not a theoretical branch.\n\n**Site:** `services/payments/internal/psp/stripe.go` `resolveRefund`/`classify`; the `failed` case is pinned by `TestStripeRefundResolutionFailsClosedOnAFailedRefund`.\n**Constraint:** ADR-032 §Refund (amended by TKT-116) states the current rule; changing it is an ADR amendment.",
+  "comments": []
+}
