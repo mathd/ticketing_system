@@ -4,10 +4,14 @@
   "summary": "Make the access alarm surface say the true thing: per-class durable error + ADR-025 §D9 PII wording",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 131,
+    "url": "https://github.com/mathd/ticketing_system/pull/131",
+    "state": "open"
+  },
   "description": "Access boot-checks three alarm durables through the same helper: integrity (ACCESS_LIFECYCLE_ALARM_DURABLE), admission-conflict (ACCESS_ADMISSION_CONFLICT_DURABLE) and policy-conflict (ACCESS_POLICY_CONFLICT_DURABLE) — main.go:194-204. But services/access/internal/lifecyclejob/publisher.go:60-62 hardcodes \"ACCESS_LIFECYCLE_ALARM_DURABLE is required\" in the empty-durable error, and the two following error wraps say \"integrity alarm stream\" / \"integrity alarm durable\" for every class too.\n\nOperator impact: unset ACCESS_ADMISSION_CONFLICT_DURABLE and access refuses to boot telling you to set a *different* variable that is already set. Only the caller's wrap (\"admission conflict alarm route: ...\") disambiguates, and it sits outside the sentence that names the fix. This became reachable-in-practice with TKT-86, which added the first operator-facing documentation pointing at ACCESS_ADMISSION_CONFLICT_DURABLE.\n\nLikely shape: pass the env var name (or a class label) into RequireAlarmRoute and use it in all three messages. Small, isolated, no behaviour change — boot still fails, it just says the true thing.\n\nSource: TKT-86 ai-review, arm fable-5, finding 3 — triaged INCIDENTAL. Pre-existing on origin/main (predates TKT-86; confirmed there), so fixing it inside TKT-86's PR would have been scope creep.\n\n---\n\n## Absorbed TKT-120 — ADR-025 §D9 excludes a field the same ADR mandates\n\n`docs/adr/ADR-025-admission-events-and-offline-reconciliation.md:193` reads: *\"Occurrence ids and\nalarm payloads carry bounded identifiers and enums only — no buyer, no guest reference, no raw\nscanner-operator identity (ADR-003 §D3).\"*\n\nThe shipped admission-conflict payload carries `device_occurred_at` (a timestamp) and `skew_flagged`\n(a bool) alongside its four UUIDs — `services/access/internal/store/reconcile.go:297-304`. The\npolicy-conflict payload carries `version` (int) and `revisable` (bool) — `scan.go:305-315`.\n\n**Nothing is wrong with the code**: §D5 *requires* the device-claimed time. The defect is in the\ndecision record. It matters because §D9 is the PII contract a future consumer or reviewer implements\nfrom — a strict reading rejects every schema-1 alarm shipped today. The wording should name the real\nfloor (bounded identifiers, enums, and operational scalars not attributable to a person) while\nkeeping the prohibition (buyer, guest reference, raw operator identity) unchanged.\n\nThis half is a **decision, not a transcription** — settling what the PII floor admits is why it goes\nthrough the plan gate rather than straight to the default branch.\n\n## Why these are one ticket\n\nBoth are the access alarm surface telling an operator or a reviewer something untrue: one in an\nerror string, one in the ADR clause that governs the same payloads. Same files open, same reviewer\ncontext. Neither justifies its own plan gate; together they justify one.\n",
   "comments": [
     {
