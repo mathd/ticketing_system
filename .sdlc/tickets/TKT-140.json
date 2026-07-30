@@ -1,0 +1,26 @@
+{
+  "key": "TKT-140",
+  "type": "Task",
+  "summary": "TestValidateServiceResponseCoversCatalog restores its coverage bit only one way — latent stub leak if catalog ever enters the smoke gate",
+  "status": "Backlog",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "classification": "standard",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-95"
+    }
+  ],
+  "description": "Incidental finding from TKT-95's ai-review pass (deferred there, not fixed — it is\noutside that diff's scope).\n\n`smoke/contract_validation_catalog_test.go`'s `TestValidateServiceResponseCoversCatalog`\nsnapshots `smokeCoverage[\"catalog listPublicVenues\"]`, deletes it, drives a synthetic\n(stack-free) response through `validateServiceResponse`, and then restores the bit **only\nwhen it had previously been set**:\n\n```go\ndefer func() {\n    if prior {\n        smokeCoverageMu.Lock()\n        smokeCoverage[op] = true\n        smokeCoverageMu.Unlock()\n    }\n}()\n```\n\nWhen `prior` was false, the synthetic response's coverage bit **survives in the global\nmap**. Today that is harmless: catalog is deliberately absent from\n`smokeCoverageGatedServices` (ADR-030), so `uncovered2xxOps()` never reads a catalog key\nand nothing consumes the leaked bit.\n\nIt stops being harmless the moment catalog enters the smoke gate — i.e. the recorded\nADR-030 amendment ticket. At that point `listPublicVenues` would count as covered on the\nstrength of a hand-built `{\"venues\":[]}` literal, defeating the gate's real-handler /\nreal-store claim for that operation.\n\nTKT-95 hit the identical shape in a *gated* service (it copied this pattern into\n`TestConcurrentPostValidatesAndRecordsCoverage`, where the operation is\n`inventory createHold` and inventory **is** gated). The adversarial review caught it as a\nhigh finding; the fix there restores both ways and adds a `t.Cleanup` guard that asserts\nits own cleanup, mutation-checked.\n\n## Conditions of Success\n- `TestValidateServiceResponseCoversCatalog` restores the exact prior state both ways\n  (`delete` when `prior` was false).\n- It carries the same self-asserting cleanup guard as\n  `TestConcurrentPostValidatesAndRecordsCoverage`, so a future one-way revert fails a test\n  rather than sitting latent.\n- `make check` passes.\n\n## Notes\n- Trivially small and test-only, hence `risk:low`. The reason it is a ticket at all rather\n  than a direct commit is that it is product-test code with a real (if currently dormant)\n  correctness claim behind it.\n- **Do this before the ADR-030 catalog-gate-flip ticket**, not after — the flip is what\n  makes the latent leak live. Worth a `blocks` link once that ticket exists.\n",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Filed from TKT-95's ai-review triage (incidental)\n\nVerified at HEAD before filing: the one-way restore is at\n`smoke/contract_validation_catalog_test.go`, and `smokeCoverageGatedServices` in\n`smoke/coverage_test.go` is `[\"inventory\",\"commerce\",\"payments\",\"access\"]` — catalog absent,\nwhich is exactly why the leak is currently inert.\n\nNot fixed inside TKT-95: that PR's diff is the helper unification plus the five catalog\nhappy-paths, and fixing an adjacent test's dormant defect there would have been scope\ncreep on a PR the review pass had already converged on. Filing rather than fixing is the\ntriage rule (`quality-practices.md` §2 — incidental findings become Backlog issues, never\nsilent drops).\n"
+    }
+  ]
+}
