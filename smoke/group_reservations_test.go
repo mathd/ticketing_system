@@ -207,8 +207,23 @@ func TestGroupReservationDrawDownRacesPublicHolds(t *testing.T) {
 		}
 	}
 
+	// Join every request goroutine before this test can return, rolling back first so the
+	// workers queued on the pool lock are released: they report on t, and t.Error after
+	// the test completed panics, while waitQueued and the explicit rollback below are both
+	// t.Fatal paths. Registered after the top-level rollback defer so LIFO runs it first.
+	// See the same guard in inventory_contention_test.go for the full reasoning.
+	var workers sync.WaitGroup
+	var wg sync.WaitGroup
+	defer func() {
+		_ = tx.Rollback(ctx)
+		workers.Wait()
+		wg.Wait()
+	}()
+
 	drawDone := make(chan int, 1)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		code, _ := internalJSONAsync(t, http.MethodPost, fmt.Sprintf("%s/internal/group-reservations/%s/draw-down", commerceURL, res.ID), "grp-race-draw-"+slot,
 			map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 3, "actor": "staff:smoke", "reason": "race draw"})
 		drawDone <- code
@@ -218,7 +233,6 @@ func TestGroupReservationDrawDownRacesPublicHolds(t *testing.T) {
 	waitQueued("%grp-draw pool lock%", 1)
 
 	var publicGrants atomic.Int32
-	var wg sync.WaitGroup
 	for i := 0; i < 12; i++ {
 		wg.Add(1)
 		go func(i int) {

@@ -138,24 +138,23 @@ func validateServiceResponse(t *testing.T, request *http.Request, status int, he
 	}
 }
 
-// There is deliberately no t.Fatal wrapper for the direct path: internalRequest is the
-// only caller and it takes its reporter (t.Fatalf or t.Errorf) as a parameter, so it
-// calls checkDirectServiceResponse itself. A wrapper would be dead code.
-//
-// The Async pair is for helpers called from inside a `go func` in this suite. No
+// validateServiceResponseAsync is for helpers called from inside a `go func`. No
 // t.Helper(): the caller is not the test goroutine, so the helper-frame skip would
 // attribute the failure to the wrong line. t.Error marks the test failed and returns,
 // which is what a contention test needs — its remaining goroutines still have to be
 // joined. Every such goroutine MUST be joined (WaitGroup or channel receive) before its
-// test function returns: t.Error after the test completes panics.
+// test function returns: t.Error after the test completes panics. The contention,
+// group-reservation and operational-hold races each carry a deferred join for exactly
+// that reason.
+//
+// The direct path has no wrappers, Fatal or Async: both of its callers want the error
+// itself rather than a report. internalRequest takes its reporter (t.Fatalf or t.Errorf)
+// as a parameter so one implementation serves internalJSON and internalJSONAsync, and
+// timedPost returns the violation to the load harness so an invalid response can be
+// classified as a server error instead of entering the OK samples. Wrappers there would
+// be dead code.
 func validateServiceResponseAsync(t *testing.T, request *http.Request, status int, header http.Header, body []byte) {
 	if err := checkServiceResponse(request, status, header, body); err != nil {
-		t.Error(err)
-	}
-}
-
-func validateDirectServiceResponseAsync(t *testing.T, service string, request *http.Request, status int, header http.Header, body []byte) {
-	if err := checkDirectServiceResponse(service, request, status, header, body); err != nil {
 		t.Error(err)
 	}
 }
@@ -310,16 +309,24 @@ func TestConcurrentPostValidatesAndRecordsCoverage(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// Restore the EXACT prior state, both ways. Setting it back only when prior was true
+	// would leave this stub's bit in the map when it was false — and inventory IS in
+	// smokeCoverageGatedServices, so TestMain would then count "inventory createHold" as
+	// covered on the strength of an httptest response. The gate's whole claim is
+	// real-handler/real-store coverage, and a stub-satisfied bit is indistinguishable
+	// from a genuine one.
 	smokeCoverageMu.Lock()
 	prior := smokeCoverage[op]
 	delete(smokeCoverage, op)
 	smokeCoverageMu.Unlock()
 	defer func() {
+		smokeCoverageMu.Lock()
 		if prior {
-			smokeCoverageMu.Lock()
 			smokeCoverage[op] = true
-			smokeCoverageMu.Unlock()
+		} else {
+			delete(smokeCoverage, op)
 		}
+		smokeCoverageMu.Unlock()
 	}()
 
 	// The call under test runs in a goroutine and is joined before this test returns —

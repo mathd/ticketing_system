@@ -226,22 +226,46 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	holdLike := "%closure_status FROM inventory_pools%FOR UPDATE%"
 	adjustLike := "%confirmed_quantity,lifecycle_status FROM inventory_pools%FOR UPDATE%"
 
+	// Every request goroutine below reports on t (a status assertion, or a contract
+	// violation via the Async validators), and t.Error after the test function has
+	// completed PANICS. The handshake between spawning them and joining them is full of
+	// t.Fatal paths — waitQueued's deadline, the explicit tx.Rollback — and the workers
+	// are queued on the pool lock this test's transaction holds, so a Goexit from any of
+	// them would return from the test while they are still blocked, whereupon the
+	// rollback defer at the top releases them into a completed test.
+	//
+	// So join them in a defer that rolls back FIRST (idempotent — the later error is
+	// ignored) and waits second. It is registered after that top-level rollback defer,
+	// so LIFO runs it before it, which is the order that terminates. On the happy path
+	// everything is already joined and this is a no-op. All three channels are buffered,
+	// so a worker's send never blocks even when nobody reads it.
+	var workers sync.WaitGroup
+	var burst sync.WaitGroup
+	defer func() {
+		_ = tx.Rollback(ctx)
+		workers.Wait()
+		burst.Wait()
+	}()
+
 	holdDone := make(chan int, 1)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		code, _ := postWithKeyAsync(t, inventory+"/holds", "adjq-first-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 		holdDone <- code
 	}()
 	waitQueued(holdLike, 1)
 
 	adjustDone := make(chan []byte, 1)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		_, body := internalJSONAsync(t, http.MethodPost, fmt.Sprintf("%s/internal/slots/%s/capacity-adjustments", inventoryURL, slot), "adjq-cut-"+slot,
 			map[string]any{"organizer_id": organizerID, "capacity": 2, "actor": "staff:amy", "reason": "storm damage"})
 		adjustDone <- body
 	}()
 	waitQueued(adjustLike, 1)
 
-	var burst sync.WaitGroup
 	var rejected atomic.Int32
 	for i := 0; i < 5; i++ {
 		burst.Add(1)

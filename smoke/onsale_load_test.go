@@ -35,7 +35,13 @@ import (
 // classification, never as a followed hop that could re-send X-Internal-Token.
 var loadClient = loadtest.NewClient()
 
-func timedPost(t *testing.T, url string, headers map[string]string, body any) (int, []byte, time.Duration, error) {
+// timedPost returns the delivered status, body, the measured duration, a transport error,
+// and — separately — a contract violation. The violation is NOT folded into err: err's
+// taxonomy is client-side/inconclusive (TKT-92), while a drifted response is server
+// evidence (ADR-028). Callers must decide on cviol FIRST, before any status-based
+// classification, or a contract-invalid 200 would enter the OK latency samples and a
+// contract-invalid 409 would count as a capacity rejection.
+func timedPost(t *testing.T, url string, headers map[string]string, body any) (code int, out []byte, d time.Duration, err, cviol error) {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -43,7 +49,7 @@ func timedPost(t *testing.T, url string, headers map[string]string, body any) (i
 	}
 	req, err := http.NewRequest(http.MethodPost, url, rd)
 	if err != nil {
-		return 0, nil, 0, err
+		return 0, nil, 0, err, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
@@ -51,32 +57,45 @@ func timedPost(t *testing.T, url string, headers map[string]string, body any) (i
 	}
 	t0 := time.Now()
 	resp, err := loadClient.Do(req)
-	d := time.Since(t0)
+	d = time.Since(t0)
 	if err != nil {
-		return 0, nil, d, err
+		return 0, nil, d, err, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, rerr := io.ReadAll(resp.Body)
-	// TKT-95: contract-validate the delivered response, AFTER d is measured so no
-	// local schema-walking time enters the latency evidence (TKT-82/TKT-125), and
-	// only when the body arrived whole — validating a truncated body would
-	// manufacture a contract violation out of a client-side symptom, inverting
-	// TKT-92's conservative direction. Async (t.Error): a stage must still join its
-	// in-flight attempts.
+	// TKT-95: contract-validate the delivered response. AFTER d is measured, so no local
+	// schema-walking time enters the latency evidence (TKT-82/TKT-125), and only when the
+	// body arrived whole — validating a truncated body would manufacture a contract
+	// violation out of a client-side symptom, inverting TKT-92's conservative direction.
+	//
+	// Known, accepted cost: this runs inside the attempt, so it is inside RunStage's
+	// in-flight window — it cannot touch d, but it does occupy a slot slightly longer,
+	// which at high offered rates can affect occupancy, drops and scheduler lag. That is
+	// bounded fail-safe rather than silently wrong: CeilingInconclusive turns lag-p99,
+	// client errors, or drops-at-cap-while-the-SLO-held into a GENERATOR verdict, so a
+	// validation-slowed run reports inconclusive and never publishes a false server
+	// ceiling. The gate profile (~285 attempts at 25/s) is far below where this is
+	// measurable; `make onsale-load-full` is where to watch for it.
 	if rerr == nil {
 		if service := directService(url); service != "" {
-			validateDirectServiceResponseAsync(t, service, resp.Request, resp.StatusCode, resp.Header, out)
+			cviol = checkDirectServiceResponse(service, resp.Request, resp.StatusCode, resp.Header, out)
 		} else {
-			validateServiceResponseAsync(t, resp.Request, resp.StatusCode, resp.Header, out)
+			cviol = checkServiceResponse(resp.Request, resp.StatusCode, resp.Header, out)
+		}
+		if cviol != nil {
+			// Fail the test as well as the attempt: a drift here is a real contract
+			// breach, not merely an unhealthy load sample. t.Error, not t.Fatal — this
+			// runs on a RunStage worker goroutine.
+			t.Error(cviol)
 		}
 	}
 	if rerr != nil {
 		// Surface a truncated/reset body as err with the delivered status:
 		// callers classify — a forbidden status is server evidence on its own;
 		// a cut-off success body is client-side/inconclusive (TKT-92).
-		return resp.StatusCode, out, d, fmt.Errorf("read body: %w", rerr)
+		return resp.StatusCode, out, d, fmt.Errorf("read body: %w", rerr), cviol
 	}
-	return resp.StatusCode, out, d, nil
+	return resp.StatusCode, out, d, nil, cviol
 }
 
 // checkoutAttempt runs one full hold→finalize→confirm lifecycle and classifies
@@ -88,7 +107,7 @@ func checkoutAttempt(t *testing.T, runID, slot string, quantity int) func(loadte
 	holds := gatewayURL + "/api/inventory/holds"
 	return func(stage loadtest.Stage, seq int) loadtest.Outcome {
 		key := fmt.Sprintf("onsale:%s:%s:%d", runID, stage.Name, seq)
-		code, body, holdD, err := timedPost(t, holds, map[string]string{"Idempotency-Key": key},
+		code, body, holdD, err, cviol := timedPost(t, holds, map[string]string{"Idempotency-Key": key},
 			map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": quantity})
 		// Classification precedence (TKT-92): a delivered status decides on its
 		// own wherever it can — a forbidden status is server evidence even if
@@ -96,6 +115,12 @@ func checkoutAttempt(t *testing.T, runID, slot string, quantity int) func(loadte
 		// status arrived, or when a success body the harness needs was cut off
 		// (the conservative, inconclusive direction).
 		switch {
+		// A contract violation decides FIRST (TKT-95, ADR-028 posture): a drifted
+		// response is server evidence, and letting the status classify it would put a
+		// contract-invalid 201 into the OK latency samples or count a contract-invalid
+		// 409 as a capacity rejection.
+		case cviol != nil:
+			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: "hold: " + cviol.Error()}
 		case err != nil && code == 0:
 			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
 		// A 409 is only sellout if the body says so (TKT-93): coded 409s
@@ -130,8 +155,10 @@ func checkoutAttempt(t *testing.T, runID, slot string, quantity int) func(loadte
 			dst          *time.Duration
 		}{{"finalize", "finalizing", &out.Finalize}, {"confirm", "confirmed", &out.Confirm}} {
 			url := fmt.Sprintf("%s/internal/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
-			code, rbody, d, err := timedPost(t, url, hdr, nil)
+			code, rbody, d, err, cviol := timedPost(t, url, hdr, nil)
 			switch {
+			case cviol != nil: // contract drift decides first (TKT-95, ADR-028)
+				return loadtest.Outcome{Kind: loadtest.KindServerError, Note: step.name + ": " + cviol.Error()}
 			case err != nil && code == 0:
 				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
 			case code != http.StatusOK: // delivered forbidden status decides alone, truncated body or not

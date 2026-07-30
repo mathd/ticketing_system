@@ -153,6 +153,11 @@ func TestOperationalConvertNeverLeaksCapacityToPublicHolds(t *testing.T) {
 
 	var publicGrants atomic.Int32
 	var wg sync.WaitGroup
+	// The convert call below is a t.Fatal path (transport error or contract violation) and
+	// it sits between spawning these workers and joining them. The workers report on t, and
+	// t.Error after the test completed panics — so join them in a defer too. The explicit
+	// wg.Wait() after convert stays; Wait is idempotent.
+	defer wg.Wait()
 	for i := 0; i < 30; i++ {
 		wg.Add(1)
 		go func(i int) {
