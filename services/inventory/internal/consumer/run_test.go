@@ -24,7 +24,7 @@ func TestWaitConsumeAsyncTerminationLatchesInventoryUnready(t *testing.T) {
 	closed := make(chan struct{})
 
 	errc := make(chan error, 1)
-	go func() { errc <- waitConsume(context.Background(), closed, &ready, "inventory-catalog-offering") }()
+	go func() { errc <- waitConsume(context.Background(), closed, &ready, "inventory-catalog-offering", nil) }()
 
 	close(closed) // durable deleted → library Stop() → Closed() fires
 
@@ -55,7 +55,7 @@ func TestWaitConsumeCleanShutdownLeavesInventoryReadinessAlone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errc := make(chan error, 1)
-	go func() { errc <- waitConsume(ctx, closed, &ready, "inventory-catalog-offering") }()
+	go func() { errc <- waitConsume(ctx, closed, &ready, "inventory-catalog-offering", nil) }()
 
 	cancel()
 

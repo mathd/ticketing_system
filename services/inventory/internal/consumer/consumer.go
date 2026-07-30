@@ -15,6 +15,7 @@ import (
 
 	"ticketing/services/inventory/internal/store"
 	"ticketing/shared/domainevent"
+	"ticketing/shared/durableconsumer"
 )
 
 const (
@@ -238,6 +239,26 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		// forever and latch readiness for an event no binary will ever apply (ai-review finding 3).
 		c.log.Error("invalid catalog event", "subject", msg.Subject(), "schema", env.Schema,
 			"err", "envelope has no usable id")
+		_ = msg.Term()
+		return
+	}
+	if env.Type != msg.Subject() {
+		// `type` is stable across every schema variant (ADR-009 §5), exactly like `id`
+		// above, so a mismatch is a broken envelope even when `schema` claims to be from
+		// the future — which is why this sits BEFORE the schema-range check: a future
+		// variant with the wrong type is a contract violation, not version skew, and
+		// quarantining it would latch readiness for an event no binary will ever apply.
+		//
+		// Inventory dispatches on the subject, so this changes no routing; it closes the
+		// gap where a non-string `type` failed the shared decode and terminated while a
+		// wrong-string one was accepted — the same violation getting two dispositions
+		// depending on its JSON representation (TKT-123, absorbed TKT-133). Access has
+		// checked this in both consumers since TKT-61.
+		//
+		// Honest-writer consistency, not security (ADR-021): anyone who can publish to
+		// this subject can publish a matching forged `type`.
+		c.log.Error("invalid catalog event", "subject", msg.Subject(), "event_id", env.ID,
+			"schema", env.Schema, "type", env.Type, "err", "envelope type does not match subject")
 		_ = msg.Term()
 		return
 	}
@@ -519,7 +540,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 		return err
 	}
 	defer c.ready.Store(false)
-	cc, err := cons.Consume(func(msg jetstream.Msg) { c.handle(ctx, msg) })
+	// The broker's own account of why consuming stopped (TKT-123) — see access.
+	var cause durableconsumer.TerminationCause
+	cc, err := cons.Consume(func(msg jetstream.Msg) { c.handle(ctx, msg) },
+		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+			if errors.Is(err, jetstream.ErrConsumerDeleted) {
+				cause.MarkConsumerDeleted()
+			}
+		}))
 	if err != nil {
 		return err
 	}
@@ -543,7 +571,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	defer cancelStartup()
 	consumeDone := make(chan error, 1)
 	go func() {
-		err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering")
+		err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering", &cause)
 		if err != nil {
 			// BEFORE the cancellation, so a startup pass that is about to publish
 			// readiness cannot observe "not cancelled yet" and then store true

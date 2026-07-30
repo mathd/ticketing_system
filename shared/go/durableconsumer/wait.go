@@ -96,12 +96,38 @@ import (
 // the wording means changing both, deliberately (and TKT-123, which wants a
 // finer-grained cause, must do exactly that).
 func Wait(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string) error {
+	return WaitWithCause(ctx, closed, ready, name, nil)
+}
+
+// WaitWithCause is Wait plus the broker's own account of why consuming stopped
+// (TKT-123). Pass the same TerminationCause the caller's ConsumeErrHandler writes
+// to; nil means "no handler registered", which yields Wait's behaviour exactly.
+func WaitWithCause(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string, cause *TerminationCause) error {
 	terminated := func() error {
 		ready.Store(false)
-		return fmt.Errorf("%s: consume context closed (durable deleted or subscription terminated)", name)
+		if cause.consumerDeleted() {
+			return fmt.Errorf("%s: consume context closed (durable deleted)", name)
+		}
+		return fmt.Errorf("%s: consume context closed (subscription terminated)", name)
 	}
 	select {
 	case <-ctx.Done():
+		// A CONFIRMED deletion outranks the shutdown preference below, and only a
+		// confirmed one. TKT-122 made shutdown win because Closed() is
+		// cause-ambiguous — this process closes subscriptions itself via
+		// `defer nc.Close()` — but a 409 Consumer Deleted is a server status message
+		// that nc.Close() cannot manufacture. So this exception is scoped exactly to
+		// the evidence TKT-122 lacked and adds no false-alarm path.
+		//
+		// Deliberately NOT waiting for a cause that has not arrived yet: that late
+		// race is the accepted no-join residual, unchanged.
+		if cause.consumerDeleted() {
+			select {
+			case <-closed:
+				return terminated()
+			default:
+			}
+		}
 		return nil
 	case <-closed:
 		// Both arms can be ready at once, and after cancellation a closed
@@ -127,11 +153,13 @@ func Wait(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name 
 		// Before cancellation — the case that actually matters, a durable deleted
 		// under a live consumer — nothing is ambiguous and termination is reported
 		// exactly as before.
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			return terminated()
+		if !cause.consumerDeleted() {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+			}
 		}
+		return terminated()
 	}
 }

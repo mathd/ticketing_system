@@ -142,7 +142,7 @@ func TestArchivedEventDispositions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			st := &fakeCatalogStore{err: tt.storeErr}
 			c := offeringConsumer(st, nil)
-			msg := &fakeMsg{subject: subjectArchived, data: []byte(tt.body)}
+			msg := &fakeMsg{subject: subjectArchived, data: []byte(withSubjectType(subjectArchived, tt.body))}
 
 			c.handle(context.Background(), msg)
 
@@ -208,7 +208,7 @@ func TestClosureEventDispositions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			st := &fakeCatalogStore{err: tt.storeErr}
 			c := offeringConsumer(st, tt.resolver)
-			msg := &fakeMsg{subject: tt.subject, data: []byte(tt.body)}
+			msg := &fakeMsg{subject: tt.subject, data: []byte(withSubjectType(tt.subject, tt.body))}
 
 			c.handle(context.Background(), msg)
 
@@ -237,7 +237,7 @@ func TestClosureEventDispositions(t *testing.T) {
 func TestMootClosureDoesNotTouchTheStore(t *testing.T) {
 	st := &fakeCatalogStore{}
 	c := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
-	msg := &fakeMsg{subject: subjectReopened, data: []byte(`{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","closure_version":3}}`)}
+	msg := &fakeMsg{subject: subjectReopened, data: []byte(withSubjectType(subjectReopened, `{`+evtID+`,"schema":1,"data":{"performance_id":"`+perfID+`","organizer_id":"`+orgID+`","closure_version":3}}`))}
 
 	c.handle(context.Background(), msg)
 

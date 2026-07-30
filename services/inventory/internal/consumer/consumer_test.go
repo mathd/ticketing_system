@@ -228,7 +228,7 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
-			msg := &fakeMsg{data: []byte(tt.body)}
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, tt.body))}
 
 			c.handle(context.Background(), msg)
 
@@ -245,8 +245,12 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 			if q.subject != subjectPublished || q.eventID != uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") || q.schema != tt.schema {
 				t.Fatalf("quarantined (%s, %s, %d), want (%s, 6ba7b810…, %d)", q.subject, q.eventID, q.schema, subjectPublished, tt.schema)
 			}
-			if string(q.envelope) != tt.body {
-				t.Fatalf("quarantined envelope %q, want the exact raw bytes %q — reprocessing republishes them verbatim", q.envelope, tt.body)
+			// Compare against what was DELIVERED, not the bare literal: the fixture is
+			// stamped with its subject's `type` (ADR-009 §5 / TKT-123). The property
+			// under test is unchanged — quarantine stores the arriving bytes verbatim,
+			// because reprocessing republishes them.
+			if delivered := withSubjectType(subjectPublished, tt.body); string(q.envelope) != delivered {
+				t.Fatalf("quarantined envelope %q, want the exact raw bytes %q — reprocessing republishes them verbatim", q.envelope, delivered)
 			}
 			if c.Ready() {
 				t.Fatal("consumer must latch unready on version skew — reporting healthy is what made TKT-61 invisible")
@@ -271,7 +275,7 @@ func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
 			st.quarantineErr = tt.err
-			msg := &fakeMsg{data: []byte(body)}
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
 
 			c.handle(context.Background(), msg)
 
@@ -295,7 +299,7 @@ func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 func TestQuarantineCollisionIsPoison(t *testing.T) {
 	c, st := testConsumerWithStore()
 	st.quarantineErr = store.ErrCatalogQuarantineCollision
-	msg := &fakeMsg{data: []byte(`{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{"x":1}}`)} // schema 5 = unknown future
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{"x":1}}`))} // schema 5 = unknown future
 
 	c.handle(context.Background(), msg)
 
@@ -313,13 +317,13 @@ func TestKnownEventFlowsWhileUnknownIsHeld(t *testing.T) {
 	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	c, st := testConsumerWithStore()
 
-	future := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":5,"data":{"slot_ref":"a"}}`)} // schema 5 = unknown future
+	future := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":5,"data":{"slot_ref":"a"}}`))} // schema 5 = unknown future
 	c.handle(context.Background(), future)
 	if !slices.Contains(future.actions, "ack") || len(st.quarantined) != 1 {
 		t.Fatalf("future: actions = %v quarantined = %d, want quarantine + ack", future.actions, len(st.quarantined))
 	}
 
-	known := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":2,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `,"capacity":500}}`)}
+	known := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":2,"data":{"performance_id":`+uid+`,"organizer_id":`+uid+`,"capacity":500}}`))}
 	c.handle(context.Background(), known)
 	if !slices.Contains(known.actions, "ack") || len(st.provisioned) != 1 {
 		t.Fatalf("known: actions = %v provisioned = %d — a supported variant must still provision and ack", known.actions, len(st.provisioned))
@@ -342,7 +346,7 @@ func TestEnvelopeWithoutUsableSchemaIsTerminatedAndStaysReady(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
-			msg := &fakeMsg{data: []byte(tt.body)}
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, tt.body))}
 
 			c.handle(context.Background(), msg)
 
@@ -372,7 +376,7 @@ func TestInvalidKnownSchemaIsTerminatedAndStaysReady(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
-			msg := &fakeMsg{data: []byte(tt.body)}
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, tt.body))}
 
 			c.handle(context.Background(), msg)
 
@@ -395,7 +399,7 @@ func TestSchema1ResolutionFailureIsRetriedAndStaysReady(t *testing.T) {
 	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	c := testConsumer()
 	c.resolver = fakeResolver{err: errors.New("catalog unreachable")}
-	msg := &fakeMsg{data: []byte(`{"id":` + uid + `,"schema":1,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `}}`)}
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":1,"data":{"performance_id":`+uid+`,"organizer_id":`+uid+`}}`))}
 
 	c.handle(context.Background(), msg)
 
@@ -421,7 +425,7 @@ func TestSeatedPublicationProvisionsSeatedPool(t *testing.T) {
 	seatMap := "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 	body := `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","kind":"performance","capacity":500,"seat_map_id":"` + seatMap + `","re_entry":{"mode":"single","requires_exit":false}}}`
 	c, st := testConsumerWithStore()
-	msg := &fakeMsg{data: []byte(body)}
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
 
 	c.handle(context.Background(), msg)
 
@@ -452,7 +456,7 @@ func TestSeatedPublicationWithoutCapacityIsPoison(t *testing.T) {
 	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	body := `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","seat_map_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}}`
 	c, st := testConsumerWithStore()
-	msg := &fakeMsg{data: []byte(body)}
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
 
 	c.handle(context.Background(), msg)
 
@@ -567,4 +571,81 @@ func TestMaxKnownSchemaIsNotBehindTheArms(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unsupported publication schema") {
 		t.Fatalf("schema %d = maxKnownPublicationSchema+1 must be unsupported, got err = %v — the const is behind the arms", next, err)
 	}
+}
+
+// TKT-123 (absorbed TKT-133). Inventory dispatched purely on the NATS subject and
+// ignored `type` entirely, while access checked it in both consumers. ADR-009 §5
+// makes `type == subject` part of the envelope contract, so inventory accepted
+// envelopes that violate it.
+//
+// Worse, TKT-126 left the disposition depending on the JSON *representation* of
+// the same violation: a non-string `type` failed the shared decode and
+// terminated, while a wrong-string `type` was accepted outright. Three shapes,
+// two outcomes, one contract.
+//
+// All three are poison for the same reason `id` is: `type` is stable across every
+// schema variant, so a wrong one is a broken envelope even when `schema` claims
+// to be from the future — which is why the future-schema rows matter. Parking
+// would NAK forever and latch readiness for an event no binary will ever apply.
+//
+// Fixtures are hand-written JSON literals: one built from domainevent.Raw could
+// not express a non-string `type` at all, which is the shape that exposed the
+// inconsistency.
+func TestTypeMismatchIsPoisonWhateverItsShape(t *testing.T) {
+	const id = `"id":"11111111-1111-4111-8111-111111111111"`
+	// The known-schema rows carry VALID data on purpose. With an empty payload they
+	// terminate anyway — on payload validation, not on the contract — and would have
+	// passed against the defect. Valid data means the only thing standing between
+	// these envelopes and a successful provision is the `type` check itself.
+	const good = `"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","capacity":500}`
+	const wrongType = `"type":"platform.catalog.performance.archived"`
+	for _, tc := range []struct{ name, body string }{
+		{"missing type, known schema", `{` + id + `,"schema":2,` + good + `}`},
+		{"missing type, future schema", `{` + id + `,"schema":5,` + good + `}`},
+		{"wrong type, known schema", `{` + id + `,` + wrongType + `,"schema":2,` + good + `}`},
+		{"wrong type, future schema", `{` + id + `,` + wrongType + `,"schema":5,` + good + `}`},
+		{"non-string type, known schema", `{` + id + `,"type":42,"schema":2,` + good + `}`},
+		{"non-string type, future schema", `{` + id + `,"type":42,"schema":5,` + good + `}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, st := testConsumerWithStore()
+			c.ready.Store(true)
+			msg := &fakeMsg{subject: subjectPublished, data: []byte(tc.body)}
+
+			c.handle(context.Background(), msg)
+
+			// One disposition class for all six: terminate. Not park (NAKs forever),
+			// not quarantine (that is version skew, and this is not a variant).
+			if len(msg.actions) != 1 || msg.actions[0] != "term" {
+				t.Fatalf("actions = %v, want exactly [term]", msg.actions)
+			}
+			// A broken producer must never take inventory down (the same rule the
+			// id check follows), so readiness is untouched even at a future schema.
+			if !c.ready.Load() {
+				t.Fatal("a contract violation must not latch readiness false; a broken producer cannot take inventory down")
+			}
+			// And nothing may be persisted from an envelope we refused to trust —
+			// in particular a future-schema violation must NOT be quarantined,
+			// which is what would happen if the schema check ran first.
+			if len(st.quarantined) != 0 {
+				t.Fatalf("quarantined %d events from a broken envelope; version skew and contract violation are different things", len(st.quarantined))
+			}
+			if len(st.provisioned) != 0 || len(st.archived) != 0 || len(st.closures) != 0 {
+				t.Fatalf("a rejected envelope mutated the store: provisioned=%v archived=%v closures=%v", st.provisioned, st.archived, st.closures)
+			}
+		})
+	}
+}
+
+// withSubjectType stamps the envelope `type` that ADR-009 §5 requires to equal the
+// subject, for fixtures written before TKT-123 enforced it. These tests vary the
+// SUBJECT and the payload; `type` is not their variable, and leaving it absent
+// would make every one of them a contract violation rather than the case it
+// describes. Fixtures that deliberately carry a wrong or missing `type` do not
+// use this — see TestTypeMismatchIsPoisonWhateverItsShape.
+func withSubjectType(subject, body string) string {
+	if strings.Contains(body, `"type"`) || !strings.HasPrefix(body, "{") {
+		return body
+	}
+	return `{"type":"` + subject + `",` + body[1:]
 }

@@ -19,7 +19,7 @@ func TestWaitConsumeAsyncTerminationLatchesUnreadyAndErrors(t *testing.T) {
 	closed := make(chan struct{})
 
 	errc := make(chan error, 1)
-	go func() { errc <- waitConsume(context.Background(), closed, &ready, "test-consumer") }()
+	go func() { errc <- waitConsume(context.Background(), closed, &ready, "test-consumer", nil) }()
 
 	close(closed) // durable deleted → library Stop() → Closed() fires
 
@@ -48,7 +48,7 @@ func TestWaitConsumeCleanShutdownStaysLatchedAndReturnsNil(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errc := make(chan error, 1)
-	go func() { errc <- waitConsume(ctx, closed, &ready, "test-consumer") }()
+	go func() { errc <- waitConsume(ctx, closed, &ready, "test-consumer", nil) }()
 
 	cancel()
 
@@ -74,7 +74,7 @@ func TestWaitConsumeTerminationErrorNamesConsumer(t *testing.T) {
 	closed := make(chan struct{})
 	close(closed)
 
-	err := waitConsume(context.Background(), closed, &ready, "access-slot-policy")
+	err := waitConsume(context.Background(), closed, &ready, "access-slot-policy", nil)
 	if err == nil {
 		t.Fatal("expected non-nil error on termination")
 	}
@@ -99,7 +99,7 @@ func TestWaitConsumeTerminationWinsOverLiveContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // ctx stays live; only `closed` is ready
 
-	err := waitConsume(ctx, closed, &ready, "access-ticket-issuer")
+	err := waitConsume(ctx, closed, &ready, "access-ticket-issuer", nil)
 	if err == nil {
 		t.Fatal("expected the termination arm to win when only closed is ready")
 	}

@@ -22,6 +22,7 @@ import (
 	"ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
 	"ticketing/shared/domainevent"
+	"ticketing/shared/durableconsumer"
 )
 
 const (
@@ -426,14 +427,22 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 	c.ready.Store(true)
 	defer c.ready.Store(false)
+	// The broker's own account of why consuming stopped, which Closed() cannot
+	// carry (TKT-123). Registered here because handler wiring is service-owned
+	// (ADR-034); the classification and the wording live in the shared package.
+	var cause durableconsumer.TerminationCause
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		c.handle(ctx, msg)
-	})
+	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+		if errors.Is(err, jetstream.ErrConsumerDeleted) {
+			cause.MarkConsumerDeleted()
+		}
+	}))
 	if err != nil {
 		return err
 	}
 	defer cc.Stop()
-	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-ticket-issuer"); err != nil {
+	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-ticket-issuer", &cause); err != nil {
 		return err
 	}
 	return fmt.Errorf("consumer stopped: %w", ctx.Err())
