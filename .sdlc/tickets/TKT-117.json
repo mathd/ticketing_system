@@ -1,16 +1,16 @@
 {
   "key": "TKT-117",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "risk:low",
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 130,
     "url": "https://github.com/mathd/ticketing_system/pull/130",
-    "state": "open"
+    "state": "merged"
   },
   "comments": [
     {
