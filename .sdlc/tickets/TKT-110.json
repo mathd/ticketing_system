@@ -2,10 +2,8 @@
   "key": "TKT-110",
   "type": "Task",
   "summary": "Declare the responses catalog and inventory actually emit (lifecycle 400s + the availability cache tier)",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 127,
