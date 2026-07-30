@@ -302,7 +302,14 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// the timestamp of the checkout that died, stays past recovery's grace period,
 		// and recovery can claim it while this request is live — the grace period only
 		// protects orders whose updated_at actually moves.
-		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1`, id); err != nil {
+		//
+		// Scoped to the statuses that actually RESUME orchestration (TKT-116). A retry
+		// landing on release_pending or reconciliation_required returns from a replay
+		// branch below without touching anything downstream, so there is no in-flight work
+		// to protect — while refreshing updated_at would push the order back inside
+		// recovery's 2-minute grace window on every retry, leaving the release that IS
+		// outstanding permanently unclaimable and the buyer looping on the same answer.
+		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, id); err != nil {
 			return uuid.Nil, "", err
 		}
 	}
@@ -534,6 +541,24 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		write(w, terminalCheckoutCode(orderStatus), map[string]any{"order_id": order, "status": orderStatus, "replay": true})
+		return
+	}
+	if orderStatus == "release_pending" {
+		// A terminal outcome is already decided and durable: RecordTerminalOutcome writes
+		// terminal_outcome and this status in ONE statement, and the runner treats a
+		// release_pending row without an outcome as a bug. Only the inventory release is
+		// outstanding. Falling through would re-journal order.created and finalize a claim
+		// recovery is concurrently releasing — or, once inventory had released it, hand the
+		// buyer a misleading 409 "hold expired" (TKT-116). claimOrder narrows this but
+		// cannot close it: errRecoveryInProgress fires only while the lease is LIVE.
+		//
+		// 202 echoing the durable status, not 402/408 from terminal_outcome: from here the
+		// release can still find a CONFIRMED claim and park the order for reconciliation
+		// (recovery.releaseAndFail), so the buyer-visible outcome is not final yet. It is
+		// also exactly what answerRecovered already returns for this state, so the guarded
+		// -write loser and this replay agree without either changing. terminal_outcome does
+		// prove no money was captured, and 202-with-status says that without over-claiming.
+		write(w, 202, map[string]any{"order_id": order, "status": orderStatus})
 		return
 	}
 	if orderStatus == "reconciliation_required" {
