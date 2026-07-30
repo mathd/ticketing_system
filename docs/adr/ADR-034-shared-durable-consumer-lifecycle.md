@@ -208,6 +208,22 @@ consumer does stays with the service.**
 - Still open, deliberately: TKT-123 (the diagnostic cannot distinguish causes), TKT-133 (inventory
   does not validate `type` against the subject).
 
+### Termination wins when both arms are ready (TKT-122)
+
+`Wait` used to pick at random when the parent context and `Closed()` were both ready — a durable
+deleted at the instant of SIGTERM — and this ADR called both answers defensible, telling callers not
+to depend on which. That held only while the answer changed nothing but an exit code nothing reads.
+
+It stopped holding when TKT-122 made the classification carry the operator's evidence: a `nil` there
+is filtered by both mains as a clean stop, so the durable's death left no error, no log line and no
+trace at all. **Termination now wins whenever it is observable** — the more serious state, the only
+one with a diagnostic, and the one that never self-heals (ADR-017 §240-241), while "we were also
+asked to stop" is already evident from the fact that we are stopping.
+
+An ordinary stop still cannot be misreported: `Closed()` only fires once the durable dies or
+`cc.Stop()` runs, and that deferred `Stop` runs *after* `Run` returns, i.e. after `Wait` has already
+arbitrated. The change applies to **both** services, since both classify through this one function.
+
 ### The shutdown drain stays a snapshot — decided, not overlooked (TKT-122)
 
 `awaitShutdown` in both services drains `consumerErr` for errors that have **already arrived**, then

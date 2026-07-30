@@ -69,15 +69,19 @@ type blockingResolver struct {
 	// simultaneous parent cancellation can be injected deterministically; a sleep
 	// after closing the durable lands far too late, because the pass has already
 	// returned by then.
-	cancelled chan struct{}
-	release   chan struct{}
+	cancelled     chan struct{}
+	release       chan struct{}
+	cancelledOnce sync.Once
 }
 
 func (r *blockingResolver) PoolOfferState(ctx context.Context, _ uuid.UUID) (PoolOfferState, error) {
 	r.once.Do(func() { close(r.entered) })
 	<-ctx.Done()
 	if r.cancelled != nil {
-		close(r.cancelled)
+		// Once: reconcile calls this per pool per attempt, and a second close
+		// would panic — turning a test-fixture detail into a failure that looks
+		// like a product bug.
+		r.cancelledOnce.Do(func() { close(r.cancelled) })
 		<-r.release
 	}
 	return PoolOfferState{}, ctx.Err()

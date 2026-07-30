@@ -62,9 +62,12 @@ import (
 // a receive on it therefore unblocks on that close. On a clean shutdown main
 // cancels the root context, and the caller's deferred cc.Stop() — which would
 // also close `closed` — runs only after Run returns, so the ctx.Done() arm
-// reliably wins the ordinary path. If both are ready at once (a subscription
-// killed at the exact instant of shutdown), the select picks either arm; both
-// answers are defensible, so callers must not depend on which.
+// reliably wins the ordinary path — an ordinary stop can never be misreported as
+// a termination. If both are ready at once (a subscription killed at the exact
+// instant of shutdown), **termination wins**; see the nested select below. That
+// was deliberately unspecified until TKT-122 ("both answers are defensible, so
+// callers must not depend on which") and stopped being defensible once the
+// classification began carrying the operator's only evidence.
 //
 // The error string is a CONTRACT, not a log line. smoke/access_consumer_test.go
 // (TKT-99) asserts it verbatim against a real broker after deleting a durable,
@@ -75,11 +78,30 @@ import (
 // the wording means changing both, deliberately (and TKT-123, which wants a
 // finer-grained cause, must do exactly that).
 func Wait(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string) error {
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-closed:
+	terminated := func() error {
 		ready.Store(false)
 		return fmt.Errorf("%s: consume context closed (durable deleted or subscription terminated)", name)
+	}
+	select {
+	case <-ctx.Done():
+		// Both arms can be ready at once — a durable deleted at the instant of
+		// SIGTERM. Picking at random was defensible while the answer changed only
+		// an exit code nothing reads. It stopped being defensible once TKT-122 made
+		// this classification carry the operator's evidence: a nil here is filtered
+		// by both mains as a clean stop, so the durable's death would leave no
+		// error, no log line and no trace at all.
+		//
+		// So termination wins when it is observable. It is the more serious of the
+		// two states, the only one carrying a diagnostic, and it never self-heals
+		// (ADR-017 §240-241) — while "we were also asked to stop" is already
+		// evident from the fact that we are stopping.
+		select {
+		case <-closed:
+			return terminated()
+		default:
+			return nil
+		}
+	case <-closed:
+		return terminated()
 	}
 }

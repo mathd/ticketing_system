@@ -118,3 +118,35 @@ func TestWaitTerminationDiagnosticIsExact(t *testing.T) {
 		t.Fatal("the error must name the consumer so an operator can tell which one terminated")
 	}
 }
+
+// TestWaitPrefersTerminationWhenBothAreReady pins the arbitration TKT-122's
+// ai-review found under-specified. A durable deleted at the instant of SIGTERM
+// leaves BOTH arms ready, and a random pick returned nil half the time — which
+// both services' mains filter as a clean stop, so the durable's death left no
+// error, no log line and no trace.
+//
+// Deterministic by construction: both channels are ready BEFORE Wait is called,
+// so there is no interleaving to lose. Run it with -count to convince yourself —
+// a random select would fail roughly half the time, which is exactly why the
+// previous behaviour could not be caught by a single run.
+func TestWaitPrefersTerminationWhenBothAreReady(t *testing.T) {
+	for i := 0; i < 64; i++ {
+		var ready atomic.Bool
+		ready.Store(true)
+		closed := make(chan struct{})
+		close(closed)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := Wait(ctx, closed, &ready, "test-consumer")
+		if err == nil {
+			t.Fatalf("iteration %d: a termination observable at shutdown must not be reported as a clean stop", i)
+		}
+		if !strings.Contains(err.Error(), "consume context closed") {
+			t.Fatalf("iteration %d: want the durable diagnostic, got %v", i, err)
+		}
+		if ready.Load() {
+			t.Fatalf("iteration %d: termination must latch ready false even when shutdown is concurrent", i)
+		}
+	}
+}
