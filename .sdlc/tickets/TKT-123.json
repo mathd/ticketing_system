@@ -1,15 +1,15 @@
 {
   "key": "TKT-123",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 133,
     "url": "https://github.com/mathd/ticketing_system/pull/133",
-    "state": "open"
+    "state": "merged"
   },
   "summary": "Shared durable-consumer contract checks: distinguish durable deletion, validate envelope type against subject",
   "description": "TKT-99's broker-level test asserts the exact waitConsume diagnostic, but that message covers every async termination (\"durable deleted or subscription terminated\"). The test therefore proves deletion happened and that something terminated the consume context — not that the first caused the second. jetstream distinguishes them (ErrConsumerDeleted, pull.go:722); access does not surface it. Fix is a production diagnostic/readiness-surface change, so it was split out of the test-only ticket.\n\n---\n\n## Absorbed TKT-133 — inventory never validates the envelope `type` against the subject\n\nInventory's catalog consumer dispatches purely on the NATS subject\n(`knownSchemas[msg.Subject()]`, `services/inventory/internal/consumer/consumer.go:201`) and ignores\n`type` entirely. Access checks it in both consumers (`consumer.go:360`, `policy.go:96`).\nPre-existing at `origin/main`; TKT-126 preserved the behaviour deliberately and recorded the\nasymmetry in ADR-033 rather than silently fixing it.\n\nADR-009 §5 makes `type == subject` part of the envelope contract, so inventory currently accepts\nenvelopes that violate it. And TKT-126 introduced an inconsistency, deliberately and with a test\n(`TestDecodeEnvelopeRejectsNonStringType`): a **non-string** `type` fails the shared decode and\nterminates, while a **wrong-string** `type` is accepted — disposition depends on the JSON\nrepresentation of the same contract violation.\n\nSub-scope:\n- [ ] Inventory validates `env.Type` against `msg.Subject()` before schema dispatch, **or** the\n      decision not to is recorded with a reason (the broker, not the payload, may be the deliberate\n      routing authority)\n- [ ] Missing / mismatched / non-string `type` reach the **same** disposition class, not three\n- [ ] Consumer-level tests pin the chosen behaviour for all three shapes, at a known and a future\n      schema, asserting the exact action sequence and the readiness outcome\n- [ ] ADR-033's \"what deliberately does not live here\" section and the `domainevent` package doc match\n\n## Why these are one ticket\n\nBoth belong to `shared/go/durableconsumer` — TKT-133's own text says the `id`/`type` checks belong in\nthe skeleton, and TKT-127 (which built it) is now **Done**, so this is where they land. TKT-123's\ndiagnostic moved there too when TKT-127 lifted `waitConsume`\n(`shared/go/durableconsumer/wait.go:83`), which means fixing it once now covers access *and*\ninventory instead of only access as originally scoped.\n\nBoth halves are the same question asked at two layers: **what does this consumer actually verify\nbefore it acts, and can it tell you which thing went wrong?** One plan gate.\n",
