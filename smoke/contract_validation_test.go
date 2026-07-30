@@ -328,6 +328,19 @@ func TestConcurrentPostValidatesAndRecordsCoverage(t *testing.T) {
 		}
 		smokeCoverageMu.Unlock()
 	}()
+	// Cleanup runs after the deferred restore above, so it can check the restore actually
+	// happened. This is the regression guard for the leak itself: an "if prior" restore
+	// that skips the false case leaves this stub's bit in the map, and TestMain would then
+	// credit a gated operation to an httptest response.
+	t.Cleanup(func() {
+		smokeCoverageMu.Lock()
+		leaked := smokeCoverage[op] && !prior
+		smokeCoverageMu.Unlock()
+		if leaked {
+			t.Errorf("this test leaked %q into smokeCoverage: a stub response must never "+
+				"satisfy the real-stack coverage gate (inventory is in smokeCoverageGatedServices)", op)
+		}
+	})
 
 	// The call under test runs in a goroutine and is joined before this test returns —
 	// the invariant every async helper depends on (t.Error after the test completes
