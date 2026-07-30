@@ -13,7 +13,7 @@ import (
 
 func TestSubcommandsRegisterMigrateAndReprocessQuarantine(t *testing.T) {
 	subs := subcommands()
-	for _, name := range []string{"migrate", "reprocess-quarantine"} {
+	for _, name := range []string{"migrate", "reprocess-quarantine", "reconcile-pins"} {
 		if _, ok := subs[name]; !ok {
 			t.Fatalf("subcommands() lacks %q", name)
 		}
@@ -22,6 +22,12 @@ func TestSubcommandsRegisterMigrateAndReprocessQuarantine(t *testing.T) {
 
 func TestReprocessQuarantineRejectsArguments(t *testing.T) {
 	if err := reprocessQuarantine([]string{"--force"}); err == nil {
+		t.Fatal("unexpected arguments must be a usage error, not silently ignored")
+	}
+}
+
+func TestReconcilePinsRejectsArguments(t *testing.T) {
+	if err := reconcilePins([]string{"--all"}); err == nil {
 		t.Fatal("unexpected arguments must be a usage error, not silently ignored")
 	}
 }

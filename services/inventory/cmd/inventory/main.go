@@ -51,11 +51,13 @@ func main() {
 
 // subcommands are the one-shot modes (the registry shape services/access uses). migrate is the
 // out-of-band migration job (ADR-022); reprocess-quarantine republishes future-schema events a
-// newer binary now understands (TKT-68) — deploy that binary first, run this, then restart.
+// newer binary now understands (TKT-68) — deploy that binary first, run this, then restart;
+// reconcile-pins reclaims catalog seat pins left behind by expired holds (TKT-112).
 func subcommands() map[string]func([]string) error {
 	return map[string]func([]string) error{
 		"migrate":              func([]string) error { return migrate() },
 		"reprocess-quarantine": reprocessQuarantine,
+		"reconcile-pins":       reconcilePins,
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -95,6 +96,85 @@ func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID
 		return PublishedPerformance{}, fmt.Errorf("invalid catalog festival capacity lookup")
 	}
 	return PublishedPerformance{OrganizerID: body.OrganizerID, Capacity: body.Capacity, CapacityGroupID: body.CapacityGroupID, SharedCapacity: body.SharedCapacity}, nil
+}
+
+// SeatPin is one catalog pin row as the reconciliation read returns it (TKT-112).
+// SeatMapID is a representative version of the pin's family — enough to reach the pin
+// through catalog's family-locked unpin path (ADR-029).
+type SeatPin struct {
+	ID           uuid.UUID
+	OrganizerID  uuid.UUID
+	SeatMapID    uuid.UUID
+	SeatIdentity string
+	PinnedBy     string
+}
+
+// ListSeatPins reads one bounded, keyset-ordered page of catalog's pin table (TKT-112).
+//
+// It fails closed on anything it cannot fully trust — a short field, a nil id, a duplicate, a
+// row at or before the cursor, more rows than were asked for. This is stricter than a decoder
+// needs to be because the caller uses the result to decide what to DELETE: a page accepted on
+// partial data is a reclaim decision made on partial data. Rejecting a row at or before the
+// cursor also makes a server that ignores `after` a loud failure rather than an infinite drain.
+func (r *CatalogResolver) ListSeatPins(ctx context.Context, after uuid.UUID, limit int) ([]SeatPin, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("seat pin page limit must be positive, got %d", limit)
+	}
+	url := r.baseURL + "/internal/seat-map-pins?"
+	if after != uuid.Nil {
+		url += "after=" + after.String() + "&"
+	}
+	url += "limit=" + strconv.Itoa(limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Internal-Token", r.credential)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("catalog seat pin list: status %d", resp.StatusCode)
+	}
+	var body struct {
+		Pins *[]struct {
+			ID           uuid.UUID `json:"id"`
+			OrganizerID  uuid.UUID `json:"organizer_id"`
+			SeatMapID    uuid.UUID `json:"seat_map_id"`
+			SeatIdentity string    `json:"seat_identity"`
+			PinnedBy     string    `json:"pinned_by"`
+		} `json:"pins"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode catalog seat pin list: %w", err)
+	}
+	// A pointer, so an absent "pins" key is distinguishable from an empty page — the empty
+	// page is the drain's termination signal and must never be inferred from a typo.
+	if body.Pins == nil {
+		return nil, errors.New("catalog seat pin list: response has no pins")
+	}
+	if len(*body.Pins) > limit {
+		return nil, fmt.Errorf("catalog seat pin list: %d rows for a limit of %d", len(*body.Pins), limit)
+	}
+	out := make([]SeatPin, 0, len(*body.Pins))
+	prev := after
+	for i, p := range *body.Pins {
+		if p.ID == uuid.Nil || p.OrganizerID == uuid.Nil || p.SeatMapID == uuid.Nil ||
+			strings.TrimSpace(p.SeatIdentity) == "" || strings.TrimSpace(p.PinnedBy) == "" {
+			return nil, fmt.Errorf("catalog seat pin list: row %d is incomplete", i)
+		}
+		// Strictly increasing by primary key, and strictly past the cursor. Compares the
+		// raw 16 bytes, which is exactly how Postgres orders uuid.
+		if prev != uuid.Nil && bytes.Compare(p.ID[:], prev[:]) <= 0 {
+			return nil, fmt.Errorf("catalog seat pin list: row %d (%s) is not past %s", i, p.ID, prev)
+		}
+		prev = p.ID
+		out = append(out, SeatPin{ID: p.ID, OrganizerID: p.OrganizerID, SeatMapID: p.SeatMapID,
+			SeatIdentity: p.SeatIdentity, PinnedBy: p.PinnedBy})
+	}
+	return out, nil
 }
 
 // PinSeats pins a seat-hold's whole set against catalog (TKT-80, hold-then-pin). The

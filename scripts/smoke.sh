@@ -284,3 +284,82 @@ psql_access "ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER;
             DROP TABLE lifecycle_heads_smoke_backup;
             DROP TABLE lifecycle_checkpoints_smoke_backup;"
 compose exec -T access /app verify-lifecycle
+
+# ADR-031 / TKT-112: reclaim leaked seat pins end-to-end, through the real binary.
+#
+# What this block exists to prove is the WIRING, not the classification — the verdict logic
+# is pinned by unit tests and by the two store suites. Only a real run can catch the class of
+# failure those cannot see: the command not being registered, the container missing
+# CATALOG_URL or the internal token, the internal read not being mounted, or the unpin route
+# refusing the call. That is the gap TKT-94 was filed for.
+#
+# The fixture is seeded by SQL (the same approach the journal and lifecycle blocks above take)
+# because the state being reconciled is by definition state nobody is touching any more: a
+# hold that expired on a pool no request has come near since.
+psql_inventory() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d inventory -tAc "$1"; }
+psql_catalog() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d catalog -tAc "$1"; }
+
+# Borrow a published seat map the Go suite already created, and two real identities from it.
+recon_map=$(psql_catalog "SELECT m.id FROM seat_maps m JOIN seat_map_seats s ON s.seat_map_id=m.id
+  WHERE m.status='published' GROUP BY m.id HAVING count(*)>=2 ORDER BY m.id LIMIT 1" | tr -d '[:space:]')
+if [ -z "$recon_map" ]; then
+  echo "smoke: no published seat map with two seats to reconcile against" >&2
+  exit 1
+fi
+recon_org=$(psql_catalog "SELECT organizer_id FROM seat_maps WHERE id='$recon_map'" | tr -d '[:space:]')
+recon_family=$(psql_catalog "SELECT map_family_id FROM seat_maps WHERE id='$recon_map'" | tr -d '[:space:]')
+recon_seat_dead=$(psql_catalog "SELECT seat_identity FROM seat_map_seats WHERE seat_map_id='$recon_map' ORDER BY seat_identity LIMIT 1" | tr -d '[:space:]')
+recon_seat_live=$(psql_catalog "SELECT seat_identity FROM seat_map_seats WHERE seat_map_id='$recon_map' ORDER BY seat_identity OFFSET 1 LIMIT 1" | tr -d '[:space:]')
+
+# Inventory side: one seated pool carrying two claims — one terminal (its pin is garbage), one
+# confirmed (its pin is a SOLD seat and must survive).
+recon_slot=$(psql_inventory "SELECT gen_random_uuid()" | tr -d '[:space:]')
+psql_inventory "INSERT INTO inventory_pools(slot_id,organizer_id,capacity,inventory_kind,seat_map_id)
+  VALUES('$recon_slot','$recon_org',100,'seated','$recon_map')" >/dev/null
+recon_dead_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,claim_kind)
+  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'expired',now()-interval '1 hour','buyer') RETURNING id" | tr -d '[:space:]')
+psql_inventory "INSERT INTO claim_seats(claim_id,pool_id,seat_identity,released_at)
+  VALUES('$recon_dead_claim','$recon_slot','$recon_seat_dead',now())" >/dev/null
+recon_live_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,claim_kind)
+  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'confirmed','buyer') RETURNING id" | tr -d '[:space:]')
+psql_inventory "INSERT INTO claim_seats(claim_id,pool_id,seat_identity)
+  VALUES('$recon_live_claim','$recon_slot','$recon_seat_live')" >/dev/null
+
+# Catalog side: the leaked pin, the sold seat's pin, a sale pin, and a pin naming a claim
+# inventory has never seen — the last two must be left alone.
+recon_orphan_ref="hold:$(psql_inventory "SELECT gen_random_uuid()" | tr -d '[:space:]')"
+psql_catalog "INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by) VALUES
+  ('$recon_org','$recon_family','$recon_seat_dead','hold:$recon_dead_claim'),
+  ('$recon_org','$recon_family','$recon_seat_live','hold:$recon_live_claim'),
+  ('$recon_org','$recon_family','$recon_seat_live','sale:00000000-0000-0000-0000-0000000000ff'),
+  ('$recon_org','$recon_family','$recon_seat_dead','$recon_orphan_ref')" >/dev/null
+
+compose exec -T inventory /app reconcile-pins
+
+expect_pin() {
+  local pinned_by="$1" want="$2" got
+  got=$(psql_catalog "SELECT count(*) FROM seat_map_pins WHERE map_family_id='$recon_family' AND pinned_by='$pinned_by'" | tr -d '[:space:]')
+  if [ "$got" != "$want" ]; then
+    echo "smoke: reconcile-pins left $got pin(s) for $pinned_by, want $want" >&2
+    exit 1
+  fi
+}
+expect_pin "hold:$recon_dead_claim" 0 # the leak this ticket exists to reclaim
+expect_pin "hold:$recon_live_claim" 1 # a CONFIRMED seat is still sold — removing this pin
+                                      # would let an edit orphan it
+expect_pin "sale:00000000-0000-0000-0000-0000000000ff" 1 # not this command's namespace
+expect_pin "$recon_orphan_ref" 1      # unknown claim: reported, never reclaimed (fail safe)
+
+# Idempotent: a second run reclaims nothing and exits zero even though fail-safe residue
+# (the unknown reference) is still sitting there.
+compose exec -T inventory /app reconcile-pins
+expect_pin "hold:$recon_dead_claim" 0
+expect_pin "hold:$recon_live_claim" 1
+expect_pin "sale:00000000-0000-0000-0000-0000000000ff" 1
+expect_pin "$recon_orphan_ref" 1
+
+psql_catalog "DELETE FROM seat_map_pins WHERE map_family_id='$recon_family'" >/dev/null
+psql_inventory "DELETE FROM claim_seats WHERE pool_id='$recon_slot';
+  DELETE FROM claim_history WHERE claim_id IN ('$recon_dead_claim','$recon_live_claim');
+  DELETE FROM claims WHERE pool_id='$recon_slot';
+  DELETE FROM inventory_pools WHERE slot_id='$recon_slot'" >/dev/null

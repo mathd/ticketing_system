@@ -99,6 +99,8 @@ distributed transaction.
       Operator remedy: the internal batch-unpin endpoint is manually callable; a one-shot
       `reconcile-pins` subcommand is deferred to a follow-up ticket. Losing the *ability* to
       clean up would not be acceptable; deferring the automation is.
+      **Closed by TKT-112** — see §Amendment below. §4's refusal of a worker still stands: the
+      remedy is a command an operator runs, not a process that runs itself.
     - **Undersell if seat count > GA snapshot.** The coarse ceiling assumes a seated seat
       count ≤ the venue standing capacity (physically true, not schema-enforced). A pathological
       config would cap seated sales early — fail-closed (`ErrUnavailable`), never oversell.
@@ -111,6 +113,49 @@ distributed transaction.
       current-version-only check (the shipped, most reversible behavior). If a v2-added seat
       must not be sellable against a v1 performance, add an exact-version membership check to
       `PinSeats` under the same lock — one guarded SELECT.
+
+## Amendment — leaked-pin reconciliation (TKT-112, 2026-07-30)
+
+The deferred remedy shipped as `inventory reconcile-pins`, a one-shot operator subcommand
+(ADR-022 placement, alongside `migrate` and `reprocess-quarantine`). §4 is unchanged: still no
+worker, outbox or scheduler. Four decisions are worth recording because each rules out an
+implementation that looks obviously right.
+
+1. **Inventory hosts it, not catalog.** A liveness verdict cannot be a pure read. Deciding that
+   an expired hold is dead requires *making* it dead — taking the pool lock and running the
+   ordinary `sweepExpired` — because `now()` is frozen at transaction start
+   (`docs/learnings/2026-07-16-lock-queue-time-cutoffs.md`), so a finalize that BEGAN before the
+   TTL elapsed and is queued behind the reconciler would otherwise still succeed after the pin
+   was removed. Flipping the status makes the verdict a fact the waiter re-reads and refuses.
+   Only inventory can do that, so only inventory can own the verdict.
+
+2. **Neither service reads the other's database** (ADR-010, ADR-002), so catalog exposes the
+   *read* side of the pin contract — `GET /internal/seat-map-pins`, keyset-paged over the
+   primary key, hand-mounted and outside the public contract like its pin/unpin siblings
+   (ADR-009). It returns every `pinned_by` namespace; the classification belongs to the caller,
+   because a catalog-side filter would define which pins are reclaimable in the service that
+   has no way to know.
+
+3. **A pin naming an unknown claim is reported, never reclaimed.** Tempting to unpin — claims
+   are never deleted, and hold-then-pin commits the claim first, so "unknown" should be
+   impossible. But `hold:` pins cover **confirmed** claims too (§3: confirm/finalize keep the
+   pin), so an unknown reference is exactly what an inventory database restored *behind* catalog
+   looks like, and unpinning there strips the protection from a sold seat — the one outcome
+   ADR-029 exists to prevent. Unpinning is also irreversible (catalog keeps no pin history and
+   inventory cannot re-pin what it does not know), while leaving the pin costs one blocked edit
+   and stays fixable by hand. Same for a malformed `hold:<not-a-uuid>`; `pinned_by` is free-form
+   text, so that is reachable.
+
+4. **Fail-safe residue exits zero.** `unknown` and `malformed` counts are the expected state, not
+   a failure; a non-zero exit is reserved for a store, transport or unpin failure, so an operator
+   can distinguish "nothing more to do" from "it broke". Reclaims are keyed to a specific dead
+   `pinned_by`, and a claim id is unique to its hold — so a reclaim can never delete the pin a
+   *newer* hold wrote for the same seat identity, which is also why paging without a snapshot is
+   safe (a pin inserted behind the cursor is picked up by a later run, never wrongly deleted).
+
+Scope is unchanged from §Negative: this is **honest-writer consistency, not tamper-evidence**
+(ADR-021). The reconciler derives its verdict from inventory's own tables and acts on catalog's;
+a writer with access to either can defeat it, and it is not built to notice.
 
 ## References
 

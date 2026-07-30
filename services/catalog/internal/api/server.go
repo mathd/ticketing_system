@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +109,10 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	// OpenAPI contract; the response validator skips undeclared paths.
 	r.Post("/internal/seat-maps/{id}/pins", s.pinSeats)
 	r.Post("/internal/seat-maps/{id}/unpins", s.unpinSeats)
+	// TKT-112: the read side of the same contract — inventory's one-shot reconcile-pins
+	// drains this to find pins left behind by holds that expired on a pool nobody touched
+	// again. Same hand-mounted, credential-guarded, out-of-contract convention.
+	r.Get("/internal/seat-map-pins", s.listSeatMapPins)
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -200,6 +205,51 @@ func (s *Server) getPoolOfferState(w http.ResponseWriter, r *http.Request) {
 		"closure_status":  state.Closure.Status,
 		"closure_version": state.Closure.Version,
 	})
+}
+
+// reconcileDefaultPinPage is the page size used when the caller names none. Callers may ask
+// for less or more, up to store.MaxSeatMapPinPage; an unbounded page is not on offer.
+const reconcileDefaultPinPage = 100
+
+// listSeatMapPins is the reconciliation read (TKT-112): one keyset page of the pin table,
+// cursor-driven so an operator run drains it without ever holding the whole table. Returns
+// EVERY pin namespace — the reconciler decides what `hold:*` means, catalog does not.
+func (s *Server) listSeatMapPins(w http.ResponseWriter, r *http.Request) {
+	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		return
+	}
+	after := uuid.Nil
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, Error{Error: "invalid cursor"})
+			return
+		}
+		after = parsed
+	}
+	limit := reconcileDefaultPinPage
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > store.MaxSeatMapPinPage {
+			writeJSON(w, http.StatusBadRequest, Error{Error: "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+	pins, err := s.store.ListSeatMapPins(r.Context(), after, limit)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(pins))
+	for _, pin := range pins {
+		out = append(out, map[string]any{
+			"id": pin.ID, "organizer_id": pin.OrganizerID, "seat_map_id": pin.SeatMapID,
+			"seat_identity": pin.SeatIdentity, "pinned_by": pin.PinnedBy,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pins": out})
 }
 
 // batchPinRequest is the body inventory sends to pin/unpin a seat-hold's seats (TKT-80).

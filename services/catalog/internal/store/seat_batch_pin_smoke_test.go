@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // enrichedTriple publishes Orchestra/A/1 then edits to Orchestra/A/1,2,3 so batch tests
@@ -93,5 +95,123 @@ func TestBatchPinBlocksOrphaningEdit(t *testing.T) {
 		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("1", 1), st1("3", 3)))}})
 	if !errors.Is(err, ErrSeatMapEditOrphansPinned) {
 		t.Fatalf("orphaning edit err = %v want ErrSeatMapEditOrphansPinned", err)
+	}
+}
+
+// TestListSeatMapPinsIsKeysetPagedAndResolvesFamilyVersion is the reconciliation read
+// (TKT-112). Three things must hold: a bounded keyset drain visits every pin exactly once
+// across families; the read is deliberately unfiltered (hold AND sale pins come back —
+// classification belongs to the caller, not catalog); and every row carries a seat-map id
+// that reaches the pin through the family-locked unpin path, INCLUDING for an edited family
+// whose pin was created against a superseded version.
+func TestListSeatMapPinsIsKeysetPagedAndResolvesFamilyVersion(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+
+	// Family 1: edited, so the family has two versions and the pin predates the current one.
+	v1 := seedPublishedMap(ctx, t, st, "Recon-one")
+	if err := st.PinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg, SeatMapID: v1.ID,
+		SeatIdentities: []string{"Orchestra/A/1"}, PinnedBy: "hold:recon-a"}); err != nil {
+		t.Fatalf("pin family one: %v", err)
+	}
+	v1b, _, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: v1.ID,
+		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("1", 1), st1("2", 2)))}})
+	if err != nil {
+		t.Fatalf("edit family one: %v", err)
+	}
+	if v1b.ID == v1.ID {
+		t.Fatal("edit must produce a new version row")
+	}
+	if err := st.PinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg, SeatMapID: v1b.ID,
+		SeatIdentities: []string{"Orchestra/A/2"}, PinnedBy: "sale:recon-order"}); err != nil {
+		t.Fatalf("sale pin family one: %v", err)
+	}
+
+	// Family 2: untouched, one version.
+	v2 := seedPublishedMap(ctx, t, st, "Recon-two")
+	if err := st.PinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg, SeatMapID: v2.ID,
+		SeatIdentities: []string{"Orchestra/A/1"}, PinnedBy: "hold:recon-b"}); err != nil {
+		t.Fatalf("pin family two: %v", err)
+	}
+
+	var total int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM seat_map_pins`).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Fatalf("fixture has %d pins want 3", total)
+	}
+
+	// Drain with a page of 2: more than one request, and the cursor must make progress.
+	seen := map[string]uuid.UUID{}
+	after := uuid.Nil
+	pages := 0
+	for {
+		page, listErr := st.ListSeatMapPins(ctx, after, 2)
+		if listErr != nil {
+			t.Fatalf("list page after %s: %v", after, listErr)
+		}
+		if len(page) == 0 {
+			break
+		}
+		pages++
+		if pages > 5 {
+			t.Fatal("drain did not terminate — the keyset cursor is not advancing")
+		}
+		if len(page) > 2 {
+			t.Fatalf("page returned %d rows, limit was 2", len(page))
+		}
+		for _, p := range page {
+			key := p.PinnedBy + "|" + p.SeatIdentity
+			if _, dup := seen[key]; dup {
+				t.Fatalf("pin %s returned twice across pages", key)
+			}
+			seen[key] = p.SeatMapID
+			if p.OrganizerID != seatMapOrg {
+				t.Fatalf("pin %s organizer = %s", key, p.OrganizerID)
+			}
+		}
+		after = page[len(page)-1].ID
+	}
+	if pages < 2 {
+		t.Fatalf("drained in %d page(s) — the fixture should need at least two", pages)
+	}
+
+	want := []string{"hold:recon-a|Orchestra/A/1", "hold:recon-b|Orchestra/A/1", "sale:recon-order|Orchestra/A/2"}
+	if len(seen) != len(want) {
+		t.Fatalf("drain saw %v want exactly %v", seen, want)
+	}
+	for _, key := range want {
+		if _, ok := seen[key]; !ok {
+			t.Fatalf("drain missed %s (saw %v)", key, seen)
+		}
+	}
+
+	// The returned seat-map id must be USABLE: unpinning through it clears the pin, which
+	// is only true if it resolves to the pin's family. The hold pin on family one was
+	// created against the SUPERSEDED version, so this is the case a naive
+	// "join on the pin's creation version" would get wrong.
+	if err := st.UnpinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg,
+		SeatMapID:      seen["hold:recon-a|Orchestra/A/1"],
+		SeatIdentities: []string{"Orchestra/A/1"}, PinnedBy: "hold:recon-a"}); err != nil {
+		t.Fatalf("unpin through the listed seat-map id: %v", err)
+	}
+	var remaining int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM seat_map_pins WHERE pinned_by=$1`, "hold:recon-a").Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("the listed seat-map id did not reach the pin (%d left)", remaining)
+	}
+}
+
+// TestListSeatMapPinsBoundsThePage: the caller cannot ask for an unbounded page, and a
+// non-positive limit is a usage error rather than a silent full-table read.
+func TestListSeatMapPinsBoundsThePage(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+	if _, err := st.ListSeatMapPins(ctx, uuid.Nil, 0); err == nil {
+		t.Fatal("limit 0 must be rejected, not read the whole table")
+	}
+	if _, err := st.ListSeatMapPins(ctx, uuid.Nil, MaxSeatMapPinPage+1); err == nil {
+		t.Fatalf("limit above MaxSeatMapPinPage (%d) must be rejected", MaxSeatMapPinPage)
 	}
 }

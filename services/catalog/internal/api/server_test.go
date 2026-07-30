@@ -47,6 +47,8 @@ type fakeStore struct {
 	seatSections   map[uuid.UUID]fakeSection
 	seatRows       map[uuid.UUID]fakeRow
 	seatSeats      map[uuid.UUID]fakeSeat
+	pinPage        []store.SeatMapPin // what ListSeatMapPins hands back (TKT-112)
+	pinLimits      []int              // the limits it was asked for
 }
 
 // fakeSection/fakeRow/fakeSeat carry the parent linkage the SQL enforces via
@@ -264,6 +266,11 @@ func (f *fakeStore) PinSeats(_ context.Context, _ store.BatchPinInput) error {
 }
 
 func (f *fakeStore) UnpinSeats(_ context.Context, _ store.BatchPinInput) error { return nil }
+
+func (f *fakeStore) ListSeatMapPins(_ context.Context, _ uuid.UUID, limit int) ([]store.SeatMapPin, error) {
+	f.pinLimits = append(f.pinLimits, limit)
+	return f.pinPage, nil
+}
 
 func (f *fakeStore) AddSeatMapSection(_ context.Context, in store.SeatMapSectionInput) (store.SeatMapSection, error) {
 	if _, ok := f.draftMap(in.SeatMapID, in.OrganizerID); !ok {
@@ -2262,5 +2269,72 @@ func TestListPublicVenuesRejectsBadOrganizer(t *testing.T) {
 				t.Fatalf("want 400, got %d %s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestInternalSeatMapPinsRead covers the reconciliation read route (TKT-112): it is
+// credential-guarded like every other /internal path, it bounds the page, and it hands back
+// the pin fields the reconciler needs. The route is hand-mounted and deliberately outside
+// the OpenAPI contract (ADR-009), so the response validator skips it.
+func TestInternalSeatMapPinsRead(t *testing.T) {
+	st := newFakeStore()
+	pinID, org, seatMap := uuid.New(), uuid.New(), uuid.New()
+	st.pinPage = []store.SeatMapPin{{ID: pinID, OrganizerID: org, SeatMapID: seatMap,
+		SeatIdentity: "Orchestra/A/1", PinnedBy: "hold:" + uuid.New().String()}}
+	h, err := NewRouter(NewServer(st, &fakePublisher{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, token, query string
+		want               int
+	}{
+		{name: "missing credential", query: "", want: http.StatusUnauthorized},
+		{name: "wrong credential", token: "wrong", want: http.StatusUnauthorized},
+		{name: "first page", token: "secret", want: http.StatusOK},
+		{name: "explicit cursor and limit", token: "secret", query: "?after=" + uuid.New().String() + "&limit=10", want: http.StatusOK},
+		{name: "malformed cursor", token: "secret", query: "?after=not-a-uuid", want: http.StatusBadRequest},
+		{name: "non-numeric limit", token: "secret", query: "?limit=lots", want: http.StatusBadRequest},
+		{name: "zero limit", token: "secret", query: "?limit=0", want: http.StatusBadRequest},
+		{name: "limit over the bound", token: "secret",
+			query: fmt.Sprintf("?limit=%d", store.MaxSeatMapPinPage+1), want: http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/internal/seat-map-pins"+tt.query, nil)
+			if tt.token != "" {
+				req.Header.Set("X-Internal-Token", tt.token)
+			}
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, req)
+			if res.Code != tt.want {
+				t.Fatalf("status=%d want=%d body=%s", res.Code, tt.want, res.Body.String())
+			}
+			if tt.want != http.StatusOK {
+				return
+			}
+			var body struct {
+				Pins []struct {
+					ID           uuid.UUID `json:"id"`
+					OrganizerID  uuid.UUID `json:"organizer_id"`
+					SeatMapID    uuid.UUID `json:"seat_map_id"`
+					SeatIdentity string    `json:"seat_identity"`
+					PinnedBy     string    `json:"pinned_by"`
+				} `json:"pins"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode %s: %v", res.Body.String(), err)
+			}
+			if len(body.Pins) != 1 {
+				t.Fatalf("pins = %d want 1 (%s)", len(body.Pins), res.Body.String())
+			}
+			got := body.Pins[0]
+			if got.ID != pinID || got.OrganizerID != org || got.SeatMapID != seatMap ||
+				got.SeatIdentity != "Orchestra/A/1" {
+				t.Fatalf("pin payload %+v", got)
+			}
+		})
+	}
+	if st.pinLimits[0] != reconcileDefaultPinPage {
+		t.Fatalf("default limit = %d want %d", st.pinLimits[0], reconcileDefaultPinPage)
 	}
 }

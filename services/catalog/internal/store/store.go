@@ -371,6 +371,26 @@ type BatchPinInput struct {
 	PinnedBy       string
 }
 
+// SeatMapPin is one row of the pin table as the reconciliation read exposes it
+// (TKT-112). SeatMapID is a REPRESENTATIVE version of the pin's family, not the
+// version the pin was created against — pins are version-independent (ADR-029),
+// and UnpinSeats resolves the family from whatever version id it is handed, so any
+// member of the family lets the caller reach the pin through the family-locked
+// path. A pin whose family has no seat_maps row left is not listable and therefore
+// not reclaimable by this read: there would be no version id to name it with.
+type SeatMapPin struct {
+	ID           uuid.UUID
+	OrganizerID  uuid.UUID
+	SeatMapID    uuid.UUID
+	SeatIdentity string
+	PinnedBy     string
+}
+
+// MaxSeatMapPinPage bounds one reconciliation page. The operator scan is a full
+// drain of seat_map_pins, so the page — not the table — is what bounds memory and
+// the HTTP payload.
+const MaxSeatMapPinPage = 500
+
 type PerformanceInput struct {
 	OrganizerID   uuid.UUID
 	EventID       uuid.UUID
@@ -503,6 +523,13 @@ type Store interface {
 	// UnpinSeat clears a pin (sale cancelled / hold released), so a later edit may
 	// drop that seat. Idempotent: removing an absent pin is a no-op.
 	UnpinSeat(ctx context.Context, in PinSeatInput) error
+	// ListSeatMapPins returns one bounded page of pin rows, ordered by primary key,
+	// starting strictly after `after` (uuid.Nil for the first page). It is the read
+	// behind inventory's one-shot `reconcile-pins` (TKT-112): the reconciler drains
+	// pages, decides liveness against its own claims, and unpins the dead ones over
+	// the existing batch-unpin route. Every kind of pin is returned — `hold:*` and
+	// `sale:*` alike — because the caller, not catalog, owns the classification.
+	ListSeatMapPins(ctx context.Context, after uuid.UUID, limit int) ([]SeatMapPin, error)
 	// GetSeatMapGeometry returns a map's full nested geometry, each level
 	// ordered by position; ErrNotFound if the map does not exist.
 	GetSeatMapGeometry(ctx context.Context, seatMapID uuid.UUID) (SeatMapGeometry, error)
