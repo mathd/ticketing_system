@@ -314,14 +314,16 @@ recon_seat_live=$(psql_catalog "SELECT seat_identity FROM seat_map_seats WHERE s
 # Inventory side: one seated pool carrying two claims — one terminal (its pin is garbage), one
 # confirmed (its pin is a SOLD seat and must survive).
 recon_slot=$(psql_inventory "SELECT gen_random_uuid()" | tr -d '[:space:]')
-psql_inventory "INSERT INTO inventory_pools(slot_id,organizer_id,capacity,inventory_kind,seat_map_id)
-  VALUES('$recon_slot','$recon_org',100,'seated','$recon_map')" >/dev/null
-recon_dead_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,claim_kind)
-  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'expired',now()-interval '1 hour','buyer') RETURNING id" | tr -d '[:space:]')
+psql_inventory "INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id,inventory_kind,seat_map_id)
+  VALUES('$recon_slot','$recon_org',100,gen_random_uuid(),'seated','$recon_map')" >/dev/null
+# expires_at is NOT NULL for a buyer claim (claims_kind_shape) even when it is already
+# terminal, and idempotency_key/request_fingerprint are NOT NULL on every claim.
+recon_dead_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
+  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'expired',now()-interval '1 hour','recon-dead-$recon_slot','recon-dead-$recon_slot','buyer') RETURNING id" | tr -d '[:space:]')
 psql_inventory "INSERT INTO claim_seats(claim_id,pool_id,seat_identity,released_at)
   VALUES('$recon_dead_claim','$recon_slot','$recon_seat_dead',now())" >/dev/null
-recon_live_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,claim_kind)
-  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'confirmed','buyer') RETURNING id" | tr -d '[:space:]')
+recon_live_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
+  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'confirmed',now()+interval '1 hour','recon-live-$recon_slot','recon-live-$recon_slot','buyer') RETURNING id" | tr -d '[:space:]')
 psql_inventory "INSERT INTO claim_seats(claim_id,pool_id,seat_identity)
   VALUES('$recon_live_claim','$recon_slot','$recon_seat_live')" >/dev/null
 
