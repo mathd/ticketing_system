@@ -215,11 +215,18 @@ func TestNewKeyringCatchesBase64PasteAcrossNonCanonicalHistoricalEncoding(t *tes
 	last := canonical[len(canonical)-1]
 	noncanonical := canonical[:len(canonical)-1] + string(alphabet[(strings.IndexByte(alphabet, last)+1)%64])
 
-	// Guard the premise: if Go ever makes this strict, this test must fail loudly rather
-	// than silently stop exercising the bypass it was written for.
+	// Guard the premise, and distinguish the two ways it can fail — conflating them is how
+	// a test stops exercising what it claims while still looking healthy.
+	//
+	// Advancing the final character only preserves the decoded bytes when the last quantum
+	// has spare bits (len(secret) mod 3 != 0). If it ever decodes to DIFFERENT bytes, this
+	// test is no longer about non-canonical encodings at all and must say so loudly.
 	decoded, err := base64.RawStdEncoding.DecodeString(noncanonical)
-	if err != nil || string(decoded) != outgoing {
-		t.Skipf("RawStdEncoding no longer accepts non-canonical trailing bits (err=%v); the bypass this covers is gone", err)
+	if err != nil {
+		t.Skipf("RawStdEncoding no longer accepts non-canonical trailing bits (%v); the bypass this covers is gone", err)
+	}
+	if string(decoded) != outgoing {
+		t.Fatalf("the constructed encoding decodes to different bytes, so this test would pass for a reason unrelated to non-canonical encodings: pick a secret whose length is not a multiple of 3 (len=%d)", len(outgoing))
 	}
 	if noncanonical == canonical {
 		t.Fatal("failed to construct a distinct non-canonical encoding")
@@ -233,5 +240,33 @@ func TestNewKeyringCatchesBase64PasteAcrossNonCanonicalHistoricalEncoding(t *tes
 	}
 	if !strings.Contains(err.Error(), "RAW") {
 		t.Fatalf("error must tell the operator which variable is raw, got: %v", err)
+	}
+}
+
+// ai-review pass 3. The runbook pipes step 1 through `tr -d '='`, but a bare `base64`
+// keeps the padding — and a padded encoding is a DIFFERENT-LENGTH string, so a guard that
+// compared against the unpadded canonical text alone let this variant boot silently. It is
+// the same mistake with different tooling, which is exactly the realistic case.
+func TestNewKeyringCatchesPaddedBase64PastedActiveKey(t *testing.T) {
+	// 32 bytes: not a multiple of 3, so the standard encoding really does carry '='.
+	const outgoing = "retired-journal-secret-v1-abcdef"
+	raw := base64.RawStdEncoding.EncodeToString([]byte(outgoing))
+	padded := base64.StdEncoding.EncodeToString([]byte(outgoing))
+
+	// Guard the premise: if these ever stop differing, this test silently stops covering
+	// the padded variant.
+	if padded == raw || !strings.HasSuffix(padded, "=") {
+		t.Fatalf("fixture no longer exercises padding: raw=%q padded=%q", raw, padded)
+	}
+
+	_, err := NewKeyring("local-v2", []byte(padded), "local-v1="+raw)
+	if err == nil {
+		t.Fatal("a PADDED base64 paste must refuse startup; it is the same mistake with different tooling")
+	}
+	if !strings.Contains(err.Error(), "RAW") {
+		t.Fatalf("error must tell the operator which variable is raw, got: %v", err)
+	}
+	if strings.Contains(err.Error(), outgoing) {
+		t.Fatalf("error echoes the decoded secret: %v", err)
 	}
 }

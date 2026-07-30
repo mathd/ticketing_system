@@ -310,19 +310,25 @@ JOURNAL_HISTORICAL_KEYS  retired keys: kid=<secret>,kid=<secret> — secrets bas
 Steps 2 and 3 must land in the **same** deployment: a new active key without the old one in the
 ring makes every pre-rotation entry fail verification.
 
-**Startup rejects the classic mis-paste.** If `JOURNAL_SIGNING_KEY` holds the *base64* of a key
-listed in `JOURNAL_HISTORICAL_KEYS` — i.e. you pasted step 1's output into step 3 — payments refuses
-to start and names the key it matched. That is the one rotation error the steps above can actually
-produce, and it used to be silent.
+**Startup rejects the classic mis-paste.** If `JOURNAL_SIGNING_KEY` **decodes** to a key listed in
+`JOURNAL_HISTORICAL_KEYS` — i.e. you pasted step 1's output into step 3 — payments refuses to start
+and names the key it matched. That is the one rotation error the steps above can actually produce,
+and it used to be silent.
 
-Two honest bounds:
+It compares *decoded bytes*, so it does not matter which encoding your tooling produced: the step-1
+pipeline above strips padding, a bare `base64` keeps it, and both are caught.
 
-- It catches base64 of a key **in the ring**. Base64 of some other key, or any other
+Three honest bounds — the guarantee is exactly this and no wider:
+
+- **Standard base64 only**, padded or unpadded. ADR-032 fixes the keyring's encoding as standard
+  base64, so a URL-safe (`-_`) paste is a different mistake and is deliberately outside this
+  guarantee rather than half-covered.
+- It catches a key that decodes to a secret **in the ring**. Base64 of some other key, or any other
   wrong-but-plausible secret, is not detectable — nothing in this package can make that detectable.
-- It cannot tell the mistake from intent. A raw key deliberately chosen to equal a ring member's
-  base64 is rejected too. That needs a key that is both arbitrary and exactly the base64 of a secret
-  already in the ring; the error names what to change, and there is deliberately no override — an
-  escape hatch on a fail-closed check is worth less than the case it would serve.
+- It cannot tell the mistake from intent. A raw key that happens to decode to a ring member is
+  rejected too. That needs a key both arbitrary and a valid encoding of a secret already in the
+  ring; the error names what to change, and there is deliberately no override — an escape hatch on
+  a fail-closed check is worth less than the case it would serve.
 - It is not a security control. This ring is secret material and every holder can forge under every
   kid in it (ADR-021 §the trust boundary). It catches an honest operator's paste error.
 
