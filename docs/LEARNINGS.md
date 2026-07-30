@@ -154,3 +154,25 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   Also: a declared response header *is* enforced (enum + `required`), so pin it by feeding the test
   the production constant — a hardcoded wrong value passes no matter what the constant says.
   (TKT-110, PR #127)
+- [**A decoded page is not an answered one**](./learnings/2026-07-30-a-decoded-page-is-not-an-answered-one.md) —
+  a fail-closed evidence check asked "does a refund already exist?" and treated any response that
+  unmarshalled as an answer. Go zero values make a truncated page (`Data == nil, HasMore == false`)
+  **bit-for-bit identical** to the genuine `{"data":[],"has_more":false}` — the one answer that
+  licenses submitting a second refund. Hand-written fixtures did not save it, because every fixture
+  was *complete*: the test that finds this omits a field rather than supplying a strange one. Make
+  absence representable (pointers + a positive `object == "list"` check). The same review found the
+  mirror bug: a deliberately lenient matcher, defended as "leniency means we don't submit, so it
+  fails safe" — true, and wrong, because adopting a refund also **appends a money fact**. On a
+  two-sided risk, "fails safe" is not an argument until you say which failure it is safe against;
+  the binary return type was the tell, and the fix was a third verdict, `Inconclusive`.
+  (TKT-116, PR #129)
+- [**Check *why* a test is red, not just that it is**](./learnings/2026-07-30-check-why-a-test-is-red-not-just-that-it-is.md) —
+  red-first was followed and still produced two tests that could never fail for their stated reason:
+  the stub answered **500 for unregistered routes**, so "the code did the wrong thing" and "the code
+  did the right thing against an unconfigured stub" were the same observable. Both would have passed
+  with the feature deleted. When the behaviour is an **interaction** ("resolve before submitting",
+  "never call X"), assert the **request sequence**, not the returned value — outcomes collide,
+  sequences don't. And a permissive stub is a hazard, not a convenience. Corollary for review-fix
+  commits, where fix and test land together and the red phase is skipped by construction: run the
+  mutation instead of asserting it's obvious — one gate cycle turns "obviously it would fail" into
+  one dead test with the intended message. (TKT-116, PR #129)
