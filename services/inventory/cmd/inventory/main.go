@@ -164,7 +164,18 @@ func run() error {
 	catalog := consumer.NewCatalogResolver(catalogURL, credential, &http.Client{Timeout: 5 * time.Second})
 	cons := consumer.New(js, st, catalog, log)
 	consumerErr := make(chan error, 1)
-	go func() { consumerErr <- cons.Run(ctx) }()
+	// Log at the PRODUCER (TKT-122) — see access's main for the full reasoning.
+	// awaitShutdown's single receive is a deliberate snapshot; an error arriving
+	// after it reaches no one, so without this the failure leaves no exit code and
+	// no line at all. No latency, no lifecycle coupling, same predicate the
+	// arbitration below uses.
+	go func() {
+		err := cons.Run(ctx)
+		if err != nil && !isShutdownConsumerError(ctx, err) {
+			log.ErrorContext(ctx, "consumer stopped with an error", "err", err)
+		}
+		consumerErr <- err
+	}()
 
 	r := chi.NewRouter()
 	r.Method(http.MethodGet, "/healthz", httpx.Healthz(serviceName,
@@ -242,6 +253,11 @@ func awaitShutdown(ctx context.Context, srvErr, consumerErr <-chan error, shutdo
 		// the receive. Closing that window means blocking shutdown until the
 		// consumer has terminated, which trades a missed exit code on an
 		// operator-requested stop for a stop a wedged consumer can delay.
+		//
+		// TKT-122 weighed that trade and kept the snapshot — see ADR-034 §"The
+		// shutdown drain stays a snapshot". The late error is still logged by the
+		// producing goroutine, so only the exit code is given up, not the
+		// evidence.
 		select {
 		case err := <-consumerErr:
 			if !isShutdownConsumerError(ctx, err) {

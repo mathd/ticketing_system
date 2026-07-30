@@ -164,7 +164,18 @@ consumer does stays with the service.**
     - Inventory can now exit on durable deletion where before it stayed up. That is the point, but
       it is a new production exit path, and it interacts with TKT-121 (inventory's `main` does not
       filter cancellation-caused consumer errors) which remains open.
-    - **Inventory's adoption has a startup-shaped hole, and this ADR should not be read as
+    - ~~**Inventory's adoption has a startup-shaped hole, and this ADR should not be read as
+      claiming otherwise.**~~ ***Closed by TKT-122.*** `Run` now starts one `waitConsume` observer
+      immediately after `Consume` and passes `startupConverge` a context that observer cancels, so a
+      durable deleted during the pass unwinds it promptly instead of at the next retry boundary. On
+      termination `Run` returns `waitConsume`'s durable-named diagnostic rather than
+      `startupConverge`'s `context.Canceled`, which is what keeps `main`'s
+      `isShutdownConsumerError` from filtering a real failure away as a clean stop.
+      `refreshStartupReadiness` additionally refuses to latch `true` under a cancelled context,
+      checked while `readinessMu` is held so it stays atomic against TKT-90's skew latch. The
+      original text is kept below because the reasoning for deferring it is still the record of why
+      it waited.
+      **Inventory's adoption had a startup-shaped hole, and this ADR should not be read as
       claiming otherwise.** `Run` begins observing `cc.Closed()` only after `startupConverge`
       returns, and that pass retries up to three times with a 5s backoff, making a serial catalog
       call per pool. A durable deleted during it is not noticed until the pass ends. Readiness is
@@ -186,10 +197,44 @@ consumer does stays with the service.**
 - TKT-127 (this decision), TKT-126 / ADR-033 (the envelope, and the option that handed this here)
 - TKT-97 (the reaction to `ConsumeContext.Closed()`), TKT-99 (the broker-level proof), TKT-90 (the
   readiness/skew serialization left in place)
-- Still open, deliberately: TKT-135 (the startup-window gap in inventory's adoption, raised by this
-  ticket's ai-review), TKT-121 (inventory `main`'s cancellation race), TKT-122 (access's drain
-  snapshot), TKT-123 (the diagnostic cannot distinguish causes), TKT-133 (inventory does not
-  validate `type` against the subject)
+- Resolved since: TKT-121 (inventory `main`'s cancellation race, `2fb5709`); TKT-135 and TKT-122's
+  startup half (the startup-window gap, closed as described above).
+- Still open, deliberately: TKT-123 (the diagnostic cannot distinguish causes), TKT-133 (inventory
+  does not validate `type` against the subject).
+
+### The shutdown drain stays a snapshot — decided, not overlooked (TKT-122)
+
+`awaitShutdown` in both services drains `consumerErr` for errors that have **already arrived**, then
+shuts down. A consumer failure that materialises *during* teardown is published to a channel nobody
+reads, and the process exits 0. TKT-122 asked whether to close that window by collecting one
+terminal result per consumer within a bounded grace period. **It stays open, deliberately.**
+
+The exit status of a SIGTERM'd process feeds nothing here:
+
+- Every Go service inherits **`restart: unless-stopped`** (`compose.yaml`, the `x-go-service`
+  anchor) — *not* `on-failure`. On an operator-requested stop Docker suppresses restart **regardless
+  of exit code**, and the drain is only reached after `ctx.Done()`, i.e. on exactly that path.
+- Compose does not act on an unhealthy `/readyz` either (§236-238 above), so readiness is already
+  false and already inert.
+- `scripts/smoke.sh` tears the stack down with `compose down` and never inspects service status;
+  `smoke/access_consumer_test.go` (TKT-99) asserts a **restart plus the durable-named diagnostic**,
+  not a numeric status.
+
+So a bounded join would spend part of the shutdown budget waiting on the component most likely to be
+wedged, to produce a value nothing reads. Access pays double — two terminal results, either of which
+can hold the process open.
+
+**What TKT-122 did change:** the error is now **logged at the producing goroutine**, before the send.
+Previously a late failure left *no* exit code **and** no line anywhere — `main` prints to stderr only
+on the error it returns, which by then it never sees. That was a separate loss from the exit code,
+and it costs nothing to fix: no latency, no lifecycle coupling, same shutdown-cancellation predicate
+so a clean unwind stays quiet. The accepted residual is precisely *"we do not act on this signal"*,
+no longer *"we lose this signal"*.
+
+**Reopen if:** an orchestrator or alerting path starts distinguishing zero from non-zero SIGTERM
+exits; an incident shows a teardown-only error carries evidence the log line does not; or consumer
+termination gains a documented upper bound and the deployment gains a shutdown budget that can pay
+for a join.
 - [ADR-033: One domain-event envelope in the shared kernel](ADR-033-shared-domain-event-envelope.md)
 - [ADR-017: Domain event schema evolution](ADR-017-domain-event-schema-evolution.md) §5b, §5b′, §236-241
 - [ADR-009: Contract-first APIs and the platform envelope](ADR-009-contract-first-apis.md) §5

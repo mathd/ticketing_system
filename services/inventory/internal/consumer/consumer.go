@@ -469,6 +469,16 @@ func (c *Consumer) refreshStartupReadiness(ctx context.Context) error {
 		c.log.Error("unresolved quarantined catalog events; staying unready until reprocess-quarantine + restart")
 		return nil
 	}
+	// TKT-122: never latch true under a cancelled context, checked HERE while
+	// readinessMu is still held. Termination cancels the startup context and
+	// durableconsumer.Wait latches ready false; a true stored afterwards would
+	// self-heal that latch and report a terminated consumer as healthy — the
+	// silent stall ADR-017 §236-241 forbids. Inside the mutex because that is
+	// what makes it atomic against handle's skew latch (TKT-90): outside it, a
+	// cancellation landing between the check and the Store reopens the window.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("startup readiness abandoned: %w", err)
+	}
 	c.ready.Store(true)
 	return nil
 }
@@ -492,6 +502,29 @@ func (c *Consumer) Run(ctx context.Context) error {
 		return err
 	}
 	defer cc.Stop()
+	// TKT-122: observe termination from HERE, not after the pass below.
+	//
+	// waitConsume used to be called only once startupConverge returned, and that
+	// pass retries reconcileAttempts times with retryBackoff between them plus a
+	// serial catalog call per published pool. A durable deleted inside that window
+	// went unnoticed until the pass ended: honestly unready throughout (the true
+	// latch is refreshStartupReadiness's last act), but alive, consuming nothing,
+	// and compose does not restart an unhealthy container (ADR-017 §236-241) — so
+	// the late process exit was the signal that mattered, and it was late.
+	//
+	// One observer goroutine, started before the pass and joined after it. Its
+	// result cancels startupCtx, so a blocked catalog call unwinds promptly rather
+	// than at the next retry boundary. startupConverge stays SYNCHRONOUS: running
+	// it in a goroutine would let a reconciliation outlive Run and store readiness
+	// true after termination, which is the failure this ticket exists to prevent.
+	startupCtx, cancelStartup := context.WithCancel(ctx)
+	defer cancelStartup()
+	consumeDone := make(chan error, 1)
+	go func() {
+		err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering")
+		cancelStartup()
+		consumeDone <- err
+	}()
 	// TKT-90: reconcile pool offering state against catalog before readiness —
 	// dead-beyond-retention pools converge here; the quarantine latch still wins.
 	// Consumption is already running: the durable's backlog drains in parallel
@@ -500,7 +533,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// per-slot version guard, and anything vs archive because archival is
 	// terminal and offeringStatus collapses archived over closed — a post-archive
 	// closure row changes nothing the read path can see.
-	if err := c.startupConverge(ctx); err != nil {
+	if err := c.startupConverge(startupCtx); err != nil {
+		// Cancellation here is ambiguous by itself — it means either "the durable
+		// died" or "we were asked to stop". waitConsume already knows which, and
+		// its answer is the one main can act on: a termination carries the durable
+		// diagnostic and does NOT wrap context.Canceled, so isShutdownConsumerError
+		// cannot filter it away. Returning startupConverge's context.Canceled
+		// instead would be filtered as a clean shutdown and the process would exit
+		// 0 with nothing consuming.
+		if startupCtx.Err() != nil && ctx.Err() == nil {
+			return <-consumeDone
+		}
 		return err
 	}
 	// TKT-127: observe async termination, not just cancellation. Blocking on
@@ -521,7 +564,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// which entangles the pass's error with shutdown cancellation and so with
 	// TKT-121 — deliberately deferred to TKT-135 rather than done here
 	// (TKT-127 ai-review, triaged incidental).
-	if err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering"); err != nil {
+	if err := <-consumeDone; err != nil {
 		return err
 	}
 	return fmt.Errorf("consumer stopped: %w", ctx.Err())

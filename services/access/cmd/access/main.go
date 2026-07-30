@@ -254,11 +254,26 @@ func run() error {
 	// blocks on the send, and its error — which may be a genuine failure, not a
 	// shutdown cancellation — is never observable by awaitShutdown (ai-review R1).
 	consumerErr := make(chan error, 2)
-	go func() { consumerErr <- cons.Run(ctx) }()
+	// Log at the PRODUCER, not only where the error is consumed (TKT-122).
+	// awaitShutdown's drain is a deliberate snapshot: an error arriving after it
+	// goes to a channel nobody reads, and main's stderr print never happens, so
+	// today that failure vanishes with no exit code AND no line anywhere. The
+	// exit code is genuinely not worth blocking shutdown for — compose runs these
+	// services `restart: unless-stopped`, which suppresses restart on an
+	// operator-requested stop whatever the status — but losing the evidence is a
+	// separate cost, and one line buys it back with no latency and no lifecycle
+	// coupling. Same predicate awaitShutdown uses, so a clean unwind stays quiet.
+	reportConsumer := func(err error) error {
+		if err != nil && !isShutdownConsumerError(ctx, err) {
+			log.ErrorContext(ctx, "consumer stopped with an error", "err", err)
+		}
+		return err
+	}
+	go func() { consumerErr <- reportConsumer(cons.Run(ctx)) }()
 	// The slot-policy projector (TKT-87): its DeliverAll durable replays the
 	// publication history, so pass policies backfill on first boot for free.
 	policyCons := consumer.NewPolicyConsumer(js, st, log)
-	go func() { consumerErr <- policyCons.Run(ctx) }()
+	go func() { consumerErr <- reportConsumer(policyCons.Run(ctx)) }()
 
 	r := chi.NewRouter()
 	health := httpx.Healthz(serviceName,
@@ -335,6 +350,12 @@ func awaitShutdown(ctx context.Context, srvErr, consumerErr <-chan error, shutdo
 	// drain. Closing that last window means blocking shutdown until both
 	// consumers have terminated, which trades a missed exit code on an
 	// operator-requested stop for a stop a wedged consumer can delay.
+	//
+	// TKT-122 weighed that trade and kept the snapshot — see ADR-034 §"The
+	// shutdown drain stays a snapshot": `restart: unless-stopped` suppresses
+	// restart on an operator stop whatever the exit code, so the status feeds
+	// nothing. The error a late failure produces is no longer lost, though: the
+	// producing goroutine above logs it before sending.
 drained:
 	for {
 		select {
