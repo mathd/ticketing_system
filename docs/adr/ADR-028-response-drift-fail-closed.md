@@ -72,7 +72,20 @@ five services enforce the same policy.
       (`IncludeResponseStatus`): a handler returning a status its spec does not commit is
       failed closed like a body mismatch. This guards what the inner handler writes;
       statuses written by request-rejection short-circuits (the request validator's own
-      error responses) sit outside the response wrap and are not checked.
+      error responses) sit outside the response wrap and are not checked **in the four
+      non-codegen services** — `shared/go/contract.requestValidator` nests
+      `responseValidated` *inside* the request validator, so a rejection short-circuits
+      before the wrap is reached. **The carve-out does not hold for catalog** (corrected by
+      TKT-110): catalog's `NewRouter` wraps `contract.ResponseValidator` around the whole
+      generated `HandlerWithOptions` from the outside, so response validation is its
+      **outermost** layer and every rejection written beneath it — the request validator's
+      *and* the oapi-codegen binder's — is checked. That is not a theoretical difference:
+      nine lifecycle operations declared no `'400'`, and the binder's 400 for a malformed
+      path UUID reached clients as this decision's generic 500 (plus an ERROR log) until
+      TKT-110 declared it. **The rule for catalog is therefore stricter than this bullet
+      originally implied: any status the binder or the request validator can write must be
+      declared.** `TestUUIDPathOperationsDeclareBadRequest` enforces the `format: uuid` case
+      of that rule at the spec level.
 - **Negative:**
     - A schema mistake (over-strict spec) is a production outage for that operation until
       corrected; the tests above are the mitigation, not a guarantee.

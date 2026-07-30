@@ -27,6 +27,14 @@ type SeatPinner interface {
 	UnpinSeats(ctx context.Context, org, seatMapID uuid.UUID, seats []string, pinnedBy string) error
 }
 
+// CacheControlPublicAvailability is ADR-004 rule 1's seconds tier, carried by the
+// public availability read — the tier where staleness is most load-bearing during
+// an on-sale. TKT-110 declared it in the OpenAPI document, so it is now a
+// contract value enforced at runtime on both sides (the '200' response declares
+// it required, with this string as its only allowed value): changing it here
+// without changing the spec fails the contract, and vice versa.
+const CacheControlPublicAvailability = "public, max-age=5, s-maxage=5"
+
 type Server struct {
 	st         *store.Postgres
 	credential string
@@ -246,6 +254,6 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 		problem(w, err)
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=5, s-maxage=5")
+	w.Header().Set("Cache-Control", CacheControlPublicAvailability)
 	write(w, 200, a)
 }

@@ -69,7 +69,8 @@ artifact rather than an incidental header, and it is exactly the contract a futu
 honor. It is still not proof that such an owner is deployed, and emitting `Cache-Control` must never
 be read as one.
 
-**Only catalog has made that commitment.** Catalog's contract declares `Cache-Control` on its public
+**Only catalog has made that commitment.** *(True as of TKT-128; superseded by TKT-110 — see the
+callout at the end of this amendment. Inventory now declares its tier too.)* Catalog's contract declares `Cache-Control` on its public
 reads (minutes tier for events/seasons/festivals, hours tier for venues and seat maps) and its handlers
 emit it through named constants. **Inventory's public availability read is the exception that matters**:
 `GET /slots/{id}/availability` emits `public, max-age=5, s-maxage=5` — rule 1's seconds tier — from the
@@ -119,6 +120,21 @@ kill-switch, staleness tests, and the on-sale read-load evidence this ADR's Cons
 The **contract** gap is TKT-137's: declaring inventory's seconds-tier availability header in its
 OpenAPI document, which is a source change and so could not be made here. This amendment routes both
 rather than leaving either implicit.
+
+> **Contract gap CLOSED by TKT-110 (2026-07-29).** TKT-137 was absorbed into TKT-110 and the
+> declaration shipped: `services/inventory/api/openapi.yaml` now declares `Cache-Control` on
+> `getAvailability`'s `200` via `components.headers.AvailabilityCacheControl` — `required: true`,
+> with `public, max-age=5, s-maxage=5` as its single allowed value — and the handler emits it
+> through the named constant `CacheControlPublicAvailability`
+> (`services/inventory/internal/api/server.go`). So **inventory is no longer the exception**: two
+> services now commit a tier in their contract, and the sentence above stating that only catalog
+> has made that commitment is true as of TKT-128 but superseded here. Because ADR-028's response
+> validator fails closed on a declared header, the constant and the declaration can only move
+> together — a mismatch is a 500, pinned stack-free by
+> `TestAvailabilityCacheTierIsContractEnforced` and end-to-end by
+> `smoke/inventory_contention_test.go`. **The deployment gap is untouched and remains TKT-31's:**
+> declaring a tier still is not evidence of a cache, and no shared cache is deployed. Rule 2
+> remains accepted and unimplemented.
 
 ## Amendment (2026-07-29, TKT-107) — the seat-map tier splits on publication status
 

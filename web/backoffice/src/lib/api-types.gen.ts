@@ -1355,6 +1355,7 @@ export interface operations {
                     "application/json": components["schemas"]["SeatMap"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description An archived seat map cannot be published */
             409: {
@@ -1517,6 +1518,7 @@ export interface operations {
                     "application/json": components["schemas"]["Performance"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description No sellable offer, or archived performances cannot be re-published */
             409: {
@@ -1550,6 +1552,7 @@ export interface operations {
                     "application/json": components["schemas"]["Performance"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Draft performances cannot be archived */
             409: {
@@ -1587,6 +1590,7 @@ export interface operations {
                     "application/json": components["schemas"]["Performance"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Only published slots can be closed, or a prior closure event is still owed */
             409: {
@@ -1620,6 +1624,7 @@ export interface operations {
                     "application/json": components["schemas"]["Performance"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Only published slots can be reopened, or a prior closure event is still owed */
             409: {
@@ -1718,6 +1723,7 @@ export interface operations {
                     "application/json": components["schemas"]["SeriesLifecycleResult"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Empty series or a member cannot publish */
             409: {
@@ -1751,6 +1757,7 @@ export interface operations {
                     "application/json": components["schemas"]["SeriesLifecycleResult"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Empty series, draft member, or member with an owed closure event */
             409: {
@@ -1952,6 +1959,7 @@ export interface operations {
                     "application/json": components["schemas"]["FestivalLifecycleResult"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Empty festival or a member cannot publish */
             409: {
@@ -1985,6 +1993,7 @@ export interface operations {
                     "application/json": components["schemas"]["FestivalLifecycleResult"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             /** @description Empty festival, draft member, or member with an owed closure event */
             409: {

@@ -36,7 +36,11 @@ paths:
         - {$ref: '#/components/parameters/OrganizerId'}
         - {name: channel, in: query, required: false, schema: {type: string, minLength: 1, maxLength: 100}, description: 'Scope `available` to this sales channel; omitted means the default/public channel'}
       responses:
-        '200': {description: Availability, content: {application/json: {schema: {$ref: '#/components/schemas/Availability'}}}}
+        '200':
+          description: Availability
+          headers:
+            Cache-Control: {$ref: '#/components/headers/AvailabilityCacheControl'}
+          content: {application/json: {schema: {$ref: '#/components/schemas/Availability'}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
@@ -196,6 +200,22 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
 components:
+  headers:
+    AvailabilityCacheControl:
+      description: >
+        ADR-004 rule 1's seconds tier for the public availability read, declared
+        rather than merely emitted (TKT-110, closing the gap that ADR's TKT-128
+        amendment recorded). This is the tier where staleness is most load-bearing
+        during an on-sale, so a future cache owner has to be able to find it in the
+        contract. The single-value enum is deliberate and is enforced at runtime,
+        not only by the gate: ADR-028's response validator fails closed, so the
+        handler constant (CacheControlPublicAvailability) and this declaration can
+        only move together. Required, so a handler that stops emitting the header
+        fails the contract instead of silently degrading it to a comment.
+      required: true
+      schema:
+        type: string
+        enum: ['public, max-age=5, s-maxage=5']
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     OrganizerId: {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
