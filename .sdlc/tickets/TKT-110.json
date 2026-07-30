@@ -2,9 +2,11 @@
   "key": "TKT-110",
   "type": "Task",
   "summary": "Declare the responses catalog and inventory actually emit (lifecycle 400s + the availability cache tier)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "description": "### Incidental finding spun out of TKT-108 ai-review (gpt-5.6-luna:high@claudex, finding B2 — confirmed against HEAD)\n\nLifecycle operations (publish/archive/close/reopen for performances, series, festivals, seat maps) declare no `'400'` response, yet the generated request middleware returns 400 for malformed path UUIDs before the handler runs. Production is safe by ADR-028's explicit carve-out (request-rejection short-circuits sit outside the response validator wrap), but the catalog handler-test validator (aligned in TKT-108) WOULD reject such a 400 as undocumented if a test ever drives malformed input through `e.do` — a latent test trap.\n\nOptions to settle at plan time: declare `400: BadRequest` on the ops the request validator can reject; or codify the carve-out in the test helper; or both. Repo-wide consistency question, same shape as TKT-108's 500 work.\n\nGoverning: ADR-028 (carve-out is explicit in Consequences), ADR-009 (any spec change ⇒ regen).\n\n---\n\n## Absorbed TKT-137 — inventory's availability read emits an undeclared seconds tier\n\n`services/inventory/internal/api/server.go:249` sets `Cache-Control: public, max-age=5, s-maxage=5`;\n`services/inventory/api/openapi.yaml` declares no `Cache-Control` header on `getAvailability`\n(`grep -ci cache-control` = 0). Behaviour with no declaration — the inverse of the defect TKT-128\nfixed in ADR-004. A future cache owner (TKT-31) reading the contract will not find the seconds tier\nat all, and it is the tier where staleness is most load-bearing during an on-sale.\n\nSub-scope:\n- [ ] `getAvailability`'s `'200'` declares `Cache-Control`, value matching the handler\n      (`public, max-age=5, s-maxage=5`), following catalog's `CacheControl` response-header component\n- [ ] Consider a named constant at the call site, the way catalog has\n      `CacheControlPublicReads` / `CacheControlPublicVenueReads`\n- [ ] ADR-004 § Amendment (TKT-128)'s sentence recording this as an open gap is updated to say closed\n\n## Why these are one ticket\n\nSame act in both halves: edit `openapi.yaml`, `make generate`, **commit the regen before running the\ngate** (`check-generate` diffs against HEAD — an uncommitted regen reads as drift and costs two gate\nruns, per AGENTS.md / TKT-114). Two services, one regen pass, one plan gate. Splitting them buys\nnothing and pays the pipeline overhead twice.\n\n**Correction carried from Gate-1 validation:** this ticket's original text names `closePerformance`\nand `reopenPerformance` — no such operationIds exist in the catalog spec. The ops that really lack a\n`'400'` are `publishPerformance`, `archivePerformance`, `publishSeatMap`, `editSeatMap`.\n",
   "comments": [
@@ -17,6 +19,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged TKT-137 into this ticket (backlog drain, 2026-07-29)\n\nWas: *Declare 400 request-validation responses on catalog lifecycle operations (or record the carve-out)*\n\nTKT-137 is now **Inventory's availability read emits a seconds-tier Cache-Control its OpenAPI contract never declares (TKT-128 ai-review)** — absorbed above, and moved back to Backlog marked MERGED so it cannot be claimed twice. Its own thread stays readable on the board for the full filing history and review lineage.\n\nRationale: a plan gate + ai-review + PO gate on each half costs more than the work. See the *Why these are one ticket* section in the description."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-110, branch `TKT-110-declare-emitted-responses` off `origin/main` (`3ea57e0`)\n\n**⚠️ GATELESS RUN — the four human gates are waived for this ticket.** The repo owner\n(Mathieu Dupuis, repo owner and PO) explicitly waived Gate 1 (priority — already satisfied by\n`Ready`), Gate 2 (plan approval), Gate 3 (review + merge) and Gate 4 (PO acceptance) for this run\nas a **deliberate process experiment**: measuring what a fully autonomous Ready→Done pass produces\nwhen the human checkpoints are removed. Recorded here so the board history shows this ticket ran\ngateless and no future reader mistakes it for a normal gated run.\n\nEverything else in the pipeline applies unchanged: `config.models` routing with no substitution,\ncross-model review for both the plan and the code, TDD with tests observed red first, `make check`\ngreen before every push and after the merge, every marker comment posted, no AI attribution in\ncommits or PRs. Gate replacements the owner specified:\n\n| Gate | Replacement |\n|---|---|\n| 1 priority | already given (ticket sits in `Ready`) |\n| 2 plan approval | agent resolves open decisions itself — prefer the critique's recommendation; absent one, the most reversible option; every self-made decision recorded in `kind=plan-final` |\n| 3 review + merge | agent squash-merges and deletes the branch after ai-review converges (same triage / second-pass / churn-cap rules); review-guide still posted first, as the audit record |\n| 4 PO acceptance | agent self-validates each COS against test evidence on the merged code, posts the validation note, closes with the full metrics comment |\n\n**Selection reason:** not a free choice — the owner named this ticket. It was claimable on the\npipeline's own rules: it sits in `Ready` (priority given at Gate 1), and it has **zero open\nblockers** — its only link is `absorbs → TKT-137`, which is an absorption record, not a\n`blocked-by` edge (TKT-137 is parked in Backlog marked MERGED precisely so it cannot be claimed\ntwice).\n\n**Readiness / DoR.** The Gate-1 comment deliberately deferred the 8-item bake to claim time\n(\"per the owner's drain-the-debt call\"), so it happens here. All eight are now `met` — the\ncontext-mémo below is the `context_memo` item, and the grounding pass that produced it also\nresolved `approach` and `uncertainties`, which were the two the ticket left genuinely open. No\nitem needs a human, which is what makes a gateless run defensible for *this* ticket.\n\n---\n\n### 🔴 The grounding pass changed the ticket materially — read this before the plan\n\nThe ticket's premise is **wrong about the mechanism and understates the severity**. Nine\nlifecycle ops, probed against the **real** `NewRouter` (fake store, `validateResponses=true`,\ni.e. the production default per ADR-028's TKT-125 amendment):\n\n```\npublishPerformance /performances/not-a-uuid/publish  -> 500 {\"error\":\"response violates OpenAPI contract\"}\narchivePerformance /performances/not-a-uuid/archive  -> 500  (same)\ncloseSlot          /performances/not-a-uuid/close    -> 500  (same)\nreopenSlot         /performances/not-a-uuid/reopen   -> 500  (same)\npublishSeries      /series/not-a-uuid/publish        -> 500  (same)\narchiveSeries      /series/not-a-uuid/archive        -> 500  (same)\npublishFestival    /festivals/not-a-uuid/publish     -> 500  (same)\narchiveFestival    /festivals/not-a-uuid/archive     -> 500  (same)\npublishSeatMap     /seat-maps/not-a-uuid/publish     -> 500  (same)\neditSeatMap        /seat-maps/not-a-uuid/edit        -> 400  (control: declares '400')\n```\n\nThree corrections to the ticket text, each verified at HEAD:\n\n1. **It is not the kin-openapi request validator.** `format: uuid` is *not* enforced anywhere in\n   this repo — no `openapi3.EnableFormatValidation` / `DefineStringFormat` call exists\n   (`grep -rn \"EnableFormatValidation\\|DefineStringFormat\" --include=*.go .` → 0 hits). Probing\n   `contract.RequestValidator` alone, a malformed path UUID sails through to the handler with\n   **200**. The 400 comes from the **oapi-codegen binder** —\n   `HandlerWithOptions(..., ErrorHandlerFunc: writeJSON(w, 400, …))` in\n   `services/catalog/internal/api/server.go:112-120` — which fails to unmarshal `not-a-uuid`\n   into a `uuid.UUID` path param.\n\n2. **It is a live production defect, not a latent test trap.** `NewRouter` wires\n   `contract.ResponseValidator` as the **outermost** wrap (`server.go:126`), *around*\n   `HandlerWithOptions` — so the binder's 400 is written **inside** the response wrap and is\n   checked. Undeclared status → ADR-028 fail-closed → the client gets\n   **500 `response violates OpenAPI contract`** plus a false-alarm ERROR log line, on every\n   malformed-UUID request to any of the nine ops, in production, today. Wrong direction for a\n   client: a 500 says \"server's fault, retry me\" for what is purely caller error.\n\n3. **ADR-028's carve-out sentence is false for catalog.** Its Consequences say *\"statuses written\n   by request-rejection short-circuits (the request validator's own error responses) sit outside\n   the response wrap and are not checked.\"* True for the four non-codegen services —\n   `contract.requestValidator` puts `responseValidated` **inside** the validator\n   (`shared/go/contract/http.go:146-152`), e.g. inventory's `Router`. **False for catalog**,\n   whose codegen wiring inverts the order. The ADR needs correcting, and that correction is what\n   makes the \"just codify the carve-out in the test helper\" option dead — there is no carve-out\n   to codify here, and the test helper is not where the damage is.\n\n**So the ticket's plan-time option is settled by evidence, not preference:** declare\n`'400': BadRequest` on all nine ops. The other two options (\"codify the carve-out\", \"both\") rest\non a premise the probe refutes.\n\n**One narrowing, in the other direction.** `closeSlot` is the only one of the nine with a\n`requestBody` (`SlotCloseRequest`, optional), so it is the only one the *kin-openapi* validator\ncan also 400 (invalid JSON, `reason` wrong type, `minLength` violation, wrong Content-Type — all\nfour probed, all four currently laundered to 500). The other eight can 400 only via the binder.\nSame fix, one declaration each; noted so the test plan covers both rejection sources.\n\n**Correction to the Gate-1 readiness comment, for the record.** It named\n`publishPerformance, archivePerformance, publishSeatMap, editSeatMap` as the ops lacking `'400'`.\n`editSeatMap` **does** declare one (`openapi.yaml:201`) — it is the control above. And the real\nlist is nine, not four: it missed `closeSlot`, `reopenSlot`, `publishSeries`, `archiveSeries`,\n`publishFestival`, `archiveFestival`. The description's own correction was right that\n`closePerformance`/`reopenPerformance` do not exist — the operationIds are `closeSlot`/`reopenSlot`,\nand they are in scope.\n\n*Evidence method: a throwaway `zz_probe_test.go` in `services/catalog/internal/api` driving\n`newEnv(t).handler`, run and then deleted. The regression tests that pin this land in Building,\nthrough the real `e.do` seam.*\n"
     }
   ],
   "links": [
@@ -24,5 +31,58 @@
       "type": "absorbs",
       "key": "TKT-137"
     }
-  ]
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the OpenAPI document is authoritative, so any spec edit here requires `make generate` and the regenerated openapi_gen.go / api-types.gen.ts COMMITTED BEFORE the gate runs (check-generate diffs against HEAD)."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed with 500, IncludeResponseStatus:true — this is the mechanism that turns each undeclared 400 into a 500. Its Consequences carve-out sentence is FALSE for catalog (codegen wiring puts ResponseValidator outermost) and must be corrected as part of this ticket."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Cache-first read path: rule 1's seconds tier is what inventory's availability read emits. Its TKT-128 amendment names this exact gap and routes it to TKT-137 (now absorbed here); the amendment sentence must flip from open to closed."
+      },
+      {
+        "id": "ADR-018",
+        "why": "Catalog slot transition concurrency governs the handlers being re-declared (publish/archive/close/reopen). Constrains nothing in this ticket — the change is contract-only, no transition logic is touched — but read it before editing any of those handlers so a spec edit does not drift into a behaviour edit."
+      },
+      {
+        "id": "ADR-029",
+        "why": "Seat-identity pinning: publishSeatMap/editSeatMap are pin-relevant ops. Again contract-only here; listed so the implementer knows a behaviour change in these handlers is out of scope."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-108 did the identical act for 500s on emit-failing catalog endpoints — the shape to mirror.",
+        "link": "board: TKT-108"
+      },
+      {
+        "summary": "The nine ops lacking '400' and their spec line numbers: publishSeatMap:146, publishPerformance:293, archivePerformance:324, closeSlot:354, reopenSlot:389, publishSeries:461, archiveSeries:481, publishFestival:617, archiveFestival:637.",
+        "link": "services/catalog/api/openapi.yaml"
+      },
+      {
+        "summary": "BadRequest response component already exists and is used by 25 other catalog ops — reuse it, do not add a component.",
+        "link": "services/catalog/api/openapi.yaml (#/components/responses/BadRequest)"
+      },
+      {
+        "summary": "Inventory availability handler sets 'public, max-age=5, s-maxage=5' inline; catalog's named-constant precedent is CacheControlPublicReads / CacheControlPublicVenueReads.",
+        "link": "services/inventory/internal/api/server.go:249, services/catalog/internal/api/server.go:37-45"
+      },
+      {
+        "summary": "Catalog's CacheControl / SeatMapCacheControl response-header components are the declaration pattern to follow for inventory.",
+        "link": "services/catalog/api/openapi.yaml:946-950"
+      },
+      {
+        "summary": "Test seam for the catalog half: env.do -> env.validateResponse (IncludeResponseStatus:true) in server_test.go:1154-1204. Existing seam, highest that still isolates, and the one that would have caught this.",
+        "link": "services/catalog/internal/api/server_test.go"
+      }
+    ],
+    "capturedAt": "2026-07-29",
+    "note": "Baked at claim time, not at shaping — the Gate-1 comment deferred the DoR bake to claim per the owner's drain-the-debt call. All five governingAdrs verified to resolve to real files at HEAD under docs/adr/."
+  }
 }
