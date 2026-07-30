@@ -84,24 +84,36 @@ func Wait(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name 
 	}
 	select {
 	case <-ctx.Done():
-		// Both arms can be ready at once — a durable deleted at the instant of
-		// SIGTERM. Picking at random was defensible while the answer changed only
-		// an exit code nothing reads. It stopped being defensible once TKT-122 made
-		// this classification carry the operator's evidence: a nil here is filtered
-		// by both mains as a clean stop, so the durable's death would leave no
-		// error, no log line and no trace at all.
-		//
-		// So termination wins when it is observable. It is the more serious of the
-		// two states, the only one carrying a diagnostic, and it never self-heals
-		// (ADR-017 §240-241) — while "we were also asked to stop" is already
-		// evident from the fact that we are stopping.
-		select {
-		case <-closed:
-			return terminated()
-		default:
-			return nil
-		}
+		return nil
 	case <-closed:
-		return terminated()
+		// Both arms can be ready at once, and after cancellation a closed
+		// subscription is AMBIGUOUS: we close it ourselves. Both mains
+		// `defer nc.Close()` without joining their consumer goroutines, so on an
+		// ordinary stop the connection close races a goroutine that has not yet
+		// arbitrated its already-cancelled context — and `Closed()` does not encode
+		// its cause.
+		//
+		// So shutdown wins, deterministically. Reporting termination here would
+		// emit a durable-deletion diagnostic on ordinary stops, which is strictly
+		// worse than missing a rare real one: it would corrupt the very operator
+		// evidence TKT-122's producer-side logging exists to preserve, and it would
+		// do so on every clean shutdown that lost the race.
+		//
+		// A durable that genuinely dies inside this window is therefore not
+		// distinguished. That is the SAME accepted residual as the shutdown drain
+		// (ADR-034 §"The shutdown drain stays a snapshot"): once SIGTERM has
+		// landed, this process no longer tries to classify late consumer events,
+		// because doing so correctly needs a bounded join of every consumer before
+		// nc.Close() — the lifecycle coupling TKT-122 weighed and declined to buy.
+		//
+		// Before cancellation — the case that actually matters, a durable deleted
+		// under a live consumer — nothing is ambiguous and termination is reported
+		// exactly as before.
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			return terminated()
+		}
 	}
 }

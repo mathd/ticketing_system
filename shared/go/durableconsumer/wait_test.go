@@ -119,17 +119,26 @@ func TestWaitTerminationDiagnosticIsExact(t *testing.T) {
 	}
 }
 
-// TestWaitPrefersTerminationWhenBothAreReady pins the arbitration TKT-122's
-// ai-review found under-specified. A durable deleted at the instant of SIGTERM
-// leaves BOTH arms ready, and a random pick returned nil half the time — which
-// both services' mains filter as a clean stop, so the durable's death left no
-// error, no log line and no trace.
+// TestWaitPrefersShutdownWhenBothAreReady pins the arbitration TKT-122's ai-review
+// found under-specified — and then found had to point the OTHER way.
 //
-// Deterministic by construction: both channels are ready BEFORE Wait is called,
-// so there is no interleaving to lose. Run it with -count to convince yourself —
-// a random select would fail roughly half the time, which is exactly why the
-// previous behaviour could not be caught by a single run.
-func TestWaitPrefersTerminationWhenBothAreReady(t *testing.T) {
+// Pass 2 was right that a random pick is wrong. Pass 3 showed which way it must be
+// deterministic: after cancellation a closed subscription is ambiguous, because we
+// close it ourselves. Both mains `defer nc.Close()` without joining their consumer
+// goroutines, so an ordinary stop routinely closes the subscription under a
+// goroutine that has not yet arbitrated — and preferring termination would emit a
+// durable-deletion diagnostic on clean shutdowns, corrupting the operator evidence
+// the producer-side logging exists to preserve.
+//
+// So shutdown wins. A durable that truly dies in this window is not distinguished,
+// which is the same accepted residual as the drain snapshot: once SIGTERM lands,
+// this process stops classifying late consumer events.
+//
+// Deterministic by construction: both channels are ready BEFORE Wait is called, so
+// there is no interleaving to lose. Looped because a random select would pass a
+// single run about half the time — which is exactly how the original behaviour
+// escaped notice.
+func TestWaitPrefersShutdownWhenBothAreReady(t *testing.T) {
 	for i := 0; i < 64; i++ {
 		var ready atomic.Bool
 		ready.Store(true)
@@ -138,15 +147,28 @@ func TestWaitPrefersTerminationWhenBothAreReady(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		err := Wait(ctx, closed, &ready, "test-consumer")
-		if err == nil {
-			t.Fatalf("iteration %d: a termination observable at shutdown must not be reported as a clean stop", i)
+		if err := Wait(ctx, closed, &ready, "test-consumer"); err != nil {
+			t.Fatalf("iteration %d: an ordinary stop must not be reported as a durable termination: %v", i, err)
 		}
-		if !strings.Contains(err.Error(), "consume context closed") {
-			t.Fatalf("iteration %d: want the durable diagnostic, got %v", i, err)
+		if !ready.Load() {
+			t.Fatalf("iteration %d: a clean shutdown must leave readiness to the caller's own latch", i)
 		}
-		if ready.Load() {
-			t.Fatalf("iteration %d: termination must latch ready false even when shutdown is concurrent", i)
-		}
+	}
+}
+
+// The case that actually matters is unchanged: a durable deleted under a LIVE
+// consumer, where nothing is ambiguous.
+func TestWaitStillReportsTerminationWhenNotShuttingDown(t *testing.T) {
+	var ready atomic.Bool
+	ready.Store(true)
+	closed := make(chan struct{})
+	close(closed)
+
+	err := Wait(context.Background(), closed, &ready, "test-consumer")
+	if err == nil || !strings.Contains(err.Error(), "consume context closed") {
+		t.Fatalf("a durable deleted under a live consumer must still terminate the process, got %v", err)
+	}
+	if ready.Load() {
+		t.Fatal("termination must latch ready false")
 	}
 }

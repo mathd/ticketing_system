@@ -208,21 +208,32 @@ consumer does stays with the service.**
 - Still open, deliberately: TKT-123 (the diagnostic cannot distinguish causes), TKT-133 (inventory
   does not validate `type` against the subject).
 
-### Termination wins when both arms are ready (TKT-122)
+### After cancellation, a closed subscription is ambiguous — shutdown wins (TKT-122)
 
-`Wait` used to pick at random when the parent context and `Closed()` were both ready — a durable
-deleted at the instant of SIGTERM — and this ADR called both answers defensible, telling callers not
-to depend on which. That held only while the answer changed nothing but an exit code nothing reads.
+`Wait` used to pick at random when the parent context and `Closed()` were both ready, and this ADR
+called both answers defensible. TKT-122's review agreed the randomness was wrong, then established
+which way it has to be deterministic — and it is not the intuitive one.
 
-It stopped holding when TKT-122 made the classification carry the operator's evidence: a `nil` there
-is filtered by both mains as a clean stop, so the durable's death left no error, no log line and no
-trace at all. **Termination now wins whenever it is observable** — the more serious state, the only
-one with a diagnostic, and the one that never self-heals (ADR-017 §240-241), while "we were also
-asked to stop" is already evident from the fact that we are stopping.
+**`Closed()` does not encode its cause, and after SIGTERM we close it ourselves.** Both mains
+`defer nc.Close()` without joining their consumer goroutines, so an ordinary stop routinely closes
+the subscription underneath a goroutine that has not yet arbitrated its already-cancelled context.
+Preferring termination there would emit a durable-deletion diagnostic on **clean shutdowns** — a
+false alarm on every stop that lost the race, corrupting the very operator evidence the
+producer-side log exists to preserve. That is strictly worse than missing a rare true one.
 
-An ordinary stop still cannot be misreported: `Closed()` only fires once the durable dies or
-`cc.Stop()` runs, and that deferred `Stop` runs *after* `Run` returns, i.e. after `Wait` has already
-arbitrated. The change applies to **both** services, since both classify through this one function.
+So **shutdown wins** when both are ready, deterministically. A durable that genuinely dies inside
+that window is not distinguished. That is the **same accepted residual** as the drain snapshot
+below: once SIGTERM has landed this process stops classifying late consumer events, because doing so
+correctly requires a bounded join of every consumer before `nc.Close()` — precisely the lifecycle
+coupling this ticket weighed and declined to buy.
+
+**Before** cancellation — a durable deleted under a live consumer, the case that actually matters —
+nothing is ambiguous and termination is reported exactly as before.
+
+*An earlier revision of this section claimed an ordinary stop "can never be misreported" because the
+deferred `cc.Stop()` runs after `Run` returns. That was false: the outer `nc.Close()` closes
+subscriptions independently of `cc.Stop()`, and the claim survived one review pass before a second
+caught it.*
 
 ### The shutdown drain stays a snapshot — decided, not overlooked (TKT-122)
 
