@@ -4,7 +4,7 @@
   "summary": "Declare the responses catalog and inventory actually emit (lifecycle 400s + the availability cache tier)",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
   "pr": {
