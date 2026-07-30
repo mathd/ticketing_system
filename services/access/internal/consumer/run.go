@@ -17,6 +17,10 @@ import (
 // through it too. Point those call sites straight at durableconsumer.Wait and
 // the tests would still pass while testing nothing that ships: a façade. Keeping
 // one symbol for both is what keeps the guarantee tested on the real path.
-func waitConsume(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string) error {
-	return durableconsumer.Wait(ctx, closed, ready, name)
+// cause carries what the BROKER said (TKT-123): a durable the server confirmed
+// deleted reads differently from any other reason consuming stopped, and only a
+// ConsumeErrHandler ever hears that. Pass nil for no handler — the diagnostic
+// degrades to the generic form rather than lying.
+func waitConsume(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string, cause *durableconsumer.TerminationCause) error {
+	return durableconsumer.WaitWithCause(ctx, closed, ready, name, cause)
 }

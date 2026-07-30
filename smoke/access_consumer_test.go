@@ -27,14 +27,18 @@ const (
 	// notices. The literal is assembled by three pieces of production code and
 	// asserted here verbatim on purpose — it is the whole discriminator (see
 	// TestAccessDurableDeletionTerminatesAndRecovers):
-	//   consumer/run.go       "%s: consume context closed (durable deleted or subscription terminated)"
+	//   consumer/run.go       "%s: consume context closed (durable deleted)" via WaitWithCause
 	//   consumer/policy.go    passes "access-slot-policy" as %s, returns the error unwrapped
 	//   cmd/access/main.go    fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err) then os.Exit(1)
 	// Changing any of the three should break this test loudly rather than
 	// silently degrade it to "access restarted for some reason".
-	policyDurable     = "access-slot-policy"
-	policyTermination = "access: access-slot-policy: consume context closed " +
-		"(durable deleted or subscription terminated)"
+	policyDurable = "access-slot-policy"
+	// TKT-123 split this in two. The test DELETES the durable, so it asserts the
+	// narrower literal — which is the point: the old message could not tell a
+	// deletion from any other termination, so this test proved a durable was
+	// deleted and that something stopped the consumer, never that the first caused
+	// the second. Capturing jetstream's ErrConsumerDeleted is what closes that gap.
+	policyTermination = "access: access-slot-policy: consume context closed (durable deleted)"
 	// consumer.SubjectPerformancePublished — the smoke module is its own Go
 	// module and does not import the services, so the literal is repeated here
 	// as every other subject in this package is.

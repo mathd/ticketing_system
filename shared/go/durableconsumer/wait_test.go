@@ -110,7 +110,9 @@ func TestWaitTerminationDiagnosticIsExact(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-nil error on termination")
 	}
-	const want = "access-slot-policy: consume context closed (durable deleted or subscription terminated)"
+	// No cause registered, so this is the generic fallback. TKT-123 split the old
+	// single message in two; the deletion-specific literal is pinned below.
+	const want = "access-slot-policy: consume context closed (subscription terminated)"
 	if err.Error() != want {
 		t.Fatalf("diagnostic drifted.\n got: %q\nwant: %q\n\nsmoke/access_consumer_test.go asserts this string verbatim against a real broker (TKT-99); changing it there and here together is a deliberate contract change, not a test update.", err.Error(), want)
 	}
@@ -171,4 +173,73 @@ func TestWaitStillReportsTerminationWhenNotShuttingDown(t *testing.T) {
 	if ready.Load() {
 		t.Fatal("termination must latch ready false")
 	}
+}
+
+// TKT-123. The old message said "durable deleted or subscription terminated" for
+// every async termination, so TKT-99's broker-level test proved a durable was
+// deleted and that something terminated the consumer — not that the first caused
+// the second. jetstream knows the difference (ErrConsumerDeleted); nothing
+// captured it.
+//
+// Both literals are CONTRACTS: smoke/access_consumer_test.go asserts the deletion
+// one verbatim against a real broker. Changing either means changing both.
+func TestWaitDiagnosticNamesTheConfirmedCause(t *testing.T) {
+	var cause TerminationCause
+	cause.MarkConsumerDeleted()
+
+	var ready atomic.Bool
+	ready.Store(true)
+	closed := make(chan struct{})
+	close(closed)
+
+	err := WaitWithCause(context.Background(), closed, &ready, "access-slot-policy", &cause)
+	const want = "access-slot-policy: consume context closed (durable deleted)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("diagnostic drifted.\n got: %v\nwant: %q\n\nsmoke/access_consumer_test.go asserts this verbatim against a real broker (TKT-99).", err, want)
+	}
+	if ready.Load() {
+		t.Fatal("a confirmed deletion must latch readiness false")
+	}
+}
+
+// A CONFIRMED deletion outranks TKT-122's shutdown preference — and only a
+// confirmed one. That preference exists because Closed() is cause-ambiguous when
+// this process closes subscriptions itself; a 409 Consumer Deleted is a server
+// status message nc.Close() cannot manufacture, so the exception is scoped
+// exactly to the evidence TKT-122 lacked.
+func TestConfirmedDeletionOutranksShutdownButAmbiguityDoesNot(t *testing.T) {
+	newClosed := func() <-chan struct{} {
+		c := make(chan struct{})
+		close(c)
+		return c
+	}
+	cancelled := func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+
+	t.Run("confirmed deletion is reported even during shutdown", func(t *testing.T) {
+		var cause TerminationCause
+		cause.MarkConsumerDeleted()
+		var ready atomic.Bool
+		ready.Store(true)
+		err := WaitWithCause(cancelled(), newClosed(), &ready, "c", &cause)
+		if err == nil || !strings.Contains(err.Error(), "durable deleted") {
+			t.Fatalf("broker-confirmed deletion must survive a concurrent shutdown, got %v", err)
+		}
+	})
+
+	t.Run("without a confirmed cause shutdown still wins", func(t *testing.T) {
+		var ready atomic.Bool
+		ready.Store(true)
+		// No cause marked: exactly TKT-122's ambiguous case, which must stay nil or
+		// ordinary stops start reporting durable deaths.
+		if err := WaitWithCause(cancelled(), newClosed(), &ready, "c", new(TerminationCause)); err != nil {
+			t.Fatalf("an ambiguous closure during shutdown must stay a clean stop, got %v", err)
+		}
+		if !ready.Load() {
+			t.Fatal("a clean shutdown must leave readiness to the caller's latch")
+		}
+	})
 }

@@ -18,6 +18,10 @@ import (
 // ADR-017 §236-241 rules out. Access has had the guarantee since TKT-97;
 // inventory had the same loop and not the same protection, which is the
 // duplication TKT-127 exists to end.
-func waitConsume(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string) error {
-	return durableconsumer.Wait(ctx, closed, ready, name)
+// cause carries what the BROKER said (TKT-123): a durable the server confirmed
+// deleted reads differently from any other reason consuming stopped, and only a
+// ConsumeErrHandler ever hears that. Pass nil for no handler — the diagnostic
+// degrades to the generic form rather than lying.
+func waitConsume(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string, cause *durableconsumer.TerminationCause) error {
+	return durableconsumer.WaitWithCause(ctx, closed, ready, name, cause)
 }

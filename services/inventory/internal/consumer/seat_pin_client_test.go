@@ -22,7 +22,7 @@ func TestPinSeatsClassifiesStatus(t *testing.T) {
 		wantRejected bool
 	}{
 		{http.StatusOK, false, false},
-		{http.StatusConflict, true, true},      // seat not in current version → deterministic
+		{http.StatusConflict, true, true},            // seat not in current version → deterministic
 		{http.StatusServiceUnavailable, true, false}, // transient
 		{http.StatusUnauthorized, true, false},       // token rotation → transient, must not release
 		{http.StatusNotFound, true, false},           // map lookup → transient

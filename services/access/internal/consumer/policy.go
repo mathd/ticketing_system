@@ -14,6 +14,7 @@ import (
 
 	"ticketing/services/access/internal/store"
 	"ticketing/shared/domainevent"
+	"ticketing/shared/durableconsumer"
 )
 
 // SubjectPerformancePublished is catalog's publication subject. Access
@@ -186,9 +187,17 @@ func (c *PolicyConsumer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The broker's own account of why consuming stopped, which Closed() cannot
+	// carry (TKT-123). Registered here because handler wiring is service-owned
+	// (ADR-034); the classification and the wording live in the shared package.
+	var cause durableconsumer.TerminationCause
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		c.handle(ctx, msg)
-	})
+	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+		if errors.Is(err, jetstream.ErrConsumerDeleted) {
+			cause.MarkConsumerDeleted()
+		}
+	}))
 	if err != nil {
 		return err
 	}
@@ -215,7 +224,7 @@ func (c *PolicyConsumer) Run(ctx context.Context) error {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-slot-policy"); err != nil {
+	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-slot-policy", &cause); err != nil {
 		return err
 	}
 	return fmt.Errorf("policy consumer stopped: %w", ctx.Err())

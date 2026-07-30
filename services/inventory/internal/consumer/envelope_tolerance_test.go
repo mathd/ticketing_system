@@ -39,7 +39,7 @@ func TestFutureVariantSurvivesUnparseableEnvelopeMetadata(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
-			msg := &fakeMsg{data: []byte(tt.body)}
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, tt.body))}
 
 			c.handle(context.Background(), msg)
 
@@ -73,7 +73,7 @@ func TestKnownVariantSurvivesUnparseableOccurredAt(t *testing.T) {
 		`"data":{"performance_id":"` + perf.String() + `","organizer_id":"` + org.String() + `","capacity":250}}`
 
 	c, st := testConsumerWithStore()
-	msg := &fakeMsg{data: []byte(body)}
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
 
 	c.handle(context.Background(), msg)
 

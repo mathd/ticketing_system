@@ -57,7 +57,7 @@ func TestReconcileArchivesPoolWhoseSlotIsArchived(t *testing.T) {
 func TestReconcileAppliesNewerClosureBothDirections(t *testing.T) {
 	stale, reopened := uuid.New(), uuid.New()
 	st := &fakeCatalogStore{pools: []store.PoolOffering{
-		{SlotID: stale, ClosureStatus: "open"},     // catalog says closed@2 → close
+		{SlotID: stale, ClosureStatus: "open"},      // catalog says closed@2 → close
 		{SlotID: reopened, ClosureStatus: "closed"}, // catalog says open@3 → reopen
 	}}
 	c := reconcileConsumer(st, fakeOfferStateResolver{states: map[uuid.UUID]PoolOfferState{
