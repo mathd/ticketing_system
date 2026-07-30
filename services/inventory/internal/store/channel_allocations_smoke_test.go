@@ -178,9 +178,24 @@ func TestChannelSurvivesLifecycleAndConvertStaysPublic(t *testing.T) {
 }
 
 func TestScheduledReleaseIsLazyAndObservable(t *testing.T) {
-	ctx, st, _ := storeForTest(t, time.Minute)
+	// A ONE-SECOND hold TTL, deliberately shorter than the release this test waits
+	// for (TKT-134). The flake was `available=10 want 8`: 10 is full capacity, which
+	// decomposes as capacity 10 − confirmed 0 − held 0 − reserved 0. reserved=0 proves
+	// the public read HAD observed the release, so the two reads never disagreed about
+	// the boundary — what vanished was the hold, whose liveness hung on a TTL clock the
+	// test neither controls nor cares about.
+	//
+	// Keeping the TTL short is the guard: with the old `held` claim this reproduces the
+	// failure on every run, and it can only pass because liveness no longer depends on
+	// expiry at all. A minute-long TTL would merely make the flake rare again.
+	ctx, st, db := storeForTest(t, time.Second)
 	org, slot := provisioned(t, ctx, st, 10)
-	releaseAt := time.Now().UTC().Add(2 * time.Second)
+	// Establish the cutoff by DATABASE time, as the lock-wait test below does: host/DB
+	// clock skew must not be a second moving boundary.
+	var releaseAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT clock_timestamp() + interval '2 seconds'`).Scan(&releaseAt); err != nil {
+		t.Fatal(err)
+	}
 	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6, ReleaseAt: &releaseAt}})
 
 	// Sell 2 of the 6 before release.
@@ -195,6 +210,17 @@ func TestScheduledReleaseIsLazyAndObservable(t *testing.T) {
 	ch, err := st.Availability(ctx, org, slot, "presale")
 	if err != nil || ch.Available != 4 {
 		t.Fatalf("channel before release: %v %+v want available 4", err, ch)
+	}
+
+	// Take the hold out of the TTL's hands before waiting (TKT-134). `finalizing` is
+	// live in liveClaims INDEPENDENTLY of expires_at (store.go:62), so from here the
+	// allocation release is the only moving boundary in the test — which is what the
+	// test is named for. Previously the hold stayed `held`, so its liveness rode on a
+	// clock the test neither controls nor asserts anything about: when that clock won,
+	// the hold vanished from the public read and the failure LOOKED like the release
+	// being observed inconsistently. It never was.
+	if _, err := st.Transition(ctx, org, c.ID, "finalizing"); err != nil {
+		t.Fatalf("take the pre-release hold out of TTL scope: %v", err)
 	}
 
 	// Cross release_at by DB time. Reads only — no mutation, no sweeper.
@@ -219,9 +245,6 @@ func TestScheduledReleaseIsLazyAndObservable(t *testing.T) {
 	// New channel holds reject; the pre-release hold still finishes its lifecycle.
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "rel-late"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("post-release channel hold: got %v want ErrUnavailable", err)
-	}
-	if _, err := st.Transition(ctx, org, c.ID, "finalizing"); err != nil {
-		t.Fatal(err)
 	}
 	if _, err := st.Transition(ctx, org, c.ID, "confirmed"); err != nil {
 		t.Fatalf("pre-release hold must confirm after release: %v", err)
