@@ -191,3 +191,17 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   successive fixes each close one instance of a class — individually valid, individually shrinking,
   all the same shape — that is enumeration, not convergence. Change the question, and state the
   boundary (URL-safe is excluded *out loud*). (TKT-117, PR #130)
+- [**Record a relaxation as a relaxation**](./learnings/2026-07-30-record-a-relaxation-as-a-relaxation.md) —
+  ADR-025 §D9 said alarm payloads carry "identifiers and enums **only**"; six fields across the three
+  shipped classes never satisfied it, including the integrity payload the clause was written for.
+  Correcting it took **three review passes on one paragraph**, each finding a different error the
+  previous fix exposed: the amendment prohibited free text the code emits → the rationale claimed it
+  "keeps every prohibition" when `only` had prohibited exactly what it now admits → prohibitions that
+  `only` already entailed were labelled "Added". **A clause that widens must say so**, as a delta:
+  preserved / relaxed / preserved-and-made-explicit. A relaxation recorded as a correction lets the
+  next reviewer treat the carve-out as pre-existing policy and measure the next widening against an
+  already-widened baseline. Also: half 1 of the same ticket (code, with a test) was approved in pass 1
+  and never returned — **every finding landed on the half with no executable check**, so budget
+  adversarial passes toward governing prose, not away from it. And when sweeping restatements,
+  distinguish them from *citations*: a pointer to a clause stays correct after an amendment and
+  editing it is churn. (TKT-119, PR #131)
