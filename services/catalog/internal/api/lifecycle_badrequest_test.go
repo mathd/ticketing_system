@@ -70,7 +70,12 @@ func TestUUIDPathOperationsDeclareBadRequest(t *testing.T) {
 			if !hasUUIDPathParam(item.Parameters, op.Parameters) {
 				continue
 			}
-			if op.Responses.Value("400") == nil {
+			// A `default:` response covers 400 under kin-openapi's status
+			// matching, so it satisfies the invariant. None exist in this spec
+			// today (ADR-028 notes the same for its coverage gate); without this
+			// arm the test would fail a future default-documented operation that
+			// is in fact contract-correct.
+			if op.Responses.Value("400") == nil && op.Responses.Default() == nil {
 				missing = append(missing, method+" "+path+" ("+op.OperationID+")")
 			}
 		}
