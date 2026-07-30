@@ -1,0 +1,17 @@
+{
+  "key": "TKT-147",
+  "type": "Task",
+  "summary": "Replace the integrity alarm's free-text reason with a fixed reason-code vocabulary (TKT-119 incidental)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-119"
+    }
+  ],
+  "description": "Raised by TKT-119's ai-review and confirmed independently during its plan-review. **Pre-existing** — TKT-119 corrected the ADR clause to describe reality; it did not change the payload.\n\n`alarmData.Reason` (`services/access/internal/store/lifecycle.go`) is an **unconstrained string**, populated from `cause.Error()` (`lifecycle.go:403`) and `chainErr.Error()` (`scan.go:114`), persisted in the alarm envelope and published to the operator durable. The golden fixture carries `\"reason\":\"chain head mismatch\"`.\n\nIt is the **one unbounded field** in any alarm payload. ADR-025 §D9 (as amended by TKT-119) admits it explicitly as \"a service-produced diagnostic reason string\" and states plainly that nothing enforces its content — the constraint is a *discipline on the producer*, not an enforced property.\n\nThat is honest but weak. A future error path could interpolate scanner-, device- or buyer-derived text into an error and it would flow into an operator-visible alarm payload with nothing to stop it. Every other field in every alarm class is an identifier, an enum, or a scalar.\n\n**Wanted:** a fixed `AlarmReason` vocabulary (like `PolicyConflictRule` in `conflicts.go:32-36`), with the detailed error kept in logs rather than the payload. Then §D9's prohibition becomes enforceable rather than aspirational, and the reason field can be pinned by a test the way `rule` already is.\n\n**Why it was not done in TKT-119:** it is a payload change. It fires ADR-017 §3 (a changed field on an existing contract) and ADR-033 (byte-identical wire output), needs a schema decision and a golden migration, and TKT-119 was explicitly a no-behaviour-change ticket. Routing a wire-format decision through a ticket whose COS says \"no behaviour change\" would have been the wrong gate.\n\n**Sites:** `services/access/internal/store/lifecycle.go` (`alarmData.Reason`, `oweAlarm`, `degradedScan:403`), `services/access/internal/store/scan.go:114`, goldens in `services/access/internal/store/alarm_envelope_test.go`.\n**Governing:** ADR-025 §D9 (amended TKT-119), ADR-017 §3, ADR-033, ADR-003 §D3.",
+  "comments": []
+}
