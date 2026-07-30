@@ -3,10 +3,14 @@
   "type": "Task",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 134,
+    "url": "https://github.com/mathd/ticketing_system/pull/134",
+    "state": "open"
+  },
   "classification": "simple",
   "summary": "Flaky: TestScheduledReleaseIsLazyAndObservable — channel and public reads disagree across the release boundary",
   "comments": [
