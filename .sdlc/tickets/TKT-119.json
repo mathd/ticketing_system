@@ -4,7 +4,7 @@
   "summary": "Make the access alarm surface say the true thing: per-class durable error + ADR-025 §D9 PII wording",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent",
   "pr": null,
