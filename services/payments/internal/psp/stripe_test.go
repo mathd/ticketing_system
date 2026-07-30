@@ -595,3 +595,109 @@ func TestStripeStatusResolvesRefundRef(t *testing.T) {
 		t.Fatalf("pending must not map to Refunded: %+v", got2)
 	}
 }
+
+// ---- ai-review F1: incomplete evidence is not absence (TKT-116) ----
+// The fail-closed rule is "only a CONCLUSIVE listing licenses a submit". A page that
+// decodes without error is not automatically conclusive: Go zero values make a missing
+// `has_more` read as false and a missing `data` read as empty, which is exactly the shape
+// of "no refunds exist". Presence has to be checked, not inferred.
+
+// missing has_more: cannot know whether a later page holds our refund.
+const refundListNoHasMore = `{"object":"list","url":"/v1/refunds","data":[]}`
+
+// missing data: an empty page and an absent page are not the same claim.
+const refundListNoData = `{"object":"list","url":"/v1/refunds","has_more":false}`
+
+// has_more with nothing to advance the cursor past: no progress is possible.
+const refundListMorePagesButEmpty = `{"object":"list","has_more":true,"data":[]}`
+
+// Our compensation key on a refund for a DIFFERENT PaymentIntent. Neither ours (the
+// evidence disagrees) nor absent (something carries our key) — inconclusive.
+const refundListKeyWrongIntent = `{
+  "object": "list", "has_more": false,
+  "data": [{"id": "re_mis", "object": "refund", "amount": 1250, "currency": "eur",
+            "status": "succeeded", "payment_intent": "pi_someone_else",
+            "metadata": {"compensation_key": "psp-comp-v1:deadbeef"}}]
+}`
+
+func assertNoSubmit(t *testing.T, stub *stripeStub, got Result, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("incomplete evidence must not resolve: %+v", got)
+	}
+	if got.Outcome == Refunded {
+		t.Fatalf("incomplete evidence must never map to Refunded: %+v", got)
+	}
+	for _, req := range stub.requests {
+		if req.method == http.MethodPost {
+			t.Fatalf("incomplete evidence must not license a submit; requests=%+v", stub.requests)
+		}
+	}
+}
+
+// A page whose required fields are absent is malformed, not empty. Treating it as empty
+// licenses a POST on top of a refund that may already exist.
+func TestStripeRefundTreatsIncompleteListPagesAsInconclusive(t *testing.T) {
+	for name, page := range map[string]string{
+		"missing has_more":     refundListNoHasMore,
+		"missing data":         refundListNoData,
+		"not a list":           `{"object":"refund","has_more":false,"data":[]}`,
+		"more pages but empty": refundListMorePagesButEmpty,
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := newStripeStub(t, map[string]stubResp{
+				"GET /v1/refunds":  {200, page},
+				"POST /v1/refunds": {200, `{"id":"re_never","object":"refund","status":"succeeded"}`},
+			})
+			s := newStripeForStub(stub)
+			got, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
+			assertNoSubmit(t, stub, got, err)
+		})
+	}
+}
+
+// A refund carrying OUR compensation key whose corroborating evidence disagrees is the
+// dangerous middle case: calling it "not ours" would license a second refund on top of one
+// that probably is ours, and calling it ours would append a money fact on evidence that
+// does not confirm it. Fail closed both ways.
+func TestStripeRefundTreatsMismatchedEvidenceAsInconclusive(t *testing.T) {
+	stub := newStripeStub(t, map[string]stubResp{
+		"GET /v1/refunds":  {200, refundListKeyWrongIntent},
+		"POST /v1/refunds": {200, `{"id":"re_never","object":"refund","status":"succeeded"}`},
+	})
+	s := newStripeForStub(stub)
+	got, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
+	assertNoSubmit(t, stub, got, err)
+}
+
+// A match on a later page must be found. The cursor advances by the last id on each page.
+func TestStripeRefundResolvesAMatchOnALaterPage(t *testing.T) {
+	page1 := `{"object":"list","has_more":true,"data":[
+	  {"id":"re_other_1","object":"refund","amount":500,"currency":"eur","status":"succeeded",
+	   "payment_intent":"pi_test_authonly","metadata":{}}]}`
+	page2 := `{"object":"list","has_more":false,"data":[
+	  {"id":"re_ours_p2","object":"refund","amount":1250,"currency":"eur","status":"succeeded",
+	   "payment_intent":"pi_test_authonly","metadata":{"compensation_key":"psp-comp-v1:deadbeef"}}]}`
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(page1))
+			return
+		}
+		if got := r.URL.Query().Get("starting_after"); got != "re_other_1" {
+			t.Errorf("page 2 cursor = %q, want re_other_1", got)
+		}
+		_, _ = w.Write([]byte(page2))
+	}))
+	t.Cleanup(srv.Close)
+	s := NewStripe("sk_test_dummy", srv.URL, srv.Client())
+	got, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
+	if err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	if got.ProviderRef != "re_ours_p2" {
+		t.Fatalf("want the page-2 match adopted, got %+v", got)
+	}
+}

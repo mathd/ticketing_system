@@ -414,3 +414,45 @@ func TestCheckoutReplayAtReleasePendingAnswersPendingWithoutFinalize(t *testing.
 		t.Fatalf("retry refreshed updated_at (%s -> %s): recovery eligibility is postponed by every retry and the order never drains", before, after)
 	}
 }
+
+// ai-review F2 (TKT-116). The 202 above promises that something will advance the order.
+// That promise is false once recovery has PARKED it: ReleaseStuckOrder sets
+// recovery_parked_at when recovery_attempts hits MaxRecoveryAttempts and deliberately
+// leaves the status alone, and ClaimStuckOrders excludes parked rows — so no worker will
+// ever pick it up again. Answering 202 forever would be a pending state with no path out
+// of it. Parked means a human must act, which is exactly what reconciliation_required
+// already tells buyers, so it gets the same 409.
+func TestCheckoutReplayAtParkedReleasePendingIsNotPending(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, ticketType := setupCheckoutOffer(t, "parkedpending")
+	reservation := reserveCheckout(t, ticketType, "parked-pending-reserve-"+uuid.NewString())
+	checkoutKey := "parked-pending-order-" + uuid.NewString()
+	checkoutBody := map[string]any{"reservation_id": reservation["reservation_id"], "name": "Parked Buyer",
+		"email": "parked@example.test", "payment_token": "fake-decline"}
+
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", checkoutKey, checkoutBody)
+	if code != 402 {
+		t.Fatalf("declined checkout = %d %s, want 402", code, body)
+	}
+	var declined struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &declined); err != nil {
+		t.Fatal(err)
+	}
+
+	db := commerceDB(t, ctx)
+	// Same residue as the test above, plus the park: attempts exhausted, recovery_parked_at
+	// set, status still release_pending — exactly what ReleaseStuckOrder leaves behind.
+	if _, err := db.Exec(ctx, `UPDATE orders SET status='release_pending', terminal_outcome='declined',
+		recovery_lease_until=NULL, recovery_claim_id=NULL, recovery_parked_at=now(),
+		updated_at=now()-interval '10 minutes' WHERE id=$1`, declined.OrderID); err != nil {
+		t.Fatalf("stage parked release_pending order: %v", err)
+	}
+
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", checkoutKey, checkoutBody)
+	if code != 409 {
+		t.Fatalf("replay against a PARKED release_pending = %d %s, want 409 — 202 would promise progress no worker can make", code, body)
+	}
+}
