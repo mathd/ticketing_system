@@ -152,11 +152,24 @@ func (r *CatalogResolver) ListSeatPins(ctx context.Context, after uuid.UUID, lim
 			PinnedBy     string    `json:"pinned_by"`
 		} `json:"pins"`
 	}
-	// Bounded before decoding, and required to be EXACTLY one JSON value: json.Decode happily
-	// accepts a valid first value followed by trailing garbage or a truncated second one, so a
-	// spliced or half-written 200 body would otherwise pass every field check below and go on
-	// to drive a delete (ai-review F2).
-	dec := json.NewDecoder(io.LimitReader(resp.Body, maxSeatPinPageBytes))
+	// Read the whole page into a bounded buffer FIRST, then decode from the buffer, so the
+	// decoder's EOF is the real end of the response.
+	//
+	// Two requirements that fight each other if you stream (ai-review pass 1 F2, then pass 2):
+	// the body must be size-bounded, and it must contain EXACTLY one JSON value — json.Decode
+	// alone accepts a valid first value followed by trailing garbage or a truncated second one,
+	// which at this boundary means a spliced or half-written 200 can drive a DELETE. Enforcing
+	// the bound with io.LimitReader defeats the second check: the reader manufactures an EOF at
+	// the limit, so a page padded through it and then followed by garbage reports "exactly one
+	// value" and is accepted. Reading max+1 bytes and rejecting the overflow keeps both.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxSeatPinPageBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read catalog seat pin list: %w", err)
+	}
+	if len(raw) > maxSeatPinPageBytes {
+		return nil, fmt.Errorf("catalog seat pin list: response exceeds %d bytes", maxSeatPinPageBytes)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode catalog seat pin list: %w", err)
 	}

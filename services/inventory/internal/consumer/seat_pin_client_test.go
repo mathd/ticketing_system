@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -182,6 +183,48 @@ func TestListSeatPinsFailsClosedOnBadPage(t *testing.T) {
 		r, _ := pinListServer(t, http.StatusOK, `{"pins":[]}`)
 		if _, err := r.ListSeatPins(context.Background(), uuid.Nil, 0); err == nil {
 			t.Fatal("limit 0 must be a usage error")
+		}
+	})
+}
+
+// TestListSeatPinsGuardsTheSizeLimitBoundary closes the hole the FIRST fix for the
+// exactly-one-value check opened (ai-review pass 2). Reading through io.LimitReader(body, N)
+// manufactures an EOF at N even when the socket has more to give, so a page padded through the
+// limit and then followed by garbage made the second Decode return io.EOF — the page was
+// accepted and its dead entries could reach UnpinSeats. The size bound and the
+// exactly-one-value check cancelled each other out.
+func TestListSeatPinsGuardsTheSizeLimitBoundary(t *testing.T) {
+	const p1 = `{"id":"00000000-0000-0000-0000-000000000001","organizer_id":"11111111-1111-1111-1111-111111111111","seat_map_id":"22222222-2222-2222-2222-222222222222","seat_identity":"Orchestra/A/1","pinned_by":"hold:h1"}`
+	page := `{"pins":[` + p1 + `]}`
+
+	t.Run("exactly at the limit is accepted", func(t *testing.T) {
+		body := page + strings.Repeat(" ", maxSeatPinPageBytes-len(page))
+		if len(body) != maxSeatPinPageBytes {
+			t.Fatalf("fixture is %d bytes, want exactly %d", len(body), maxSeatPinPageBytes)
+		}
+		r, _ := pinListServer(t, http.StatusOK, body)
+		pins, err := r.ListSeatPins(context.Background(), uuid.Nil, 100)
+		if err != nil {
+			t.Fatalf("a page exactly at the limit must be accepted: %v", err)
+		}
+		if len(pins) != 1 {
+			t.Fatalf("pins = %d want 1", len(pins))
+		}
+	})
+
+	t.Run("one byte over the limit is rejected", func(t *testing.T) {
+		body := page + strings.Repeat(" ", maxSeatPinPageBytes-len(page)) + " "
+		r, _ := pinListServer(t, http.StatusOK, body)
+		if _, err := r.ListSeatPins(context.Background(), uuid.Nil, 100); err == nil {
+			t.Fatal("a body over the size limit must be rejected, not silently truncated")
+		}
+	})
+
+	t.Run("garbage hidden beyond the limit is rejected", func(t *testing.T) {
+		body := page + strings.Repeat(" ", maxSeatPinPageBytes) + `{"pins":[`
+		r, _ := pinListServer(t, http.StatusOK, body)
+		if _, err := r.ListSeatPins(context.Background(), uuid.Nil, 100); err == nil {
+			t.Fatal("trailing content past the limit must not be invisible to the one-value check")
 		}
 	})
 }
