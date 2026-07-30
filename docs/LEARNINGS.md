@@ -136,3 +136,10 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   the runner's tick — and run the same forcing against both versions: old **FAIL 51.17s** with the
   verbatim reported message, new **PASS 3/3**. The forcing is scaffolding and is not committed.
   Measure the baseline *before* designing the red. (TKT-132, PR #123)
+- [**The fail-closed validator emits `Cache-Control: no-store` too**](./learnings/2026-07-29-fail-closed-validator-emits-the-same-header-as-the-success-case.md) —
+  ADR-028's wrap sets `no-store` on its own 500, so a test asserting only that header passes when the
+  200 it wanted was withheld. Refuted for **catalog** (its `env.do` sniffs the mask by body —
+  narrowing the contract enum so every draft response drifts made all five cases fail loudly);
+  **still live in inventory, commerce, payments and access**, whose unit tests run through the same
+  validator with no such guard. Assert the status alongside the header. Settled by running the
+  mutation, not reading the code. (TKT-107, PR #126)
