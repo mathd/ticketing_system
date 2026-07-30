@@ -110,9 +110,19 @@ type SeatPin struct {
 	PinnedBy     string
 }
 
-// maxSeatPinPageBytes bounds a pin page's response body. A full page of 500 rows is well under
-// 200 KiB; the cap exists so a runaway or hostile body cannot be read into memory at all.
-const maxSeatPinPageBytes = 1 << 20
+// maxSeatPinPageBytes bounds a pin page's response body so a runaway body cannot be read into
+// memory. It is NOT derived from a producer contract, because there isn't one: `seat_identity`
+// and `pinned_by` are unbounded `text` (migration 0011), and catalog bounds only the whole pin
+// REQUEST at 1 MiB — so a single identity can approach that on its own. 4 MiB therefore leaves
+// room for one worst-case row plus JSON overhead, and a page that still overflows is reported as
+// ErrSeatPinPageTooLarge so the caller can ask for fewer rows instead of giving up.
+const maxSeatPinPageBytes = 4 << 20
+
+// ErrSeatPinPageTooLarge reports that the page did not fit the byte cap. It is a RETRYABLE
+// signal, not a dead end: the caller re-asks for fewer rows. Aborting instead would wedge the
+// drain permanently, since the keyset cursor only advances past rows that were read — one
+// oversized page would make every later page unreachable (ai-review pass 3).
+var ErrSeatPinPageTooLarge = errors.New("catalog seat pin page exceeds the response cap")
 
 // ListSeatPins reads one bounded, keyset-ordered page of catalog's pin table (TKT-112).
 //
@@ -167,7 +177,7 @@ func (r *CatalogResolver) ListSeatPins(ctx context.Context, after uuid.UUID, lim
 		return nil, fmt.Errorf("read catalog seat pin list: %w", err)
 	}
 	if len(raw) > maxSeatPinPageBytes {
-		return nil, fmt.Errorf("catalog seat pin list: response exceeds %d bytes", maxSeatPinPageBytes)
+		return nil, fmt.Errorf("catalog seat pin list of %d rows: %w", limit, ErrSeatPinPageTooLarge)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&body); err != nil {

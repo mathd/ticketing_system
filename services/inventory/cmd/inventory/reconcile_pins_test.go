@@ -345,3 +345,51 @@ func TestReconcilePinsGroupsUnpinsPerClaim(t *testing.T) {
 		t.Fatalf("survivors = %v, the fresh hold's pin on the same seat must survive", got)
 	}
 }
+
+// TestReconcilePinsShrinksThePageRatherThanStalling closes ai-review pass 3's finding. The
+// consumer caps a page's bytes, but catalog bounds neither `seat_identity` nor `pinned_by` (both
+// unbounded text; the pin request is capped at 1 MiB, so ONE identity can be nearly that big).
+// A page that overflows the byte cap used to abort the run at that cursor — and since the cursor
+// only advances past rows that were successfully read, the drain could never get past it. One
+// oversized page permanently disabled the tool built to reclaim pins.
+func TestReconcilePinsShrinksThePageRatherThanStalling(t *testing.T) {
+	dead := uuid.New()
+	pins := []consumer.SeatPin{}
+	for i := 1; i <= 30; i++ {
+		pins = append(pins, pin(i, fmt.Sprintf("Orchestra/A/%d", i), "hold:"+dead.String()))
+	}
+	cat := &fakeCatalogPins{pins: pins}
+	live := &livenessRecorder{states: map[uuid.UUID]store.SeatClaimState{dead: store.SeatClaimDead}}
+
+	// Any page above 25 rows overflows the byte cap; smaller ones fit.
+	oversized := func(ctx context.Context, after uuid.UUID, limit int) ([]consumer.SeatPin, error) {
+		if limit > 25 {
+			return nil, fmt.Errorf("page of %d: %w", limit, consumer.ErrSeatPinPageTooLarge)
+		}
+		return cat.list(ctx, after, limit)
+	}
+
+	stats, err := pinReconciler{listPins: oversized, liveness: live.verdicts, unpin: cat.unpinSeats}.run(context.Background())
+	if err != nil {
+		t.Fatalf("an oversized page must be retried smaller, not abort the drain: %v", err)
+	}
+	if stats.Reclaimed != 30 {
+		t.Fatalf("reclaimed = %d want 30 — the drain must still reach every pin", stats.Reclaimed)
+	}
+	if len(cat.survivors()) != 0 {
+		t.Fatalf("survivors = %v want none", cat.survivors())
+	}
+
+	// A single row that still overflows is a genuine dead end: fail loudly, naming the cursor,
+	// rather than looping or silently skipping the row.
+	alwaysTooBig := func(_ context.Context, _ uuid.UUID, limit int) ([]consumer.SeatPin, error) {
+		return nil, fmt.Errorf("page of %d: %w", limit, consumer.ErrSeatPinPageTooLarge)
+	}
+	cat2 := &fakeCatalogPins{pins: append([]consumer.SeatPin{}, pins...)}
+	if _, err = (pinReconciler{listPins: alwaysTooBig, liveness: live.verdicts, unpin: cat2.unpinSeats}).run(context.Background()); err == nil {
+		t.Fatal("a single row over the cap must fail the run, not spin or skip")
+	}
+	if cat2.unpinCall != 0 {
+		t.Fatalf("unpinned %d groups without ever reading a page", cat2.unpinCall)
+	}
+}

@@ -69,10 +69,19 @@ type unpinGroup struct {
 func (r pinReconciler) run(ctx context.Context) (pinReconcileStats, error) {
 	var stats pinReconcileStats
 	after := uuid.Nil
+	// Shrinks (never grows) when a page overflows the client's byte cap. Monotone, so it cannot
+	// oscillate, and it is what keeps one oversized page from wedging the whole drain: the keyset
+	// cursor only advances past rows that were read, so aborting there would make every later
+	// page permanently unreachable (ai-review pass 3).
+	pageSize := reconcilePinPageSize
 	for {
-		page, err := r.listPins(ctx, after, reconcilePinPageSize)
+		page, err := r.listPins(ctx, after, pageSize)
+		for errors.Is(err, consumer.ErrSeatPinPageTooLarge) && pageSize > 1 {
+			pageSize /= 2
+			page, err = r.listPins(ctx, after, pageSize)
+		}
 		if err != nil {
-			return stats, fmt.Errorf("list catalog pins after %s: %w", after, err)
+			return stats, fmt.Errorf("list catalog pins after %s (page size %d): %w", after, pageSize, err)
 		}
 		if len(page) == 0 {
 			return stats, nil
