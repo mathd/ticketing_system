@@ -59,15 +59,33 @@ import (
 //
 // The `closed` channel is the value returned by jetstream ConsumeContext.Closed(),
 // which the library *closes* (never sends to) when consuming is fully stopped;
-// a receive on it therefore unblocks on that close. On a clean shutdown main
-// cancels the root context, and the caller's deferred cc.Stop() — which would
-// also close `closed` — runs only after Run returns, so the ctx.Done() arm
-// reliably wins the ordinary path — an ordinary stop can never be misreported as
-// a termination. If both are ready at once (a subscription killed at the exact
-// instant of shutdown), **termination wins**; see the nested select below. That
-// was deliberately unspecified until TKT-122 ("both answers are defensible, so
-// callers must not depend on which") and stopped being defensible once the
-// classification began carrying the operator's only evidence.
+// a receive on it therefore unblocks on that close.
+//
+// # Arbitration when both are ready (TKT-122)
+//
+// `Closed()` does not encode its CAUSE, and after cancellation this process closes
+// subscriptions itself: both service mains `defer nc.Close()` without joining
+// their consumer goroutines. So a cancelled context plus a closed subscription is
+// genuinely ambiguous — it is an ordinary stop far more often than a dead durable.
+//
+// **Shutdown wins when both are ready**, deterministically. Preferring termination
+// would emit a durable-deletion diagnostic on every clean stop that lost that
+// race, which is worse than missing a rare real one.
+//
+// The consequence, stated because it is easy to miss: **a durable that genuinely
+// dies as SIGTERM lands is suppressed entirely.** Wait returns nil, so no error
+// reaches the caller and nothing is logged — this residual is *quieter* than the
+// shutdown-drain residual it is often lumped with (ADR-034), where an error is
+// produced and logged and only the exit code is given up. Distinguishing the two
+// cases needs a bounded join of every consumer before `nc.Close()`, which TKT-122
+// weighed and declined.
+//
+// Before cancellation — a durable deleted under a live consumer, the case that
+// actually matters — nothing is ambiguous and termination is always reported.
+//
+// (This paragraph previously claimed cc.Stop's ordering made an ordinary stop
+// impossible to misreport, and later that termination wins. Both were wrong; the
+// first survived a review pass before a second disproved it.)
 //
 // The error string is a CONTRACT, not a log line. smoke/access_consumer_test.go
 // (TKT-99) asserts it verbatim against a real broker after deleting a durable,

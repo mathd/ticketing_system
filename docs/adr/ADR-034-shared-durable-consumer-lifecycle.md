@@ -222,10 +222,22 @@ false alarm on every stop that lost the race, corrupting the very operator evide
 producer-side log exists to preserve. That is strictly worse than missing a rare true one.
 
 So **shutdown wins** when both are ready, deterministically. A durable that genuinely dies inside
-that window is not distinguished. That is the **same accepted residual** as the drain snapshot
-below: once SIGTERM has landed this process stops classifying late consumer events, because doing so
-correctly requires a bounded join of every consumer before `nc.Close()` — precisely the lifecycle
-coupling this ticket weighed and declined to buy.
+that window is not distinguished.
+
+**This residual is quieter than the drain-snapshot one below, and the two must not be conflated.**
+They share a cause — once SIGTERM has landed this process stops classifying late consumer events,
+because doing so correctly requires a bounded join of every consumer before `nc.Close()`, precisely
+the lifecycle coupling this ticket declined to buy — but they differ in what survives:
+
+| | what `Wait` returns | logged? | exit code |
+|---|---|---|---|
+| **Arbitration** (this section) | `nil` — shutdown wins | **no, nothing at all** | 0 |
+| **Drain snapshot** (below) | the durable diagnostic | **yes**, by the producer goroutine | 0 |
+
+So the drain gives up only the exit code, while the arbitration gives up the **whole signal**. That
+is the more expensive of the two accepted residuals and it is accepted for a narrower reason: any
+attempt to report it produces false alarms on ordinary stops, which corrupts the evidence rather
+than adding to it.
 
 **Before** cancellation — a durable deleted under a live consumer, the case that actually matters —
 nothing is ambiguous and termination is reported exactly as before.
@@ -261,8 +273,12 @@ can hold the process open.
 Previously a late failure left *no* exit code **and** no line anywhere — `main` prints to stderr only
 on the error it returns, which by then it never sees. That was a separate loss from the exit code,
 and it costs nothing to fix: no latency, no lifecycle coupling, same shutdown-cancellation predicate
-so a clean unwind stays quiet. The accepted residual is precisely *"we do not act on this signal"*,
-no longer *"we lose this signal"*.
+so a clean unwind stays quiet.
+
+Scope that claim precisely: it covers **errors `Wait` actually returns**. For those, the accepted
+residual is *"we do not act on this signal"* rather than *"we lose it"*. It does **not** cover the
+arbitration case above, where `Wait` returns `nil` and there is no error to log — that signal is
+still lost completely.
 
 **Reopen if:** an orchestrator or alerting path starts distinguishing zero from non-zero SIGTERM
 exits; an incident shows a teardown-only error carries evidence the log line does not; or consumer
