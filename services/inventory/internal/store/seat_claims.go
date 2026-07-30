@@ -283,6 +283,141 @@ func seatsAboutToExpire(ctx context.Context, tx *sql.Tx, pool, seatMapID uuid.UU
 	return refs, nil
 }
 
+// SeatClaimState is the reconciliation verdict for one claim id a catalog pin refers to
+// (TKT-112). Three states, not a bool: "unknown" is a distinct outcome that must NOT be
+// treated as dead — a pin naming a claim this database has never seen is the shape an
+// inventory database restored behind catalog presents, and `hold:` pins cover CONFIRMED
+// sales as well as live holds (confirm/finalize keep the pin, ADR-031 §3), so unpinning
+// one can strip the protection from a sold seat. Unknown is reported, never reclaimed.
+type SeatClaimState string
+
+const (
+	// SeatClaimLive — the claim still consumes its seats: held and unexpired,
+	// finalizing, or confirmed (all three keep claim_seats.released_at NULL).
+	SeatClaimLive SeatClaimState = "live"
+	// SeatClaimDead — the claim reached a terminal state and its seats are released,
+	// so its catalog pins are stale and reclaimable.
+	SeatClaimDead SeatClaimState = "dead"
+	// SeatClaimUnknown — no such claim in this database. Fail safe: leave the pin.
+	SeatClaimUnknown SeatClaimState = "unknown"
+)
+
+// ReconcileSeatClaimStates is the liveness verdict behind `reconcile-pins` (TKT-112): one
+// state per requested claim id, so the caller can never read a missing answer as permission
+// to delete.
+//
+// It does NOT read the claims and report what it saw. It groups the ids by pool, takes each
+// pool's row lock in ADR-010's usual order, and runs the ordinary lazy `sweepExpired` before
+// classifying — so a "dead" verdict is a fact this call CREATED (status flipped to expired,
+// `claim_seats.released_at` set) rather than a prediction about a row someone else may still
+// change. That is what closes the lock-queue race: a finalize that BEGAN before the TTL
+// elapsed and is queued behind us re-reads the claim under READ COMMITTED when the lock is
+// granted, sees the terminal status, and refuses. A time-comparison verdict would lose that
+// race, because `now()` is frozen at transaction start
+// (docs/learnings/2026-07-16-lock-queue-time-cutoffs.md, TKT-78) — and the same freeze is why
+// the opposite order is safe: a reconciler that queues across the boundary judges with
+// stale-early time and reports the claim live, which errs toward keeping the pin.
+//
+// "Live" is any non-terminal claim status — held, finalizing, or confirmed. Confirmed is in
+// that list because confirm/finalize deliberately KEEP the catalog pin (the seat is sold,
+// ADR-031 §3), so treating it as anything else would unpin every sold seat.
+func (p *Postgres) ReconcileSeatClaimStates(ctx context.Context, claimIDs []uuid.UUID) (map[uuid.UUID]SeatClaimState, error) {
+	out := make(map[uuid.UUID]SeatClaimState, len(claimIDs))
+	if len(claimIDs) == 0 {
+		return out, nil
+	}
+	// Every requested id starts unknown; a pool pass can only upgrade it. An id whose claim
+	// does not exist therefore stays unknown, which the caller treats as "leave the pin".
+	byPool := map[uuid.UUID][]uuid.UUID{}
+	poolOrder := []uuid.UUID{}
+	for _, id := range claimIDs {
+		if _, seen := out[id]; seen {
+			continue
+		}
+		out[id] = SeatClaimUnknown
+		var pool uuid.UUID
+		err := p.db.QueryRowContext(ctx, `SELECT pool_id FROM claims WHERE id=$1`, id).Scan(&pool)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("resolve pool for claim %s: %w", id, err)
+		}
+		if _, ok := byPool[pool]; !ok {
+			poolOrder = append(poolOrder, pool)
+		}
+		byPool[pool] = append(byPool[pool], id)
+	}
+	for _, pool := range poolOrder {
+		if err := p.classifySeatClaimsInPool(ctx, pool, byPool[pool], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// classifySeatClaimsInPool settles one pool's expiry under its row lock and records a verdict
+// for each of that pool's requested claims. One transaction per pool, in the same
+// lock-the-pool-first order as every other write (ADR-010), so this can never deadlock
+// against a hold, a transition, or a capacity adjustment.
+func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID, ids []uuid.UUID, out map[uuid.UUID]SeatClaimState) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, pool); err != nil {
+		return fmt.Errorf("lock pool %s: %w", pool, err)
+	}
+	if err = sweepExpired(ctx, tx, pool); err != nil {
+		return fmt.Errorf("sweep pool %s: %w", pool, err)
+	}
+	verdicts := map[uuid.UUID]SeatClaimState{}
+	for _, id := range ids {
+		var status string
+		err = tx.QueryRowContext(ctx, `SELECT status FROM claims WHERE id=$1 AND pool_id=$2`, id, pool).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // stays unknown
+		}
+		if err != nil {
+			return fmt.Errorf("classify claim %s: %w", id, err)
+		}
+		// Dead is established POSITIVELY, from a terminal status — never inferred from a
+		// failure to prove liveness (ai-review F1). The first cut derived dead as the inverse
+		// of "has a live claim_seats row AND has a live status", which classified any live
+		// claim with missing or already-released seat rows as dead and deleted its pin.
+		// Nothing in the schema couples claim status to claim_seats.released_at, so that shape
+		// is representable — a `hold:` pin naming a GA claim has no seat rows at all — and
+		// those are the same degraded-data cases the unknown verdict deliberately fails closed
+		// for. Failing open here contradicted that rule.
+		//
+		// The terminal statuses are safe to call dead without re-checking the child rows
+		// because sweepExpired ran above in THIS transaction and its releaseSeatsForTerminal
+		// releases every terminal claim's seats pool-wide. A held claim past its expiry has
+		// already been flipped by that same sweep, so it cannot still be sitting here as
+		// "held"; if one ever did, calling it live keeps the pin, which is the safe direction.
+		switch status {
+		case "held", "finalizing", "confirmed":
+			verdicts[id] = SeatClaimLive
+		case "expired", "released":
+			verdicts[id] = SeatClaimDead
+		default:
+			// A status this binary does not know is not permission to delete.
+			verdicts[id] = SeatClaimUnknown
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit pool %s reconciliation: %w", pool, err)
+	}
+	// Published only after the commit: an uncommitted sweep is not yet the fact the "dead"
+	// verdict claims it is, and a caller that unpinned on a rolled-back verdict would have
+	// freed a seat whose claim is still live.
+	for id, state := range verdicts {
+		out[id] = state
+	}
+	return nil
+}
+
 // SeatPinRef returns the pin coordinates for a claim's seats (for the release handler to
 // unpin after a terminal transition). Empty (ok=false) for a GA claim / non-seated pool.
 func (p *Postgres) SeatPinRef(ctx context.Context, org, claimID uuid.UUID) (PinRef, bool, error) {

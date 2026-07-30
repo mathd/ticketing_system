@@ -1933,6 +1933,53 @@ func (p *Postgres) UnpinSeats(ctx context.Context, in BatchPinInput) error {
 	return nil
 }
 
+// ListSeatMapPins drains seat_map_pins one bounded page at a time, keyset-ordered by the
+// primary key (TKT-112). The scan is bounded by the page, which the PRIMARY KEY's unique
+// index backs — no additional index, and no ADR-019 subset claim to prove, because this is
+// a deliberate FULL drain for an operator command rather than a scoped read.
+//
+// Every pin is returned regardless of `pinned_by` namespace: the reconciler owns the
+// hold/sale classification, and a catalog-side filter would silently define which pins are
+// reclaimable in the service that has no way to know.
+//
+// The seat-map id is resolved per FAMILY (newest version), not per creation version — pins
+// are version-independent (ADR-029) and `UnpinSeats` resolves the family from whatever
+// version id it is handed, so the newest member reaches every pin in the lineage. The join
+// is an inner one: a pin whose family has no seat_maps row left cannot be named by any
+// version id, so it is unreachable through the family-locked path and is not listed.
+func (p *Postgres) ListSeatMapPins(ctx context.Context, after uuid.UUID, limit int) ([]SeatMapPin, error) {
+	if limit <= 0 || limit > MaxSeatMapPinPage {
+		return nil, fmt.Errorf("seat-map pin page limit must be 1..%d, got %d", MaxSeatMapPinPage, limit)
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT p.id, p.organizer_id, m.id, p.seat_identity, p.pinned_by
+		   FROM seat_map_pins p
+		   JOIN LATERAL (
+		        SELECT s.id FROM seat_maps s
+		         WHERE s.map_family_id = p.map_family_id AND s.organizer_id = p.organizer_id
+		         ORDER BY s.version DESC LIMIT 1
+		   ) m ON true
+		  WHERE p.id > $1
+		  ORDER BY p.id
+		  LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list seat-map pins: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []SeatMapPin{}
+	for rows.Next() {
+		var pin SeatMapPin
+		if err := rows.Scan(&pin.ID, &pin.OrganizerID, &pin.SeatMapID, &pin.SeatIdentity, &pin.PinnedBy); err != nil {
+			return nil, fmt.Errorf("scan seat-map pin: %w", err)
+		}
+		out = append(out, pin)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate seat-map pins: %w", err)
+	}
+	return out, nil
+}
+
 func (p *Postgres) AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error) {
 	s := SeatMapSection{Name: in.Name, Position: in.Position}
 	err := p.db.QueryRowContext(ctx,

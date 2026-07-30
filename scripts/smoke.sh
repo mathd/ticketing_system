@@ -284,3 +284,93 @@ psql_access "ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER;
             DROP TABLE lifecycle_heads_smoke_backup;
             DROP TABLE lifecycle_checkpoints_smoke_backup;"
 compose exec -T access /app verify-lifecycle
+
+# ADR-031 / TKT-112: reclaim leaked seat pins end-to-end, through the real binary.
+#
+# What this block exists to prove is the WIRING, not the classification — the verdict logic is
+# pinned by unit tests and by the two store suites. Only a real run can catch the class of
+# failure those cannot see: the subcommand not being registered, the container missing
+# CATALOG_URL or the internal token, the internal read not being mounted, or the unpin route
+# refusing the call. That is the gap TKT-94 was filed for.
+#
+# The fixture is seeded by SQL (as the journal and lifecycle blocks above do) because the state
+# being reconciled is by definition state nobody is touching any more: a hold that expired on a
+# pool no request has come near since.
+#
+# -tAqc, not -tAc: without -q, psql prints the "INSERT 0 1" status tag after the RETURNING
+# value, and capturing both yields a uuid with the tag glued onto it.
+psql_inventory() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d inventory -tAqc "$1"; }
+psql_catalog() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d catalog -tAqc "$1"; }
+
+# Borrow a published seat map the Go suite already created, and one real identity from it. One
+# seat is enough for every case: the pins differ by pinned_by, which is the whole point.
+recon_map=$(psql_catalog "SELECT s.seat_map_id FROM seat_map_seats s JOIN seat_maps m ON m.id=s.seat_map_id
+  WHERE m.status='published' ORDER BY s.seat_map_id, s.seat_identity LIMIT 1" | tr -d '[:space:]')
+if [ -z "$recon_map" ]; then
+  # Loud, not skipped: a silently skipped assertion is a green gate that proved nothing, which
+  # is the exact defect the -run filters above were removed for.
+  echo "smoke: no published seat map with seats to reconcile against" >&2
+  exit 1
+fi
+recon_org=$(psql_catalog "SELECT organizer_id FROM seat_maps WHERE id='$recon_map'" | tr -d '[:space:]')
+recon_family=$(psql_catalog "SELECT map_family_id FROM seat_maps WHERE id='$recon_map'" | tr -d '[:space:]')
+recon_seat=$(psql_catalog "SELECT seat_identity FROM seat_map_seats WHERE seat_map_id='$recon_map' ORDER BY seat_identity LIMIT 1" | tr -d '[:space:]')
+
+# Inventory side: one seated pool with two claims on the same identity — one terminal (its pin
+# is garbage) and one confirmed (its pin guards a SOLD seat). Both can hold the same identity
+# because claim_seats' uniqueness covers live rows only, and the terminal one is released.
+recon_slot=$(psql_inventory "SELECT gen_random_uuid()" | tr -d '[:space:]')
+psql_inventory "INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id,inventory_kind,seat_map_id)
+  VALUES('$recon_slot','$recon_org',100,gen_random_uuid(),'seated','$recon_map')" >/dev/null
+# expires_at is NOT NULL for a buyer claim (claims_kind_shape) even when it is seeded already
+# terminal, and idempotency_key/request_fingerprint are NOT NULL on every claim.
+recon_dead_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
+  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'expired',now()-interval '1 hour','recon-dead-$recon_slot','recon-dead-$recon_slot','buyer') RETURNING id" | tr -d '[:space:]')
+psql_inventory "INSERT INTO claim_seats(claim_id,pool_id,seat_identity,released_at)
+  VALUES('$recon_dead_claim','$recon_slot','$recon_seat',now())" >/dev/null
+recon_live_claim=$(psql_inventory "INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
+  VALUES(gen_random_uuid(),'$recon_org','$recon_slot',1,'confirmed',now()+interval '1 hour','recon-live-$recon_slot','recon-live-$recon_slot','buyer') RETURNING id" | tr -d '[:space:]')
+psql_inventory "INSERT INTO claim_seats(claim_id,pool_id,seat_identity)
+  VALUES('$recon_live_claim','$recon_slot','$recon_seat')" >/dev/null
+
+# Catalog side: the leaked pin, the sold seat's pin, a sale pin, and a pin naming a claim
+# inventory has never seen. Only the first may be reclaimed.
+recon_orphan_ref="hold:$(psql_inventory "SELECT gen_random_uuid()" | tr -d '[:space:]')"
+psql_catalog "INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by) VALUES
+  ('$recon_org','$recon_family','$recon_seat','hold:$recon_dead_claim'),
+  ('$recon_org','$recon_family','$recon_seat','hold:$recon_live_claim'),
+  ('$recon_org','$recon_family','$recon_seat','sale:00000000-0000-0000-0000-0000000000ff'),
+  ('$recon_org','$recon_family','$recon_seat','$recon_orphan_ref')" >/dev/null
+
+compose exec -T inventory /app reconcile-pins
+
+expect_pin() {
+  local pinned_by="$1" want="$2" got
+  got=$(psql_catalog "SELECT count(*) FROM seat_map_pins WHERE map_family_id='$recon_family' AND pinned_by='$pinned_by'" | tr -d '[:space:]')
+  if [ "$got" != "$want" ]; then
+    echo "smoke: reconcile-pins left $got pin(s) for $pinned_by, want $want" >&2
+    exit 1
+  fi
+}
+assert_recon_survivors() {
+  expect_pin "hold:$recon_dead_claim" 0 # the leak this ticket exists to reclaim
+  expect_pin "hold:$recon_live_claim" 1 # CONFIRMED means sold: removing this pin would let an
+                                        # edit orphan a sold seat
+  expect_pin "sale:00000000-0000-0000-0000-0000000000ff" 1 # not this command's namespace
+  expect_pin "$recon_orphan_ref" 1      # unknown claim: reported, never reclaimed (fail safe)
+}
+assert_recon_survivors
+
+# Idempotent: a second run reclaims nothing and still exits zero even though fail-safe residue
+# (the unknown reference) is sitting right there.
+compose exec -T inventory /app reconcile-pins
+assert_recon_survivors
+
+# Scoped to the four pins this block created. The family very likely also carries REAL pins
+# from the Go suite's own seat holds, and a family-wide delete would take those with it.
+psql_catalog "DELETE FROM seat_map_pins WHERE map_family_id='$recon_family' AND pinned_by IN
+  ('hold:$recon_dead_claim','hold:$recon_live_claim','sale:00000000-0000-0000-0000-0000000000ff','$recon_orphan_ref')" >/dev/null
+psql_inventory "DELETE FROM claim_seats WHERE pool_id='$recon_slot';
+  DELETE FROM claim_history WHERE claim_id IN ('$recon_dead_claim','$recon_live_claim');
+  DELETE FROM claims WHERE pool_id='$recon_slot';
+  DELETE FROM inventory_pools WHERE slot_id='$recon_slot'" >/dev/null

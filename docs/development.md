@@ -16,6 +16,7 @@ make check                            # full local gate: lint + test + build + s
 make lint / test / build / smoke      # individual stages
 docker compose exec payments /app verify-journal    # verify the live money journal
 docker compose exec access /app verify-lifecycle   # verify the live ticket lifecycle trail
+docker compose exec inventory /app reconcile-pins  # reclaim seat pins left by expired holds
 ```
 
 ### Internal service credential (TKT-83)
@@ -89,6 +90,60 @@ business processing completed (that is `consumed_events`' job). Reinjected rows 
 7 days after reinjection; unresolved rows never age out. If the quarantine itself fills, new
 future-schema events fall back to delayed NAKs — a deliberate, loud stall at an
 inventory-owned bound, not a drop.
+
+## Seat-pin reconciliation (TKT-112)
+
+A seated hold pins its seats in catalog (`seat_map_pins`, `pinned_by = 'hold:<claim_id>'`) and
+unpins them when the hold is released, or best-effort when the next mutation on that pool sweeps
+the expiry (ADR-031 §4 — no worker, deliberately). A pool that is never touched again after an
+on-sale therefore keeps the pins of holds that simply timed out. Those pins fail **safe**: they
+block a now-unnecessary seat-map edit with a 409, they never orphan or oversell a seat. Left
+alone they accumulate and slowly degrade an organizer's ability to edit a published map.
+
+`inventory reconcile-pins` is the one-shot cleanup:
+
+```bash
+docker compose exec inventory /app reconcile-pins
+# inventory reconcile-pins: scanned=812 reclaimed=37 live=770 unknown=2 malformed=0 other=3
+```
+
+It drains catalog's pin table in keyset pages over the internal read
+(`GET /internal/seat-map-pins`), asks inventory for one verdict per `hold:` reference, and unpins
+the dead ones through the same family-locked batch route a release uses. Requires the service's
+usual `DATABASE_URL`, `CATALOG_URL` and `INTERNAL_SERVICE_TOKEN`; it never reads catalog's
+database (ADR-010).
+
+**Three dispositions leave the pin in place on purpose**, and the counters name each:
+
+- `live` — the claim still consumes its seats: held and unexpired, finalizing, or **confirmed**.
+  A confirmed seated claim keeps its pin because the seat is sold.
+- `unknown` — the pin names a claim this inventory database does not have. Reported, never
+  reclaimed: that is the shape an inventory database restored *behind* catalog presents, and
+  since `hold:` pins cover sold seats too, unpinning one could let an edit orphan a sold seat.
+- `malformed` — `pinned_by` is `hold:<not-a-uuid>`. The column is free-form, so this is
+  reachable; it cannot be correlated to a claim, so it is a human's problem.
+
+The run **exits zero** when `unknown` or `malformed` pins remain — that is the expected fail-safe
+state, the same contract `reprocess-quarantine` has for rows awaiting a newer binary. A non-zero
+exit means a store, transport, or unpin failure; every unpin it did apply is idempotent, so the
+fix is to rerun. Deciding a claim is dead **settles that pool's lazy expiry under the pool lock**
+(the ordinary `sweepExpired`), so a run also expires other due holds in the pools it touches and
+settles any pending capacity cut there — the same thing the next hold on that pool would have
+done.
+
+Scope, stated the way ADR-021 requires: this is **honest-writer reconciliation**. It guards
+against our own bugs and against concurrent honest writers. A writer with catalog database access
+can insert or delete pins at will and nothing here detects it; a writer with inventory database
+access can forge the claims the verdict is derived from. It is not tamper-evidence.
+
+**Known limitation (TKT-143).** A pin whose `seat_identity` or `pinned_by` is megabyte-scale can
+stop a run at that row. The command pages the pin table and shrinks the page on overflow, but a
+single row that exceeds the 4 MiB response cap cannot be read, and the keyset cursor cannot
+advance past a row it never read — so later pins stay unreclaimed until the offending pin is
+removed by hand. Nothing this system writes can produce such a row (`pinned_by` is `hold:` plus a
+uuid; identities are composed server-side from labels), and catalog enforces no length limit on
+those columns, which is what TKT-143 is for. The failure is loud and names the cursor; no pin is
+wrongly removed.
 
 ## Access ticket lifecycle trail operations
 

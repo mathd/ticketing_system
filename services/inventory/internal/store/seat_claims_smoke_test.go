@@ -295,3 +295,220 @@ func TestConcurrentOverlappingSeatedHoldsNeverDoubleAllocate(t *testing.T) {
 		t.Fatalf("a seat is held by %d live claims — double-allocation", maxDup)
 	}
 }
+
+// TestReconcileSeatClaimStatesClassifiesAfterExpirySweep is the liveness verdict behind
+// reconcile-pins (TKT-112). It asserts the exact verdict for every lifecycle a catalog
+// `hold:` pin can point at, plus the two negative cases the reconciler must not confuse:
+// a claim that is due but not yet swept (the verdict must MAKE it terminal, not predict it)
+// and a claim id this database has never seen (unknown, never dead).
+func TestReconcileSeatClaimStatesClassifiesAfterExpirySweep(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	hold := func(key string, seats ...string) uuid.UUID {
+		t.Helper()
+		sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), seats, 0, "EUR", key)
+		if err != nil {
+			t.Fatalf("hold %s: %v", key, err)
+		}
+		return sh.Claim.ID
+	}
+
+	held := hold("k-held", "A/1/1")
+	finalizing := hold("k-finalizing", "A/1/2")
+	if _, err := st.Transition(ctx, org, finalizing, "finalizing"); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	confirmed := hold("k-confirmed", "A/1/3")
+	if _, err := st.Transition(ctx, org, confirmed, "confirmed"); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	released := hold("k-released", "A/1/4")
+	if _, err := st.Transition(ctx, org, released, "released"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	// Due but unswept: backdate expires_at without touching status, exactly the state a
+	// pool nobody has held against since the on-sale is left in.
+	due := hold("k-due", "A/1/5")
+	if _, err := db.ExecContext(ctx, `UPDATE claims SET expires_at=now()-interval '1 second' WHERE id=$1`, due); err != nil {
+		t.Fatal(err)
+	}
+	var stillHeld string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM claims WHERE id=$1`, due).Scan(&stillHeld); err != nil {
+		t.Fatal(err)
+	}
+	if stillHeld != "held" {
+		t.Fatalf("fixture: due claim status = %s, want an unswept 'held'", stillHeld)
+	}
+	unknown := uuid.New()
+
+	got, err := st.ReconcileSeatClaimStates(ctx, []uuid.UUID{held, finalizing, confirmed, released, due, unknown})
+	if err != nil {
+		t.Fatalf("reconcile states: %v", err)
+	}
+	want := map[uuid.UUID]SeatClaimState{
+		held:       SeatClaimLive,
+		finalizing: SeatClaimLive,
+		confirmed:  SeatClaimLive,
+		released:   SeatClaimDead,
+		due:        SeatClaimDead,
+		unknown:    SeatClaimUnknown,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("verdicts = %v want one per requested claim %v", got, want)
+	}
+	for id, wantState := range want {
+		if got[id] != wantState {
+			t.Fatalf("claim %s verdict = %q want %q (all: %v)", id, got[id], wantState, got)
+		}
+	}
+
+	// The dead verdict must be a FACT the call created, not a prediction: the due claim is
+	// now terminal with its seats released, so a finalizer queued behind the pool lock sees
+	// a status it must refuse rather than a time comparison it can win.
+	var status string
+	var releasedAt *time.Time
+	if err := db.QueryRowContext(ctx, `SELECT c.status, cs.released_at FROM claims c
+		JOIN claim_seats cs ON cs.claim_id=c.id WHERE c.id=$1`, due).Scan(&status, &releasedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "expired" || releasedAt == nil {
+		t.Fatalf("due claim after verdict: status=%s released_at=%v, want expired + released", status, releasedAt)
+	}
+	// Every claim that survived must still hold its seats.
+	for _, id := range []uuid.UUID{held, finalizing, confirmed} {
+		var live int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1 AND released_at IS NULL`, id).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if live != 1 {
+			t.Fatalf("live claim %s has %d live seat rows want 1", id, live)
+		}
+	}
+}
+
+// TestReconcileSeatClaimStatesSerializesWithFinalize is the lock-queue race (ADR-010,
+// docs/learnings/2026-07-16-lock-queue-time-cutoffs.md). A finalize that BEGAN before the
+// TTL elapsed sits behind the pool lock; the reconciler must not be able to declare the
+// claim dead and have the finalize then succeed anyway. Whichever order the lock grants,
+// the two must agree — a dead verdict implies the finalize is refused.
+func TestReconcileSeatClaimStatesSerializesWithFinalize(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+	sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1"}, 0, "EUR", "k1")
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	claim := sh.Claim.ID
+	if _, err = db.ExecContext(ctx, `UPDATE claims SET expires_at=now()-interval '1 second' WHERE id=$1`, claim); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the pool lock so both contenders queue behind a third party, then release it and
+	// let them race for real.
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = blocker.ExecContext(ctx, `SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slot); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	var verdicts map[uuid.UUID]SeatClaimState
+	var verdictErr, finalizeErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		verdicts, verdictErr = st.ReconcileSeatClaimStates(ctx, []uuid.UUID{claim})
+	}()
+	go func() {
+		defer wg.Done()
+		_, finalizeErr = st.Transition(ctx, org, claim, "finalizing")
+	}()
+	time.Sleep(150 * time.Millisecond) // let both block on the pool lock
+	if err = blocker.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+
+	if verdictErr != nil {
+		t.Fatalf("verdict: %v", verdictErr)
+	}
+	var status string
+	if err = db.QueryRowContext(ctx, `SELECT status FROM claims WHERE id=$1`, claim).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	// The two outcomes must be consistent. A dead verdict may never coexist with a claim
+	// that went on to finalize — that is the combination that would strand a pinned seat.
+	if verdicts[claim] == SeatClaimDead && (finalizeErr == nil || status == "finalizing") {
+		t.Fatalf("dead verdict but finalize succeeded (status=%s finalizeErr=%v) — the verdict raced the lock", status, finalizeErr)
+	}
+	if verdicts[claim] == SeatClaimLive && status == "expired" {
+		t.Fatalf("live verdict for a claim that is now expired (finalizeErr=%v)", finalizeErr)
+	}
+}
+
+// TestReconcileSeatClaimStatesKeepsLiveClaimsWithInconsistentSeatRows closes the fail-open hole
+// ai-review F1 found. The first cut derived "dead" as the INVERSE of "has a live claim_seats row
+// AND has a live status", so any live claim whose seat rows were missing or already released came
+// out dead and had its catalog pin deleted. Nothing in the schema couples claim status to
+// claim_seats.released_at, so that shape is representable — by a `hold:` pin naming a GA claim
+// (no seat rows at all, and the batch-pin endpoint is manually callable), or by restore skew or an
+// earlier defect. Those are exactly the degraded-data cases the unknown verdict fails closed for,
+// so failing OPEN here was inconsistent with the design's own safety rule.
+//
+// Dead is now established positively from a terminal status. A live status is live whatever its
+// child rows look like.
+func TestReconcileSeatClaimStatesKeepsLiveClaimsWithInconsistentSeatRows(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	hold := func(key, seat string) uuid.UUID {
+		t.Helper()
+		sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat}, 0, "EUR", key)
+		if err != nil {
+			t.Fatalf("hold %s: %v", key, err)
+		}
+		return sh.Claim.ID
+	}
+
+	// Held, with its seat row released out from under it.
+	heldReleased := hold("k-held-released", "A/2/1")
+	if _, err := db.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1`, heldReleased); err != nil {
+		t.Fatal(err)
+	}
+	// Finalizing, with its seat row deleted entirely.
+	finalizingGone := hold("k-finalizing-gone", "A/2/2")
+	if _, err := st.Transition(ctx, org, finalizingGone, "finalizing"); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM claim_seats WHERE claim_id=$1`, finalizingGone); err != nil {
+		t.Fatal(err)
+	}
+	// Confirmed — a SOLD seat — with its seat row released.
+	confirmedReleased := hold("k-confirmed-released", "A/2/3")
+	if _, err := st.Transition(ctx, org, confirmedReleased, "confirmed"); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1`, confirmedReleased); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.ReconcileSeatClaimStates(ctx, []uuid.UUID{heldReleased, finalizingGone, confirmedReleased})
+	if err != nil {
+		t.Fatalf("reconcile states: %v", err)
+	}
+	for _, c := range []struct {
+		id   uuid.UUID
+		what string
+	}{
+		{heldReleased, "held claim whose seat row was released"},
+		{finalizingGone, "finalizing claim whose seat row is missing"},
+		{confirmedReleased, "CONFIRMED (sold) claim whose seat row was released"},
+	} {
+		if got[c.id] != SeatClaimLive {
+			t.Fatalf("%s: verdict = %q want %q — a live status must never be reclaimable", c.what, got[c.id], SeatClaimLive)
+		}
+	}
+}
