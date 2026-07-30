@@ -1,9 +1,11 @@
 {
   "key": "TKT-112",
   "type": "Story",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "summary": "Seat-pin reconciliation: reclaim leaked catalog pins from expired holds",
   "description": "Deferred from TKT-80 (ADR-031). Hold-then-pin unpins on explicit release and best-effort on the next pool mutation's sweep, but a seated pool that is never touched again after an on-sale can leak catalog `seat_map_pins` rows from TTL-expired holds. A leaked pin fails SAFE — it blocks a now-safe map edit (409), never orphans or oversells — but it degrades an organizer's ability to edit a published map over time.\n\n**Scope:** a one-shot `reconcile-pins` subcommand (inventory or catalog binary) that reconciles `seat_map_pins` (pinned_by='hold:*') against live inventory `claim_seats` and unpins the dead ones. Must NOT have inventory read the catalog DB (ADR-010) — reconcile over the existing internal HTTP contract, or as a catalog-side job fed the live hold set. The manually-callable internal batch-unpin endpoint (shipped in TKT-80) is the interim operator remedy.\n\n**COS:** given N expired-hold pins with no live claim, the subcommand removes exactly those and leaves confirmed-sale and live-hold pins intact; idempotent; honest-writer only (ADR-021).",
@@ -23,6 +25,114 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — re-verified against HEAD `ac2952b`\n\n**Still real.** Leaked-pin reconciliation is unimplemented — no `reconcile-pins` subcommand in either binary. Description carries scope + COS; the \"not shaped for Ready\" note predates this validation pass.\n\n**Verdict: still worth doing → Ready.** Not DoR-baked: the 8-item shaping happens when the ticket is claimed, per the owner's drain-the-debt call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### DoR bake at claim time — 8/8 met\n\nThe Gate 1 validation pass deliberately left this ticket un-baked (\"the 8-item shaping happens\nwhen the ticket is claimed, per the owner's drain-the-debt call\"). Baked now, against HEAD\n`2520164`, before the planning brief is written.\n\n| Item | State | Short form |\n|---|---|---|\n| objective | met | expired-hold pins linger on quiet seated pools and block a now-safe map edit |\n| scope | met | one-shot `reconcile-pins`; NO worker/outbox (ADR-031 §4 refuses one); `sale:*` pins out |\n| uncertainties | met | host binary undecided; unknown-claim pins must fail safe — both resolvable in Planning |\n| dependencies | met | TKT-80 Done; zero open blockers |\n| approach | met | copy `reprocess.go`'s injectable-core subcommand shape; unpin via the family-locked store path |\n| first_slice | met | subcommand + internal read + reconciler unit test + selective-unpin store test, one slice |\n| success | met | COS as written on the description (exact removal, idempotent, honest-writer only) |\n| context_memo | met | `context.governingAdrs` baked — 8 ADRs, each verified to resolve at HEAD |\n\n**`governingAdrs` (the field the drafter cannot discover for itself):** ADR-031, ADR-010, ADR-002,\nADR-029, ADR-022, ADR-009, ADR-019, ADR-021 — each with one line on what it constrains *here*, on\nthe ticket's `context` object. The load-bearing one is **ADR-010**: the obvious implementation\n(join `seat_map_pins` against `claim_seats`) is illegal because it crosses the service DB line, and\nnothing in the code says so.\n\nNo `risk:low`: this adds an operator command that DELETEs rows in another service's table on the\nstrength of a cross-service liveness judgement. A wrong verdict unpins a live seat and lets an edit\norphan a sold seat.\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-112\n\n**Selection reason:** the only `Ready` ticket that closes a named ADR deferral (ADR-031\n§Consequences: \"a one-shot `reconcile-pins` subcommand is deferred to a follow-up ticket\"), its\nsole blocker TKT-80 is `Done`, and the debt it carries grows monotonically — every expired hold on\na quiet seated pool adds another pin that an organizer's map edit will trip over.\n\n**Blockers:** TKT-80 `blocked-by` → `Done`. Zero open.\n\n**Branch:** `TKT-112-reconcile-seat-pins` off `origin/main` @ `2520164`.\n\n---\n\n### ⚠️ Process waiver — this ticket runs GATELESS\n\nThe repo owner is deliberately waiving **all four human gates** for this run as a process\nexperiment, and asked for the waiver recorded here so the board history shows it. Verbatim\nsubstitutions, agreed at kickoff:\n\n| Gate | Normally | This run |\n|---|---|---|\n| 1 — priority | human moves Backlog → Ready | already given (ticket was in `Ready`) |\n| 2 — plan approval | human moves Planning → Building | **agent self-resolves** every open decision: take the plan-critique's recommendation; where it makes none, take the **most reversible** option. Each self-made decision + rationale recorded in `kind=plan-final`. |\n| 3 — review + merge | human reviews the PR and squash-merges | **agent squash-merges and deletes the branch** after the adversarial ai-review converges (same triage / second-pass / churn-cap rules). The review-guide is still posted first — it becomes the audit record. |\n| 4 — PO acceptance | PO validates COS and moves to Done | **agent self-validates** each COS against test evidence on the merged code, posts the validation note, closes with the full metrics comment. |\n\n**Everything else in the skill applies unchanged** and is explicitly non-negotiable for this run:\n`config.models` routing with no substitutions (plan → `gpt-5.6-sol`, planReview → main-agent,\nimplement → main-agent, aiReview → `gpt-5.6-sol`), cross-model review for both plan and code, TDD\nwith tests observed red first, `make check` green before every push *and* after the merge, every\nmarker comment posted at its stage, and no AI attribution anywhere in commits or the PR.\n\n**Standing stop conditions** (report instead of proceeding): the gate or CI failing twice on the\nsame cause with no clear fix; implementation touching auth / money paths / data migrations /\nCI-deploy config in a way the ticket and plan did not anticipate; a blocking review finding\nsurviving the churn cap; a configured model unreachable after the documented escalation ladder; any\ndestructive or hard-to-reverse action where the right choice is ambiguous.\n\nCross-model invariant checked before starting: `plan` (`gpt-5.6-sol`) ≠ `planReview` (main-agent),\nand `implement` (main-agent) ≠ `aiReview` (`gpt-5.6-sol`). Both hold — no degraded flow.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "TTL-expired seat holds leave catalog seat_map_pins rows behind on a seated pool that is never mutated again; they fail safe but block a now-safe published-map edit (409) forever. ADR-031 deferred the cleanup automation here."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: one-shot operator subcommand that reconciles hold:* pins against live inventory claim_seats and unpins the dead ones; idempotent; runs over the existing internal HTTP contract (a new internal read may be added). OUT: background worker/outbox/scheduler (ADR-031 §4 explicitly refuses one), sale:* pins, per-version membership checks (ADR-031 open question), any change to the hold/pin write path."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Two named and resolvable at Planning: (1) which binary hosts the subcommand — inventory owns hold liveness, catalog owns the pin table, and neither may read the other's DB (ADR-010/002), so one new internal endpoint is needed either way; (2) the disposition of a hold:<id> pin whose claim inventory has never seen — must fail safe (leave + report), not unpin."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-80 (Done, shipped ADR-031 + the batch pin/unpin endpoint this reuses). No open blockers."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Copy the established one-shot subcommand shape (services/inventory/cmd/inventory/reprocess.go: injectable core struct + thin env/DB/HTTP wiring outer func, ADR-022 registry in main.go subcommands()). Unpins go through the existing family-advisory-locked store path (POST /internal/seat-maps/{id}/unpins), never a raw DELETE (ADR-029)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice: subcommand + whatever internal read it needs + unit test on the reconciler core + a store/smoke test proving the selective-unpin behaviour. Well under the ~400-line target."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS on the ticket description: given N expired-hold pins with no live claim, exactly those are removed; confirmed-sale and live-hold pins survive; idempotent (a second run is a no-op); honest-writer only (ADR-021 — the reconciler guards our own bugs, not an adversary with DB write access)."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at claim time (context.governingAdrs below), re-resolved against docs/adr/ at HEAD 2520164 — all eight cited ADRs verified to exist."
+    }
+  },
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-031",
+        "why": "The decision this ticket completes: hold-then-pin, best-effort unpin on the next pool mutation, and an EXPLICIT refusal of a background worker/outbox (§4). So the deliverable is a one-shot operator command, not a sweeper — and §Consequences already names the interim remedy (the manually-callable batch-unpin endpoint) this automates."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Inventory is the sole write-side correctness boundary and NEVER reads or writes the catalog database. The reconciler must cross the service line over internal HTTP, not SQL — this is what makes the naive 'join pins against claim_seats' implementation illegal here."
+      },
+      {
+        "id": "ADR-002",
+        "why": "One database per service; the pin table lives in catalog, claim_seats in inventory. Same constraint from the other direction: a catalog-hosted job may not read inventory's DB either."
+      },
+      {
+        "id": "ADR-029",
+        "why": "The pin contract: pins key on (map_family_id, seat_identity, pinned_by) and every pin/unpin/edit serializes on a FAMILY-scoped pg_advisory_xact_lock, not a row lock. Any unpin the reconciler performs must go through that locked store path (UnpinSeats), never a bare DELETE, or it races a concurrent edit."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Out-of-band one-shot subcommands are the established placement for operator jobs (each binary's own subcommand, run as a Compose one-shot). reconcile-pins joins the same registry as migrate / reprocess-quarantine / access verify-lifecycle; the server path never runs it."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Service-to-service routes are HAND-MOUNTED internal paths outside the public OpenAPI contract (the existing /internal/seat-maps/{id}/pins|unpins are exactly this). Any new internal read this ticket adds follows that convention and is NOT declared in the spec — the response validator skips undeclared paths (ADR-028)."
+      },
+      {
+        "id": "ADR-019",
+        "why": "A scoped read is only scoped if an index backs the filter, and proving it takes two assertions (result scoped AND scan scoped). If the reconciler adds a pins-by-family read, seat_map_pins_by_family already backs it — say so rather than adding an index."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a guarantee. This reconciler is honest-writer consistency only: state inside a database cannot constrain a writer with access to that database. The COS says 'honest-writer only' for exactly this reason — do not let the plan or the docs imply tamper-evidence."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The one-shot subcommand shape to copy: injectable core struct (quarantineReprocessor) + thin outer func owning env/DB/NATS, registered in main.go subcommands(); unit-tested with fakes, no DB",
+        "link": "services/inventory/cmd/inventory/reprocess.go"
+      },
+      {
+        "summary": "Existing internal batch pin/unpin endpoints + shared decodeBatchPin (the interim operator remedy this automates)",
+        "link": "services/catalog/internal/api/server.go:106-252"
+      },
+      {
+        "summary": "Catalog's family-locked pin store path — PinSeat/UnpinSeat/PinSeats/UnpinSeats",
+        "link": "services/catalog/internal/store/postgres.go:1770-1935"
+      },
+      {
+        "summary": "Inventory's hold-side pin coordinates: PinRef, SeatHold.ExpiredPins, seatsAboutToExpire, SeatPinRef",
+        "link": "services/inventory/internal/store/seat_claims.go"
+      },
+      {
+        "summary": "Inventory's HTTP client to the catalog pin contract (CatalogResolver.PinSeats/UnpinSeats/batchPin)",
+        "link": "services/inventory/internal/consumer/catalog.go:100-140"
+      },
+      {
+        "summary": "seat_map_pins schema + the by-family index",
+        "link": "services/catalog/internal/store/migrations/0011_seat_map_edit_pinning.sql"
+      }
+    ],
+    "capturedAt": "2026-07-30"
+  }
 }
