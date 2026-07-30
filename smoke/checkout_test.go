@@ -52,6 +52,32 @@ func postWithKey(t *testing.T, url, key string, body any) (int, []byte) {
 	return resp.StatusCode, out
 }
 
+// postWithKeyAsync is postWithKey for callers inside a `go func` (TKT-95, was
+// holdRequest): same transport, same timing, but it reports a transport failure or a
+// contract violation with t.Error instead of t.Fatal, because T.FailNow may only be
+// called on the test goroutine. Before TKT-95 the concurrent hold path stayed legal by
+// skipping validation altogether, which also hid it from the coverage gate.
+//
+// A transport error still returns (0, message) rather than aborting: the contention
+// tests classify a zero status themselves, and the goroutine must reach its
+// WaitGroup/channel so the test can join it.
+func postWithKeyAsync(t *testing.T, url, key string, body any) (int, []byte) {
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return 0, []byte(err.Error())
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	validateServiceResponseAsync(t, resp.Request, resp.StatusCode, resp.Header, out)
+	return resp.StatusCode, out
+}
+
 func setupCheckoutOffer(t *testing.T, suffix string) (string, string) {
 	t.Helper()
 	catalog := gatewayURL + "/api/catalog"
@@ -90,25 +116,6 @@ func reserveCheckout(t *testing.T, ticketType, key string) map[string]any {
 		t.Fatalf("authoritative total: %v", out)
 	}
 	return out
-}
-
-func postScan(url, payload string) (int, []byte, error) {
-	b, err := json.Marshal(map[string]string{"qr_payload": payload})
-	if err != nil {
-		return 0, nil, err
-	}
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		return 0, nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { _ = response.Body.Close() }()
-	body, _ := io.ReadAll(response.Body)
-	return response.StatusCode, body, nil
 }
 
 func expireInventoryHold(t *testing.T, holdID string) {
@@ -191,32 +198,32 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		return nil
 	})
 	first, second := issuedBundle.Tickets[0], issuedBundle.Tickets[1]
-	acceptedCode, acceptedBody, err := postScan(gatewayURL+"/api/access/scans", first.QRPayload)
-	if err != nil || acceptedCode != http.StatusOK {
-		t.Fatalf("first scan = %d %s: %v", acceptedCode, acceptedBody, err)
+	acceptedCode, acceptedBody := postJSON(t, gatewayURL+"/api/access/scans", map[string]string{"qr_payload": first.QRPayload})
+	if acceptedCode != http.StatusOK {
+		t.Fatalf("first scan = %d %s", acceptedCode, acceptedBody)
 	}
 	var accepted struct {
 		Decision  string    `json:"decision"`
 		ScannedAt time.Time `json:"scanned_at"`
 	}
-	if err = json.Unmarshal(acceptedBody, &accepted); err != nil || accepted.Decision != "accepted" || accepted.ScannedAt.IsZero() {
+	if err := json.Unmarshal(acceptedBody, &accepted); err != nil || accepted.Decision != "accepted" || accepted.ScannedAt.IsZero() {
 		t.Fatalf("accepted scan = %s: %v", acceptedBody, err)
 	}
-	duplicateCode, duplicateBody, err := postScan(gatewayURL+"/api/access/scans", first.QRPayload)
-	if err != nil || duplicateCode != http.StatusConflict {
-		t.Fatalf("duplicate scan = %d %s: %v", duplicateCode, duplicateBody, err)
+	duplicateCode, duplicateBody := postJSON(t, gatewayURL+"/api/access/scans", map[string]string{"qr_payload": first.QRPayload})
+	if duplicateCode != http.StatusConflict {
+		t.Fatalf("duplicate scan = %d %s", duplicateCode, duplicateBody)
 	}
 	var duplicate struct {
 		Decision       string    `json:"decision"`
 		Reason         string    `json:"reason"`
 		OriginalScanAt time.Time `json:"original_scan_at"`
 	}
-	if err = json.Unmarshal(duplicateBody, &duplicate); err != nil || duplicate.Decision != "rejected" || duplicate.Reason != "already_redeemed" || !duplicate.OriginalScanAt.Equal(accepted.ScannedAt) {
+	if err := json.Unmarshal(duplicateBody, &duplicate); err != nil || duplicate.Decision != "rejected" || duplicate.Reason != "already_redeemed" || !duplicate.OriginalScanAt.Equal(accepted.ScannedAt) {
 		t.Fatalf("duplicate result = %s: %v", duplicateBody, err)
 	}
 	forged := corruptSignature(t, first.QRPayload)
-	if code, body, scanErr := postScan(gatewayURL+"/api/access/scans", forged); scanErr != nil || code != http.StatusUnprocessableEntity {
-		t.Fatalf("forged scan = %d %s: %v", code, body, scanErr)
+	if code, body := postJSON(t, gatewayURL+"/api/access/scans", map[string]string{"qr_payload": forged}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("forged scan = %d %s", code, body)
 	}
 	parts := strings.Split(second.QRPayload, ".")
 	if len(parts) != 3 {
@@ -241,8 +248,8 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	mismatched := encoded + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(ed25519.NewKeyFromSeed(seed), []byte(encoded)))
-	if code, body, scanErr := postScan(gatewayURL+"/api/access/scans", mismatched); scanErr != nil || code != http.StatusUnprocessableEntity {
-		t.Fatalf("claim-mismatch scan = %d %s: %v", code, body, scanErr)
+	if code, body := postJSON(t, gatewayURL+"/api/access/scans", map[string]string{"qr_payload": mismatched}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("claim-mismatch scan = %d %s", code, body)
 	}
 
 	// A real-Postgres race proves the lock -> trace read -> insert ordering:
@@ -269,7 +276,7 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		go func() {
 			defer scans.Done()
 			<-start
-			code, body := postWithKey(t, gatewayURL+"/api/access/scans", "concurrent-scan-"+occurrence,
+			code, body := postWithKeyAsync(t, gatewayURL+"/api/access/scans", "concurrent-scan-"+occurrence,
 				map[string]any{"qr_payload": second.QRPayload, "occurrence_id": occurrence, "occurred_at": raceClaimedAt.Format(time.RFC3339Nano)})
 			scanResults <- scanResult{code: code, body: body, occurrence: occurrence}
 		}()
@@ -373,7 +380,7 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	results := make(chan checkoutResult, 2)
 	for range 2 {
 		go func() {
-			code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-same-key-race", concurrentBody)
+			code, body := postWithKeyAsync(t, gatewayURL+"/api/commerce/orders", "order-same-key-race", concurrentBody)
 			results <- checkoutResult{code, body}
 		}()
 	}

@@ -3,10 +3,8 @@
 package smoke_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -15,20 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
-
-func holdRequest(url, key string, body any) (int, []byte) {
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", key)
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		return 0, []byte(err.Error())
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, out
-}
 
 func TestInventoryContentionSafeHolds(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
@@ -53,7 +37,7 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 	})
 
 	knownKey := "known-" + slot
-	code, body := holdRequest(inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+	code, body := postWithKey(t, inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 	if code != http.StatusCreated {
 		t.Fatalf("known hold %d %s", code, body)
 	}
@@ -64,7 +48,7 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			code, _ := holdRequest(inventory+"/holds", fmt.Sprintf("parallel-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+			code, _ := postWithKeyAsync(t, inventory+"/holds", fmt.Sprintf("parallel-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 			if code == 201 {
 				granted.Add(1)
 			} else if code != 409 {
@@ -76,11 +60,11 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 	if got := granted.Load(); got != 10 {
 		t.Fatalf("granted %d, want exact capacity 10", got)
 	}
-	code, body = holdRequest(inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+	code, body = postWithKey(t, inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 	if code != 200 {
 		t.Fatalf("idempotent replay %d %s", code, body)
 	}
-	code, _ = holdRequest(inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 2})
+	code, _ = postWithKey(t, inventory+"/holds", knownKey, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 2})
 	if code != 409 {
 		t.Fatalf("changed replay want 409 got %d", code)
 	}
@@ -141,7 +125,7 @@ func TestChannelAllocationContention(t *testing.T) {
 				body["channel"] = "presale"
 				counter = &presale
 			}
-			code, _ := holdRequest(inventory+"/holds", fmt.Sprintf("chan-%s-%d", slot, i), body)
+			code, _ := postWithKeyAsync(t, inventory+"/holds", fmt.Sprintf("chan-%s-%d", slot, i), body)
 			if code == 201 {
 				counter.Add(1)
 			} else if code != 409 {
@@ -191,7 +175,7 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	})
 
 	// Committed demand of 3 before anything queues.
-	if code, body := holdRequest(inventory+"/holds", "adjq-base-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 3}); code != 201 {
+	if code, body := postWithKey(t, inventory+"/holds", "adjq-base-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 3}); code != 201 {
 		t.Fatalf("base hold %d %s", code, body)
 	}
 
@@ -242,28 +226,52 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	holdLike := "%closure_status FROM inventory_pools%FOR UPDATE%"
 	adjustLike := "%confirmed_quantity,lifecycle_status FROM inventory_pools%FOR UPDATE%"
 
+	// Every request goroutine below reports on t (a status assertion, or a contract
+	// violation via the Async validators), and t.Error after the test function has
+	// completed PANICS. The handshake between spawning them and joining them is full of
+	// t.Fatal paths — waitQueued's deadline, the explicit tx.Rollback — and the workers
+	// are queued on the pool lock this test's transaction holds, so a Goexit from any of
+	// them would return from the test while they are still blocked, whereupon the
+	// rollback defer at the top releases them into a completed test.
+	//
+	// So join them in a defer that rolls back FIRST (idempotent — the later error is
+	// ignored) and waits second. It is registered after that top-level rollback defer,
+	// so LIFO runs it before it, which is the order that terminates. On the happy path
+	// everything is already joined and this is a no-op. All three channels are buffered,
+	// so a worker's send never blocks even when nobody reads it.
+	var workers sync.WaitGroup
+	var burst sync.WaitGroup
+	defer func() {
+		_ = tx.Rollback(ctx)
+		workers.Wait()
+		burst.Wait()
+	}()
+
 	holdDone := make(chan int, 1)
+	workers.Add(1)
 	go func() {
-		code, _ := holdRequest(inventory+"/holds", "adjq-first-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+		defer workers.Done()
+		code, _ := postWithKeyAsync(t, inventory+"/holds", "adjq-first-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 		holdDone <- code
 	}()
 	waitQueued(holdLike, 1)
 
 	adjustDone := make(chan []byte, 1)
+	workers.Add(1)
 	go func() {
-		_, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/slots/%s/capacity-adjustments", inventoryURL, slot), "adjq-cut-"+slot,
+		defer workers.Done()
+		_, body := internalJSONAsync(t, http.MethodPost, fmt.Sprintf("%s/internal/slots/%s/capacity-adjustments", inventoryURL, slot), "adjq-cut-"+slot,
 			map[string]any{"organizer_id": organizerID, "capacity": 2, "actor": "staff:amy", "reason": "storm damage"})
 		adjustDone <- body
 	}()
 	waitQueued(adjustLike, 1)
 
-	var burst sync.WaitGroup
 	var rejected atomic.Int32
 	for i := 0; i < 5; i++ {
 		burst.Add(1)
 		go func(i int) {
 			defer burst.Done()
-			code, _ := holdRequest(inventory+"/holds", fmt.Sprintf("adjq-burst-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
+			code, _ := postWithKeyAsync(t, inventory+"/holds", fmt.Sprintf("adjq-burst-%s-%d", slot, i), map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 			if code == 409 {
 				rejected.Add(1)
 			} else {
@@ -314,7 +322,7 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	if a.Capacity != 4 || a.Held != 4 || a.Confirmed != 0 || a.Available != 0 {
 		t.Fatalf("post-adjustment accounting %+v", a)
 	}
-	if code, _ := holdRequest(inventory+"/holds", "adjq-after-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1}); code != 409 {
+	if code, _ := postWithKey(t, inventory+"/holds", "adjq-after-"+slot, map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1}); code != 409 {
 		t.Fatalf("hold above target admitted: %d", code)
 	}
 }

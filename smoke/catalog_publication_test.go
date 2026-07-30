@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -309,19 +310,12 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req, err := http.NewRequest(http.MethodPost, archiveURL, nil)
-			if err != nil {
-				results <- archiveResult{err: err}
-				return
-			}
-			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-			if err != nil {
-				results <- archiveResult{err: err}
-				return
-			}
-			defer func() { _ = resp.Body.Close() }()
-			body, err := io.ReadAll(resp.Body)
-			results <- archiveResult{code: resp.StatusCode, body: body, err: err}
+			// TKT-95: was a raw client — the only reason it bypassed the validating
+			// helpers was that they t.Fatal'd, which is illegal here. postWithKeyAsync
+			// contract-validates and reports with t.Error instead. No idempotency key:
+			// the point of this block is two concurrent unkeyed archives.
+			code, body := postWithKeyAsync(t, archiveURL, "", nil)
+			results <- archiveResult{code: code, body: body}
 		}()
 	}
 	wg.Wait()
@@ -1218,4 +1212,225 @@ func awaitSlotEnvelope(t *testing.T, cons jetstream.Consumer, subject string, sl
 	}
 	t.Fatalf("%s not received for slot %v", subject, slotID)
 	return slotEnvelope{}
+}
+
+// TestSeatMapVersioningReadsAndEdit drives the five catalog operations TKT-95 absorbed
+// from TKT-111 — the TKT-105 surface no smoke test exercised: editSeatMap,
+// getPublicSeatMapGeometry, listSeatMapVersions, listVenueSeatMaps and
+// updateVenueGaCapacity. All five go through validating helpers, so the running stack's
+// responses are checked against the committed catalog contract (the value here is
+// real gateway + store + migration execution; catalog stays deliberately outside the
+// smoke coverage gate per ADR-030, and this test does not touch that scope).
+//
+// It owns its venue and seat-map family on purpose, rather than borrowing
+// TestSeatedPublicationCoexistsWithGA's: an edit advances the family's current version
+// and updateVenueGaCapacity rewrites the venue, and that test's later assertions read
+// both. A shared fixture would have made this test's setup silently change that one's
+// meaning.
+//
+// The edit is deliberately NON-orphaning — it keeps Orchestra/A/1 and adds
+// Orchestra/A/2 — and runs on a family no sale or hold has pinned. ADR-029 hard-rejects
+// an orphaning edit (409); that rejection path and the edit-vs-sale advisory lock are
+// TKT-104's own tests, not this one's. What is asserted here is ADR-029's
+// honest-writer consistency: the predecessor version stays readable and unchanged. That
+// is NOT a tamper-evidence claim — a writer with catalog DB access can still rewrite
+// either version.
+//
+// Must not call t.Parallel(): it publishes a seat map, and
+// TestSeatedPublicationCoexistsWithGA's DeliverNew consumer on
+// platform.catalog.seat_map.published would then be able to receive this test's event
+// instead of its own.
+func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
+	catalog := gatewayURL + "/api/catalog"
+	suffixBytes := make([]byte, 4)
+	_, _ = rand.Read(suffixBytes)
+	suffix := hex.EncodeToString(suffixBytes)
+	const hoursTier = "public, max-age=3600, s-maxage=3600" // ADR-004
+
+	venue := created(t, catalog+"/venues", map[string]any{
+		"organizer_id": organizerID, "name": "Versioning Hall " + suffix, "ga_capacity": 100,
+	})
+	venueID := fmt.Sprint(venue["id"])
+
+	// -- author and publish version 1: Orchestra / A / 1 --
+	seatMap := created(t, catalog+"/venues/"+venueID+"/seat-maps", map[string]any{
+		"organizer_id": organizerID, "name": "Versioned floor " + suffix,
+	})
+	v1ID := fmt.Sprint(seatMap["id"])
+	section := created(t, catalog+"/seat-maps/"+v1ID+"/sections", map[string]any{
+		"organizer_id": organizerID, "name": "Orchestra", "position": 1,
+	})
+	row := created(t, catalog+"/seat-maps/"+v1ID+"/rows", map[string]any{
+		"organizer_id": organizerID, "section_id": section["id"], "label": "A", "position": 1,
+	})
+	created(t, catalog+"/seat-maps/"+v1ID+"/seats", map[string]any{
+		"organizer_id": organizerID, "row_id": row["id"], "label": "1", "position": 1,
+	})
+	if code, body := postJSON(t, catalog+"/seat-maps/"+v1ID+"/publish", nil); code != http.StatusOK {
+		t.Fatalf("publish seat map: %d %s", code, body)
+	}
+
+	// -- editSeatMap: full replacement geometry keeping Orchestra/A/1, adding A/2 --
+	editCode, editBody := postJSON(t, catalog+"/seat-maps/"+v1ID+"/edit", map[string]any{
+		"organizer_id": organizerID,
+		"sections": []map[string]any{{
+			"name": "Orchestra", "position": 1,
+			"rows": []map[string]any{{
+				"label": "A", "position": 1,
+				"seats": []map[string]any{
+					{"label": "1", "position": 1},
+					{"label": "2", "position": 2},
+				},
+			}},
+		}},
+	})
+	if editCode != http.StatusCreated {
+		t.Fatalf("edit seat map: %d %s", editCode, editBody)
+	}
+	var edited struct {
+		ID          string `json:"id"`
+		VenueID     string `json:"venue_id"`
+		Version     int32  `json:"version"`
+		Status      string `json:"status"`
+		PublishedAt string `json:"published_at"`
+	}
+	if err := json.Unmarshal(editBody, &edited); err != nil {
+		t.Fatalf("decode edit: %v (%s)", err, editBody)
+	}
+	if edited.Version != 2 || edited.Status != "published" || edited.PublishedAt == "" {
+		t.Fatalf("edit must publish version 2, got %+v", edited)
+	}
+	if edited.ID == v1ID {
+		t.Fatalf("edit must create a NEW version row, got the predecessor id %s", v1ID)
+	}
+	if edited.VenueID != venueID {
+		t.Fatalf("edited version venue = %q, want %q", edited.VenueID, venueID)
+	}
+	v2ID := edited.ID
+
+	// -- getPublicSeatMapGeometry: the predecessor is unchanged, the successor has both seats --
+	for _, want := range []struct {
+		id       string
+		version  int32
+		seatIDs  []string
+		describe string
+	}{
+		{v1ID, 1, []string{"Orchestra/A/1"}, "predecessor stays immutable"},
+		{v2ID, 2, []string{"Orchestra/A/1", "Orchestra/A/2"}, "successor carries the edit"},
+	} {
+		code, body, hdr := getWithHeaders(t, catalog+"/public/seat-maps/"+want.id)
+		if code != http.StatusOK {
+			t.Fatalf("geometry %s (%s): %d %s", want.id, want.describe, code, body)
+		}
+		if got := hdr.Get("Cache-Control"); got != hoursTier {
+			t.Fatalf("geometry cache tier %q, want %q", got, hoursTier)
+		}
+		var geometry struct {
+			Map struct {
+				ID      string `json:"id"`
+				Version int32  `json:"version"`
+			} `json:"map"`
+			Sections []struct {
+				Rows []struct {
+					Seats []struct {
+						SeatIdentity string `json:"seat_identity"`
+					} `json:"seats"`
+				} `json:"rows"`
+			} `json:"sections"`
+		}
+		if err := json.Unmarshal(body, &geometry); err != nil {
+			t.Fatalf("decode geometry: %v (%s)", err, body)
+		}
+		if geometry.Map.Version != want.version {
+			t.Fatalf("geometry %s version = %d, want %d", want.id, geometry.Map.Version, want.version)
+		}
+		var identities []string
+		for _, s := range geometry.Sections {
+			for _, r := range s.Rows {
+				for _, seat := range r.Seats {
+					identities = append(identities, seat.SeatIdentity)
+				}
+			}
+		}
+		if !slices.Equal(identities, want.seatIDs) {
+			t.Fatalf("geometry %s (%s) seats = %v, want %v", want.id, want.describe, identities, want.seatIDs)
+		}
+	}
+
+	// -- listSeatMapVersions: any version resolves the family, newest first --
+	code, body, hdr := getWithHeaders(t, catalog+"/public/seat-maps/"+v1ID+"/versions")
+	if code != http.StatusOK {
+		t.Fatalf("versions: %d %s", code, body)
+	}
+	if got := hdr.Get("Cache-Control"); got != hoursTier {
+		t.Fatalf("versions cache tier %q, want %q", got, hoursTier)
+	}
+	var history struct {
+		CurrentVersion int32 `json:"current_version"`
+		Versions       []struct {
+			ID          string `json:"id"`
+			Version     int32  `json:"version"`
+			Status      string `json:"status"`
+			PublishedAt string `json:"published_at"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatalf("decode versions: %v (%s)", err, body)
+	}
+	if history.CurrentVersion != 2 {
+		t.Fatalf("current_version = %d, want 2 (the version an edit targets)", history.CurrentVersion)
+	}
+	if len(history.Versions) != 2 ||
+		history.Versions[0].Version != 2 || history.Versions[0].ID != v2ID ||
+		history.Versions[1].Version != 1 || history.Versions[1].ID != v1ID {
+		t.Fatalf("versions must be newest-first [2,1] with distinct ids, got %+v", history.Versions)
+	}
+	for _, v := range history.Versions {
+		if v.PublishedAt == "" {
+			t.Fatalf("version %d has no published_at: %+v", v.Version, v)
+		}
+	}
+
+	// -- listVenueSeatMaps: summaries for this venue's family, both versions --
+	code, body, hdr = getWithHeaders(t, catalog+"/public/venues/"+venueID+"/seat-maps")
+	if code != http.StatusOK {
+		t.Fatalf("venue seat maps: %d %s", code, body)
+	}
+	if got := hdr.Get("Cache-Control"); got != hoursTier {
+		t.Fatalf("venue seat maps cache tier %q, want %q", got, hoursTier)
+	}
+	var list struct {
+		SeatMaps []struct {
+			ID      string `json:"id"`
+			Version int32  `json:"version"`
+		} `json:"seat_maps"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		t.Fatalf("decode venue seat maps: %v (%s)", err, body)
+	}
+	found := map[string]int32{}
+	for _, m := range list.SeatMaps {
+		found[m.ID] = m.Version
+	}
+	if found[v1ID] != 1 || found[v2ID] != 2 {
+		t.Fatalf("venue seat maps must list both versions (v1=1, v2=2), got %+v", list.SeatMaps)
+	}
+
+	// -- updateVenueGaCapacity: GA capacity is writable after venue creation --
+	code, body = postJSON(t, catalog+"/venues/"+venueID+"/ga-capacity", map[string]any{
+		"organizer_id": organizerID, "ga_capacity": 450,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("update ga capacity: %d %s", code, body)
+	}
+	var updated struct {
+		ID         string `json:"id"`
+		GaCapacity int32  `json:"ga_capacity"`
+	}
+	if err := json.Unmarshal(body, &updated); err != nil {
+		t.Fatalf("decode ga capacity: %v (%s)", err, body)
+	}
+	if updated.ID != venueID || updated.GaCapacity != 450 {
+		t.Fatalf("ga capacity update = %+v, want id %s capacity 450", updated, venueID)
+	}
 }

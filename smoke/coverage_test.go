@@ -5,21 +5,28 @@ package smoke_test
 // TKT-47: every documented 2xx operation of the DB-backed services must be
 // exercised through the running stack — real handler, real store, real
 // response-validation middleware. Coverage is recorded at the two validation
-// chokepoints (validateServiceResponse / validateDirectServiceResponse) and
-// enforced after the run in TestMain; a new spec operation without a driving
-// smoke test fails the suite. Catalog's coverage gate lives in its unit suite
+// chokepoints (checkServiceResponse / checkDirectServiceResponse) and enforced
+// after the run in TestMain; a new spec operation without a driving smoke test
+// fails the suite. Catalog's coverage gate lives in its unit suite
 // (services/catalog/internal/api), where a fake store exists — a deliberate
 // exclusion, decided in ADR-030 (TKT-109) and pinned by
 // TestCatalogCoverageGateIsDeliberatelyUnitScoped below.
 //
-// Scope, precisely: only traffic through the validating helpers (postJSON,
-// getWithHeaders, get, internalJSON) reaches the chokepoints — raw helpers
-// like holdRequest/postScan are invisible to the gate, which is why
-// happy_path_coverage_test.go drives some heavily-exercised endpoints again.
-// Coverage is per-operation, not per-documented-2xx-status (checkout counts
-// covered via 200 even though 202 is also documented), and an operation
-// documented only via `default:` or a `2XX` wildcard has no explicit 2xx
-// key and is exempt.
+// Scope, precisely (TKT-95 closed the raw-helper hole — every smoke HTTP helper
+// that receives a service response now reaches a chokepoint, concurrent callers
+// included, via the Async wrappers):
+//   - Coverage is per-operation, not per-documented-2xx-status (checkout counts
+//     covered via 200 even though 202 is also documented), and an operation
+//     documented only via `default:` or a `2XX` wildcard has no explicit 2xx key
+//     and is exempt.
+//   - Catalog is outside uncovered2xxOps (ADR-030, above): catalog responses ARE
+//     contract-validated wherever smoke drives them, but a new, undriven catalog
+//     operation is caught by the unit gate, not here.
+//   - Traffic with no service operation behind it is still raw, because there is
+//     nothing to validate against: the gateway's refusals of routes absent from
+//     every contract (TestGatewayDeniesGenericInternalRoutes — a contract lookup
+//     there would fail by construction) and the storefront/scanner/health shell
+//     checks.
 
 import (
 	"flag"

@@ -27,8 +27,25 @@ var (
 	internalToken = os.Getenv("SMOKE_INTERNAL_TOKEN")
 )
 
+// internalJSON performs an internal (off-gateway) service request and contract-validates
+// the response against that service's committed contract. It is the single internal-surface
+// helper for the suite: TKT-95 folded group_reservations_test.go's identical
+// internalValidated into it (that one took the service name explicitly; directService
+// resolves it from the base URL, and it was only ever called with inventory and commerce).
 func internalJSON(t *testing.T, method, url, key string, body any) (int, []byte) {
 	t.Helper()
+	return internalRequest(t, t.Fatalf, method, url, key, body)
+}
+
+// internalJSONAsync is internalJSON for callers inside a `go func`: it reports with
+// t.Error, since T.FailNow may only be called on the test goroutine (TKT-95). Before
+// TKT-95 the two goroutine call sites used internalJSON and so carried a latent illegal
+// t.Fatal — never triggered, because it only fires on a contract violation.
+func internalJSONAsync(t *testing.T, method, url, key string, body any) (int, []byte) {
+	return internalRequest(t, t.Errorf, method, url, key, body)
+}
+
+func internalRequest(t *testing.T, fail func(string, ...any), method, url, key string, body any) (int, []byte) {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -36,7 +53,8 @@ func internalJSON(t *testing.T, method, url, key string, body any) (int, []byte)
 	}
 	req, err := http.NewRequest(method, url, rd)
 	if err != nil {
-		t.Fatalf("bad request: %v", err)
+		fail("bad request: %v", err)
+		return 0, []byte(err.Error())
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Token", internalToken)
@@ -45,12 +63,15 @@ func internalJSON(t *testing.T, method, url, key string, body any) (int, []byte)
 	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, url, err)
+		fail("%s %s: %v", method, url, err)
+		return 0, []byte(err.Error())
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
 	if service := directService(url); service != "" {
-		validateDirectServiceResponse(t, service, resp.Request, resp.StatusCode, resp.Header, out)
+		if err := checkDirectServiceResponse(service, resp.Request, resp.StatusCode, resp.Header, out); err != nil {
+			fail("%v", err)
+		}
 	}
 	return resp.StatusCode, out
 }
@@ -132,11 +153,16 @@ func TestOperationalConvertNeverLeaksCapacityToPublicHolds(t *testing.T) {
 
 	var publicGrants atomic.Int32
 	var wg sync.WaitGroup
+	// The convert call below is a t.Fatal path (transport error or contract violation) and
+	// it sits between spawning these workers and joining them. The workers report on t, and
+	// t.Error after the test completed panics — so join them in a defer too. The explicit
+	// wg.Wait() after convert stays; Wait is idempotent.
+	defer wg.Wait()
 	for i := 0; i < 30; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			code, _ := holdRequest(gatewayURL+"/api/inventory/holds", fmt.Sprintf("race-%s-%d", slot, i),
+			code, _ := postWithKeyAsync(t, gatewayURL+"/api/inventory/holds", fmt.Sprintf("race-%s-%d", slot, i),
 				map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
 			if code == 201 {
 				publicGrants.Add(1)
@@ -216,7 +242,7 @@ func TestConvertedHoldCompletesPublicCheckout(t *testing.T) {
 		t.Fatalf("conversion result %+v, want amount 5000 (2 x 2500) remaining 3", conv)
 	}
 
-	code, body = holdRequest(gatewayURL+"/api/commerce/orders", "op-order-"+slot,
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "op-order-"+slot,
 		map[string]any{"reservation_id": conv.ReservationID, "name": "Guest Of Band", "email": "guest@example.test", "payment_token": "fake-ok"})
 	if code != 200 || !bytes.Contains(body, []byte(`"completed"`)) {
 		t.Fatalf("checkout of converted reservation: %d %s", code, body)

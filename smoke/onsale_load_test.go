@@ -35,7 +35,13 @@ import (
 // classification, never as a followed hop that could re-send X-Internal-Token.
 var loadClient = loadtest.NewClient()
 
-func timedPost(url string, headers map[string]string, body any) (int, []byte, time.Duration, error) {
+// timedPost returns the delivered status, body, the measured duration, a transport error,
+// and — separately — a contract violation. The violation is NOT folded into err: err's
+// taxonomy is client-side/inconclusive (TKT-92), while a drifted response is server
+// evidence (ADR-028). Callers must decide on cviol FIRST, before any status-based
+// classification, or a contract-invalid 200 would enter the OK latency samples and a
+// contract-invalid 409 would count as a capacity rejection.
+func timedPost(t *testing.T, url string, headers map[string]string, body any) (code int, out []byte, d time.Duration, err, cviol error) {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -43,7 +49,7 @@ func timedPost(url string, headers map[string]string, body any) (int, []byte, ti
 	}
 	req, err := http.NewRequest(http.MethodPost, url, rd)
 	if err != nil {
-		return 0, nil, 0, err
+		return 0, nil, 0, err, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
@@ -51,19 +57,45 @@ func timedPost(url string, headers map[string]string, body any) (int, []byte, ti
 	}
 	t0 := time.Now()
 	resp, err := loadClient.Do(req)
-	d := time.Since(t0)
+	d = time.Since(t0)
 	if err != nil {
-		return 0, nil, d, err
+		return 0, nil, d, err, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, rerr := io.ReadAll(resp.Body)
+	// TKT-95: contract-validate the delivered response. AFTER d is measured, so no local
+	// schema-walking time enters the latency evidence (TKT-82/TKT-125), and only when the
+	// body arrived whole — validating a truncated body would manufacture a contract
+	// violation out of a client-side symptom, inverting TKT-92's conservative direction.
+	//
+	// Known, accepted cost: this runs inside the attempt, so it is inside RunStage's
+	// in-flight window — it cannot touch d, but it does occupy a slot slightly longer,
+	// which at high offered rates can affect occupancy, drops and scheduler lag. That is
+	// bounded fail-safe rather than silently wrong: CeilingInconclusive turns lag-p99,
+	// client errors, or drops-at-cap-while-the-SLO-held into a GENERATOR verdict, so a
+	// validation-slowed run reports inconclusive and never publishes a false server
+	// ceiling. The gate profile (~285 attempts at 25/s) is far below where this is
+	// measurable; `make onsale-load-full` is where to watch for it.
+	if rerr == nil {
+		if service := directService(url); service != "" {
+			cviol = checkDirectServiceResponse(service, resp.Request, resp.StatusCode, resp.Header, out)
+		} else {
+			cviol = checkServiceResponse(resp.Request, resp.StatusCode, resp.Header, out)
+		}
+		if cviol != nil {
+			// Fail the test as well as the attempt: a drift here is a real contract
+			// breach, not merely an unhealthy load sample. t.Error, not t.Fatal — this
+			// runs on a RunStage worker goroutine.
+			t.Error(cviol)
+		}
+	}
 	if rerr != nil {
 		// Surface a truncated/reset body as err with the delivered status:
 		// callers classify — a forbidden status is server evidence on its own;
 		// a cut-off success body is client-side/inconclusive (TKT-92).
-		return resp.StatusCode, out, d, fmt.Errorf("read body: %w", rerr)
+		return resp.StatusCode, out, d, fmt.Errorf("read body: %w", rerr), cviol
 	}
-	return resp.StatusCode, out, d, nil
+	return resp.StatusCode, out, d, nil, cviol
 }
 
 // checkoutAttempt runs one full hold→finalize→confirm lifecycle and classifies
@@ -71,11 +103,11 @@ func timedPost(url string, headers map[string]string, body any) (int, []byte, ti
 // unexpected instability otherwise; the caller decides which via stage
 // bookkeeping. Latency samples cover mutations only (ADR-004: availability is a
 // cached read and never appears here).
-func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int) loadtest.Outcome {
+func checkoutAttempt(t *testing.T, runID, slot string, quantity int) func(loadtest.Stage, int) loadtest.Outcome {
 	holds := gatewayURL + "/api/inventory/holds"
 	return func(stage loadtest.Stage, seq int) loadtest.Outcome {
 		key := fmt.Sprintf("onsale:%s:%s:%d", runID, stage.Name, seq)
-		code, body, holdD, err := timedPost(holds, map[string]string{"Idempotency-Key": key},
+		code, body, holdD, err, cviol := timedPost(t, holds, map[string]string{"Idempotency-Key": key},
 			map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": quantity})
 		// Classification precedence (TKT-92): a delivered status decides on its
 		// own wherever it can — a forbidden status is server evidence even if
@@ -83,6 +115,12 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 		// status arrived, or when a success body the harness needs was cut off
 		// (the conservative, inconclusive direction).
 		switch {
+		// A contract violation decides FIRST (TKT-95, ADR-028 posture): a drifted
+		// response is server evidence, and letting the status classify it would put a
+		// contract-invalid 201 into the OK latency samples or count a contract-invalid
+		// 409 as a capacity rejection.
+		case cviol != nil:
+			return loadtest.Outcome{Kind: loadtest.KindServerError, Note: "hold: " + cviol.Error()}
 		case err != nil && code == 0:
 			return loadtest.Outcome{Kind: loadtest.KindClientError, Note: "hold: " + err.Error()}
 		// A 409 is only sellout if the body says so (TKT-93): coded 409s
@@ -117,8 +155,10 @@ func checkoutAttempt(runID, slot string, quantity int) func(loadtest.Stage, int)
 			dst          *time.Duration
 		}{{"finalize", "finalizing", &out.Finalize}, {"confirm", "confirmed", &out.Confirm}} {
 			url := fmt.Sprintf("%s/internal/holds/%s/%s?organizer_id=%s", inventoryURL, claim.ID, step.name, organizerID)
-			code, rbody, d, err := timedPost(url, hdr, nil)
+			code, rbody, d, err, cviol := timedPost(t, url, hdr, nil)
 			switch {
+			case cviol != nil: // contract drift decides first (TKT-95, ADR-028)
+				return loadtest.Outcome{Kind: loadtest.KindServerError, Note: step.name + ": " + cviol.Error()}
 			case err != nil && code == 0:
 				return loadtest.Outcome{Kind: loadtest.KindClientError, Note: step.name + ": " + err.Error()}
 			case code != http.StatusOK: // delivered forbidden status decides alone, truncated body or not
@@ -324,7 +364,7 @@ func onsaleGate(t *testing.T) {
 	slot, _ := publishedSlot(t, "Onsale Load Hall "+runID, capacity)
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
-	attempt := checkoutAttempt(runID, slot, 1)
+	attempt := checkoutAttempt(t, runID, slot, 1)
 	loadStart := time.Now()
 
 	warm := loadtest.RunStage(loadtest.Stage{Name: "warmup", Rate: 5, Duration: 2 * time.Second, Quantity: 1}, 64, attempt)
@@ -352,7 +392,7 @@ func onsaleGate(t *testing.T) {
 	measuredLifecycles := sustained.OK
 	for remaining := capacity - grantedUnits; remaining > 0; {
 		q := min(remaining, 50)
-		out := checkoutAttempt(runID+"-fill", slot, q)(loadtest.Stage{Name: fmt.Sprintf("fill-%d", remaining)}, remaining)
+		out := checkoutAttempt(t, runID+"-fill", slot, q)(loadtest.Stage{Name: fmt.Sprintf("fill-%d", remaining)}, remaining)
 		if out.Kind == loadtest.KindClientError {
 			t.Fatalf("fill attempt (qty %d) hit a client-side transport error — run inconclusive, not server instability: %s", q, out.Note)
 		}
@@ -433,7 +473,7 @@ func onsaleFull(t *testing.T) {
 	conn := inventoryAdminConn(t)
 	statStatementsSetup(t, conn)
 	slot, _ := publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
-	attempt := checkoutAttempt(runID, slot, 1)
+	attempt := checkoutAttempt(t, runID, slot, 1)
 
 	// A stage's claims are only meaningful if the generator itself was healthy:
 	// a sustained schedule (nominal lag p99 is ~2ms; 1s means the offered rate
@@ -502,7 +542,7 @@ func onsaleFull(t *testing.T) {
 	var sweep []loadtest.StageResult
 	for _, rate := range []int{75, 150, 300, 600, 1200, 2400, 3000} {
 		s, _ := publishedSlot(t, fmt.Sprintf("Onsale Sweep %s %d", runID, rate), 100000)
-		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, min(max(512, rate*4), loadtest.MaxConnsPerHost), checkoutAttempt(runID, s, 1))
+		r := loadtest.RunStage(loadtest.Stage{Name: fmt.Sprintf("sweep-%d", rate), Rate: rate, Duration: 30 * time.Second, Quantity: 1}, min(max(512, rate*4), loadtest.MaxConnsPerHost), checkoutAttempt(t, runID, s, 1))
 		generatorHealthy(r)
 		report.Stages = append(report.Stages, logStage(t, r))
 		report.Accounting = append(report.Accounting, assertAccounting(t, conn, s, r.OK, r.OK))
@@ -523,7 +563,7 @@ func onsaleFull(t *testing.T) {
 	// 1,000 can succeed; the rest must be clean 409s. Correctness evidence only —
 	// excluded from the ceiling.
 	tailSlot, _ := publishedSlot(t, "Onsale Tail "+runID, 50000)
-	tail := loadtest.RunStage(loadtest.Stage{Name: "oversell-tail", Rate: 275, Duration: 4 * time.Second, Quantity: 50}, 512, checkoutAttempt(runID, tailSlot, 50))
+	tail := loadtest.RunStage(loadtest.Stage{Name: "oversell-tail", Rate: 275, Duration: 4 * time.Second, Quantity: 50}, 512, checkoutAttempt(t, runID, tailSlot, 50))
 	generatorHealthy(tail)
 	report.Stages = append(report.Stages, logStage(t, tail))
 	ta := assertAccounting(t, conn, tailSlot, tail.OK*50, tail.OK)
