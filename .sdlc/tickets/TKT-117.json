@@ -1,11 +1,12 @@
 {
   "key": "TKT-117",
   "type": "Task",
-  "status": "Ready",
+  "status": "Planning",
   "labels": [
-    "risk:low"
+    "risk:low",
+    "agent:planning"
   ],
-  "assignee": null,
+  "assignee": "agent",
   "pr": null,
   "comments": [
     {
