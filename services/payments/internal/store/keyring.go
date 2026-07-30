@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -69,6 +70,13 @@ func NewKeyring(activeKID string, activeKey []byte, historical string) (*Keyring
 	// effectiveHMACKey.
 	material := map[string]string{string(effectiveHMACKey(activeKey)): activeKID}
 
+	// Every way the active key could be read as base64 of something. Computed once, so the
+	// mis-paste check below compares decoded BYTES rather than guessing which encoding an
+	// operator's tooling produced: the runbook's step 1 strips padding, plain `base64` does
+	// not, and RawStdEncoding additionally accepts non-canonical trailing bits. A key that
+	// is not valid base64 at all simply yields nothing here.
+	activeDecodings := base64Decodings(string(activeKey))
+
 	// An entirely empty variable means "no historical keys" — the single-key
 	// configuration. Everything else is parsed, including a whitespace-only value:
 	// treating "   " as unset would let an operator typo boot a single-key ring and
@@ -100,6 +108,37 @@ func NewKeyring(activeKID string, activeKey []byte, historical string) (*Keyring
 			}
 			if _, exists := ring.keys[kid]; exists {
 				return nil, fmt.Errorf("journal keyring: duplicate key id %q", kid)
+			}
+			// THE rotation mistake, caught structurally (TKT-117). JOURNAL_SIGNING_KEY is
+			// raw while these entries are base64, and the runbook produces the outgoing
+			// key's base64 in step 1 and asks for the new RAW key in step 3. Pasting step
+			// 1's output into step 3 clears every check above — it is well over
+			// minSecretLen — so the service would boot and sign real money facts under a
+			// key nobody recorded, undetected until a verify-journal no deployment
+			// schedules.
+			//
+			// The question asked is "does the active key DECODE to a secret already in
+			// this ring", not "does it look like some particular encoding of one". Two
+			// earlier revisions asked the latter and were each defeated by a representation
+			// they had not enumerated: the entry's text as received (RawStdEncoding is
+			// non-strict, so several texts decode to one secret), then the unpadded
+			// canonical text alone (plain `base64` emits PADDED output, a different length,
+			// which slipped straight through). Comparing decoded BYTES ends that game —
+			// every accepted representation collapses to the same answer.
+			//
+			// Two bounds, stated rather than implied:
+			//   - It catches an active key that decodes to a key IN the ring. Base64 of
+			//     some other key, or any other wrong-but-plausible secret, is undetectable,
+			//     and nothing in this package can make it detectable.
+			//   - It cannot tell the mistake from intent: a raw key that happens to decode
+			//     to a ring member is rejected too. That needs a key which is both
+			//     arbitrary and a valid encoding of a secret already in the ring; the error
+			//     names what to change, and an override switch on a fail-closed check is
+			//     worth less than the case it would serve.
+			for _, decoded := range activeDecodings {
+				if subtle.ConstantTimeCompare(decoded, secret) == 1 {
+					return nil, fmt.Errorf("journal keyring: the active key is a base64 encoding of historical key %q — JOURNAL_SIGNING_KEY is RAW (see docs/development.md; you likely pasted step 1's output into step 3)", kid)
+				}
 			}
 			// Two kids that SIGN THE SAME would let a database writer who holds NO secret
 			// relabel a row's key_id between them with verification still passing, because
@@ -190,4 +229,22 @@ func (k *Keyring) verify(kid string, sum, signature []byte) error {
 		return fmt.Errorf("invalid signature under key %q", kid)
 	}
 	return nil
+}
+
+// base64Decodings returns every byte string s could decode to under the standard base64
+// alphabet, padded or unpadded. Both are accepted because the mistake this guards against
+// is an operator pasting whatever their tooling printed, and tooling disagrees: the
+// rotation runbook pipes through `tr -d '='` while a bare `base64` keeps the padding.
+//
+// Deliberately NOT the URL-safe alphabet: ADR-032 fixes the keyring's encoding as standard
+// base64, so a URL-safe paste is a different mistake and is out of this guard's stated
+// scope rather than silently half-covered.
+func base64Decodings(s string) [][]byte {
+	var out [][]byte
+	for _, enc := range []*base64.Encoding{base64.RawStdEncoding, base64.StdEncoding} {
+		if decoded, err := enc.DecodeString(s); err == nil && len(decoded) > 0 {
+			out = append(out, decoded)
+		}
+	}
+	return out
 }

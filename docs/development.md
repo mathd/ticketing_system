@@ -303,11 +303,47 @@ JOURNAL_HISTORICAL_KEYS  retired keys: kid=<secret>,kid=<secret> — secrets bas
    not base64 it.** The asymmetry is deliberate (historical keys share one delimited variable and
    need an encoding; the active key does not), and it is the one step here that fails *silently*:
    a base64 blob is over 16 bytes and passes every check, so the service boots and signs real money
-   facts under a key nobody wrote down. Nothing detects it until the next `verify-journal`.
+   facts under a key nobody wrote down. **Startup now rejects this outright when the pasted value is
+   the base64 of a key in `JOURNAL_HISTORICAL_KEYS` (below) — it is no longer silent.**
 4. Deploy, then run `verify-journal` — it must pass over the now mixed-key chain.
 
 Steps 2 and 3 must land in the **same** deployment: a new active key without the old one in the
 ring makes every pre-rotation entry fail verification.
+
+**Startup rejects the classic mis-paste.** If `JOURNAL_SIGNING_KEY` **decodes** to a key listed in
+`JOURNAL_HISTORICAL_KEYS` — i.e. you pasted step 1's output into step 3 — payments refuses to start
+and names the key it matched. That is the one rotation error the steps above can actually produce,
+and it used to be silent.
+
+It compares *decoded bytes*, so it does not matter which encoding your tooling produced: the step-1
+pipeline above strips padding, a bare `base64` keeps it, and both are caught.
+
+Three honest bounds — the guarantee is exactly this and no wider:
+
+- **Standard base64 only**, padded or unpadded. ADR-032 fixes the keyring's encoding as standard
+  base64, so a URL-safe (`-_`) paste is a different mistake and is deliberately outside this
+  guarantee rather than half-covered.
+- It catches a key that decodes to a secret **in the ring**. Base64 of some other key, or any other
+  wrong-but-plausible secret, is not detectable — nothing in this package can make that detectable.
+- It cannot tell the mistake from intent. A raw key that happens to decode to a ring member is
+  rejected too. That needs a key both arbitrary and a valid encoding of a secret already in the
+  ring; the error names what to change, and there is deliberately no override — an escape hatch on
+  a fail-closed check is worth less than the case it would serve.
+- It is not a security control. This ring is secret material and every holder can forge under every
+  kid in it (ADR-021 §the trust boundary). It catches an honest operator's paste error.
+
+Payments also logs the active key id at startup and before `verify-journal`:
+
+```json
+{"msg":"journal signing key loaded","journal_key_id":"local-v2"}
+```
+
+The key **id** only, never anything derived from the key. An earlier draft of this feature logged a
+truncated HMAC of the key as a "fingerprint" so operators could compare it; that was withdrawn
+because a deterministic tag over a fixed public message is an **offline oracle** for guessing a
+symmetric secret — anyone who can read logs could test candidate keys — and nothing here requires
+`JOURNAL_SIGNING_KEY` to be high-entropy (the development default is a readable string). Do not
+reintroduce a key-derived value into logs or metrics.
 
 **To retire** a key, drop its entry from `JOURNAL_HISTORICAL_KEYS` — but only once **no retained
 entry references it**, including backups and archives expected to stay auditable. Retiring a key

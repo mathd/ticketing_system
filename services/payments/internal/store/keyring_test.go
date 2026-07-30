@@ -161,3 +161,112 @@ func TestNewKeyringRejectsOversizedKeyAliasingItsDigest(t *testing.T) {
 		t.Fatalf("error %q does not identify the alias", err)
 	}
 }
+
+// TKT-117. The rotation runbook's step 1 emits the OUTGOING key's base64; step 3 asks for
+// the new key RAW. Pasting step 1's output into step 3 clears every other check here — it
+// is well over minSecretLen — so payments would boot and sign real money facts under a key
+// nobody recorded, undetected until a verify-journal no deployment schedules.
+//
+// An earlier revision of this ticket logged a truncated HMAC "fingerprint" so an operator
+// could spot it. The ai-review refuted that: a deterministic tag over a fixed public
+// message, for a SYMMETRIC secret, is an offline oracle for guessing the key — and this
+// repo's own default (local-development-journal-key) is exactly the low-entropy kind that
+// makes such an oracle useful. Rejecting the configuration outright leaks nothing and does
+// not depend on an operator remembering to compare anything.
+func TestNewKeyringRejectsBase64PastedActiveKey(t *testing.T) {
+	const outgoing = "retired-journal-secret-v1-abcdef"
+	encoded := base64.RawStdEncoding.EncodeToString([]byte(outgoing))
+
+	// The mistake: the ACTIVE key holds step 1's base64 text.
+	_, err := NewKeyring("local-v2", []byte(encoded), "local-v1="+encoded)
+	if err == nil {
+		t.Fatal("a base64-pasted active key must refuse startup; silently accepting it signs money facts under an unrecorded key")
+	}
+	if !strings.Contains(err.Error(), "RAW") {
+		t.Fatalf("error must tell the operator which variable is raw, got: %v", err)
+	}
+	// Errors never echo secret material — the existing contract for this constructor.
+	if strings.Contains(err.Error(), outgoing) {
+		t.Fatalf("error echoes the decoded secret: %v", err)
+	}
+
+	// The CORRECT rotation — a genuinely new raw active key alongside the encoded outgoing
+	// one — must still build. Without this the test above would pass for a ring that
+	// rejects everything.
+	if _, err := NewKeyring("local-v2", []byte("brand-new-raw-journal-secret-v2"), "local-v1="+encoded); err != nil {
+		t.Fatalf("a correct rotation must still build: %v", err)
+	}
+}
+
+// The guard compares against the CANONICAL re-encoding of the decoded secret, not against
+// the text the entry happened to carry (ai-review pass 2). base64.RawStdEncoding is
+// NON-STRICT: a final quantum with non-zero unused bits decodes fine, so two different
+// texts yield identical secrets. A historical entry stored in such a form would decode
+// normally while its text differed from what the runbook's step 1 prints — and a
+// text-to-text comparison would wave the resulting paste straight through, recreating the
+// exact silent failure this guard exists to stop.
+func TestNewKeyringCatchesBase64PasteAcrossNonCanonicalHistoricalEncoding(t *testing.T) {
+	const outgoing = "retired-journal-secret-v1-abcdef"
+	canonical := base64.RawStdEncoding.EncodeToString([]byte(outgoing))
+
+	// A non-canonical but ACCEPTED encoding of the same secret: flip the unused trailing
+	// bits by advancing the final character.
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	last := canonical[len(canonical)-1]
+	noncanonical := canonical[:len(canonical)-1] + string(alphabet[(strings.IndexByte(alphabet, last)+1)%64])
+
+	// Guard the premise, and distinguish the two ways it can fail — conflating them is how
+	// a test stops exercising what it claims while still looking healthy.
+	//
+	// Advancing the final character only preserves the decoded bytes when the last quantum
+	// has spare bits (len(secret) mod 3 != 0). If it ever decodes to DIFFERENT bytes, this
+	// test is no longer about non-canonical encodings at all and must say so loudly.
+	decoded, err := base64.RawStdEncoding.DecodeString(noncanonical)
+	if err != nil {
+		t.Skipf("RawStdEncoding no longer accepts non-canonical trailing bits (%v); the bypass this covers is gone", err)
+	}
+	if string(decoded) != outgoing {
+		t.Fatalf("the constructed encoding decodes to different bytes, so this test would pass for a reason unrelated to non-canonical encodings: pick a secret whose length is not a multiple of 3 (len=%d)", len(outgoing))
+	}
+	if noncanonical == canonical {
+		t.Fatal("failed to construct a distinct non-canonical encoding")
+	}
+
+	// The operator pastes the CANONICAL text (what step 1 prints) while the ring holds the
+	// non-canonical one. Text comparison misses this; canonical comparison catches it.
+	_, err = NewKeyring("local-v2", []byte(canonical), "local-v1="+noncanonical)
+	if err == nil {
+		t.Fatal("base64 paste went undetected because the historical entry used a different accepted encoding")
+	}
+	if !strings.Contains(err.Error(), "RAW") {
+		t.Fatalf("error must tell the operator which variable is raw, got: %v", err)
+	}
+}
+
+// ai-review pass 3. The runbook pipes step 1 through `tr -d '='`, but a bare `base64`
+// keeps the padding — and a padded encoding is a DIFFERENT-LENGTH string, so a guard that
+// compared against the unpadded canonical text alone let this variant boot silently. It is
+// the same mistake with different tooling, which is exactly the realistic case.
+func TestNewKeyringCatchesPaddedBase64PastedActiveKey(t *testing.T) {
+	// 32 bytes: not a multiple of 3, so the standard encoding really does carry '='.
+	const outgoing = "retired-journal-secret-v1-abcdef"
+	raw := base64.RawStdEncoding.EncodeToString([]byte(outgoing))
+	padded := base64.StdEncoding.EncodeToString([]byte(outgoing))
+
+	// Guard the premise: if these ever stop differing, this test silently stops covering
+	// the padded variant.
+	if padded == raw || !strings.HasSuffix(padded, "=") {
+		t.Fatalf("fixture no longer exercises padding: raw=%q padded=%q", raw, padded)
+	}
+
+	_, err := NewKeyring("local-v2", []byte(padded), "local-v1="+raw)
+	if err == nil {
+		t.Fatal("a PADDED base64 paste must refuse startup; it is the same mistake with different tooling")
+	}
+	if !strings.Contains(err.Error(), "RAW") {
+		t.Fatalf("error must tell the operator which variable is raw, got: %v", err)
+	}
+	if strings.Contains(err.Error(), outgoing) {
+		t.Fatalf("error echoes the decoded secret: %v", err)
+	}
+}

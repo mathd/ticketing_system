@@ -159,6 +159,10 @@ if [ "$mixed_kids" -lt 2 ]; then
   echo "smoke: payments_store_smoke holds $mixed_kids key id(s); the rotation test's mixed-key fixture is missing" >&2
   exit 1
 fi
+# These four literals are OWNED by services/payments/internal/store/journal_smoke_test.go
+# (smokeKIDv1/smokeKIDv2/smokeKeyv1/smokeKeyv2) — the rotation test there writes the
+# mixed-kid journal this verifies. TestSmokeJournalKeyLiteralsMatchScript reads this file
+# and fails if the two sets drift, so edit both or neither (TKT-117).
 compose exec -T \
   -e DATABASE_URL=postgres://payments:payments@postgres:5432/payments_store_smoke \
   -e JOURNAL_KEY_ID=smoke-v2 \

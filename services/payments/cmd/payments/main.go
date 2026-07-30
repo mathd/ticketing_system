@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -194,11 +195,33 @@ func signingConfig() (*paymentstore.Keyring, error) {
 	}
 	return paymentstore.NewKeyring(id, []byte(secret), os.Getenv("JOURNAL_HISTORICAL_KEYS"))
 }
+
+// logJournalSigningKey states which key id the journal is being signed under, so the
+// active kid is visible without reading the environment of a running container.
+//
+// It logs the key ID ONLY. An earlier revision also logged a truncated HMAC of the key as
+// a "fingerprint"; the ai-review caught that this publishes a deterministic tag over a
+// fixed public message for a SYMMETRIC secret, which is an offline oracle for guessing the
+// key — and this repo's own default key (local-development-journal-key) is exactly the
+// low-entropy kind that makes such an oracle useful. The mis-paste it was meant to detect
+// is now rejected at startup by NewKeyring instead, which leaks nothing. The kid is
+// already stored in plaintext on every journal row, so logging it discloses nothing new.
+//
+// Deliberately NOT called from verifyConcurrentAppend: that subcommand is a smoke
+// fault-injection helper, not an operator surface (plan-final D4).
+func logJournalSigningKey(ctx context.Context, log *slog.Logger, keys *paymentstore.Keyring) {
+	log.InfoContext(ctx, "journal signing key loaded", "journal_key_id", keys.ActiveKeyID())
+}
+
 func verifyJournal() error {
 	keys, err := signingConfig()
 	if err != nil {
 		return err
 	}
+	// An operator running verify-journal to diagnose a failure is exactly the person who
+	// needs to know which key is loaded. stderr keeps stdout free for scripting, and
+	// smoke.sh's retired-key assertion is a substring match, so an extra line is safe.
+	logJournalSigningKey(context.Background(), obs.NewLogger(serviceName, os.Stderr), keys)
 	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return err
@@ -267,6 +290,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	logJournalSigningKey(ctx, log, keys)
 	provider, providerRetention, err := pspForKey(os.Getenv("STRIPE_SECRET_KEY"))
 	if err != nil {
 		return err

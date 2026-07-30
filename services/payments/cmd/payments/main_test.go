@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
 
 	"ticketing/services/payments/internal/psp"
+	"ticketing/shared/obs"
 )
 
 // Provider selection is fail-fast config (mirrors signingConfig): the fake is chosen only
@@ -156,5 +160,50 @@ func TestSigningConfigKeyring(t *testing.T) {
 				t.Fatalf("error echoes secret material: %q", err)
 			}
 		})
+	}
+}
+
+// TKT-117. The startup line states which key id the journal is signed under. It logs the
+// key ID ONLY: an earlier revision also logged a truncated HMAC of the key, which the
+// ai-review showed is an offline oracle for guessing a symmetric secret. The kid is already
+// stored in plaintext on every journal row, so logging it discloses nothing new — and the
+// mis-paste that motivated the fingerprint is now rejected outright by NewKeyring
+// (TestNewKeyringRejectsBase64PastedActiveKey).
+func TestLogJournalSigningKey(t *testing.T) {
+	// A real, distinctive secret: the absence assertions below are worthless against a
+	// placeholder the code never held.
+	const rawSecret = "tkt117-distinctive-journal-secret"
+	pastedBase64 := base64.RawStdEncoding.EncodeToString([]byte(rawSecret))
+
+	t.Setenv("JOURNAL_KEY_ID", "local-v1")
+	t.Setenv("JOURNAL_SIGNING_KEY", rawSecret)
+	t.Setenv("JOURNAL_HISTORICAL_KEYS", "")
+	ring, err := signingConfig()
+	if err != nil {
+		t.Fatalf("signingConfig: %v", err)
+	}
+	var buf bytes.Buffer
+	logJournalSigningKey(context.Background(), obs.NewLogger("payments", &buf), ring)
+	out := buf.String()
+
+	// The leak assertions come FIRST, deliberately: behind a content assertion they are
+	// unreachable exactly when a change both leaks material and alters the line.
+	if strings.Contains(out, rawSecret) {
+		t.Fatalf("LOG LEAKED THE RAW SIGNING KEY: %s", out)
+	}
+	if strings.Contains(out, pastedBase64) {
+		t.Fatalf("LOG LEAKED A BASE64 ENCODING OF THE SIGNING KEY: %s", out)
+	}
+	// Narrow, and honest about it: substring absence proves the literal secret is not
+	// printed. It does NOT prove the absence of a derived value that could serve as an
+	// offline oracle — that property is held by the line carrying no key-derived field at
+	// all, which is why this asserts the field set rather than trusting the check above.
+	for _, forbidden := range []string{"fingerprint", "secret", "key_material"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("log line carries a key-derived field %q; only the key id may be logged: %s", forbidden, out)
+		}
+	}
+	if !strings.Contains(out, `"journal_key_id":"local-v1"`) {
+		t.Fatalf("log line does not carry the active key id: %s", out)
 	}
 }

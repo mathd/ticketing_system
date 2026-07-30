@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +40,9 @@ const (
 	// behind, and scripts/smoke.sh then runs the PACKAGED binary's verify-journal
 	// against it with exactly these values — that is what makes the "verify-journal
 	// verifies a multi-key journal" claim evidence rather than an argument.
+	// scripts/smoke.sh hard-codes these same four values (and the base64 of smokeKeyv1)
+	// to run the packaged verify-journal over the journal this package leaves behind.
+	// TestSmokeJournalKeyLiteralsMatchScript below pins the two together (TKT-117).
 	smokeKIDv1 = "smoke-v1"
 	smokeKIDv2 = "smoke-v2"
 	smokeKeyv1 = "smoke-journal-key-v1-0123456789"
@@ -680,4 +685,98 @@ func awaitBackendInHeadUpdate(t *testing.T, db *sql.DB, ctx context.Context, app
 	}
 	t.Fatal("no backend reached the head update within 30s: the delay trigger did not fire, or pg_sleep is not reported as wait_event='PgSleep' on this PostgreSQL")
 	return 0
+}
+
+// TKT-117 half B (absorbed TKT-118). scripts/smoke.sh hard-codes these same key ids and
+// secrets — plus the base64 of the v1 secret — to drive the PACKAGED binary's
+// verify-journal against the mixed-kid journal the rotation test above leaves behind.
+// Nothing linked the two sets, so editing one silently desynchronized them.
+//
+// Drift already failed LOUDLY (the packaged check breaks), so this guard's job is a CLEAR
+// MESSAGE, not detection. That is why it compares the SET of values rather than counting
+// assignment shapes: a set comparison catches drift in either direction, survives
+// reformatting and reordering, and says "shell has X, Go has Y" instead of "expected 2
+// occurrences, found 1". A guard that breaks when someone reflows a shell line would cost
+// more than the cosmetic problem it guards.
+func TestSmokeJournalKeyLiteralsMatchScript(t *testing.T) {
+	script, err := os.ReadFile("../../../../scripts/smoke.sh")
+	if err != nil {
+		t.Fatalf("read smoke.sh (this guard exists to link it to the constants above): %v", err)
+	}
+	want := map[string][]string{
+		"JOURNAL_KEY_ID":          {smokeKIDv2},
+		"JOURNAL_SIGNING_KEY":     {smokeKeyv2},
+		"JOURNAL_HISTORICAL_KEYS": {smokeKIDv1 + "=" + base64.RawStdEncoding.EncodeToString([]byte(smokeKeyv1))},
+	}
+	got := smokeJournalKeyAssignments(string(script))
+	for _, v := range []string{"JOURNAL_KEY_ID", "JOURNAL_SIGNING_KEY", "JOURNAL_HISTORICAL_KEYS"} {
+		if !equalStringSets(got[v], want[v]) {
+			t.Errorf("scripts/smoke.sh sets %s to %q; the Go constants in this file say %q.\n"+
+				"These must match: smoke.sh drives the packaged verify-journal over the journal this package writes.",
+				v, got[v], want[v])
+		}
+	}
+}
+
+// smokeJournalKeyAssignments extracts the distinct values smoke.sh assigns to each journal
+// keyring variable, in any `-e VAR=value` or `VAR=value` form.
+func smokeJournalKeyAssignments(script string) map[string][]string {
+	out := map[string][]string{}
+	for _, name := range []string{"JOURNAL_KEY_ID", "JOURNAL_SIGNING_KEY", "JOURNAL_HISTORICAL_KEYS"} {
+		seen := map[string]bool{}
+		for _, m := range regexp.MustCompile(name+`=([^\s\\]*)`).FindAllStringSubmatch(script, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				out[name] = append(out[name], m[1])
+			}
+		}
+		sort.Strings(out[name])
+	}
+	return out
+}
+
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	x, y := append([]string(nil), a...), append([]string(nil), b...)
+	sort.Strings(x)
+	sort.Strings(y)
+	for i := range x {
+		if x[i] != y[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// The guard above passes the moment it is written — the values are in sync today — so its
+// ability to FAIL is what has to be demonstrated, not its ability to pass. Each mutation
+// changes exactly one literal in a copy of the real script and must be detected.
+func TestSmokeJournalKeyLiteralsGuardDetectsDrift(t *testing.T) {
+	raw, err := os.ReadFile("../../../../scripts/smoke.sh")
+	if err != nil {
+		t.Fatalf("read smoke.sh: %v", err)
+	}
+	script := string(raw)
+	v1b64 := base64.RawStdEncoding.EncodeToString([]byte(smokeKeyv1))
+	baseline := smokeJournalKeyAssignments(script)
+
+	for _, tc := range []struct{ name, old, new, variable string }{
+		{"v2 secret drifts", smokeKeyv2, "smoke-journal-key-v2-9999999999", "JOURNAL_SIGNING_KEY"},
+		{"v1 kid drifts", smokeKIDv1 + "=" + v1b64, "smoke-v9=" + v1b64, "JOURNAL_HISTORICAL_KEYS"},
+		{"v1 base64 drifts", v1b64, "ZHJpZnRlZC1zZWNyZXQtdmFsdWUtMDAwMA", "JOURNAL_HISTORICAL_KEYS"},
+		{"v2 kid drifts", "JOURNAL_KEY_ID=" + smokeKIDv2, "JOURNAL_KEY_ID=smoke-v9", "JOURNAL_KEY_ID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := strings.ReplaceAll(script, tc.old, tc.new)
+			if mutated == script {
+				t.Fatalf("mutation %q did not change the script; the guard is checking a literal that is no longer there", tc.old)
+			}
+			got := smokeJournalKeyAssignments(mutated)
+			if equalStringSets(got[tc.variable], baseline[tc.variable]) {
+				t.Fatalf("drift in %s went undetected: still %q", tc.variable, got[tc.variable])
+			}
+		})
+	}
 }
