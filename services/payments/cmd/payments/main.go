@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -194,11 +195,31 @@ func signingConfig() (*paymentstore.Keyring, error) {
 	}
 	return paymentstore.NewKeyring(id, []byte(secret), os.Getenv("JOURNAL_HISTORICAL_KEYS"))
 }
+
+// logJournalSigningKey emits the active key id and a short non-reversible fingerprint of
+// the key itself, so a mis-pasted JOURNAL_SIGNING_KEY (raw variable, base64 value — see
+// docs/development.md) is visible in one line instead of at the next verify-journal.
+//
+// Never logs key material; ActiveKeyFingerprint carries that contract and the test asserts
+// the raw secret and its base64 encoding are both absent from the output.
+//
+// Deliberately NOT called from verifyConcurrentAppend: that subcommand is a smoke
+// fault-injection helper, not an operator surface (plan-final D4).
+func logJournalSigningKey(ctx context.Context, log *slog.Logger, keys *paymentstore.Keyring) {
+	log.InfoContext(ctx, "journal signing key loaded",
+		"journal_key_id", keys.ActiveKeyID(),
+		"journal_key_fingerprint", keys.ActiveKeyFingerprint())
+}
+
 func verifyJournal() error {
 	keys, err := signingConfig()
 	if err != nil {
 		return err
 	}
+	// An operator running verify-journal to diagnose a failure is exactly the person who
+	// needs to know which key is loaded. stderr keeps stdout free for scripting, and
+	// smoke.sh's retired-key assertion is a substring match, so an extra line is safe.
+	logJournalSigningKey(context.Background(), obs.NewLogger(serviceName, os.Stderr), keys)
 	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return err
@@ -267,6 +288,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	logJournalSigningKey(ctx, log, keys)
 	provider, providerRetention, err := pspForKey(os.Getenv("STRIPE_SECRET_KEY"))
 	if err != nil {
 		return err

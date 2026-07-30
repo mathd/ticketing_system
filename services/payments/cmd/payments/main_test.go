@@ -1,12 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
 
 	"ticketing/services/payments/internal/psp"
+	"ticketing/shared/obs"
 )
+
+// wantFingerprint is the pinned fingerprint of TestLogJournalSigningKeyFingerprint's
+// rawSecret under domain "journal-keyring-fingerprint-v1". Hardcoded on purpose.
+const wantFingerprint = "85000b81"
 
 // Provider selection is fail-fast config (mirrors signingConfig): the fake is chosen only
 // by the explicit sentinel (or unset), a test-mode key selects Stripe, and a LIVE key or
@@ -157,4 +165,59 @@ func TestSigningConfigKeyring(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TKT-117 COS 1/2. JOURNAL_SIGNING_KEY is RAW while JOURNAL_HISTORICAL_KEYS entries are
+// base64, and the rotation runbook teaches the base64 encoding one step BEFORE setting the
+// raw active key. An operator who mirrors that step and pastes a base64 blob into
+// JOURNAL_SIGNING_KEY gets no error at all — the value is over 16 bytes and passes every
+// validation — so payments boots and signs real money facts under a key nobody recorded.
+// The fingerprint makes that one log line instead of a surprise at the next verify-journal,
+// which nothing schedules in a deployed environment.
+//
+// It is an operability aid against an honest operator's paste error. It is NOT a security
+// control: this ring is secret material and every holder can forge under every kid in it
+// (ADR-021 §the trust boundary; keyring.go's own header says so bluntly).
+func TestLogJournalSigningKeyFingerprint(t *testing.T) {
+	// A real, distinctive secret — the absence assertions below are worthless against a
+	// placeholder the code never held.
+	const rawSecret = "tkt117-distinctive-journal-secret"
+	pastedBase64 := base64.RawStdEncoding.EncodeToString([]byte(rawSecret))
+
+	capture := func(t *testing.T, id, secret string) string {
+		t.Helper()
+		t.Setenv("JOURNAL_KEY_ID", id)
+		t.Setenv("JOURNAL_SIGNING_KEY", secret)
+		t.Setenv("JOURNAL_HISTORICAL_KEYS", "")
+		ring, err := signingConfig()
+		if err != nil {
+			t.Fatalf("signingConfig: %v", err)
+		}
+		var buf bytes.Buffer
+		logJournalSigningKey(context.Background(), obs.NewLogger("payments", &buf), ring)
+		return buf.String()
+	}
+
+	t.Run("logs the key id and a fingerprint, and no key material", func(t *testing.T) {
+		out := capture(t, "local-v1", rawSecret)
+		// The leak assertions come FIRST, deliberately. Behind the golden below they would
+		// be unreachable whenever the fingerprint also changed — and a change that leaks
+		// key material is exactly the change most likely to move the fingerprint too.
+		if strings.Contains(out, rawSecret) {
+			t.Fatalf("LOG LEAKED THE RAW SIGNING KEY: %s", out)
+		}
+		if strings.Contains(out, pastedBase64) {
+			t.Fatalf("LOG LEAKED A BASE64 ENCODING OF THE SIGNING KEY: %s", out)
+		}
+		if !strings.Contains(out, `"journal_key_id":"local-v1"`) {
+			t.Fatalf("log line does not carry the active key id: %s", out)
+		}
+		// Golden, hardcoded: an expectation recomputed from the production helper would
+		// pass no matter what the domain string said, which is the whole thing being
+		// pinned. Regenerating this constant is a deliberate act.
+		if !strings.Contains(out, `"journal_key_fingerprint":"`+wantFingerprint+`"`) {
+			t.Fatalf("fingerprint is not the pinned value %q: %s", wantFingerprint, out)
+		}
+	})
+
 }

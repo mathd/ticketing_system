@@ -303,11 +303,38 @@ JOURNAL_HISTORICAL_KEYS  retired keys: kid=<secret>,kid=<secret> — secrets bas
    not base64 it.** The asymmetry is deliberate (historical keys share one delimited variable and
    need an encoding; the active key does not), and it is the one step here that fails *silently*:
    a base64 blob is over 16 bytes and passes every check, so the service boots and signs real money
-   facts under a key nobody wrote down. Nothing detects it until the next `verify-journal`.
+   facts under a key nobody wrote down. **Check the startup fingerprint (below) — it is what turns
+   this from silent into one log line.**
 4. Deploy, then run `verify-journal` — it must pass over the now mixed-key chain.
 
 Steps 2 and 3 must land in the **same** deployment: a new active key without the old one in the
 ring makes every pre-rotation entry fail verification.
+
+**The startup fingerprint.** Payments logs the active key's identity at startup, and
+`verify-journal` logs the same line to stderr before it runs:
+
+```json
+{"msg":"journal signing key loaded","journal_key_id":"local-v2","journal_key_fingerprint":"85000b81"}
+```
+
+`journal_key_fingerprint` is the first 4 bytes of `HMAC(active key, "journal-keyring-fingerprint-v1")`,
+as 8 hex characters. It is **non-reversible** and reveals no key material. Record it alongside the
+key at rotation time and compare it after deploying — a base64-pasted key produces a *different*
+fingerprint, which is the only signal that step 3 went wrong before money facts are signed.
+
+Three things it is not:
+
+- **Not a security control.** This ring is secret material and every holder can forge under every
+  kid in it (ADR-021 §the trust boundary). The fingerprint catches an honest paste error, not an
+  adversary.
+- **Not proof of correctness.** Eight hex characters are a 32-bit identifier: a *mismatch* is
+  evidence, a *match* is not proof. And it only helps if you recorded the expected value.
+- **Not a check on retired keys.** Only the active key is fingerprinted. A wrong *historical*
+  secret stays undiagnosed until verification reaches that key's era.
+
+It is computed over the key's *effective* HMAC identity, so two secrets that HMAC identically (a
+key longer than 64 bytes and its SHA-256, for instance) print the same fingerprint — correctly, since
+they sign the journal identically.
 
 **To retire** a key, drop its entry from `JOURNAL_HISTORICAL_KEYS` — but only once **no retained
 entry references it**, including backups and archives expected to stay auditable. Retiring a key

@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -160,4 +162,69 @@ func TestNewKeyringRejectsOversizedKeyAliasingItsDigest(t *testing.T) {
 	if !strings.Contains(err.Error(), "same HMAC key") {
 		t.Fatalf("error %q does not identify the alias", err)
 	}
+}
+
+// TKT-117. The fingerprint's PROPERTIES live here, not in the cmd package's logging test.
+// They are properties of the derivation, so testing them through a logger would compare
+// timestamped JSON lines — which is how the first attempt at this test both failed on
+// correct behaviour AND passed a different assertion for a reason unrelated to keys
+// (docs/learnings: check *why* a test is red).
+func TestActiveKeyFingerprint(t *testing.T) {
+	fingerprint := func(t *testing.T, key []byte) string {
+		t.Helper()
+		ring, err := NewKeyring("local-v1", key, "")
+		if err != nil {
+			t.Fatalf("NewKeyring: %v", err)
+		}
+		return ring.ActiveKeyFingerprint()
+	}
+
+	// The mistake this whole ticket exists for: JOURNAL_SIGNING_KEY is RAW, but the runbook
+	// teaches base64 one step earlier, and pasting the encoded text into the raw variable
+	// passes every validation. The fingerprint is the only thing that can reveal it.
+	t.Run("a base64-pasted key differs from the raw key it encodes", func(t *testing.T) {
+		raw := []byte("tkt117-distinctive-journal-secret")
+		pasted := []byte(base64.RawStdEncoding.EncodeToString(raw))
+		if fingerprint(t, raw) == fingerprint(t, pasted) {
+			t.Fatal("raw and base64-pasted keys fingerprint the same; the paste error stays invisible")
+		}
+	})
+
+	// Computed over the EFFECTIVE HMAC key (plan-final D1). RFC 2104 replaces an
+	// over-block-size key with its digest, so these two configurations sign journal entries
+	// IDENTICALLY. A fingerprint that distinguished them would tell an operator two
+	// interchangeable keys are different — the opposite of the diagnostic's job.
+	t.Run("a long key and its digest fingerprint the same, because they sign the same", func(t *testing.T) {
+		long := bytes.Repeat([]byte("k"), sha256.BlockSize+1)
+		sum := sha256.Sum256(long)
+		if fingerprint(t, long) != fingerprint(t, sum[:]) {
+			t.Fatal("HMAC-equivalent keys must fingerprint identically: they verify the same history")
+		}
+	})
+
+	// Shape: 8 lowercase hex characters, and never the key itself in any form.
+	t.Run("is eight lowercase hex characters and reveals no key material", func(t *testing.T) {
+		key := []byte("tkt117-distinctive-journal-secret")
+		got := fingerprint(t, key)
+		if !regexp.MustCompile(`^[0-9a-f]{8}$`).MatchString(got) {
+			t.Fatalf("fingerprint %q is not 8 lowercase hex characters", got)
+		}
+		if strings.Contains(got, string(key)) || strings.Contains(string(key), got) {
+			t.Fatalf("fingerprint %q overlaps the key material", got)
+		}
+	})
+
+	// The domain string is what keeps this out of the journal's signing space, so a change
+	// to it must be a deliberate versioned act, not a silent edit. Pinned by a golden.
+	t.Run("is pinned to its domain string", func(t *testing.T) {
+		if journalKeyFingerprintDomain != "journal-keyring-fingerprint-v1" {
+			t.Fatalf("domain changed to %q: every fingerprint changes, which is a versioned decision", journalKeyFingerprintDomain)
+		}
+		// Structural domain separation: Append/Verify only ever HMAC hash()'s output, which
+		// is a SHA-256 sum and therefore ALWAYS 32 bytes. This domain is 30. No journal
+		// signing input can equal it, by length — before any collision argument.
+		if len(journalKeyFingerprintDomain) == sha256.Size {
+			t.Fatal("domain is exactly a SHA-256 sum's length; it could collide with a journal signing input")
+		}
+	})
 }
