@@ -101,6 +101,26 @@ func NewKeyring(activeKID string, activeKey []byte, historical string) (*Keyring
 			if _, exists := ring.keys[kid]; exists {
 				return nil, fmt.Errorf("journal keyring: duplicate key id %q", kid)
 			}
+			// THE rotation mistake, caught structurally (TKT-117). JOURNAL_SIGNING_KEY is
+			// raw while these entries are base64, and the runbook produces the outgoing
+			// key's base64 in step 1 and asks for the new RAW key in step 3. Pasting step
+			// 1's output into step 3 clears every check above — it is well over
+			// minSecretLen — so the service would boot and sign real money facts under a
+			// key nobody recorded, undetected until a verify-journal no deployment
+			// schedules.
+			//
+			// If the active key is byte-for-byte the base64 of a key in this same list,
+			// that is what happened. Refuse to start: an operator reading one error beats
+			// an operator remembering to compare a value, and unlike a logged fingerprint
+			// this reveals nothing about any key to anyone who can read logs.
+			//
+			// Bound, stated rather than implied: this catches the mistake the runbook can
+			// actually produce. Base64 of some key that is not in the ring is not
+			// detectable here, and no check in this package can make a wrong-but-plausible
+			// secret detectable.
+			if hmac.Equal(activeKey, []byte(encoded)) {
+				return nil, fmt.Errorf("journal keyring: the active key is the base64 encoding of historical key %q — JOURNAL_SIGNING_KEY is RAW (see docs/development.md; you likely pasted step 1's output into step 3)", kid)
+			}
 			// Two kids that SIGN THE SAME would let a database writer who holds NO secret
 			// relabel a row's key_id between them with verification still passing, because
 			// key_id is not inside canonical v1 and the signature does not bind it. The
@@ -155,42 +175,6 @@ func copyOf(b []byte) []byte {
 
 // ActiveKeyID is the key id new entries are signed under.
 func (k *Keyring) ActiveKeyID() string { return k.activeKID }
-
-// journalKeyFingerprintDomain is the fixed input the fingerprint HMACs. It is NOT a
-// journal signing input, and that is provable rather than asserted: Append and Verify
-// only ever HMAC the output of hash() (store.go), which is a SHA-256 sum and therefore
-// ALWAYS exactly 32 bytes. This constant is 30 bytes, so no journal signing input can
-// equal it — by length, before any collision argument is needed. Changing this string
-// changes every fingerprint, so it is versioned; the golden in the payments cmd test
-// pins it.
-const journalKeyFingerprintDomain = "journal-keyring-fingerprint-v1"
-
-// ActiveKeyFingerprint returns a short, non-reversible identifier for the active signing
-// key: the first 4 bytes of HMAC(activeKey, domain), as 8 lowercase hex characters.
-//
-// What it is FOR. JOURNAL_SIGNING_KEY is raw while JOURNAL_HISTORICAL_KEYS entries are
-// base64, and the rotation runbook teaches the base64 encoding one step before setting the
-// raw active key. Pasting a base64 blob into the raw variable passes every validation here
-// — it is well over minSecretLen — so the service boots and signs money facts under a key
-// nobody recorded, and nothing notices until a verify-journal that no deployment schedules.
-// This turns that into one startup log line an operator can compare against a value they
-// recorded at rotation time.
-//
-// What it is NOT. It is not a security control and must never be described as one. This
-// ring holds SECRET material: every holder can forge under every kid in it (see the type
-// comment above, and ADR-021 §the trust boundary). The fingerprint defends against an
-// honest operator's paste error, not against an adversary. Eight hex characters are a
-// 32-bit identifier, so it is evidence of a MISMATCH, never proof of a match.
-//
-// Computed over the EFFECTIVE HMAC key, not the configured bytes, so it answers the
-// question an operator actually has — "will this key verify my history?" Two configurations
-// that HMAC identically are the same key to the journal and print the same fingerprint.
-// Truncation is the second barrier: sign() returns a full 32-byte MAC, so 4 bytes of a
-// different-domain MAC can never be replayed as a journal signature.
-func (k *Keyring) ActiveKeyFingerprint() string {
-	mac := sign(effectiveHMACKey(k.keys[k.activeKID]), []byte(journalKeyFingerprintDomain))
-	return fmt.Sprintf("%x", mac[:4])
-}
 
 // Has reports whether the ring can verify entries signed under kid. Mirrors the
 // access lifecycle keyring's Has (keys.go) — it exists so configuration can be

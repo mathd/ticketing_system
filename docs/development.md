@@ -303,38 +303,37 @@ JOURNAL_HISTORICAL_KEYS  retired keys: kid=<secret>,kid=<secret> — secrets bas
    not base64 it.** The asymmetry is deliberate (historical keys share one delimited variable and
    need an encoding; the active key does not), and it is the one step here that fails *silently*:
    a base64 blob is over 16 bytes and passes every check, so the service boots and signs real money
-   facts under a key nobody wrote down. **Check the startup fingerprint (below) — it is what turns
-   this from silent into one log line.**
+   facts under a key nobody wrote down. **Startup now rejects this outright when the pasted value is
+   the base64 of a key in `JOURNAL_HISTORICAL_KEYS` (below) — it is no longer silent.**
 4. Deploy, then run `verify-journal` — it must pass over the now mixed-key chain.
 
 Steps 2 and 3 must land in the **same** deployment: a new active key without the old one in the
 ring makes every pre-rotation entry fail verification.
 
-**The startup fingerprint.** Payments logs the active key's identity at startup, and
-`verify-journal` logs the same line to stderr before it runs:
+**Startup rejects the classic mis-paste.** If `JOURNAL_SIGNING_KEY` holds the *base64* of a key
+listed in `JOURNAL_HISTORICAL_KEYS` — i.e. you pasted step 1's output into step 3 — payments refuses
+to start and names the key it matched. That is the one rotation error the steps above can actually
+produce, and it used to be silent.
+
+Two honest bounds:
+
+- It catches base64 of a key **in the ring**. Base64 of some other key, or any other
+  wrong-but-plausible secret, is not detectable — nothing in this package can make that detectable.
+- It is not a security control. This ring is secret material and every holder can forge under every
+  kid in it (ADR-021 §the trust boundary). It catches an honest operator's paste error.
+
+Payments also logs the active key id at startup and before `verify-journal`:
 
 ```json
-{"msg":"journal signing key loaded","journal_key_id":"local-v2","journal_key_fingerprint":"85000b81"}
+{"msg":"journal signing key loaded","journal_key_id":"local-v2"}
 ```
 
-`journal_key_fingerprint` is the first 4 bytes of `HMAC(active key, "journal-keyring-fingerprint-v1")`,
-as 8 hex characters. It is **non-reversible** and reveals no key material. Record it alongside the
-key at rotation time and compare it after deploying — a base64-pasted key produces a *different*
-fingerprint, which is the only signal that step 3 went wrong before money facts are signed.
-
-Three things it is not:
-
-- **Not a security control.** This ring is secret material and every holder can forge under every
-  kid in it (ADR-021 §the trust boundary). The fingerprint catches an honest paste error, not an
-  adversary.
-- **Not proof of correctness.** Eight hex characters are a 32-bit identifier: a *mismatch* is
-  evidence, a *match* is not proof. And it only helps if you recorded the expected value.
-- **Not a check on retired keys.** Only the active key is fingerprinted. A wrong *historical*
-  secret stays undiagnosed until verification reaches that key's era.
-
-It is computed over the key's *effective* HMAC identity, so two secrets that HMAC identically (a
-key longer than 64 bytes and its SHA-256, for instance) print the same fingerprint — correctly, since
-they sign the journal identically.
+The key **id** only, never anything derived from the key. An earlier draft of this feature logged a
+truncated HMAC of the key as a "fingerprint" so operators could compare it; that was withdrawn
+because a deterministic tag over a fixed public message is an **offline oracle** for guessing a
+symmetric secret — anyone who can read logs could test candidate keys — and nothing here requires
+`JOURNAL_SIGNING_KEY` to be high-entropy (the development default is a readable string). Do not
+reintroduce a key-derived value into logs or metrics.
 
 **To retire** a key, drop its entry from `JOURNAL_HISTORICAL_KEYS` — but only once **no retained
 entry references it**, including backups and archives expected to stay auditable. Retiring a key

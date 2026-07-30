@@ -12,10 +12,6 @@ import (
 	"ticketing/shared/obs"
 )
 
-// wantFingerprint is the pinned fingerprint of TestLogJournalSigningKeyFingerprint's
-// rawSecret under domain "journal-keyring-fingerprint-v1". Hardcoded on purpose.
-const wantFingerprint = "85000b81"
-
 // Provider selection is fail-fast config (mirrors signingConfig): the fake is chosen only
 // by the explicit sentinel (or unset), a test-mode key selects Stripe, and a LIVE key or
 // an unrecognized value refuses to start — a typo'd key must never silently charge the
@@ -167,57 +163,47 @@ func TestSigningConfigKeyring(t *testing.T) {
 	}
 }
 
-// TKT-117 COS 1/2. JOURNAL_SIGNING_KEY is RAW while JOURNAL_HISTORICAL_KEYS entries are
-// base64, and the rotation runbook teaches the base64 encoding one step BEFORE setting the
-// raw active key. An operator who mirrors that step and pastes a base64 blob into
-// JOURNAL_SIGNING_KEY gets no error at all — the value is over 16 bytes and passes every
-// validation — so payments boots and signs real money facts under a key nobody recorded.
-// The fingerprint makes that one log line instead of a surprise at the next verify-journal,
-// which nothing schedules in a deployed environment.
-//
-// It is an operability aid against an honest operator's paste error. It is NOT a security
-// control: this ring is secret material and every holder can forge under every kid in it
-// (ADR-021 §the trust boundary; keyring.go's own header says so bluntly).
-func TestLogJournalSigningKeyFingerprint(t *testing.T) {
-	// A real, distinctive secret — the absence assertions below are worthless against a
+// TKT-117. The startup line states which key id the journal is signed under. It logs the
+// key ID ONLY: an earlier revision also logged a truncated HMAC of the key, which the
+// ai-review showed is an offline oracle for guessing a symmetric secret. The kid is already
+// stored in plaintext on every journal row, so logging it discloses nothing new — and the
+// mis-paste that motivated the fingerprint is now rejected outright by NewKeyring
+// (TestNewKeyringRejectsBase64PastedActiveKey).
+func TestLogJournalSigningKey(t *testing.T) {
+	// A real, distinctive secret: the absence assertions below are worthless against a
 	// placeholder the code never held.
 	const rawSecret = "tkt117-distinctive-journal-secret"
 	pastedBase64 := base64.RawStdEncoding.EncodeToString([]byte(rawSecret))
 
-	capture := func(t *testing.T, id, secret string) string {
-		t.Helper()
-		t.Setenv("JOURNAL_KEY_ID", id)
-		t.Setenv("JOURNAL_SIGNING_KEY", secret)
-		t.Setenv("JOURNAL_HISTORICAL_KEYS", "")
-		ring, err := signingConfig()
-		if err != nil {
-			t.Fatalf("signingConfig: %v", err)
-		}
-		var buf bytes.Buffer
-		logJournalSigningKey(context.Background(), obs.NewLogger("payments", &buf), ring)
-		return buf.String()
+	t.Setenv("JOURNAL_KEY_ID", "local-v1")
+	t.Setenv("JOURNAL_SIGNING_KEY", rawSecret)
+	t.Setenv("JOURNAL_HISTORICAL_KEYS", "")
+	ring, err := signingConfig()
+	if err != nil {
+		t.Fatalf("signingConfig: %v", err)
 	}
+	var buf bytes.Buffer
+	logJournalSigningKey(context.Background(), obs.NewLogger("payments", &buf), ring)
+	out := buf.String()
 
-	t.Run("logs the key id and a fingerprint, and no key material", func(t *testing.T) {
-		out := capture(t, "local-v1", rawSecret)
-		// The leak assertions come FIRST, deliberately. Behind the golden below they would
-		// be unreachable whenever the fingerprint also changed — and a change that leaks
-		// key material is exactly the change most likely to move the fingerprint too.
-		if strings.Contains(out, rawSecret) {
-			t.Fatalf("LOG LEAKED THE RAW SIGNING KEY: %s", out)
+	// The leak assertions come FIRST, deliberately: behind a content assertion they are
+	// unreachable exactly when a change both leaks material and alters the line.
+	if strings.Contains(out, rawSecret) {
+		t.Fatalf("LOG LEAKED THE RAW SIGNING KEY: %s", out)
+	}
+	if strings.Contains(out, pastedBase64) {
+		t.Fatalf("LOG LEAKED A BASE64 ENCODING OF THE SIGNING KEY: %s", out)
+	}
+	// Narrow, and honest about it: substring absence proves the literal secret is not
+	// printed. It does NOT prove the absence of a derived value that could serve as an
+	// offline oracle — that property is held by the line carrying no key-derived field at
+	// all, which is why this asserts the field set rather than trusting the check above.
+	for _, forbidden := range []string{"fingerprint", "secret", "key_material"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("log line carries a key-derived field %q; only the key id may be logged: %s", forbidden, out)
 		}
-		if strings.Contains(out, pastedBase64) {
-			t.Fatalf("LOG LEAKED A BASE64 ENCODING OF THE SIGNING KEY: %s", out)
-		}
-		if !strings.Contains(out, `"journal_key_id":"local-v1"`) {
-			t.Fatalf("log line does not carry the active key id: %s", out)
-		}
-		// Golden, hardcoded: an expectation recomputed from the production helper would
-		// pass no matter what the domain string said, which is the whole thing being
-		// pinned. Regenerating this constant is a deliberate act.
-		if !strings.Contains(out, `"journal_key_fingerprint":"`+wantFingerprint+`"`) {
-			t.Fatalf("fingerprint is not the pinned value %q: %s", wantFingerprint, out)
-		}
-	})
-
+	}
+	if !strings.Contains(out, `"journal_key_id":"local-v1"`) {
+		t.Fatalf("log line does not carry the active key id: %s", out)
+	}
 }

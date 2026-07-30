@@ -196,19 +196,21 @@ func signingConfig() (*paymentstore.Keyring, error) {
 	return paymentstore.NewKeyring(id, []byte(secret), os.Getenv("JOURNAL_HISTORICAL_KEYS"))
 }
 
-// logJournalSigningKey emits the active key id and a short non-reversible fingerprint of
-// the key itself, so a mis-pasted JOURNAL_SIGNING_KEY (raw variable, base64 value — see
-// docs/development.md) is visible in one line instead of at the next verify-journal.
+// logJournalSigningKey states which key id the journal is being signed under, so the
+// active kid is visible without reading the environment of a running container.
 //
-// Never logs key material; ActiveKeyFingerprint carries that contract and the test asserts
-// the raw secret and its base64 encoding are both absent from the output.
+// It logs the key ID ONLY. An earlier revision also logged a truncated HMAC of the key as
+// a "fingerprint"; the ai-review caught that this publishes a deterministic tag over a
+// fixed public message for a SYMMETRIC secret, which is an offline oracle for guessing the
+// key — and this repo's own default key (local-development-journal-key) is exactly the
+// low-entropy kind that makes such an oracle useful. The mis-paste it was meant to detect
+// is now rejected at startup by NewKeyring instead, which leaks nothing. The kid is
+// already stored in plaintext on every journal row, so logging it discloses nothing new.
 //
 // Deliberately NOT called from verifyConcurrentAppend: that subcommand is a smoke
 // fault-injection helper, not an operator surface (plan-final D4).
 func logJournalSigningKey(ctx context.Context, log *slog.Logger, keys *paymentstore.Keyring) {
-	log.InfoContext(ctx, "journal signing key loaded",
-		"journal_key_id", keys.ActiveKeyID(),
-		"journal_key_fingerprint", keys.ActiveKeyFingerprint())
+	log.InfoContext(ctx, "journal signing key loaded", "journal_key_id", keys.ActiveKeyID())
 }
 
 func verifyJournal() error {
