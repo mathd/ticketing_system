@@ -93,7 +93,13 @@
       }
     ]
   },
-  "comments": [],
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-150 (spike)\n\n**Gate 1 waived** for this run (see the epic's `kind=claim` waiver comment on TKT-5): the repo\nowner gave priority up front and the agent performed the `Backlog → Ready` transition as proxy.\n\n**Selection reason.** It is the only claimable child of TKT-5 — the other three are\n`blocked-by` it, directly or transitively. Zero open blockers, zero open readiness items.\nHighest unblocking power in the epic by construction: closing it unblocks TKT-151, which in turn\nunblocks TKT-152 and TKT-153.\n\n**`risk:low` restated, not assumed.** The deliverable is an **ADR** — a decision document. It\ntouches no service, no schema, no money path, no auth, no CI/deploy config, and produces no\nmigration. One file added under `docs/adr/`. The plan gate (Gate 2) is skipped on that basis, per\nthe label's contract. If the investigation turns out to demand a prototype that touches service\ncode or more than 5 files, the label comes off with a comment and the plan gate returns — this run\nwould then resolve it under the Gate 2 waiver rather than silently bypassing judgment.\n\n**No PR is expected** (`shaping.md` § Spikes): a spike's Building stage is investigation, and its\noutput lands as an ADR. Per `SKILL.md` § *What this pipeline is for*, an **ADR addition** is\ninternal maintenance that goes straight to the default branch — the local gate is the whole check.\nSpikes close **`Building → Done`**, skipping PO Review; the answer is judged when the dependent\nstories are picked up.\n\nBranch: `TKT-150-rules-representation-spike` (working branch for the investigation; the ADR is\ncommitted to `main` at closure).\n"
+    }
+  ],
   "links": [
     {
       "type": "blocks",
