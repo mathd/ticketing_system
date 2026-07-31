@@ -42,10 +42,32 @@ CREATE TABLE order_exchanges (
     -- One live exchange per source order. An order reversed twice is the failure this
     -- prevents, and it is enforced here rather than by a read: a partial unique index is
     -- the only thing that holds under concurrency.
-    CONSTRAINT order_exchanges_settlement_shape CHECK (
-        (settled_at IS NULL AND replacement_order_id IS NULL AND target_total IS NULL AND delta_amount IS NULL)
+    -- The BASIS is persisted before any money moves (ai-review F3): target hold, target
+    -- total and the signed delta. A retry after a provider call that succeeded and a
+    -- later step that failed must settle against the SAME numbers — re-resolving the
+    -- price or re-taking the hold on replay can produce a different basis, or fail
+    -- outright on an expired claim, leaving a charged buyer with an unsettled exchange.
+    target_hold_id uuid,
+    replacement_reservation_id uuid,
+    basis_at timestamptz,
+    CONSTRAINT order_exchanges_basis_shape CHECK (
+        (basis_at IS NULL AND target_hold_id IS NULL AND replacement_reservation_id IS NULL
+         AND target_total IS NULL AND delta_amount IS NULL)
         OR
-        (settled_at IS NOT NULL AND replacement_order_id IS NOT NULL AND target_total IS NOT NULL AND delta_amount IS NOT NULL)
+        (basis_at IS NOT NULL AND target_hold_id IS NOT NULL AND replacement_reservation_id IS NOT NULL
+         AND target_total IS NOT NULL AND delta_amount IS NOT NULL)
+    ),
+    -- Settlement can only follow a persisted basis, and only names an order.
+    CONSTRAINT order_exchanges_settlement_shape CHECK (
+        (settled_at IS NULL AND replacement_order_id IS NULL)
+        OR
+        (settled_at IS NOT NULL AND replacement_order_id IS NOT NULL AND basis_at IS NOT NULL)
+    ),
+    -- The defining money invariant, enforced by the database rather than trusted from the
+    -- application (ai-review F4). Without it a regression or a repair can persist
+    -- target 1000 / source 5000 / delta 9000 and the row still claims to be settled.
+    CONSTRAINT order_exchanges_delta_is_the_difference CHECK (
+        delta_amount IS NULL OR delta_amount = target_total - source_total
     ),
     -- The entitlement cannot switch before the money settles (TKT-166 sets the second).
     CONSTRAINT order_exchanges_switch_after_settlement CHECK (

@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"testing"
@@ -190,11 +191,28 @@ func TestCompleteExchangeSettlementIsOnceOnly(t *testing.T) {
 	// the replacement before recording it.
 	rep, _ := seedCompleted(t, db, ctx, "exch-settle-replacement", 2, 2000)
 	replacement := rep.OrderID
-	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, replacement, 4000, 2000); err != nil {
+
+	// Settlement cannot precede the basis — the constraint refuses it, which is what stops
+	// money being recorded against numbers nobody committed to first.
+	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, replacement); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded, _, err := lookupExchangeForTest(ctx, db, ex.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	} else if reloaded.Settled {
+		t.Fatal("settlement landed without a basis")
+	}
+
+	// source_total is 2000 (2 × 1000), so a target of 4000 makes the delta +2000 — and the
+	// CHECK enforces exactly that relationship (ai-review F4).
+	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, uuid.New(), uuid.New(), 4000, 2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, replacement); err != nil {
 		t.Fatal(err)
 	}
 	other, _ := seedCompleted(t, db, ctx, "exch-settle-other", 1, 1)
-	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, other.OrderID, 9999, 9999); err != nil {
+	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, other.OrderID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,5 +247,63 @@ func TestBindOrderExchangeIsOrganizerScoped(t *testing.T) {
 	in.OrganizerID = uuid.New()
 	if _, err := BindOrderExchange(ctx, db, in); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("err = %v, want the order to be invisible to another organizer", err)
+	}
+}
+
+
+// lookupExchangeForTest reaches the unexported reader so a test can assert on stored state
+// without exporting it for production callers that do not need it.
+func lookupExchangeForTest(ctx context.Context, db *sql.DB, org, id uuid.UUID) (Exchange, bool, error) {
+	s, found, err := lookupExchange(ctx, db, org, id)
+	return s.exchange, found, err
+}
+
+// ai-review F4: the database refuses a settled row whose delta is not the difference. An
+// application regression or a repair cannot persist an internally contradictory money
+// record that the row still claims is settled.
+func TestExchangeBasisRefusesAnInconsistentDelta(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-bad-delta", 2, 1000) // source_total 2000
+	ex, err := BindOrderExchange(ctx, db, exchangeRequest(c, "x-1", uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// target 1000 against source 2000 is a delta of -1000; claiming +9000 must be refused.
+	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, uuid.New(), uuid.New(), 1000, 9000); err == nil {
+		t.Fatal("the database accepted a delta that is not target - source")
+	}
+	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, uuid.New(), uuid.New(), 1000, -1000); err != nil {
+		t.Fatalf("the true delta must be accepted: %v", err)
+	}
+}
+
+// ai-review F2: a REFUSED exchange must leave nothing behind. Eligibility is judged before
+// anything durable is written, so a sold-out or seated or mistyped attempt cannot make the
+// order permanently unreversible.
+func TestLoadExchangeSourceWritesNothing(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-readonly", 2, 1000)
+
+	src, err := LoadExchangeSource(ctx, db, c.OrganizerID, c.OrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Quantity != 2 || src.Total != 2000 || src.Currency != "EUR" || src.PaymentSourceKey != "exch-readonly" {
+		t.Fatalf("source = %+v", src)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_exchanges WHERE source_order_id=$1`, c.OrderID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("a read-only eligibility load wrote %d exchange rows", rows)
+	}
+	// And the order is still refundable, which is the property a refused exchange used to
+	// destroy.
+	if _, err := BindOrderRefund(ctx, db, RefundRequest{
+		OrderID: c.OrderID, OrganizerID: c.OrganizerID, Quantity: 1,
+		IdempotencyKey: "r-after-refused-exchange", Actor: "a", Reason: "r",
+	}); err != nil {
+		t.Fatalf("an order whose exchange was refused must stay refundable: %v", err)
 	}
 }

@@ -72,6 +72,14 @@ type Exchange struct {
 	// exists. TicketsExchanged is TKT-166's half. Settled && !TicketsExchanged is
 	// `switch_pending` — the state this slice deliberately ends in.
 	Settled, TicketsExchanged bool
+	// BasisRecorded is the pre-money commitment (ai-review F3): target hold, replacement
+	// reservation, target total and signed delta, all persisted BEFORE the provider is
+	// called. A retry settles against these, never against a re-resolved price or a
+	// re-taken hold — re-deriving on replay can produce a different basis, or fail on an
+	// expired claim, leaving a charged buyer with an unsettled exchange.
+	BasisRecorded            bool
+	TargetHoldID             uuid.UUID
+	ReplacementReservationID uuid.UUID
 	// PaymentSourceKey is the source order's checkout idempotency key, which IS the key
 	// payments bound its charge operation under. A downgrade refunds against it.
 	PaymentSourceKey string
@@ -115,6 +123,39 @@ func ValidateExchangeTarget(ex Exchange, targetTotal int64, currency string) err
 		return errors.New("exchange target total must not be negative")
 	}
 	return nil
+}
+
+// ExchangeSource is the source line, read WITHOUT binding anything.
+type ExchangeSource struct {
+	ReservationID, HoldID, BuyerID, SlotID uuid.UUID
+	Quantity                               int32
+	Total                                  int64
+	Currency, PaymentSourceKey             string
+}
+
+// LoadExchangeSource reads the source order's line for eligibility checks.
+//
+// It exists because binding first was wrong (ai-review F2): a durable row inserted before
+// the seated, currency and availability checks means any refusal — a typo, a sold-out
+// target — leaves a row that the one-per-order index and the refund exclusion then treat
+// as a live exchange, making a completed order permanently unreversible with no money
+// having moved. Nothing durable is written until the request is known to be servable.
+func LoadExchangeSource(ctx context.Context, db *sql.DB, org, order uuid.UUID) (ExchangeSource, error) {
+	var out ExchangeSource
+	var status string
+	err := db.QueryRowContext(ctx, `
+		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.total_amount, r.currency
+		FROM orders o JOIN reservations r ON r.id = o.reservation_id
+		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
+		Scan(&status, &out.PaymentSourceKey, &out.ReservationID, &out.HoldID, &out.BuyerID, &out.SlotID,
+			&out.Quantity, &out.Total, &out.Currency)
+	if err != nil {
+		return ExchangeSource{}, err
+	}
+	if status != "completed" {
+		return ExchangeSource{}, ErrOrderNotExchangeable
+	}
+	return out, nil
 }
 
 // BindOrderExchange inserts-or-loads the one exchange for (organizer, idempotency key)
@@ -212,15 +253,17 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	var s storedExchange
 	var replacement uuid.NullUUID
 	var target, delta sql.NullInt64
-	var settled, switched sql.NullTime
+	var settled, switched, basis sql.NullTime
+	var targetHold, replacementReservation uuid.NullUUID
 	var createdAt time.Time
 	err := q.QueryRowContext(ctx, `
 		SELECT id,source_order_id,replacement_order_id,target_ticket_type_id,request_fingerprint,quantity,
-		       source_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at
+		       source_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,
+		       target_hold_id,replacement_reservation_id,basis_at
 		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.exchange.ID, &s.exchange.SourceOrderID, &replacement, &s.exchange.TargetTicketTypeID,
 			&s.fingerprint, &s.exchange.Quantity, &s.exchange.SourceTotal, &target, &delta,
-			&s.exchange.Currency, &createdAt, &settled, &switched)
+			&s.exchange.Currency, &createdAt, &settled, &switched, &targetHold, &replacementReservation, &basis)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedExchange{}, false, nil
 	}
@@ -231,20 +274,33 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	s.exchange.ReplacementOrderID = replacement.UUID
 	s.exchange.TargetTotal, s.exchange.DeltaAmount = target.Int64, delta.Int64
 	s.exchange.Settled, s.exchange.TicketsExchanged = settled.Valid, switched.Valid
+	s.exchange.BasisRecorded = basis.Valid
+	s.exchange.TargetHoldID, s.exchange.ReplacementReservationID = targetHold.UUID, replacementReservation.UUID
 	s.exchange.CreatedAt = createdAt.UTC().Truncate(time.Microsecond)
 	return s, true, nil
+}
+
+// RecordExchangeBasis commits what the settlement will be, BEFORE the provider is called.
+// Once-only: a replay reads it back rather than re-deriving, which is what makes a retry
+// after a successful charge and a failed later step settle the same numbers (ai-review F3).
+func RecordExchangeBasis(ctx context.Context, db *sql.DB, org, exchangeID, targetHold, replacementReservation uuid.UUID, targetTotal, delta int64) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE order_exchanges
+		SET target_hold_id=$3, replacement_reservation_id=$4, target_total=$5, delta_amount=$6, basis_at=now()
+		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NULL`,
+		org, exchangeID, targetHold, replacementReservation, targetTotal, delta)
+	return err
 }
 
 // CompleteExchangeSettlement records the money half: the replacement order, both totals,
 // the signed delta, and the instant it settled. Guarded on `settled_at IS NULL`, so a
 // replay keeps the original result — the timestamp is evidence of when the difference
 // moved, and a retry must not rewrite it.
-func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID, replacementOrder uuid.UUID, targetTotal, delta int64) error {
+func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID, replacementOrder uuid.UUID) error {
 	_, err := db.ExecContext(ctx, `
-		UPDATE order_exchanges
-		SET replacement_order_id=$3, target_total=$4, delta_amount=$5, settled_at=now()
-		WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL`,
-		org, exchangeID, replacementOrder, targetTotal, delta)
+		UPDATE order_exchanges SET replacement_order_id=$3, settled_at=now()
+		WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL AND basis_at IS NOT NULL`,
+		org, exchangeID, replacementOrder)
 	return err
 }
 

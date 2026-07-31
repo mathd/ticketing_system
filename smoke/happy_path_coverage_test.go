@@ -293,9 +293,121 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if err := json.Unmarshal(body, &exchangeSource); err != nil {
 		t.Fatal(err)
 	}
+	// A dearer and a cheaper ticket type on the same performance, so all three money
+	// directions are exercised. The first version of this test used the SAME type and
+	// asserted delta 0 — which meant both payment branches could be deleted and it still
+	// passed (ai-review F5).
+	dearer := created(t, gatewayURL+"/api/catalog/ticket-types", map[string]any{
+		"organizer_id": organizerID, "performance_id": slot,
+		"name": map[string]string{"fr": "Cher", "en": "Dearer"},
+		"price": map[string]any{"amount": 5000, "currency": "EUR"}})
+
+	// UPGRADE: exactly the difference is charged, once.
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
+			"actor": "coverage@example.test", "reason": "upgrade"}); code != http.StatusOK {
+		t.Fatalf("upgrade exchange: %d %s", code, body)
+	}
+	var upgraded struct {
+		DeltaAmount      int64  `json:"delta_amount"`
+		SourceTotal      int64  `json:"source_total"`
+		TargetTotal      int64  `json:"target_total"`
+		Status           string `json:"status"`
+		TicketsExchanged bool   `json:"tickets_exchanged"`
+		Replay           bool   `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &upgraded); err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.DeltaAmount != upgraded.TargetTotal-upgraded.SourceTotal || upgraded.DeltaAmount <= 0 {
+		t.Fatalf("upgrade delta = %+v, want a positive target-minus-source", upgraded)
+	}
+	// switch_pending is the point: settled, and the buyer still holds valid OLD tickets
+	// until TKT-166 switches them.
+	if upgraded.Status != "switch_pending" || upgraded.TicketsExchanged || upgraded.Replay {
+		t.Fatalf("exchange state = %+v, want switch_pending on a first call", upgraded)
+	}
+	// The replay must not settle again.
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
+			"actor": "coverage@example.test", "reason": "upgrade"}); code != http.StatusOK {
+		t.Fatalf("upgrade exchange replay: %d %s", code, body)
+	}
+	var upgradeReplay struct {
+		DeltaAmount int64 `json:"delta_amount"`
+		Replay      bool  `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &upgradeReplay); err != nil {
+		t.Fatal(err)
+	}
+	if !upgradeReplay.Replay || upgradeReplay.DeltaAmount != upgraded.DeltaAmount {
+		t.Fatalf("replay = %+v, want the original delta reported as a replay", upgradeReplay)
+	}
+
+	// DOWNGRADE: its own source order, since an order is reversed once. Buying the dearer
+	// type and exchanging down to the cheaper one refunds exactly the difference.
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "cov-down-reserve-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": dearer, "quantity": 1})
+	if code != http.StatusCreated {
+		t.Fatalf("downgrade source reserve: %d %s", code, body)
+	}
+	var downReservation map[string]any
+	if err := json.Unmarshal(body, &downReservation); err != nil {
+		t.Fatal(err)
+	}
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "cov-down-order-"+slot,
+		map[string]any{"reservation_id": downReservation["reservation_id"], "name": "Downgrade Buyer",
+			"email": "downgrade@example.test", "payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("downgrade source checkout: %d %s", code, body)
+	}
+	var downSource struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &downSource); err != nil {
+		t.Fatal(err)
+	}
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, downSource.OrderID), "cov-exchange-down-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": tt,
+			"actor": "coverage@example.test", "reason": "downgrade"}); code != http.StatusOK {
+		t.Fatalf("downgrade exchange: %d %s", code, body)
+	}
+	var downgraded struct {
+		DeltaAmount int64 `json:"delta_amount"`
+		SourceTotal int64 `json:"source_total"`
+		TargetTotal int64 `json:"target_total"`
+	}
+	if err := json.Unmarshal(body, &downgraded); err != nil {
+		t.Fatal(err)
+	}
+	if downgraded.DeltaAmount != downgraded.TargetTotal-downgraded.SourceTotal || downgraded.DeltaAmount >= 0 {
+		t.Fatalf("downgrade delta = %+v, want a negative target-minus-source", downgraded)
+	}
+
 	// Same ticket type: an EQUAL exchange, which must settle no money at all and still
 	// journal both gross legs.
-	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-"+slot,
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "cov-eq-reserve-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 1})
+	if code != http.StatusCreated {
+		t.Fatalf("equal source reserve: %d %s", code, body)
+	}
+	var eqReservation map[string]any
+	if err := json.Unmarshal(body, &eqReservation); err != nil {
+		t.Fatal(err)
+	}
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "cov-eq-order-"+slot,
+		map[string]any{"reservation_id": eqReservation["reservation_id"], "name": "Equal Buyer",
+			"email": "equal@example.test", "payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("equal source checkout: %d %s", code, body)
+	}
+	var eqSource struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &eqSource); err != nil {
+		t.Fatal(err)
+	}
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, eqSource.OrderID), "cov-exchange-eq-"+slot,
 		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": tt,
 			"actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
 		t.Fatalf("exchange order: %d %s", code, body)

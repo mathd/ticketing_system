@@ -76,6 +76,46 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ELIGIBILITY FIRST, nothing durable yet (ai-review F2). Binding before these checks
+	// left a row behind on every refusal — a typo or a sold-out target then made the order
+	// permanently unreversible, because the one-per-order index blocked a corrected
+	// attempt and the refund path treats any exchange row as a live exchange. No money had
+	// moved; the order was simply stuck.
+	src, err := commercestore.LoadExchangeSource(r.Context(), s.db, in.OrganizerID, order)
+	if err != nil {
+		code, message := exchangeProblem(err)
+		write(w, code, map[string]string{"error": message})
+		return
+	}
+
+	// The SOURCE must not be seated: nothing associates an issued ticket with a seat, so
+	// an exchange of a seated line cannot say which seat leaves (TKT-164).
+	if seated, err := s.claimIsSeated(r, in.OrganizerID, src.HoldID); err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "inventory unavailable"})
+		return
+	} else if seated {
+		write(w, http.StatusConflict, map[string]string{"error": "a seated order cannot be exchanged yet (no ticket-to-seat association)"})
+		return
+	}
+
+	// Price the target through catalog's RULE RESOLUTION — never the raw column, never the
+	// source's snapshot (ADR-036 §5/§6).
+	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TargetTicketTypeID, in.OrganizerID, src.Quantity)
+	if err != nil {
+		if errors.Is(err, errResolveUnavailable) {
+			write(w, http.StatusBadGateway, map[string]string{"error": "catalog unavailable"})
+			return
+		}
+		write(w, 500, map[string]string{"error": "price resolution unusable"})
+		return
+	}
+	targetTotal := resolution.total(src.Quantity)
+	if resolution.ResolvedPrice.Currency != src.Currency {
+		write(w, http.StatusConflict, map[string]string{"error": "exchange target is priced in a different currency"})
+		return
+	}
+
+	// Only now is anything durable written.
 	ex, err := commercestore.BindOrderExchange(r.Context(), s.db, commercestore.ExchangeRequest{
 		SourceOrderID: order, OrganizerID: in.OrganizerID, TargetTicketTypeID: in.TargetTicketTypeID,
 		IdempotencyKey: key, Actor: in.Actor, Reason: in.Reason,
@@ -88,81 +128,84 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": message})
 		return
 	}
+	ex.BuyerID, ex.HoldID, ex.PaymentSourceKey = src.BuyerID, src.HoldID, src.PaymentSourceKey
 	if ex.Settled {
 		writeExchange(w, ex, true)
 		return
 	}
 
-	// 1. The SOURCE must not be seated. Nothing associates an issued ticket with a seat,
-	//    so an exchange of a seated line cannot say which seat leaves (TKT-164). Refused
-	//    here, before the target is touched: checking after would mutate target inventory
-	//    for a request that was always going to be refused.
-	if seated, err := s.claimIsSeated(r, ex.OrganizerID, ex.HoldID); err != nil {
-		write(w, http.StatusBadGateway, map[string]string{"error": "inventory unavailable"})
-		return
-	} else if seated {
-		write(w, http.StatusConflict, map[string]string{"error": "a seated order cannot be exchanged yet (no ticket-to-seat association)"})
-		return
-	}
-
-	// 2. Price the target through catalog's RULE RESOLUTION, never the raw column and
-	//    never the source's snapshot (ADR-036 §5/§6). The new line gets its own
-	//    provenance; copying the old one forward is the specific mistake that ADR exists
-	//    to prevent.
-	resolution, err := s.resolveTicketTypePrice(r.Context(), ex.TargetTicketTypeID, ex.OrganizerID, ex.Quantity)
-	if err != nil {
-		if errors.Is(err, errResolveUnavailable) {
-			write(w, http.StatusBadGateway, map[string]string{"error": "catalog unavailable"})
+	// THE BASIS, before any money (ai-review F3). A retry after a provider call that
+	// succeeded and a later step that failed must settle the SAME numbers: re-resolving
+	// the price or re-taking the hold on replay can produce a different basis, or fail
+	// outright on an expired claim, leaving a charged buyer with an unsettled exchange.
+	if !ex.BasisRecorded {
+		hold, err := s.holdExchangeTarget(r, ex, resolution)
+		if err != nil {
+			write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 			return
 		}
-		write(w, 500, map[string]string{"error": "price resolution unusable"})
-		return
-	}
-	targetTotal := resolution.total(ex.Quantity)
-	if err := commercestore.ValidateExchangeTarget(ex, targetTotal, resolution.ResolvedPrice.Currency); err != nil {
-		code, message := exchangeProblem(err)
-		write(w, code, map[string]string{"error": message})
-		return
+		reservation := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-reservation:"+ex.ID.String()))
+		delta := commercestore.ExchangeDelta(ex.SourceTotal, targetTotal)
+		if err := commercestore.RecordExchangeBasis(r.Context(), s.db, ex.OrganizerID, ex.ID, hold, reservation, targetTotal, delta); err != nil {
+			slog.Default().ErrorContext(r.Context(), "record exchange basis", "err", err)
+			write(w, 500, map[string]string{"error": "persist exchange"})
+			return
+		}
+		ex.TargetHoldID, ex.ReplacementReservationID = hold, reservation
+		ex.TargetTotal, ex.DeltaAmount, ex.BasisRecorded = targetTotal, delta, true
 	}
 
-	// 3. Take the target hold. Sold out, closed, or seated on the target side stops here —
-	//    still before any money.
-	hold, err := s.holdExchangeTarget(r, ex, resolution)
-	if err != nil {
+	// FINALIZE the target claim before the money moves, and CONFIRM it after — the same
+	// sequence checkout uses, and the steps the plan listed that the first implementation
+	// dropped (ai-review F1). Without them the target hold stays expirable: inventory can
+	// free and resell that capacity while a completed replacement order points at it.
+	if err := s.transitionExchangeHold(r, ex, "finalize"); err != nil {
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 		return
 	}
 
-	// 4. Only now does money move, and exactly once: the signed delta. NOT a refund of the
-	//    old gross plus a charge of the new — that is two provider movements and the wrong
-	//    cash-flow story.
-	delta := commercestore.ExchangeDelta(ex.SourceTotal, targetTotal)
-	if err := s.settleExchangeDelta(r, ex, delta); err != nil {
+	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount); err != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "exchange settlement unresolved"})
 		return
 	}
-
-	// 5. Both GROSS legs are journalled whichever way the delta went. The provider moved
-	//    the difference; the trail records that a line worth X was reversed and one worth
-	//    Y was sold (ADR-003).
-	if err := s.exchangeFacts(r, ex, targetTotal); err != nil {
-		write(w, 503, map[string]string{"error": "journal unavailable"})
+	if err := s.transitionExchangeHold(r, ex, "confirm"); err != nil {
+		// The money moved and the claim did not confirm. Honest answer: the exchange is
+		// unsettled and retryable against the SAME durable basis, which is exactly what
+		// persisting it beforehand bought.
+		write(w, http.StatusAccepted, map[string]any{"exchange_id": ex.ID, "status": "confirmation_pending"})
 		return
 	}
 
-	replacement, err := s.persistExchangeReplacement(r, ex, resolution, hold, targetTotal)
+	// Both GROSS legs, whichever way the delta went (ADR-003, ADR-039 §1).
+	if err := s.exchangeFacts(r, ex, ex.TargetTotal); err != nil {
+		write(w, 503, map[string]string{"error": "journal unavailable"})
+		return
+	}
+	replacement, err := s.persistExchangeReplacement(r, ex, resolution)
 	if err != nil {
 		slog.Default().ErrorContext(r.Context(), "persist exchange replacement", "err", err)
 		write(w, 500, map[string]string{"error": "persist exchange"})
 		return
 	}
-	if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, replacement, targetTotal, delta); err != nil {
+	if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, replacement); err != nil {
 		slog.Default().ErrorContext(r.Context(), "complete exchange settlement", "err", err)
 		write(w, 500, map[string]string{"error": "persist exchange"})
 		return
 	}
-	ex.ReplacementOrderID, ex.TargetTotal, ex.DeltaAmount, ex.Settled = replacement, targetTotal, delta, true
+	ex.ReplacementOrderID, ex.Settled = replacement, true
 	writeExchange(w, ex, false)
+}
+
+// transitionExchangeHold drives the target claim through the same finalize/confirm steps
+// checkout uses. Idempotent on inventory's side: a replayed transition to a state the
+// claim already holds is satisfied, not a conflict.
+func (s *Server) transitionExchangeHold(r *http.Request, ex commercestore.Exchange, step string) error {
+	code, _, err := s.call(r.Context(), http.MethodPost,
+		fmt.Sprintf("%s/internal/holds/%s/%s?organizer_id=%s", s.inventoryURL, ex.TargetHoldID, step, ex.OrganizerID), "", nil, true)
+	if err != nil || code != http.StatusOK {
+		return fmt.Errorf("target hold %s: status %d: %w", step, code, err)
+	}
+	return nil
 }
 
 // writeExchange reports the exchange, including what has NOT happened yet. `switch_pending`
@@ -283,14 +326,14 @@ func (s *Server) exchangeFacts(r *http.Request, ex commercestore.Exchange, targe
 // does NOT owe an `order.completed` event: that would make access issue the new tickets
 // while the old ones still admit — a both-admit window, which is exactly what the chosen
 // failure mode forbids. TKT-166 publishes the exchange event that switches them atomically.
-func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Exchange, res priceResolution, hold uuid.UUID, targetTotal int64) (uuid.UUID, error) {
-	reservation := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-reservation:"+ex.ID.String()))
+func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Exchange, res priceResolution) (uuid.UUID, error) {
+	reservation := ex.ReplacementReservationID
 	replacement := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-order:"+ex.ID.String()))
 	if _, err := s.db.ExecContext(r.Context(), `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status,price_resolution_snapshot)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed',$11) ON CONFLICT(id) DO NOTHING`,
-		reservation, ex.OrganizerID, hold, res.PerformanceID, ex.TargetTicketTypeID, ex.BuyerID,
-		ex.Quantity, res.ResolvedPrice.Amount, targetTotal, res.ResolvedPrice.Currency, []byte(res.raw)); err != nil {
+		reservation, ex.OrganizerID, ex.TargetHoldID, res.PerformanceID, ex.TargetTicketTypeID, ex.BuyerID,
+		ex.Quantity, res.ResolvedPrice.Amount, ex.TargetTotal, res.ResolvedPrice.Currency, []byte(res.raw)); err != nil {
 		return uuid.Nil, err
 	}
 	if _, err := s.db.ExecContext(r.Context(), `
