@@ -31,6 +31,23 @@ paths:
         '422': {description: Malformed envelope, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/refunds:
+    post:
+      operationId: refundTickets
+      summary: Void a refund's share of an order's tickets (internal; commerce only)
+      # TKT-157 / ADR-038. Selection is the lowest unrefunded ticket ids ascending,
+      # made stable across a replay by the refund-derived lifecycle event id.
+      # 503 means "not yet": issuance is asynchronous, so a refund can outrun it, and
+      # the caller must keep the obligation rather than read it as "nothing to void".
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/TicketRefundCreate'}}}}
+      responses:
+        '200': {description: Tickets voided (or replay), content: {application/json: {schema: {$ref: '#/components/schemas/TicketRefund'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /orders/{ref}/tickets:
     get:
       operationId: getTickets
@@ -58,6 +75,24 @@ components:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
     Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    TicketRefundCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, refund_id, quantity]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        # The commerce refund's own identity. It is what makes a replay identifiable:
+        # the lifecycle event id is derived from it, so an event under that id can only
+        # have been written by this refund.
+        refund_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+    TicketRefund:
+      type: object
+      additionalProperties: false
+      required: [ticket_ids, replay]
+      properties:
+        ticket_ids: {type: array, items: {type: string, format: uuid}}
+        replay: {type: boolean}
     # occurrence_id/occurred_at are the ADR-025 §D3 occurrence protocol, expand
     # phase (§D10): optional so old scanners keep today's semantics; occurred_at
     # is required iff occurrence_id is present — a pairing the schema cannot

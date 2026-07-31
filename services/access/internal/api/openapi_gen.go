@@ -169,8 +169,24 @@ type TicketBundle struct {
 	Tickets  []Ticket           `json:"tickets"`
 }
 
+// TicketRefund defines model for TicketRefund.
+type TicketRefund struct {
+	Replay    bool                 `json:"replay"`
+	TicketIds []openapi_types.UUID `json:"ticket_ids"`
+}
+
+// TicketRefundCreate defines model for TicketRefundCreate.
+type TicketRefundCreate struct {
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Quantity    int                `json:"quantity"`
+	RefundId    openapi_types.UUID `json:"refund_id"`
+}
+
 // Ref defines model for Ref.
 type Ref = openapi_types.UUID
+
+// RefundTicketsJSONRequestBody defines body for RefundTickets for application/json ContentType.
+type RefundTicketsJSONRequestBody = TicketRefundCreate
 
 // ScanTicketJSONRequestBody defines body for ScanTicket for application/json ContentType.
 type ScanTicketJSONRequestBody = ScanRequest

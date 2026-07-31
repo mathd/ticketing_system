@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -87,6 +88,9 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if refund.Completed {
+		// The money is done, but the reversal may not be: a replay is how outstanding
+		// ticket voiding gets retried (TKT-157). Drive it, then answer.
+		refund = s.voidRefundedTickets(r, refund)
 		writeRefund(w, refund, true)
 		return
 	}
@@ -108,6 +112,11 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "persist refund"})
 		return
 	}
+	// The money is durable from here on. The reversal is a SEPARATE obligation: if it
+	// fails, the refund stays valid and outstanding rather than the whole request
+	// failing and inviting a retry that would re-examine money that already moved.
+	refund = s.voidRefundedTickets(r, refund)
+
 	// Re-read the projection so the response reports the state this refund produced, not
 	// the one it was bound against. A read failure here costs the caller nothing that
 	// matters — the money moved and the refund is durable — so it answers with the
@@ -124,7 +133,42 @@ func writeRefund(w http.ResponseWriter, r commercestore.Refund, replay bool) {
 		"amount": r.Amount, "currency": r.Currency,
 		"refund_status": r.OrderRefundState, "refunded_quantity": r.RefundedQty,
 		"refunded_amount": r.RefundedAmount, "replay": replay,
+		// The reversal is reported separately from the money, and reported as FALSE
+		// when it is outstanding rather than omitted: a caller that cannot see the
+		// difference between "tickets voided" and "we did not get to it" will assume
+		// the first (TKT-157).
+		"tickets_voided": r.TicketsVoided,
 	})
+}
+
+// voidRefundedTickets discharges the ticket-voiding half of a reversal, and never fails
+// the request. The money has already moved and the refund row is durable, so the honest
+// answer to a failure here is a successful refund reporting `tickets_voided:false` —
+// visible, and retryable by replaying the same idempotency key.
+//
+// Access answers 503 when issuance has not caught up (its outbox/JetStream path is
+// asynchronous, so a prompt refund genuinely can outrun it). That is a "not yet", not a
+// "nothing to void", and it must leave the obligation outstanding.
+func (s *Server) voidRefundedTickets(r *http.Request, refund commercestore.Refund) commercestore.Refund {
+	if refund.TicketsVoided || s.accessURL == "" {
+		return refund
+	}
+	code, _, err := s.call(r.Context(), http.MethodPost,
+		fmt.Sprintf("%s/internal/orders/%s/refunds", s.accessURL, refund.OrderID), "",
+		map[string]any{"organizer_id": refund.OrganizerID, "refund_id": refund.ID, "quantity": refund.Quantity}, true)
+	if err != nil || code != http.StatusOK {
+		slog.Default().WarnContext(r.Context(), "refund tickets not voided; left outstanding",
+			"refund_id", refund.ID, "order_id", refund.OrderID, "status", code, "err", err)
+		return refund
+	}
+	if err := commercestore.MarkRefundTicketsVoided(r.Context(), s.db, refund.OrganizerID, refund.ID); err != nil {
+		// Access voided them; only our record of it failed. A replay re-drives access,
+		// which answers as a replay, and re-marks — so this is recoverable, not lost.
+		slog.Default().ErrorContext(r.Context(), "record refund ticket voiding", "refund_id", refund.ID, "err", err)
+		return refund
+	}
+	refund.TicketsVoided = true
+	return refund
 }
 
 // refundPayment moves the money through payments' partial-refund leg. The source key is

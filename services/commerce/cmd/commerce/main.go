@@ -159,7 +159,12 @@ func run() error {
 	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" {
 		return errors.New("CATALOG_URL, INVENTORY_URL and PAYMENTS_URL required")
 	}
-	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).Router(log, validateResponses))
+	// ACCESS_URL is optional, unlike the three above (TKT-157). Without it a refund
+	// still returns the money and leaves ticket voiding outstanding and retryable —
+	// degrading rather than refusing to start is the right failure for an obligation
+	// that is discharged after the money has already moved.
+	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
+		WithAccess(os.Getenv("ACCESS_URL")).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

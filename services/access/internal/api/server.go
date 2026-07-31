@@ -23,10 +23,18 @@ import (
 type Server struct {
 	st       *store.Postgres
 	verifier *ticket.Verifier
+	// token authenticates service-to-service callers. Access had no inbound internal
+	// surface before TKT-157 — it only ever used this token outbound, from its
+	// consumer — so the whole auth path here is new.
+	token string
 }
 
-func New(st *store.Postgres, verifier *ticket.Verifier) *Server {
-	return &Server{st: st, verifier: verifier}
+func New(st *store.Postgres, verifier *ticket.Verifier, token ...string) *Server {
+	s := &Server{st: st, verifier: verifier}
+	if len(token) > 0 {
+		s.token = token[0]
+	}
+	return s
 }
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r := chi.NewRouter()
@@ -39,6 +47,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
 	r.Post("/scans/reconciliations", s.reconcile)
+	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
 	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, _ string, _ int) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 	})
@@ -205,7 +214,11 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		// wire reasons — distinguishable, and none of them appended anything.
 		case store.DecisionEntryLimitReached, store.DecisionExitRequired,
 			store.DecisionNotInside, store.DecisionExitNotApplicable,
-			store.DecisionOccurrenceRequired, store.DecisionExitUnverified:
+			store.DecisionOccurrenceRequired, store.DecisionExitUnverified,
+			// TKT-157: the Decision value is already the wire reason, and
+			// ScanRejected.reason is an unconstrained string by design — no
+			// contract change is needed to carry it.
+			store.DecisionRefunded:
 			reason = string(result.Decision)
 		}
 		// No cryptographic detail leaves the gate: which field failed to verify

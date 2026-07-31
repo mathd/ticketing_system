@@ -200,6 +200,10 @@ services:
       CATALOG_URL: http://catalog:8080
       INVENTORY_URL: http://inventory:8080
       PAYMENTS_URL: http://payments:8080
+      # Refund ticket voiding (TKT-157). Optional in the binary: without it a refund
+      # returns the money and leaves the reversal outstanding rather than refusing to
+      # start.
+      ACCESS_URL: http://access:8080
 
   payments-migrate:
     <<: *migrate-job
@@ -275,6 +279,9 @@ services:
       access-lifecycle-backfill:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
+    # Internal refund surface, off the gateway by design (see inventory ports note):
+    # loopback is the ops/smoke access path in this testbed (TKT-157).
+    ports: ["127.0.0.1:${ACCESS_PORT:-8094}:8080"]
     environment:
       <<: *go-env
       DATABASE_URL: postgres://access:access@postgres:5432/access

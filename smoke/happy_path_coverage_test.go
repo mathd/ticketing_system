@@ -124,27 +124,6 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("delivery email: %d %s", code, body)
 	}
 
-	// commerce: refund one of the two tickets (TKT-156). Driven here rather than from a
-	// fixture of its own because this order is the only completed, captured purchase the
-	// suite builds — and a refund needs exactly that. It refunds 1 of 2, so the order stays
-	// partially refunded and the two tickets the access assertions below depend on are
-	// untouched (voiding them is TKT-157's).
-	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/refunds", commerceURL, order.OrderID), "cov-refund-"+slot,
-		map[string]any{"organizer_id": organizerID, "quantity": 1, "actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
-		t.Fatalf("refund order: %d %s", code, body)
-	}
-	var refunded struct {
-		RefundStatus     string `json:"refund_status"`
-		RefundedQuantity int    `json:"refunded_quantity"`
-		Replay           bool   `json:"replay"`
-	}
-	if err := json.Unmarshal(body, &refunded); err != nil {
-		t.Fatal(err)
-	}
-	if refunded.RefundStatus != "partial" || refunded.RefundedQuantity != 1 || refunded.Replay {
-		t.Fatalf("refund state = %+v, want partial/1/first-call", refunded)
-	}
-
 	// payments: journal fact, direct charge, and the recovery operation read.
 	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/facts", "",
 		map[string]any{"fact_id": uuid.NewString(), "organizer_id": organizerID, "fact_type": "order.created",
@@ -201,5 +180,52 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 			"occurred_at":   time.Now().UTC().Format(time.RFC3339),
 		}}}); code != http.StatusOK {
 		t.Fatalf("reconcile scans: %d %s", code, body)
+	}
+
+	// commerce: refund one of the two tickets (TKT-156 money, TKT-157 voiding).
+	// Driven here rather than from a fixture of its own because this order is the only
+	// completed, captured purchase the suite builds — and a refund needs exactly that.
+	//
+	// AFTER issuance, deliberately: voiding drives access, and access answers 503 until
+	// the tickets exist (the outbox/JetStream path is asynchronous). Refunding earlier
+	// would make tickets_voided a race.
+	refundKey := "cov-refund-" + slot
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/refunds", commerceURL, order.OrderID), refundKey,
+		map[string]any{"organizer_id": organizerID, "quantity": 1, "actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
+		t.Fatalf("refund order: %d %s", code, body)
+	}
+	var refunded struct {
+		RefundID         string `json:"refund_id"`
+		RefundStatus     string `json:"refund_status"`
+		RefundedQuantity int    `json:"refunded_quantity"`
+		TicketsVoided    bool   `json:"tickets_voided"`
+		Replay           bool   `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &refunded); err != nil {
+		t.Fatal(err)
+	}
+	if refunded.RefundStatus != "partial" || refunded.RefundedQuantity != 1 || refunded.Replay {
+		t.Fatalf("refund state = %+v, want partial/1/first-call", refunded)
+	}
+	if !refunded.TicketsVoided {
+		t.Fatalf("refund did not void its ticket: %+v", refunded)
+	}
+
+	// access: replay the voiding directly, which is also what registers refundTickets
+	// with the ADR-030 coverage gate — commerce drives it service-to-service, where the
+	// smoke client cannot observe it.
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/refunds", accessURL, order.OrderID), "",
+		map[string]any{"organizer_id": organizerID, "refund_id": refunded.RefundID, "quantity": 1}); code != http.StatusOK {
+		t.Fatalf("replay ticket voiding: %d %s", code, body)
+	}
+	var voided struct {
+		TicketIDs []string `json:"ticket_ids"`
+		Replay    bool     `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &voided); err != nil {
+		t.Fatal(err)
+	}
+	if !voided.Replay || len(voided.TicketIDs) != 1 {
+		t.Fatalf("replay must return the same single ticket without re-voiding: %+v", voided)
 	}
 }

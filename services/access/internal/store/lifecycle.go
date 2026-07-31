@@ -71,6 +71,12 @@ const (
 	// derived deterministic id forges retries into second admissions (§D3) —
 	// so old scanners keep pass slots denied until they adopt the protocol.
 	DecisionOccurrenceRequired Decision = "occurrence_required"
+
+	// DecisionRefunded denies a ticket a refund has voided (TKT-157, ADR-038). It is
+	// its own verdict rather than a reuse of already_redeemed, which would assert an
+	// admission that never happened, or of an integrity verdict, which describes chain
+	// health rather than commercial validity.
+	DecisionRefunded Decision = "refunded"
 )
 
 // Mode is an organizer's degraded-mode posture (ADR-021 §D6).

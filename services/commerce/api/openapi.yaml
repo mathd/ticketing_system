@@ -201,7 +201,7 @@ components:
     Refund:
       type: object
       additionalProperties: false
-      required: [refund_id, order_id, quantity, amount, currency, refund_status, refunded_quantity, refunded_amount, replay]
+      required: [refund_id, order_id, quantity, amount, currency, refund_status, refunded_quantity, refunded_amount, replay, tickets_voided]
       properties:
         refund_id: {type: string, format: uuid}
         order_id: {type: string, format: uuid}
@@ -212,6 +212,10 @@ components:
         refunded_quantity: {type: integer}
         refunded_amount: {type: integer, format: int64}
         replay: {type: boolean}
+        # False means the tickets are still valid at the gate — the money moved but
+        # the reversal is outstanding. Required, not optional: a caller that cannot
+        # tell "voided" from "we did not get to it" will assume the first (TKT-157).
+        tickets_voided: {type: boolean}
     DeliveryEmail:
       type: object
       additionalProperties: false
