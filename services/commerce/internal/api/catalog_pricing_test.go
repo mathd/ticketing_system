@@ -151,19 +151,23 @@ func TestReserveFailsClosedOnUnusableResolution(t *testing.T) {
 		"negative amount":  {200, strings.ReplaceAll(resolutionBody(900, true), `"amount":900`, `"amount":-1`)},
 		"wrong organizer":  {200, strings.Replace(resolutionBody(900, true), pricingOrg, "00000000-0000-0000-0000-0000000000ff", 1)},
 		"non-EUR currency": {200, strings.ReplaceAll(resolutionBody(900, true), `"EUR"`, `"USD"`)},
-		// A resolver newer than this build understands. A future version exists
-		// BECAUSE the comparator's semantics changed, so pricing against it with
-		// today's assumptions is how a wrong number reaches a buyer quietly.
-		"future resolver version": {200, strings.Replace(resolutionBody(900, true), `"resolver_version":2`, `"resolver_version":999`, 1)},
 		// base_price absent decodes to a zero Money and is never inspected on
 		// the winner path, so the response would sail through.
-		"missing base_price":      {200, strings.Replace(resolutionBody(900, true), `"base_price":{"amount":2500,"currency":"EUR"},`, ``, 1)},
-		"missing evaluated_at":    {200, strings.Replace(resolutionBody(900, true), `"evaluated_at":"2026-07-31T00:00:00Z",`, ``, 1)},
-		"winner without scope_id": {200, strings.Replace(resolutionBody(900, true), `"scope_id":"00000000-0000-0000-0000-0000000000e1",`, ``, 1)},
-		// Valid JSON to Go, REJECTED by PostgreSQL jsonb. Without an early check
-		// this validates, creates the hold, and only then fails the insert --
-		// leaving an orphan hold and a 500 for the buyer.
+		"missing base_price":  {200, strings.Replace(resolutionBody(900, true), `"base_price":{"amount":2500,"currency":"EUR"},`, ``, 1)},
+		"negative base_price": {200, strings.Replace(resolutionBody(900, true), `"base_price":{"amount":2500`, `"base_price":{"amount":-5`, 1)},
+		// A base in a different currency from the resolved price is incoherent:
+		// ADR-036 makes a currency mismatch fail resolution outright, so a
+		// response claiming both cannot have come from a sound resolver.
+		"base_price in another currency": {200, strings.Replace(resolutionBody(900, true), `"base_price":{"amount":2500,"currency":"EUR"}`, `"base_price":{"amount":2500,"currency":"GBP"}`, 1)},
+		"missing evaluated_at":           {200, strings.Replace(resolutionBody(900, true), `"evaluated_at":"2026-07-31T00:00:00Z",`, ``, 1)},
+		"winner without scope_id":        {200, strings.Replace(resolutionBody(900, true), `"scope_id":"00000000-0000-0000-0000-0000000000e1",`, ``, 1)},
+		// Three shapes PostgreSQL's jsonb refuses but Go's decoder does not stop
+		// at the door. Each would otherwise validate, create the hold, and only
+		// then fail the INSERT -- leaving an orphan hold and a 500 for a buyer.
+		// All three arrive in a field this build does not know, which is exactly
+		// where a byte-scan for one spelling of NUL missed them.
 		"unstorable NUL in an unknown field": {200, strings.Replace(resolutionBody(900, true), `"candidates":[]`, `"candidates":[],"future_field":"\u0000"`, 1)},
+		"unstorable out-of-range number":     {200, strings.Replace(resolutionBody(900, true), `"candidates":[]`, `"candidates":[],"future_field":1e400000`, 1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, held, done := pricingStack(t, tc.status, tc.body)
@@ -201,5 +205,64 @@ func TestReserveOverflowGuardAppliesToResolvedAmount(t *testing.T) {
 	reserve(t, s, "overflow-ok")
 	if *held != 9007199254740991 {
 		t.Fatalf("hold unit_amount = %d, want the resolved amount — the guard must not reject a representable price", *held)
+	}
+}
+
+// A resolver version newer than this build is NOT a reason to refuse a sale,
+// and getting that wrong cost a self-inflicted outage in review.
+//
+// Commerce consumes `resolved_price`, whose contract is "the unit price for this
+// ticket type". That contract does not change when the comparator's DERIVATION
+// does, so capping the version bought no price safety while guaranteeing that
+// deploying catalog before commerce stops every new reservation. The version is
+// recorded in the snapshot because a stored provenance document must stay
+// interpretable — a read-side concern, not a gate on the sale.
+func TestReserveAcceptsANewerResolverVersion(t *testing.T) {
+	future := strings.Replace(resolutionBody(900, true), `"resolver_version":2`, `"resolver_version":999`, 1)
+	s, held, done := pricingStack(t, 200, future)
+	defer done()
+
+	reserve(t, s, "future-resolver")
+
+	if *held != 900 {
+		t.Fatalf("inventory hold unit_amount = %d, want 900 — a newer resolver must not stop the sale", *held)
+	}
+}
+
+// A legitimate string whose TEXT is the six characters of the NUL escape is
+// storable, and the earlier byte-scan rejected it. The check works on decoded
+// strings now, so this must go through.
+func TestReserveAcceptsALiteralBackslashUZeroString(t *testing.T) {
+	literal := strings.Replace(resolutionBody(900, true), `"candidates":[]`,
+		`"candidates":[],"future_field":"\\u0000"`, 1)
+	s, held, done := pricingStack(t, 200, literal)
+	defer done()
+
+	reserve(t, s, "literal-escape-text")
+
+	if *held != 900 {
+		t.Fatalf("inventory hold unit_amount = %d, want 900 — the TEXT of an escape is storable", *held)
+	}
+}
+
+// An unpaired surrogate in an unknown field is NORMALISED, not refused — and the
+// distinction is deliberate.
+//
+// PostgreSQL's jsonb would reject the raw bytes, so this had to be handled
+// before the hold. But refusing would fail a sale over a byte in a field nobody
+// reads. Decoding and re-encoding replaces it with U+FFFD, which is storable,
+// and the money fields are validated independently, so nothing that decides a
+// price is touched. jsonb canonicalises the document anyway; this only decides
+// WHICH canonical form gets stored.
+func TestReserveNormalisesAnUnstorableSurrogate(t *testing.T) {
+	surrogate := strings.Replace(resolutionBody(900, true), `"candidates":[]`,
+		`"candidates":[],"future_field":"\ud800"`, 1)
+	s, held, done := pricingStack(t, 200, surrogate)
+	defer done()
+
+	reserve(t, s, "surrogate")
+
+	if *held != 900 {
+		t.Fatalf("inventory hold unit_amount = %d, want 900 — a byte in an unknown field must not fail a sale", *held)
 	}
 }

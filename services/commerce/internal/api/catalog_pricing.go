@@ -1,13 +1,13 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,10 +36,9 @@ import (
 // Neither ever degrades to the base price. "No rule matched" is NOT in this
 // list: it is a successful resolution that answers with the base price, and
 // conflating the two is exactly how a sale silently prices itself wrong.
-// maxKnownResolverVersion is the newest comparator semantics this build can
-// price against. Catalog's own constant is the source; bumping it there without
-// bumping this deliberately makes commerce refuse rather than guess.
-const maxKnownResolverVersion int32 = 2
+// maxContractAmount is the OpenAPI Money bound: every consumer, the storefront
+// included, must represent it exactly.
+const maxContractAmount int64 = 9007199254740991
 
 var (
 	errResolveUnavailable = errors.New("price resolution unavailable")
@@ -104,16 +103,14 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 	if json.Unmarshal(body, &p) != nil {
 		return priceResolution{}, fmt.Errorf("%w: body is not a PriceResolution", errResolveUnusable)
 	}
-	p.raw = append(json.RawMessage(nil), body...)
-	// The snapshot has to be STORABLE, and that has to be known before a hold
-	// exists. PostgreSQL's jsonb rejects the NUL code point while Go's decoder
-	// accepts it, so a response carrying one anywhere -- including in a field
-	// this build does not know -- would validate, create inventory, and only
-	// then fail the insert, leaving an orphan hold and a 500. Check it here,
-	// where failing is still free.
-	if bytes.Contains(body, []byte(`\u0000`)) {
-		return priceResolution{}, fmt.Errorf("%w: body is not storable as jsonb", errResolveUnusable)
+	// The snapshot has to be STORABLE, and that has to be known BEFORE a hold
+	// exists -- otherwise the insert fails after inventory has committed and the
+	// buyer gets a 500 with an orphan hold.
+	canonical, err := storableSnapshot(body)
+	if err != nil {
+		return priceResolution{}, err
 	}
+	p.raw = canonical
 	if err := p.validate(organizerID, quantity); err != nil {
 		return priceResolution{}, err
 	}
@@ -125,20 +122,35 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 func (p priceResolution) validate(organizerID uuid.UUID, quantity int32) error {
 	bad := func(why string) error { return fmt.Errorf("%w: %s", errResolveUnusable, why) }
 
-	// Refuse a resolver this build does not understand. Accepting anything >= 1
-	// was the exact inversion of the rule this file claims to follow: a future
-	// version exists BECAUSE the comparator's semantics changed, so pricing a
-	// sale with today's assumptions against tomorrow's resolver is how a wrong
-	// number reaches a buyer silently. Same trap ADR-017 documents for event
-	// schemas -- judge the version before trusting the payload.
-	if p.ResolverVersion < 1 || p.ResolverVersion > maxKnownResolverVersion {
-		return bad("unsupported resolver_version")
+	// Any version >= 1 is accepted, and the reason is worth writing down because
+	// the opposite was tried first and was worse.
+	//
+	// Capping this at the newest version commerce knew looked like ADR-017's
+	// "judge the version before trusting the payload". It is not the same
+	// situation. ADR-017 protects a consumer that DECODES a payload whose
+	// meaning changed. Commerce decodes almost nothing here: it consumes
+	// `resolved_price`, whose contract is "the unit price for this ticket type",
+	// and that contract does not change when the COMPARATOR's derivation does.
+	// A cap therefore bought no price safety and cost a real outage -- deploy
+	// catalog before commerce and every new reservation stops.
+	//
+	// If catalog ever changes what `resolved_price` MEANS, that is a breaking
+	// contract change needing a new field or operation, not a version bump, and
+	// the validations below are what would catch a shape that no longer fits.
+	// The version is recorded in the snapshot so a stored provenance document
+	// stays interpretable -- a read-side concern, not a reason to refuse a sale.
+	if p.ResolverVersion < 1 {
+		return bad("resolver_version below 1")
 	}
 	// base_price absent decodes to a zero Money and would never be looked at on
-	// the winner path. Require it: a response that cannot say what the price was
-	// BEFORE rules is not a resolution.
-	if p.BasePrice.Currency == "" {
-		return bad("missing base_price")
+	// the winner path. Require it, and require it to be REAL money: presence
+	// alone let a negative amount, a lowercase code, or a currency different
+	// from the resolved one sail through on the winner path.
+	if err := checkMoney("base_price", p.BasePrice); err != nil {
+		return err
+	}
+	if p.BasePrice.Currency != p.ResolvedPrice.Currency {
+		return bad("base_price and resolved_price are in different currencies")
 	}
 	if p.EvaluatedAt.IsZero() {
 		return bad("missing evaluated_at")
@@ -194,6 +206,85 @@ func (p priceResolution) validate(organizerID uuid.UUID, quantity int32) error {
 		return bad("resolved price overflows the order total")
 	}
 	return nil
+}
+
+// checkMoney enforces the contract's Money bounds on any amount that reaches
+// this sale: non-negative, within the range every consumer can represent
+// exactly, and an ISO-4217 code in the shape the contract declares.
+func checkMoney(field string, m resolvedMoney) error {
+	switch {
+	case m.Amount < 0:
+		return fmt.Errorf("%w: negative %s", errResolveUnusable, field)
+	case m.Amount > maxContractAmount:
+		return fmt.Errorf("%w: %s exceeds the contract's Money range", errResolveUnusable, field)
+	case !isISO4217(m.Currency):
+		return fmt.Errorf("%w: %s carries a malformed currency", errResolveUnusable, field)
+	}
+	return nil
+}
+
+func isISO4217(c string) bool {
+	if len(c) != 3 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if c[i] < 'A' || c[i] > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// storableSnapshot returns the document in a form PostgreSQL jsonb will accept,
+// or refuses it.
+//
+// Scanning the raw bytes for one spelling of the NUL escape was not a
+// storability test -- three inputs got past it and would have failed the INSERT
+// *after* the hold existed, leaving an orphan hold and a 500 for the buyer:
+// an unpaired surrogate (Go decodes it, PostgreSQL refuses it), a number outside
+// PostgreSQL's numeric range, and any of these nested inside a field this build
+// does not know. It also false-positived on a legitimate string whose TEXT
+// happens to be the six characters of the escape.
+//
+// Decoding and re-encoding settles all of it: the decoder rejects out-of-range
+// numbers and replaces invalid surrogates, and the walk below looks for a real
+// NUL rune rather than a spelling of one. The re-encoded bytes are what gets
+// stored -- no loss, since jsonb canonicalises anyway, and unknown fields
+// survive because the document is decoded as a generic map.
+func storableSnapshot(body []byte) ([]byte, error) {
+	var doc any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("%w: body is not storable as jsonb: %v", errResolveUnusable, err)
+	}
+	if containsNUL(doc) {
+		return nil, fmt.Errorf("%w: body carries a NUL, which jsonb refuses", errResolveUnusable)
+	}
+	canonical, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: body cannot be re-encoded: %v", errResolveUnusable, err)
+	}
+	return canonical, nil
+}
+
+// containsNUL walks decoded JSON for an actual NUL rune in any key or string.
+func containsNUL(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.ContainsRune(t, 0)
+	case map[string]any:
+		for k, vv := range t {
+			if strings.ContainsRune(k, 0) || containsNUL(vv) {
+				return true
+			}
+		}
+	case []any:
+		for _, vv := range t {
+			if containsNUL(vv) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // total is the composed line amount. Commerce's job, not catalog's.
