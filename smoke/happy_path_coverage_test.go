@@ -297,10 +297,11 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// directions are exercised. The first version of this test used the SAME type and
 	// asserted delta 0 — which meant both payment branches could be deleted and it still
 	// passed (ai-review F5).
-	dearer := created(t, gatewayURL+"/api/catalog/ticket-types", map[string]any{
+	dearerType := created(t, gatewayURL+"/api/catalog/ticket-types", map[string]any{
 		"organizer_id": organizerID, "performance_id": slot,
 		"name": map[string]string{"fr": "Cher", "en": "Dearer"},
 		"price": map[string]any{"amount": 5000, "currency": "EUR"}})
+	dearer := fmt.Sprint(dearerType["id"])
 
 	// UPGRADE: exactly the difference is charged, once.
 	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
