@@ -1,15 +1,15 @@
 {
   "key": "TKT-134",
   "type": "Task",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 134,
     "url": "https://github.com/mathd/ticketing_system/pull/134",
-    "state": "open"
+    "state": "merged"
   },
   "classification": "simple",
   "summary": "Flaky: TestScheduledReleaseIsLazyAndObservable — channel and public reads disagree across the release boundary",
