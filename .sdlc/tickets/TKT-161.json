@@ -4,9 +4,9 @@
   "parent": "TKT-9",
   "classification": "complex",
   "summary": "US-O2b: A refund gives the capacity back",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
