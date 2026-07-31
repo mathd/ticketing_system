@@ -80,6 +80,9 @@ type Exchange struct {
 	BasisRecorded            bool
 	TargetHoldID             uuid.UUID
 	ReplacementReservationID uuid.UUID
+	TargetUnitAmount         int64
+	TargetSlotID             uuid.UUID
+	TargetPriceSnapshot      []byte
 	// PaymentSourceKey is the source order's checkout idempotency key, which IS the key
 	// payments bound its charge operation under. A downgrade refunds against it.
 	PaymentSourceKey string
@@ -254,16 +257,18 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	var replacement uuid.NullUUID
 	var target, delta sql.NullInt64
 	var settled, switched, basis sql.NullTime
-	var targetHold, replacementReservation uuid.NullUUID
+	var targetHold, replacementReservation, targetSlot uuid.NullUUID
+	var targetUnit sql.NullInt64
 	var createdAt time.Time
 	err := q.QueryRowContext(ctx, `
 		SELECT id,source_order_id,replacement_order_id,target_ticket_type_id,request_fingerprint,quantity,
 		       source_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,
-		       target_hold_id,replacement_reservation_id,basis_at
+		       target_hold_id,replacement_reservation_id,basis_at,target_unit_amount,target_slot_id,target_price_snapshot
 		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.exchange.ID, &s.exchange.SourceOrderID, &replacement, &s.exchange.TargetTicketTypeID,
 			&s.fingerprint, &s.exchange.Quantity, &s.exchange.SourceTotal, &target, &delta,
-			&s.exchange.Currency, &createdAt, &settled, &switched, &targetHold, &replacementReservation, &basis)
+			&s.exchange.Currency, &createdAt, &settled, &switched, &targetHold, &replacementReservation, &basis,
+			&targetUnit, &targetSlot, &s.exchange.TargetPriceSnapshot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedExchange{}, false, nil
 	}
@@ -276,6 +281,7 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	s.exchange.Settled, s.exchange.TicketsExchanged = settled.Valid, switched.Valid
 	s.exchange.BasisRecorded = basis.Valid
 	s.exchange.TargetHoldID, s.exchange.ReplacementReservationID = targetHold.UUID, replacementReservation.UUID
+	s.exchange.TargetUnitAmount, s.exchange.TargetSlotID = targetUnit.Int64, targetSlot.UUID
 	s.exchange.CreatedAt = createdAt.UTC().Truncate(time.Microsecond)
 	return s, true, nil
 }
@@ -283,13 +289,32 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 // RecordExchangeBasis commits what the settlement will be, BEFORE the provider is called.
 // Once-only: a replay reads it back rather than re-deriving, which is what makes a retry
 // after a successful charge and a failed later step settle the same numbers (ai-review F3).
-func RecordExchangeBasis(ctx context.Context, db *sql.DB, org, exchangeID, targetHold, replacementReservation uuid.UUID, targetTotal, delta int64) error {
+func RecordExchangeBasis(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID, basis ExchangeBasis) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE order_exchanges
-		SET target_hold_id=$3, replacement_reservation_id=$4, target_total=$5, delta_amount=$6, basis_at=now()
+		SET target_hold_id=$3, replacement_reservation_id=$4, target_total=$5, delta_amount=$6,
+		    target_unit_amount=$7, target_slot_id=$8, target_price_snapshot=$9, basis_at=now()
 		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NULL`,
-		org, exchangeID, targetHold, replacementReservation, targetTotal, delta)
+		org, exchangeID, basis.TargetHoldID, basis.ReplacementReservationID, basis.TargetTotal,
+		basis.DeltaAmount, basis.TargetUnitAmount, basis.TargetSlotID, basis.PriceSnapshot)
 	return err
+}
+
+// ExchangeBasis is everything the settlement and the replacement are built from, committed
+// in one write before the provider is called.
+type ExchangeBasis struct {
+	TargetHoldID, ReplacementReservationID, TargetSlotID uuid.UUID
+	TargetTotal, DeltaAmount, TargetUnitAmount           int64
+	PriceSnapshot                                        []byte
+}
+
+// LookupExchange reads an exchange by its deterministic identity, without binding or
+// locking anything. The handler resolves an existing exchange with this BEFORE any
+// external call, so a settled replay answers without needing catalog to be reachable
+// (ai-review pass 2).
+func LookupExchange(ctx context.Context, db *sql.DB, org, id uuid.UUID) (Exchange, bool, error) {
+	s, found, err := lookupExchange(ctx, db, org, id)
+	return s.exchange, found, err
 }
 
 // CompleteExchangeSettlement records the money half: the replacement order, both totals,

@@ -76,11 +76,24 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ELIGIBILITY FIRST, nothing durable yet (ai-review F2). Binding before these checks
-	// left a row behind on every refusal — a typo or a sold-out target then made the order
-	// permanently unreversible, because the one-per-order index blocked a corrected
-	// attempt and the refund path treats any exchange row as a live exchange. No money had
-	// moved; the order was simply stuck.
+	// A SETTLED replay answers first, before any external call (ai-review pass 2).
+	// Resolving the price on every request meant a settled exchange could not be replayed
+	// while catalog was unreachable — an operation that already happened failing because
+	// of a dependency it no longer needs.
+	exchangeID := commercestore.ExchangeID(in.OrganizerID, key)
+	if existing, found, err := commercestore.LookupExchange(r.Context(), s.db, in.OrganizerID, exchangeID); err != nil {
+		write(w, 500, map[string]string{"error": "persist exchange"})
+		return
+	} else if found && existing.Settled {
+		writeExchange(w, existing, true)
+		return
+	}
+
+	// ELIGIBILITY, and nothing durable yet (ai-review F2). Binding before these checks left
+	// a row behind on every refusal — a typo or a sold-out target then made the order
+	// permanently unreversible, because the one-per-order index blocked a corrected attempt
+	// and the refund path treats any exchange row as a live exchange. No money had moved;
+	// the order was simply stuck.
 	src, err := commercestore.LoadExchangeSource(r.Context(), s.db, in.OrganizerID, order)
 	if err != nil {
 		code, message := exchangeProblem(err)
@@ -115,7 +128,16 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only now is anything durable written.
+	// THE TARGET HOLD, still before anything durable (ai-review pass 2, P2-1). Taking it
+	// after the bind meant a sold-out target left an exchange row behind and locked the
+	// order exactly as a typo did. A hold that is never used simply expires; a durable row
+	// does not.
+	hold, err := s.holdExchangeTarget(r, in.OrganizerID, in.TargetTicketTypeID, src.Quantity, resolution)
+	if err != nil {
+		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
+		return
+	}
+
 	ex, err := commercestore.BindOrderExchange(r.Context(), s.db, commercestore.ExchangeRequest{
 		SourceOrderID: order, OrganizerID: in.OrganizerID, TargetTicketTypeID: in.TargetTicketTypeID,
 		IdempotencyKey: key, Actor: in.Actor, Reason: in.Reason,
@@ -129,49 +151,48 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ex.BuyerID, ex.HoldID, ex.PaymentSourceKey = src.BuyerID, src.HoldID, src.PaymentSourceKey
-	if ex.Settled {
-		writeExchange(w, ex, true)
-		return
-	}
 
-	// THE BASIS, before any money (ai-review F3). A retry after a provider call that
-	// succeeded and a later step that failed must settle the SAME numbers: re-resolving
-	// the price or re-taking the hold on replay can produce a different basis, or fail
-	// outright on an expired claim, leaving a charged buyer with an unsettled exchange.
+	// THE BASIS, before any money (ai-review F3), and complete: hold, reservation, total,
+	// signed delta, AND the unit price, slot and provenance snapshot. The replacement is
+	// written from these, so a price change between the basis and the replacement cannot
+	// produce a reservation whose total disagrees with quantity × unit, or whose
+	// provenance describes a different basis from the money that moved (pass 2, P2-3).
 	if !ex.BasisRecorded {
-		hold, err := s.holdExchangeTarget(r, ex, resolution)
-		if err != nil {
-			write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
-			return
+		basis := commercestore.ExchangeBasis{
+			TargetHoldID:             hold,
+			ReplacementReservationID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-reservation:"+ex.ID.String())),
+			TargetSlotID:             resolution.PerformanceID,
+			TargetTotal:              targetTotal,
+			DeltaAmount:              commercestore.ExchangeDelta(ex.SourceTotal, targetTotal),
+			TargetUnitAmount:         resolution.ResolvedPrice.Amount,
+			PriceSnapshot:            []byte(resolution.raw),
 		}
-		reservation := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-reservation:"+ex.ID.String()))
-		delta := commercestore.ExchangeDelta(ex.SourceTotal, targetTotal)
-		if err := commercestore.RecordExchangeBasis(r.Context(), s.db, ex.OrganizerID, ex.ID, hold, reservation, targetTotal, delta); err != nil {
+		if err := commercestore.RecordExchangeBasis(r.Context(), s.db, ex.OrganizerID, ex.ID, basis); err != nil {
 			slog.Default().ErrorContext(r.Context(), "record exchange basis", "err", err)
 			write(w, 500, map[string]string{"error": "persist exchange"})
 			return
 		}
-		ex.TargetHoldID, ex.ReplacementReservationID = hold, reservation
-		ex.TargetTotal, ex.DeltaAmount, ex.BasisRecorded = targetTotal, delta, true
+		ex.TargetHoldID, ex.ReplacementReservationID = basis.TargetHoldID, basis.ReplacementReservationID
+		ex.TargetSlotID, ex.TargetUnitAmount, ex.TargetPriceSnapshot = basis.TargetSlotID, basis.TargetUnitAmount, basis.PriceSnapshot
+		ex.TargetTotal, ex.DeltaAmount, ex.BasisRecorded = basis.TargetTotal, basis.DeltaAmount, true
 	}
 
-	// FINALIZE the target claim before the money moves, and CONFIRM it after — the same
-	// sequence checkout uses, and the steps the plan listed that the first implementation
-	// dropped (ai-review F1). Without them the target hold stays expirable: inventory can
-	// free and resell that capacity while a completed replacement order points at it.
+	// FINALIZE before the money and CONFIRM after — the sequence checkout uses, and the
+	// steps the plan listed that the first implementation dropped (ai-review F1). Finalize
+	// also takes the claim out of the expiry predicate, which only fires on `held`, so the
+	// target cannot lapse between settlement and confirmation.
 	if err := s.transitionExchangeHold(r, ex, "finalize"); err != nil {
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 		return
 	}
-
 	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount); err != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "exchange settlement unresolved"})
 		return
 	}
 	if err := s.transitionExchangeHold(r, ex, "confirm"); err != nil {
-		// The money moved and the claim did not confirm. Honest answer: the exchange is
-		// unsettled and retryable against the SAME durable basis, which is exactly what
-		// persisting it beforehand bought.
+		// Money moved, capacity did not confirm. The basis is durable and the claim is
+		// finalizing (so it cannot expire), which is what makes the retry able to finish
+		// against the same numbers rather than re-deriving them.
 		write(w, http.StatusAccepted, map[string]any{"exchange_id": ex.ID, "status": "confirmation_pending"})
 		return
 	}
@@ -181,7 +202,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, 503, map[string]string{"error": "journal unavailable"})
 		return
 	}
-	replacement, err := s.persistExchangeReplacement(r, ex, resolution)
+	replacement, err := s.persistExchangeReplacement(r, ex)
 	if err != nil {
 		slog.Default().ErrorContext(r.Context(), "persist exchange replacement", "err", err)
 		write(w, 500, map[string]string{"error": "persist exchange"})
@@ -242,13 +263,17 @@ func (s *Server) claimIsSeated(r *http.Request, org, hold uuid.UUID) (bool, erro
 	return out.Seated, nil
 }
 
-func (s *Server) holdExchangeTarget(r *http.Request, ex commercestore.Exchange, res priceResolution) (uuid.UUID, error) {
+func (s *Server) holdExchangeTarget(r *http.Request, org, ticketType uuid.UUID, quantity int32, res priceResolution) (uuid.UUID, error) {
 	body := map[string]any{
-		"organizer_id": ex.OrganizerID, "slot_id": res.PerformanceID,
-		"ticket_type_id": ex.TargetTicketTypeID, "quantity": ex.Quantity,
+		"organizer_id": org, "slot_id": res.PerformanceID,
+		"ticket_type_id": ticketType, "quantity": quantity,
 		"unit_amount": res.ResolvedPrice.Amount, "currency": res.ResolvedPrice.Currency,
 	}
-	code, out, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds", "exchange:"+ex.ID.String(), body, false)
+	// Keyed on the ticket type and organizer rather than the exchange, because the hold is
+	// taken BEFORE the exchange exists now (P2-1). A retry that gets this far re-holds; an
+	// unused hold expires on its own, which a durable row would not.
+	code, out, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds",
+		"exchange-target:"+org.String()+":"+ticketType.String(), body, false)
 	if err != nil || (code != 200 && code != 201) {
 		return uuid.Nil, fmt.Errorf("target hold: status %d: %w", code, err)
 	}
@@ -326,14 +351,22 @@ func (s *Server) exchangeFacts(r *http.Request, ex commercestore.Exchange, targe
 // does NOT owe an `order.completed` event: that would make access issue the new tickets
 // while the old ones still admit — a both-admit window, which is exactly what the chosen
 // failure mode forbids. TKT-166 publishes the exchange event that switches them atomically.
-func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Exchange, res priceResolution) (uuid.UUID, error) {
+// persistExchangeReplacement writes the replacement from the PERSISTED basis only — never
+// from a freshly resolved price (ai-review pass 2, P2-3). Mixing a stored total with a
+// fresh unit amount is how a reservation ends up claiming a total that is not its quantity
+// times its unit price, with provenance describing a basis the money never used.
+//
+// It deliberately does NOT owe an `order.completed` event: that would make access issue the
+// new tickets while the old ones still admit — the both-admit window ADR-039 §3 rejects.
+// TKT-166 publishes the exchange event that switches them atomically.
+func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Exchange) (uuid.UUID, error) {
 	reservation := ex.ReplacementReservationID
 	replacement := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-order:"+ex.ID.String()))
 	if _, err := s.db.ExecContext(r.Context(), `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status,price_resolution_snapshot)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed',$11) ON CONFLICT(id) DO NOTHING`,
-		reservation, ex.OrganizerID, ex.TargetHoldID, res.PerformanceID, ex.TargetTicketTypeID, ex.BuyerID,
-		ex.Quantity, res.ResolvedPrice.Amount, ex.TargetTotal, res.ResolvedPrice.Currency, []byte(res.raw)); err != nil {
+		reservation, ex.OrganizerID, ex.TargetHoldID, ex.TargetSlotID, ex.TargetTicketTypeID, ex.BuyerID,
+		ex.Quantity, ex.TargetUnitAmount, ex.TargetTotal, ex.Currency, ex.TargetPriceSnapshot); err != nil {
 		return uuid.Nil, err
 	}
 	if _, err := s.db.ExecContext(r.Context(), `

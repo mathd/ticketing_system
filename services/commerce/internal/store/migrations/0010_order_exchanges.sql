@@ -49,13 +49,22 @@ CREATE TABLE order_exchanges (
     -- outright on an expired claim, leaving a charged buyer with an unsettled exchange.
     target_hold_id uuid,
     replacement_reservation_id uuid,
+    -- The FULL priced basis, not just the total (ai-review pass 2). The replacement
+    -- reservation is written from these, so a price change between the basis and the
+    -- replacement cannot produce a row whose total disagrees with quantity × unit, or a
+    -- provenance snapshot describing a different basis from the money that moved.
+    target_unit_amount bigint CHECK (target_unit_amount >= 0),
+    target_slot_id uuid,
+    target_price_snapshot jsonb,
     basis_at timestamptz,
     CONSTRAINT order_exchanges_basis_shape CHECK (
         (basis_at IS NULL AND target_hold_id IS NULL AND replacement_reservation_id IS NULL
-         AND target_total IS NULL AND delta_amount IS NULL)
+         AND target_total IS NULL AND delta_amount IS NULL AND target_unit_amount IS NULL
+         AND target_slot_id IS NULL)
         OR
         (basis_at IS NOT NULL AND target_hold_id IS NOT NULL AND replacement_reservation_id IS NOT NULL
-         AND target_total IS NOT NULL AND delta_amount IS NOT NULL)
+         AND target_total IS NOT NULL AND delta_amount IS NOT NULL AND target_unit_amount IS NOT NULL
+         AND target_slot_id IS NOT NULL)
     ),
     -- Settlement can only follow a persisted basis, and only names an order.
     CONSTRAINT order_exchanges_settlement_shape CHECK (
@@ -68,6 +77,10 @@ CREATE TABLE order_exchanges (
     -- target 1000 / source 5000 / delta 9000 and the row still claims to be settled.
     CONSTRAINT order_exchanges_delta_is_the_difference CHECK (
         delta_amount IS NULL OR delta_amount = target_total - source_total
+    ),
+    -- The total is a product, and the basis says so rather than leaving it implied.
+    CONSTRAINT order_exchanges_total_is_the_product CHECK (
+        target_total IS NULL OR target_total = target_unit_amount * quantity
     ),
     -- The entitlement cannot switch before the money settles (TKT-166 sets the second).
     CONSTRAINT order_exchanges_switch_after_settlement CHECK (

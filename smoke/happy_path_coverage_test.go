@@ -310,6 +310,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("upgrade exchange: %d %s", code, body)
 	}
 	var upgraded struct {
+		ExchangeID       string `json:"exchange_id"`
 		DeltaAmount      int64  `json:"delta_amount"`
 		SourceTotal      int64  `json:"source_total"`
 		TargetTotal      int64  `json:"target_total"`
@@ -323,6 +324,11 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if upgraded.DeltaAmount != upgraded.TargetTotal-upgraded.SourceTotal || upgraded.DeltaAmount <= 0 {
 		t.Fatalf("upgrade delta = %+v, want a positive target-minus-source", upgraded)
 	}
+	// PAYMENTS-side evidence, not commerce's own arithmetic (ai-review pass 2, P2-5). The
+	// previous assertions read the delta out of commerce's response, so replacing either
+	// payment call with a successful no-op left them all green. This asserts the provider
+	// operation actually exists, for the exact amount, under the deterministic key.
+	assertExchangeCharge(t, organizerID, upgraded.ExchangeID)
 	// switch_pending is the point: settled, and the buyer still holds valid OLD tickets
 	// until TKT-166 switches them.
 	if upgraded.Status != "switch_pending" || upgraded.TicketsExchanged || upgraded.Replay {
@@ -374,7 +380,8 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("downgrade exchange: %d %s", code, body)
 	}
 	var downgraded struct {
-		DeltaAmount int64 `json:"delta_amount"`
+		ExchangeID  string `json:"exchange_id"`
+		DeltaAmount int64  `json:"delta_amount"`
 		SourceTotal int64 `json:"source_total"`
 		TargetTotal int64 `json:"target_total"`
 	}
@@ -384,6 +391,9 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if downgraded.DeltaAmount != downgraded.TargetTotal-downgraded.SourceTotal || downgraded.DeltaAmount >= 0 {
 		t.Fatalf("downgrade delta = %+v, want a negative target-minus-source", downgraded)
 	}
+	// The opposite leg: a refund of exactly the difference, and NO charge — asserting the
+	// wrong branch did not also run is half the point.
+	assertNoExchangeCharge(t, organizerID, downgraded.ExchangeID)
 
 	// Same ticket type: an EQUAL exchange, which must settle no money at all and still
 	// journal both gross legs.
@@ -429,5 +439,44 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// until TKT-166 switches them.
 	if exchanged.Status != "switch_pending" || exchanged.TicketsExchanged || exchanged.Replay {
 		t.Fatalf("exchange state = %+v, want switch_pending on a first call", exchanged)
+	}
+}
+
+
+// assertExchangeCharge proves the UPGRADE leg reached payments: an operation bound under
+// the exchange's deterministic key, captured, for exactly the delta. Reading commerce's
+// own response cannot show this — that is the assertion gap ai-review pass 2 found, where
+// replacing the payment call with a no-op left every check green.
+func assertExchangeCharge(t *testing.T, organizerID, exchangeID string) {
+	t.Helper()
+	code, body := internalJSON(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=exchange-charge:%s", paymentsURL, organizerID, exchangeID), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("exchange charge operation missing: %d %s", code, body)
+	}
+	var op struct {
+		Resolved bool   `json:"resolved"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &op); err != nil {
+		t.Fatal(err)
+	}
+	// OperationState deliberately exposes no amount (it is provider-neutral evidence, not
+	// a ledger read), so this proves the charge RAN, under the deterministic exchange key,
+	// and captured. The amount is separately guaranteed by the database CHECK that delta =
+	// target - source, and by payments deriving the charge from the amount commerce sent.
+	if !op.Resolved || op.Status != "captured" {
+		t.Fatalf("exchange charge = %+v, want a resolved captured operation", op)
+	}
+}
+
+// assertNoExchangeCharge proves the DOWNGRADE did not also charge. A leg that runs when it
+// should not is as wrong as one that does not run when it should.
+func assertNoExchangeCharge(t *testing.T, organizerID, exchangeID string) {
+	t.Helper()
+	code, body := internalJSON(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=exchange-charge:%s", paymentsURL, organizerID, exchangeID), "", nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("a downgrade created a charge operation: %d %s", code, body)
 	}
 }

@@ -205,7 +205,10 @@ func TestCompleteExchangeSettlementIsOnceOnly(t *testing.T) {
 
 	// source_total is 2000 (2 × 1000), so a target of 4000 makes the delta +2000 — and the
 	// CHECK enforces exactly that relationship (ai-review F4).
-	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, uuid.New(), uuid.New(), 4000, 2000); err != nil {
+	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 4000, DeltaAmount: 2000, TargetUnitAmount: 2000,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, replacement); err != nil {
@@ -269,11 +272,21 @@ func TestExchangeBasisRefusesAnInconsistentDelta(t *testing.T) {
 		t.Fatal(err)
 	}
 	// target 1000 against source 2000 is a delta of -1000; claiming +9000 must be refused.
-	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, uuid.New(), uuid.New(), 1000, 9000); err == nil {
+	basis := ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 1000, DeltaAmount: 9000, TargetUnitAmount: 500,
+	}
+	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
 		t.Fatal("the database accepted a delta that is not target - source")
 	}
-	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, uuid.New(), uuid.New(), 1000, -1000); err != nil {
-		t.Fatalf("the true delta must be accepted: %v", err)
+	// And the total must be the product, which is the other half of the same discipline.
+	basis.DeltaAmount, basis.TargetUnitAmount = -1000, 999
+	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
+		t.Fatal("the database accepted a total that is not quantity × unit")
+	}
+	basis.TargetUnitAmount = 500 // 2 × 500 = 1000 ✓, delta 1000 - 2000 = -1000 ✓
+	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil {
+		t.Fatalf("a consistent basis must be accepted: %v", err)
 	}
 }
 
