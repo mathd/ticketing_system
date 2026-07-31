@@ -56,7 +56,7 @@ func (e FestivalStatus) Valid() bool {
 // Defines values for LosingPriceRuleReason.
 const (
 	ExcludedByForcedRule LosingPriceRuleReason = "excluded_by_forced_rule"
-	ForcedAncestor       LosingPriceRuleReason = "forced_ancestor"
+	ForcedBroaderScope   LosingPriceRuleReason = "forced_broader_scope"
 	LessSpecific         LosingPriceRuleReason = "less_specific"
 	LowerForcedScope     LosingPriceRuleReason = "lower_forced_scope"
 	LowerPriority        LosingPriceRuleReason = "lower_priority"
@@ -70,7 +70,7 @@ func (e LosingPriceRuleReason) Valid() bool {
 	switch e {
 	case ExcludedByForcedRule:
 		return true
-	case ForcedAncestor:
+	case ForcedBroaderScope:
 		return true
 	case LessSpecific:
 		return true
@@ -407,7 +407,7 @@ type PriceResolution struct {
 
 	// ResolverVersion Bumped when the comparator's semantics change. A commitment, not a decoration: TKT-153 persists snapshots that must stay interpretable.
 	ResolverVersion int32                `json:"resolver_version"`
-	Winner          *PriceRuleProvenance `json:"winner,omitempty"`
+	Winner          *PriceRuleProvenance `json:"winner"`
 }
 
 // PriceResolutionFallbackReason Present only when no rule applied and base_price is the answer.
@@ -421,10 +421,10 @@ type PriceRuleProvenance struct {
 	Currency   string                        `json:"currency"`
 
 	// EffectiveFrom Always null until TKT-152 adds effective windows. Declared now, not later, because TKT-153 persists this provenance shape as a snapshot on the reservation — if the shape changed between TKT-151 and TKT-152, stored snapshots would span two formats.
-	EffectiveFrom *time.Time `json:"effective_from,omitempty"`
+	EffectiveFrom *time.Time `json:"effective_from"`
 
 	// EffectiveUntil Always null until TKT-152 — see effective_from.
-	EffectiveUntil *time.Time `json:"effective_until,omitempty"`
+	EffectiveUntil *time.Time `json:"effective_until"`
 
 	// Forced force_ancestor_override — restricts the competition to forced rules and inverts the scope order.
 	Forced     bool                          `json:"forced"`

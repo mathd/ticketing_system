@@ -1074,7 +1074,13 @@ components:
     PriceRuleProvenance:
       description: One pricing rule as reported in a resolution's provenance (ADR-036 §5).
       type: object
-      required: [rule_id, scope_level, scope_id, action_kind, amount, currency, priority, forced]
+      # effective_from / effective_until are REQUIRED and nullable, not optional:
+      # the point of declaring them in TKT-151 is that TKT-153 persists this shape
+      # as a snapshot, and an absent key is a different shape from an explicit
+      # null. Optional + omitempty would have shipped the second while claiming
+      # the first.
+      required: [rule_id, scope_level, scope_id, action_kind, amount, currency,
+                 effective_from, effective_until, priority, forced]
       properties:
         rule_id:
           type: string
@@ -1130,7 +1136,7 @@ components:
           type: string
           enum:
             - less_specific
-            - forced_ancestor
+            - forced_broader_scope
             - excluded_by_forced_rule
             - lower_forced_scope
             - lower_priority
@@ -1144,7 +1150,9 @@ components:
         explicitly because "candidates" and "the losers" pull in opposite
         directions and two implementations of a looser sentence would disagree.
       type: object
-      required: [resolver_version, evaluated_at, base_price, resolved_price, candidates]
+      # winner is required and nullable for the same reason: a fallback response
+      # must say "winner: null", not omit the key.
+      required: [resolver_version, evaluated_at, base_price, resolved_price, winner, candidates]
       properties:
         resolver_version:
           description: >

@@ -708,12 +708,12 @@ export interface components {
              * Format: date-time
              * @description Always null until TKT-152 adds effective windows. Declared now, not later, because TKT-153 persists this provenance shape as a snapshot on the reservation — if the shape changed between TKT-151 and TKT-152, stored snapshots would span two formats.
              */
-            effective_from?: string | null;
+            effective_from: string | null;
             /**
              * Format: date-time
              * @description Always null until TKT-152 — see effective_from.
              */
-            effective_until?: string | null;
+            effective_until: string | null;
             /** Format: int32 */
             priority: number;
             /** @description force_ancestor_override — restricts the competition to forced rules and inverts the scope order. */
@@ -723,7 +723,7 @@ export interface components {
         LosingPriceRule: {
             rule: components["schemas"]["PriceRuleProvenance"];
             /** @enum {string} */
-            reason: "less_specific" | "forced_ancestor" | "excluded_by_forced_rule" | "lower_forced_scope" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
+            reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
         };
         /** @description A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. */
         PriceResolution: {
@@ -739,7 +739,7 @@ export interface components {
             evaluated_at: string;
             base_price: components["schemas"]["Money"];
             resolved_price: components["schemas"]["Money"];
-            winner?: components["schemas"]["PriceRuleProvenance"] | null;
+            winner: components["schemas"]["PriceRuleProvenance"] | null;
             candidates: components["schemas"]["LosingPriceRule"][];
             /**
              * @description Present only when no rule applied and base_price is the answer.

@@ -64,7 +64,7 @@ var scopeRank = map[ScopeLevel]int{
 // implementer invents one.
 const (
 	ReasonLessSpecific         = "less_specific"
-	ReasonForcedAncestor       = "forced_ancestor"
+	ReasonForcedBroaderScope   = "forced_broader_scope"
 	ReasonExcludedByForcedRule = "excluded_by_forced_rule"
 	ReasonLowerForcedScope     = "lower_forced_scope"
 	ReasonLowerPriority        = "lower_priority"
@@ -88,6 +88,12 @@ const PricingResolverVersion int32 = 1
 // not apply (ADR-036 §2). Silently skipping it would sell at the wrong price
 // and look like nothing happened, so resolution fails instead.
 var ErrPriceRuleCurrencyMismatch = errors.New("price rule currency differs from the ticket type's")
+
+// ErrDuplicatePriceRuleID guards the comparator's determinism claim: the last
+// tie-break is the id, so two rules sharing one are inseparable and the winner
+// would depend on input order. Unreachable through Postgres (id is the primary
+// key) — this is the pure seam refusing to pretend otherwise.
+var ErrDuplicatePriceRuleID = errors.New("two price rules share an id")
 
 // Money is integer minor units + ISO-4217 (ADR-001). Floats are banned here.
 type Money struct {
@@ -183,6 +189,20 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 		if matchesScope(r, in.Scopes) {
 			scoped = append(scoped, r)
 		}
+	}
+
+	// Two rules sharing an id would make the answer depend on input order: the
+	// final tie-break is the id itself, so they form an equivalence class the
+	// comparator cannot separate, and the loser loop would suppress both. The
+	// primary key makes this unreachable through Postgres — but this function is
+	// the seam TKT-152 and TKT-153 build on, and a function that advertises
+	// determinism must not quietly have an input that breaks it.
+	seen := make(map[uuid.UUID]struct{}, len(scoped))
+	for _, r := range scoped {
+		if _, dup := seen[r.ID]; dup {
+			return RuleSelection{}, fmt.Errorf("%w: %s", ErrDuplicatePriceRuleID, r.ID)
+		}
+		seen[r.ID] = struct{}{}
 	}
 
 	// Step 1 — currency, on every scoped rule, BEFORE the window filter.
@@ -311,7 +331,7 @@ func beats(challenger, best PriceRule, inverted bool) bool {
 func lossReason(loser, winner PriceRule) string {
 	if winner.ForceAncestorOverride && !loser.ForceAncestorOverride {
 		if scopeRank[winner.ScopeLevel] > scopeRank[loser.ScopeLevel] {
-			return ReasonForcedAncestor
+			return ReasonForcedBroaderScope
 		}
 		return ReasonExcludedByForcedRule
 	}

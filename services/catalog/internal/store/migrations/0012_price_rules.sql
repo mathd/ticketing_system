@@ -32,7 +32,12 @@ CREATE TABLE price_rules (
     -- pre-existing and is TKT-154's, deliberately not fixed here.
     amount                  bigint NOT NULL
         CHECK (amount >= 0 AND amount <= 9007199254740991),
-    currency                char(3) NOT NULL,
+    -- Uppercase-enforced, unlike ticket_types.currency: the OpenAPI contract
+    -- requires ^[A-Z]{3}$, so a lowercase code would be legal in Postgres,
+    -- resolve fine, and then fail response validation as a 500 (ADR-028). Same
+    -- class of gap as the amount bound above. ticket_types.currency has the
+    -- same hole and is pre-existing -- TKT-154's, not fixed here.
+    currency                char(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
     -- Operators express intent through priority; the resolver's final
     -- tie-break on id exists only so row order can never decide a price.
     priority                integer NOT NULL DEFAULT 0,
@@ -51,6 +56,12 @@ CREATE INDEX price_rules_scope ON price_rules (organizer_id, scope_level, scope_
 
 -- +goose Down
 -- Fail closed rather than silently discard pricing data, mirroring 0004/0006.
+-- The lock comes BEFORE the check on purpose. Checking first and dropping after
+-- leaves a window: the guard sees an empty table, a writer commits a rule, and
+-- the drop then destroys it -- a "fail closed" guard that silently loses data.
+-- ACCESS EXCLUSIVE is what DROP TABLE needs anyway, so taking it up front costs
+-- nothing and makes the check and the drop one atomic decision.
+LOCK TABLE price_rules IN ACCESS EXCLUSIVE MODE;
 -- +goose StatementBegin
 DO $$
 BEGIN

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -159,11 +160,11 @@ func TestSelectPricingRule(t *testing.T) {
 				rule(ruleB, ScopeEvent, eventID, 3300),
 			},
 			wantWinner: &ruleA, wantAmount: 3400,
-			wantLosers: []loserWant{{ruleB, ReasonForcedAncestor}},
+			wantLosers: []loserWant{{ruleB, ReasonForcedBroaderScope}},
 		},
 		{
 			// The winner is forced but NARROWER than the loser, so
-			// forced_ancestor does not fit — this is the case that had no
+			// forced_broader_scope does not fit — this is the case that had no
 			// reason at all until ADR-036 gained excluded_by_forced_rule.
 			name:       "forced_event_beats_ordinary_venue",
 			withSeries: true,
@@ -313,5 +314,63 @@ func TestSelectPricingRuleIgnoresZeroUUIDSeriesRule(t *testing.T) {
 	}
 	if got.ResolvedPrice.Amount != basePrice.Amount {
 		t.Fatalf("ResolvedPrice = %d, want base %d", got.ResolvedPrice.Amount, basePrice.Amount)
+	}
+}
+
+// Two rules sharing an id have no separable order — the last tie-break IS the
+// id — so the winner would depend on input order and the loser loop would
+// suppress both. Postgres cannot produce this (id is the primary key), but the
+// pure seam is what TKT-152 and TKT-153 build on, so it refuses the input
+// rather than quietly returning one of two different prices.
+func TestSelectPricingRuleRejectsDuplicateIDs(t *testing.T) {
+	dup := []PriceRule{
+		rule(ruleA, ScopeEvent, eventID, 3300),
+		rule(ruleA, ScopeEvent, eventID, 9900),
+	}
+	forward, errF := SelectPricingRule(evalAt, PricingCandidates{
+		BasePrice: basePrice, Scopes: testScopes(true), Rules: dup})
+	reversed, errR := SelectPricingRule(evalAt, PricingCandidates{
+		BasePrice: basePrice, Scopes: testScopes(true), Rules: []PriceRule{dup[1], dup[0]}})
+	if !errors.Is(errF, ErrDuplicatePriceRuleID) || !errors.Is(errR, ErrDuplicatePriceRuleID) {
+		t.Fatalf("want ErrDuplicatePriceRuleID both ways, got %v / %v (results %d / %d) — "+
+			"without the guard these two orderings resolve to different prices",
+			errF, errR, forward.ResolvedPrice.Amount, reversed.ResolvedPrice.Amount)
+	}
+}
+
+// Order independence, stated as a property rather than hoped for: every
+// permutation of a candidate set must produce the same winner, the same price
+// and the same loser reasons.
+func TestSelectPricingRuleIsOrderIndependent(t *testing.T) {
+	rules := []PriceRule{
+		forced(rule(ruleA, ScopeVenue, venueID, 3400)),
+		rule(ruleB, ScopeEvent, eventID, 3300),
+		withPriority(rule(uuid.MustParse("cccccccc-0000-0000-0000-000000000000"), ScopeSlot, slotID, 3100), 7),
+	}
+	want, err := SelectPricingRule(evalAt, PricingCandidates{
+		BasePrice: basePrice, Scopes: testScopes(true), Rules: rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, perm := range [][]int{{0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		shuffled := []PriceRule{rules[perm[0]], rules[perm[1]], rules[perm[2]]}
+		got, err := SelectPricingRule(evalAt, PricingCandidates{
+			BasePrice: basePrice, Scopes: testScopes(true), Rules: shuffled})
+		if err != nil {
+			t.Fatalf("permutation %v: %v", perm, err)
+		}
+		if got.Winner.ID != want.Winner.ID || got.ResolvedPrice != want.ResolvedPrice {
+			t.Errorf("permutation %v: winner/price = %v/%+v, want %v/%+v",
+				perm, got.Winner.ID, got.ResolvedPrice, want.Winner.ID, want.ResolvedPrice)
+		}
+		if len(got.Candidates) != len(want.Candidates) {
+			t.Fatalf("permutation %v: %d losers, want %d", perm, len(got.Candidates), len(want.Candidates))
+		}
+		for i := range got.Candidates {
+			if got.Candidates[i] != want.Candidates[i] {
+				t.Errorf("permutation %v: loser %d = %+v, want %+v",
+					perm, i, got.Candidates[i], want.Candidates[i])
+			}
+		}
 	}
 }

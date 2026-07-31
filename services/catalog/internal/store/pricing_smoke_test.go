@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,14 @@ func TestPriceRulesMigrationConstraints(t *testing.T) {
 	}
 	if err := insert(100, "venue", "multiplier"); err == nil {
 		t.Error("an unknown action_kind must be rejected — the union has one member today")
+	}
+	// A lowercase code is legal in char(3) but violates the contract's
+	// ^[A-Z]{3}$, so it would resolve fine and then 500 the declared read
+	// (ADR-028). The column enforces the contract instead.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO price_rules(organizer_id,scope_level,scope_id,action_kind,amount,currency)
+		 VALUES($1,'venue',$2,'absolute',100,'eur')`, orgID, venueID); err == nil {
+		t.Error("a lowercase currency must be rejected — the contract requires ^[A-Z]{3}$")
 	}
 }
 
@@ -264,4 +273,22 @@ func TestResolveTicketTypePriceIsIndexScoped(t *testing.T) {
 	plan := explainGenericPlan(ctx, t, db, priceRuleCandidatesQuery,
 		orgID, ttID, slotID, seriesID, eventID, venueID)
 	assertReachesVia(t, plan, "price_rules", "price_rules_scope")
+
+	// assertReachesVia alone is not enough here, and the gap is worth naming:
+	// it checks that the index appears and no sequential scan does. A read that
+	// walked the WHOLE index for this organizer — every rule they own, at every
+	// scope level — would satisfy it while doing exactly the unscoped work
+	// ADR-019 exists to forbid. So assert the scope predicate is IN the index
+	// condition, not merely a filter applied after the rows are fetched.
+	if !strings.Contains(plan, "Index Cond") || !strings.Contains(plan, "scope_level") {
+		t.Fatalf("scope_level is not in the index condition — the read may be walking the "+
+			"organizer's whole rule set and filtering afterwards.\nplan:\n%s", plan)
+	}
+	// A leftover post-index Filter on the scope columns is the same defect
+	// wearing a different name: rows fetched, then discarded.
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.Contains(line, "Filter:") && strings.Contains(line, "scope_id") {
+			t.Errorf("scope_id is filtered AFTER the index fetch, not by it: %s\nplan:\n%s", line, plan)
+		}
+	}
 }
