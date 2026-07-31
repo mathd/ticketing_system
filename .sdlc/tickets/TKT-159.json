@@ -1,0 +1,116 @@
+{
+  "key": "TKT-159",
+  "type": "Story",
+  "parent": "TKT-9",
+  "classification": "complex",
+  "summary": "US-O4: Cancelling an event refunds its whole order book, with a per-order outcome",
+  "description": "**As** an organizer whose event is cancelled, **I want** every order on it refunded in one operation with a per-order outcome I can read, **so that** I can prove who was repaid and chase only the ones that failed.\n\n**Priority:** P1  **Depends on:** TKT-157 (a complete, reversible refund exists)\n\nBulk is a different problem from single: it must be resumable, it must not double-refund, one bad order must not stop the run, and the result must be readable afterwards.\n\n**Acceptance Criteria:**\n- [ ] Cancelling a slot enumerates every `completed`, not-fully-refunded order on it and attempts a full refund of each.\n- [ ] Each order ends with exactly one recorded outcome — refunded / already-refunded / failed with a reason. A test runs the cancellation **twice** and proves no order is refunded twice and the second run reports every order as already-refunded.\n- [ ] One order failing (provider decline, downstream unavailable) does not abort the run; the failure is recorded with its reason and the run continues.\n- [ ] The run is **resumable**: a test interrupts it mid-book and resumes, proving no order is skipped and none refunded twice.\n- [ ] The outcome report is readable through the API — counts by outcome plus per-order rows — and is `organizer_id`-scoped (ADR-002).\n- [ ] The book is processed without holding one long transaction or one lock across the whole run; the plan states the batching/locking shape and a test with more orders than one batch proves it.\n- [ ] Spec declared, generated code committed, smoke coverage (ADR-009/028/030).\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); entities `organizer_id`-scoped (ADR-002); money is integer minor units + ISO-4217 code, floats banned (ADR-001); regenerate and **commit** `openapi_gen.go` / `api-types.gen.ts` before running the gate.",
+  "context": {
+    "capturedAt": "2026-07-31",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-31",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-31",
+        "rule": "Traceability is a must, for money and tickets: money-relevant records land as immutable, hash-chained, signed journal entries from the first order (corrections = compensating entries; read models = projections), and every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-003",
+        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
+      },
+      {
+        "id": "ADR-032",
+        "why": "All provider money movement goes through the PSP port. `/internal/psp/refund` and the `payment_compensations` table already exist (TKT-114/116) — the PRIMARY KEY (organizer, source_idempotency_key, kind) is what converges duplicate refunds onto ONE provider idempotency key. Reuse it; do not add a parallel refund path."
+      },
+      {
+        "id": "ADR-016",
+        "why": "TRAP: the orders status vocabulary ALREADY contains `refunded`, and the recovery runner writes it for a COMPENSATED FAILED CHECKOUT (money taken for an order that never completed). A post-purchase refund of a COMPLETED order is a different thing. Reusing the token would make recovery's classifyRecovered() treat a refunded completed order as a terminal checkout failure. Pick distinct tokens and check every switch over order status."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Inventory's claim transaction is the contention path. Giving capacity back must go through the same row-locked transaction discipline; a plain UPDATE outside it can drive confirmed_quantity negative or double-return under concurrency."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed. Responses are validated against the spec; an undeclared status code becomes a 500. Every new endpoint must declare every status it can answer, and a downstream answer commerce cannot validate aborts rather than degrades."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first. A new operation is written in the service's openapi.yaml first, then `openapi_gen.go` / `api-types.gen.ts` are regenerated and COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Commerce and inventory ARE inside the smoke happy-path coverage gate. A new documented 2xx operation must be exercised through the running stack or the suite fails."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's `migrate` subcommand as a one-shot Compose job. Add the SQL under the service's internal/store/migrations/ with the next number; the server path never migrates."
+      }
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The epic's third COS. It is also the flow with the worst blast radius in the product — an event cancellation touching every order at once — which is why the resumability and idempotence ACs are non-negotiable."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: operator-triggered bulk refund over one slot's order book, per-order outcomes, resumability, batching, a readable report. OUT: the catalog-side cancellation/slot state transition itself (TKT-2/ADR-018), buyer notification (TKT-18), partial-cancellation policies and credit-instead-of-refund (TKT-21/TKT-34), fee retention policy on cancellation (TKT-6)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the run is a synchronous batched operation, a durable job row driven by an existing runner (the commerce recovery runner is the in-repo precedent), or event-driven is a Planning-time call; all are reversible and the ACs constrain the observable behaviour either way."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-157. Deliberately NOT blocked on the catalog-side event-cancellation transition: this ticket refunds an order book on demand and does not require the slot to be in a cancelled state first."
+    },
+    "approach": {
+      "state": "met",
+      "note": "A durable per-order outcome table keyed by (run, order) is what makes 'exactly one outcome', resumability and no-double-refund the same mechanism; the single-order refund from TKT-156/157 is the unit of work. Test seams: commerce store/api tests with a seeded multi-order book, plus an interrupted-run test."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slot, a handful of completed orders, run twice — the double-run test is the slice's own proof."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable: seed a book, cancel, read the report, re-run, read an all-already-refunded report."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition; ADR-016's status-token trap and ADR-032's compensation-key convergence are what keep the bulk path from double-refunding."
+    }
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-157"
+    }
+  ],
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": []
+}
