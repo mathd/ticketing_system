@@ -1,0 +1,116 @@
+{
+  "key": "TKT-153",
+  "type": "Story",
+  "parent": "TKT-5",
+  "classification": "complex",
+  "summary": "US-P4: The sale charges the resolved price, and the reservation records why",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "**As** a buyer, **I want** the price I was quoted to be the price I am charged, **so that** a rule change mid-checkout never moves the number under me — and **as** the organizer, I want to be able to prove afterwards which rule produced it.\n\n**Priority:** P0  **Depends on:** TKT-151 (resolution + provenance exist)\n\nCloses the epic by putting the hierarchy on the money path. Today `services/commerce/internal/api/server.go` reads catalog's `/internal/ticket-types/{id}` and takes `price.amount` verbatim; after this story it takes the **resolved** price and persists the provenance alongside the reservation.\n\n**⚠️ Money path.** Anticipated and in scope for this ticket — but the plan must say explicitly which existing money invariants it preserves.\n\n**Acceptance Criteria:**\n- [ ] Commerce's reserve path sources `unit_amount` from catalog's rules resolution instead of the raw ticket-type price. With **no rules defined the behaviour is byte-identical to today** — the existing commerce and smoke tests stay green unmodified, and that is the regression proof.\n- [ ] The reservation persists the **provenance** of the price it was created with (winning rule id + scope level + active tier), so a completed order can be traced to the rule that priced it.\n- [ ] **The quote is pinned to the hold**: the price resolved at reserve time is the price checkout charges. A test changes the rules between reserve and checkout and proves the reservation's amount does not move.\n- [ ] Resolution failure **fails closed** (ADR-028): a malformed, drifted, or unreachable resolution response aborts the reserve with an error — it never silently falls back to the base price. Note the distinction the test must encode: *no rule matched* is a valid 200 answering with the base price; *could not resolve* is not.\n- [ ] Money stays integer minor units end to end (ADR-001); the existing overflow guard on `unit_amount × quantity` still holds for a rule-supplied amount.\n- [ ] The commerce operation is exercised through the running stack in the smoke suite (ADR-030 — commerce **is** in the happy-path coverage gate, unlike catalog), and OpenAPI/`api-types.gen.ts` are regenerated and committed before the gate runs.\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; entities `organizer_id`-scoped (ADR-002); money is integer minor units + ISO-4217 code, floats banned (ADR-001).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A pricing hierarchy nothing sells through is inert; this is the ticket that makes TKT-5 real, and it makes the sale auditable."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: reserve-path price sourcing, provenance persistence, quote pinning, fail-closed. OUT: repricing on exchange/refund (TKT-9), fees (TKT-6), cart/multi-item (TKT-8), storefront display of provenance."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether provenance is a column set or a jsonb blob on `reservations` is a Planning-time call; both are reversible within one migration."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-151. Runs after TKT-152 in this epic's sequence, but does not depend on it — the pinning AC holds whether or not tiers exist."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Swap the catalog call in commerce's reserve handler for the resolution endpoint; new commerce migration adds provenance columns to `reservations`; the pinning AC is proven at the API test seam with a fake catalog, plus the smoke suite end-to-end."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One vertical path: reserve → resolved price → persisted provenance → checkout charges the pinned amount."
+    },
+    "success": {
+      "state": "met",
+      "note": "Epic COS-1's 'visible provenance' becomes durable, not just readable."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; governingAdrs resolved from docs/adr/ at 2026-07-30 and to be re-resolved at claim time."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-07-30",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-30",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-30",
+        "rule": "Every money mutation flows through the append-only journal; every price/fee decision resolves through the rules hierarchy (TKT-5) once it exists."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-001",
+        "why": "Money on every pricing path is integer minor units + ISO-4217 code; a percentage/discount rule must not introduce a float or a rounding-by-float step."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns **rule definitions**; commerce owns **pricing evaluation at sale time**. Do not put rule CRUD in commerce, and do not put cart/fee/promo evaluation in catalog (docs/architecture.md service table)."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the OpenAPI document is the source of truth, regenerate `openapi_gen.go` / `api-types.gen.ts` and commit them BEFORE running the gate (check-generate diffs against HEAD)."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via the binary's `migrate` subcommand as a one-shot Compose job; the server path never migrates. New migration files follow the existing numbering in `services/<svc>/internal/store/migrations/`."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response-schema drift fails closed with 500. A resolution response commerce cannot validate must abort the reserve, not degrade to the base price — degrading silently is exactly the failure this ADR exists to prevent."
+      },
+      {
+        "id": "ADR-010",
+        "why": "The claim/hold transaction is inventory's; commerce supplies `unit_amount` to `/holds` and must not move pricing logic into the contention path."
+      },
+      {
+        "id": "ADR-011",
+        "why": "The checkout journal protocol governs what commerce records at checkout; provenance is added alongside it, not in place of any journalled fact."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Commerce IS inside the smoke happy-path coverage gate (unlike catalog) — a new or changed documented 2xx operation must be exercised through the running stack or the suite fails."
+      },
+      {
+        "id": "ADR-016",
+        "why": "Checkout recovery state machine: reserve→checkout is resumable, so anything persisted at reserve time must survive and be re-read on the recovery path rather than re-derived."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The seam to change: `reserve()` in services/commerce/internal/api/server.go calls `/internal/ticket-types/{id}` and uses `o.Price.Amount` for both the hold and the reservation row.",
+        "link": "services/commerce/internal/api/server.go"
+      },
+      {
+        "summary": "`reservations.unit_amount` / `total_amount` are the columns the resolved price lands in (commerce migration 0001).",
+        "link": "services/commerce/internal/store/migrations/0001_checkout.sql"
+      }
+    ]
+  },
+  "comments": [],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-151"
+    }
+  ]
+}
