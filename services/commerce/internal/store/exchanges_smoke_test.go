@@ -30,12 +30,20 @@ func exchangeRequest(c Completion, key string, target uuid.UUID) ExchangeRequest
 // The identity every downstream key derives from must be stable across a retry that lost
 // its response — otherwise a replay settles the difference twice.
 func TestExchangeIDIsDeterministic(t *testing.T) {
-	org := uuid.New()
-	if ExchangeID(org, "k") != ExchangeID(org, "k") {
-		t.Fatal("exchange identity is not deterministic")
+	org, other := uuid.New(), uuid.New()
+	// Bound first: `f(x) != f(x)` inline reads as a tautology to staticcheck, and it has a
+	// point — the assertion that matters is that two SEPARATE derivations agree, which is
+	// what a retry actually performs.
+	first := ExchangeID(org, "k")
+	second := ExchangeID(org, "k")
+	if first != second {
+		t.Fatalf("exchange identity is not deterministic: %s vs %s", first, second)
 	}
-	if ExchangeID(org, "k") == ExchangeID(org, "k2") || ExchangeID(org, "k") == ExchangeID(uuid.New(), "k") {
-		t.Fatal("distinct organizer/key pairs must not collide")
+	if first == ExchangeID(org, "k2") {
+		t.Fatal("distinct idempotency keys must not collide")
+	}
+	if first == ExchangeID(other, "k") {
+		t.Fatal("distinct organizers must not collide")
 	}
 }
 
