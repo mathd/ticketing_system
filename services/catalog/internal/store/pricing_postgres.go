@@ -24,8 +24,9 @@ import (
 // bypasses it entirely (ADR-021).
 const priceRuleWriteGateQuery = `
 INSERT INTO price_rules (organizer_id, scope_level, scope_id, action_kind,
-                         amount, currency, priority, force_ancestor_override)
-SELECT $1, $2, $3, 'absolute', $4, $5, $6, $7
+                         amount, currency, priority, force_ancestor_override,
+                         effective_from, effective_until)
+SELECT $1, $2, $3, 'absolute', $4, $5, $6, $7, $8, $9
 FROM (
     SELECT organizer_id FROM ticket_types WHERE $2 = 'ticket_type' AND id = $3
     UNION ALL
@@ -39,7 +40,8 @@ FROM (
 ) target
 WHERE target.organizer_id = $1
 RETURNING id, organizer_id, scope_level, scope_id, action_kind, amount,
-          currency, priority, force_ancestor_override, created_at`
+          currency, priority, force_ancestor_override,
+          effective_from, effective_until, created_at`
 
 // pricingScopesQuery derives the five scope identities from a ticket type in
 // one read (ADR-036 §1). The LEFT JOIN is what makes the series edge partial:
@@ -62,13 +64,20 @@ WHERE t.id = $1`
 // an unrelated event's rule could be loaded as a candidate for a ticket type
 // that happened to share its id (ADR-036 §3).
 //
+// It deliberately carries NO time predicate. Filtering by window in SQL would
+// be cheaper and WRONG: an expired rule must still be loaded to be reported as
+// outside_window_past, a future one as outside_window_future, and a future
+// wrong-currency rule must still fail the resolution. The time filter is the
+// resolver's (ADR-036 §4 step 2), and the scope pair is what bounds cardinality.
+//
 // A slot with no series passes SQL NULL for $4. The ('series', NULL) row
 // comparison is unknown rather than true, so it matches nothing -- which is
 // also why the parameter must be a typed nil and never uuid.Nil, or it would
 // match a rule whose scope_id is the zero UUID.
 const priceRuleCandidatesQuery = `
 SELECT id, organizer_id, scope_level, scope_id, action_kind, amount,
-       currency, priority, force_ancestor_override, created_at
+       currency, priority, force_ancestor_override,
+       effective_from, effective_until, created_at
 FROM price_rules
 WHERE organizer_id = $1
   AND (scope_level, scope_id) IN (
@@ -86,9 +95,10 @@ func (p *Postgres) CreatePriceRule(ctx context.Context, in PriceRuleInput) (Pric
 	var r PriceRule
 	err := p.db.QueryRowContext(ctx, priceRuleWriteGateQuery,
 		in.OrganizerID, string(in.ScopeLevel), in.ScopeID, in.Amount, in.Currency,
-		in.Priority, in.ForceAncestorOverride,
+		in.Priority, in.ForceAncestorOverride, in.EffectiveFrom, in.EffectiveUntil,
 	).Scan(&r.ID, &r.OrganizerID, &r.ScopeLevel, &r.ScopeID, &r.ActionKind, &r.Amount,
-		&r.Currency, &r.Priority, &r.ForceAncestorOverride, &r.CreatedAt)
+		&r.Currency, &r.Priority, &r.ForceAncestorOverride,
+		&r.EffectiveFrom, &r.EffectiveUntil, &r.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PriceRule{}, ErrNotFound
 	}
@@ -146,7 +156,8 @@ func (p *Postgres) ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid
 	for rows.Next() {
 		var r PriceRule
 		if err = rows.Scan(&r.ID, &r.OrganizerID, &r.ScopeLevel, &r.ScopeID, &r.ActionKind,
-			&r.Amount, &r.Currency, &r.Priority, &r.ForceAncestorOverride, &r.CreatedAt); err != nil {
+			&r.Amount, &r.Currency, &r.Priority, &r.ForceAncestorOverride,
+			&r.EffectiveFrom, &r.EffectiveUntil, &r.CreatedAt); err != nil {
 			return RuleSelection{}, err
 		}
 		rules = append(rules, r)

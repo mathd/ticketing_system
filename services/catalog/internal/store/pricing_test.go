@@ -59,6 +59,24 @@ func forced(r PriceRule) PriceRule { r.ForceAncestorOverride = true; return r }
 
 func withPriority(r PriceRule, p int32) PriceRule { r.Priority = p; return r }
 
+// window sets a half-open [from, until) on a rule. Both bounds are offsets from
+// evalAt, so every fixture is relative to the instant under test rather than to
+// a calendar literal — a literal is green at merge and rots once the clock
+// crosses it (docs/learnings/2026-07-18-time-window-fixtures-must-be-relative.md).
+func window(r PriceRule, fromOffset, untilOffset *time.Duration) PriceRule {
+	if fromOffset != nil {
+		t := evalAt.Add(*fromOffset)
+		r.EffectiveFrom = &t
+	}
+	if untilOffset != nil {
+		t := evalAt.Add(*untilOffset)
+		r.EffectiveUntil = &t
+	}
+	return r
+}
+
+func dur(d time.Duration) *time.Duration { return &d }
+
 type loserWant struct {
 	id     uuid.UUID
 	reason string
@@ -204,6 +222,110 @@ func TestSelectPricingRule(t *testing.T) {
 			rules: []PriceRule{
 				rule(ruleB, ScopeEvent, eventID, 3350),
 				rule(ruleA, ScopeEvent, eventID, 3300),
+			},
+			wantWinner: &ruleA, wantAmount: 3300,
+			wantLosers: []loserWant{{ruleB, ReasonStableIDTiebreak}},
+		},
+		// ---- TKT-152 rows (ADR-036 §4 step 2) ----
+		{
+			// The half-open interval's closed end: at == effective_from is IN.
+			name:       "effective_from_is_inclusive",
+			withSeries: true,
+			rules:      []PriceRule{window(rule(ruleA, ScopeEvent, eventID, 3300), dur(0), nil)},
+			wantWinner: &ruleA, wantAmount: 3300,
+		},
+		{
+			// The open end: at == effective_until is OUT. This is the boundary
+			// an inclusive/exclusive ambiguity turns into a money bug.
+			name:       "effective_until_is_exclusive",
+			withSeries: true,
+			rules:      []PriceRule{window(rule(ruleA, ScopeEvent, eventID, 3300), nil, dur(0))},
+			wantAmount: 4550,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowPast}},
+		},
+		{
+			name:       "closed_rule_loses_as_outside_window_past",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-48*time.Hour), dur(-24*time.Hour)),
+				rule(ruleB, ScopeVenue, venueID, 3400),
+			},
+			wantWinner: &ruleB, wantAmount: 3400,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowPast}},
+		},
+		{
+			name:       "future_rule_loses_as_outside_window_future",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(24*time.Hour), nil),
+				rule(ruleB, ScopeVenue, venueID, 3400),
+			},
+			wantWinner: &ruleB, wantAmount: 3400,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowFuture}},
+		},
+		{
+			// The case the empty-eligible early return would silently break:
+			// the price is right and the provenance is gone. Asserting the
+			// losers is what makes this row worth having.
+			name:       "all_tiers_expired_falls_back_to_base_price",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-48*time.Hour), dur(-24*time.Hour)),
+				window(rule(ruleB, ScopeVenue, venueID, 3400), dur(-72*time.Hour), dur(-1*time.Hour)),
+			},
+			wantAmount: 4550,
+			wantLosers: []loserWant{
+				{ruleA, ReasonOutsideWindowPast},
+				{ruleB, ReasonOutsideWindowPast},
+			},
+		},
+		{
+			// A wrong-currency rule whose window has CLOSED is inert: it can
+			// never price anything again, so failing every resolution forever
+			// on its account would be an unrecoverable outage (currency is
+			// immutable, effective_until only shortens). ADR-036 §4 step 1.
+			name:       "closed_currency_mismatch_is_inert",
+			withSeries: true,
+			rules: []PriceRule{
+				window(PriceRule{ID: ruleA, ScopeLevel: ScopeEvent, ScopeID: eventID,
+					ActionKind: ActionAbsolute, Amount: 3300, Currency: "USD"},
+					dur(-48*time.Hour), dur(-24*time.Hour)),
+			},
+			wantAmount: 4550,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowPast}},
+		},
+		{
+			// ...but one that has not opened yet still HAS a future, so it must
+			// fail now rather than reprice mysteriously the moment it opens.
+			name:       "future_currency_mismatch_fails_resolution",
+			withSeries: true,
+			rules: []PriceRule{
+				window(PriceRule{ID: ruleA, ScopeLevel: ScopeEvent, ScopeID: eventID,
+					ActionKind: ActionAbsolute, Amount: 3300, Currency: "USD"},
+					dur(24*time.Hour), nil),
+			},
+			wantErr: true,
+		},
+		{
+			// Overlap: windows decide ELIGIBILITY, never precedence. Both are
+			// live, so the existing comparator settles it on priority.
+			name:       "overlapping_windows_use_priority",
+			withSeries: true,
+			rules: []PriceRule{
+				withPriority(window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-24*time.Hour), dur(24*time.Hour)), 1),
+				withPriority(window(rule(ruleB, ScopeEvent, eventID, 3350), dur(-1*time.Hour), dur(1*time.Hour)), 5),
+			},
+			wantWinner: &ruleB, wantAmount: 3350,
+			wantLosers: []loserWant{{ruleA, ReasonLowerPriority}},
+		},
+		{
+			// The narrower window does NOT win for being narrower — equal
+			// priority falls through to the id tie-break, unchanged.
+			name:       "equal_priority_overlapping_windows_use_lowest_uuid",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleB, ScopeEvent, eventID, 3350), dur(-1*time.Hour), dur(1*time.Hour)),
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-24*time.Hour), dur(24*time.Hour)),
 			},
 			wantWinner: &ruleA, wantAmount: 3300,
 			wantLosers: []loserWant{{ruleB, ReasonStableIDTiebreak}},

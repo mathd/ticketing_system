@@ -310,3 +310,113 @@ func TestResolveTicketTypePriceIsIndexScoped(t *testing.T) {
 		}
 	}
 }
+
+// The reversed-window CHECK. Without it an instant could be simultaneously
+// after `until` and before `from`, so both provenance reasons would apply to
+// one rule with no stated precedence — and the resolver's two window branches
+// would stop being mutually exclusive.
+func TestPriceRulesEffectiveWindowConstraint(t *testing.T) {
+	ctx, db, _ := seasonSmokeStore(t)
+	_, orgID, venueID, _, _, _ := seedPricingChain(ctx, t, db)
+
+	insert := func(from, until any) error {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO price_rules(organizer_id,scope_level,scope_id,action_kind,amount,currency,
+			                         effective_from,effective_until)
+			 VALUES($1,'venue',$2,'absolute',100,'EUR',$3,$4)`, orgID, venueID, from, until)
+		return err
+	}
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct{ from, until any }{
+		"both unbounded": {nil, nil},
+		"open-ended":     {base, nil},
+		"only an end":    {nil, base},
+		"ordered window": {base, base.Add(time.Hour)},
+	} {
+		if err := insert(tc.from, tc.until); err != nil {
+			t.Errorf("%s must be accepted: %v", name, err)
+		}
+	}
+	if err := insert(base.Add(time.Hour), base); err == nil {
+		t.Error("a reversed window must be rejected")
+	}
+	if err := insert(base, base); err == nil {
+		t.Error("an empty window (from == until) must be rejected — it can never be eligible")
+	}
+}
+
+// COS-2, proven: an early-bird tier switches over BY THE CLOCK ALONE.
+//
+// Both tiers are written once, before either resolution, and NOTHING is written
+// between the two calls. The only thing that differs is the instant passed in.
+// If this passes, no cron, job or scheduled write is involved in a tier taking
+// effect — which is the whole claim of "without manual intervention".
+//
+// The instants come from ONE base read off the DATABASE clock and truncated to
+// microsecond precision before use: a calendar literal is green at merge and
+// rots once the clock crosses it, and an untruncated base would be compared
+// against a value that did not survive the timestamptz round trip.
+//
+// The early-bird rule is given the HIGHER priority deliberately. If window
+// eligibility did not precede the ordinary comparator, it would keep winning
+// past its boundary — so the successor winning at `cutover` proves the filter
+// runs first, not merely that some filter exists.
+func TestResolveTicketTypePriceSwitchesTierWithoutAnyWrite(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	ttID, orgID, _, eventID, _, _ := seedPricingChain(ctx, t, db)
+
+	var base time.Time
+	if err := db.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&base); err != nil {
+		t.Fatal(err)
+	}
+	base = base.UTC().Truncate(time.Microsecond)
+	cutover := base.Add(time.Hour)
+	earlyFrom := base.Add(-time.Hour)
+
+	earlyBird, err := st.CreatePriceRule(ctx, PriceRuleInput{
+		OrganizerID: orgID, ScopeLevel: ScopeEvent, ScopeID: eventID,
+		Amount: 3000, Currency: "EUR", Priority: 100,
+		EffectiveFrom: &earlyFrom, EffectiveUntil: &cutover})
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor, err := st.CreatePriceRule(ctx, PriceRuleInput{
+		OrganizerID: orgID, ScopeLevel: ScopeEvent, ScopeID: eventID,
+		Amount: 4000, Currency: "EUR", Priority: 0,
+		EffectiveFrom: &cutover})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ---- no writes from here on ----
+
+	before, err := st.ResolveTicketTypePrice(ctx, ttID, cutover.Add(-time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Winner == nil || before.Winner.ID != earlyBird.ID {
+		t.Fatalf("at cutover-1ns winner = %+v, want the early bird %v", before.Winner, earlyBird.ID)
+	}
+	if before.ResolvedPrice.Amount != 3000 {
+		t.Errorf("at cutover-1ns price = %d, want 3000", before.ResolvedPrice.Amount)
+	}
+	if len(before.Candidates) != 1 || before.Candidates[0].Reason != ReasonOutsideWindowFuture {
+		t.Errorf("at cutover-1ns losers = %+v, want the successor as outside_window_future", before.Candidates)
+	}
+
+	after, err := st.ResolveTicketTypePrice(ctx, ttID, cutover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Winner == nil || after.Winner.ID != successor.ID {
+		t.Fatalf("at cutover winner = %+v, want the successor %v — the early bird has priority 100 "+
+			"and must still lose, or window eligibility is not running before the comparator",
+			after.Winner, successor.ID)
+	}
+	if after.ResolvedPrice.Amount != 4000 {
+		t.Errorf("at cutover price = %d, want 4000", after.ResolvedPrice.Amount)
+	}
+	if len(after.Candidates) != 1 || after.Candidates[0].Reason != ReasonOutsideWindowPast {
+		t.Errorf("at cutover losers = %+v, want the early bird as outside_window_past", after.Candidates)
+	}
+}

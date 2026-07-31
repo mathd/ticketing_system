@@ -107,13 +107,17 @@ func TestResolveTicketTypePrice(t *testing.T) {
 	if out.FallbackReason != nil {
 		t.Errorf("FallbackReason = %v, want none when a rule won", *out.FallbackReason)
 	}
-	if out.ResolverVersion != store.PricingResolverVersion {
-		t.Errorf("ResolverVersion = %d, want %d", out.ResolverVersion, store.PricingResolverVersion)
+	// Asserted as a LITERAL, not against the constant: comparing the response
+	// to the constant it came from passes at any version, including one bumped
+	// by accident. TKT-152 raised it 1 -> 2 because window eligibility changes
+	// what the comparator means, and TKT-153 persists this number.
+	if out.ResolverVersion != 2 {
+		t.Errorf("ResolverVersion = %d, want 2", out.ResolverVersion)
 	}
-	// TKT-152 fills these; declared now so TKT-153's persisted snapshot shape
-	// does not change between the two stories.
+	// This winner carries no window, so both bounds are null — the unbounded
+	// case, which must stay representable now that windows exist.
 	if out.Winner.EffectiveFrom != nil || out.Winner.EffectiveUntil != nil {
-		t.Errorf("window fields = %v/%v, want null until TKT-152",
+		t.Errorf("window fields = %v/%v, want null for an unbounded rule",
 			out.Winner.EffectiveFrom, out.Winner.EffectiveUntil)
 	}
 	if time.Since(out.EvaluatedAt) > time.Minute {
@@ -177,4 +181,54 @@ func TestResolveTicketTypePriceNotFound(t *testing.T) {
 
 func containsUUID(body string, id uuid.UUID) bool {
 	return strings.Contains(body, id.String())
+}
+
+// A populated window must survive the contract round trip, and a rule that lost
+// on TIME must appear in the response with its own reason — the window fields
+// were declared by TKT-151 and unreachable until now, so this is the first test
+// that can prove they carry values rather than nulls.
+func TestResolveTicketTypePriceReportsWindows(t *testing.T) {
+	e := newEnv(t)
+	ttID, scopes := seedPricedTicketType(t, e, 4550, "EUR")
+	// Offsets from now, never calendar literals: a literal fixture is green at
+	// merge and fails once the clock crosses it.
+	base := time.Now().UTC()
+	expiredFrom, expiredUntil := base.Add(-48*time.Hour), base.Add(-24*time.Hour)
+	liveFrom := base.Add(-time.Hour)
+
+	expired, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeVenue, ScopeID: scopes.VenueID, Amount: 3000, Currency: "EUR",
+		EffectiveFrom: &expiredFrom, EffectiveUntil: &expiredUntil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: scopes.EventID, Amount: 5000, Currency: "EUR",
+		EffectiveFrom: &liveFrom})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec, out := resolvePrice(t, e, ttID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if out.Winner == nil || out.Winner.RuleId != live.ID {
+		t.Fatalf("Winner = %+v, want the live rule %v", out.Winner, live.ID)
+	}
+	if out.Winner.EffectiveFrom == nil || !out.Winner.EffectiveFrom.Equal(liveFrom) {
+		t.Errorf("winner effective_from = %v, want %v", out.Winner.EffectiveFrom, liveFrom)
+	}
+	if out.Winner.EffectiveUntil != nil {
+		t.Errorf("winner effective_until = %v, want null (open-ended)", out.Winner.EffectiveUntil)
+	}
+	if len(out.Candidates) != 1 || out.Candidates[0].Rule.RuleId != expired.ID {
+		t.Fatalf("losers = %+v, want the expired rule reported", out.Candidates)
+	}
+	if out.Candidates[0].Reason != "outside_window_past" {
+		t.Errorf("loser reason = %q, want outside_window_past", out.Candidates[0].Reason)
+	}
+	if out.Candidates[0].Rule.EffectiveUntil == nil {
+		t.Error("the expired rule's window must be reported, not nulled — it is the answer to why it lost")
+	}
 }

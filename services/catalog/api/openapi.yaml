@@ -710,8 +710,11 @@ paths:
         sale-time composition (price + fees + promos + taxes) stays in commerce.
 
         Cache-Control: no-store. That is a correctness tier, not a performance
-        one — a resolved price feeds a money decision, and once TKT-152 adds
-        windows the answer's correctness expires at a known instant.
+        one: a resolved price feeds a money decision, and with effective windows
+        the answer's correctness expires at an exact, known instant. A future
+        browse-only endpoint could cache, but its max-age would have to be
+        rounded down and capped at the earliest upcoming window boundary — a
+        different endpoint and a different contract.
       parameters:
         - name: ticketTypeId
           in: path
@@ -1105,15 +1108,22 @@ components:
           pattern: '^[A-Z]{3}$'
         effective_from:
           description: >
-            Always null until TKT-152 adds effective windows. Declared now, not
-            later, because TKT-153 persists this provenance shape as a snapshot
-            on the reservation — if the shape changed between TKT-151 and
-            TKT-152, stored snapshots would span two formats.
+            Inclusive lower bound of the rule's effective window; null means
+            unbounded. The interval is HALF-OPEN [effective_from,
+            effective_until) — a rule is eligible at an instant equal to
+            effective_from and NOT eligible at one equal to effective_until.
+            Stated explicitly because an inclusive/exclusive ambiguity at a tier
+            boundary is a money bug, not a rounding detail. A reversed window is
+            rejected by the database.
           type: string
           format: date-time
           nullable: true
         effective_until:
-          description: Always null until TKT-152 — see effective_from.
+          description: >
+            Exclusive upper bound; null means unbounded. See effective_from for
+            the half-open semantics. A rule whose window has closed is inert: it
+            can never price anything again, so a misconfiguration in it is
+            ignored rather than failing every resolution forever.
           type: string
           format: date-time
           nullable: true

@@ -420,10 +420,10 @@ type PriceRuleProvenance struct {
 	Amount     int64                         `json:"amount"`
 	Currency   string                        `json:"currency"`
 
-	// EffectiveFrom Always null until TKT-152 adds effective windows. Declared now, not later, because TKT-153 persists this provenance shape as a snapshot on the reservation — if the shape changed between TKT-151 and TKT-152, stored snapshots would span two formats.
+	// EffectiveFrom Inclusive lower bound of the rule's effective window; null means unbounded. The interval is HALF-OPEN [effective_from, effective_until) — a rule is eligible at an instant equal to effective_from and NOT eligible at one equal to effective_until. Stated explicitly because an inclusive/exclusive ambiguity at a tier boundary is a money bug, not a rounding detail. A reversed window is rejected by the database.
 	EffectiveFrom *time.Time `json:"effective_from"`
 
-	// EffectiveUntil Always null until TKT-152 — see effective_from.
+	// EffectiveUntil Exclusive upper bound; null means unbounded. See effective_from for the half-open semantics. A rule whose window has closed is inert: it can never price anything again, so a misconfiguration in it is ignored rather than failing every resolution forever.
 	EffectiveUntil *time.Time `json:"effective_until"`
 
 	// Forced force_ancestor_override — restricts the competition to forced rules and inverts the scope order.

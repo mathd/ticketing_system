@@ -82,7 +82,11 @@ const FallbackNoEligibleRule = "no_eligible_rule"
 // PricingResolverVersion is a commitment, not a decoration: TKT-153 persists
 // provenance snapshots, so changing the comparator's semantics means bumping
 // this, or stored snapshots stop being interpretable.
-const PricingResolverVersion int32 = 1
+// Bumped to 2 by TKT-152: window eligibility changes what the comparator
+// MEANS, even though the response shape is unchanged. Version 1 cannot honestly
+// describe both "windows ignored" and "windows filter eligibility", and TKT-153
+// persists this number in snapshots that must stay interpretable.
+const PricingResolverVersion int32 = 2
 
 // ErrPriceRuleCurrencyMismatch is invalid configuration, not a rule that does
 // not apply (ADR-036 §2). Silently skipping it would sell at the wrong price
@@ -124,7 +128,16 @@ type PriceRule struct {
 	Currency              string
 	Priority              int32
 	ForceAncestorOverride bool
-	CreatedAt             time.Time
+	// Half-open effective window [EffectiveFrom, EffectiveUntil) (TKT-152,
+	// ADR-036 §4 step 2). Either bound nil means unbounded on that side; a
+	// reversed window is unrepresentable (CHECK in migration 0013).
+	//
+	// This is what makes a tier flip "without manual intervention": nothing
+	// runs. The same rows resolve differently as the evaluation instant
+	// crosses a boundary — no cron, no scheduled write, no job to fail.
+	EffectiveFrom  *time.Time
+	EffectiveUntil *time.Time
+	CreatedAt      time.Time
 }
 
 // PriceRuleInput creates a rule. The store validates that ScopeID names a real
@@ -138,6 +151,8 @@ type PriceRuleInput struct {
 	Currency              string
 	Priority              int32
 	ForceAncestorOverride bool
+	EffectiveFrom         *time.Time
+	EffectiveUntil        *time.Time
 }
 
 // PricingCandidates is everything the pure comparator needs.
@@ -225,20 +240,49 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 	// in TKT-151 every rule is unbounded and so every scoped rule is checked.
 	// TKT-152 narrows this to rules that are not already past.
 	for _, r := range scoped {
+		if isPast(at, r) {
+			// Inert: its window closed, so it can never price anything again.
+			// Failing on its account would be permanent and unrecoverable --
+			// currency is immutable and effective_until only shortens, so no
+			// write could rescue it. A dead row must not be an outage.
+			continue
+		}
 		if r.Currency != in.BasePrice.Currency {
 			return RuleSelection{}, fmt.Errorf("%w: rule %s is %s, ticket type is %s",
 				ErrPriceRuleCurrencyMismatch, r.ID, r.Currency, in.BasePrice.Currency)
 		}
 	}
 
-	// Step 2 — window filter. A no-op until TKT-152 adds the columns; written
-	// as an explicit assignment so that story is additive rather than a
-	// reshaping of this function.
-	eligible := scoped
+	// Step 2 — window filter. Half-open [EffectiveFrom, EffectiveUntil): the
+	// closed end is inclusive, the open end is not. An ambiguity here is a
+	// money bug at every tier boundary, so both ends are asserted by tests.
+	//
+	// The CHECK in migration 0013 makes a reversed window unrepresentable, so
+	// no rule can be simultaneously past and future and the two reasons below
+	// are mutually exclusive.
+	eligible := make([]PriceRule, 0, len(scoped))
+	var windowLosers []LosingPriceRule
+	for _, r := range scoped {
+		switch {
+		case isPast(at, r):
+			windowLosers = append(windowLosers, LosingPriceRule{Rule: r, Reason: ReasonOutsideWindowPast})
+		case r.EffectiveFrom != nil && at.Before(*r.EffectiveFrom):
+			windowLosers = append(windowLosers, LosingPriceRule{Rule: r, Reason: ReasonOutsideWindowFuture})
+		default:
+			eligible = append(eligible, r)
+		}
+	}
 
 	if len(eligible) == 0 {
 		reason := FallbackNoEligibleRule
 		out.FallbackReason = &reason
+		// The window losers still ship. Returning the base price with EMPTY
+		// provenance would satisfy "all tiers expired falls back to the base
+		// price" while destroying the only answer to the question anyone
+		// actually asks -- "why is it showing 60 and not the early-bird 45?".
+		// TKT-151's version of this early return did exactly that; it was
+		// latent because no reason could reach it until this ticket.
+		out.Candidates = sortedCandidates(windowLosers)
 		return out, nil
 	}
 
@@ -276,18 +320,30 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 
 	out.Winner = &winner
 	out.ResolvedPrice = Money{Amount: winner.Amount, Currency: winner.Currency}
+	losers := windowLosers
 	for _, r := range eligible {
 		if r.ID == winner.ID {
 			continue
 		}
-		out.Candidates = append(out.Candidates, LosingPriceRule{Rule: r, Reason: lossReason(r, winner)})
+		losers = append(losers, LosingPriceRule{Rule: r, Reason: lossReason(r, winner)})
 	}
-	// Stable output ordering. Representation only — the comparator above does
-	// not depend on it, and must not.
-	sort.Slice(out.Candidates, func(i, j int) bool {
-		return out.Candidates[i].Rule.ID.String() < out.Candidates[j].Rule.ID.String()
-	})
+	out.Candidates = sortedCandidates(losers)
 	return out, nil
+}
+
+// isPast reports that a rule's window has closed at `at`. Half-open: the
+// instant equal to EffectiveUntil is already outside.
+func isPast(at time.Time, r PriceRule) bool {
+	return r.EffectiveUntil != nil && !at.Before(*r.EffectiveUntil)
+}
+
+// sortedCandidates gives the loser list a stable order. Representation only --
+// the comparator does not depend on it, and must not.
+func sortedCandidates(losers []LosingPriceRule) []LosingPriceRule {
+	sort.Slice(losers, func(i, j int) bool {
+		return losers[i].Rule.ID.String() < losers[j].Rule.ID.String()
+	})
+	return losers
 }
 
 // matchesScope reports whether a rule attaches to one of the derived identities
