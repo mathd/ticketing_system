@@ -1,0 +1,130 @@
+{
+  "key": "TKT-161",
+  "type": "Story",
+  "parent": "TKT-9",
+  "classification": "complex",
+  "summary": "US-O2b: A refund gives the capacity back",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "**As** an organizer, **I want** a refunded ticket's seat to go back on sale, **so that** the capacity a refund frees can actually be resold.\n\n**Priority:** P0  **Depends on:** TKT-157 (tickets are voided first)\n\n**Created at TKT-157's planning (2026-07-31)** — the capacity-return half of the original TKT-157. See TKT-157's `kind=plan-final` for why the split runs by reversal rather than by service, and why voiding goes first: freeing capacity while the original ticket still admits is the one ordering that can oversell.\n\nThe plan draft's **Q1** answers this ticket's design and is inherited verbatim: `claims.returned_quantity` orthogonal to `claims.status`, with `claim_history` (`action='refund_return'`, `idempotency_key='refund:'||refund_id`) as the durable idempotency receipt, inside inventory's pool-lock-first claim transaction.\n\n**It also inherits the draft's seated finding, which is the hard part:** *no persistent mapping connects an access ticket to a `claim_seats.seat_identity`*, so a partial return of a seated claim has no correct semantics. Support full seated returns (release every seat) and refuse partial ones **before money moves**; record the limitation in ADR-038 rather than hiding it behind a successful quantity update.\n\n**Acceptance Criteria:**\n- [ ] A supported return decrements `inventory_pools.confirmed_quantity` and the claim's unreturned quantity by exactly q under the pool lock. **AC amended from the original TKT-157 wording** (accepted at TKT-157 planning): “availability increases by exactly q” holds literally only for an open pool with no draining capacity cut and no channel masking. The universal invariant is: *remaining confirmed demand decreases by exactly q, once; availability stays within `[0, effective capacity]`; in an ordinary open GA pool public availability increases by exactly q.*\n- [ ] Replaying the same refund identity returns a replay answer, writes no second `claim_history` row, and leaves the counters unchanged.\n- [ ] The return runs inside inventory's row-locked claim transaction (ADR-010). A contention test proves `confirmed_quantity >= 0`, `returned_quantity <= quantity`, and one refund identity applied once.\n- [ ] Every channel-consumption aggregate subtracts `returned_quantity` from confirmed claims, so returned capacity is not double-counted as still sold.\n- [ ] A **full** seated return releases every live `claim_seats` row in the same transaction; a **partial** seated return is refused before any money moves.\n- [ ] Capacity returned is visible on the refund (`order_refunds.capacity_returned_at`) and retryable by replaying the refund idempotency key.\n- [ ] Spec declared, generated code committed, smoke coverage (ADR-009/028/030).\n\nQuality gates: `make check` green; contract tests; `organizer_id`-scoped entities; money untouched (this ticket moves no money).",
+  "context": {
+    "capturedAt": "2026-07-31",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-31",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-31",
+        "rule": "Traceability is a must, for money and tickets: money-relevant records land as immutable, hash-chained, signed journal entries from the first order (corrections = compensating entries; read models = projections), and every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-021",
+        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Inventory's claim transaction is the contention path. Giving capacity back must go through the same row-locked transaction discipline; a plain UPDATE outside it can drive confirmed_quantity negative or double-return under concurrency."
+      },
+      {
+        "id": "ADR-026",
+        "why": "Capacity adjustments clamp rather than reject. Returning capacity must not let availability exceed the pool's capacity, and the clamp reasoning is the precedent for what to do when it would."
+      },
+      {
+        "id": "ADR-003",
+        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
+      },
+      {
+        "id": "ADR-017",
+        "why": "If any domain event payload changes or a new one is published: bump on CONSUMER SEMANTICS, not parse compatibility, and consumers dispatch on `schema` BEFORE decoding `data`. A fixture built from the type under test cannot fail."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed. Responses are validated against the spec; an undeclared status code becomes a 500. Every new endpoint must declare every status it can answer, and a downstream answer commerce cannot validate aborts rather than degrades."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first. A new operation is written in the service's openapi.yaml first, then `openapi_gen.go` / `api-types.gen.ts` are regenerated and COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Commerce and inventory ARE inside the smoke happy-path coverage gate. A new documented 2xx operation must be exercised through the running stack or the suite fails."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's `migrate` subcommand as a one-shot Compose job. Add the SQL under the service's internal/store/migrations/ with the next number; the server path never migrates."
+      }
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Without it a refund frees no capacity and the organizer cannot resell the seat — the second half of TKT-9's first COS."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: inventory partial/full return, channel aggregates, seated full-return + partial refusal, the commerce leg that drives it. OUT: ticket voiding (TKT-157), exchange (TKT-158), bulk cancellation (TKT-159), persistent ticket-to-seat identity (needs its own ticket)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the pre-money seated-eligibility check is a new inventory read operation or a field on an existing one is a Planning-time call; both are reversible."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-157. Everything else exists on main."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Inherited verbatim from TKT-157's plan draft Q1 — see that ticket's kind=plan comment, which this ticket's implementer should read before drafting its own."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "GA partial return, proven end to end: refund, availability rises by exactly q, replay moves nothing."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable: refund 1 of 2, watch availability rise by 1, replay and watch it not move again."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Inherited from TKT-157 (ADR-037 and ADR-031 included, both added at TKT-157's claim). Re-validate at claim: ADR-038 will exist by then."
+    }
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-157"
+    },
+    {
+      "type": "blocks",
+      "key": "TKT-158"
+    },
+    {
+      "type": "blocks",
+      "key": "TKT-159"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nBorn from TKT-157's planning split, not from shaping — so this is a verdict on inherited work, and the inheritance is the point: the design (Q1), the seated finding, and the amended availability AC all come from a cross-model-reviewed plan rather than being re-derived here. The context-mémo is inherited whole.\n\n**Concerns:** none blocking. One to carry: **re-validate the mémo at claim.** ADR-038 will exist by then (TKT-157 writes it) and will govern this ticket directly — the same staleness that bit TKT-157, whose bake-time mémo was missing ADR-037 and ADR-031.\n\n**Verdict:** PASS."
+    }
+  ]
+}
