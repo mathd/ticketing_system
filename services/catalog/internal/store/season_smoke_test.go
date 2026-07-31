@@ -188,8 +188,11 @@ func TestGetPublishedSeasonDoesNotScanForeignEvents(t *testing.T) {
 // to govern — so all three run in one transaction, rolled back to drop both the
 // setting and the prepared statement.
 //
-// scope is the query's single parameter — a uuid.UUID (a scalar scope, e.g. the
-// festival read) or a []uuid.UUID (an array scope, e.g. the season read). It is
+// scopes are the query's parameters in order, each a uuid.UUID (a scalar scope,
+// e.g. the festival read) or a []uuid.UUID (an array scope, e.g. the season
+// read). Variadic so a multi-parameter query — the TKT-151 pricing read binds
+// six — uses the SAME helper: ADR-019 is explicit that forking it is how one
+// copy quietly stops asserting anything. Each is
 // interpolated into the EXECUTE as a literal because EXECUTE arguments cannot be
 // driver parameters (they would belong to the outer statement) nor subqueries. The
 // values are fixture-generated uuid.UUIDs formatted by their own String method —
@@ -198,21 +201,30 @@ func TestGetPublishedSeasonDoesNotScanForeignEvents(t *testing.T) {
 // Both catalog subset reads share this helper deliberately: the plan mode and the
 // $1 guard below are the discipline ADR-019 rule 2 asks for, and forking them per
 // read is how one copy quietly stops asserting anything.
-func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query string, scope any) string {
+func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query string, scopes ...any) string {
 	t.Helper()
-	var paramType, literal string
-	switch v := scope.(type) {
-	case uuid.UUID:
-		paramType, literal = `uuid`, `'`+v.String()+`'::uuid`
-	case []uuid.UUID:
-		ids := make([]string, 0, len(v))
-		for _, id := range v {
-			ids = append(ids, id.String())
-		}
-		paramType, literal = `uuid[]`, `'{`+strings.Join(ids, ",")+`}'::uuid[]`
-	default:
-		t.Fatalf("explainGenericPlan: unsupported scope type %T", scope)
+	if len(scopes) == 0 {
+		t.Fatal("explainGenericPlan: a query with no parameters has no generic plan to assert")
 	}
+	paramTypes := make([]string, 0, len(scopes))
+	literals := make([]string, 0, len(scopes))
+	for i, scope := range scopes {
+		switch v := scope.(type) {
+		case uuid.UUID:
+			paramTypes = append(paramTypes, `uuid`)
+			literals = append(literals, `'`+v.String()+`'::uuid`)
+		case []uuid.UUID:
+			ids := make([]string, 0, len(v))
+			for _, id := range v {
+				ids = append(ids, id.String())
+			}
+			paramTypes = append(paramTypes, `uuid[]`)
+			literals = append(literals, `'{`+strings.Join(ids, ",")+`}'::uuid[]`)
+		default:
+			t.Fatalf("explainGenericPlan: unsupported scope type %T at $%d", scope, i+1)
+		}
+	}
+	paramType, literal := strings.Join(paramTypes, ", "), strings.Join(literals, ", ")
 
 	stmt := "plan_probe_" + strconv.FormatUint(planProbeSeq.Add(1), 10)
 
@@ -246,13 +258,19 @@ func explainGenericPlan(ctx context.Context, t *testing.T, db *sql.DB, query str
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	// Guard the trap above: if the parameter was folded to a literal this is a
-	// custom plan, and every index assertion below would be vacuous.
-	if got := plan.String(); !strings.Contains(got, "$1") {
-		t.Fatalf("not a generic plan — $1 was substituted, so plan_cache_mode did not apply "+
-			"and this assertion proves nothing.\nplan:\n%s", got)
+	// Guard the trap above: if a parameter was folded to a literal this is a
+	// custom plan, and every index assertion below would be vacuous. Every
+	// parameter is checked, not just $1 — a multi-parameter query can have one
+	// survive while another is substituted.
+	got := plan.String()
+	for i := range scopes {
+		marker := "$" + strconv.Itoa(i+1)
+		if !strings.Contains(got, marker) {
+			t.Fatalf("not a generic plan — %s was substituted, so plan_cache_mode did not apply "+
+				"and this assertion proves nothing.\nplan:\n%s", marker, got)
+		}
 	}
-	return plan.String()
+	return got
 }
 
 // TestGetPublishedSeasonIsIndexScoped asserts PHYSICAL scan cost — the claim a

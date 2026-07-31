@@ -684,6 +684,57 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /ticket-types/{ticketTypeId}/price-resolution:
+    get:
+      operationId: resolveTicketTypePrice
+      summary: Resolve a ticket type's unit price through the rule hierarchy, with provenance
+      description: >
+        Answers "what does this ticket type cost right now, and why" (TKT-151,
+        ADR-036). Rules attach to one of five scope levels — ticket_type, slot,
+        series, event, venue — and the narrowest wins, except that a rule marked
+        force_ancestor_override restricts the competition to forced rules and
+        inverts the order, so the broadest house rule wins. Ties break on
+        priority, then on lowest rule id.
+
+        With no applicable rule the ticket type's own price is returned and
+        fallback_reason says so, so a catalog with no rules prices exactly as it
+        did before this operation existed.
+
+        The evaluation instant is the server's, NOT a request parameter. Letting
+        a caller choose it would let anyone ask a sale-time price endpoint for
+        early-bird pricing after the window closed. TKT-152 adds effective
+        windows; the instant stays server-side.
+
+        This is catalog's question, not commerce's: ADR-036 §6 amends ADR-002 so
+        rule-based unit-price resolution sits with the rule definitions, while
+        sale-time composition (price + fees + promos + taxes) stays in commerce.
+
+        Cache-Control: no-store. That is a correctness tier, not a performance
+        one — a resolved price feeds a money decision, and once TKT-152 adds
+        windows the answer's correctness expires at a known instant.
+      parameters:
+        - name: ticketTypeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Resolved price with full provenance
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/PriceResolutionCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceResolution'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /public/events:
     get:
       operationId: listPublicEvents
@@ -974,6 +1025,18 @@ components:
         enum:
           - 'no-store'
           - 'public, max-age=3600, s-maxage=3600'
+    PriceResolutionCacheControl:
+      description: >
+        Always no-store. A resolved price feeds a money decision (ADR-004's
+        "never" tier), and once TKT-152 adds effective windows the response's
+        correctness expires at a known instant — caching it past that instant
+        would sell at a stale price. Single-valued and required so the ADR-028
+        response validator turns any other value into a 500.
+      required: true
+      schema:
+        type: string
+        enum:
+          - 'no-store'
   responses:
     BadRequest:
       description: Validation failed
@@ -1008,6 +1071,110 @@ components:
       type: object
       additionalProperties:
         type: string
+    PriceRuleProvenance:
+      description: One pricing rule as reported in a resolution's provenance (ADR-036 §5).
+      type: object
+      required: [rule_id, scope_level, scope_id, action_kind, amount, currency, priority, forced]
+      properties:
+        rule_id:
+          type: string
+          format: uuid
+        scope_level:
+          type: string
+          enum: [ticket_type, slot, series, event, venue]
+        scope_id:
+          type: string
+          format: uuid
+        action_kind:
+          description: Tagged union with one member today; widening it later is additive (ADR-036 §2).
+          type: string
+          enum: [absolute]
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        effective_from:
+          description: >
+            Always null until TKT-152 adds effective windows. Declared now, not
+            later, because TKT-153 persists this provenance shape as a snapshot
+            on the reservation — if the shape changed between TKT-151 and
+            TKT-152, stored snapshots would span two formats.
+          type: string
+          format: date-time
+          nullable: true
+        effective_until:
+          description: Always null until TKT-152 — see effective_from.
+          type: string
+          format: date-time
+          nullable: true
+        priority:
+          type: integer
+          format: int32
+        forced:
+          description: force_ancestor_override — restricts the competition to forced rules and inverts the scope order.
+          type: boolean
+    LosingPriceRule:
+      description: >
+        A candidate that did not win, and why. The reason enum is closed and
+        total over the comparator: every way a rule can lose has a value.
+      type: object
+      required: [rule, reason]
+      properties:
+        rule:
+          $ref: '#/components/schemas/PriceRuleProvenance'
+        reason:
+          type: string
+          enum:
+            - less_specific
+            - forced_ancestor
+            - excluded_by_forced_rule
+            - lower_forced_scope
+            - lower_priority
+            - stable_id_tiebreak
+            - outside_window_past
+            - outside_window_future
+    PriceResolution:
+      description: >
+        A resolved unit price and the provenance of that answer (ADR-036 §5).
+        candidates holds every considered rule EXCEPT the winner — stated
+        explicitly because "candidates" and "the losers" pull in opposite
+        directions and two implementations of a looser sentence would disagree.
+      type: object
+      required: [resolver_version, evaluated_at, base_price, resolved_price, candidates]
+      properties:
+        resolver_version:
+          description: >
+            Bumped when the comparator's semantics change. A commitment, not a
+            decoration: TKT-153 persists snapshots that must stay interpretable.
+          type: integer
+          format: int32
+          minimum: 1
+        evaluated_at:
+          description: The server-side instant the rules were evaluated against.
+          type: string
+          format: date-time
+        base_price:
+          # The ticket type's own price, before any rule.
+          $ref: '#/components/schemas/Money'
+        resolved_price:
+          # What the winning rule produced, or base_price when none applied.
+          $ref: '#/components/schemas/Money'
+        winner:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PriceRuleProvenance'
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/LosingPriceRule'
+        fallback_reason:
+          description: Present only when no rule applied and base_price is the answer.
+          type: string
+          enum: [no_eligible_rule]
     Money:
       description: Integer minor units + ISO-4217 code (ADR-001); no floats, ever
       type: object

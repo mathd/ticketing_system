@@ -53,6 +53,42 @@ func (e FestivalStatus) Valid() bool {
 	}
 }
 
+// Defines values for LosingPriceRuleReason.
+const (
+	ExcludedByForcedRule LosingPriceRuleReason = "excluded_by_forced_rule"
+	ForcedAncestor       LosingPriceRuleReason = "forced_ancestor"
+	LessSpecific         LosingPriceRuleReason = "less_specific"
+	LowerForcedScope     LosingPriceRuleReason = "lower_forced_scope"
+	LowerPriority        LosingPriceRuleReason = "lower_priority"
+	OutsideWindowFuture  LosingPriceRuleReason = "outside_window_future"
+	OutsideWindowPast    LosingPriceRuleReason = "outside_window_past"
+	StableIdTiebreak     LosingPriceRuleReason = "stable_id_tiebreak"
+)
+
+// Valid indicates whether the value is a known member of the LosingPriceRuleReason enum.
+func (e LosingPriceRuleReason) Valid() bool {
+	switch e {
+	case ExcludedByForcedRule:
+		return true
+	case ForcedAncestor:
+		return true
+	case LessSpecific:
+		return true
+	case LowerForcedScope:
+		return true
+	case LowerPriority:
+		return true
+	case OutsideWindowFuture:
+		return true
+	case OutsideWindowPast:
+		return true
+	case StableIdTiebreak:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PerformanceStatus.
 const (
 	PerformanceStatusArchived  PerformanceStatus = "archived"
@@ -68,6 +104,63 @@ func (e PerformanceStatus) Valid() bool {
 	case PerformanceStatusDraft:
 		return true
 	case PerformanceStatusPublished:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PriceResolutionFallbackReason.
+const (
+	NoEligibleRule PriceResolutionFallbackReason = "no_eligible_rule"
+)
+
+// Valid indicates whether the value is a known member of the PriceResolutionFallbackReason enum.
+func (e PriceResolutionFallbackReason) Valid() bool {
+	switch e {
+	case NoEligibleRule:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PriceRuleProvenanceActionKind.
+const (
+	Absolute PriceRuleProvenanceActionKind = "absolute"
+)
+
+// Valid indicates whether the value is a known member of the PriceRuleProvenanceActionKind enum.
+func (e PriceRuleProvenanceActionKind) Valid() bool {
+	switch e {
+	case Absolute:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PriceRuleProvenanceScopeLevel.
+const (
+	PriceRuleProvenanceScopeLevelEvent      PriceRuleProvenanceScopeLevel = "event"
+	PriceRuleProvenanceScopeLevelSeries     PriceRuleProvenanceScopeLevel = "series"
+	PriceRuleProvenanceScopeLevelSlot       PriceRuleProvenanceScopeLevel = "slot"
+	PriceRuleProvenanceScopeLevelTicketType PriceRuleProvenanceScopeLevel = "ticket_type"
+	PriceRuleProvenanceScopeLevelVenue      PriceRuleProvenanceScopeLevel = "venue"
+)
+
+// Valid indicates whether the value is a known member of the PriceRuleProvenanceScopeLevel enum.
+func (e PriceRuleProvenanceScopeLevel) Valid() bool {
+	switch e {
+	case PriceRuleProvenanceScopeLevelEvent:
+		return true
+	case PriceRuleProvenanceScopeLevelSeries:
+		return true
+	case PriceRuleProvenanceScopeLevelSlot:
+		return true
+	case PriceRuleProvenanceScopeLevelTicketType:
+		return true
+	case PriceRuleProvenanceScopeLevelVenue:
 		return true
 	default:
 		return false
@@ -213,6 +306,17 @@ type FestivalLifecycleResult struct {
 // LocalizedString Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
 type LocalizedString map[string]string
 
+// LosingPriceRule A candidate that did not win, and why. The reason enum is closed and total over the comparator: every way a rule can lose has a value.
+type LosingPriceRule struct {
+	Reason LosingPriceRuleReason `json:"reason"`
+
+	// Rule One pricing rule as reported in a resolution's provenance (ADR-036 §5).
+	Rule PriceRuleProvenance `json:"rule"`
+}
+
+// LosingPriceRuleReason defines model for LosingPriceRule.Reason.
+type LosingPriceRuleReason string
+
 // Money Integer minor units + ISO-4217 code (ADR-001); no floats, ever
 type Money struct {
 	Amount   int64  `json:"amount"`
@@ -285,6 +389,56 @@ type PerformanceCreate struct {
 	Timezone string             `json:"timezone"`
 	VenueId  openapi_types.UUID `json:"venue_id"`
 }
+
+// PriceResolution A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree.
+type PriceResolution struct {
+	// BasePrice Integer minor units + ISO-4217 code (ADR-001); no floats, ever
+	BasePrice  Money             `json:"base_price"`
+	Candidates []LosingPriceRule `json:"candidates"`
+
+	// EvaluatedAt The server-side instant the rules were evaluated against.
+	EvaluatedAt time.Time `json:"evaluated_at"`
+
+	// FallbackReason Present only when no rule applied and base_price is the answer.
+	FallbackReason *PriceResolutionFallbackReason `json:"fallback_reason,omitempty"`
+
+	// ResolvedPrice Integer minor units + ISO-4217 code (ADR-001); no floats, ever
+	ResolvedPrice Money `json:"resolved_price"`
+
+	// ResolverVersion Bumped when the comparator's semantics change. A commitment, not a decoration: TKT-153 persists snapshots that must stay interpretable.
+	ResolverVersion int32                `json:"resolver_version"`
+	Winner          *PriceRuleProvenance `json:"winner,omitempty"`
+}
+
+// PriceResolutionFallbackReason Present only when no rule applied and base_price is the answer.
+type PriceResolutionFallbackReason string
+
+// PriceRuleProvenance One pricing rule as reported in a resolution's provenance (ADR-036 §5).
+type PriceRuleProvenance struct {
+	// ActionKind Tagged union with one member today; widening it later is additive (ADR-036 §2).
+	ActionKind PriceRuleProvenanceActionKind `json:"action_kind"`
+	Amount     int64                         `json:"amount"`
+	Currency   string                        `json:"currency"`
+
+	// EffectiveFrom Always null until TKT-152 adds effective windows. Declared now, not later, because TKT-153 persists this provenance shape as a snapshot on the reservation — if the shape changed between TKT-151 and TKT-152, stored snapshots would span two formats.
+	EffectiveFrom *time.Time `json:"effective_from,omitempty"`
+
+	// EffectiveUntil Always null until TKT-152 — see effective_from.
+	EffectiveUntil *time.Time `json:"effective_until,omitempty"`
+
+	// Forced force_ancestor_override — restricts the competition to forced rules and inverts the scope order.
+	Forced     bool                          `json:"forced"`
+	Priority   int32                         `json:"priority"`
+	RuleId     openapi_types.UUID            `json:"rule_id"`
+	ScopeId    openapi_types.UUID            `json:"scope_id"`
+	ScopeLevel PriceRuleProvenanceScopeLevel `json:"scope_level"`
+}
+
+// PriceRuleProvenanceActionKind Tagged union with one member today; widening it later is additive (ADR-036 §2).
+type PriceRuleProvenanceActionKind string
+
+// PriceRuleProvenanceScopeLevel defines model for PriceRuleProvenance.ScopeLevel.
+type PriceRuleProvenanceScopeLevel string
 
 // PublicEventDetail defines model for PublicEventDetail.
 type PublicEventDetail struct {
@@ -843,6 +997,9 @@ type ServerInterface interface {
 	// Create a ticket type with a price
 	// (POST /ticket-types)
 	CreateTicketType(w http.ResponseWriter, r *http.Request)
+	// Resolve a ticket type's unit price through the rule hierarchy, with provenance
+	// (GET /ticket-types/{ticketTypeId}/price-resolution)
+	ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID)
 	// Create a general-admission venue
 	// (POST /venues)
 	CreateVenue(w http.ResponseWriter, r *http.Request)
@@ -1047,6 +1204,12 @@ func (_ Unimplemented) PublishSeries(w http.ResponseWriter, r *http.Request, ser
 // Create a ticket type with a price
 // (POST /ticket-types)
 func (_ Unimplemented) CreateTicketType(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resolve a ticket type's unit price through the rule hierarchy, with provenance
+// (GET /ticket-types/{ticketTypeId}/price-resolution)
+func (_ Unimplemented) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1887,6 +2050,32 @@ func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// ResolveTicketTypePrice operation middleware
+func (siw *ServerInterfaceWrapper) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ticketTypeId" -------------
+	var ticketTypeId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ticketTypeId", chi.URLParam(r, "ticketTypeId"), &ticketTypeId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ticketTypeId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveTicketTypePrice(w, r, ticketTypeId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateVenue operation middleware
 func (siw *ServerInterfaceWrapper) CreateVenue(w http.ResponseWriter, r *http.Request) {
 
@@ -2161,6 +2350,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/ticket-types", wrapper.CreateTicketType)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/ticket-types/{ticketTypeId}/price-resolution", wrapper.ResolveTicketTypePrice)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/venues", wrapper.CreateVenue)
