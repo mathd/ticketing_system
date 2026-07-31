@@ -1,0 +1,61 @@
+{
+  "key": "TKT-155",
+  "type": "Task",
+  "summary": "Price-resolution provenance is publicly readable through the gateway — including unannounced future tiers (TKT-153 plan-review finding)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### Finding (surfaced at TKT-153 plan-review; inherited from TKT-151)\n\n`GET /ticket-types/{ticketTypeId}/price-resolution` is a **declared, non-`/internal/`** catalog\noperation, so the gateway proxies it to the public internet:\n\n```\ngateway/cmd/gateway/main.go:30   \"/api/catalog/\": \"CATALOG_URL\"\ngateway/cmd/gateway/main.go:47   only /api/<svc>/internal/ is registered to NotFoundHandler\n```\n\nCatalog has no authentication in v1 (its own OpenAPI says write endpoints are \"v1-trusted, no auth\nyet\"), so the route is reachable by anyone.\n\nIts `candidates` array reports **every considered rule** with `rule_id`, `scope_level`, `scope_id`,\n`amount`, `priority` and `forced` — and since TKT-152, that includes rules that lost with\n`outside_window_future`.\n\n### Why this is worth a ticket rather than a shrug\n\n**An organizer's unannounced future prices are readable before they go on sale**, along with the\nwhole rule ladder: which levels carry rules, what each is worth, which are forced house rules, and\nwhat the tiers step to next.\n\nFor a platform whose users run on-sales, that is a commercial disclosure. A competitor, a reseller,\nor a buyer waiting for a price drop can all read it. It is not a v1-auth complaint — the whole\ncatalog API is open in v1 — it is that **this endpoint publishes a new category of data**: forward\npricing intent, rather than the current state of what is on sale.\n\n### Why it was missed\n\nFour adversarial review passes across TKT-151 and TKT-152 did not catch it, and the reason is\nstructural: each pass was scoped to a diff. TKT-151's diff made the endpoint declared (correct, for\ncontract validation). TKT-152's diff made provenance report window losers (correct, for\nsupportability). **The exposure is the product of the two, and neither diff contains it.**\n\nWorth remembering as a review-scope limitation, not a reviewer failure.\n\n### Options\n\n1. **Require the internal credential** on the declared operation, as `getTicketType` does. Keeps\n   contract validation and the coverage gate; closes the route at the edge. Commerce already has\n   the credential. Cheapest.\n2. **Split the surface**: a public read returning only `resolved_price`, and an internal one with\n   full provenance. More work; better if a public browse-time price read is genuinely wanted —\n   ADR-036 §6 already contemplates one, and says its `max-age` must be capped at the next window\n   boundary.\n3. **Redact `candidates` on the public route** (winner + resolved price only). Keeps one endpoint.\n4. **Accept and record**, if the platform is single-organizer and pricing is not considered\n   sensitive in v1.\n\n### Why TKT-153 did not fix it\n\nAdding a credential to an endpoint is **auth work**, and that run's stop conditions name\nunanticipated auth work as a halt. TKT-153's behaviour is identical whether or not the endpoint is\ncredentialed, so the correct move was to file this rather than change an auth posture without the\nowner. TKT-153 correctly does **not** send its internal credential to this route — that would be\nstrictly worse than leaving it open.\n\n**Only the owner can decide this**: it is a product judgement about whether forward pricing is\npublic, not a technical defect with one right answer.",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-153"
+    }
+  ],
+  "context": {
+    "capturedAt": "2026-07-31",
+    "binding": [
+      {
+        "id": "gateway/cmd/gateway/main.go:47",
+        "date": "2026-07-31",
+        "rule": "The route table is the security boundary (ADR-002): /api/<svc>/internal/ is registered to a NotFoundHandler so internal routes are unreachable from the edge by construction."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "The gateway route table IS the security boundary — an operation is public or internal by where its path sits, so this is a routing decision, not a middleware one."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Whatever is chosen must stay contract-first. Option 1 keeps the operation declared and coverage-gated while requiring a header; option 2 splits it into two declared operations."
+      },
+      {
+        "id": "ADR-036",
+        "why": "§5 defines the provenance shape (why candidates are rich) and §6 already contemplates a separate public browse-time price read with a boundary-capped max-age — which is close to option 2."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Catalog covers its operations in its own coverage_test.go; any new or split operation needs a driving test there."
+      },
+      {
+        "id": "ADR-004",
+        "why": "The current response is no-store. A public browse-time variant would need its own tier, capped at the next window boundary."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Surfaced at TKT-153's plan-review by main-agent. Four prior adversarial passes missed it because each was scoped to a diff and the exposure is the product of two correct diffs.",
+        "link": "TKT-153 kind=plan-review"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from a plan-review finding, not shaped. It is a **product decision** (is forward pricing public?) with four costed options, so it needs the plan gate rather than a straight-to-Ready path. Minimal mémo baked at creation per `decomposition.md`. **Not blocking TKT-153** — that ticket's behaviour is identical either way."
+    }
+  ]
+}
