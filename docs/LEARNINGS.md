@@ -238,6 +238,8 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   69 MB binary. **Before preserving a decision, check that a decision was made** — configuration is
   not evidence of choice, and the tell was an undocumented entry sitting among documented ones.
   Recording an invented rationale is worse than either outcome: it looks like institutional memory
-  and stops the next person from pulling the thread. Corollary: a docs-link checker must resolve
-  against `git ls-files`, never the filesystem — a filesystem checker goes **green on this very
-  defect** on the author's machine and red only in a fresh clone. (TKT-139, PR #136)
+  and stops the next person from pulling the thread. `git log -S` cannot read intent — a directory
+  rule can be added prospectively — but a rule that **predates its subject** cannot encode a
+  judgement about it, which is the strongest form of the answer. Corollary: a docs-link checker must
+  resolve against `git ls-files`, never the filesystem — a filesystem checker goes **green on this
+  very defect** on the author's machine and red only in a fresh clone. (TKT-139, PR #136)
