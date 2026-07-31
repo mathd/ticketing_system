@@ -1,0 +1,112 @@
+{
+  "key": "TKT-156",
+  "type": "Story",
+  "parent": "TKT-9",
+  "classification": "complex",
+  "summary": "US-O1: A completed order can be refunded — the money returns and the journal records it",
+  "description": "**As** an organizer's support agent, **I want** to refund all or part of a completed order, **so that** a buyer who cannot attend gets their money back and the books still balance.\n\n**Priority:** P0  **Depends on:** — (first slice of the epic)\n\nThe money leg only. Commerce gains a staff-facing refund operation that resolves the order's captured payment, moves the money back through the existing PSP port (`/internal/psp/refund`, ADR-032), and appends a **compensating** fact to the hash-chained journal (ADR-003). Giving the capacity back and voiding the tickets is TKT-157 — a refund that returns money but leaves the seat sold is safe (it under-sells, never over-sells) and is the honest first tracer bullet.\n\n**⚠️ Money path.** Anticipated and in scope for this ticket — the plan must state explicitly which existing money invariants it preserves.\n\n**Acceptance Criteria:**\n- [ ] Refunding q of Q tickets on a `completed` order returns exactly `q × unit_amount` through the PSP port. The amount is derived from the persisted `reservations.unit_amount`, **never** by dividing the order total — integer minor units throughout, no floats, no rounding step.\n- [ ] The refund appends a **compensating** journal fact. The original sale fact is untouched (the journal's append-only trigger is the enforcement), and the payments chain still verifies after the refund.\n- [ ] Idempotent under a stable idempotency key: a replay returns the same outcome and issues **exactly one** provider refund. A test proves two concurrent identical refund requests produce one `payment_compensations` row and one provider call.\n- [ ] Cumulative refunded quantity can never exceed the order's quantity and cumulative refunded amount can never exceed what was captured. A test issues two partial refunds that would together over-refund and proves the second is refused.\n- [ ] Refunding an order that is not `completed` is refused with a stated reason; refunding an already fully-refunded order is a replay (same answer), not an error.\n- [ ] The post-refund order state distinguishes partial from full refund **and does not collide with the recovery state machine's existing `refunded` token** for compensated *failed* checkouts (ADR-016). Every existing switch over order status is checked, `classifyRecovered` included.\n- [ ] The new operation is declared in commerce's `openapi.yaml` with every status it can answer (ADR-028), generated code is regenerated and committed, and the operation is exercised through the running stack in the smoke suite (ADR-030).\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); entities `organizer_id`-scoped (ADR-002); money is integer minor units + ISO-4217 code, floats banned (ADR-001); regenerate and **commit** `openapi_gen.go` / `api-types.gen.ts` before running the gate.",
+  "context": {
+    "capturedAt": "2026-07-31",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-31",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-31",
+        "rule": "Traceability is a must, for money and tickets: money-relevant records land as immutable, hash-chained, signed journal entries from the first order (corrections = compensating entries; read models = projections), and every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-003",
+        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
+      },
+      {
+        "id": "ADR-032",
+        "why": "All provider money movement goes through the PSP port. `/internal/psp/refund` and the `payment_compensations` table already exist (TKT-114/116) — the PRIMARY KEY (organizer, source_idempotency_key, kind) is what converges duplicate refunds onto ONE provider idempotency key. Reuse it; do not add a parallel refund path."
+      },
+      {
+        "id": "ADR-011",
+        "why": "The checkout journal protocol defines how commerce records money facts (order_facts row → payments /internal/facts, deterministic fact_id, idempotent). A post-purchase money movement uses the same protocol; do not invent a second one."
+      },
+      {
+        "id": "ADR-016",
+        "why": "TRAP: the orders status vocabulary ALREADY contains `refunded`, and the recovery runner writes it for a COMPENSATED FAILED CHECKOUT (money taken for an order that never completed). A post-purchase refund of a COMPLETED order is a different thing. Reusing the token would make recovery's classifyRecovered() treat a refunded completed order as a terminal checkout failure. Pick distinct tokens and check every switch over order status."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed. Responses are validated against the spec; an undeclared status code becomes a 500. Every new endpoint must declare every status it can answer, and a downstream answer commerce cannot validate aborts rather than degrades."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first. A new operation is written in the service's openapi.yaml first, then `openapi_gen.go` / `api-types.gen.ts` are regenerated and COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Commerce and inventory ARE inside the smoke happy-path coverage gate. A new documented 2xx operation must be exercised through the running stack or the suite fails."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's `migrate` subcommand as a one-shot Compose job. Add the SQL under the service's internal/store/migrations/ with the next number; the server path never migrates."
+      }
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The epic's whole post-purchase story stands on one primitive: money can come back and the trail still proves it. Everything else in TKT-9 (partial, exchange, bulk cancellation) is a caller of this."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: commerce refund operation, PSP refund via the existing port, compensating journal fact, order/reservation refund state, idempotency and over-refund guards. OUT: inventory capacity return and ticket voiding (TKT-157), exchange (TKT-158), bulk cancellation (TKT-159), fees/taxes on refunds (TKT-6/TKT-32), buyer-facing self-service refunds (TKT-21/TKT-22), refund-protection add-on (TKT-8)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "The exact status tokens for a partially/fully refunded completed order are a Planning-time call — constrained by ADR-016's existing `refunded`, reversible within one migration. Whether the refund is a new table or columns on `orders` is likewise Planning's."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. The PSP refund port, `payment_compensations`, the journal and the completed-order path all exist on main today (TKT-114/116, TKT-153)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "New commerce operation → resolve the order's captured payment operation → payments `/internal/psp/refund` under a deterministic key → compensating fact through the existing `s.fact` protocol → guarded status write. Test seam: commerce's api server_test plus the payments journal chain verification already in the gate."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "A full refund of a single-line completed order, proven end to end; partial quantity is the same code path with q < Q and is in the same slice because the guard maths only exists once."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable through the running stack: complete an order, refund it, show the provider refund, the compensating fact, and a still-verifying chain."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition; 8 governing ADRs with per-ticket constraints, including the ADR-016 status-token trap."
+    }
+  },
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-157"
+    }
+  ],
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": []
+}
