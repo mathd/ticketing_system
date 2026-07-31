@@ -4,11 +4,12 @@
   "parent": "TKT-5",
   "classification": "complex",
   "summary": "US-P1: Rules representation — custom DSL vs declarative config (spike, 1 day)",
-  "status": "Ready",
+  "status": "Planning",
   "labels": [
-    "risk:low"
+    "risk:low",
+    "agent:planning"
   ],
-  "assignee": null,
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "description": "### The question\n\nTKT-5 needs pricing rules that override each other along a hierarchy (venue → series → event → slot → ticket type) and change over time (early-bird tiers). The owner is open to a **custom DSL** for complex event programming. The alternative is **declarative config**: structured rows/JSON with a fixed, engine-owned evaluation order and no user-authored expression language.\n\nThis is the epic's third COS (*DSL-vs-config spike concluded with an ADR*) and it decides the data shape every other child implements, so it runs first and blocks them.\n\n**Timebox:** 1 day. **Deliverable:** an ADR in `docs/adr/` — a decision, not code.\n\n### Expected output (what the dependent stories consume)\n- [ ] A decision — DSL or declarative config — with the rejected option's cost stated, not just the chosen option's benefit.\n- [ ] The concrete **rule shape** TKT-151 implements: the scope levels, what a rule may express (absolute price / delta / multiplier — pick and justify), and where evaluation lives (catalog defines, commerce evaluates — ADR-002).\n- [ ] The **conflict semantics**: which scope wins by default, how an explicit override inverts that, and the deterministic tie-break when two rules sit at the same level.\n- [ ] The **provenance shape** — what a resolution must report about which rule won and which lost, so COS-1's 'visible provenance' is testable rather than aspirational.\n- [ ] An escape-hatch note: what the chosen option makes *hard*, and the cheapest migration out of it if the owner later wants the other one.\n\n**No PR is expected** (per `shaping.md` § Spikes): the ADR lands on the default branch as an internal-maintenance commit; a throwaway branch is fine. Spikes close `Building → Done`, skipping PO Review.\n\nQuality gates: `make check` green (an ADR-only change still runs the gate).",
   "readiness": {
