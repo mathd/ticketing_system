@@ -1,0 +1,126 @@
+{
+  "key": "TKT-166",
+  "type": "Story",
+  "parent": "TKT-9",
+  "classification": "complex",
+  "summary": "US-O3b: An exchange switches the entitlement — old tickets out, new tickets in",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "**As** a buyer who exchanged a ticket, **I want** my old ticket to stop working and my new one to start, **so that** the exchange I paid for is real at the gate.\n\n**Priority:** P1  **Depends on:** TKT-158 (the difference settles and the replacement is confirmed)\n\n**Created at TKT-158's planning split.** TKT-158 leaves the exchange in `switch_pending`: the delta is settled, the replacement order is confirmed, and the buyer still holds **valid old tickets**. That state is deliberately safe — it under-sells, cannot oversell, and never leaves the buyer with nothing. This ticket closes it.\n\n**Decided at TKT-158's planning and inherited here:** commerce publishes a **new subject**, `platform.commerce.order.exchanged` (schema 1), rather than bumping `order.completed` to schema 2. ADR-017 applies in full to the new subject, but the existing issuance path — which every consumer depends on — is untouched. TKT-61 shipped the schema-ordering bug twice, past a mutation-checked suite and a full review pass; a new subject cannot repeat it.\n\n**Acceptance Criteria:**\n- [ ] Every old ticket receives one `exchanged` lifecycle event through `store.appendLifecycle` (ADR-021), and the replacement tickets are issued — **in one access transaction**, so there is no window in which both admit or neither does.\n- [ ] `access verify-lifecycle` verifies clean; `exchanged` joins the event-type vocabulary without a canonical-version migration (a new value, not a new field).\n- [ ] A refunded-ticket-style refusal applies: an exchanged ticket does not admit at a live gate, checked **before** integrity fail-open, exactly as `refunded` is (ADR-038 §4).\n- [ ] The old capacity returns only **after** the switch commits — the ADR-038 §1 ordering, which is what stops an exchange overselling.\n- [ ] The consumer dispatches on `schema` **before** decoding `data` (ADR-017 §5b′), and the `schema <= 0` broken-envelope rule is honoured. A fixture built from the type under test cannot prove this; the test must use a hand-written envelope.\n- [ ] A failure mid-switch leaves the buyer with the OLD tickets valid and the work visible and retryable — never neither, never both.\n- [ ] Spec declared, generated code committed, smoke coverage (ADR-009/028/030).\n\nQuality gates: `make check` green; `access verify-lifecycle` green; contract tests; `organizer_id`-scoped. **This ticket moves no money** — TKT-158 already settled it.",
+  "context": {
+    "capturedAt": "2026-07-31",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-31",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-31",
+        "rule": "Traceability is a must, for money and tickets: money-relevant records land as immutable, hash-chained, signed journal entries from the first order (corrections = compensating entries; read models = projections), and every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "Catalog is the SINGLE authority for the rule-resolved unit price and commerce consumes `resolved_price` without recomputing it. Any re-pricing (an exchange) resolves through catalog and persists the §5 provenance snapshot for the NEW reservation — never copies the old snapshot."
+      },
+      {
+        "id": "ADR-003",
+        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
+      },
+      {
+        "id": "ADR-032",
+        "why": "All provider money movement goes through the PSP port. `/internal/psp/refund` and the `payment_compensations` table already exist (TKT-114/116) — the PRIMARY KEY (organizer, source_idempotency_key, kind) is what converges duplicate refunds onto ONE provider idempotency key. Reuse it; do not add a parallel refund path."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
+      },
+      {
+        "id": "ADR-011",
+        "why": "The checkout journal protocol defines how commerce records money facts (order_facts row → payments /internal/facts, deterministic fact_id, idempotent). A post-purchase money movement uses the same protocol; do not invent a second one."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Inventory's claim transaction is the contention path. Giving capacity back must go through the same row-locked transaction discipline; a plain UPDATE outside it can drive confirmed_quantity negative or double-return under concurrency."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed. Responses are validated against the spec; an undeclared status code becomes a 500. Every new endpoint must declare every status it can answer, and a downstream answer commerce cannot validate aborts rather than degrades."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first. A new operation is written in the service's openapi.yaml first, then `openapi_gen.go` / `api-types.gen.ts` are regenerated and COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Commerce and inventory ARE inside the smoke happy-path coverage gate. A new documented 2xx operation must be exercised through the running stack or the suite fails."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's `migrate` subcommand as a one-shot Compose job. Add the SQL under the service's internal/store/migrations/ with the next number; the server path never migrates."
+      }
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Without it an exchange is paid for but not real: the buyer holds the old ticket and the new order is confirmed but unusable."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the atomic old→new ticket cutover, the exchanged lifecycle event and its gate refusal, the post-switch capacity return, the new domain event and its consumer. OUT: money (TKT-158), seated exchanges (TKT-164), bulk cancellation (TKT-159)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the cutover is one access transaction driven by the consumer, or a store operation the consumer calls, is a Planning-time call. Both are reversible; the AC constrains the observable property (no both-admit, no neither-admit window)."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-158. Everything else — appendLifecycle, the refunded-style scan refusal, inventory's refund-capacity return — is merged."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Inherited from TKT-158's plan draft Q2/Q4 and its plan-final amendments A1/A2 — read those before drafting. The new-subject decision is already taken."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "A GA exchange whose switch completes: old ticket stops admitting, new one admits, capacity returns."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable end to end: exchange, scan the old ticket (refused), scan the new one (accepted), watch old capacity come back."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Inherited from TKT-158. Re-validate at claim — this epic has needed a mémo amendment at claim on four consecutive tickets, and ADR-039 may exist by then."
+    }
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-158"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nBorn from TKT-158's planning split, inheriting a cross-model-reviewed design and two decisions already taken (the split point, and the new subject instead of a schema bump).\n\n**Concerns:** none blocking. One to carry: the ADR-017 consumer-dispatch AC is the one this repo has got wrong before — TKT-61 shipped it twice past a mutation-checked suite. The AC names the specific trap (a fixture built from the type under test cannot fail) because that is what defeated the last attempt.\n\n**Verdict:** PASS."
+    }
+  ]
+}
