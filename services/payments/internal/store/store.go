@@ -118,7 +118,10 @@ func validate(f Fact) error {
 	// payment.voided / payment.refunded are compensating facts (ADR-016 §Decision 4): a
 	// void or refund is an appended entry, never a mutation of the authorize/capture it
 	// reverses. Added in TKT-56 Slice 1; the compensation slice is what emits them.
-	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
+	// order.refunded joins the vocabulary (TKT-156): the compensating fact commerce
+	// appends when a completed order is refunded, in whole or in part. ADR-003 —
+	// corrections are new entries, never edits to the sale fact.
+	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "order.refunded": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
 	if !allowedTypes[f.Type] {
 		return errors.New("unsupported journal fact type")
 	}

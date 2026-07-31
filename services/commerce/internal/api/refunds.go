@@ -176,7 +176,9 @@ func (s *Server) refundFact(r *http.Request, refund commercestore.Refund) error 
 		"fact_id": factID, "organizer_id": refund.OrganizerID, "fact_type": "order.refunded",
 		"buyer_id": refund.BuyerID, "amount": refund.Amount, "currency": refund.Currency,
 		"occurred_at": occurred.Format(time.RFC3339Nano),
-		"payload":     map[string]string{"order_id": refund.OrderID.String(), "refund_id": refund.ID.String()},
+		// order_id only — the journal allows no other payload key (a deliberate PII
+		// guard), and RefundFactID already ties this fact to its refund.
+		"payload": map[string]string{"order_id": refund.OrderID.String()},
 	}, true)
 	if err != nil || code != 200 {
 		return errors.New("journal unavailable")

@@ -251,7 +251,7 @@ func TestRefundLegFactsKeepTheJournalVerifiable(t *testing.T) {
 		if _, _, err := j.Append(ctx, Fact{
 			ID: factID, OrganizerID: org, Type: "payment.refunded", OccurredAt: bound.BoundAt,
 			BuyerID: buyer, Amount: leg.amount, Currency: "EUR",
-			Payload: map[string]string{"refund_key": leg.refundKey},
+			Payload: map[string]string{"order_id": uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()},
 		}); err != nil {
 			t.Fatalf("append %s: %v", leg.refundKey, err)
 		}

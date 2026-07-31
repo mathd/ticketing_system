@@ -107,7 +107,9 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 	if _, _, err := s.journal.Append(r.Context(), store.Fact{
 		ID: factID, OrganizerID: in.OrganizerID, Type: "payment.refunded", OccurredAt: leg.BoundAt,
 		BuyerID: op.BuyerID, Amount: leg.Amount, Currency: leg.Currency,
-		Payload: map[string]string{"order_id": op.OrderID.String(), "refund_key": refundKey},
+		// order_id only: the journal's payload allowlist is a deliberate PII guard, and
+		// the deterministic fact id already ties this entry to its leg.
+		Payload: map[string]string{"order_id": op.OrderID.String()},
 	}); err != nil {
 		write(w, 500, map[string]string{"error": "journal append failed"})
 		return

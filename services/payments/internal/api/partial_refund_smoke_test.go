@@ -58,9 +58,13 @@ var (
 
 func refundDB(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("PAYMENTS_TEST_DATABASE_URL")
+	// Its OWN database, not the store suite's. Journal.Verify scans the whole
+	// journal_entries table, so an append here under a key that suite's ring does not
+	// know fails seven of its tests — and `go test ./internal/...` runs the two packages
+	// concurrently, so the append can land mid-scan. scripts/smoke.sh creates it.
+	dsn := os.Getenv("PAYMENTS_API_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("PAYMENTS_TEST_DATABASE_URL is not set")
+		t.Skip("PAYMENTS_API_TEST_DATABASE_URL is not set")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {

@@ -136,7 +136,17 @@ cd "$ROOT/services/payments"
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS payments_store_smoke" \
   -c "CREATE DATABASE payments_store_smoke OWNER payments" >/dev/null
+# ./internal/api gets its OWN database (TKT-156). Two reasons, either sufficient:
+# Journal.Verify scans the WHOLE journal_entries table, so the store suite can only
+# verify a database in which every entry is signed by a key its ring knows — an
+# api-package append under any other key fails seven unrelated store tests. And
+# `go test ./internal/...` runs packages CONCURRENTLY, so an api-package append can
+# land mid-scan of a store test's whole-table verification.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS payments_api_smoke" \
+  -c "CREATE DATABASE payments_api_smoke OWNER payments" >/dev/null
 PAYMENTS_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_store_smoke" \
+PAYMENTS_API_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_api_smoke" \
 go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT"
