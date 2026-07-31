@@ -120,5 +120,11 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-157 (US-O2)\n\n**Blocker check.** `blocked-by TKT-156` — **now Done**, merged as `f7f419c` on `main`. Zero open\nblockers. It is also the only claimable child of TKT-9: TKT-158 and TKT-159 are both blocked by\nthis ticket, so it carries all the unblocking power.\n\n**Branch:** `TKT-157-refund-capacity-tickets` off `origin/main` @ `f7f419c` (post-TKT-156).\n\n**Gate waiver.** Inherits the gateless waiver recorded on the epic (TKT-9, `kind=claim`).\n\n**Mémo revalidation at claim.** The mémo was baked 2026-07-31 listing ADR-021, ADR-010, ADR-026,\nADR-003, ADR-017, ADR-028, ADR-009, ADR-030, ADR-022. Re-resolved against `docs/adr/` at\n`f7f419c`: all nine exist and none is superseded — **but the list is now incomplete.**\n**ADR-037 landed after the bake** (TKT-156, this epic's own previous ticket) and governs the\nrefund path this ticket extends: it defines where refund state lives, that both ceilings are\nenforced under row locks with no provider call inside, and §6 explicitly names capacity return\nand ticket voiding as *this* ticket's scope. **ADR-031** (seat-claim pin coordination) also\nbelongs on the list and was missed at bake time — `releaseSeatsForTerminal` runs on a claim's\nterminal transitions, and a partial return has to say what it does about seats. Both are added\nto the planning brief. This is the staleness case `SKILL.md` §3a warns about, and it is the\nsecond consecutive ticket in this epic where the bake-time snapshot needed amending at claim.\n\n**Risk:** not `risk:low`. Two services, a lifecycle-trail change guarded by the gate's verifier,\nand the inventory contention path.\n\n**Models** (`.claude/sdlc.config.json`, unmodified): plan = `gpt-5.6-sol`, planReview =\n`main-agent`, implement = `main-agent`, aiReview = `gpt-5.6-sol`. Both cross-model pairs hold.\n"
+    }
+  ]
 }
