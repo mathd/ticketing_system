@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -253,11 +255,20 @@ func isISO4217(c string) bool {
 // survive because the document is decoded as a generic map.
 func storableSnapshot(body []byte) ([]byte, error) {
 	var doc any
-	if err := json.Unmarshal(body, &doc); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// UseNumber keeps every number as its ORIGINAL TEXT. Decoding into the
+	// default float64 was itself a defect: it silently rounded any integer above
+	// 2^53 in a field this build does not know -- corrupting the very provenance
+	// document this ticket exists to keep true -- and it REJECTED 1e400, which
+	// PostgreSQL stores happily (numeric allows ~131k digits). Money is capped at
+	// 2^53-1 by contract so the money fields were never at risk, but "the
+	// snapshot is what catalog said" has to hold for the whole document.
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("%w: body is not storable as jsonb: %v", errResolveUnusable, err)
 	}
-	if containsNUL(doc) {
-		return nil, fmt.Errorf("%w: body carries a NUL, which jsonb refuses", errResolveUnusable)
+	if err := checkStorable(doc); err != nil {
+		return nil, err
 	}
 	canonical, err := json.Marshal(doc)
 	if err != nil {
@@ -266,25 +277,62 @@ func storableSnapshot(body []byte) ([]byte, error) {
 	return canonical, nil
 }
 
-// containsNUL walks decoded JSON for an actual NUL rune in any key or string.
-func containsNUL(v any) bool {
+// pgNumericMaxDigits is PostgreSQL's limit on digits before the decimal point in
+// a numeric value. A number past it is valid JSON and unstorable, so it has to
+// be caught here rather than by the INSERT -- after the hold exists.
+const pgNumericMaxDigits = 131072
+
+// checkStorable walks decoded JSON for the two things PostgreSQL jsonb refuses
+// but Go accepts: a NUL rune in any key or string, and a number too large for
+// numeric.
+func checkStorable(v any) error {
 	switch t := v.(type) {
 	case string:
-		return strings.ContainsRune(t, 0)
+		if strings.ContainsRune(t, 0) {
+			return fmt.Errorf("%w: body carries a NUL, which jsonb refuses", errResolveUnusable)
+		}
+	case json.Number:
+		if !numericFits(t.String()) {
+			return fmt.Errorf("%w: body carries a number jsonb cannot store", errResolveUnusable)
+		}
 	case map[string]any:
 		for k, vv := range t {
-			if strings.ContainsRune(k, 0) || containsNUL(vv) {
-				return true
+			if strings.ContainsRune(k, 0) {
+				return fmt.Errorf("%w: body carries a NUL in a key", errResolveUnusable)
+			}
+			if err := checkStorable(vv); err != nil {
+				return err
 			}
 		}
 	case []any:
 		for _, vv := range t {
-			if containsNUL(vv) {
-				return true
+			if err := checkStorable(vv); err != nil {
+				return err
 			}
 		}
 	}
-	return false
+	return nil
+}
+
+// numericFits reports whether a JSON number's magnitude is within PostgreSQL's
+// numeric range, judged from its TEXT so no precision is lost deciding.
+func numericFits(n string) bool {
+	mantissa, exp := n, 0
+	if i := strings.IndexAny(n, "eE"); i >= 0 {
+		var err error
+		if exp, err = strconv.Atoi(n[i+1:]); err != nil {
+			return false
+		}
+		mantissa = n[:i]
+	}
+	digits := 0
+	for _, r := range strings.TrimLeft(strings.TrimLeft(mantissa, "+-"), "0") {
+		if r == '.' {
+			break
+		}
+		digits++
+	}
+	return digits+exp <= pgNumericMaxDigits && exp >= -pgNumericMaxDigits
 }
 
 // total is the composed line amount. Commerce's job, not catalog's.

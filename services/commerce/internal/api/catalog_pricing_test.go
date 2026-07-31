@@ -161,11 +161,11 @@ func TestReserveFailsClosedOnUnusableResolution(t *testing.T) {
 		"base_price in another currency": {200, strings.Replace(resolutionBody(900, true), `"base_price":{"amount":2500,"currency":"EUR"}`, `"base_price":{"amount":2500,"currency":"GBP"}`, 1)},
 		"missing evaluated_at":           {200, strings.Replace(resolutionBody(900, true), `"evaluated_at":"2026-07-31T00:00:00Z",`, ``, 1)},
 		"winner without scope_id":        {200, strings.Replace(resolutionBody(900, true), `"scope_id":"00000000-0000-0000-0000-0000000000e1",`, ``, 1)},
-		// Three shapes PostgreSQL's jsonb refuses but Go's decoder does not stop
-		// at the door. Each would otherwise validate, create the hold, and only
-		// then fail the INSERT -- leaving an orphan hold and a 500 for a buyer.
-		// All three arrive in a field this build does not know, which is exactly
-		// where a byte-scan for one spelling of NUL missed them.
+		// Two shapes PostgreSQL's jsonb refuses but Go does not stop at the door.
+		// Each would otherwise validate, create the hold, and only then fail the
+		// INSERT -- orphan hold, 500 for the buyer. Both arrive in a field this
+		// build does not know, which is exactly where a byte-scan for one
+		// spelling of NUL missed them. TestStorableSnapshot covers the rest.
 		"unstorable NUL in an unknown field": {200, strings.Replace(resolutionBody(900, true), `"candidates":[]`, `"candidates":[],"future_field":"\u0000"`, 1)},
 		"unstorable out-of-range number":     {200, strings.Replace(resolutionBody(900, true), `"candidates":[]`, `"candidates":[],"future_field":1e400000`, 1)},
 	} {
@@ -245,24 +245,68 @@ func TestReserveAcceptsALiteralBackslashUZeroString(t *testing.T) {
 	}
 }
 
-// An unpaired surrogate in an unknown field is NORMALISED, not refused — and the
-// distinction is deliberate.
-//
-// PostgreSQL's jsonb would reject the raw bytes, so this had to be handled
-// before the hold. But refusing would fail a sale over a byte in a field nobody
-// reads. Decoding and re-encoding replaces it with U+FFFD, which is storable,
-// and the money fields are validated independently, so nothing that decides a
-// price is touched. jsonb canonicalises the document anyway; this only decides
-// WHICH canonical form gets stored.
-func TestReserveNormalisesAnUnstorableSurrogate(t *testing.T) {
-	surrogate := strings.Replace(resolutionBody(900, true), `"candidates":[]`,
-		`"candidates":[],"future_field":"\ud800"`, 1)
-	s, held, done := pricingStack(t, 200, surrogate)
-	defer done()
+// storableSnapshot is tested DIRECTLY, because a reserve-level test cannot see
+// it: the fake inventory answers 409 before persistence, so every one of these
+// inputs reaches the same place whether the function works or not. Asserting the
+// bytes it produces is the only way these cases can fail.
+func TestStorableSnapshot(t *testing.T) {
+	t.Run("an unpaired surrogate is normalised, not refused", func(t *testing.T) {
+		// PostgreSQL's jsonb rejects the raw bytes, so this had to be handled
+		// before the hold — but REFUSING would fail a sale over a byte in a
+		// field nobody reads. Decoding and re-encoding replaces it with U+FFFD,
+		// which is storable, and no field that decides a price is touched.
+		out, err := storableSnapshot([]byte(`{"a":"\ud800"}`))
+		if err != nil {
+			t.Fatalf("an unpaired surrogate must be normalised, not refused: %v", err)
+		}
+		if !strings.Contains(string(out), "\ufffd") {
+			t.Errorf("output = %s, want the surrogate replaced by U+FFFD", out)
+		}
+	})
 
-	reserve(t, s, "surrogate")
+	t.Run("a real NUL is refused", func(t *testing.T) {
+		if _, err := storableSnapshot([]byte(`{"a":"\u0000"}`)); err == nil {
+			t.Error("jsonb refuses NUL, so this must fail BEFORE the hold exists")
+		}
+		if _, err := storableSnapshot([]byte(`{"\u0000":"a"}`)); err == nil {
+			t.Error("a NUL in a KEY must be refused too")
+		}
+		if _, err := storableSnapshot([]byte(`{"a":[{"b":"\u0000"}]}`)); err == nil {
+			t.Error("a NUL nested inside an array/object must be refused")
+		}
+	})
 
-	if *held != 900 {
-		t.Fatalf("inventory hold unit_amount = %d, want 900 — a byte in an unknown field must not fail a sale", *held)
-	}
+	t.Run("the TEXT of an escape is storable", func(t *testing.T) {
+		// The six literal characters, not the code point. The byte-scan this
+		// replaced rejected it.
+		if _, err := storableSnapshot([]byte(`{"a":"\\u0000"}`)); err != nil {
+			t.Errorf("a string whose text is the escape is storable: %v", err)
+		}
+	})
+
+	t.Run("numbers survive exactly", func(t *testing.T) {
+		// Decoding into float64 silently rounded this to ...992, corrupting the
+		// document this ticket exists to keep true.
+		out, err := storableSnapshot([]byte(`{"a":9007199254740993}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "9007199254740993") {
+			t.Errorf("output = %s, want the integer preserved exactly", out)
+		}
+	})
+
+	t.Run("a big-but-valid number is accepted", func(t *testing.T) {
+		// 1e400 overflows float64 and is perfectly good PostgreSQL numeric.
+		// Rejecting it would turn an additive unknown field into a sale outage.
+		if _, err := storableSnapshot([]byte(`{"a":1e400}`)); err != nil {
+			t.Errorf("1e400 is storable as numeric: %v", err)
+		}
+	})
+
+	t.Run("a number past numeric's range is refused", func(t *testing.T) {
+		if _, err := storableSnapshot([]byte(`{"a":1e400000}`)); err == nil {
+			t.Error("a number beyond numeric's digit limit must fail before the hold")
+		}
+	})
 }

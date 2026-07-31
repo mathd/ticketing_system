@@ -253,7 +253,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	buyer := uuid.NewSHA1(uuid.NameSpaceOID, []byte("buyer:"+id.String()))
-	// The provenance snapshot is stored VERBATIM, not as a rule reference: a
+	// The provenance snapshot is stored as a document, not as a rule reference: a
 	// rule can later be closed or superseded, and a foreign key would let that
 	// rewrite what a buyer was charged. Copying the document keeps the record
 	// true. Honest-writer consistency, not tamper-evidence (ADR-021) — anyone
