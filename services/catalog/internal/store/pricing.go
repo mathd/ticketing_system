@@ -191,6 +191,15 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 		}
 	}
 
+	// Sort by id up front so EVERY output of this function is order-independent,
+	// not just the winner. Without it the currency check below reports whichever
+	// bad rule happened to come first, and that id is what the handler logs — so
+	// the same broken data would produce different operator-facing diagnostics
+	// run to run.
+	sort.Slice(scoped, func(i, j int) bool {
+		return scoped[i].ID.String() < scoped[j].ID.String()
+	})
+
 	// Two rules sharing an id would make the answer depend on input order: the
 	// final tie-break is the id itself, so they form an equivalence class the
 	// comparator cannot separate, and the loser loop would suppress both. The

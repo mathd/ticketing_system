@@ -280,9 +280,27 @@ func TestResolveTicketTypePriceIsIndexScoped(t *testing.T) {
 	// scope level — would satisfy it while doing exactly the unscoped work
 	// ADR-019 exists to forbid. So assert the scope predicate is IN the index
 	// condition, not merely a filter applied after the rows are fetched.
-	if !strings.Contains(plan, "Index Cond") || !strings.Contains(plan, "scope_level") {
-		t.Fatalf("scope_level is not in the index condition — the read may be walking the "+
-			"organizer's whole rule set and filtering afterwards.\nplan:\n%s", plan)
+	// Check the Index Cond LINE itself, and require BOTH paired columns in it.
+	// Looking for the two strings anywhere in the plan is not enough: a read
+	// widened to
+	//     WHERE organizer_id = $1 AND scope_level IN ('ticket_type',...,'venue')
+	// uses the same index, prints both strings, leaves no scope_id Filter, and
+	// scans every rule the organizer owns — the exact unscoped work ADR-019
+	// forbids, wearing an index name. Only scope_id inside the access condition
+	// distinguishes the two.
+	var indexCond string
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.Contains(line, "Index Cond:") {
+			indexCond = line
+			break
+		}
+	}
+	if indexCond == "" {
+		t.Fatalf("no Index Cond in the plan — rows are not being reached BY the index.\nplan:\n%s", plan)
+	}
+	if !strings.Contains(indexCond, "scope_level") || !strings.Contains(indexCond, "scope_id") {
+		t.Fatalf("the index condition does not use the (scope_level, scope_id) pair, so the read "+
+			"may be walking the organizer's whole rule set: %s\nplan:\n%s", indexCond, plan)
 	}
 	// A leftover post-index Filter on the scope columns is the same defect
 	// wearing a different name: rows fetched, then discarded.

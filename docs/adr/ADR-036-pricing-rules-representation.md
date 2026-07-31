@@ -190,10 +190,11 @@ for every contract-representable price"*, and the residue is TKT-154's, below.
 (`0001_catalog_schema.sql:51`) with **no upper bound**, and it has never needed one because
 `getTicketType` is a hand-mounted `/internal/` route outside the OpenAPI contract, so no validator
 ever sees it. The new operation in §6 **is** contract-declared, so a legal existing base price
-between `9007199254740992` and `MaxInt64` would make it 500 — which contradicts this ADR's own
-promise that data with no rules resolves unchanged. The window is theoretical (no such row exists;
-`gen_random_uuid`-era seed data is nowhere near it) but the contradiction is real. It is a
-**pre-existing defect surfaced by this decision, not introduced by it**, so it is filed as its own
+between `9007199254740992` and `MaxInt64` would make it 500 — which is why the promise above is
+qualified rather than absolute. The window is theoretical (no such row exists; `gen_random_uuid`-era
+seed data is nowhere near it) but it is real. The **unbounded column** is pre-existing; **exposing it
+through a validated response** is introduced here, and both halves of that sentence matter. It is
+filed as its own
 ticket rather than smuggled into TKT-151.
 
 **Currency is not converted.** A rule's `currency` must equal the ticket type's. A mismatch is
@@ -367,7 +368,8 @@ Given the candidate rules for the ≤5 derived scopes, at evaluation instant `at
 4. **Same scope level:** the higher explicit `priority` wins.
 5. **Equal priority:** lowest `id` (uuid ascending) wins.
 6. **No surviving rule:** the ticket type's own `price_amount`/`currency` is the answer. Existing
-   data with no rules resolves to today's price, unchanged.
+   data with no rules resolves to today's price, unchanged — for every
+   **contract-representable** price; see the qualification in §2.
 
 Step 5 is deliberately semantically uninteresting. Operators express intent through `priority`;
 the id tie-break exists only so that database order, insertion timestamps or a query plan can
@@ -469,7 +471,8 @@ decides, including when the two rules sit at the *same* level (which lands in
 `excluded_by_forced_rule`).
 
 The three forced-related reasons are **mutually exclusive by construction** — partition on *was
-the loser forced?*, then on *is the winner its ancestor?* — so the mapping is a function, not a
+the loser forced?*, then on *is the winner **broader in the §1 order**?* — so the mapping is a
+function, not a
 judgement call. That precision was missing in an earlier revision, where this reason and
 `lower_forced_scope` were given the same definition and the truth table then assigned the first to
 an *unforced* rule; two implementers reading it would have disagreed.
@@ -582,8 +585,8 @@ What this decision makes hard, honestly:
       `SelectPricingRule(at, candidates)` is a pure function that needs no database to test.
     - The contract is structurally validatable, so a malformed rule is rejected at the boundary
       rather than at evaluation time on a money path.
-    - Organizers with no rules keep today's behaviour exactly — the base price is the documented
-      fallback, not an accident.
+    - Organizers with no rules keep today's behaviour — the base price is the documented fallback,
+      not an accident. Qualified as in §2: exactly, for every contract-representable price.
     - The chosen shape is the compilation target a future DSL would need, so reversing this
       decision costs a compiler **plus** a widening of the row shape (§7) — but no data migration
       and no change to the sale path. That is a smaller promise than "reversible at the price of a

@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -372,5 +373,31 @@ func TestSelectPricingRuleIsOrderIndependent(t *testing.T) {
 					perm, i, got.Candidates[i], want.Candidates[i])
 			}
 		}
+	}
+}
+
+// The currency failure must name the SAME rule regardless of input order. It is
+// not cosmetic: the handler logs that id as the offending rule, so the same
+// broken data producing different diagnostics run to run is how an operator
+// chases the wrong row.
+func TestSelectPricingRuleCurrencyErrorIsOrderIndependent(t *testing.T) {
+	bad := []PriceRule{
+		{ID: ruleB, ScopeLevel: ScopeVenue, ScopeID: venueID, ActionKind: ActionAbsolute, Amount: 1, Currency: "GBP"},
+		{ID: ruleA, ScopeLevel: ScopeEvent, ScopeID: eventID, ActionKind: ActionAbsolute, Amount: 1, Currency: "USD"},
+	}
+	var messages []string
+	for _, rules := range [][]PriceRule{bad, {bad[1], bad[0]}} {
+		_, err := SelectPricingRule(evalAt, PricingCandidates{
+			BasePrice: basePrice, Scopes: testScopes(true), Rules: rules})
+		if !errors.Is(err, ErrPriceRuleCurrencyMismatch) {
+			t.Fatalf("want a currency mismatch, got %v", err)
+		}
+		messages = append(messages, err.Error())
+	}
+	if messages[0] != messages[1] {
+		t.Errorf("the reported rule depends on input order:\n  %s\n  %s", messages[0], messages[1])
+	}
+	if !strings.Contains(messages[0], ruleA.String()) {
+		t.Errorf("want the lowest-id offender %v reported, got %q", ruleA, messages[0])
 	}
 }
