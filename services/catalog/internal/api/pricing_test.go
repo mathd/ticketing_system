@@ -107,13 +107,17 @@ func TestResolveTicketTypePrice(t *testing.T) {
 	if out.FallbackReason != nil {
 		t.Errorf("FallbackReason = %v, want none when a rule won", *out.FallbackReason)
 	}
-	if out.ResolverVersion != store.PricingResolverVersion {
-		t.Errorf("ResolverVersion = %d, want %d", out.ResolverVersion, store.PricingResolverVersion)
+	// Asserted as a LITERAL, not against the constant: comparing the response
+	// to the constant it came from passes at any version, including one bumped
+	// by accident. TKT-152 raised it 1 -> 2 because window eligibility changes
+	// what the comparator means, and TKT-153 persists this number.
+	if out.ResolverVersion != 2 {
+		t.Errorf("ResolverVersion = %d, want 2", out.ResolverVersion)
 	}
-	// TKT-152 fills these; declared now so TKT-153's persisted snapshot shape
-	// does not change between the two stories.
+	// This winner carries no window, so both bounds are null — the unbounded
+	// case, which must stay representable now that windows exist.
 	if out.Winner.EffectiveFrom != nil || out.Winner.EffectiveUntil != nil {
-		t.Errorf("window fields = %v/%v, want null until TKT-152",
+		t.Errorf("window fields = %v/%v, want null for an unbounded rule",
 			out.Winner.EffectiveFrom, out.Winner.EffectiveUntil)
 	}
 	if time.Since(out.EvaluatedAt) > time.Minute {
@@ -177,4 +181,107 @@ func TestResolveTicketTypePriceNotFound(t *testing.T) {
 
 func containsUUID(body string, id uuid.UUID) bool {
 	return strings.Contains(body, id.String())
+}
+
+// A populated window must survive the contract round trip, and a rule that lost
+// on TIME must appear in the response with its own reason — the window fields
+// were declared by TKT-151 and unreachable until now, so this is the first test
+// that can prove they carry values rather than nulls.
+func TestResolveTicketTypePriceReportsWindows(t *testing.T) {
+	e := newEnv(t)
+	ttID, scopes := seedPricedTicketType(t, e, 4550, "EUR")
+	// Offsets from now, never calendar literals: a literal fixture is green at
+	// merge and fails once the clock crosses it.
+	base := time.Now().UTC()
+	expiredFrom, expiredUntil := base.Add(-48*time.Hour), base.Add(-24*time.Hour)
+	liveFrom := base.Add(-time.Hour)
+
+	expired, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeVenue, ScopeID: scopes.VenueID, Amount: 3000, Currency: "EUR",
+		EffectiveFrom: &expiredFrom, EffectiveUntil: &expiredUntil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: scopes.EventID, Amount: 5000, Currency: "EUR",
+		EffectiveFrom: &liveFrom})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec, out := resolvePrice(t, e, ttID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if out.Winner == nil || out.Winner.RuleId != live.ID {
+		t.Fatalf("Winner = %+v, want the live rule %v", out.Winner, live.ID)
+	}
+	if out.Winner.EffectiveFrom == nil || !out.Winner.EffectiveFrom.Equal(liveFrom) {
+		t.Errorf("winner effective_from = %v, want %v", out.Winner.EffectiveFrom, liveFrom)
+	}
+	if out.Winner.EffectiveUntil != nil {
+		t.Errorf("winner effective_until = %v, want null (open-ended)", out.Winner.EffectiveUntil)
+	}
+	if len(out.Candidates) != 1 || out.Candidates[0].Rule.RuleId != expired.ID {
+		t.Fatalf("losers = %+v, want the expired rule reported", out.Candidates)
+	}
+	if out.Candidates[0].Reason != "outside_window_past" {
+		t.Errorf("loser reason = %q, want outside_window_past", out.Candidates[0].Reason)
+	}
+	if out.Candidates[0].Rule.EffectiveUntil == nil {
+		t.Error("the expired rule's window must be reported, not nulled — it is the answer to why it lost")
+	}
+}
+
+// The schema cannot express it (OpenAPI 3.0 has no dependentRequired, and a
+// oneOf would churn both generated clients for a pair nobody branches on), so
+// the invariant is pinned here instead: exactly one of "a winner exists" and
+// "fallback_reason is present" holds, in both directions. Without this the
+// published contract would permit a state the server never produces and nothing
+// would notice if the server started producing it.
+func TestResolveTicketTypePriceWinnerAndFallbackAreExclusive(t *testing.T) {
+	e := newEnv(t)
+	withRule, scopes := seedPricedTicketType(t, e, 4550, "EUR")
+	if _, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: scopes.EventID, Amount: 5000, Currency: "EUR"}); err != nil {
+		t.Fatal(err)
+	}
+	withoutRule, _ := seedPricedTicketType(t, e, 4550, "EUR")
+
+	// The third shape, and the one a naive implementation misses: a fallback
+	// that still HAS candidates. Mapping fallback_reason only when the
+	// candidate list is empty passes the other two cases and produces
+	// winner: null with no fallback_reason here.
+	allExpired, expiredScopes := seedPricedTicketType(t, e, 4550, "EUR")
+	past, pastEnd := time.Now().UTC().Add(-48*time.Hour), time.Now().UTC().Add(-24*time.Hour)
+	if _, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: expiredScopes.EventID, Amount: 5000, Currency: "EUR",
+		EffectiveFrom: &past, EffectiveUntil: &pastEnd}); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, tc := range map[string]struct {
+		id             uuid.UUID
+		wantWinner     bool
+		wantCandidates int
+	}{
+		"a rule won":                   {withRule, true, 0},
+		"no rules at all":              {withoutRule, false, 0},
+		"every rule window-ineligible": {allExpired, false, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, out := resolvePrice(t, e, tc.id)
+			hasWinner, hasFallback := out.Winner != nil, out.FallbackReason != nil
+			if hasWinner != tc.wantWinner {
+				t.Fatalf("winner present = %t, want %t", hasWinner, tc.wantWinner)
+			}
+			if len(out.Candidates) != tc.wantCandidates {
+				t.Errorf("candidates = %d, want %d", len(out.Candidates), tc.wantCandidates)
+			}
+			if hasWinner == hasFallback {
+				t.Errorf("winner present = %t and fallback_reason present = %t — exactly one must hold",
+					hasWinner, hasFallback)
+			}
+		})
+	}
 }

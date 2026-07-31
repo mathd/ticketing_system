@@ -62,6 +62,10 @@ func priceResolutionToAPI(sel store.RuleSelection) PriceResolution {
 		winner := priceRuleToAPI(*sel.Winner)
 		out.Winner = &winner
 	}
+	// Mapped unconditionally when the store set it — NOT gated on an empty
+	// candidate list. A fallback can carry candidates (every rule
+	// window-ineligible), and gating on emptiness would produce winner: null
+	// with no fallback_reason for exactly that case.
 	if sel.FallbackReason != nil {
 		reason := PriceResolutionFallbackReason(*sel.FallbackReason)
 		out.FallbackReason = &reason
@@ -75,18 +79,22 @@ func priceResolutionToAPI(sel store.RuleSelection) PriceResolution {
 	return out
 }
 
-// priceRuleToAPI maps one rule into its provenance shape. effective_from and
-// effective_until stay nil until TKT-152 — declared now so the shape TKT-153
-// persists as a snapshot does not change between the two stories.
+// priceRuleToAPI maps one rule into its provenance shape. The window fields
+// were declared required-and-nullable by TKT-151 while always null; TKT-152
+// fills them. The SHAPE is unchanged by design — TKT-153 persists it as a
+// snapshot, and a shape that shifted between the two stories would mean stored
+// snapshots spanning two formats.
 func priceRuleToAPI(r store.PriceRule) PriceRuleProvenance {
 	return PriceRuleProvenance{
-		RuleId:     r.ID,
-		ScopeLevel: PriceRuleProvenanceScopeLevel(r.ScopeLevel),
-		ScopeId:    r.ScopeID,
-		ActionKind: PriceRuleProvenanceActionKind(r.ActionKind),
-		Amount:     r.Amount,
-		Currency:   r.Currency,
-		Priority:   r.Priority,
-		Forced:     r.ForceAncestorOverride,
+		EffectiveFrom:  r.EffectiveFrom,
+		EffectiveUntil: r.EffectiveUntil,
+		RuleId:         r.ID,
+		ScopeLevel:     PriceRuleProvenanceScopeLevel(r.ScopeLevel),
+		ScopeId:        r.ScopeID,
+		ActionKind:     PriceRuleProvenanceActionKind(r.ActionKind),
+		Amount:         r.Amount,
+		Currency:       r.Currency,
+		Priority:       r.Priority,
+		Forced:         r.ForceAncestorOverride,
 	}
 }

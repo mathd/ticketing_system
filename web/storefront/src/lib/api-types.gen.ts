@@ -489,7 +489,7 @@ export interface paths {
          *     With no applicable rule the ticket type's own price is returned and fallback_reason says so, so a catalog with no rules prices exactly as it did before this operation existed.
          *     The evaluation instant is the server's, NOT a request parameter. Letting a caller choose it would let anyone ask a sale-time price endpoint for early-bird pricing after the window closed. TKT-152 adds effective windows; the instant stays server-side.
          *     This is catalog's question, not commerce's: ADR-036 §6 amends ADR-002 so rule-based unit-price resolution sits with the rule definitions, while sale-time composition (price + fees + promos + taxes) stays in commerce.
-         *     Cache-Control: no-store. That is a correctness tier, not a performance one — a resolved price feeds a money decision, and once TKT-152 adds windows the answer's correctness expires at a known instant.
+         *     Cache-Control: no-store. That is a correctness tier, not a performance one: a resolved price feeds a money decision, and with effective windows the answer's correctness expires at an exact, known instant. A future browse-only endpoint could cache, but its max-age would have to be rounded down and capped at the earliest upcoming window boundary — a different endpoint and a different contract.
          */
         get: operations["resolveTicketTypePrice"];
         put?: never;
@@ -706,12 +706,12 @@ export interface components {
             currency: string;
             /**
              * Format: date-time
-             * @description Always null until TKT-152 adds effective windows. Declared now, not later, because TKT-153 persists this provenance shape as a snapshot on the reservation — if the shape changed between TKT-151 and TKT-152, stored snapshots would span two formats.
+             * @description Inclusive lower bound of the rule's effective window; null means unbounded. The interval is HALF-OPEN [effective_from, effective_until) — a rule is eligible at an instant equal to effective_from and NOT eligible at one equal to effective_until. Stated explicitly because an inclusive/exclusive ambiguity at a tier boundary is a money bug, not a rounding detail. A reversed window is rejected by the database.
              */
             effective_from: string | null;
             /**
              * Format: date-time
-             * @description Always null until TKT-152 — see effective_from.
+             * @description Exclusive upper bound; null means unbounded. See effective_from for the half-open semantics. A rule whose window has closed is inert: it can never price anything again, so a misconfiguration in it is ignored rather than failing every resolution forever.
              */
             effective_until: string | null;
             /** Format: int32 */
@@ -725,7 +725,11 @@ export interface components {
             /** @enum {string} */
             reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
         };
-        /** @description A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. */
+        /**
+         * @description A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. It is ordered by rule id ascending; the order is representation only and carries no precedence.
+         *     INVARIANT, guaranteed by the server: winner and fallback_reason are mutually exclusive and jointly exhaustive — exactly one of "winner is non-null" and "fallback_reason is present" holds.
+         *     This FLAT schema cannot express that. OpenAPI 3.0 could, as a oneOf of two variants — the accurate statement is not "impossible" but "not worth it here": a oneOf would turn PriceResolution into a union in the generated Go and in both generated TypeScript clients, for a pair no consumer branches on. So the contract is deliberately BROADER than the runtime: a client may rely on the invariant, and the server side is pinned by TestResolveTicketTypePriceWinnerAndFallbackAreExclusive, which covers a winner, an empty-candidate fallback, and a fallback WITH candidates (every rule window-ineligible) — the three shapes the handler can actually produce.
+         */
         PriceResolution: {
             /**
              * Format: int32

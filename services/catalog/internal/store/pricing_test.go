@@ -59,6 +59,24 @@ func forced(r PriceRule) PriceRule { r.ForceAncestorOverride = true; return r }
 
 func withPriority(r PriceRule, p int32) PriceRule { r.Priority = p; return r }
 
+// window sets a half-open [from, until) on a rule. Both bounds are offsets from
+// evalAt, so every fixture is relative to the instant under test rather than to
+// a calendar literal — a literal is green at merge and rots once the clock
+// crosses it (docs/learnings/2026-07-18-time-window-fixtures-must-be-relative.md).
+func window(r PriceRule, fromOffset, untilOffset *time.Duration) PriceRule {
+	if fromOffset != nil {
+		t := evalAt.Add(*fromOffset)
+		r.EffectiveFrom = &t
+	}
+	if untilOffset != nil {
+		t := evalAt.Add(*untilOffset)
+		r.EffectiveUntil = &t
+	}
+	return r
+}
+
+func dur(d time.Duration) *time.Duration { return &d }
+
 type loserWant struct {
 	id     uuid.UUID
 	reason string
@@ -204,6 +222,110 @@ func TestSelectPricingRule(t *testing.T) {
 			rules: []PriceRule{
 				rule(ruleB, ScopeEvent, eventID, 3350),
 				rule(ruleA, ScopeEvent, eventID, 3300),
+			},
+			wantWinner: &ruleA, wantAmount: 3300,
+			wantLosers: []loserWant{{ruleB, ReasonStableIDTiebreak}},
+		},
+		// ---- TKT-152 rows (ADR-036 §4 step 2) ----
+		{
+			// The half-open interval's closed end: at == effective_from is IN.
+			name:       "effective_from_is_inclusive",
+			withSeries: true,
+			rules:      []PriceRule{window(rule(ruleA, ScopeEvent, eventID, 3300), dur(0), nil)},
+			wantWinner: &ruleA, wantAmount: 3300,
+		},
+		{
+			// The open end: at == effective_until is OUT. This is the boundary
+			// an inclusive/exclusive ambiguity turns into a money bug.
+			name:       "effective_until_is_exclusive",
+			withSeries: true,
+			rules:      []PriceRule{window(rule(ruleA, ScopeEvent, eventID, 3300), nil, dur(0))},
+			wantAmount: 4550,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowPast}},
+		},
+		{
+			name:       "closed_rule_loses_as_outside_window_past",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-48*time.Hour), dur(-24*time.Hour)),
+				rule(ruleB, ScopeVenue, venueID, 3400),
+			},
+			wantWinner: &ruleB, wantAmount: 3400,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowPast}},
+		},
+		{
+			name:       "future_rule_loses_as_outside_window_future",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(24*time.Hour), nil),
+				rule(ruleB, ScopeVenue, venueID, 3400),
+			},
+			wantWinner: &ruleB, wantAmount: 3400,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowFuture}},
+		},
+		{
+			// The case the empty-eligible early return would silently break:
+			// the price is right and the provenance is gone. Asserting the
+			// losers is what makes this row worth having.
+			name:       "all_tiers_expired_falls_back_to_base_price",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-48*time.Hour), dur(-24*time.Hour)),
+				window(rule(ruleB, ScopeVenue, venueID, 3400), dur(-72*time.Hour), dur(-1*time.Hour)),
+			},
+			wantAmount: 4550,
+			wantLosers: []loserWant{
+				{ruleA, ReasonOutsideWindowPast},
+				{ruleB, ReasonOutsideWindowPast},
+			},
+		},
+		{
+			// A wrong-currency rule whose window has CLOSED is inert: it can
+			// never price anything again, so failing every resolution forever
+			// on its account would be an unrecoverable outage (currency is
+			// immutable, effective_until only shortens). ADR-036 §4 step 1.
+			name:       "closed_currency_mismatch_is_inert",
+			withSeries: true,
+			rules: []PriceRule{
+				window(PriceRule{ID: ruleA, ScopeLevel: ScopeEvent, ScopeID: eventID,
+					ActionKind: ActionAbsolute, Amount: 3300, Currency: "USD"},
+					dur(-48*time.Hour), dur(-24*time.Hour)),
+			},
+			wantAmount: 4550,
+			wantLosers: []loserWant{{ruleA, ReasonOutsideWindowPast}},
+		},
+		{
+			// ...but one that has not opened yet still HAS a future, so it must
+			// fail now rather than reprice mysteriously the moment it opens.
+			name:       "future_currency_mismatch_fails_resolution",
+			withSeries: true,
+			rules: []PriceRule{
+				window(PriceRule{ID: ruleA, ScopeLevel: ScopeEvent, ScopeID: eventID,
+					ActionKind: ActionAbsolute, Amount: 3300, Currency: "USD"},
+					dur(24*time.Hour), nil),
+			},
+			wantErr: true,
+		},
+		{
+			// Overlap: windows decide ELIGIBILITY, never precedence. Both are
+			// live, so the existing comparator settles it on priority.
+			name:       "overlapping_windows_use_priority",
+			withSeries: true,
+			rules: []PriceRule{
+				withPriority(window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-24*time.Hour), dur(24*time.Hour)), 1),
+				withPriority(window(rule(ruleB, ScopeEvent, eventID, 3350), dur(-1*time.Hour), dur(1*time.Hour)), 5),
+			},
+			wantWinner: &ruleB, wantAmount: 3350,
+			wantLosers: []loserWant{{ruleA, ReasonLowerPriority}},
+		},
+		{
+			// The narrower window does NOT win for being narrower — equal
+			// priority falls through to the id tie-break, unchanged.
+			name:       "equal_priority_overlapping_windows_use_lowest_uuid",
+			withSeries: true,
+			rules: []PriceRule{
+				window(rule(ruleB, ScopeEvent, eventID, 3350), dur(-1*time.Hour), dur(1*time.Hour)),
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-24*time.Hour), dur(24*time.Hour)),
 			},
 			wantWinner: &ruleA, wantAmount: 3300,
 			wantLosers: []loserWant{{ruleB, ReasonStableIDTiebreak}},
@@ -399,5 +521,88 @@ func TestSelectPricingRuleCurrencyErrorIsOrderIndependent(t *testing.T) {
 	}
 	if !strings.Contains(messages[0], ruleA.String()) {
 		t.Errorf("want the lowest-id offender %v reported, got %q", ruleA, messages[0])
+	}
+}
+
+// assertLosers compares by id, so it cannot see ORDER — and both code paths
+// promise an id-ascending loser list. Removing sortedCandidates leaves every
+// other test green, so without this the promise is unenforced.
+//
+// Mutation-checked, and the result is worth writing down because it is not
+// symmetric:
+//
+//   - the WINNER path genuinely needs the sort, and its subtest reddens without
+//     it. That path concatenates window losers with comparator losers, so the
+//     two groups interleave and input order survives into the output.
+//   - the FALLBACK path does NOT redden, even with a reversed fixture, because
+//     `scoped` is already id-sorted upstream (TKT-151 sorts it so the currency
+//     error is order-independent) and window losers are appended in that order.
+//     Its subtest pins the PROPERTY — id-ascending output — not the line that
+//     currently provides it. That is the right thing to pin: a consumer depends
+//     on the order, not on which statement produces it.
+func TestSelectPricingRuleOrdersLosersByID(t *testing.T) {
+	ruleC := uuid.MustParse("cccccccc-0000-0000-0000-000000000000")
+
+	t.Run("all expired, input reversed", func(t *testing.T) {
+		got, err := SelectPricingRule(evalAt, PricingCandidates{
+			BasePrice: basePrice, Scopes: testScopes(true),
+			Rules: []PriceRule{
+				window(rule(ruleB, ScopeVenue, venueID, 3400), dur(-72*time.Hour), dur(-1*time.Hour)),
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-48*time.Hour), dur(-24*time.Hour)),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertLoserOrder(t, got, ruleA, ruleB)
+	})
+
+	t.Run("winner present, window loser sorts after a comparator loser", func(t *testing.T) {
+		// ruleC is the WINDOW loser and ruleB the COMPARATOR loser, so the two
+		// groups concatenate as [C, B] — descending — and only the sort turns
+		// that into [B, C]. Mutation-checked: removing sortedCandidates reddens
+		// exactly this subtest. ruleA (slot, narrowest) wins.
+		got, err := SelectPricingRule(evalAt, PricingCandidates{
+			BasePrice: basePrice, Scopes: testScopes(true),
+			Rules: []PriceRule{
+				window(rule(ruleC, ScopeVenue, venueID, 3400), dur(-72*time.Hour), dur(-1*time.Hour)),
+				rule(ruleB, ScopeEvent, eventID, 3300),
+				rule(ruleA, ScopeSlot, slotID, 3100),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Winner == nil || got.Winner.ID != ruleA {
+			t.Fatalf("Winner = %+v, want the slot rule", got.Winner)
+		}
+		assertLoserOrder(t, got, ruleB, ruleC)
+	})
+}
+
+func assertLoserOrder(t *testing.T, got RuleSelection, want ...uuid.UUID) {
+	t.Helper()
+	if len(got.Candidates) != len(want) {
+		t.Fatalf("got %d losers, want %d: %+v", len(got.Candidates), len(want), got.Candidates)
+	}
+	// Enforce the PROPERTY independently of what the caller asked for. Without
+	// this the helper only checks equality with `want`, so a caller passing a
+	// descending list would get a pass while the failure message still claimed
+	// "id-ascending" — the helper would be asserting the caller's opinion
+	// rather than the contract.
+	for i := 1; i < len(got.Candidates); i++ {
+		if got.Candidates[i-1].Rule.ID.String() >= got.Candidates[i].Rule.ID.String() {
+			t.Fatalf("losers are not id-ascending at index %d: %v then %v",
+				i, got.Candidates[i-1].Rule.ID, got.Candidates[i].Rule.ID)
+		}
+	}
+	for i, id := range want {
+		if got.Candidates[i].Rule.ID != id {
+			var ids []string
+			for _, c := range got.Candidates {
+				ids = append(ids, c.Rule.ID.String())
+			}
+			t.Fatalf("loser order = %v, want id-ascending %v", ids, want)
+		}
 	}
 }

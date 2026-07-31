@@ -361,6 +361,22 @@ Given the candidate rules for the ≤5 derived scopes, at evaluation instant `at
    `CHECK (effective_from IS NULL OR effective_until IS NULL OR effective_from < effective_until)`.
    Without it an instant could be simultaneously "past" and "future" relative to one rule, and the
    two provenance reasons in §5 would both apply with no stated precedence.
+2b. **Overlap: windows decide *eligibility*, never *precedence*.** Two rules whose windows both
+   contain `at` are settled by the ordinary comparator below — scope, then the forced partition,
+   then `priority`, then lowest `id`. A narrower window does **not** win for being narrower, and a
+   later `effective_from` does **not** win for being later.
+
+   *Decided in TKT-152; §4 left it open, and leaving it in code rather than here would make the
+   next reader re-derive it.* The reason is that **temporal geometry does not reliably encode
+   operator intent**: "latest start wins" lets a newly authored row silently supersede an existing
+   one, and "narrowest window wins" lets an unrelated end date pick the price and behaves badly
+   against an open-ended successor. Overlap should be expressed through the field built for
+   conflict. It also keeps provenance honest — an overlap loser gets `lower_priority` or
+   `stable_id_tiebreak`, both true, with no new reason value needed.
+
+   If the product later wants latest-start semantics, that needs its **own** reason value
+   (`earlier_effective_from`); reporting it as `stable_id_tiebreak` would be a lie.
+
 3. **Override partition.** If any surviving rule has `force_ancestor_override = true`, the
    competition is **restricted to those rules** and the scope order is **inverted**:
    `venue > event > series > slot > ticket_type`. Otherwise the normal order applies:
@@ -543,7 +559,9 @@ performance one. A resolved price feeds a money decision, which is ADR-004's "ne
 once TKT-152 adds windows, the response's correctness *expires at a known instant*, so caching it
 past `effective_until` serves a stale price to a buyer. If a public browse-time price read is
 later wanted, it is a **different** endpoint, and its `max-age` must be bounded by the distance to
-the next window boundary.
+the next window boundary — specifically **rounded down and capped at the earliest upcoming
+`effective_from` or `effective_until` relevant to that response**. An integer `max-age` that
+overshoots a boundary by even a second serves a price that has already changed.
 
 **Not event-bound.** Neither rules nor resolved prices enter a domain event in TKT-151–153;
 `OrderCompletedData` carries identifiers and quantity, not price. Adding either later is an

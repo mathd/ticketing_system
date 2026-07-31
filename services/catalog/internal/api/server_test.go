@@ -646,7 +646,10 @@ func (f *fakeStore) CreatePriceRule(_ context.Context, in store.PriceRuleInput) 
 		ID: uuid.New(), OrganizerID: in.OrganizerID, ScopeLevel: in.ScopeLevel,
 		ScopeID: in.ScopeID, ActionKind: store.ActionAbsolute, Amount: in.Amount,
 		Currency: in.Currency, Priority: in.Priority,
-		ForceAncestorOverride: in.ForceAncestorOverride, CreatedAt: time.Now().UTC(),
+		ForceAncestorOverride: in.ForceAncestorOverride,
+		EffectiveFrom:         in.EffectiveFrom,
+		EffectiveUntil:        in.EffectiveUntil,
+		CreatedAt:             time.Now().UTC(),
 	}
 	if f.priceRules == nil {
 		f.priceRules = map[uuid.UUID][]store.PriceRule{}

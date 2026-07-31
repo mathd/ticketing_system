@@ -390,7 +390,9 @@ type PerformanceCreate struct {
 	VenueId  openapi_types.UUID `json:"venue_id"`
 }
 
-// PriceResolution A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree.
+// PriceResolution A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. It is ordered by rule id ascending; the order is representation only and carries no precedence.
+// INVARIANT, guaranteed by the server: winner and fallback_reason are mutually exclusive and jointly exhaustive — exactly one of "winner is non-null" and "fallback_reason is present" holds.
+// This FLAT schema cannot express that. OpenAPI 3.0 could, as a oneOf of two variants — the accurate statement is not "impossible" but "not worth it here": a oneOf would turn PriceResolution into a union in the generated Go and in both generated TypeScript clients, for a pair no consumer branches on. So the contract is deliberately BROADER than the runtime: a client may rely on the invariant, and the server side is pinned by TestResolveTicketTypePriceWinnerAndFallbackAreExclusive, which covers a winner, an empty-candidate fallback, and a fallback WITH candidates (every rule window-ineligible) — the three shapes the handler can actually produce.
 type PriceResolution struct {
 	// BasePrice Integer minor units + ISO-4217 code (ADR-001); no floats, ever
 	BasePrice  Money             `json:"base_price"`
@@ -420,10 +422,10 @@ type PriceRuleProvenance struct {
 	Amount     int64                         `json:"amount"`
 	Currency   string                        `json:"currency"`
 
-	// EffectiveFrom Always null until TKT-152 adds effective windows. Declared now, not later, because TKT-153 persists this provenance shape as a snapshot on the reservation — if the shape changed between TKT-151 and TKT-152, stored snapshots would span two formats.
+	// EffectiveFrom Inclusive lower bound of the rule's effective window; null means unbounded. The interval is HALF-OPEN [effective_from, effective_until) — a rule is eligible at an instant equal to effective_from and NOT eligible at one equal to effective_until. Stated explicitly because an inclusive/exclusive ambiguity at a tier boundary is a money bug, not a rounding detail. A reversed window is rejected by the database.
 	EffectiveFrom *time.Time `json:"effective_from"`
 
-	// EffectiveUntil Always null until TKT-152 — see effective_from.
+	// EffectiveUntil Exclusive upper bound; null means unbounded. See effective_from for the half-open semantics. A rule whose window has closed is inert: it can never price anything again, so a misconfiguration in it is ignored rather than failing every resolution forever.
 	EffectiveUntil *time.Time `json:"effective_until"`
 
 	// Forced force_ancestor_override — restricts the competition to forced rules and inverts the scope order.
