@@ -252,6 +252,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
+        code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
     RefundCapacityReturnCreate:
       type: object
       additionalProperties: false
@@ -271,7 +272,6 @@ components:
         quantity: {type: integer}
         unreturned_quantity: {type: integer}
         replay: {type: boolean}
-        code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
     HoldCreate:
       type: object
       additionalProperties: false
