@@ -324,6 +324,30 @@ func beginReport(t *testing.T, r *loadtest.Report) (complete func()) {
 	return func() { r.Partial = false }
 }
 
+// armReportThenSetup is the ordering, made structural (TKT-138).
+//
+// TKT-130 hoisted beginReport above each profile's fallible setup so that a run
+// dying in publishedSlot, inventoryAdminConn or statStatementsSetup still
+// overwrites ONSALE_REPORT instead of leaving a previous run's file to be read as
+// this one's output. That was correct and completely unguarded: the ordering lived
+// as two statements in two profile bodies, and reversing either was silent —
+// TestOnsaleReportSurvivesAnAbortedStage arms the report itself, so it could not
+// notice.
+//
+// A profile can no longer get it wrong because a profile no longer decides it: it
+// hands its setup here and the arming happens before the call. The regression test
+// mutates THIS function, not a profile.
+//
+// Each profile keeps its own setup ORDER inside the closure — gate resolves the
+// slot first, full opens the admin connection first — because that is existing
+// behaviour and this is a test-infrastructure change, not a place to quietly
+// normalise them.
+func armReportThenSetup(t *testing.T, r *loadtest.Report, setup func()) (complete func()) {
+	complete = beginReport(t, r)
+	setup()
+	return complete
+}
+
 func gitSHA() string {
 	b, err := os.ReadFile(filepath.Join("..", ".git", "HEAD"))
 	if err != nil {
@@ -353,17 +377,18 @@ func TestOnsaleLoadProof(t *testing.T) {
 func onsaleGate(t *testing.T) {
 	const capacity = 500
 	runID := uuid.NewString()[:8]
-	// Armed before any fallible setup: publishedSlot, the admin connection and
-	// statStatementsSetup can all t.Fatalf, and a run that dies there must still
-	// overwrite the configured path. Otherwise a previous run's file survives
-	// and reads as this run's output.
+	// The report is armed before any fallible setup — armReportThenSetup owns that
+	// ordering now, and TKT-138's regression test mutates it there.
 	report := loadtest.NewReport("TKT-82", "gate", gitSHA())
-	complete := beginReport(t, report)
 	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 
-	slot, _ := publishedSlot(t, "Onsale Load Hall "+runID, capacity)
-	conn := inventoryAdminConn(t)
-	statStatementsSetup(t, conn)
+	var slot string
+	var conn *pgx.Conn
+	complete := armReportThenSetup(t, report, func() {
+		slot, _ = publishedSlot(t, "Onsale Load Hall "+runID, capacity)
+		conn = inventoryAdminConn(t)
+		statStatementsSetup(t, conn)
+	})
 	attempt := checkoutAttempt(t, runID, slot, 1)
 	loadStart := time.Now()
 
@@ -464,15 +489,18 @@ func onsaleGate(t *testing.T) {
 // p99 ≤ 1s, lifecycle p99 ≤ 3s at the NFR window.
 func onsaleFull(t *testing.T) {
 	runID := uuid.NewString()[:8]
-	// Armed before any fallible setup — see onsaleGate.
+	// Armed before any fallible setup — armReportThenSetup owns the ordering.
 	report := loadtest.NewReport("TKT-82", "full", gitSHA())
-	complete := beginReport(t, report)
 	report.ClientMaxConnsPerHost = loadtest.MaxConnsPerHost
 	report.Notes = "local compose topology; DB_MAX_OPEN_CONNS=25; single-host client+server — see docs/verification/on-sale-load/README.md"
 
-	conn := inventoryAdminConn(t)
-	statStatementsSetup(t, conn)
-	slot, _ := publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
+	var slot string
+	var conn *pgx.Conn
+	complete := armReportThenSetup(t, report, func() {
+		conn = inventoryAdminConn(t)
+		statStatementsSetup(t, conn)
+		slot, _ = publishedSlot(t, "Onsale NFR Hall "+runID, 100000)
+	})
 	attempt := checkoutAttempt(t, runID, slot, 1)
 
 	// A stage's claims are only meaningful if the generator itself was healthy:
