@@ -6,6 +6,15 @@ Date: 2026-07-12
 
 Accepted
 
+**Amended by [ADR-036](./ADR-036-pricing-rules-representation.md) (2026-07-30, TKT-150)** — *the
+`commerce` row's "pricing evaluation" only*, under that run's owner-waived gates. The five-service
+cut and every other ownership row below stand unchanged. What moved: **rule-based resolution of a
+ticket type's unit price** is `catalog`'s, next to the rule definitions this ADR already assigns
+there. What stayed: **sale-time composition** — unit price + fees + promos + taxes into an order
+total, and everything downstream — remains `commerce`'s. Read the table's "pricing/fee/promo
+evaluation" as composition, not as resolution. The line: catalog answers *"what does this ticket
+type cost, and why"*; commerce answers *"what does this order total"*.
+
 ## Context
 
 The owner decided during discovery (2026-07-12) that the system is built as separate services from the start — isolating the contention-heavy inventory core early is the point, and exercising AI-assisted development against a distributed estate is part of the testbed's purpose. Deployment is Docker Compose only; the team is one owner + AI agents. The risk to manage is integration tax: with ~24 capability epics, a fine-grained service cut would spend the project on plumbing.
