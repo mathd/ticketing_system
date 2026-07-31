@@ -523,3 +523,74 @@ func TestSelectPricingRuleCurrencyErrorIsOrderIndependent(t *testing.T) {
 		t.Errorf("want the lowest-id offender %v reported, got %q", ruleA, messages[0])
 	}
 }
+
+// assertLosers compares by id, so it cannot see ORDER — and both code paths
+// promise an id-ascending loser list. Removing sortedCandidates leaves every
+// other test green, so without this the promise is unenforced.
+//
+// Mutation-checked, and the result is worth writing down because it is not
+// symmetric:
+//
+//   - the WINNER path genuinely needs the sort, and its subtest reddens without
+//     it. That path concatenates window losers with comparator losers, so the
+//     two groups interleave and input order survives into the output.
+//   - the FALLBACK path does NOT redden, even with a reversed fixture, because
+//     `scoped` is already id-sorted upstream (TKT-151 sorts it so the currency
+//     error is order-independent) and window losers are appended in that order.
+//     Its subtest pins the PROPERTY — id-ascending output — not the line that
+//     currently provides it. That is the right thing to pin: a consumer depends
+//     on the order, not on which statement produces it.
+func TestSelectPricingRuleOrdersLosersByID(t *testing.T) {
+	ruleC := uuid.MustParse("cccccccc-0000-0000-0000-000000000000")
+
+	t.Run("all expired, input reversed", func(t *testing.T) {
+		got, err := SelectPricingRule(evalAt, PricingCandidates{
+			BasePrice: basePrice, Scopes: testScopes(true),
+			Rules: []PriceRule{
+				window(rule(ruleB, ScopeVenue, venueID, 3400), dur(-72*time.Hour), dur(-1*time.Hour)),
+				window(rule(ruleA, ScopeEvent, eventID, 3300), dur(-48*time.Hour), dur(-24*time.Hour)),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertLoserOrder(t, got, ruleA, ruleB)
+	})
+
+	t.Run("winner present, window loser sorts after a comparator loser", func(t *testing.T) {
+		// ruleC (comparator loser) sorts AFTER ruleB (window loser) but is
+		// appended after it too — so this only reddens if the sort is real when
+		// the groups interleave. ruleA wins.
+		got, err := SelectPricingRule(evalAt, PricingCandidates{
+			BasePrice: basePrice, Scopes: testScopes(true),
+			Rules: []PriceRule{
+				window(rule(ruleC, ScopeVenue, venueID, 3400), dur(-72*time.Hour), dur(-1*time.Hour)),
+				rule(ruleB, ScopeEvent, eventID, 3300),
+				rule(ruleA, ScopeSlot, slotID, 3100),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Winner == nil || got.Winner.ID != ruleA {
+			t.Fatalf("Winner = %+v, want the slot rule", got.Winner)
+		}
+		assertLoserOrder(t, got, ruleB, ruleC)
+	})
+}
+
+func assertLoserOrder(t *testing.T, got RuleSelection, want ...uuid.UUID) {
+	t.Helper()
+	if len(got.Candidates) != len(want) {
+		t.Fatalf("got %d losers, want %d: %+v", len(got.Candidates), len(want), got.Candidates)
+	}
+	for i, id := range want {
+		if got.Candidates[i].Rule.ID != id {
+			var ids []string
+			for _, c := range got.Candidates {
+				ids = append(ids, c.Rule.ID.String())
+			}
+			t.Fatalf("loser order = %v, want id-ascending %v", ids, want)
+		}
+	}
+}

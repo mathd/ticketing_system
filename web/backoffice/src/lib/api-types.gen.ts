@@ -725,7 +725,10 @@ export interface components {
             /** @enum {string} */
             reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
         };
-        /** @description A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. */
+        /**
+         * @description A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. It is ordered by rule id ascending; the order is representation only and carries no precedence.
+         *     INVARIANT, guaranteed by the server and NOT expressible in this schema: winner and fallback_reason are mutually exclusive and jointly exhaustive — exactly one of "winner is non-null" and "fallback_reason is present" holds. OpenAPI 3.0 has no dependentRequired, and expressing it as a oneOf of two variants would churn the generated Go and TypeScript union types for a pair no consumer branches on. The contract is therefore deliberately BROADER than the runtime here: a client may assume the invariant, and a server change that broke it would be caught by TestResolveTicketTypePriceWinnerAndFallbackAreExclusive rather than by the validator.
+         */
         PriceResolution: {
             /**
              * Format: int32

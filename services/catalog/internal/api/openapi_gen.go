@@ -390,7 +390,8 @@ type PerformanceCreate struct {
 	VenueId  openapi_types.UUID `json:"venue_id"`
 }
 
-// PriceResolution A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree.
+// PriceResolution A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. It is ordered by rule id ascending; the order is representation only and carries no precedence.
+// INVARIANT, guaranteed by the server and NOT expressible in this schema: winner and fallback_reason are mutually exclusive and jointly exhaustive — exactly one of "winner is non-null" and "fallback_reason is present" holds. OpenAPI 3.0 has no dependentRequired, and expressing it as a oneOf of two variants would churn the generated Go and TypeScript union types for a pair no consumer branches on. The contract is therefore deliberately BROADER than the runtime here: a client may assume the invariant, and a server change that broke it would be caught by TestResolveTicketTypePriceWinnerAndFallbackAreExclusive rather than by the validator.
 type PriceResolution struct {
 	// BasePrice Integer minor units + ISO-4217 code (ADR-001); no floats, ever
 	BasePrice  Money             `json:"base_price"`

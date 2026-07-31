@@ -232,3 +232,39 @@ func TestResolveTicketTypePriceReportsWindows(t *testing.T) {
 		t.Error("the expired rule's window must be reported, not nulled — it is the answer to why it lost")
 	}
 }
+
+// The schema cannot express it (OpenAPI 3.0 has no dependentRequired, and a
+// oneOf would churn both generated clients for a pair nobody branches on), so
+// the invariant is pinned here instead: exactly one of "a winner exists" and
+// "fallback_reason is present" holds, in both directions. Without this the
+// published contract would permit a state the server never produces and nothing
+// would notice if the server started producing it.
+func TestResolveTicketTypePriceWinnerAndFallbackAreExclusive(t *testing.T) {
+	e := newEnv(t)
+	withRule, scopes := seedPricedTicketType(t, e, 4550, "EUR")
+	if _, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: scopes.EventID, Amount: 5000, Currency: "EUR"}); err != nil {
+		t.Fatal(err)
+	}
+	withoutRule, _ := seedPricedTicketType(t, e, 4550, "EUR")
+
+	for name, tc := range map[string]struct {
+		id         uuid.UUID
+		wantWinner bool
+	}{
+		"a rule won":  {withRule, true},
+		"no rule won": {withoutRule, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, out := resolvePrice(t, e, tc.id)
+			hasWinner, hasFallback := out.Winner != nil, out.FallbackReason != nil
+			if hasWinner != tc.wantWinner {
+				t.Fatalf("winner present = %t, want %t", hasWinner, tc.wantWinner)
+			}
+			if hasWinner == hasFallback {
+				t.Errorf("winner present = %t and fallback_reason present = %t — exactly one must hold",
+					hasWinner, hasFallback)
+			}
+		})
+	}
+}
