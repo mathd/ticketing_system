@@ -146,6 +146,10 @@
     {
       "type": "blocked-by",
       "key": "TKT-151"
+    },
+    {
+      "type": "found",
+      "key": "TKT-155"
     }
   ]
 }
