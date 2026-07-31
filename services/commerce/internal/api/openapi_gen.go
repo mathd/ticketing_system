@@ -26,6 +26,27 @@ func (e OrderResultStatus) Valid() bool {
 	}
 }
 
+// Defines values for RefundRefundStatus.
+const (
+	Full    RefundRefundStatus = "full"
+	None    RefundRefundStatus = "none"
+	Partial RefundRefundStatus = "partial"
+)
+
+// Valid indicates whether the value is a known member of the RefundRefundStatus enum.
+func (e RefundRefundStatus) Valid() bool {
+	switch e {
+	case Full:
+		return true
+	case None:
+		return true
+	case Partial:
+		return true
+	default:
+		return false
+	}
+}
+
 // Checkout defines model for Checkout.
 type Checkout struct {
 	Email         string             `json:"email"`
@@ -102,6 +123,30 @@ type OrderState struct {
 	Status  string             `json:"status"`
 }
 
+// Refund defines model for Refund.
+type Refund struct {
+	Amount           int64              `json:"amount"`
+	Currency         string             `json:"currency"`
+	OrderId          openapi_types.UUID `json:"order_id"`
+	Quantity         int                `json:"quantity"`
+	RefundId         openapi_types.UUID `json:"refund_id"`
+	RefundStatus     RefundRefundStatus `json:"refund_status"`
+	RefundedAmount   int64              `json:"refunded_amount"`
+	RefundedQuantity int                `json:"refunded_quantity"`
+	Replay           bool               `json:"replay"`
+}
+
+// RefundRefundStatus defines model for Refund.RefundStatus.
+type RefundRefundStatus string
+
+// RefundCreate defines model for RefundCreate.
+type RefundCreate struct {
+	Actor       string             `json:"actor"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Quantity    int                `json:"quantity"`
+	Reason      string             `json:"reason"`
+}
+
 // Reservation defines model for Reservation.
 type Reservation struct {
 	Amount        int64              `json:"amount"`
@@ -136,6 +181,11 @@ type ConvertOperationalHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// RefundOrderParams defines parameters for RefundOrder.
+type RefundOrderParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CheckoutParams defines parameters for Checkout.
 type CheckoutParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -151,6 +201,9 @@ type DrawDownGroupReservationJSONRequestBody = OperationalConversionCreate
 
 // ConvertOperationalHoldJSONRequestBody defines body for ConvertOperationalHold for application/json ContentType.
 type ConvertOperationalHoldJSONRequestBody = OperationalConversionCreate
+
+// RefundOrderJSONRequestBody defines body for RefundOrder for application/json ContentType.
+type RefundOrderJSONRequestBody = RefundCreate
 
 // CheckoutJSONRequestBody defines body for Checkout for application/json ContentType.
 type CheckoutJSONRequestBody = Checkout

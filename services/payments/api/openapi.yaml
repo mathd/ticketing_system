@@ -93,6 +93,24 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
+  /internal/psp/partial-refund:
+    post:
+      # Post-purchase partial refund leg (TKT-156, ADR-037). The ONE refund path whose
+      # amount comes from the caller — validated against the operation's own durable
+      # captured evidence under a row lock before any provider call, so it can only ever
+      # be a subset of money payments already knows moved. Repeatable: many legs against
+      # one charge, each with its own refund_key and its own provider idempotency key.
+      # Mutually exclusive with the whole-refund recovery path above.
+      operationId: pspPartialRefund
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PSPPartialRefund'}}}}
+      responses:
+        '200': {description: Refunded (or replay of the completed leg), content: {application/json: {schema: {$ref: '#/components/schemas/PSPPartialRefundResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
 components:
   parameters:
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
@@ -154,6 +172,29 @@ components:
       properties:
         status: {type: string, enum: [voided, refunded]}
         fact_id: {type: string, format: uuid}
+        replay: {type: boolean}
+    PSPPartialRefund:
+      # One post-purchase refund leg. refund_key is the leg's own identity — two legs
+      # against one charge differ only there, and that is what makes them two provider
+      # operations. The amount is validated against the stored captured evidence.
+      type: object
+      additionalProperties: false
+      required: [organizer_id, idempotency_key, refund_key, amount, currency]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        idempotency_key: {type: string, minLength: 1, maxLength: 200}
+        refund_key: {type: string, minLength: 1, maxLength: 200}
+        amount: {type: integer, format: int64, minimum: 1}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+    PSPPartialRefundResult:
+      type: object
+      additionalProperties: false
+      required: [status, fact_id, amount, currency, replay]
+      properties:
+        status: {type: string, enum: [refunded]}
+        fact_id: {type: string, format: uuid}
+        amount: {type: integer, format: int64}
+        currency: {type: string}
         replay: {type: boolean}
     PSPStatus:
       # Normalized provider evidence. Never contains provider references (pi_/ch_/re_),

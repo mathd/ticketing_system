@@ -160,7 +160,14 @@ Operator runbook: `docs/development.md` §Journal signing key rotation.
 - `Void`: cancel an uncaptured authorization; append `payment.voided` only after the provider result
   is durable.
 - `Refund`: refund the captured charge under a stable **compensation** idempotency key; the refund
-  amount/currency come from the **durable stored operation**, never from a caller-supplied value;
+  amount/currency come from the **durable stored operation**, never from a caller-supplied value
+  — *amended on this clause only by [ADR-037](./ADR-037-post-purchase-refund-money-protocol.md) §3
+  (TKT-156)*: the **post-purchase partial-refund leg** (`/internal/psp/partial-refund`) does take a
+  caller-supplied amount, because only commerce knows that two of three tickets are being returned.
+  It is admissible because payments validates that amount against the operation's own durable
+  captured evidence under the operation row lock before any provider call, so a caller can only ever
+  name a *subset* of money payments already knows moved. **This clause stands verbatim for the
+  whole-refund compensation path described here**, which is recovery's and is unchanged;
   append `payment.refunded`. *Amended (TKT-116):* the refund path **resolves before it submits**.
   Idempotency alone does not survive the retention bound above: a refund Stripe settled whose
   response was lost leaves **no `re_` reference to retrieve**, so the recorded-ref dispatch cannot

@@ -42,33 +42,48 @@ func (e PSPCompensationResultStatus) Valid() bool {
 	}
 }
 
+// Defines values for PSPPartialRefundResultStatus.
+const (
+	PSPPartialRefundResultStatusRefunded PSPPartialRefundResultStatus = "refunded"
+)
+
+// Valid indicates whether the value is a known member of the PSPPartialRefundResultStatus enum.
+func (e PSPPartialRefundResultStatus) Valid() bool {
+	switch e {
+	case PSPPartialRefundResultStatusRefunded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PSPStatusOutcome.
 const (
-	PSPStatusOutcomeAuthorized PSPStatusOutcome = "authorized"
-	PSPStatusOutcomeCaptured   PSPStatusOutcome = "captured"
-	PSPStatusOutcomeDeclined   PSPStatusOutcome = "declined"
-	PSPStatusOutcomeRefunded   PSPStatusOutcome = "refunded"
-	PSPStatusOutcomeTimeout    PSPStatusOutcome = "timeout"
-	PSPStatusOutcomeUnknown    PSPStatusOutcome = "unknown"
-	PSPStatusOutcomeVoided     PSPStatusOutcome = "voided"
+	Authorized PSPStatusOutcome = "authorized"
+	Captured   PSPStatusOutcome = "captured"
+	Declined   PSPStatusOutcome = "declined"
+	Refunded   PSPStatusOutcome = "refunded"
+	Timeout    PSPStatusOutcome = "timeout"
+	Unknown    PSPStatusOutcome = "unknown"
+	Voided     PSPStatusOutcome = "voided"
 )
 
 // Valid indicates whether the value is a known member of the PSPStatusOutcome enum.
 func (e PSPStatusOutcome) Valid() bool {
 	switch e {
-	case PSPStatusOutcomeAuthorized:
+	case Authorized:
 		return true
-	case PSPStatusOutcomeCaptured:
+	case Captured:
 		return true
-	case PSPStatusOutcomeDeclined:
+	case Declined:
 		return true
-	case PSPStatusOutcomeRefunded:
+	case Refunded:
 		return true
-	case PSPStatusOutcomeTimeout:
+	case Timeout:
 		return true
-	case PSPStatusOutcomeUnknown:
+	case Unknown:
 		return true
-	case PSPStatusOutcomeVoided:
+	case Voided:
 		return true
 	default:
 		return false
@@ -145,6 +160,27 @@ type PSPCompensationResult struct {
 // PSPCompensationResultStatus defines model for PSPCompensationResult.Status.
 type PSPCompensationResultStatus string
 
+// PSPPartialRefund defines model for PSPPartialRefund.
+type PSPPartialRefund struct {
+	Amount         int64              `json:"amount"`
+	Currency       string             `json:"currency"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	RefundKey      string             `json:"refund_key"`
+}
+
+// PSPPartialRefundResult defines model for PSPPartialRefundResult.
+type PSPPartialRefundResult struct {
+	Amount   int64                        `json:"amount"`
+	Currency string                       `json:"currency"`
+	FactId   openapi_types.UUID           `json:"fact_id"`
+	Replay   bool                         `json:"replay"`
+	Status   PSPPartialRefundResultStatus `json:"status"`
+}
+
+// PSPPartialRefundResultStatus defines model for PSPPartialRefundResult.Status.
+type PSPPartialRefundResultStatus string
+
 // PSPStatus defines model for PSPStatus.
 type PSPStatus struct {
 	Authorized           bool             `json:"authorized"`
@@ -184,6 +220,9 @@ type ChargeJSONRequestBody = Charge
 
 // AppendFactJSONRequestBody defines body for AppendFact for application/json ContentType.
 type AppendFactJSONRequestBody = Fact
+
+// PspPartialRefundJSONRequestBody defines body for PspPartialRefund for application/json ContentType.
+type PspPartialRefundJSONRequestBody = PSPPartialRefund
 
 // PspRefundJSONRequestBody defines body for PspRefund for application/json ContentType.
 type PspRefundJSONRequestBody = PSPCompensation

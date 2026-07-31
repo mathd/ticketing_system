@@ -330,6 +330,15 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		amount, currency = compensationBasis(op, kind)
 	}
 	comp, err := s.journal.BindCompensation(r.Context(), in.OrganizerID, key, kind, amount, currency)
+	if errors.Is(err, store.ErrRefundLegsBound) {
+		// Post-purchase legs already have a claim on this charge, and the whole-refund
+		// basis is the ENTIRE captured amount — part of which those legs have spent. The
+		// exclusion is decided inside BindCompensation under the payment_operations row
+		// lock, not by a check out here: a check and an insert as separate statements
+		// leave a window a concurrent leg binds in (TKT-156 ai-review, critical).
+		write(w, 409, map[string]string{"error": err.Error()})
+		return
+	}
 	if err != nil {
 		write(w, 500, map[string]string{"error": "bind compensation"})
 		return
