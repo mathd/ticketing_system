@@ -115,8 +115,16 @@ func (p *Postgres) ReturnRefundedCapacity(ctx context.Context, org, claimID, ref
 	// identity — so "which two of these three seats" is a question the model cannot
 	// answer (TKT-164). releaseSeatsForTerminal does not help: it selects claims already
 	// in ('expired','released'), and a returned claim stays confirmed.
+	// Seatedness is ANY seat row, released or not — never the count of LIVE ones
+	// (ai-review pass 2). `claims.status` and `claim_seats.released_at` are not coupled by
+	// the schema, so a confirmed seated claim whose rows were already released by restore
+	// skew or an earlier defect is representable; `classifySeatClaimsInPool` says exactly
+	// that, a few lines from here. Inferring "not seated" from zero live rows would let a
+	// partial return of such a claim through as if it were GA, and then unpin every one of
+	// its seats — SeatPinRef reads released rows too — stripping catalog protection from
+	// the seats its remaining live tickets still occupy.
 	var seats int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1 AND released_at IS NULL`, claimID).Scan(&seats); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1`, claimID).Scan(&seats); err != nil {
 		return RefundCapacityReturn{}, err
 	}
 	if seats > 0 {

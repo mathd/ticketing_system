@@ -87,7 +87,12 @@ func (s *Server) refundCapacity(w http.ResponseWriter, r *http.Request) {
 	// An earlier version of this comment claimed a commerce replay would retry the unpin.
 	// It would not — commerce marks capacity_returned_at on the 200 and its replay path
 	// exits early — and the adversarial review was right to call that out.
-	if seated && pinErr == nil && len(pin.Seats) > 0 {
+	// Only when the claim owes NOTHING. The store refuses a partial seated return, so a
+	// seated claim reaching here should always be fully returned — this is the second lock
+	// on that door (ai-review pass 2), because SeatPinRef reads released rows too and an
+	// unpin of a partially-returned claim would strip catalog protection from seats its
+	// remaining live tickets still occupy.
+	if seated && pinErr == nil && len(pin.Seats) > 0 && out.UnreturnedQuantity == 0 {
 		_ = s.pinner.UnpinSeats(r.Context(), in.OrganizerID, pin.SeatMapID, pin.Seats, pin.PinnedBy)
 	}
 	write(w, http.StatusOK, map[string]any{

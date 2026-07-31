@@ -412,8 +412,22 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 			// stays live, because it still holds every one of its seats — a partial
 			// seated return is refused precisely because no subset can be identified.
 			if status == "confirmed" && quantity > 0 && returned == quantity {
-				verdicts[id] = SeatClaimDead
-				continue
+				// Accounting alone is not proof. The rule this file already states —
+				// dead is established POSITIVELY, never inferred — applies to the
+				// return path too: `returned_quantity` and `claim_seats.released_at`
+				// are not coupled by the schema, so a repair, a restore skew or a
+				// future defect can leave the counter full while seat rows are still
+				// live. Deleting the pin then lets a seat-map edit orphan seats
+				// inventory still holds. Confirm the child rows agree; if they do not,
+				// fall through to live, which keeps the pin (ai-review pass 2).
+				var liveSeats int
+				if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1 AND released_at IS NULL`, id).Scan(&liveSeats); err != nil {
+					return fmt.Errorf("count live seats for claim %s: %w", id, err)
+				}
+				if liveSeats == 0 {
+					verdicts[id] = SeatClaimDead
+					continue
+				}
 			}
 			verdicts[id] = SeatClaimLive
 		case "expired", "released":

@@ -377,3 +377,72 @@ func TestPartialSeatedReturnIsRefusedAndChangesNothing(t *testing.T) {
 		t.Fatalf("claim with all seats still held = %v, want live", states[sh.Claim.ID])
 	}
 }
+
+// ai-review pass 2. Both of these cover a state the schema permits but the happy path
+// never produces: `claims.status`/`returned_quantity` and `claim_seats.released_at` are
+// not coupled, so they can disagree after a repair, a restore skew, or a future defect.
+// `classifySeatClaimsInPool` already says so in its own comment — these are that rule
+// applied to the return path.
+
+// A seated claim whose seat rows are ALREADY released must still be treated as seated.
+// Inferring seatedness from live rows would let a partial return through as if it were
+// GA — and then unpin every seat, because SeatPinRef reads released rows too, stripping
+// catalog protection from the seats the remaining live tickets occupy.
+func TestPartialSeatedReturnIsRefusedEvenWhenSeatRowsWereAlreadyReleased(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"C/1/1", "C/1/2", "C/1/3"}, 4500, "EUR", "seat-released")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "finalizing"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	// The degraded state: rows present, all released, claim still confirmed.
+	if _, err = db.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1`, sh.Claim.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.ReturnRefundedCapacity(ctx, org, sh.Claim.ID, uuid.New(), 2); !errors.Is(err, ErrPartialSeatedReturn) {
+		t.Fatalf("err = %v, want ErrPartialSeatedReturn — a claim with released seat rows is still a SEATED claim", err)
+	}
+}
+
+// A fully returned confirmed claim that still holds live seats must NOT be called dead.
+// `reconcile-pins` deletes a dead claim's catalog pin, and deleting one while inventory
+// still holds the seats lets a seat-map edit orphan them. Dead is established positively
+// or not at all.
+func TestFullyReturnedClaimWithLiveSeatsIsNotReconcileDead(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"D/1/1", "D/1/2"}, 4500, "EUR", "seat-skew")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "finalizing"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReturnRefundedCapacity(ctx, org, sh.Claim.ID, uuid.New(), 2); err != nil {
+		t.Fatal(err)
+	}
+	// The skew: accounting says fully returned, a seat row says otherwise.
+	if _, err = db.ExecContext(ctx, `UPDATE claim_seats SET released_at=NULL WHERE claim_id=$1 AND seat_identity='D/1/1'`, sh.Claim.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := st.ReconcileSeatClaimStates(ctx, []uuid.UUID{sh.Claim.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states[sh.Claim.ID] == SeatClaimDead {
+		t.Fatal("a fully returned claim that still holds a live seat was called dead; reconcile-pins would delete a pin inventory still needs")
+	}
+}
