@@ -178,15 +178,42 @@ func TestChannelSurvivesLifecycleAndConvertStaysPublic(t *testing.T) {
 }
 
 func TestScheduledReleaseIsLazyAndObservable(t *testing.T) {
-	ctx, st, _ := storeForTest(t, time.Minute)
+	// The flake was `available=10 want 8`. 10 is full capacity, which decomposes as
+	// capacity 10 − confirmed 0 − held 0 − reserved 0: reserved=0 proves the public read
+	// HAD observed the release, so the two reads never disagreed about the boundary —
+	// what vanished was the HOLD, whose liveness rode on a TTL clock this test neither
+	// controls nor asserts anything about.
+	//
+	// The claim therefore stays `held` right across release_at, exactly as before, so
+	// the post-release held→finalizing→confirmed path keeps its only coverage. What
+	// changes is that its expiry is pinned by DATABASE time below instead of being left
+	// to the host TTL and the machine's load.
+	ctx, st, db := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 10)
-	releaseAt := time.Now().UTC().Add(2 * time.Second)
+	// Establish the cutoff by DATABASE time, as the lock-wait test below does: host/DB
+	// clock skew must not be a second moving boundary.
+	var releaseAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT clock_timestamp() + interval '2 seconds'`).Scan(&releaseAt); err != nil {
+		t.Fatal(err)
+	}
 	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6, ReleaseAt: &releaseAt}})
 
 	// Sell 2 of the 6 before release.
 	c, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "presale", "rel-sold")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Pin the hold's liveness by DATABASE time, so the allocation release is the only
+	// moving boundary in a test named for exactly that. The host TTL is now irrelevant
+	// to this claim: whatever the machine's load, expiry cannot decide the outcome.
+	//
+	// Shortening the TTL and finalizing early were both tried and both rejected — the
+	// first raced CreateHold against Transition (separate transactions, so narrowing the
+	// window cannot close it), and the second finalized BEFORE the cutoff, deleting the
+	// post-release held→finalizing→confirmed coverage this test uniquely provides.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE claims SET expires_at = clock_timestamp() + interval '1 hour' WHERE id=$1`, c.ID); err != nil {
+		t.Fatalf("pin the hold beyond the test window by DB time: %v", err)
 	}
 	pub, err := st.Availability(ctx, org, slot, "")
 	if err != nil || pub.Available != 4 {
@@ -220,8 +247,11 @@ func TestScheduledReleaseIsLazyAndObservable(t *testing.T) {
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "rel-late"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("post-release channel hold: got %v want ErrUnavailable", err)
 	}
+	// The whole point of holding the claim across the cutoff: a buyer claim taken
+	// BEFORE release must still complete its lifecycle AFTER it, even though its
+	// channel allocation is now inactive. Finalizing early would have deleted this.
 	if _, err := st.Transition(ctx, org, c.ID, "finalizing"); err != nil {
-		t.Fatal(err)
+		t.Fatalf("pre-release hold must finalize after release: %v", err)
 	}
 	if _, err := st.Transition(ctx, org, c.ID, "confirmed"); err != nil {
 		t.Fatalf("pre-release hold must confirm after release: %v", err)
