@@ -132,7 +132,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	// after the bind meant a sold-out target left an exchange row behind and locked the
 	// order exactly as a typo did. A hold that is never used simply expires; a durable row
 	// does not.
-	hold, err := s.holdExchangeTarget(r, in.OrganizerID, in.TargetTicketTypeID, src.Quantity, resolution)
+	hold, err := s.holdExchangeTarget(r, exchangeID, in.OrganizerID, in.TargetTicketTypeID, src.Quantity, resolution)
 	if err != nil {
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 		return
@@ -263,17 +263,19 @@ func (s *Server) claimIsSeated(r *http.Request, org, hold uuid.UUID) (bool, erro
 	return out.Seated, nil
 }
 
-func (s *Server) holdExchangeTarget(r *http.Request, org, ticketType uuid.UUID, quantity int32, res priceResolution) (uuid.UUID, error) {
+func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType uuid.UUID, quantity int32, res priceResolution) (uuid.UUID, error) {
 	body := map[string]any{
 		"organizer_id": org, "slot_id": res.PerformanceID,
 		"ticket_type_id": ticketType, "quantity": quantity,
 		"unit_amount": res.ResolvedPrice.Amount, "currency": res.ResolvedPrice.Currency,
 	}
-	// Keyed on the ticket type and organizer rather than the exchange, because the hold is
-	// taken BEFORE the exchange exists now (P2-1). A retry that gets this far re-holds; an
-	// unused hold expires on its own, which a durable row would not.
+	// Keyed on the EXCHANGE identity, which is derivable from (organizer, idempotency key)
+	// before the exchange row exists — that is what lets the hold precede the bind (P2-1)
+	// without two different exchanges sharing a hold. Keying it on organizer+ticket type
+	// did exactly that: a second exchange onto the same type replayed the first one's hold
+	// and then collided persisting its replacement.
 	code, out, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds",
-		"exchange-target:"+org.String()+":"+ticketType.String(), body, false)
+		"exchange-target:"+exchangeID.String(), body, false)
 	if err != nil || (code != 200 && code != 201) {
 		return uuid.Nil, fmt.Errorf("target hold: status %d: %w", code, err)
 	}
