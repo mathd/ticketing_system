@@ -197,12 +197,21 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 				write(w, 409, map[string]string{"error": "hold no longer matches the reservation"})
 				return
 			}
-			write(w, 200, map[string]any{"reservation_id": id, "hold_id": pin.hold, "buyer_id": pin.buyer,
+			// 201, not 200: createReservation declares exactly one success
+			// status, and a replay was already indistinguishable from a first
+			// call before this change (ON CONFLICT DO NOTHING then returned 201
+			// too). Answering 200 would be an undeclared response, which the
+			// fail-closed validator turns into a 500 (ADR-028) — widening the
+			// contract to legalise it would be changing an API to fit an
+			// implementation detail.
+			write(w, 201, map[string]any{"reservation_id": id, "hold_id": pin.hold, "buyer_id": pin.buyer,
 				"amount": pin.total, "currency": pin.currency,
 				"expires_at": replayed.ExpiresAt, "server_time": replayed.ServerTime})
 			return
 		case !errors.Is(err, sql.ErrNoRows):
-			write(w, 503, map[string]string{"error": "temporarily unavailable"})
+			// 500, not 503: createReservation does not declare 503, and an
+			// undeclared status is an outage under the response validator.
+			write(w, 500, map[string]string{"error": "persist reservation"})
 			return
 		}
 	}

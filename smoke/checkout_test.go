@@ -639,8 +639,8 @@ func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
 	// repricing.
 	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt153-pin",
 		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 2})
-	if code != 200 && code != 201 {
-		t.Fatalf("replay %d %s", code, body)
+	if code != 201 {
+		t.Fatalf("replay %d %s — a replay answers like a first call", code, body)
 	}
 	var replay map[string]any
 	if err = json.Unmarshal(body, &replay); err != nil {
