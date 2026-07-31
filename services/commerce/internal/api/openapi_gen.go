@@ -11,15 +11,33 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for ExchangeStatus.
+const (
+	ExchangeStatusCompleted     ExchangeStatus = "completed"
+	ExchangeStatusSwitchPending ExchangeStatus = "switch_pending"
+)
+
+// Valid indicates whether the value is a known member of the ExchangeStatus enum.
+func (e ExchangeStatus) Valid() bool {
+	switch e {
+	case ExchangeStatusCompleted:
+		return true
+	case ExchangeStatusSwitchPending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for OrderResultStatus.
 const (
-	Completed OrderResultStatus = "completed"
+	OrderResultStatusCompleted OrderResultStatus = "completed"
 )
 
 // Valid indicates whether the value is a known member of the OrderResultStatus enum.
 func (e OrderResultStatus) Valid() bool {
 	switch e {
-	case Completed:
+	case OrderResultStatusCompleted:
 		return true
 	default:
 		return false
@@ -63,6 +81,32 @@ type DeliveryEmail struct {
 // Error defines model for Error.
 type Error struct {
 	Error string `json:"error"`
+}
+
+// Exchange defines model for Exchange.
+type Exchange struct {
+	Currency           string             `json:"currency"`
+	DeltaAmount        int64              `json:"delta_amount"`
+	ExchangeId         openapi_types.UUID `json:"exchange_id"`
+	Quantity           int                `json:"quantity"`
+	ReplacementOrderId openapi_types.UUID `json:"replacement_order_id"`
+	Replay             bool               `json:"replay"`
+	SourceOrderId      openapi_types.UUID `json:"source_order_id"`
+	SourceTotal        int64              `json:"source_total"`
+	Status             ExchangeStatus     `json:"status"`
+	TargetTotal        int64              `json:"target_total"`
+	TicketsExchanged   bool               `json:"tickets_exchanged"`
+}
+
+// ExchangeStatus defines model for Exchange.Status.
+type ExchangeStatus string
+
+// ExchangeCreate defines model for ExchangeCreate.
+type ExchangeCreate struct {
+	Actor              string             `json:"actor"`
+	OrganizerId        openapi_types.UUID `json:"organizer_id"`
+	Reason             string             `json:"reason"`
+	TargetTicketTypeId openapi_types.UUID `json:"target_ticket_type_id"`
 }
 
 // OperationalConversion defines model for OperationalConversion.
@@ -183,6 +227,11 @@ type ConvertOperationalHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// ExchangeOrderParams defines parameters for ExchangeOrder.
+type ExchangeOrderParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // RefundOrderParams defines parameters for RefundOrder.
 type RefundOrderParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -203,6 +252,9 @@ type DrawDownGroupReservationJSONRequestBody = OperationalConversionCreate
 
 // ConvertOperationalHoldJSONRequestBody defines body for ConvertOperationalHold for application/json ContentType.
 type ConvertOperationalHoldJSONRequestBody = OperationalConversionCreate
+
+// ExchangeOrderJSONRequestBody defines body for ExchangeOrder for application/json ContentType.
+type ExchangeOrderJSONRequestBody = ExchangeCreate
 
 // RefundOrderJSONRequestBody defines body for RefundOrder for application/json ContentType.
 type RefundOrderJSONRequestBody = RefundCreate

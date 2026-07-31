@@ -253,4 +253,68 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if !returned.Replay || returned.UnreturnedQuantity != 1 {
 		t.Fatalf("replay must not decrement again: %+v", returned)
 	}
+
+	// inventory: the seating lookup an exchange uses to refuse a seated source before any
+	// money moves (TKT-158). GA here, so it answers false.
+	if code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/holds/%v/seating?organizer_id=%s", inventoryURL, reservation["hold_id"], organizerID), "", nil); code != http.StatusOK {
+		t.Fatalf("hold seating: %d %s", code, body)
+	}
+	var seating struct {
+		Seated bool `json:"seated"`
+	}
+	if err := json.Unmarshal(body, &seating); err != nil {
+		t.Fatal(err)
+	}
+	if seating.Seated {
+		t.Fatalf("a GA claim reported as seated: %s", body)
+	}
+
+	// commerce: exchange a SECOND completed order onto another ticket type (TKT-158). It
+	// needs its own order because the one above is already partly refunded, and an order
+	// is reversed once — by a refund or by an exchange, never both.
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "cov-exch-reserve-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 1})
+	if code != http.StatusCreated {
+		t.Fatalf("exchange source reserve: %d %s", code, body)
+	}
+	var exchangeReservation map[string]any
+	if err := json.Unmarshal(body, &exchangeReservation); err != nil {
+		t.Fatal(err)
+	}
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "cov-exch-order-"+slot,
+		map[string]any{"reservation_id": exchangeReservation["reservation_id"], "name": "Exchange Buyer",
+			"email": "exchange@example.test", "payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("exchange source checkout: %d %s", code, body)
+	}
+	var exchangeSource struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &exchangeSource); err != nil {
+		t.Fatal(err)
+	}
+	// Same ticket type: an EQUAL exchange, which must settle no money at all and still
+	// journal both gross legs.
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": tt,
+			"actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
+		t.Fatalf("exchange order: %d %s", code, body)
+	}
+	var exchanged struct {
+		DeltaAmount      int64  `json:"delta_amount"`
+		Status           string `json:"status"`
+		TicketsExchanged bool   `json:"tickets_exchanged"`
+		Replay           bool   `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &exchanged); err != nil {
+		t.Fatal(err)
+	}
+	if exchanged.DeltaAmount != 0 {
+		t.Fatalf("an equal exchange settled %d, want 0", exchanged.DeltaAmount)
+	}
+	// switch_pending is the point: settled, and the buyer still holds valid OLD tickets
+	// until TKT-166 switches them.
+	if exchanged.Status != "switch_pending" || exchanged.TicketsExchanged || exchanged.Replay {
+		t.Fatalf("exchange state = %+v, want switch_pending on a first call", exchanged)
+	}
 }

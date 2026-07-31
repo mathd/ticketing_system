@@ -166,3 +166,20 @@ func (p *Postgres) ReturnRefundedCapacity(ctx context.Context, org, claimID, ref
 func refundReturnFingerprint(org, claimID uuid.UUID, quantity int32) string {
 	return opFingerprint("refund-return", org, claimID, quantity)
 }
+
+// ClaimIsSeated reports whether a claim holds seats. ANY seat row counts, released or
+// not — the same rule the return path uses, and for the same reason: `claims.status` and
+// `claim_seats.released_at` are not schema-coupled, so a seated claim whose rows were
+// already released is representable and is still a seated claim (TKT-161 ai-review).
+func (p *Postgres) ClaimIsSeated(ctx context.Context, org, claimID uuid.UUID) (bool, error) {
+	var one int
+	if err := p.db.QueryRowContext(ctx, `SELECT 1 FROM claims WHERE id=$1 AND organizer_id=$2`, claimID, org).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, err
+	}
+	var seats int
+	err := p.db.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1`, claimID).Scan(&seats)
+	return seats > 0, err
+}

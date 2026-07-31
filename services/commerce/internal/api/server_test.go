@@ -495,3 +495,50 @@ func TestRefundOrderRequiresInternalToken(t *testing.T) {
 		})
 	}
 }
+
+// TKT-158: same discipline as refundProblem — the handler stays thin, so what is left is
+// this mapping, and every status it can produce must be one the contract declares (an
+// undeclared status becomes a 500 under the fail-closed validator, ADR-028).
+func TestExchangeProblemMapsEveryStoreError(t *testing.T) {
+	declared := map[int]bool{400: true, 404: true, 409: true, 500: true, 502: true, 503: true}
+	for name, tc := range map[string]struct {
+		err  error
+		code int
+	}{
+		"not exchangeable":  {commercestore.ErrOrderNotExchangeable, http.StatusConflict},
+		"key reused":        {commercestore.ErrExchangeConflict, http.StatusConflict},
+		"currency mismatch": {commercestore.ErrExchangeCurrencyMismatch, http.StatusConflict},
+		"unknown order":     {sql.ErrNoRows, http.StatusNotFound},
+		"anything else":     {errors.New("connection reset"), http.StatusInternalServerError},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, message := exchangeProblem(tc.err)
+			if code != tc.code {
+				t.Fatalf("code = %d, want %d", code, tc.code)
+			}
+			if !declared[code] {
+				t.Fatalf("status %d is not declared by exchangeOrder", code)
+			}
+			if strings.Contains(message, "connection reset") {
+				t.Fatalf("message leaks the underlying error: %q", message)
+			}
+		})
+	}
+}
+
+// The signed delta is the whole money story: one movement, or none. Pure arithmetic on
+// persisted minor units, so it is worth pinning without a database.
+func TestExchangeDeltaDirections(t *testing.T) {
+	for name, tc := range map[string]struct{ source, target, want int64 }{
+		"upgrade":   {5001, 6000, 999},
+		"downgrade": {5001, 3000, -2001},
+		"equal":     {5001, 5001, 0},
+		"to free":   {5001, 0, -5001},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := commercestore.ExchangeDelta(tc.source, tc.target); got != tc.want {
+				t.Fatalf("delta = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
