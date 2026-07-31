@@ -174,6 +174,12 @@ type LosingPriceRule struct {
 type RuleSelection struct {
 	ResolverVersion int32
 	EvaluatedAt     time.Time
+	// Identity of what was priced. Carried here so ONE read answers a caller's
+	// whole question — commerce needs the organizer to authorize and the slot to
+	// place the hold, and a second catalog read to fetch them would have to be
+	// reconciled against this one on every sale (TKT-153).
+	OrganizerID   uuid.UUID
+	PerformanceID uuid.UUID
 	BasePrice       Money
 	ResolvedPrice   Money
 	Winner          *PriceRule
@@ -191,6 +197,7 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 	out := RuleSelection{
 		ResolverVersion: PricingResolverVersion,
 		EvaluatedAt:     at,
+		PerformanceID:   in.Scopes.SlotID,
 		BasePrice:       in.BasePrice,
 		ResolvedPrice:   in.BasePrice,
 	}

@@ -164,3 +164,73 @@ func TestMigration0005VocabularyChecks(t *testing.T) {
 		t.Fatal("terminal_outcome must still reject values that do not prove absence of a side effect")
 	}
 }
+
+// TKT-153: the reservation carries the provenance of the price it was created
+// with, as a snapshot rather than a reference — so closing or superseding the
+// rule later cannot rewrite what a buyer was charged.
+func TestPriceResolutionSnapshotColumns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	res := uuid.New()
+	seed := func(snapshot any) error {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+			                         quantity,unit_amount,total_amount,currency,status,
+			                         price_resolution_snapshot)
+			VALUES($1,$2,$3,$4,$5,$6,1,900,900,'EUR','held',$7)
+			ON CONFLICT(id) DO UPDATE SET price_resolution_snapshot = EXCLUDED.price_resolution_snapshot`,
+			res, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), snapshot)
+		return err
+	}
+
+	// A legacy row — priced before this migration — stays NULL. Backfilling
+	// 'no_eligible_rule' would fabricate a resolution that never happened.
+	if err := seed(nil); err != nil {
+		t.Fatalf("a NULL snapshot must be accepted (legacy and staff-path rows): %v", err)
+	}
+
+	winner := `{"resolver_version":2,"winner":{"rule_id":"` + uuid.New().String() +
+		`","scope_level":"event"},"candidates":[]}`
+	if err := seed([]byte(winner)); err != nil {
+		t.Fatalf("a winner snapshot must be accepted: %v", err)
+	}
+	var (
+		version int32
+		ruleID  uuid.UUID
+		scope   string
+	)
+	if err := db.QueryRowContext(ctx,
+		`SELECT price_resolver_version, price_rule_id, price_rule_scope_level FROM reservations WHERE id=$1`,
+		res).Scan(&version, &ruleID, &scope); err != nil {
+		t.Fatalf("the generated trace projections must be readable without a JSON path: %v", err)
+	}
+	if version != 2 || scope != "event" || ruleID == uuid.Nil {
+		t.Errorf("projections = %d/%v/%q, want them derived from the snapshot", version, ruleID, scope)
+	}
+
+	fallback := `{"resolver_version":2,"winner":null,"candidates":[],"fallback_reason":"no_eligible_rule"}`
+	if err := seed([]byte(fallback)); err != nil {
+		t.Fatalf("a fallback snapshot must be accepted: %v", err)
+	}
+
+	// The XOR the application enforces before persisting, enforced again here:
+	// a document claiming both a winner and a fallback is incoherent, and a
+	// snapshot is the one record that must stay interpretable years later.
+	both := `{"resolver_version":2,"winner":{"rule_id":"` + uuid.New().String() +
+		`","scope_level":"event"},"candidates":[],"fallback_reason":"no_eligible_rule"}`
+	if err := seed([]byte(both)); err == nil {
+		t.Error("a snapshot with BOTH a winner and a fallback_reason must be rejected")
+	}
+	neither := `{"resolver_version":2,"winner":null,"candidates":[]}`
+	if err := seed([]byte(neither)); err == nil {
+		t.Error("a snapshot with NEITHER a winner nor a fallback_reason must be rejected")
+	}
+	if err := seed([]byte(`[]`)); err == nil {
+		t.Error("a non-object snapshot must be rejected")
+	}
+}

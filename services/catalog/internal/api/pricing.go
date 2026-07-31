@@ -52,6 +52,8 @@ func priceResolutionToAPI(sel store.RuleSelection) PriceResolution {
 	out := PriceResolution{
 		ResolverVersion: sel.ResolverVersion,
 		EvaluatedAt:     sel.EvaluatedAt,
+		OrganizerId:     sel.OrganizerID,
+		PerformanceId:   sel.PerformanceID,
 		BasePrice:       Money{Amount: sel.BasePrice.Amount, Currency: sel.BasePrice.Currency},
 		ResolvedPrice:   Money{Amount: sel.ResolvedPrice.Amount, Currency: sel.ResolvedPrice.Currency},
 		// Never nil: the contract requires the array, and "no losers" must

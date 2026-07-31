@@ -732,6 +732,16 @@ export interface components {
          */
         PriceResolution: {
             /**
+             * Format: uuid
+             * @description Tenant that owns the ticket type. Present so ONE call answers a caller's whole question: commerce needs it to authorize the sale, and a second catalog read to fetch it would have to be reconciled against this response on every reserve (TKT-153).
+             */
+            organizer_id: string;
+            /**
+             * Format: uuid
+             * @description The dated slot the ticket type belongs to — the inventory pool a hold is placed against. Present for the same reason as organizer_id.
+             */
+            performance_id: string;
+            /**
              * Format: int32
              * @description Bumped when the comparator's semantics change. A commitment, not a decoration: TKT-153 persists snapshots that must stay interpretable.
              */
