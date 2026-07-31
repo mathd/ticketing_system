@@ -166,5 +166,11 @@ func (p *Postgres) ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid
 		return RuleSelection{}, err
 	}
 
-	return SelectPricingRule(at, PricingCandidates{BasePrice: base, Scopes: scopes, Rules: rules})
+	sel, err := SelectPricingRule(at, PricingCandidates{BasePrice: base, Scopes: scopes, Rules: rules})
+	if err != nil {
+		return RuleSelection{}, err
+	}
+	// The pure seam has no idea who owns this; the store does.
+	sel.OrganizerID = organizerID
+	return sel, nil
 }

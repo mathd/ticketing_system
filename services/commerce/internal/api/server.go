@@ -139,19 +139,69 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "invalid reservation"})
 		return
 	}
-	code, body, err := s.call(r.Context(), http.MethodGet, s.catalogURL+"/internal/ticket-types/"+in.TicketTypeID.String(), "", nil, true)
-	if err != nil || code != 200 {
-		write(w, 502, map[string]string{"error": "catalog unavailable"})
+	// The quote is pinned to the hold, and the pin has to be structural rather
+	// than hopeful. The reservation id is derived from the idempotency key, so a
+	// replayed reserve lands on the same row -- but re-resolving first would send
+	// inventory a DIFFERENT unit_amount after a rule change, and inventory
+	// fingerprints its idempotency on that amount. The replay would be rejected
+	// with a 409 before commerce ever reached its ON CONFLICT DO NOTHING.
+	//
+	// So: look for the reservation BEFORE pricing anything. If it exists, answer
+	// from what was persisted and never call catalog. That is what makes "the
+	// price you were quoted is the price you are charged" true across a retry.
+	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("reservation:"+in.OrganizerID.String()+":"+key))
+	if s.db != nil {
+		var (
+			pinnedTotal    int64
+			pinnedCurrency string
+			pinnedHold     uuid.UUID
+			pinnedBuyer    uuid.UUID
+			pinnedQty      int32
+			pinnedTicket   uuid.UUID
+		)
+		err := s.db.QueryRowContext(r.Context(),
+			`SELECT hold_id,buyer_id,quantity,ticket_type_id,total_amount,currency FROM reservations WHERE id=$1 AND organizer_id=$2`,
+			id, in.OrganizerID).Scan(&pinnedHold, &pinnedBuyer, &pinnedQty, &pinnedTicket, &pinnedTotal, &pinnedCurrency)
+		switch {
+		case err == nil:
+			// Same key, different request: the caller reused an idempotency key
+			// for something else. Refuse rather than answer with the old quote.
+			if pinnedQty != in.Quantity || pinnedTicket != in.TicketTypeID {
+				write(w, 409, map[string]string{"error": "idempotency key reused with different terms"})
+				return
+			}
+			write(w, 200, map[string]any{"reservation_id": id, "hold_id": pinnedHold, "buyer_id": pinnedBuyer,
+				"amount": pinnedTotal, "currency": pinnedCurrency})
+			return
+		case !errors.Is(err, sql.ErrNoRows):
+			write(w, 503, map[string]string{"error": "temporarily unavailable"})
+			return
+		}
+	}
+
+	// The price comes from catalog's RULE RESOLUTION, not from the ticket type's
+	// raw column (TKT-153 / ADR-036 §6). One read: it carries the organizer, the
+	// slot, the money and the provenance together.
+	//
+	// Every failure here aborts BEFORE inventory. "No rule matched" is not a
+	// failure — it is a successful resolution answering with the base price, and
+	// that distinction is the whole point of the fail-closed rule (ADR-028): a
+	// silent fall back to the base price would sell at the wrong price and look
+	// like nothing happened.
+	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TicketTypeID, in.OrganizerID, in.Quantity)
+	if err != nil {
+		if errors.Is(err, errResolveUnavailable) {
+			write(w, 502, map[string]string{"error": "catalog unavailable"})
+			return
+		}
+		write(w, 500, map[string]string{"error": "price resolution unusable"})
 		return
 	}
-	var o offer
-	if json.Unmarshal(body, &o) != nil || o.OrganizerID != in.OrganizerID || o.Price.Currency != "EUR" || o.Price.Amount < 0 || o.Price.Amount > math.MaxInt64/int64(in.Quantity) {
-		write(w, 409, map[string]string{"error": "offer not sellable in EUR"})
-		return
-	}
-	total := o.Price.Amount * int64(in.Quantity)
+	o := offer{OrganizerID: resolution.OrganizerID, PerformanceID: resolution.PerformanceID,
+		Price: price{Amount: resolution.ResolvedPrice.Amount, Currency: resolution.ResolvedPrice.Currency}}
+	total := resolution.total(in.Quantity)
 	holdBody := map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity, "unit_amount": o.Price.Amount, "currency": o.Price.Currency}
-	code, body, err = s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds", key, holdBody, false)
+	code, body, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds", key, holdBody, false)
 	if err != nil || (code != 200 && code != 201) {
 		write(w, 409, map[string]string{"error": "inventory unavailable"})
 		return
@@ -165,9 +215,14 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "invalid inventory response"})
 		return
 	}
-	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("reservation:"+in.OrganizerID.String()+":"+key))
 	buyer := uuid.NewSHA1(uuid.NameSpaceOID, []byte("buyer:"+id.String()))
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held') ON CONFLICT(id) DO NOTHING`, id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, in.Quantity, o.Price.Amount, total, o.Price.Currency)
+	// The provenance snapshot is stored VERBATIM, not as a rule reference: a
+	// rule can later be closed or superseded, and a foreign key would let that
+	// rewrite what a buyer was charged. Copying the document keeps the record
+	// true. Honest-writer consistency, not tamper-evidence (ADR-021) — anyone
+	// with commerce DB access can still replace it.
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status,price_resolution_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held',$11) ON CONFLICT(id) DO NOTHING`,
+		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, in.Quantity, o.Price.Amount, total, o.Price.Currency, []byte(resolution.raw))
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist reservation"})
 		return

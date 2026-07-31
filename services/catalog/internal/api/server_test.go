@@ -675,11 +675,16 @@ func (f *fakeStore) ResolveTicketTypePrice(_ context.Context, ticketTypeID uuid.
 	if scopes.SeriesID != nil {
 		rules = append(rules, f.priceRules[*scopes.SeriesID]...)
 	}
-	return store.SelectPricingRule(at, store.PricingCandidates{
+	sel, err := store.SelectPricingRule(at, store.PricingCandidates{
 		BasePrice: store.Money{Amount: tt.PriceAmount, Currency: tt.Currency},
 		Scopes:    scopes,
 		Rules:     rules,
 	})
+	if err != nil {
+		return store.RuleSelection{}, err
+	}
+	sel.OrganizerID = tt.OrganizerID
+	return sel, nil
 }
 
 func (f *fakeStore) GetPublishedPerformance(_ context.Context, id uuid.UUID) (store.Performance, error) {

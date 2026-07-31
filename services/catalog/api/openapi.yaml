@@ -1179,8 +1179,23 @@ components:
       type: object
       # winner is required and nullable for the same reason: a fallback response
       # must say "winner: null", not omit the key.
-      required: [resolver_version, evaluated_at, base_price, resolved_price, winner, candidates]
+      required: [resolver_version, evaluated_at, organizer_id, performance_id,
+                 base_price, resolved_price, winner, candidates]
       properties:
+        organizer_id:
+          description: >
+            Tenant that owns the ticket type. Present so ONE call answers a
+            caller's whole question: commerce needs it to authorize the sale, and
+            a second catalog read to fetch it would have to be reconciled against
+            this response on every reserve (TKT-153).
+          type: string
+          format: uuid
+        performance_id:
+          description: >
+            The dated slot the ticket type belongs to — the inventory pool a hold
+            is placed against. Present for the same reason as organizer_id.
+          type: string
+          format: uuid
         resolver_version:
           description: >
             Bumped when the comparator's semantics change. A commitment, not a

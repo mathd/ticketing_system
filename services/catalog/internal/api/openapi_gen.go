@@ -404,6 +404,12 @@ type PriceResolution struct {
 	// FallbackReason Present only when no rule applied and base_price is the answer.
 	FallbackReason *PriceResolutionFallbackReason `json:"fallback_reason,omitempty"`
 
+	// OrganizerId Tenant that owns the ticket type. Present so ONE call answers a caller's whole question: commerce needs it to authorize the sale, and a second catalog read to fetch it would have to be reconciled against this response on every reserve (TKT-153).
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// PerformanceId The dated slot the ticket type belongs to — the inventory pool a hold is placed against. Present for the same reason as organizer_id.
+	PerformanceId openapi_types.UUID `json:"performance_id"`
+
 	// ResolvedPrice Integer minor units + ISO-4217 code (ADR-001); no floats, ever
 	ResolvedPrice Money `json:"resolved_price"`
 

@@ -552,3 +552,102 @@ func corruptSignature(t *testing.T, token string) string {
 	parts[2] = base64.RawURLEncoding.EncodeToString(signature)
 	return strings.Join(parts, ".")
 }
+
+// TKT-153: the sale is priced by catalog's rule hierarchy, and the quote a buyer
+// was given is the quote they are charged — proven through the running stack,
+// not at a fake seam.
+//
+// Rules are seeded directly into catalog's database because this epic ships no
+// HTTP rule-authoring surface (a deliberate scoping decision, recorded on
+// TKT-151). Everything AFTER the seed goes through the gateway.
+func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
+	_, ticketType := setupCheckoutOffer(t, "tkt153")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cat, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/catalog", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cat.Close(ctx) }()
+
+	// The event this ticket type hangs off — an event-scoped rule beats nothing
+	// else here, and proves resolution walked the hierarchy rather than reading
+	// the ticket type's own column.
+	var eventID string
+	if err = cat.QueryRow(ctx, `SELECT p.event_id FROM ticket_types t
+		JOIN performances p ON p.id = t.performance_id WHERE t.id = $1`, ticketType).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	seedRule := func(amount int64, priority int32) {
+		t.Helper()
+		if _, err := cat.Exec(ctx, `INSERT INTO price_rules
+			(organizer_id, scope_level, scope_id, action_kind, amount, currency, priority)
+			VALUES($1,'event',$2,'absolute',$3,'EUR',$4)`, organizerID, eventID, amount, priority); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Base price is 2500; the rule says 1800.
+	seedRule(1800, 0)
+
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt153-pin",
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 2})
+	if code != 201 {
+		t.Fatalf("reserve %d %s", code, body)
+	}
+	var first map[string]any
+	if err = json.Unmarshal(body, &first); err != nil {
+		t.Fatal(err)
+	}
+	if first["amount"] != float64(3600) {
+		t.Fatalf("reserved total = %v, want 2 x the RULE price 1800 — not the base 2500", first["amount"])
+	}
+
+	// The reservation records WHY it was priced that way, as a snapshot rather
+	// than a pointer: closing the rule below must not rewrite it.
+	com, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/commerce", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = com.Close(ctx) }()
+	var scopeLevel string
+	var snapshotAmount int64
+	if err = com.QueryRow(ctx, `SELECT price_rule_scope_level,
+		(price_resolution_snapshot #>> '{resolved_price,amount}')::bigint
+		FROM reservations WHERE id = $1`, first["reservation_id"]).Scan(&scopeLevel, &snapshotAmount); err != nil {
+		t.Fatalf("the reservation must carry its price provenance: %v", err)
+	}
+	if scopeLevel != "event" || snapshotAmount != 1800 {
+		t.Fatalf("provenance = %q/%d, want the event rule at 1800", scopeLevel, snapshotAmount)
+	}
+
+	// Now change the price under the buyer: a higher-priority rule wins from here on.
+	seedRule(9900, 100)
+	// Catalog really does resolve the new price for a fresh caller.
+	code, body, _ = getWithHeaders(t, fmt.Sprintf("%s/api/catalog/ticket-types/%s/price-resolution", gatewayURL, ticketType))
+	if code != 200 {
+		t.Fatalf("resolution %d %s", code, body)
+	}
+	if !strings.Contains(string(body), `"amount":9900`) {
+		t.Fatalf("catalog should now resolve 9900 for a NEW quote: %s", body)
+	}
+
+	// The replay must answer with the ORIGINAL quote. Re-resolving would also
+	// hand inventory a different unit_amount, and inventory fingerprints its
+	// idempotency on that amount — so this would 409 rather than merely
+	// repricing.
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt153-pin",
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 2})
+	if code != 200 && code != 201 {
+		t.Fatalf("replay %d %s", code, body)
+	}
+	var replay map[string]any
+	if err = json.Unmarshal(body, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay["amount"] != float64(3600) {
+		t.Fatalf("replayed total = %v, want the PINNED 3600 — a rule change must not move a quote already given",
+			replay["amount"])
+	}
+}
