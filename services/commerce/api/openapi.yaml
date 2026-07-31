@@ -201,7 +201,7 @@ components:
     Refund:
       type: object
       additionalProperties: false
-      required: [refund_id, order_id, quantity, amount, currency, refund_status, refunded_quantity, refunded_amount, replay, tickets_voided]
+      required: [refund_id, order_id, quantity, amount, currency, refund_status, refunded_quantity, refunded_amount, replay, tickets_voided, capacity_returned]
       properties:
         refund_id: {type: string, format: uuid}
         order_id: {type: string, format: uuid}
@@ -216,6 +216,11 @@ components:
         # the reversal is outstanding. Required, not optional: a caller that cannot
         # tell "voided" from "we did not get to it" will assume the first (TKT-157).
         tickets_voided: {type: boolean}
+        # False means the seat is still counted as sold. Required for the same reason as
+        # tickets_voided: a caller that cannot tell "returned" from "we did not get to it"
+        # will assume the first. A partial refund of a SEATED order stays false forever —
+        # no subset of seats can be identified (TKT-164).
+        capacity_returned: {type: boolean}
     DeliveryEmail:
       type: object
       additionalProperties: false

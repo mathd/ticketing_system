@@ -199,6 +199,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		RefundStatus     string `json:"refund_status"`
 		RefundedQuantity int    `json:"refunded_quantity"`
 		TicketsVoided    bool   `json:"tickets_voided"`
+		CapacityReturned bool   `json:"capacity_returned"`
 		Replay           bool   `json:"replay"`
 	}
 	if err := json.Unmarshal(body, &refunded); err != nil {
@@ -209,6 +210,12 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	}
 	if !refunded.TicketsVoided {
 		t.Fatalf("refund did not void its ticket: %+v", refunded)
+	}
+	// TKT-161: and the seat goes back on sale. Ordered after voiding by construction —
+	// commerce refuses to attempt the return until tickets_voided_at is set, because
+	// freeing capacity while the ticket still admits is the one order that can oversell.
+	if !refunded.CapacityReturned {
+		t.Fatalf("refund did not return its capacity: %+v", refunded)
 	}
 
 	// access: replay the voiding directly, which is also what registers refundTickets
@@ -227,5 +234,23 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	}
 	if !voided.Replay || len(voided.TicketIDs) != 1 {
 		t.Fatalf("replay must return the same single ticket without re-voiding: %+v", voided)
+	}
+
+	// inventory: replay the capacity return directly. Same reason as the access replay —
+	// commerce drives this service-to-service, where the smoke client cannot observe it,
+	// so the ADR-030 coverage gate needs a direct call.
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/holds/%v/refund-capacity", inventoryURL, reservation["hold_id"]), "",
+		map[string]any{"organizer_id": organizerID, "refund_id": refunded.RefundID, "quantity": 1}); code != http.StatusOK {
+		t.Fatalf("replay capacity return: %d %s", code, body)
+	}
+	var returned struct {
+		UnreturnedQuantity int  `json:"unreturned_quantity"`
+		Replay             bool `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &returned); err != nil {
+		t.Fatal(err)
+	}
+	if !returned.Replay || returned.UnreturnedQuantity != 1 {
+		t.Fatalf("replay must not decrement again: %+v", returned)
 	}
 }

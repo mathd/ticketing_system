@@ -375,7 +375,8 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 	verdicts := map[uuid.UUID]SeatClaimState{}
 	for _, id := range ids {
 		var status string
-		err = tx.QueryRowContext(ctx, `SELECT status FROM claims WHERE id=$1 AND pool_id=$2`, id, pool).Scan(&status)
+		var quantity, returned int32
+		err = tx.QueryRowContext(ctx, `SELECT status,quantity,returned_quantity FROM claims WHERE id=$1 AND pool_id=$2`, id, pool).Scan(&status, &quantity, &returned)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // stays unknown
 		}
@@ -398,6 +399,22 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 		// "held"; if one ever did, calling it live keeps the pin, which is the safe direction.
 		switch status {
 		case "held", "finalizing", "confirmed":
+			// A FULLY returned confirmed claim is dead, even though its status stays
+			// confirmed (TKT-161). A refund releases such a claim's seats inside the
+			// inventory transaction and then unpins in catalog after the commit; if that
+			// unpin fails, ADR-031's fail-safe leaves the pin, which blocks seat-map
+			// edits. Without this branch `reconcile-pins` could never reclaim it, because
+			// the claim never reaches a terminal status — the leak would be permanent.
+			//
+			// Positively established, like the terminal statuses beside it: fully
+			// returned means the claim consumes nothing and its seats were released in
+			// the same transaction that recorded the return. A PARTIALLY returned claim
+			// stays live, because it still holds every one of its seats — a partial
+			// seated return is refused precisely because no subset can be identified.
+			if status == "confirmed" && quantity > 0 && returned == quantity {
+				verdicts[id] = SeatClaimDead
+				continue
+			}
 			verdicts[id] = SeatClaimLive
 		case "expired", "released":
 			verdicts[id] = SeatClaimDead

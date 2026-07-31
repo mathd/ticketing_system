@@ -48,33 +48,6 @@ func (e CapacityAdjustmentStatus) Valid() bool {
 	}
 }
 
-// Defines values for ErrorCode.
-const (
-	PinUnavailable  ErrorCode = "pin_unavailable"
-	SeatTaken       ErrorCode = "seat_taken"
-	SeatUnavailable ErrorCode = "seat_unavailable"
-	SlotArchived    ErrorCode = "slot_archived"
-	SlotClosed      ErrorCode = "slot_closed"
-)
-
-// Valid indicates whether the value is a known member of the ErrorCode enum.
-func (e ErrorCode) Valid() bool {
-	switch e {
-	case PinUnavailable:
-		return true
-	case SeatTaken:
-		return true
-	case SeatUnavailable:
-		return true
-	case SlotArchived:
-		return true
-	case SlotClosed:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for OperationalHoldCreatePurpose.
 const (
 	Artist OperationalHoldCreatePurpose = "artist"
@@ -93,6 +66,33 @@ func (e OperationalHoldCreatePurpose) Valid() bool {
 	case Kill:
 		return true
 	case Other:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RefundCapacityReturnCode.
+const (
+	PinUnavailable  RefundCapacityReturnCode = "pin_unavailable"
+	SeatTaken       RefundCapacityReturnCode = "seat_taken"
+	SeatUnavailable RefundCapacityReturnCode = "seat_unavailable"
+	SlotArchived    RefundCapacityReturnCode = "slot_archived"
+	SlotClosed      RefundCapacityReturnCode = "slot_closed"
+)
+
+// Valid indicates whether the value is a known member of the RefundCapacityReturnCode enum.
+func (e RefundCapacityReturnCode) Valid() bool {
+	switch e {
+	case PinUnavailable:
+		return true
+	case SeatTaken:
+		return true
+	case SeatUnavailable:
+		return true
+	case SlotArchived:
+		return true
+	case SlotClosed:
 		return true
 	default:
 		return false
@@ -201,13 +201,8 @@ type ConvertResult struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
-	Code  *ErrorCode `json:"code,omitempty"`
-	Error string     `json:"error"`
+	Error string `json:"error"`
 }
-
-// ErrorCode Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
-type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.
 type GroupReservation struct {
@@ -326,6 +321,26 @@ type OperationalRelease struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 	Quantity    int                `json:"quantity"`
 	Reason      string             `json:"reason"`
+}
+
+// RefundCapacityReturn defines model for RefundCapacityReturn.
+type RefundCapacityReturn struct {
+	// Code Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
+	Code               *RefundCapacityReturnCode `json:"code,omitempty"`
+	HoldId             openapi_types.UUID        `json:"hold_id"`
+	Quantity           int                       `json:"quantity"`
+	Replay             bool                      `json:"replay"`
+	UnreturnedQuantity int                       `json:"unreturned_quantity"`
+}
+
+// RefundCapacityReturnCode Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
+type RefundCapacityReturnCode string
+
+// RefundCapacityReturnCreate defines model for RefundCapacityReturnCreate.
+type RefundCapacityReturnCreate struct {
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Quantity    int                `json:"quantity"`
+	RefundId    openapi_types.UUID `json:"refund_id"`
 }
 
 // SeatHold defines model for SeatHold.
@@ -483,6 +498,9 @@ type PlaceGroupReservationJSONRequestBody = GroupReservationCreate
 
 // DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
 type DrawDownGroupReservationJSONRequestBody = OperationalConvert
+
+// ReturnRefundedCapacityJSONRequestBody defines body for ReturnRefundedCapacity for application/json ContentType.
+type ReturnRefundedCapacityJSONRequestBody = RefundCapacityReturnCreate
 
 // PlaceOperationalHoldJSONRequestBody defines body for PlaceOperationalHold for application/json ContentType.
 type PlaceOperationalHoldJSONRequestBody = OperationalHoldCreate

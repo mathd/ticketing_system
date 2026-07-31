@@ -28,6 +28,16 @@ const activeAllocation = `(release_at IS NULL OR release_at > clock_timestamp())
 // fork between pool and channel accounting.
 const consumingClaims = `(status='confirmed' OR ` + liveClaims + `)`
 
+// consumedQuantity is HOW MUCH a counted claim consumes — net of anything a refund gave
+// back (TKT-161). Confirmed capacity is no longer permanent: a refund returns part of it,
+// and a channel that kept counting the original quantity would refuse to resell seats the
+// pool has already put back.
+//
+// It is a single expression on purpose. Six call sites sum a claim's consumption, and one
+// of them (channelRowsSQL) never used consumingClaims at all — it sums a bare
+// `status='confirmed'`. Six hand-written variants is how the fifth one gets missed.
+const consumedQuantity = `(CASE WHEN status='confirmed' THEN quantity-returned_quantity ELSE quantity END)`
+
 // reservedForChannelsSQL computes the capacity still reserved for active allocations —
 // what the public channel may not touch. Consumed quantity is clamped at the cap so an
 // over-consumed channel (cap lowered is rejected, but operational math stays safe) can
@@ -35,7 +45,7 @@ const consumingClaims = `(status='confirmed' OR ` + liveClaims + `)`
 const reservedForChannelsSQL = `SELECT COALESCE(sum(GREATEST(a.cap::bigint - COALESCE(u.used,0), 0)),0)
 	FROM channel_allocations a
 	LEFT JOIN LATERAL (
-		SELECT sum(quantity)::bigint AS used FROM claims
+		SELECT sum(`+consumedQuantity+`)::bigint AS used FROM claims
 		WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND ` + consumingClaims + `
 	) u ON true
 	WHERE a.pool_id=$1 AND ` + activeAllocation
@@ -93,7 +103,7 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 	}
 	for _, a := range allocs {
 		var consumed int64
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, a.Channel).Scan(&consumed); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(`+consumedQuantity+`),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, a.Channel).Scan(&consumed); err != nil {
 			return nil, err
 		}
 		if consumed > int64(a.Cap) {
@@ -124,7 +134,7 @@ func channelAvailabilities(ctx context.Context, q interface {
 			COALESCE(h.held,0), COALESCE(cf.confirmed,0)
 		FROM channel_allocations a
 		LEFT JOIN LATERAL (SELECT sum(quantity) AS held FROM claims WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND `+liveClaims+`) h ON true
-		LEFT JOIN LATERAL (SELECT sum(quantity) AS confirmed FROM claims WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND status='confirmed') cf ON true
+		LEFT JOIN LATERAL (SELECT sum(`+consumedQuantity+`) AS confirmed FROM claims WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND status='confirmed') cf ON true
 		WHERE a.pool_id=$1 ORDER BY a.channel_code`, pool)
 	if err != nil {
 		return nil, err

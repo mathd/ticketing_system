@@ -58,6 +58,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/internal/holds/{id}/confirm", s.internalOnly(s.transition("confirmed")))
 	r.Post("/internal/holds/{id}/finalize", s.internalOnly(s.transition("finalizing")))
 	r.Post("/internal/holds/{id}/release", s.internalOnly(s.transition("released")))
+	r.Post("/internal/holds/{id}/refund-capacity", s.internalOnly(s.refundCapacity))
 	r.Post("/internal/operational-holds", s.internalOnly(s.opPlace))
 	r.Post("/internal/operational-holds/{id}/release", s.internalOnly(s.opRelease))
 	r.Post("/internal/operational-holds/{id}/convert", s.internalOnly(s.opConvert))

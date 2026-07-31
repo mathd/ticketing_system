@@ -265,7 +265,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 			return Claim{}, false, err
 		}
 		var consumed int64
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(`+consumedQuantity+`),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
 			return Claim{}, false, err
 		}
 		if consumed+int64(qty) > int64(chCap) {
@@ -429,7 +429,7 @@ func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID, channe
 			return a, err
 		}
 		var consumed int64
-		if err = p.db.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
+		if err = p.db.QueryRowContext(ctx, `SELECT COALESCE(sum(`+consumedQuantity+`),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
 			return a, err
 		}
 		a.Available = clampAvailable(min(remaining, int64(chCap)-consumed))

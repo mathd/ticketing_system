@@ -1,0 +1,284 @@
+//go:build smoke
+
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+// Refund capacity return (TKT-161, ADR-038). A confirmed claim's whole quantity was added
+// to inventory_pools.confirmed_quantity in one step and there was no vocabulary for
+// giving part of it back. `claims.returned_quantity` is that vocabulary, orthogonal to
+// `status`, and `claim_history` is the idempotency receipt.
+
+// confirmedClaim provisions a pool and drives a buyer hold all the way to confirmed —
+// through the real transitions, so the counters start the way production leaves them.
+func confirmedClaim(t *testing.T, ctx context.Context, st *Postgres, org, slot uuid.UUID, qty int32, channel, key string) Claim {
+	t.Helper()
+	c, _, err := st.CreateHold(ctx, org, slot, uuid.New(), qty, 1000, "EUR", channel, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, c.ID, "finalizing"); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := st.Transition(ctx, org, c.ID, "confirmed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return confirmed
+}
+
+func availability(t *testing.T, ctx context.Context, st *Postgres, org, slot uuid.UUID, channel string) Availability {
+	t.Helper()
+	a, err := st.Availability(ctx, org, slot, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// AC1, the ordinary case the AC's amended wording is about: an open GA pool with no
+// draining cut and no channel masking gains exactly q.
+func TestReturnRefundedCapacityGivesBackExactlyQ(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	c := confirmedClaim(t, ctx, st, org, slot, 3, "", "ret-exact")
+
+	before := availability(t, ctx, st, org, slot, "")
+	out, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 2)
+	if err != nil {
+		t.Fatalf("return: %v", err)
+	}
+	if out.Replay || out.UnreturnedQuantity != 1 {
+		t.Fatalf("return = %+v, want a fresh application leaving 1 unreturned", out)
+	}
+	after := availability(t, ctx, st, org, slot, "")
+	if after.Available != before.Available+2 {
+		t.Fatalf("available %d → %d, want +2", before.Available, after.Available)
+	}
+	if after.Confirmed != before.Confirmed-2 {
+		t.Fatalf("confirmed %d → %d, want -2", before.Confirmed, after.Confirmed)
+	}
+	var returned int32
+	if err := db.QueryRowContext(ctx, `SELECT returned_quantity FROM claims WHERE id=$1`, c.ID).Scan(&returned); err != nil {
+		t.Fatal(err)
+	}
+	if returned != 2 {
+		t.Fatalf("returned_quantity = %d, want 2", returned)
+	}
+}
+
+// AC2: the receipt is the idempotency, and a replay must not move a counter.
+func TestReturnRefundedCapacityReplayIsSideEffectFree(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	c := confirmedClaim(t, ctx, st, org, slot, 3, "", "ret-replay")
+	refundID := uuid.New()
+
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, refundID, 2); err != nil {
+		t.Fatal(err)
+	}
+	mid := availability(t, ctx, st, org, slot, "")
+
+	replay, err := st.ReturnRefundedCapacity(ctx, org, c.ID, refundID, 2)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if !replay.Replay || replay.UnreturnedQuantity != 1 {
+		t.Fatalf("replay = %+v, want Replay with 1 unreturned", replay)
+	}
+	if got := availability(t, ctx, st, org, slot, ""); got.Available != mid.Available || got.Confirmed != mid.Confirmed {
+		t.Fatalf("replay moved the counters: %+v → %+v", mid, got)
+	}
+	var receipts int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM claim_history WHERE claim_id=$1 AND action='refund_return'`, c.ID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 1 {
+		t.Fatalf("refund_return receipts = %d, want 1", receipts)
+	}
+
+	// Same refund identity, different quantity: a replay must be the same request or no
+	// request at all.
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, refundID, 1); !errors.Is(err, ErrRefundReturnConflict) {
+		t.Fatalf("err = %v, want ErrRefundReturnConflict", err)
+	}
+}
+
+// The ceiling. A return can never take back more than the claim still owes.
+func TestReturnRefundedCapacityRefusesMoreThanUnreturned(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	c := confirmedClaim(t, ctx, st, org, slot, 3, "", "ret-ceiling")
+
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 4); !errors.Is(err, ErrRefundReturnExceedsClaim) {
+		t.Fatalf("err = %v, want ErrRefundReturnExceedsClaim", err)
+	}
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 2); !errors.Is(err, ErrRefundReturnExceedsClaim) {
+		t.Fatalf("err = %v, want ErrRefundReturnExceedsClaim once only 1 is left", err)
+	}
+	// Exactly the remainder fits.
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 1); err != nil {
+		t.Fatalf("the exact remainder must fit: %v", err)
+	}
+}
+
+// AC3, deterministically. The pool lock is the serialization, so the test HOLDS the pool
+// row and asserts the call blocks on it — rather than starting goroutines and hoping for
+// an interleaving. Two racing-goroutine tests in this epic passed against deliberately
+// broken code (TKT-156, TKT-157); when the fix is a lock, hold the lock.
+func TestReturnRefundedCapacitySerializesOnThePoolLock(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	c := confirmedClaim(t, ctx, st, org, slot, 3, "", "ret-lock")
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slot).Scan(&one); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 2)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("returned (%v) without taking the pool lock — the contention path is not serialized", err)
+	case <-time.After(750 * time.Millisecond):
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("return after the lock cleared: %v", err)
+	}
+
+	var confirmed, returned int32
+	if err := db.QueryRowContext(ctx, `SELECT p.confirmed_quantity, c.returned_quantity FROM inventory_pools p JOIN claims c ON c.pool_id=p.slot_id WHERE c.id=$1`, c.ID).
+		Scan(&confirmed, &returned); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed != 1 || returned != 2 {
+		t.Fatalf("confirmed=%d returned=%d, want 1 and 2", confirmed, returned)
+	}
+}
+
+// AC4: every aggregate that counts a confirmed claim's consumption must count it NET of
+// what came back. Six call sites share one expression; this proves the channel-visible
+// ones, which are where a stale variant would let a channel over- or under-sell.
+func TestReturnedQuantityIsSubtractedFromChannelConsumption(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "resale", Cap: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	c := confirmedClaim(t, ctx, st, org, slot, 4, "resale", "ret-channel")
+
+	before := availability(t, ctx, st, org, slot, "resale")
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 3); err != nil {
+		t.Fatal(err)
+	}
+	after := availability(t, ctx, st, org, slot, "resale")
+	if after.Available != before.Available+3 {
+		t.Fatalf("channel available %d → %d, want +3: the channel aggregate still counts returned capacity as sold",
+			before.Available, after.Available)
+	}
+
+	// A fresh hold on that channel must fit in the headroom the return created. This is
+	// the admission-side aggregate, which is a different call site from Availability.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.New(), 3, 1000, "EUR", "resale", "ret-channel-refill"); err != nil {
+		t.Fatalf("a hold must fit in the returned headroom: %v", err)
+	}
+}
+
+// AC1's exceptional case, from the plan's worked fixture. A draining capacity cut is in
+// flight: the return lowers demand AND effective capacity together, so availability does
+// NOT rise — and never exceeds the ceiling. This is why the AC's original "exactly +q"
+// wording was amended.
+func TestReturnDuringADrainingCutFollowsTheClampInsteadOfRaisingAvailability(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 8)
+	c := confirmedClaim(t, ctx, st, org, slot, 8, "", "ret-drain")
+
+	if _, _, err := st.AdjustCapacity(ctx, org, slot, 5, "staff:amy", "cut", "cut-1"); err != nil {
+		t.Fatal(err)
+	}
+	assertPool := func(wantCapacity, wantConfirmed int32, wantTarget sql.NullInt32, wantAvailable int32) {
+		t.Helper()
+		var capacity, confirmed int32
+		var target sql.NullInt32
+		if err := db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity FROM inventory_pools WHERE slot_id=$1`, slot).
+			Scan(&capacity, &confirmed, &target); err != nil {
+			t.Fatal(err)
+		}
+		a := availability(t, ctx, st, org, slot, "")
+		if capacity != wantCapacity || confirmed != wantConfirmed || target != wantTarget || a.Available != wantAvailable {
+			t.Fatalf("pool = (capacity %d, confirmed %d, target %v, available %d), want (%d, %d, %v, %d)",
+				capacity, confirmed, target, a.Available, wantCapacity, wantConfirmed, wantTarget, wantAvailable)
+		}
+	}
+	assertPool(8, 8, sql.NullInt32{Int32: 5, Valid: true}, 0)
+
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 2); err != nil {
+		t.Fatal(err)
+	}
+	// Demand 6 still exceeds the target: capacity follows demand down, availability stays 0.
+	assertPool(6, 6, sql.NullInt32{Int32: 5, Valid: true}, 0)
+
+	if _, err := st.ReturnRefundedCapacity(ctx, org, c.ID, uuid.New(), 1); err != nil {
+		t.Fatal(err)
+	}
+	// Demand 5 has reached the target: the cut settles and the target clears.
+	assertPool(5, 5, sql.NullInt32{}, 0)
+}
+
+// Only a confirmed BUYER claim can be returned. Operational holds and group reservations
+// transition through their own staff endpoints, exactly as Transition already refuses them.
+func TestReturnRefundedCapacityRefusesNonBuyerAndUnconfirmedClaims(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+
+	held, _, err := st.CreateHold(ctx, org, slot, uuid.New(), 2, 1000, "EUR", "", "ret-held")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReturnRefundedCapacity(ctx, org, held.ID, uuid.New(), 1); !errors.Is(err, ErrRefundReturnNotConfirmed) {
+		t.Fatalf("err = %v, want ErrRefundReturnNotConfirmed for a held claim", err)
+	}
+
+	op, _, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house", "front-of-house", "staff:amy", "allotment", "ret-op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReturnRefundedCapacity(ctx, org, op.ID, uuid.New(), 1); !errors.Is(err, ErrRefundReturnNotConfirmed) {
+		t.Fatalf("err = %v, want ErrRefundReturnNotConfirmed for an operational hold", err)
+	}
+}
+
+// ADR-002. Another organizer's claim is invisible, not merely refused.
+func TestReturnRefundedCapacityIsOrganizerScoped(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	c := confirmedClaim(t, ctx, st, org, slot, 2, "", "ret-scope")
+
+	if _, err := st.ReturnRefundedCapacity(ctx, uuid.New(), c.ID, uuid.New(), 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
