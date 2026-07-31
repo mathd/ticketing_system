@@ -48,7 +48,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/scans", s.scan)
 	r.Post("/scans/reconciliations", s.reconcile)
 	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
-	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, _ int) {
+	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
 		// The scan-shaped 422 is the gate's established representation and stays that
 		// way — but it is not this whole service's, and applying it to the internal
 		// refund route emitted a status that route does not declare (ai-review F4).
@@ -57,6 +57,12 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 		// answers before the response validator can see it. Internal routes get the
 		// Error shape they declare.
 		if strings.HasPrefix(req.URL.Path, "/internal/") {
+			// 404 here means no operation matched at all. Preserve it rather than
+			// inventing a 400 for a route the contract does not describe.
+			if status == http.StatusNotFound {
+				write(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
 			write(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 			return
 		}

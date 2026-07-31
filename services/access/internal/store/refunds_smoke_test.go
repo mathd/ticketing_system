@@ -309,14 +309,22 @@ func TestConcurrentCrossOrderRefundIDReuseVoidsOneBatch(t *testing.T) {
 			errs <- err
 		}(order)
 	}
-	var ok int
+	// Counting successes is not enough: the loser must fail with the CONFLICT, not with a
+	// raw unique violation the API would map to 500 (ai-review pass 2 caught exactly that,
+	// because the first version of this test only counted).
+	var ok, conflicts int
 	for i := 0; i < 2; i++ {
-		if err := <-errs; err == nil {
+		switch err := <-errs; {
+		case err == nil:
 			ok++
+		case errors.Is(err, ErrRefundBatchConflict):
+			conflicts++
+		default:
+			t.Fatalf("loser failed with %v, want ErrRefundBatchConflict", err)
 		}
 	}
-	if ok != 1 {
-		t.Fatalf("%d of 2 cross-order reuses succeeded, want exactly 1", ok)
+	if ok != 1 || conflicts != 1 {
+		t.Fatalf("%d succeeded and %d conflicted, want exactly 1 of each", ok, conflicts)
 	}
 	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='refunded'`); n != 1 {
 		t.Fatalf("refunded events = %d, want 1", n)

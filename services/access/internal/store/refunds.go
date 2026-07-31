@@ -148,6 +148,14 @@ func (p *Postgres) RefundOrderTickets(ctx context.Context, org, order, refundID 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO ticket_refund_batches(organizer_id,refund_id,order_id,quantity) VALUES($1,$2,$3,$4)`,
 		org, refundID, order, quantity); err != nil {
+		// The two cross-order requests lock DISJOINT ticket rows, so nothing above
+		// serializes them — they both see no binding and race here. The loser blocks on
+		// the primary key and surfaces 23505 once the winner commits. That is this
+		// function's conflict, and returning it raw made the API answer 500 for a
+		// condition it declares a 409 for (ai-review pass 2).
+		if isUniqueViolation(err) {
+			return TicketRefundBatch{}, ErrRefundBatchConflict
+		}
 		return TicketRefundBatch{}, err
 	}
 

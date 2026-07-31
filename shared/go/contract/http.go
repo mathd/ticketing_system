@@ -140,15 +140,28 @@ func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validate
 	if err != nil {
 		return nil, err
 	}
-	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, &oapimiddleware.Options{
-		ErrorHandlerWithOpts: func(_ context.Context, err error, w http.ResponseWriter, r *http.Request, opts oapimiddleware.ErrorHandlerOpts) {
-			if errorHandler != nil {
-				errorHandler(w, r, err.Error(), opts.StatusCode)
-				return
-			}
-			writeValidationError(w, opts.StatusCode, map[string]string{"error": err.Error()})
-		},
-	})
+	// Exactly one of the two hooks is set, and which one is a compatibility decision,
+	// not a style one (TKT-157 ai-review pass 2). `ErrorHandlerWithOpts` is the only hook
+	// that receives the request — but in nethttp-middleware v1.1.2 it also hard-codes
+	// **404** for every route-lookup failure, while the legacy `ErrorHandler` path
+	// distinguishes `routers.ErrMethodNotAllowed` as **405**. Routing every service
+	// through WithOpts to give ONE of them a request-aware handler would have silently
+	// changed wrong-method responses across the whole platform.
+	//
+	// So services that pass nil keep the legacy hook and behave exactly as before; only a
+	// service that asks for a request-aware handler gets the newer one, and owns the
+	// difference.
+	options := &oapimiddleware.Options{}
+	if errorHandler != nil {
+		options.ErrorHandlerWithOpts = func(_ context.Context, err error, w http.ResponseWriter, r *http.Request, opts oapimiddleware.ErrorHandlerOpts) {
+			errorHandler(w, r, err.Error(), opts.StatusCode)
+		}
+	} else {
+		options.ErrorHandler = func(w http.ResponseWriter, message string, status int) {
+			writeValidationError(w, status, map[string]string{"error": message})
+		}
+	}
+	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, options)
 	inner := next
 	if validateResponses {
 		inner = responseValidated(router, next, log, openapi3filter.ValidateResponse)

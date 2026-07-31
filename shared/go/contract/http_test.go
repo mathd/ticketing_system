@@ -376,3 +376,36 @@ func TestCustomRequestValidationErrorSeesTheRequest(t *testing.T) {
 		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+// Services that pass no custom handler must be unaffected by the request-aware hook
+// existing at all (TKT-157 ai-review pass 2). nethttp-middleware v1.1.2 routes the two
+// hooks through different code: the newer one hard-codes 404 for every route-lookup
+// failure, while the legacy one distinguishes ErrMethodNotAllowed as 405. Switching
+// everyone to the newer hook to serve one service would have changed wrong-method
+// responses platform-wide, silently — nothing else in the gate looks at them.
+func TestNilErrorHandlerKeepsLegacyValidationStatuses(t *testing.T) {
+	handler, err := RequestValidator(testSpec, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid request reached handler")
+	}), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, method, path string
+		want               int
+	}{
+		{"wrong method on a known path", http.MethodDelete, "/things", http.StatusMethodNotAllowed},
+		{"unknown path", http.MethodGet, "/nothing-here", http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.path, nil))
+			if recorder.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, tc.want, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), `"error"`) {
+				t.Fatalf("body lost its Error shape: %s", recorder.Body.String())
+			}
+		})
+	}
+}
