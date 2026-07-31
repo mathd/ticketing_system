@@ -236,12 +236,15 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   owner-only judgement call; `git log -S` gave the chronology and commit context that made it
   answerable: the ignore rule was added **thirteen days before the file existed**, inside a commit
   titled "untrack build artifacts" that also deleted a 69 MB binary. That does not read anyone's
-  intent — a directory rule can be prospective — but it does establish the rule was no reaction to
-  this document, and that no recorded reason exists to preserve. **Before preserving a decision, check that a decision was made** — configuration is
+  intent — a directory rule can legitimately be prospective — but it establishes the rule was no
+  reaction to this document, and the commit context points strongly (not conclusively) at collateral
+  inclusion. Enough to establish that **no recorded reason exists to preserve**, which was the
+  blocking question. **Before preserving a decision, check that a decision was made** — configuration is
   not evidence of choice, and the tell was an undocumented entry sitting among documented ones.
   Recording an invented rationale is worse than either outcome: it looks like institutional memory
   and stops the next person from pulling the thread. `git log -S` cannot read intent — a directory
-  rule can be added prospectively — but a rule that **predates its subject** cannot encode a
-  judgement about it, which is the strongest form of the answer. Corollary: a docs-link checker must
+  rule can legitimately be prospective — but it establishes that this rule was no reaction to this
+  document, and its commit context points strongly at collateral inclusion. That is enough to
+  conclude **no recorded reason exists to preserve**, which was the blocking question. Corollary: a docs-link checker must
   resolve against `git ls-files`, never the filesystem — a filesystem checker goes **green on this
   very defect** on the author's machine and red only in a fresh clone. (TKT-139, PR #136)

@@ -30,8 +30,11 @@ Two dates ended the discussion:
 | `docs/reviews/` added to `.gitignore` | **2026-07-12**, in a commit titled *"untrack build artifacts/node_modules…"* that also deleted a 69 MB `bin/golangci-lint` |
 | the review written | **2026-07-25** |
 
-**The rule predates the file by thirteen days.** It could not have been a decision about this
-document. A build-artifact sweep claimed a directory name, and a document later walked into it.
+**The rule predates the file by thirteen days**, so it was not a reaction to this document. Its
+commit context — a build-artifact sweep, a block of compiled-output paths, no comment — points
+strongly at a directory name being claimed collaterally. Neither fact reads anyone's mind, and §The
+rule below is careful about the difference; together they are enough to establish that **no recorded
+reason exists**, which is the question that was actually blocking.
 
 ## The rule
 
