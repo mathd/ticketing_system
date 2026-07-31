@@ -1,11 +1,13 @@
 {
   "key": "TKT-138",
   "type": "Task",
-  "status": "Ready",
+  "status": "Planning",
   "summary": "onsale report: nothing guards the armed-before-setup ordering (TKT-130 follow-up)",
   "description": "### Finding (TKT-130 ai-review, second pass, 2026-07-28)\n\nTKT-130 hoisted `beginReport` above the fallible setup in both `onsaleGate` and `onsaleFull`\n(`smoke/onsale_load_test.go`), so a run that dies in `publishedSlot`, `inventoryAdminConn` or\n`statStatementsSetup` still overwrites `ONSALE_REPORT` instead of leaving a previous run's file\nin place to be misread as the current run's output.\n\n**That ordering has no regression test.** `TestOnsaleReportSurvivesAnAbortedStage` calls\n`beginReport` itself and aborts only after appending a completed stage, so it would still pass if\nsomeone moved `beginReport` back below the setup calls. The gate runs `onsaleGate` for real, but\nnothing asserts anything about a pre-existing report file, so the revert would be silent.\n\n### Why it was not fixed in TKT-130\n\nThe reviewer's own recommendation is to \"refactor the profile setup behind an injectable callback\"\n— production restructuring of both profile bodies, well outside TKT-130's scope (`defer\nwriteReport` + a partial marker), and it would have introduced fresh unreviewed production code at\nthe second-pass churn cap. Triaged as incidental and filed rather than widened.\n\n### Scope\n\nMake the armed-before-setup ordering provable without the stack: an injected failure in the first\nfallible setup step must replace a pre-seeded `ONSALE_REPORT` with a parseable `partial: true`\nreport for the current run. Needs a seam in the profile orchestration that does not exist yet —\ndesign it, don't force the current shape.\n\n### Acceptance Criteria\n\n- [ ] A test fails if `beginReport` is moved back below the fallible setup in either profile\n- [ ] The test needs no docker stack and runs in the ordinary gate\n- [ ] A pre-existing report at the configured path is proven replaced, not merely present\n- [ ] `make check` green\n",
-  "labels": [],
-  "assignee": null,
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [],
   "comments": [
