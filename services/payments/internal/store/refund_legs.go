@@ -28,6 +28,12 @@ var ErrRefundExceedsCapture = errors.New("refund legs would exceed the captured 
 // while the other has a claim.
 var ErrWholeRefundBound = errors.New("a whole refund is already bound for this operation")
 
+// ErrRefundLegsBound is the same exclusion seen from the other side: the recovery
+// whole-refund path refusing a charge that post-purchase legs already have a claim on.
+// Both are decided under the SAME payment_operations row lock, which is what makes the
+// exclusion atomic instead of a check with a window (TKT-156 ai-review, critical).
+var ErrRefundLegsBound = errors.New("partial refund legs exist for this operation")
+
 // RefundLegKey derives the bounded, versioned provider idempotency key for one leg. It
 // mirrors CompensationKey's construction (versioned prefix, NUL separators so
 // concatenation cannot collide) and differs in namespace so a leg and a whole refund can
@@ -156,14 +162,6 @@ func lookupRefundLegTx(ctx context.Context, q rowQuerier, org uuid.UUID, sourceK
 	leg.Completed = leg.Status == "refunded"
 	leg.BoundAt = boundAt.UTC().Truncate(time.Microsecond)
 	return leg, true, nil
-}
-
-// RefundLegsExist reports whether any partial leg is bound against a charge. The
-// whole-refund path consults it so the two ceilings can never both be live.
-func (j *Journal) RefundLegsExist(ctx context.Context, org uuid.UUID, sourceKey string) (bool, error) {
-	var n int
-	err := j.db.QueryRowContext(ctx, `SELECT count(*) FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2`, org, sourceKey).Scan(&n)
-	return n > 0, err
 }
 
 // CompleteRefundLeg records the provider result and the journalled fact. Only the first

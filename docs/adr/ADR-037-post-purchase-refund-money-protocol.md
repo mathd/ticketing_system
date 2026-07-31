@@ -58,11 +58,21 @@ One row per `(organizer_id, source charge key, refund key)`; the provider idempo
 from those three (`store.RefundLegKey`, namespaced apart from `CompensationKey` so a leg and a whole
 refund can never collide). `payment_compensations` and `/internal/psp/refund` are untouched.
 
-The two paths are **mutually exclusive** against one charge: `BindRefundLeg` refuses when a refund
-compensation exists, and `compensate(kind="refund")` refuses when any leg exists. They track their
-ceilings in different tables, so neither may run while the other has a claim. For legitimate traffic
-this is unreachable — commerce only permits a refund on a `completed` order, which recovery never
-claims — so it is a guard, not a flow.
+The two paths are **mutually exclusive** against one charge, and the exclusion is decided **inside
+both bind transactions, under the same `payment_operations` row lock** — `BindRefundLeg` refuses
+when a refund compensation exists, `BindCompensation` refuses when any leg exists, and the shared
+lock is what serializes two paths that write different tables.
+
+That last clause is the whole decision, not a detail. The first implementation checked "no legs
+exist" and inserted the compensation as two separate autocommit statements. A leg binding in the
+window between them leaves **both** rows present, each deriving its own deterministic provider key,
+and the partial amount *plus* the entire captured amount are both refunded. A cross-table invariant
+enforced by a read followed by an unlocked write is not an invariant. (Found by the TKT-156
+adversarial review; the sequential test that existed could not see it.)
+
+For legitimate traffic the collision is unreachable anyway — commerce only permits a refund on a
+`completed` order, which recovery never claims. That argument is why this is a guard rather than a
+flow; it is *not* why it is safe. Safety comes from the lock.
 
 ### 3. The refund amount may come from the caller — on this path only (amends ADR-032)
 

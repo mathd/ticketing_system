@@ -439,33 +439,68 @@ type Compensation struct {
 // recording the amount/currency evidence the compensation was decided on. The PK makes a
 // concurrent duplicate converge on the same row — and therefore the same deterministic
 // provider key — so two racing refund calls cannot issue two provider refunds.
+// It runs inside a transaction that first takes `SELECT … FOR UPDATE` on the SAME
+// payment_operations row BindRefundLeg locks, and that is what makes the whole-vs-partial
+// exclusion real rather than a check (TKT-156 ai-review, critical). Two autocommit
+// statements — "no legs exist" then "insert the compensation" — leave a window in which a
+// partial leg binds between them; both rows then exist, both derive distinct provider
+// keys, and the partial amount plus the entire captured amount are both refunded. The
+// shared row lock is the only thing that serializes two paths writing different tables.
 func (j *Journal) BindCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind string, amount int64, currency string) (Compensation, error) {
-	providerKey := CompensationKey(org, sourceKey, kind)
-	_, err := j.db.ExecContext(ctx, `INSERT INTO payment_compensations(organizer_id,source_idempotency_key,kind,provider_idempotency_key,amount,currency) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, org, sourceKey, kind, providerKey, amount, currency)
+	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Compensation{}, err
 	}
-	c, found, err := j.LookupCompensation(ctx, org, sourceKey, kind)
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`, org, sourceKey).Scan(&exists); err != nil {
+		return Compensation{}, err
+	}
+	// A compensation that already exists RESUMES: the exclusion below must not judge it,
+	// because a leg bound afterwards cannot un-make a whole refund already in progress.
+	if c, found, err := lookupCompensationTx(ctx, tx, org, sourceKey, kind); err != nil {
+		return Compensation{}, err
+	} else if found {
+		return c, tx.Commit()
+	}
+	if kind == "refund" {
+		var legs int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2`, org, sourceKey).Scan(&legs); err != nil {
+			return Compensation{}, err
+		}
+		if legs > 0 {
+			return Compensation{}, ErrRefundLegsBound
+		}
+	}
+	providerKey := CompensationKey(org, sourceKey, kind)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO payment_compensations(organizer_id,source_idempotency_key,kind,provider_idempotency_key,amount,currency) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, org, sourceKey, kind, providerKey, amount, currency); err != nil {
+		return Compensation{}, err
+	}
+	c, found, err := lookupCompensationTx(ctx, tx, org, sourceKey, kind)
 	if err != nil {
 		return Compensation{}, err
 	}
 	if !found {
 		return Compensation{}, errors.New("compensation row missing after bind")
 	}
-	return c, nil
+	return c, tx.Commit()
 }
 
 // LookupCompensation reads a compensation row without binding one — the read-only replay
 // check (ai-review B5): a completed compensation must answer as a replay BEFORE any
 // eligibility re-derivation, whose evidence may legitimately have moved on since.
 func (j *Journal) LookupCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind string) (Compensation, bool, error) {
+	return lookupCompensationTx(ctx, j.db, org, sourceKey, kind)
+}
+
+func lookupCompensationTx(ctx context.Context, q rowQuerier, org uuid.UUID, sourceKey, kind string) (Compensation, bool, error) {
 	var c Compensation
 	var status, providerRef sql.NullString
 	var factID uuid.NullUUID
 	var amt sql.NullInt64
 	var cur sql.NullString
 	var boundAt time.Time
-	err := j.db.QueryRowContext(ctx, `SELECT kind,provider_idempotency_key,status,provider_ref,fact_id,amount,currency,bound_at FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3`, org, sourceKey, kind).
+	err := q.QueryRowContext(ctx, `SELECT kind,provider_idempotency_key,status,provider_ref,fact_id,amount,currency,bound_at FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3`, org, sourceKey, kind).
 		Scan(&c.Kind, &c.ProviderKey, &status, &providerRef, &factID, &amt, &cur, &boundAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Compensation{}, false, nil

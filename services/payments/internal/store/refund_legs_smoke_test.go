@@ -8,6 +8,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -174,12 +175,119 @@ func TestRefundLegAndWholeRefundAreMutuallyExclusive(t *testing.T) {
 	if _, err := j.BindRefundLeg(ctx, org2, key2, "refund-1", 100, "EUR"); err != nil {
 		t.Fatalf("bind leg: %v", err)
 	}
-	bound, err := j.RefundLegsExist(ctx, org2, key2)
-	if err != nil {
-		t.Fatalf("refund legs exist: %v", err)
+	if _, err := j.BindCompensation(ctx, org2, key2, "refund", 2500, "EUR"); !errors.Is(err, ErrRefundLegsBound) {
+		t.Fatalf("err = %v, want ErrRefundLegsBound", err)
 	}
-	if !bound {
-		t.Fatal("a bound leg must be visible to the whole-refund path")
+	// A VOID is unaffected: the exclusion is about refund money, not about the operation.
+	if _, err := j.BindCompensation(ctx, org2, key2, "void", 2500, "EUR"); err != nil {
+		t.Fatalf("a void must not be blocked by refund legs: %v", err)
+	}
+}
+
+// The race the sequential test above cannot see (ai-review, critical). Before the fix the
+// whole-refund path checked "no legs exist" and inserted its compensation as two separate
+// autocommit statements, so a leg could bind in between: both rows exist, both derive
+// distinct provider keys, and the partial amount PLUS the entire captured amount are both
+// refunded.
+//
+// It is asserted DETERMINISTICALLY, by holding the lock, rather than by racing two
+// goroutines. A twelve-iteration racing version was written first and PASSED against the
+// reverted, broken implementation — the losing interleaving is too narrow to hit by luck,
+// so that test proved nothing while looking like it proved everything. The fix is a lock;
+// the test holds the lock.
+func TestBindCompensationDecidesUnderTheOperationRowLock(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, key := uuid.New(), "charge-exclusion-lock"
+	seedCaptured(t, db, ctx, org, key, 2500)
+
+	// Stand in for a leg bind in progress: hold the row BindRefundLeg locks, then insert
+	// the leg inside that same transaction so it is invisible to any uncommitted read.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`, org, key).Scan(&one); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := j.BindCompensation(ctx, org, key, "refund", 2500, "EUR")
+		done <- err
+	}()
+
+	// It must BLOCK. Pre-fix it never touched payment_operations and returned immediately
+	// — which is precisely the window the leg bound in.
+	select {
+	case err := <-done:
+		t.Fatalf("BindCompensation returned (%v) without waiting for the operation row lock", err)
+	case <-time.After(750 * time.Millisecond):
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO payment_refund_legs(organizer_id,source_idempotency_key,refund_idempotency_key,provider_idempotency_key,amount,currency)
+		VALUES($1,$2,'refund-1',$3,1250,'EUR')`, org, key, RefundLegKey(org, key, "refund-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unblocked, it now observes the leg that committed while it waited.
+	if err := <-done; !errors.Is(err, ErrRefundLegsBound) {
+		t.Fatalf("err = %v, want ErrRefundLegsBound", err)
+	}
+	var whole int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM payment_compensations WHERE organizer_id=$1 AND kind='refund'`, org).Scan(&whole); err != nil {
+		t.Fatal(err)
+	}
+	if whole != 0 {
+		t.Fatalf("a whole refund bound alongside a partial leg: %d rows", whole)
+	}
+}
+
+// The mirror image: BindRefundLeg must contend on the same row, or the exclusion only
+// holds in one direction.
+func TestBindRefundLegDecidesUnderTheOperationRowLock(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, key := uuid.New(), "charge-leg-lock"
+	seedCaptured(t, db, ctx, org, key, 2500)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`, org, key).Scan(&one); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := j.BindRefundLeg(ctx, org, key, "refund-1", 1250, "EUR")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("BindRefundLeg returned (%v) without waiting for the operation row lock", err)
+	case <-time.After(750 * time.Millisecond):
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO payment_compensations(organizer_id,source_idempotency_key,kind,provider_idempotency_key,amount,currency)
+		VALUES($1,$2,'refund',$3,2500,'EUR')`, org, key, CompensationKey(org, key, "refund")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrWholeRefundBound) {
+		t.Fatalf("err = %v, want ErrWholeRefundBound", err)
 	}
 }
 
