@@ -289,15 +289,24 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 // RecordExchangeBasis commits what the settlement will be, BEFORE the provider is called.
 // Once-only: a replay reads it back rather than re-deriving, which is what makes a retry
 // after a successful charge and a failed later step settle the same numbers (ai-review F3).
-func RecordExchangeBasis(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID, basis ExchangeBasis) error {
-	_, err := db.ExecContext(ctx, `
+func RecordExchangeBasis(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID, basis ExchangeBasis) (bool, error) {
+	result, err := db.ExecContext(ctx, `
 		UPDATE order_exchanges
 		SET target_hold_id=$3, replacement_reservation_id=$4, target_total=$5, delta_amount=$6,
 		    target_unit_amount=$7, target_slot_id=$8, target_price_snapshot=$9, basis_at=now()
 		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NULL`,
 		org, exchangeID, basis.TargetHoldID, basis.ReplacementReservationID, basis.TargetTotal,
 		basis.DeltaAmount, basis.TargetUnitAmount, basis.TargetSlotID, basis.PriceSnapshot)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	// false means another writer got there first. The caller must NOT continue with its
+	// own local basis — the persisted one is the money's basis, and the two can differ
+	// (ai-review pass 3). Reloading and resuming from the authoritative row is TKT-167's;
+	// refusing to proceed on an unpersisted basis is this ticket's, because continuing
+	// silently is a defect in the code this ticket wrote.
+	return n == 1, err
 }
 
 // ExchangeBasis is everything the settlement and the replacement are built from, committed
@@ -308,13 +317,22 @@ type ExchangeBasis struct {
 	PriceSnapshot                                        []byte
 }
 
-// LookupExchange reads an exchange by its deterministic identity, without binding or
-// locking anything. The handler resolves an existing exchange with this BEFORE any
-// external call, so a settled replay answers without needing catalog to be reachable
-// (ai-review pass 2).
-func LookupExchange(ctx context.Context, db *sql.DB, org, id uuid.UUID) (Exchange, bool, error) {
-	s, found, err := lookupExchange(ctx, db, org, id)
-	return s.exchange, found, err
+// LookupExchangeFor resolves an existing exchange for THIS request, without binding or
+// locking anything. The handler calls it before any external work, so a settled replay
+// answers without needing catalog to be reachable (ai-review pass 2).
+//
+// It takes the whole request, not just the id, because answering 200 with a prior exchange
+// for a DIFFERENT order or target would tell the caller their request succeeded when a
+// different one did (ai-review pass 3). A key names one request or it names nothing.
+func LookupExchangeFor(ctx context.Context, db *sql.DB, in ExchangeRequest) (Exchange, bool, error) {
+	stored, found, err := lookupExchange(ctx, db, in.OrganizerID, ExchangeID(in.OrganizerID, in.IdempotencyKey))
+	if err != nil || !found {
+		return Exchange{}, found, err
+	}
+	if stored.fingerprint != exchangeFingerprint(in) {
+		return Exchange{}, false, ErrExchangeConflict
+	}
+	return stored.exchange, true, nil
 }
 
 // CompleteExchangeSettlement records the money half: the replacement order, both totals,

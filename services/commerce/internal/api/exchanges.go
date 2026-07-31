@@ -81,10 +81,20 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	// while catalog was unreachable — an operation that already happened failing because
 	// of a dependency it no longer needs.
 	exchangeID := commercestore.ExchangeID(in.OrganizerID, key)
-	if existing, found, err := commercestore.LookupExchange(r.Context(), s.db, in.OrganizerID, exchangeID); err != nil {
-		write(w, 500, map[string]string{"error": "persist exchange"})
+	request := commercestore.ExchangeRequest{
+		SourceOrderID: order, OrganizerID: in.OrganizerID, TargetTicketTypeID: in.TargetTicketTypeID,
+		IdempotencyKey: key, Actor: in.Actor, Reason: in.Reason,
+	}
+	existing, found, err := commercestore.LookupExchangeFor(r.Context(), s.db, request)
+	if err != nil {
+		code, message := exchangeProblem(err)
+		if code == http.StatusInternalServerError {
+			slog.Default().ErrorContext(r.Context(), "look up exchange", "err", err)
+		}
+		write(w, code, map[string]string{"error": message})
 		return
-	} else if found && existing.Settled {
+	}
+	if found && existing.Settled {
 		writeExchange(w, existing, true)
 		return
 	}
@@ -138,11 +148,14 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ex, err := commercestore.BindOrderExchange(r.Context(), s.db, commercestore.ExchangeRequest{
-		SourceOrderID: order, OrganizerID: in.OrganizerID, TargetTicketTypeID: in.TargetTicketTypeID,
-		IdempotencyKey: key, Actor: in.Actor, Reason: in.Reason,
-	})
+	ex, err := commercestore.BindOrderExchange(r.Context(), s.db, request)
 	if err != nil {
+		// Release the hold THIS request just took. A losing racer that keeps its hold
+		// consumes target capacity for the full TTL, so repeated attempts against an
+		// already-exchanged order drain an on-sale pool (ai-review pass 3). Best-effort and
+		// safe either way: the hold is keyed on this exchange identity, so releasing it
+		// cannot touch another request's claim.
+		s.releaseExchangeHold(r, in.OrganizerID, hold)
 		code, message := exchangeProblem(err)
 		if code == http.StatusInternalServerError {
 			slog.Default().ErrorContext(r.Context(), "bind order exchange", "err", err)
@@ -167,9 +180,19 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 			TargetUnitAmount:         resolution.ResolvedPrice.Amount,
 			PriceSnapshot:            []byte(resolution.raw),
 		}
-		if err := commercestore.RecordExchangeBasis(r.Context(), s.db, ex.OrganizerID, ex.ID, basis); err != nil {
+		recorded, err := commercestore.RecordExchangeBasis(r.Context(), s.db, ex.OrganizerID, ex.ID, basis)
+		if err != nil {
 			slog.Default().ErrorContext(r.Context(), "record exchange basis", "err", err)
 			write(w, 500, map[string]string{"error": "persist exchange"})
+			return
+		}
+		if !recorded {
+			// Another writer persisted a basis first, and the money's basis is theirs, not
+			// the one in this request's hand. Continuing on an unpersisted basis is how a
+			// reservation ends up storing a snapshot that disagrees with the exchange row
+			// (ai-review pass 3). Resuming from the authoritative row is TKT-167; refusing
+			// to guess is this ticket's job.
+			write(w, http.StatusConflict, map[string]string{"error": "exchange is already in flight; retry with the same key"})
 			return
 		}
 		ex.TargetHoldID, ex.ReplacementReservationID = basis.TargetHoldID, basis.ReplacementReservationID
@@ -215,6 +238,21 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	ex.ReplacementOrderID, ex.Settled = replacement, true
 	writeExchange(w, ex, false)
+}
+
+// releaseExchangeHold returns a hold this request created and will not use. Best-effort:
+// an unreleased hold expires on its own, so a failure here costs a TTL of capacity rather
+// than correctness — which is why it must not turn a refusal into a 500.
+func (s *Server) releaseExchangeHold(r *http.Request, org, hold uuid.UUID) {
+	if hold == uuid.Nil {
+		return
+	}
+	code, _, err := s.call(r.Context(), http.MethodPost,
+		fmt.Sprintf("%s/internal/holds/%s/release?organizer_id=%s", s.inventoryURL, hold, org), "", nil, true)
+	if err != nil || code != http.StatusOK {
+		slog.Default().WarnContext(r.Context(), "exchange target hold not released; it will expire",
+			"hold_id", hold, "status", code, "err", err)
+	}
 }
 
 // transitionExchangeHold drives the target claim through the same finalize/confirm steps

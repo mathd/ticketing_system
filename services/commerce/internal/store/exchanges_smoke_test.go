@@ -205,11 +205,11 @@ func TestCompleteExchangeSettlementIsOnceOnly(t *testing.T) {
 
 	// source_total is 2000 (2 × 1000), so a target of 4000 makes the delta +2000 — and the
 	// CHECK enforces exactly that relationship (ai-review F4).
-	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+	if recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 4000, DeltaAmount: 2000, TargetUnitAmount: 2000,
-	}); err != nil {
-		t.Fatal(err)
+	}); err != nil || !recorded {
+		t.Fatalf("record basis: %v recorded=%t", err, recorded)
 	}
 	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, replacement); err != nil {
 		t.Fatal(err)
@@ -276,17 +276,22 @@ func TestExchangeBasisRefusesAnInconsistentDelta(t *testing.T) {
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 1000, DeltaAmount: 9000, TargetUnitAmount: 500,
 	}
-	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
+	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
 		t.Fatal("the database accepted a delta that is not target - source")
 	}
 	// And the total must be the product, which is the other half of the same discipline.
 	basis.DeltaAmount, basis.TargetUnitAmount = -1000, 999
-	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
+	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
 		t.Fatal("the database accepted a total that is not quantity × unit")
 	}
 	basis.TargetUnitAmount = 500 // 2 × 500 = 1000 ✓, delta 1000 - 2000 = -1000 ✓
-	if err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil {
-		t.Fatalf("a consistent basis must be accepted: %v", err)
+	if recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil || !recorded {
+		t.Fatalf("a consistent basis must be accepted: %v recorded=%t", err, recorded)
+	}
+	// Second writer: the row is taken, and it must be TOLD so rather than receiving nil and
+	// continuing on a basis the money does not use (ai-review pass 3).
+	if recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil || recorded {
+		t.Fatalf("a second basis write reported recorded=%t (err %v); it must report false", recorded, err)
 	}
 }
 
@@ -318,5 +323,32 @@ func TestLoadExchangeSourceWritesNothing(t *testing.T) {
 		IdempotencyKey: "r-after-refused-exchange", Actor: "a", Reason: "r",
 	}); err != nil {
 		t.Fatalf("an order whose exchange was refused must stay refundable: %v", err)
+	}
+}
+
+
+// ai-review pass 3: an idempotency key names ONE request. A settled replay carrying a
+// different order or target must conflict, not answer 200 with somebody else's exchange.
+func TestLookupExchangeForRefusesADifferentRequestUnderTheSameKey(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-fingerprint", 2, 1000)
+	target := uuid.New()
+	in := exchangeRequest(c, "x-1", target)
+
+	if _, err := BindOrderExchange(ctx, db, in); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := LookupExchangeFor(ctx, db, in); err != nil || !found || got.TargetTicketTypeID != target {
+		t.Fatalf("the same request must resolve: %v found=%t", err, found)
+	}
+	other := in
+	other.TargetTicketTypeID = uuid.New()
+	if _, _, err := LookupExchangeFor(ctx, db, other); !errors.Is(err, ErrExchangeConflict) {
+		t.Fatalf("err = %v, want ErrExchangeConflict for a different target under the same key", err)
+	}
+	other = in
+	other.Reason = "something else"
+	if _, _, err := LookupExchangeFor(ctx, db, other); !errors.Is(err, ErrExchangeConflict) {
+		t.Fatalf("err = %v, want ErrExchangeConflict for a different reason under the same key", err)
 	}
 }
