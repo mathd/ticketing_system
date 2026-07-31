@@ -108,5 +108,11 @@
   "labels": [],
   "assignee": null,
   "pr": null,
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-156 (US-O1)\n\n**Selection reason.** First child of TKT-9 and the only one of the four with **zero blockers** —\nTKT-157/158/159 are all blocked-by it, directly or transitively, so it has maximum unblocking power\nand there is nothing else to choose between.\n\n**Blocker check:** `links` carries `blocks TKT-157` and no `blocked-by`. Zero open blockers.\n\n**Branch:** `TKT-156-order-refund-money` off `origin/main` @ `0911713`.\n\n**Gate waiver.** This ticket runs under the **gateless waiver recorded on the epic (TKT-9,\n`kind=claim`)**: all four human gates are waived by the repo owner as a process experiment. Gate 2\nis self-resolved from the cross-model critique, Gate 3 is an agent squash-merge after the ai-review\nconverges, Gate 4 is a self-validation against test evidence on the merged code. Model routing, TDD,\ncross-model review and the local gate are unchanged.\n\n**Mémo revalidation at claim (the mémo is a shaping-time snapshot).** Re-resolved\n`governingAdrs` against `docs/adr/` at HEAD `0911713`: all eight named ADRs exist and none has been\nsuperseded since the 2026-07-31 bake — the bake and the claim are the same day, so no drift is\npossible. Highest ADR on main is **ADR-036**; the mémo's list is current.\n\n**Risk:** not `risk:low`. This is a money path across two services with a new persisted state.\n\n**Models for this ticket** (`.claude/sdlc.config.json`, unmodified): plan = `gpt-5.6-sol` (Codex),\nplanReview = `main-agent` (this session, Claude Opus 5), implement = `main-agent`,\naiReview = `gpt-5.6-sol` (Codex). Both cross-model pairs hold: plan ≠ planReview, implement ≠\naiReview.\n"
+    }
+  ]
 }
