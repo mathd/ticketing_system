@@ -1,0 +1,120 @@
+{
+  "key": "TKT-152",
+  "type": "Story",
+  "parent": "TKT-5",
+  "classification": "complex",
+  "summary": "US-P3: Early-bird tiers switch over by the clock alone — no manual intervention",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "**As** an organizer, **I want** to schedule an early-bird price and its successors up front, **so that** the price changes on time without anyone being awake for it.\n\n**Priority:** P0  **Depends on:** TKT-151 (hierarchy + provenance exist)\n\nTKT-5's second COS: *scheduled price changes (early-bird tiers) apply without manual intervention*. The lazy correct reading of 'without manual intervention' is **no scheduler at all** — a rule carries an effective window and resolution is evaluated against request time, so the tier flips by the passage of time and nothing has to run. If the plan proposes a cron/job instead, it must argue why evaluation-time windowing is insufficient.\n\n**Acceptance Criteria:**\n- [ ] A price rule carries an effective window; both bounds nullable (unbounded). The interval is **half-open `[starts_at, ends_at)`** and that is stated in the OpenAPI description — an inclusive/exclusive ambiguity at a tier boundary is a real money bug.\n- [ ] Resolution filters by the caller-supplied evaluation instant (defaulting to now), so **no scheduled job, cron, or write is required** for a tier to take effect. A test proves it: from one fixed dataset with **no write in between**, resolving at `ends_at - 1ns` yields the early-bird tier and at `ends_at` yields the next one.\n- [ ] Overlapping windows at the same scope level resolve deterministically by a documented rule (e.g. narrower window wins, then the TKT-151 tie-break) — proven by a test with two deliberately overlapping tiers.\n- [ ] Provenance names the **active tier** as well as the winning scope level, and reports the tier that lost on time (not just the ones that lost on scope).\n- [ ] An expired or not-yet-started rule is invisible to resolution and never leaks into provenance as a winner; with all tiers expired, resolution falls back exactly as TKT-151 specified (no-rule → ticket type's base price).\n- [ ] The window filter is **index-backed** per ADR-019 (result scoped *and* scan scoped); plain `CREATE INDEX` (ADR-020). OpenAPI regenerated and committed before the gate; the operation stays covered in catalog's own coverage test (ADR-030).\n- [ ] The ADR-004 TTL tier is **re-argued**, not inherited: a response whose correctness expires at a known instant cannot be cached past that instant. State how the declared TTL interacts with a tier boundary.\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; entities `organizer_id`-scoped (ADR-002); money is integer minor units + ISO-4217 code, floats banned (ADR-001).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Early-bird pricing is table stakes; doing it by hand at midnight is the failure mode this removes."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: effective windows on rules, evaluation-time filtering, overlap semantics, provenance of the active tier, TTL interaction. OUT: quantity-tiered / demand-based pricing, channel windows (TKT-17), commerce wiring (TKT-153)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Overlap tie-break (narrowest-window vs latest-start) is a design call resolvable in Planning against TKT-150's conflict semantics; it does not need a product decision."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-151."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend TKT-151's rule table with the window columns and thread an evaluation instant through the same pure resolver — same test seam, table-driven with fixed instants (no wall-clock in tests)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Windows on the existing rule shape; demoable by resolving the same data at two instants and getting two prices."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS-2 of TKT-5, proven by the no-write-in-between boundary test."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; governingAdrs resolved from docs/adr/ at 2026-07-30 and to be re-resolved at claim time."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-07-30",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-30",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "TKT-134",
+        "date": "2026-07-29",
+        "rule": "Pin time-sensitive assertions to the DB's clock, not the test process's, so the boundary under test is the only moving part."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-001",
+        "why": "Money on every pricing path is integer minor units + ISO-4217 code; a percentage/discount rule must not introduce a float or a rounding-by-float step."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns **rule definitions**; commerce owns **pricing evaluation at sale time**. Do not put rule CRUD in commerce, and do not put cart/fee/promo evaluation in catalog (docs/architecture.md service table)."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the OpenAPI document is the source of truth, regenerate `openapi_gen.go` / `api-types.gen.ts` and commit them BEFORE running the gate (check-generate diffs against HEAD)."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via the binary's `migrate` subcommand as a one-shot Compose job; the server path never migrates. New migration files follow the existing numbering in `services/<svc>/internal/store/migrations/`."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Any public read this story adds declares a volatility TTL tier with rationale. A resolved price is availability-adjacent, not seat-map-stable — argue the tier, don't copy one."
+      },
+      {
+        "id": "ADR-019",
+        "why": "A scoped read is only scoped if an index backs the filter. Proving it takes TWO tests: the result is scoped *and* the scan is (plan assertion, not just output)."
+      },
+      {
+        "id": "ADR-020",
+        "why": "Plain `CREATE INDEX` — `CONCURRENTLY` is still NOT adopted; preconditions (2) and (3) remain false even after ADR-022. Do not 'improve' this."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Catalog is deliberately OUT of the smoke happy-path coverage gate; its per-operation coverage gate is `services/catalog/internal/api/coverage_test.go`. A new catalog operation must be exercised THERE, not in the smoke suite."
+      },
+      {
+        "id": "ADR-015",
+        "why": "Series/season grouping is the hierarchy level between venue and event — reuse the existing `series`/`seasons` shape, don't invent a parallel grouping."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Sharpened for this ticket: a resolved price with a known expiry instant must not be cacheable past it. The TTL tier is a correctness argument here, not a performance one."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "TKT-134's learning — pin the hold by DB time so release is the test's only moving boundary — is the closest precedent for testing a time boundary in this repo.",
+        "link": "docs/learnings/"
+      },
+      {
+        "summary": "The existing operating-window columns on `performances` (migration 0004) show the repo's convention for representable time bounds.",
+        "link": "services/catalog/internal/store/migrations/0004_typed_slot.sql"
+      }
+    ]
+  },
+  "comments": [],
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-151"
+    }
+  ]
+}
