@@ -126,6 +126,7 @@ type OrderState struct {
 // Refund defines model for Refund.
 type Refund struct {
 	Amount           int64              `json:"amount"`
+	CapacityReturned bool               `json:"capacity_returned"`
 	Currency         string             `json:"currency"`
 	OrderId          openapi_types.UUID `json:"order_id"`
 	Quantity         int                `json:"quantity"`

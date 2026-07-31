@@ -64,6 +64,26 @@ paths:
       operationId: releaseHold
       parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
       responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
+  /internal/holds/{id}/refund-capacity:
+    post:
+      operationId: returnRefundedCapacity
+      summary: Return a refunded quantity of a confirmed claim's capacity to the pool (internal)
+      # TKT-161 / ADR-038. The second obligation of a refund's reversal, after the tickets
+      # are voided — that order is a safety property: freeing capacity while the original
+      # ticket still admits is the one ordering that can oversell.
+      #
+      # 409 `partial seated` is not a transient failure: nothing associates an issued
+      # ticket with a seat identity, so a partial return of a seated claim cannot say
+      # which seats to free (TKT-164). The refund itself still completes.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RefundCapacityReturnCreate'}}}}
+      responses:
+        '200': {description: Capacity returned (or replay), content: {application/json: {schema: {$ref: '#/components/schemas/RefundCapacityReturn'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/operational-holds:
     post:
       operationId: placeOperationalHold
@@ -233,6 +253,25 @@ components:
       properties:
         error: {type: string}
         code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
+    RefundCapacityReturnCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, refund_id, quantity]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        # The commerce refund's identity. It is the idempotency key in claim_history, so a
+        # replay is a read of the receipt rather than a second decrement.
+        refund_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+    RefundCapacityReturn:
+      type: object
+      additionalProperties: false
+      required: [hold_id, quantity, unreturned_quantity, replay]
+      properties:
+        hold_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        unreturned_quantity: {type: integer}
+        replay: {type: boolean}
     HoldCreate:
       type: object
       additionalProperties: false

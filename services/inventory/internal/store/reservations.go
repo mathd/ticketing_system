@@ -106,7 +106,7 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 			return GroupReservation{}, false, err
 		}
 		var consumed int64
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(`+consumedQuantity+`),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
 			return GroupReservation{}, false, err
 		}
 		if consumed+int64(qty) > int64(chCap) {

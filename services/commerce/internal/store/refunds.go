@@ -58,6 +58,14 @@ type Refund struct {
 	// refund whose money moved but whose tickets are still valid is a real state, and
 	// it has to be visible rather than rounded up to "done".
 	TicketsVoided bool
+	// CapacityReturned reports the second obligation (TKT-161). Independent of
+	// TicketsVoided in storage, but NOT in execution: the return is attempted only once
+	// voiding has happened, because freeing the seat while the ticket still admits is the
+	// one ordering that can oversell (ADR-038 §1).
+	CapacityReturned bool
+	// HoldID is the inventory claim the reservation holds — the thing capacity is
+	// returned against.
+	HoldID uuid.UUID
 	BuyerID          uuid.UUID
 	PaymentFactID    uuid.UUID
 	RefundedQty      int32
@@ -106,14 +114,14 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	defer func() { _ = tx.Rollback() }()
 
 	var status, chargeKey, currency string
-	var buyer uuid.UUID
+	var buyer, hold uuid.UUID
 	var soldQty int32
 	var unit int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.buyer_id, r.quantity, r.unit_amount, r.currency
+		SELECT o.status, o.idempotency_key, r.buyer_id, r.hold_id, r.quantity, r.unit_amount, r.currency
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2 FOR UPDATE OF o`, in.OrderID, in.OrganizerID).
-		Scan(&status, &chargeKey, &buyer, &soldQty, &unit, &currency)
+		Scan(&status, &chargeKey, &buyer, &hold, &soldQty, &unit, &currency)
 	if err != nil {
 		return Refund{}, err
 	}
@@ -132,7 +140,7 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 			return Refund{}, ErrRefundConflict
 		}
 		out := existing.refund
-		out.OrganizerID, out.BuyerID, out.PaymentSourceKey = in.OrganizerID, buyer, chargeKey
+		out.OrganizerID, out.BuyerID, out.PaymentSourceKey, out.HoldID = in.OrganizerID, buyer, chargeKey, hold
 		out.RefundedQty, out.RefundedAmount, out.OrderRefundState, err = orderProjection(ctx, tx, in.OrderID)
 		if err != nil {
 			return Refund{}, err
@@ -171,7 +179,7 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 		return Refund{}, errors.New("refund row missing after bind")
 	}
 	out := bound.refund
-	out.OrganizerID, out.BuyerID, out.PaymentSourceKey = in.OrganizerID, buyer, chargeKey
+	out.OrganizerID, out.BuyerID, out.PaymentSourceKey, out.HoldID = in.OrganizerID, buyer, chargeKey, hold
 	out.RefundedQty, out.RefundedAmount, out.OrderRefundState, err = orderProjection(ctx, tx, in.OrderID)
 	if err != nil {
 		return Refund{}, err
@@ -196,12 +204,12 @@ func lookupRefund(ctx context.Context, q rowQuerier, org, id uuid.UUID) (storedR
 	var s storedRefund
 	var factID uuid.NullUUID
 	var createdAt time.Time
-	var voidedAt sql.NullTime
+	var voidedAt, returnedAt sql.NullTime
 	err := q.QueryRowContext(ctx, `
-		SELECT id,order_id,request_fingerprint,quantity,unit_amount,amount,currency,status,payment_fact_id,created_at,tickets_voided_at
+		SELECT id,order_id,request_fingerprint,quantity,unit_amount,amount,currency,status,payment_fact_id,created_at,tickets_voided_at,capacity_returned_at
 		FROM order_refunds WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.refund.ID, &s.refund.OrderID, &s.fingerprint, &s.refund.Quantity, &s.refund.UnitAmount,
-			&s.refund.Amount, &s.refund.Currency, &s.refund.Status, &factID, &createdAt, &voidedAt)
+			&s.refund.Amount, &s.refund.Currency, &s.refund.Status, &factID, &createdAt, &voidedAt, &returnedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedRefund{}, false, nil
 	}
@@ -211,6 +219,7 @@ func lookupRefund(ctx context.Context, q rowQuerier, org, id uuid.UUID) (storedR
 	s.refund.PaymentFactID = factID.UUID
 	s.refund.Completed = s.refund.Status == "completed"
 	s.refund.TicketsVoided = voidedAt.Valid
+	s.refund.CapacityReturned = returnedAt.Valid
 	s.refund.CreatedAt = createdAt.UTC().Truncate(time.Microsecond)
 	return s, true, nil
 }
@@ -288,5 +297,16 @@ func MarkRefundTicketsVoided(ctx context.Context, db *sql.DB, org, refundID uuid
 	_, err := db.ExecContext(ctx, `
 		UPDATE order_refunds SET tickets_voided_at=now()
 		WHERE organizer_id=$1 AND id=$2 AND tickets_voided_at IS NULL`, org, refundID)
+	return err
+}
+
+// MarkRefundCapacityReturned records that a refund's capacity has gone back to the pool.
+// Guarded on the column still being NULL for the same reason as MarkRefundTicketsVoided:
+// the timestamp is evidence of when the obligation was discharged, and a retry must not
+// rewrite it.
+func MarkRefundCapacityReturned(ctx context.Context, db *sql.DB, org, refundID uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE order_refunds SET capacity_returned_at=now()
+		WHERE organizer_id=$1 AND id=$2 AND capacity_returned_at IS NULL`, org, refundID)
 	return err
 }

@@ -375,7 +375,8 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 	verdicts := map[uuid.UUID]SeatClaimState{}
 	for _, id := range ids {
 		var status string
-		err = tx.QueryRowContext(ctx, `SELECT status FROM claims WHERE id=$1 AND pool_id=$2`, id, pool).Scan(&status)
+		var quantity, returned int32
+		err = tx.QueryRowContext(ctx, `SELECT status,quantity,returned_quantity FROM claims WHERE id=$1 AND pool_id=$2`, id, pool).Scan(&status, &quantity, &returned)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // stays unknown
 		}
@@ -398,6 +399,50 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 		// "held"; if one ever did, calling it live keeps the pin, which is the safe direction.
 		switch status {
 		case "held", "finalizing", "confirmed":
+			// A FULLY returned confirmed claim is dead, even though its status stays
+			// confirmed (TKT-161). A refund releases such a claim's seats inside the
+			// inventory transaction and then unpins in catalog after the commit; if that
+			// unpin fails, ADR-031's fail-safe leaves the pin, which blocks seat-map
+			// edits. Without this branch `reconcile-pins` could never reclaim it, because
+			// the claim never reaches a terminal status — the leak would be permanent.
+			//
+			// Positively established, like the terminal statuses beside it: fully
+			// returned means the claim consumes nothing and its seats were released in
+			// the same transaction that recorded the return. A PARTIALLY returned claim
+			// stays live, because it still holds every one of its seats — a partial
+			// seated return is refused precisely because no subset can be identified.
+			if status == "confirmed" && quantity > 0 && returned == quantity {
+				// Accounting alone is not proof. The rule this file already states —
+				// dead is established POSITIVELY, never inferred — applies to the
+				// return path too: `returned_quantity` and `claim_seats.released_at`
+				// are not coupled by the schema, so a repair, a restore skew or a
+				// future defect can leave the counter full while seat rows are still
+				// live. Deleting the pin then lets a seat-map edit orphan seats
+				// inventory still holds. Confirm the child rows agree; if they do not,
+				// fall through to live, which keeps the pin (ai-review pass 2).
+				var liveSeats int
+				if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1 AND released_at IS NULL`, id).Scan(&liveSeats); err != nil {
+					return fmt.Errorf("count live seats for claim %s: %w", id, err)
+				}
+				if liveSeats == 0 {
+					verdicts[id] = SeatClaimDead
+					continue
+				}
+				// Fully returned AND still holding seats is a CONTRADICTION, not a live
+				// claim, and calling it live would assert something false about it
+				// (ai-review pass 3). Unknown is the verdict this file already reserves
+				// for degraded data: it keeps the pin — the safe direction, since
+				// deleting one orphans a sold seat — and `reconcile-pins` counts and
+				// reports it under "investigate before unpinning them by hand" rather
+				// than filing it silently among healthy claims.
+				//
+				// Deliberately NOT repaired here. Which side is true is exactly what is
+				// unknown: if the seat row is right and the counter is wrong, releasing
+				// the seat would destroy the true fact. A classification read does not
+				// get to mutate its way out of an ambiguity.
+				verdicts[id] = SeatClaimUnknown
+				continue
+			}
 			verdicts[id] = SeatClaimLive
 		case "expired", "released":
 			verdicts[id] = SeatClaimDead

@@ -90,7 +90,7 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 	if refund.Completed {
 		// The money is done, but the reversal may not be: a replay is how outstanding
 		// ticket voiding gets retried (TKT-157). Drive it, then answer.
-		refund = s.voidRefundedTickets(r, refund)
+		refund = s.driveReversal(r, refund)
 		writeRefund(w, refund, true)
 		return
 	}
@@ -115,7 +115,7 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 	// The money is durable from here on. The reversal is a SEPARATE obligation: if it
 	// fails, the refund stays valid and outstanding rather than the whole request
 	// failing and inviting a retry that would re-examine money that already moved.
-	refund = s.voidRefundedTickets(r, refund)
+	refund = s.driveReversal(r, refund)
 
 	// Re-read the projection so the response reports the state this refund produced, not
 	// the one it was bound against. A read failure here costs the caller nothing that
@@ -138,7 +138,57 @@ func writeRefund(w http.ResponseWriter, r commercestore.Refund, replay bool) {
 		// difference between "tickets voided" and "we did not get to it" will assume
 		// the first (TKT-157).
 		"tickets_voided": r.TicketsVoided,
+		// Reported separately, and reported as FALSE when outstanding rather than omitted,
+		// for the same reason as tickets_voided (TKT-161).
+		"capacity_returned": r.CapacityReturned,
 	})
+}
+
+// driveReversal discharges a refund's two downstream obligations, IN ORDER.
+//
+// The order is a safety property, not a preference (ADR-038 §1): freeing the seat while
+// the original ticket still admits is the one sequence that can OVERSELL. Voiding first
+// can only under-sell. So the capacity return is attempted only once voiding has actually
+// happened — which is why this is a guard and not a comment, and why an access outage
+// leaves BOTH obligations outstanding rather than letting the second run without the
+// first.
+//
+// Neither leg fails the request. The money has moved and the refund row is durable, so a
+// downstream failure answers a successful refund with the obligation still outstanding —
+// visible, and retryable by replaying the same idempotency key.
+func (s *Server) driveReversal(r *http.Request, refund commercestore.Refund) commercestore.Refund {
+	refund = s.voidRefundedTickets(r, refund)
+	if !refund.TicketsVoided {
+		return refund
+	}
+	return s.returnRefundedCapacity(r, refund)
+}
+
+// returnRefundedCapacity gives the seat back. A partial return of a SEATED claim is
+// refused by inventory and stays outstanding forever: nothing associates an issued ticket
+// with a seat identity, so no subset of seats can be derived (TKT-164). That is a
+// deliberate under-sell — the buyer keeps their refund and the tickets stay void — rather
+// than refusing the refund itself to protect a resale.
+func (s *Server) returnRefundedCapacity(r *http.Request, refund commercestore.Refund) commercestore.Refund {
+	if refund.CapacityReturned || s.inventoryURL == "" || refund.HoldID == uuid.Nil {
+		return refund
+	}
+	code, _, err := s.call(r.Context(), http.MethodPost,
+		fmt.Sprintf("%s/internal/holds/%s/refund-capacity", s.inventoryURL, refund.HoldID), "",
+		map[string]any{"organizer_id": refund.OrganizerID, "refund_id": refund.ID, "quantity": refund.Quantity}, true)
+	if err != nil || code != http.StatusOK {
+		slog.Default().WarnContext(r.Context(), "refund capacity not returned; left outstanding",
+			"refund_id", refund.ID, "hold_id", refund.HoldID, "status", code, "err", err)
+		return refund
+	}
+	if err := commercestore.MarkRefundCapacityReturned(r.Context(), s.db, refund.OrganizerID, refund.ID); err != nil {
+		// Inventory returned it; only our record of it failed. A replay re-drives
+		// inventory, which answers as a replay, and re-marks.
+		slog.Default().ErrorContext(r.Context(), "record refund capacity return", "refund_id", refund.ID, "err", err)
+		return refund
+	}
+	refund.CapacityReturned = true
+	return refund
 }
 
 // voidRefundedTickets discharges the ticket-voiding half of a reversal, and never fails

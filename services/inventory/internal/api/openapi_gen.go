@@ -328,6 +328,21 @@ type OperationalRelease struct {
 	Reason      string             `json:"reason"`
 }
 
+// RefundCapacityReturn defines model for RefundCapacityReturn.
+type RefundCapacityReturn struct {
+	HoldId             openapi_types.UUID `json:"hold_id"`
+	Quantity           int                `json:"quantity"`
+	Replay             bool               `json:"replay"`
+	UnreturnedQuantity int                `json:"unreturned_quantity"`
+}
+
+// RefundCapacityReturnCreate defines model for RefundCapacityReturnCreate.
+type RefundCapacityReturnCreate struct {
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Quantity    int                `json:"quantity"`
+	RefundId    openapi_types.UUID `json:"refund_id"`
+}
+
 // SeatHold defines model for SeatHold.
 type SeatHold struct {
 	Channel      *string             `json:"channel,omitempty"`
@@ -483,6 +498,9 @@ type PlaceGroupReservationJSONRequestBody = GroupReservationCreate
 
 // DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
 type DrawDownGroupReservationJSONRequestBody = OperationalConvert
+
+// ReturnRefundedCapacityJSONRequestBody defines body for ReturnRefundedCapacity for application/json ContentType.
+type ReturnRefundedCapacityJSONRequestBody = RefundCapacityReturnCreate
 
 // PlaceOperationalHoldJSONRequestBody defines body for PlaceOperationalHold for application/json ContentType.
 type PlaceOperationalHoldJSONRequestBody = OperationalHoldCreate

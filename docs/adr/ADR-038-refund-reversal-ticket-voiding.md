@@ -99,10 +99,30 @@ report a discharged obligation nobody discharged, and the refund would look comp
 
 ### 6. Reversal progress is nullable timestamps, and the money path never fails on it
 
-`order_refunds.tickets_voided_at`; TKT-161 adds `capacity_returned_at` beside it. Two independent
-obligations, each either discharged or not, in no required order. A `reversal_status` CHECK would
-have to be migrated by TKT-161 to admit its own terminal value; a second nullable column is purely
+`order_refunds.tickets_voided_at` and `capacity_returned_at` (TKT-161). Two obligations, each
+either discharged or not; the reversal is complete when both are set. A `reversal_status` CHECK
+would have had to be migrated to admit its own terminal value; a second nullable column is purely
 additive.
+
+***Corrected by TKT-161.*** This section originally said the obligations have **"no required
+order"**. That was **false**, and false in the direction that matters: §1 of this same ADR makes
+voiding-before-capacity a *safety* property, because freeing the seat while the ticket still admits
+is the one sequence that can **oversell**. Independent *storage* is not independent *execution*.
+
+Commerce therefore attempts the capacity return **only once `tickets_voided_at` is set** — a guard
+with a negative test, not a comment. The hole was reachable: `voidRefundedTickets` never fails the
+request, so appending a capacity call after it would have run that call precisely when voiding had
+failed. Caught by the TKT-161 plan draft reading this ADR against the code.
+
+**Say precisely where that guarantee lives: in commerce, not at inventory's boundary.**
+`POST /internal/holds/{id}/refund-capacity` trusts its caller — it verifies the claim and the
+quantity, not that anyone voided anything. A holder of the internal service token can therefore
+free capacity while the tickets still admit. That is the system's existing trust model rather than
+a new hole (`/internal/holds/{id}/release` has always been able to free a whole claim the same
+way, and `/internal/psp/refund` can move money), but it means the ordering is an **honest-caller**
+guarantee, not an enforced one — the ADR-021 distinction, applied to a service boundary instead of
+a database. Whether inventory should demand proof of prior voiding, and whether that generalizes to
+every internal mutation, is **TKT-165**.
 
 **Not backfilled.** Refunds written before this migration returned money with their tickets still
 valid; stamping them would assert a voiding that never happened.
@@ -126,6 +146,50 @@ commit schema and a service dependency that TKT-158 and TKT-159 would have to re
 `ACCESS_URL` is optional in commerce for the same reason: without it a refund still returns the
 money and leaves voiding outstanding. Degrading beats refusing to start, for an obligation
 discharged after the money has already moved.
+
+### 8. Capacity returns are accounted, not transitioned (TKT-161)
+
+Confirming a claim adds its **whole** quantity to `inventory_pools.confirmed_quantity` in one step,
+and there was no vocabulary for giving part of it back. `claims.returned_quantity` is that
+vocabulary, **orthogonal to `status`**: a returned claim is still a *confirmed* claim — the sale
+happened — and a lifecycle status cannot express "partially refunded, twice, by two different
+refunds". Mutating `quantity` was the alternative and it destroys the original sale quantity, which
+is the thing an audit asks about.
+
+`claim_history` is the idempotency receipt (`action='refund_return'`,
+`idempotency_key='refund:'||refund_id`). It is already the organizer-scoped registry with a UNIQUE
+`(organizer_id, idempotency_key)` and an append-only trigger, so it is the receipt *and* the replay
+check — no separate returns table duplicating a registry that exists.
+
+**Consumption is now net.** Six call sites summed a confirmed claim's `quantity`; they share one
+expression, `consumedQuantity`, which subtracts `returned_quantity` for confirmed claims. One of
+the six never used the `consumingClaims` constant at all, so a grep for it would have missed the
+site — which is the argument for one expression rather than six edits.
+
+`reconcileCapacity` runs on this path: a return lowers demand, which is exactly the condition a
+draining capacity cut waits on (TKT-76).
+
+### 9. Seated claims: full returns work, partial ones cannot
+
+`claim_seats` is per **claim**; `tickets` records order, slot and ticket type but **not a seat**.
+Nothing joins them, so for a partial return there is no way to say *which* seats come back.
+
+A **full** return releases every live `claim_seats` row inside the inventory transaction, then
+unpins in catalog **after the commit** — a catalog HTTP call cannot join a PostgreSQL transaction,
+and holding the hot pool lock across another service is what ADR-010 forbids. A failed unpin leaks
+a pin, which ADR-031 makes the safe direction: it blocks a seat-map edit rather than orphaning a
+sold seat. `ReconcileSeatClaimStates` now reads a **fully returned confirmed** claim as dead, so
+`reconcile-pins` can reclaim such a leak — without that, the leak would be permanent, because the
+claim never reaches a terminal status.
+
+A **partial** seated return is refused by inventory and the obligation stays outstanding forever.
+
+**The refund itself still completes.** An earlier design refused the whole refund *before any money
+moved*, so that the organizer's resale was never lost. Follow that through to a person: a support
+agent refunding 2 of 3 seats would be told no, and the buyer would get nothing — to protect two
+resales that nothing knows how to identify. Refusing a buyer's money to avoid an under-sell is the
+wrong trade. It also would have made refunds depend on inventory being reachable, which they do not
+today. The real fix is a persistent ticket→seat association: **TKT-164**.
 
 ## Consequences
 
