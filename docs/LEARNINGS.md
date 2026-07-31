@@ -231,11 +231,13 @@ Index of recurring lessons. Detailed notes live in [`learnings/`](./learnings/),
   not those tests' variable — and leave the one test where it *is* the variable unstamped.
   (TKT-123, PR #133)
 - [**A gitignore rule can outlive its reason — and predate its victim**](./learnings/2026-07-30-a-gitignore-rule-can-outlive-its-reason.md) —
-  a finished architecture review sat untracked for weeks, cited by an ADR, contradicting `AGENTS.md`'s
-  "documentation is 100% in-repo". Whether it was ignored *deliberately* looked like an owner-only
-  judgement call; `git log -S` settled it in one command: the ignore rule was added **thirteen days
-  before the file existed**, inside a commit titled "untrack build artifacts" that also deleted a
-  69 MB binary. **Before preserving a decision, check that a decision was made** — configuration is
+  a finished architecture review sat untracked for five days, cited by an ADR, contradicting
+  `AGENTS.md`'s "documentation is 100% in-repo". Whether it was ignored *deliberately* looked like an
+  owner-only judgement call; `git log -S` gave the chronology and commit context that made it
+  answerable: the ignore rule was added **thirteen days before the file existed**, inside a commit
+  titled "untrack build artifacts" that also deleted a 69 MB binary. That does not read anyone's
+  intent — a directory rule can be prospective — but it does establish the rule was no reaction to
+  this document, and that no recorded reason exists to preserve. **Before preserving a decision, check that a decision was made** — configuration is
   not evidence of choice, and the tell was an undocumented entry sitting among documented ones.
   Recording an invented rationale is worse than either outcome: it looks like institutional memory
   and stops the next person from pulling the thread. `git log -S` cannot read intent — a directory
