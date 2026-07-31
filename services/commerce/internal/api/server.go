@@ -151,27 +151,55 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	// price you were quoted is the price you are charged" true across a retry.
 	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("reservation:"+in.OrganizerID.String()+":"+key))
 	if s.db != nil {
-		var (
-			pinnedTotal    int64
-			pinnedCurrency string
-			pinnedHold     uuid.UUID
-			pinnedBuyer    uuid.UUID
-			pinnedQty      int32
-			pinnedTicket   uuid.UUID
-		)
+		var pin struct {
+			hold, buyer, slot, ticket uuid.UUID
+			qty                       int32
+			unit, total               int64
+			currency                  string
+		}
 		err := s.db.QueryRowContext(r.Context(),
-			`SELECT hold_id,buyer_id,quantity,ticket_type_id,total_amount,currency FROM reservations WHERE id=$1 AND organizer_id=$2`,
-			id, in.OrganizerID).Scan(&pinnedHold, &pinnedBuyer, &pinnedQty, &pinnedTicket, &pinnedTotal, &pinnedCurrency)
+			`SELECT hold_id,buyer_id,slot_id,ticket_type_id,quantity,unit_amount,total_amount,currency
+			 FROM reservations WHERE id=$1 AND organizer_id=$2`, id, in.OrganizerID).
+			Scan(&pin.hold, &pin.buyer, &pin.slot, &pin.ticket, &pin.qty, &pin.unit, &pin.total, &pin.currency)
 		switch {
 		case err == nil:
-			// Same key, different request: the caller reused an idempotency key
-			// for something else. Refuse rather than answer with the old quote.
-			if pinnedQty != in.Quantity || pinnedTicket != in.TicketTypeID {
+			// Same key, different terms: the caller reused an idempotency key for
+			// something else. Refuse rather than answer with the old quote.
+			if pin.qty != in.Quantity || pin.ticket != in.TicketTypeID {
 				write(w, 409, map[string]string{"error": "idempotency key reused with different terms"})
 				return
 			}
-			write(w, 200, map[string]any{"reservation_id": id, "hold_id": pinnedHold, "buyer_id": pinnedBuyer,
-				"amount": pinnedTotal, "currency": pinnedCurrency})
+			// Replay inventory with the PERSISTED amount, not a re-resolved one.
+			// That is the whole point: inventory fingerprints its idempotency on
+			// unit_amount, so replaying with today's price after a rule change
+			// would be rejected as a conflicting request. Replaying with the
+			// pinned amount returns the same hold, and its expiry is what the
+			// caller actually needs on a retry.
+			code, body, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds", key,
+				map[string]any{"organizer_id": in.OrganizerID, "slot_id": pin.slot, "ticket_type_id": pin.ticket,
+					"quantity": pin.qty, "unit_amount": pin.unit, "currency": pin.currency}, false)
+			if err != nil || (code != 200 && code != 201) {
+				write(w, 409, map[string]string{"error": "inventory unavailable"})
+				return
+			}
+			var replayed struct {
+				ID         uuid.UUID `json:"hold_id"`
+				ExpiresAt  time.Time `json:"expires_at"`
+				ServerTime time.Time `json:"server_time"`
+			}
+			if json.Unmarshal(body, &replayed) != nil {
+				write(w, 502, map[string]string{"error": "invalid inventory response"})
+				return
+			}
+			// A different hold under the same key means the two sides disagree
+			// about what this reservation is. Fail rather than answer.
+			if replayed.ID != pin.hold {
+				write(w, 409, map[string]string{"error": "hold no longer matches the reservation"})
+				return
+			}
+			write(w, 200, map[string]any{"reservation_id": id, "hold_id": pin.hold, "buyer_id": pin.buyer,
+				"amount": pin.total, "currency": pin.currency,
+				"expires_at": replayed.ExpiresAt, "server_time": replayed.ServerTime})
 			return
 		case !errors.Is(err, sql.ErrNoRows):
 			write(w, 503, map[string]string{"error": "temporarily unavailable"})
