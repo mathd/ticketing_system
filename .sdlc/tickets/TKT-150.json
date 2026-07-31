@@ -4,7 +4,7 @@
   "parent": "TKT-5",
   "classification": "complex",
   "summary": "US-P1: Rules representation — custom DSL vs declarative config (spike, 1 day)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [
     "risk:low"
   ],
