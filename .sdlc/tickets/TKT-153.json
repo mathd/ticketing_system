@@ -4,9 +4,11 @@
   "parent": "TKT-5",
   "classification": "complex",
   "summary": "US-P4: The sale charges the resolved price, and the reservation records why",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "description": "**As** a buyer, **I want** the price I was quoted to be the price I am charged, **so that** a rule change mid-checkout never moves the number under me — and **as** the organizer, I want to be able to prove afterwards which rule produced it.\n\n**Priority:** P0  **Depends on:** TKT-151 (resolution + provenance exist)\n\nCloses the epic by putting the hierarchy on the money path. Today `services/commerce/internal/api/server.go` reads catalog's `/internal/ticket-types/{id}` and takes `price.amount` verbatim; after this story it takes the **resolved** price and persists the provenance alongside the reservation.\n\n**⚠️ Money path.** Anticipated and in scope for this ticket — but the plan must say explicitly which existing money invariants it preserves.\n\n**Acceptance Criteria:**\n- [ ] Commerce's reserve path sources `unit_amount` from catalog's rules resolution instead of the raw ticket-type price. With **no rules defined the behaviour is byte-identical to today** — the existing commerce and smoke tests stay green unmodified, and that is the regression proof.\n- [ ] The reservation persists the **provenance** of the price it was created with (winning rule id + scope level + active tier), so a completed order can be traced to the rule that priced it.\n- [ ] **The quote is pinned to the hold**: the price resolved at reserve time is the price checkout charges. A test changes the rules between reserve and checkout and proves the reservation's amount does not move.\n- [ ] Resolution failure **fails closed** (ADR-028): a malformed, drifted, or unreachable resolution response aborts the reserve with an error — it never silently falls back to the base price. Note the distinction the test must encode: *no rule matched* is a valid 200 answering with the base price; *could not resolve* is not.\n- [ ] Money stays integer minor units end to end (ADR-001); the existing overflow guard on `unit_amount × quantity` still holds for a rule-supplied amount.\n- [ ] The commerce operation is exercised through the running stack in the smoke suite (ADR-030 — commerce **is** in the happy-path coverage gate, unlike catalog), and OpenAPI/`api-types.gen.ts` are regenerated and committed before the gate runs.\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; entities `organizer_id`-scoped (ADR-002); money is integer minor units + ISO-4217 code, floats banned (ADR-001).",
   "readiness": {
