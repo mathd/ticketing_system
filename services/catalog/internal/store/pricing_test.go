@@ -558,9 +558,10 @@ func TestSelectPricingRuleOrdersLosersByID(t *testing.T) {
 	})
 
 	t.Run("winner present, window loser sorts after a comparator loser", func(t *testing.T) {
-		// ruleC (comparator loser) sorts AFTER ruleB (window loser) but is
-		// appended after it too — so this only reddens if the sort is real when
-		// the groups interleave. ruleA wins.
+		// ruleC is the WINDOW loser and ruleB the COMPARATOR loser, so the two
+		// groups concatenate as [C, B] — descending — and only the sort turns
+		// that into [B, C]. Mutation-checked: removing sortedCandidates reddens
+		// exactly this subtest. ruleA (slot, narrowest) wins.
 		got, err := SelectPricingRule(evalAt, PricingCandidates{
 			BasePrice: basePrice, Scopes: testScopes(true),
 			Rules: []PriceRule{
@@ -583,6 +584,17 @@ func assertLoserOrder(t *testing.T, got RuleSelection, want ...uuid.UUID) {
 	t.Helper()
 	if len(got.Candidates) != len(want) {
 		t.Fatalf("got %d losers, want %d: %+v", len(got.Candidates), len(want), got.Candidates)
+	}
+	// Enforce the PROPERTY independently of what the caller asked for. Without
+	// this the helper only checks equality with `want`, so a caller passing a
+	// descending list would get a pass while the failure message still claimed
+	// "id-ascending" — the helper would be asserting the caller's opinion
+	// rather than the contract.
+	for i := 1; i < len(got.Candidates); i++ {
+		if got.Candidates[i-1].Rule.ID.String() >= got.Candidates[i].Rule.ID.String() {
+			t.Fatalf("losers are not id-ascending at index %d: %v then %v",
+				i, got.Candidates[i-1].Rule.ID, got.Candidates[i].Rule.ID)
+		}
 	}
 	for i, id := range want {
 		if got.Candidates[i].Rule.ID != id {

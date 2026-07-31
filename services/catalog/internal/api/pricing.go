@@ -62,6 +62,10 @@ func priceResolutionToAPI(sel store.RuleSelection) PriceResolution {
 		winner := priceRuleToAPI(*sel.Winner)
 		out.Winner = &winner
 	}
+	// Mapped unconditionally when the store set it — NOT gated on an empty
+	// candidate list. A fallback can carry candidates (every rule
+	// window-ineligible), and gating on emptiness would produce winner: null
+	// with no fallback_reason for exactly that case.
 	if sel.FallbackReason != nil {
 		reason := PriceResolutionFallbackReason(*sel.FallbackReason)
 		out.FallbackReason = &reason
@@ -84,13 +88,13 @@ func priceRuleToAPI(r store.PriceRule) PriceRuleProvenance {
 	return PriceRuleProvenance{
 		EffectiveFrom:  r.EffectiveFrom,
 		EffectiveUntil: r.EffectiveUntil,
-		RuleId:     r.ID,
-		ScopeLevel: PriceRuleProvenanceScopeLevel(r.ScopeLevel),
-		ScopeId:    r.ScopeID,
-		ActionKind: PriceRuleProvenanceActionKind(r.ActionKind),
-		Amount:     r.Amount,
-		Currency:   r.Currency,
-		Priority:   r.Priority,
-		Forced:     r.ForceAncestorOverride,
+		RuleId:         r.ID,
+		ScopeLevel:     PriceRuleProvenanceScopeLevel(r.ScopeLevel),
+		ScopeId:        r.ScopeID,
+		ActionKind:     PriceRuleProvenanceActionKind(r.ActionKind),
+		Amount:         r.Amount,
+		Currency:       r.Currency,
+		Priority:       r.Priority,
+		Forced:         r.ForceAncestorOverride,
 	}
 }

@@ -248,18 +248,35 @@ func TestResolveTicketTypePriceWinnerAndFallbackAreExclusive(t *testing.T) {
 	}
 	withoutRule, _ := seedPricedTicketType(t, e, 4550, "EUR")
 
+	// The third shape, and the one a naive implementation misses: a fallback
+	// that still HAS candidates. Mapping fallback_reason only when the
+	// candidate list is empty passes the other two cases and produces
+	// winner: null with no fallback_reason here.
+	allExpired, expiredScopes := seedPricedTicketType(t, e, 4550, "EUR")
+	past, pastEnd := time.Now().UTC().Add(-48*time.Hour), time.Now().UTC().Add(-24*time.Hour)
+	if _, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: expiredScopes.EventID, Amount: 5000, Currency: "EUR",
+		EffectiveFrom: &past, EffectiveUntil: &pastEnd}); err != nil {
+		t.Fatal(err)
+	}
+
 	for name, tc := range map[string]struct {
-		id         uuid.UUID
-		wantWinner bool
+		id             uuid.UUID
+		wantWinner     bool
+		wantCandidates int
 	}{
-		"a rule won":  {withRule, true},
-		"no rule won": {withoutRule, false},
+		"a rule won":                   {withRule, true, 0},
+		"no rules at all":              {withoutRule, false, 0},
+		"every rule window-ineligible": {allExpired, false, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, out := resolvePrice(t, e, tc.id)
 			hasWinner, hasFallback := out.Winner != nil, out.FallbackReason != nil
 			if hasWinner != tc.wantWinner {
 				t.Fatalf("winner present = %t, want %t", hasWinner, tc.wantWinner)
+			}
+			if len(out.Candidates) != tc.wantCandidates {
+				t.Errorf("candidates = %d, want %d", len(out.Candidates), tc.wantCandidates)
 			}
 			if hasWinner == hasFallback {
 				t.Errorf("winner present = %t and fallback_reason present = %t — exactly one must hold",
