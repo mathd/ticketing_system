@@ -94,5 +94,10 @@
     ]
   },
   "comments": [],
-  "links": []
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-151"
+    }
+  ]
 }
