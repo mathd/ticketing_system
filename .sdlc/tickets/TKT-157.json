@@ -114,7 +114,7 @@
   ],
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": {
