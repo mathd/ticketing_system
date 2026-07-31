@@ -63,6 +63,25 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/refunds:
+    post:
+      operationId: refundOrder
+      summary: Staff refund of all or part of a completed order (money leg only)
+      # Post-purchase refund (TKT-156, ADR-037). The order's checkout status stays
+      # `completed` — a refunded purchase is still a purchase that happened, and
+      # `orders.status='refunded'` already means something else (a compensated FAILED
+      # checkout, ADR-016). Refund state is reported on its own dimension.
+      # Returning the inventory capacity and voiding the tickets is TKT-157.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RefundCreate'}}}}
+      responses:
+        '200': {description: Refunded (or replay of a completed refund), content: {application/json: {schema: {$ref: '#/components/schemas/Refund'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail
@@ -168,6 +187,31 @@ components:
       additionalProperties: false
       required: [order_id, status]
       properties: {order_id: {type: string, format: uuid}, status: {type: string}}
+    RefundCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, quantity, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+        # Staff attribution, mirroring OperationalConversionCreate: an operation that
+        # moves money cannot be less attributable than one that moves a seat.
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    Refund:
+      type: object
+      additionalProperties: false
+      required: [refund_id, order_id, quantity, amount, currency, refund_status, refunded_quantity, refunded_amount, replay]
+      properties:
+        refund_id: {type: string, format: uuid}
+        order_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        amount: {type: integer, format: int64}
+        currency: {type: string}
+        refund_status: {type: string, enum: [none, partial, full]}
+        refunded_quantity: {type: integer}
+        refunded_amount: {type: integer, format: int64}
+        replay: {type: boolean}
     DeliveryEmail:
       type: object
       additionalProperties: false

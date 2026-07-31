@@ -89,9 +89,14 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 # No -run filter: every smoke test in this package is part of the gate. An allowlist
 # means a newly added test silently never runs and the gate still passes green — which
 # is exactly what happened to this file's first six tests.
+# ./internal/... rather than ./internal/store, for the same reason inventory uses it
+# (TKT-80): a DB-backed test added under ./internal/api would otherwise silently never
+# run while the gate stayed green — the allowlist defect this file already records three
+# times. Nothing lives there for commerce yet; the widening closes the hole before it is
+# dug (TKT-156).
 COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_store_smoke" \
 COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 ./internal/store
+go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/access"
 # No -run filter, for the same reason as commerce and catalog above: an allowlist

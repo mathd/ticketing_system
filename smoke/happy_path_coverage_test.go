@@ -114,6 +114,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("checkout: %d %s", code, body)
 	}
 	var order struct {
+		OrderID       string `json:"order_id"`
 		GuestOrderRef string `json:"guest_order_ref"`
 	}
 	if err := json.Unmarshal(body, &order); err != nil {
@@ -121,6 +122,27 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	}
 	if code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/buyers/%v/delivery-email", commerceURL, reservation["buyer_id"]), "", nil); code != http.StatusOK {
 		t.Fatalf("delivery email: %d %s", code, body)
+	}
+
+	// commerce: refund one of the two tickets (TKT-156). Driven here rather than from a
+	// fixture of its own because this order is the only completed, captured purchase the
+	// suite builds — and a refund needs exactly that. It refunds 1 of 2, so the order stays
+	// partially refunded and the two tickets the access assertions below depend on are
+	// untouched (voiding them is TKT-157's).
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/refunds", commerceURL, order.OrderID), "cov-refund-"+slot,
+		map[string]any{"organizer_id": organizerID, "quantity": 1, "actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
+		t.Fatalf("refund order: %d %s", code, body)
+	}
+	var refunded struct {
+		RefundStatus     string `json:"refund_status"`
+		RefundedQuantity int    `json:"refunded_quantity"`
+		Replay           bool   `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &refunded); err != nil {
+		t.Fatal(err)
+	}
+	if refunded.RefundStatus != "partial" || refunded.RefundedQuantity != 1 || refunded.Replay {
+		t.Fatalf("refund state = %+v, want partial/1/first-call", refunded)
 	}
 
 	// payments: journal fact, direct charge, and the recovery operation read.
@@ -138,6 +160,14 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	}
 	if code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=%s", paymentsURL, organizerID, chargeKey), "", nil); code != http.StatusOK {
 		t.Fatalf("operation lookup: %d %s", code, body)
+	}
+	// A partial refund leg against that direct charge (TKT-156). Distinct from the
+	// commerce refund above, which drives this same operation service-to-service where
+	// the smoke client cannot observe it.
+	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/psp/partial-refund", "",
+		map[string]any{"organizer_id": organizerID, "idempotency_key": chargeKey,
+			"refund_key": "cov-leg-" + slot, "amount": 400, "currency": "EUR"}); code != http.StatusOK {
+		t.Fatalf("partial refund leg: %d %s", code, body)
 	}
 
 	// access: offline reconciliation on an issued ticket. The live scan (scanTicket)

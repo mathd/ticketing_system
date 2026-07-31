@@ -15,6 +15,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
+	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/fakepsp"
 )
 
@@ -434,5 +437,61 @@ func TestClassifyRecoveredCoversTheStatusVocabulary(t *testing.T) {
 			t.Errorf("order status %q is in the CHECK constraint but has no checkout answer; "+
 				"decide what a buyer racing recovery is told before adding it", status[1])
 		}
+	}
+}
+
+// TKT-156: the refund handler is thin because every DB-dependent decision lives in
+// store.BindOrderRefund. What is left in the handler is this mapping, and it is worth a
+// table because an unmapped store error would become a 500 for something the caller could
+// have acted on — and because an UNDECLARED status becomes a 500 anyway under the
+// fail-closed response validator (ADR-028), so the mapping must only produce statuses the
+// contract declares.
+func TestRefundProblemMapsEveryStoreError(t *testing.T) {
+	declared := map[int]bool{400: true, 404: true, 409: true, 500: true, 502: true, 503: true}
+	cases := []struct {
+		name string
+		err  error
+		code int
+	}{
+		{"not completed", commercestore.ErrOrderNotRefundable, http.StatusConflict},
+		{"over refund", commercestore.ErrRefundExceedsOrder, http.StatusConflict},
+		{"no money", commercestore.ErrRefundNoMoney, http.StatusConflict},
+		{"key reused", commercestore.ErrRefundConflict, http.StatusConflict},
+		{"unknown order", sql.ErrNoRows, http.StatusNotFound},
+		{"anything else", errors.New("connection reset"), http.StatusInternalServerError},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			code, message := refundProblem(tt.err)
+			if code != tt.code {
+				t.Fatalf("code = %d, want %d", code, tt.code)
+			}
+			if !declared[code] {
+				t.Fatalf("status %d is not declared by refundOrder; the validator turns it into a 500", code)
+			}
+			if strings.Contains(message, "connection reset") {
+				t.Fatalf("message leaks the underlying error: %q", message)
+			}
+		})
+	}
+}
+
+// The refund is internal-only: the gateway denies /internal/* at the edge, and commerce
+// fails closed to 404 (not 401) exactly as staffSale and deliveryEmail do. An unconfigured
+// token must not open the endpoint.
+func TestRefundOrderRequiresInternalToken(t *testing.T) {
+	for name, token := range map[string]string{"no token configured": "", "wrong token": "expected"} {
+		t.Run(name, func(t *testing.T) {
+			s := New(nil, http.DefaultClient, "", "", "", token)
+			req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+uuid.Nil.String()+"/refunds",
+				bytes.NewBufferString(`{"organizer_id":"00000000-0000-0000-0000-000000000001","quantity":1,"actor":"a","reason":"r"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "refund-auth")
+			res := httptest.NewRecorder()
+			s.Router(nil, true).ServeHTTP(res, req)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", res.Code)
+			}
+		})
 	}
 }
