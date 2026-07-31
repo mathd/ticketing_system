@@ -4,10 +4,8 @@
   "parent": "TKT-5",
   "classification": "complex",
   "summary": "US-P2: A price resolves deterministically through the hierarchy, with visible provenance",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": {
     "number": 137,
