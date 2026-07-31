@@ -71,11 +71,22 @@ func (s *Server) refundCapacity(w http.ResponseWriter, r *http.Request) {
 	// PostgreSQL transaction, and holding the hot pool lock across another service is the
 	// thing ADR-010 exists to prevent. Best-effort, and the failure direction is
 	// deliberate (ADR-031): a leaked pin blocks a seat-map edit, which is recoverable,
-	// while unpinning a live seat orphans a sold one. `reconcile-pins` can now reclaim
-	// such a leak because a fully returned confirmed claim reads as dead.
+	// while unpinning a live seat orphans a sold one.
 	//
-	// Attempted on replay too, so a transient catalog failure heals when commerce retries
-	// the refund.
+	// A failure here does NOT make the response retryable, and the 200 is not a lie: the
+	// capacity IS back and the seats ARE released — both committed above. Only the
+	// catalog-side pin is stale, and a pin is not capacity. Reporting the whole return as
+	// outstanding would make commerce re-drive a mutation that already happened, to fix
+	// something it cannot see.
+	//
+	// The remedy is `reconcile-pins`, and THIS ticket is what makes it work here: a fully
+	// returned confirmed claim now reads as dead (ReconcileSeatClaimStates), so the
+	// command can reclaim the leak. Before that change the claim never reached a terminal
+	// status and the leak was permanent.
+	//
+	// An earlier version of this comment claimed a commerce replay would retry the unpin.
+	// It would not — commerce marks capacity_returned_at on the 200 and its replay path
+	// exits early — and the adversarial review was right to call that out.
 	if seated && pinErr == nil && len(pin.Seats) > 0 {
 		_ = s.pinner.UnpinSeats(r.Context(), in.OrganizerID, pin.SeatMapID, pin.Seats, pin.PinnedBy)
 	}

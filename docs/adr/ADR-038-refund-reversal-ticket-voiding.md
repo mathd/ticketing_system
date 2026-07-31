@@ -114,6 +114,16 @@ with a negative test, not a comment. The hole was reachable: `voidRefundedTicket
 request, so appending a capacity call after it would have run that call precisely when voiding had
 failed. Caught by the TKT-161 plan draft reading this ADR against the code.
 
+**Say precisely where that guarantee lives: in commerce, not at inventory's boundary.**
+`POST /internal/holds/{id}/refund-capacity` trusts its caller — it verifies the claim and the
+quantity, not that anyone voided anything. A holder of the internal service token can therefore
+free capacity while the tickets still admit. That is the system's existing trust model rather than
+a new hole (`/internal/holds/{id}/release` has always been able to free a whole claim the same
+way, and `/internal/psp/refund` can move money), but it means the ordering is an **honest-caller**
+guarantee, not an enforced one — the ADR-021 distinction, applied to a service boundary instead of
+a database. Whether inventory should demand proof of prior voiding, and whether that generalizes to
+every internal mutation, is **TKT-165**.
+
 **Not backfilled.** Refunds written before this migration returned money with their tickets still
 valid; stamping them would assert a voiding that never happened.
 

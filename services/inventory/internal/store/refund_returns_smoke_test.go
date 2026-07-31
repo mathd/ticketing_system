@@ -282,3 +282,98 @@ func TestReturnRefundedCapacityIsOrganizerScoped(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// AC5. Seated claims were the ticket's hard part and had no test at all until the
+// adversarial review said so — the ACs were asserted in prose and nowhere else.
+
+// A FULL seated return releases every live seat in the same transaction. It has to be
+// the same transaction: the seats and the capacity are one fact, and a caller that saw
+// capacity back while the seats were still held could resell a seat twice.
+func TestFullSeatedReturnReleasesEverySeat(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1", "A/1/2", "A/1/3"}, 4500, "EUR", "seat-full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "finalizing"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.ReturnRefundedCapacity(ctx, org, sh.Claim.ID, uuid.New(), 3); err != nil {
+		t.Fatalf("full seated return: %v", err)
+	}
+	var live int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1 AND released_at IS NULL`, sh.Claim.ID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 {
+		t.Fatalf("%d seats still held after a full return", live)
+	}
+
+	// And the claim reads as DEAD to pin reconciliation, even though its status is still
+	// `confirmed`. Without that, a catalog unpin that failed after the commit would leak a
+	// pin `reconcile-pins` could never reclaim — the claim never reaches a terminal status.
+	states, err := st.ReconcileSeatClaimStates(ctx, []uuid.UUID{sh.Claim.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states[sh.Claim.ID] != SeatClaimDead {
+		t.Fatalf("fully returned confirmed claim = %v, want dead so reconcile-pins can reclaim its pin", states[sh.Claim.ID])
+	}
+}
+
+// A PARTIAL seated return has no correct answer and must refuse rather than guess.
+// `claim_seats` is per claim; `tickets` records no seat. Nothing can say which two of
+// three seats come back (TKT-164).
+func TestPartialSeatedReturnIsRefusedAndChangesNothing(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	sh, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"B/1/1", "B/1/2", "B/1/3"}, 4500, "EUR", "seat-partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "finalizing"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Transition(ctx, org, sh.Claim.ID, "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	before := availability(t, ctx, st, org, slot, "")
+
+	if _, err := st.ReturnRefundedCapacity(ctx, org, sh.Claim.ID, uuid.New(), 2); !errors.Is(err, ErrPartialSeatedReturn) {
+		t.Fatalf("err = %v, want ErrPartialSeatedReturn", err)
+	}
+	// Nothing moved: not the pool, not the claim, not the seats, not the history.
+	if got := availability(t, ctx, st, org, slot, ""); got.Available != before.Available || got.Confirmed != before.Confirmed {
+		t.Fatalf("a refused return moved the counters: %+v → %+v", before, got)
+	}
+	var returned, live, receipts int
+	if err := db.QueryRowContext(ctx, `SELECT returned_quantity FROM claims WHERE id=$1`, sh.Claim.ID).Scan(&returned); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM claim_seats WHERE claim_id=$1 AND released_at IS NULL`, sh.Claim.ID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM claim_history WHERE claim_id=$1 AND action='refund_return'`, sh.Claim.ID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if returned != 0 || live != 3 || receipts != 0 {
+		t.Fatalf("refused return left returned=%d live_seats=%d receipts=%d, want 0/3/0", returned, live, receipts)
+	}
+
+	// A partially returned claim stays LIVE for pin reconciliation — it still holds every
+	// seat. Only a fully returned one is dead.
+	states, err := st.ReconcileSeatClaimStates(ctx, []uuid.UUID{sh.Claim.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states[sh.Claim.ID] != SeatClaimLive {
+		t.Fatalf("claim with all seats still held = %v, want live", states[sh.Claim.ID])
+	}
+}
