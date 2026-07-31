@@ -1,0 +1,57 @@
+{
+  "key": "TKT-154",
+  "type": "Task",
+  "summary": "ticket_types.price_amount is unbounded but Money.amount caps at 2^53-1 — a legal price the contract cannot return (TKT-150 incidental)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "### Finding (incidental, surfaced by TKT-150's adversarial review of ADR-036)\n\n`ticket_types.price_amount` is unbounded above, but the OpenAPI `Money.amount` schema every\ncontract-declared response uses is capped at `9007199254740991`:\n\n```\nservices/catalog/internal/store/migrations/0001_catalog_schema.sql:51\n    price_amount   bigint NOT NULL CHECK (price_amount >= 0),      -- no upper bound\n\nservices/catalog/api/openapi.yaml:1011-1022\n    Money.amount: { type: integer, format: int64, minimum: 0,\n                    maximum: 9007199254740991 }   # JS safe-integer range\n```\n\nSo a price between `9007199254740992` and `MaxInt64` is **legal in the database and\nunrepresentable in the contract**. Runtime response validation would turn it into a 500\n(ADR-028 fails closed), and the storefront could not represent it exactly even if it got through\n— which is the reason the cap exists.\n\n### Why it has been invisible\n\nThe only reader of that column today is `getTicketType`, a hand-mounted `/internal/` route\noutside the OpenAPI document (`services/catalog/internal/api/server.go:104`), and the response\nvalidator skips undeclared paths. Nothing has ever checked the value against the contract's\nbound.\n\n### Why it matters now\n\nTKT-151 adds a **contract-declared** catalog operation that returns the ticket type's base price\nas `Money` (ADR-036 §6). From that point the gap is reachable: an out-of-range base price makes\nthe new endpoint 500 — contradicting ADR-036's promise that data with no rules resolves exactly\nas today.\n\nThe window is theoretical: no such row exists, and nothing in the product creates one. It is\nrecorded because it is a **latent contract violation on a money path**, and because the fix is\none migration.\n\n### The decision to take\n\n1. **Add the bound** — `CHECK (price_amount <= 9007199254740991)` on `ticket_types`, matching the\n   contract. Cheapest, and makes the invariant enforced where the data lives.\n2. **Bound it at the API instead**, rejecting out-of-range prices at `createTicketType` and\n   leaving the column alone.\n3. **Record it as accepted** — decide the range is unreachable in practice and write that down so\n   the next reader does not re-derive this.\n\nDeliberately **not** fixed inside TKT-151: it is pre-existing, it is not what that story is\nabout, and bundling a migration on `ticket_types` into the pricing-rules story would widen a\nmoney-path diff for an unrelated reason.\n\nNote ADR-036 already applies the bound to the **new** table — `price_rules.amount` carries\n`CHECK (amount >= 0 AND amount <= 9007199254740991)`. This ticket is only about the pre-existing\ncolumn.\n",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-150"
+    }
+  ],
+  "context": {
+    "capturedAt": "2026-07-30",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-30",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-028",
+        "why": "Response-schema drift fails closed with 500 — which is exactly how this latent gap would surface once a contract-declared endpoint reads the column."
+      },
+      {
+        "id": "ADR-009",
+        "why": "The OpenAPI document is the source of truth; the cap is part of the contract, so the database is the side that disagrees."
+      },
+      {
+        "id": "ADR-022",
+        "why": "If option 1 is taken, the migration runs out-of-band via the binary's migrate subcommand, not at server start."
+      },
+      {
+        "id": "ADR-036",
+        "why": "Names this gap and deliberately leaves it out of TKT-151; the new price_rules.amount already carries the bound."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Surfaced by the gpt-5.6-sol adversarial review on TKT-150 (finding R6).",
+        "link": "TKT-150 kind=summary (ai-review)"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from a TKT-150 review finding, not yet shaped. It is a **decision** (bound the column, bound the API, or accept and record), so it needs the plan gate rather than a straight-to-Ready path. Minimal mémo baked at creation per `decomposition.md` — review-born tickets get one so Planning does not re-derive the context. Not blocking TKT-151: the range is unreachable with today's data, and ADR-036 already bounds the new table."
+    }
+  ]
+}
