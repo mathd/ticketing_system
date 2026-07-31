@@ -4,11 +4,11 @@
   "parent": "TKT-5",
   "classification": "complex",
   "summary": "US-P2: A price resolves deterministically through the hierarchy, with visible provenance",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
-  "description": "**As** an organizer, **I want** a price to resolve through venue → series → event → slot → ticket type with explicit overrides, **so that** I can set a house rule once and bend it where I need to — and always see which level won.\n\n**Priority:** P0  **Depends on:** TKT-150 (rule/conflict/provenance shape decided)\n\nThis is TKT-5's headline COS: *a price resolves deterministically through the hierarchy with visible provenance (which level won)*. Static time-invariant rules only — the time-windowed tiers are TKT-152, and the sale path is TKT-153.\n\n**Acceptance Criteria:**\n- [ ] A migration adds the price-rule storage in the shape TKT-150 decided: `organizer_id`-scoped (ADR-002), money as integer minor units + ISO-4217 (ADR-001), one row per (scope level, scope id, ticket-type selector). Plain `CREATE INDEX` (ADR-020).\n- [ ] Resolution is **deterministic and total**: for any (ticket type, resolution context) exactly one rule wins, or none does and the ticket type's own `price_amount` is the answer — **existing data with no rules resolves to today's price, unchanged**.\n- [ ] The default order is most-specific-wins; a rule marked as an **explicit override** inverts that for its subtree, per TKT-150's conflict semantics. Two rules at the same level resolve by the documented tie-break, never by row order or `ORDER BY` luck.\n- [ ] The resolution reports **provenance**: the winning rule's id and scope level, and the levels that were considered and lost. A test asserts the losing levels are reported, not just the winner — 'which level won' is unverifiable without them.\n- [ ] Catalog exposes resolution over its API; OpenAPI regenerated **and committed before the gate runs** (ADR-009), the operation covered in `services/catalog/internal/api/coverage_test.go` (ADR-030 — catalog is out of the smoke gate), and the public read declares its ADR-004 TTL tier with rationale.\n- [ ] The rule lookup is **index-backed**: two tests per ADR-019 — the result is scoped, *and* the scan is (an `EXPLAIN`-level assertion, not just the returned rows).\n- [ ] Unit tests cover: each scope level winning in turn, an override inverting the order, the same-level tie-break, and the no-rule fallback.\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any touched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004 TTL tier with rationale; entities `organizer_id`-scoped (ADR-002); money is integer minor units + ISO-4217 code, floats banned (ADR-001).",
+  "description": "**As** an organizer, **I want** a price to resolve through venue → event → series → slot\n→ ticket type with explicit overrides, **so that** I can set a house rule once and bend it where I\nneed to — and always see which level won.\n\n**Priority:** P0  **Depends on:** TKT-150 ✅ (closed — shape decided in\n[ADR-036](docs/adr/ADR-036-pricing-rules-representation.md))\n\nThis is TKT-5's headline COS: *a price resolves deterministically through the hierarchy with\nvisible provenance (which level won)*. Static, time-invariant rules only — effective windows are\n**entirely** TKT-152's (columns *and* filter), and the sale path is TKT-153's.\n\n> **ACs re-synced to the spike's decision** (`decomposition.md` § spike-amended scope). Two changed\n> — the ticket-type selector is gone, and the window columns moved to TKT-152. See the\n> `kind=claim` comment for the before/after and why.\n\n**Acceptance Criteria:**\n- [ ] A migration adds `price_rules` in ADR-036 §3's shape: `organizer_id`-scoped (ADR-002),\n  polymorphic `(scope_level, scope_id)`, `action_kind='absolute'`, `amount bigint CHECK (amount >= 0\n  AND amount <= 9007199254740991)` + `currency`, `priority`, `force_ancestor_override`. **No\n  `effective_from`/`effective_until`** — those are TKT-152's, with their filter. **No ticket-type\n  selector.** Index `price_rules_scope (organizer_id, scope_level, scope_id)`, plain `CREATE INDEX`\n  (ADR-020).\n- [ ] Resolution is **deterministic and total**: for any (ticket type, context) exactly one rule\n  wins, or none does and the ticket type's own `price_amount`/`currency` is the answer —\n  **existing data with no rules resolves to today's price, unchanged.**\n- [ ] The comparator implements ADR-036 §4 steps 1 and 3–6 (step 2, the window filter, is a no-op\n  until TKT-152 and must be *written* so TKT-152 is purely additive). The specificity order is\n  `ticket_type > slot > series > event > venue`; a `force_ancestor_override` rule inverts it for\n  the forced partition; same-level ties break on `priority` then on lowest `id` — never on row\n  order or `ORDER BY` luck.\n- [ ] Resolution reports **provenance** per ADR-036 §5: winner (id, scope level, action, priority,\n  forced) **and every losing candidate with its reason** from the closed enum. `candidates`\n  excludes the winner. A test asserts the **losers** are reported, not just the winner.\n- [ ] The truth-table rows ADR-036 §4 assigns to **TKT-151** all pass, via the pure seam\n  `SelectPricingRule(at, candidates) RuleSelection` — table-driven, fixed instants and UUIDs, no\n  database. Includes the **scope-id collision poison row** and the `forced_ancestor` vs\n  `excluded_by_forced_rule` vs `lower_forced_scope` distinction.\n- [ ] A currency mismatch between a rule and the ticket type **fails the resolution loudly** — it\n  is never silently skipped (ADR-036 §2 / §4 step 1).\n- [ ] Catalog exposes resolution as an operation **declared in its OpenAPI document** (not a\n  hand-mounted `/internal/` route — ADR-036 §6 explains why that distinction is load-bearing);\n  `openapi_gen.go` and `api-types.gen.ts` regenerated **and committed before the gate runs**\n  (ADR-009); the operation covered in `services/catalog/internal/api/coverage_test.go` (ADR-030 —\n  catalog is out of the smoke gate); response declares **`Cache-Control: no-store`** (ADR-036 §6).\n- [ ] The rule lookup is **index-backed**, with ADR-019's two tests: a **poison-row result-scope**\n  test *and* an `EXPLAIN`-under-`force_generic_plan` **scan** assertion over the production query\n  constant. `explainGenericPlan` takes one parameter today — **generalize it in place**, do not\n  fork it. Seed and `ANALYZE` so a sequential scan is the *expensive* choice.\n\nQuality gates: `make check` green (lint + unit + integration, mirrors CI); contract tests for any\ntouched service boundary (OpenAPI drift check, ADR-009); public-read stories declare their ADR-004\nTTL tier with rationale; entities `organizer_id`-scoped (ADR-002); money is integer minor units +\nISO-4217 code, floats banned (ADR-001).",
   "readiness": {
     "objective": {
       "state": "met",
@@ -19,8 +19,8 @@
       "note": "IN: rule storage, deterministic resolution, provenance, catalog read endpoint. OUT: time windows (TKT-152), commerce wiring (TKT-153), fees/promos/taxes (TKT-6/TKT-32), back-office UI."
     },
     "uncertainties": {
-      "state": "deferred",
-      "note": "The exact rule/conflict shape is TKT-150's output; this ticket's ACs cite it rather than pre-empt it. Per decomposition.md § spike-amended scope, re-sync these ACs to the spike's decision before this ticket reaches Ready."
+      "state": "met",
+      "note": "Closed by TKT-150: ADR-036 fixes the rule shape, conflict semantics and provenance. ACs re-synced to it at claim (see kind=claim)."
     },
     "dependencies": {
       "state": "met",
@@ -44,7 +44,7 @@
     }
   },
   "context": {
-    "capturedAt": "2026-07-30",
+    "capturedAt": "2026-07-30 (revalidated at claim)",
     "binding": [
       {
         "id": "AGENTS.md",
@@ -64,40 +64,44 @@
     ],
     "governingAdrs": [
       {
-        "id": "ADR-001",
-        "why": "Money on every pricing path is integer minor units + ISO-4217 code; a percentage/discount rule must not introduce a float or a rounding-by-float step."
+        "id": "ADR-036",
+        "why": "THIS TICKET'S SPECIFICATION. §1 scope levels + order, §2 action shape and amount bounds, §3 storage/query/index + append-mostly, §4 the six-step comparator and the truth-table rows owned by TKT-151, §5 the provenance object and its closed reason enum, §6 catalog as the single pricing authority + no-store. Landed after this mémo was first baked."
       },
       {
         "id": "ADR-002",
-        "why": "Catalog owns **rule definitions**; commerce owns **pricing evaluation at sale time**. Do not put rule CRUD in commerce, and do not put cart/fee/promo evaluation in catalog (docs/architecture.md service table)."
+        "why": "AMENDED by ADR-036 on the pricing row: rule-based unit-price resolution is now CATALOG's, not commerce's. The mémo's original line said the opposite — do not follow it. Everything else in the five-service cut is unchanged."
+      },
+      {
+        "id": "ADR-001",
+        "why": "Money is integer minor units + ISO-4217; floats banned. Bounds the amount column and forbids any float in the comparator."
       },
       {
         "id": "ADR-009",
-        "why": "Contract-first: the OpenAPI document is the source of truth, regenerate `openapi_gen.go` / `api-types.gen.ts` and commit them BEFORE running the gate (check-generate diffs against HEAD)."
+        "why": "Contract-first: this ticket adds a DECLARED operation, so regenerate openapi_gen.go / api-types.gen.ts and COMMIT them before running the gate — check-generate diffs against HEAD."
       },
       {
         "id": "ADR-022",
-        "why": "Migrations run out-of-band via the binary's `migrate` subcommand as a one-shot Compose job; the server path never migrates. New migration files follow the existing numbering in `services/<svc>/internal/store/migrations/`."
+        "why": "The new migration runs out-of-band via the binary's migrate subcommand as a one-shot Compose job; the server path never migrates."
       },
       {
         "id": "ADR-004",
-        "why": "Any public read this story adds declares a volatility TTL tier with rationale. A resolved price is availability-adjacent, not seat-map-stable — argue the tier, don't copy one."
+        "why": "The new read declares a tier. ADR-036 §6 already decided it: no-store, because a resolved price feeds a money decision."
       },
       {
         "id": "ADR-019",
-        "why": "A scoped read is only scoped if an index backs the filter. Proving it takes TWO tests: the result is scoped *and* the scan is (plan assertion, not just output)."
+        "why": "Two tests, not one: a poison-row result-scope test AND an EXPLAIN-under-force_generic_plan scan assertion over the production query constant. explainGenericPlan takes one parameter — generalize it in place, do not fork it."
       },
       {
         "id": "ADR-020",
-        "why": "Plain `CREATE INDEX` — `CONCURRENTLY` is still NOT adopted; preconditions (2) and (3) remain false even after ADR-022. Do not 'improve' this."
+        "why": "Plain CREATE INDEX. CONCURRENTLY is still not adopted; do not 'improve' the migration."
       },
       {
         "id": "ADR-030",
-        "why": "Catalog is deliberately OUT of the smoke happy-path coverage gate; its per-operation coverage gate is `services/catalog/internal/api/coverage_test.go`. A new catalog operation must be exercised THERE, not in the smoke suite."
+        "why": "Catalog is OUT of the smoke happy-path coverage gate — cover the new operation in services/catalog/internal/api/coverage_test.go, not in smoke."
       },
       {
-        "id": "ADR-015",
-        "why": "Series/season grouping is the hierarchy level between venue and event — reuse the existing `series`/`seasons` shape, don't invent a parallel grouping."
+        "id": "ADR-021",
+        "why": "If the plan claims the rule trail is auditable: say honest-writer consistency, not tamper-evidence. ADR-036 §3 already words this correctly — reuse that wording."
       }
     ],
     "reference": [
@@ -108,6 +112,10 @@
       {
         "summary": "ADR-019's worked examples (TKT-53, TKT-60) are the shape of the scoping evidence this ticket owes.",
         "link": "docs/adr/ADR-019-catalog-read-path-scoping.md"
+      },
+      {
+        "summary": "ADR-036 §4 carries the 19-row truth table with an owner column; the rows marked TKT-151 are this ticket's test suite.",
+        "link": "docs/adr/ADR-036-pricing-rules-representation.md"
       }
     ]
   },
