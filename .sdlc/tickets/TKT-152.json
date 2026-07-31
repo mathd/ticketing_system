@@ -107,6 +107,10 @@
       {
         "summary": "The existing operating-window columns on `performances` (migration 0004) show the repo's convention for representable time bounds.",
         "link": "services/catalog/internal/store/migrations/0004_typed_slot.sql"
+      },
+      {
+        "summary": "Time-window fixtures must be relative to now — a calendar-literal fixture judged against now() is green at merge and fails once the clock crosses it; CI, mutation testing and review all pass because the defect only exists later. Build window fixtures from time.Now() with a deliberate offset, pinned once per run.",
+        "link": "docs/learnings/2026-07-18-time-window-fixtures-must-be-relative.md"
       }
     ]
   },
