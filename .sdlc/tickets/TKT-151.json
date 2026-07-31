@@ -114,7 +114,7 @@
   "comments": [],
   "links": [
     {
-      "type": "blocks",
+      "type": "blocked-by",
       "key": "TKT-150"
     }
   ]
