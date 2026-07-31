@@ -234,5 +234,5 @@ legitimate future wire change means updating a literal deliberately, in an ADR o
 - [ADR-025: Admission events and offline reconciliation](ADR-025-admission-events-and-offline-reconciliation.md)
   — §D9 constrains the alarm payloads whose envelopes this ticket rewraps
 - `docs/architecture.md` — the shared-kernel rule this ADR satisfies
-- The 2026-07-25 architecture review, recommendation R3 — the originating finding. The review is not
-  an in-repo document; its recommendations live on the board (R3 → TKT-126, R4 → TKT-128).
+- [The 2026-07-25 architecture review](../reviews/2026-07-25-architecture.md), recommendation R3 —
+  the originating finding. Its recommendations also live on the board (R3 → TKT-126, R4 → TKT-128).
