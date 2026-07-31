@@ -118,7 +118,7 @@
   ],
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
