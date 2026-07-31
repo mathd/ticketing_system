@@ -1,0 +1,98 @@
+{
+  "key": "TKT-150",
+  "type": "Spike",
+  "parent": "TKT-5",
+  "classification": "complex",
+  "summary": "US-P1: Rules representation — custom DSL vs declarative config (spike, 1 day)",
+  "status": "Backlog",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "description": "### The question\n\nTKT-5 needs pricing rules that override each other along a hierarchy (venue → series → event → slot → ticket type) and change over time (early-bird tiers). The owner is open to a **custom DSL** for complex event programming. The alternative is **declarative config**: structured rows/JSON with a fixed, engine-owned evaluation order and no user-authored expression language.\n\nThis is the epic's third COS (*DSL-vs-config spike concluded with an ADR*) and it decides the data shape every other child implements, so it runs first and blocks them.\n\n**Timebox:** 1 day. **Deliverable:** an ADR in `docs/adr/` — a decision, not code.\n\n### Expected output (what the dependent stories consume)\n- [ ] A decision — DSL or declarative config — with the rejected option's cost stated, not just the chosen option's benefit.\n- [ ] The concrete **rule shape** TKT-151 implements: the scope levels, what a rule may express (absolute price / delta / multiplier — pick and justify), and where evaluation lives (catalog defines, commerce evaluates — ADR-002).\n- [ ] The **conflict semantics**: which scope wins by default, how an explicit override inverts that, and the deterministic tie-break when two rules sit at the same level.\n- [ ] The **provenance shape** — what a resolution must report about which rule won and which lost, so COS-1's 'visible provenance' is testable rather than aspirational.\n- [ ] An escape-hatch note: what the chosen option makes *hard*, and the cheapest migration out of it if the owner later wants the other one.\n\n**No PR is expected** (per `shaping.md` § Spikes): the ADR lands on the default branch as an internal-maintenance commit; a throwaway branch is fine. Spikes close `Building → Done`, skipping PO Review.\n\nQuality gates: `make check` green (an ADR-only change still runs the gate).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Decide the rules representation before any of it is built — the shape is expensive to change once rules exist in production data."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the decision + ADR + the rule/conflict/provenance shape TKT-151 consumes. OUT: any schema, any code, fee/promo/tax rules (TKT-6, TKT-32)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The unknown IS the deliverable. Timebox 1 day; expiring without an answer is itself the answer (descope to declarative config, the reversible default)."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None open. Blocks TKT-151."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Read the existing catalog rule-adjacent shapes (ticket_types, series/seasons, festivals), weigh a DSL's authoring/eval/testing cost against declarative rows, decide, write the ADR against docs/adr/[template].md."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole spike is one slice — one ADR."
+    },
+    "success": {
+      "state": "met",
+      "note": "The five expected-output bullets above are all answered in a committed ADR."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; governingAdrs resolved from docs/adr/ at 2026-07-30."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-07-30",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-30",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-30",
+        "rule": "Record decisions. Capture architecture and design decisions as ADRs in docs/adr/ (template in docs/adr/[template].md)."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-30",
+        "rule": "Cross-epic invariant: every price/fee decision resolves through the rules hierarchy (TKT-5) once it exists."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "Fixes WHERE the answer may land: catalog owns rule definitions, commerce owns pricing evaluation. A DSL that has to be evaluated inside catalog's read path would cross that line — the spike must say which side runs the evaluator."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Whatever shape is chosen becomes an API contract; a DSL string in a request body is a contract that OpenAPI cannot validate structurally. Weigh that."
+      },
+      {
+        "id": "ADR-017",
+        "why": "If a rule shape ever reaches a domain event payload, consumer-semantics versioning applies. Cheap to keep in view now, expensive to retrofit."
+      },
+      {
+        "id": "ADR-001",
+        "why": "The chosen shape must be expressible without floats — a percentage rule needs an integer-safe formulation (basis points + documented rounding), not a float multiplier."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD open questions list 'DSL vs declarative rules (spike in TKT-5)' as an explicitly deferred decision.",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Existing spikes for shape: docs/spikes/TKT-50-dated-slot-pressure-test.md is the in-repo precedent for a spike deliverable.",
+        "link": "docs/spikes/"
+      }
+    ]
+  },
+  "comments": [],
+  "links": []
+}
