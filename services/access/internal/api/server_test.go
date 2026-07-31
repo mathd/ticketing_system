@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -238,5 +239,53 @@ func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
 	}
 	if len(out.Results) != 2 || out.Results[0]["result"] != "rejected" || out.Results[1]["result"] != "rejected" {
 		t.Fatalf("results = %+v, want two per-item rejections", out.Results)
+	}
+}
+
+// ai-review F4. The scan-shaped 422 is the gate's established representation for a
+// request the contract rejects, and it was applied to EVERY route — including the
+// internal refund operation, which declares no 422. An undeclared status is exactly the
+// drift ADR-028's response validator exists to convert into a 500, and this one slipped
+// past it because the REQUEST validator answers first, before the response validator can
+// see anything.
+//
+// The assertion is on the status *being declared*, not merely on it being 400: the point
+// is that the route can no longer answer outside its own contract.
+func TestInternalRoutesRejectMalformedRequestsWithADeclaredStatus(t *testing.T) {
+	declared := map[int]bool{400: true, 404: true, 409: true, 500: true, 503: true}
+	router := New(nil, nil, "internal-token").Router(nil, true)
+
+	for name, body := range map[string]string{
+		"unknown field":  `{"organizer_id":"00000000-0000-0000-0000-000000000001","refund_id":"00000000-0000-0000-0000-000000000002","quantity":1,"nope":true}`,
+		"missing field":  `{"organizer_id":"00000000-0000-0000-0000-000000000001"}`,
+		"wrong type":     `{"organizer_id":"00000000-0000-0000-0000-000000000001","refund_id":"00000000-0000-0000-0000-000000000002","quantity":"two"}`,
+		"quantity zero":  `{"organizer_id":"00000000-0000-0000-0000-000000000001","refund_id":"00000000-0000-0000-0000-000000000002","quantity":0}`,
+		"malformed json": `{`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost,
+				"/internal/orders/00000000-0000-0000-0000-000000000003/refunds", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Internal-Token", "internal-token")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if !declared[recorder.Code] {
+				t.Fatalf("status %d is not declared by refundTickets; body=%s", recorder.Code, recorder.Body.String())
+			}
+			if strings.Contains(recorder.Body.String(), "invalid_credential") {
+				t.Fatalf("internal route answered with the gate's scan-shaped rejection: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+// The gate keeps its own representation — the fix is route-scoped, not a replacement.
+func TestScanKeepsTheScanShapedRejection(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(`{"qr_payload":123}`))
+	request.Header.Set("Content-Type", "application/json")
+	New(nil, nil).Router(nil, true).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "invalid_credential") {
+		t.Fatalf("scan rejection changed: %d %s", recorder.Code, recorder.Body.String())
 	}
 }

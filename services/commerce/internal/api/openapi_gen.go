@@ -134,6 +134,7 @@ type Refund struct {
 	RefundedAmount   int64              `json:"refunded_amount"`
 	RefundedQuantity int                `json:"refunded_quantity"`
 	Replay           bool               `json:"replay"`
+	TicketsVoided    bool               `json:"tickets_voided"`
 }
 
 // RefundRefundStatus defines model for Refund.RefundStatus.

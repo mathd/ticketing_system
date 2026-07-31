@@ -34,7 +34,14 @@ func RequestValidator(spec []byte, next http.Handler, log *slog.Logger, validate
 
 // RequestValidatorWithErrorHandler lets a service preserve an established
 // error representation for requests rejected before its handler runs.
-func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
+//
+// The handler receives the REQUEST, not just the message: a service's established
+// representation is rarely the right answer for every route it serves, and a handler
+// that cannot see which route it is answering for can only answer uniformly. Access
+// learned this by emitting its gate-shaped 422 on an internal route that declares no
+// 422 — an undeclared status, which is precisely the drift the response validator
+// exists to catch, reached through the one path that runs before it (TKT-157 ai-review).
+func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int)) (http.Handler, error) {
 	return requestValidator(spec, next, log, validateResponses, errorHandler)
 }
 
@@ -128,20 +135,33 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 	})
 }
 
-func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
+func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int)) (http.Handler, error) {
 	doc, router, err := load(spec)
 	if err != nil {
 		return nil, err
 	}
-	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, &oapimiddleware.Options{
-		ErrorHandler: func(w http.ResponseWriter, message string, status int) {
-			if errorHandler != nil {
-				errorHandler(w, message, status)
-				return
-			}
+	// Exactly one of the two hooks is set, and which one is a compatibility decision,
+	// not a style one (TKT-157 ai-review pass 2). `ErrorHandlerWithOpts` is the only hook
+	// that receives the request — but in nethttp-middleware v1.1.2 it also hard-codes
+	// **404** for every route-lookup failure, while the legacy `ErrorHandler` path
+	// distinguishes `routers.ErrMethodNotAllowed` as **405**. Routing every service
+	// through WithOpts to give ONE of them a request-aware handler would have silently
+	// changed wrong-method responses across the whole platform.
+	//
+	// So services that pass nil keep the legacy hook and behave exactly as before; only a
+	// service that asks for a request-aware handler gets the newer one, and owns the
+	// difference.
+	options := &oapimiddleware.Options{}
+	if errorHandler != nil {
+		options.ErrorHandlerWithOpts = func(_ context.Context, err error, w http.ResponseWriter, r *http.Request, opts oapimiddleware.ErrorHandlerOpts) {
+			errorHandler(w, r, err.Error(), opts.StatusCode)
+		}
+	} else {
+		options.ErrorHandler = func(w http.ResponseWriter, message string, status int) {
 			writeValidationError(w, status, map[string]string{"error": message})
-		},
-	})
+		}
+	}
+	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, options)
 	inner := next
 	if validateResponses {
 		inner = responseValidated(router, next, log, openapi3filter.ValidateResponse)

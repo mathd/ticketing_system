@@ -169,7 +169,7 @@ func TestResponseValidationUsesRequestContext(t *testing.T) {
 func TestCustomRequestValidationError(t *testing.T) {
 	handler, err := RequestValidatorWithErrorHandler(testSpec, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("invalid request reached handler")
-	}), nil, true, func(w http.ResponseWriter, _ string, _ int) {
+	}), nil, true, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) {
 		writeValidationError(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected"})
 	})
 	if err != nil {
@@ -348,5 +348,64 @@ func TestResponseValidatorDisabledPassesDriftUnmodified(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("disabled validation must not log drift: %q", buf.String())
+	}
+}
+
+// The handler receives the request, so a service whose established error representation
+// suits one route family can answer differently for another (TKT-157 ai-review F4).
+// Without it, access emitted its gate-shaped 422 on an internal route declaring no 422 —
+// an undeclared status reached through the one path that runs BEFORE the response
+// validator, so nothing downstream could catch it.
+func TestCustomRequestValidationErrorSeesTheRequest(t *testing.T) {
+	handler, err := RequestValidatorWithErrorHandler(testSpec, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid request reached handler")
+	}), nil, true, func(w http.ResponseWriter, r *http.Request, _ string, status int) {
+		if r == nil {
+			t.Fatal("error handler received no request")
+		}
+		writeValidationError(w, status, map[string]string{"path": r.URL.Path})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/things", strings.NewReader(`{"unknown":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, request)
+	if !strings.Contains(recorder.Body.String(), `"path":"/things"`) {
+		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// Services that pass no custom handler must be unaffected by the request-aware hook
+// existing at all (TKT-157 ai-review pass 2). nethttp-middleware v1.1.2 routes the two
+// hooks through different code: the newer one hard-codes 404 for every route-lookup
+// failure, while the legacy one distinguishes ErrMethodNotAllowed as 405. Switching
+// everyone to the newer hook to serve one service would have changed wrong-method
+// responses platform-wide, silently — nothing else in the gate looks at them.
+func TestNilErrorHandlerKeepsLegacyValidationStatuses(t *testing.T) {
+	handler, err := RequestValidator(testSpec, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid request reached handler")
+	}), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, method, path string
+		want               int
+	}{
+		{"wrong method on a known path", http.MethodDelete, "/things", http.StatusMethodNotAllowed},
+		{"unknown path", http.MethodGet, "/nothing-here", http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.path, nil))
+			if recorder.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, tc.want, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), `"error"`) {
+				t.Fatalf("body lost its Error shape: %s", recorder.Body.String())
+			}
+		})
 	}
 }

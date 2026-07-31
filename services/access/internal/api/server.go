@@ -23,10 +23,18 @@ import (
 type Server struct {
 	st       *store.Postgres
 	verifier *ticket.Verifier
+	// token authenticates service-to-service callers. Access had no inbound internal
+	// surface before TKT-157 — it only ever used this token outbound, from its
+	// consumer — so the whole auth path here is new.
+	token string
 }
 
-func New(st *store.Postgres, verifier *ticket.Verifier) *Server {
-	return &Server{st: st, verifier: verifier}
+func New(st *store.Postgres, verifier *ticket.Verifier, token ...string) *Server {
+	s := &Server{st: st, verifier: verifier}
+	if len(token) > 0 {
+		s.token = token[0]
+	}
+	return s
 }
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r := chi.NewRouter()
@@ -39,7 +47,30 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
 	r.Post("/scans/reconciliations", s.reconcile)
-	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, _ string, _ int) {
+	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
+	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
+		// The scan-shaped 422 is the gate's established representation and stays that
+		// way — but it is not this whole service's, and applying it to the internal
+		// refund route emitted a status that route does not declare (ai-review F4).
+		// An undeclared status is exactly the drift ADR-028's response validator exists
+		// to turn into a 500, and here it slipped past because the REQUEST validator
+		// answers before the response validator can see it. Internal routes get the
+		// Error shape they declare.
+		if strings.HasPrefix(req.URL.Path, "/internal/") {
+			// 404 covers BOTH an unknown path and a wrong method: the middleware
+			// reports every route-lookup failure as 404, and it is not worth
+			// distinguishing here (ai-review pass 3). This route already answers 404
+			// to any caller without the internal token, so answering 404 to a wrong
+			// method is the same deliberate silence rather than a new one — and 405
+			// is not a status this operation declares, so returning it would be the
+			// undeclared-status drift this handler exists to stop.
+			if status == http.StatusNotFound {
+				write(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+			write(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+			return
+		}
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 	})
 	if err != nil {
@@ -205,7 +236,11 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		// wire reasons — distinguishable, and none of them appended anything.
 		case store.DecisionEntryLimitReached, store.DecisionExitRequired,
 			store.DecisionNotInside, store.DecisionExitNotApplicable,
-			store.DecisionOccurrenceRequired, store.DecisionExitUnverified:
+			store.DecisionOccurrenceRequired, store.DecisionExitUnverified,
+			// TKT-157: the Decision value is already the wire reason, and
+			// ScanRejected.reason is an unconstrained string by design — no
+			// contract change is needed to carry it.
+			store.DecisionRefunded:
 			reason = string(result.Decision)
 		}
 		// No cryptographic detail leaves the gate: which field failed to verify

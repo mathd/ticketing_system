@@ -89,6 +89,20 @@ func (p *Postgres) admitPass(ctx context.Context, in RedeemInput, direction Admi
 		return RedeemResult{}, ErrTicketCredential
 	}
 
+	// Refused before the chain is verified, for the same reason as the single-entry
+	// path: the §D6 degraded posture admits once, and a refunded ticket must not be
+	// the one it admits (TKT-157, ADR-038).
+	refunded, err := ticketRefunded(ctx, tx, in.TicketID)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	if refunded {
+		if err = tx.Commit(); err != nil {
+			return RedeemResult{}, err
+		}
+		return RedeemResult{Decision: DecisionRefunded, OccurredAt: p.now()}, nil
+	}
+
 	// A chain that does not verify takes the unchanged §D6 posture for
 	// ENTRIES — admit once, alarm, deny later distinct occurrences. Policy
 	// evaluation needs a verified trace (count and inside-state are

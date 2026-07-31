@@ -307,7 +307,7 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
-	r.Mount("/", accessapi.New(st, verifier).Router(log, validateResponses))
+	r.Mount("/", accessapi.New(st, verifier, token).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

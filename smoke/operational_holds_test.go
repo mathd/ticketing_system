@@ -22,6 +22,9 @@ var (
 	inventoryURL = env("SMOKE_INVENTORY_URL", "http://localhost:8091")
 	commerceURL  = env("SMOKE_COMMERCE_URL", "http://localhost:8092")
 	paymentsURL  = env("SMOKE_PAYMENTS_URL", "http://localhost:8093")
+	// TKT-157: access gained an internal refund surface, so the suite needs to reach
+	// it off the gateway like the other three.
+	accessURL = env("SMOKE_ACCESS_URL", "http://localhost:8094")
 	// No fallback: the harness (scripts/smoke.sh) generates and exports the
 	// credential per invocation (TKT-83).
 	internalToken = os.Getenv("SMOKE_INTERNAL_TOKEN")
@@ -86,6 +89,8 @@ func directService(url string) string {
 		return "commerce"
 	case strings.HasPrefix(url, paymentsURL):
 		return "payments"
+	case strings.HasPrefix(url, accessURL):
+		return "access"
 	}
 	return ""
 }

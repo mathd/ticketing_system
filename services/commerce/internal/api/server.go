@@ -38,6 +38,10 @@ type Server struct {
 	db                                           *sql.DB
 	client                                       *http.Client
 	catalogURL, inventoryURL, paymentsURL, token string
+	// accessURL drives the ticket-voiding half of a refund reversal (TKT-157). Empty
+	// leaves the obligation outstanding rather than failing the refund — the money has
+	// already moved by then.
+	accessURL string
 	publisher                                    commerceevents.Publisher
 }
 
@@ -47,6 +51,14 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 		publisher = publishers[0]
 	}
 	return &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
+}
+
+// WithAccess supplies the access base URL for refund ticket voiding. A separate setter
+// rather than a seventh positional argument: every existing New caller keeps compiling,
+// and a server without it degrades to leaving reversals outstanding instead of failing.
+func (s *Server) WithAccess(access string) *Server {
+	s.accessURL = strings.TrimSuffix(access, "/")
+	return s
 }
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r := chi.NewRouter()

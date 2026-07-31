@@ -302,6 +302,22 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 		return RedeemResult{}, ErrTicketCredential
 	}
 
+	// A refunded ticket is refused BEFORE the chain is verified, and the ordering is
+	// the point (TKT-157, ADR-038). A chain that does not verify takes the §D6
+	// degraded posture and ADMITS ONCE; checking the refund after it would let a
+	// refunded ticket through the gate exactly once, which is the failure this denial
+	// exists to prevent. Commercial validity is not a chain-health question.
+	refunded, err := ticketRefunded(ctx, tx, in.TicketID)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	if refunded {
+		if err = tx.Commit(); err != nil {
+			return RedeemResult{}, err
+		}
+		return RedeemResult{Decision: DecisionRefunded, OccurredAt: p.now()}, nil
+	}
+
 	if chainErr := p.verifyTicketChain(ctx, tx, in.TicketID, id); chainErr != nil {
 		// degradedScan commits the transaction itself: the quarantine record and
 		// the owed alarm must land whatever this scan decides.

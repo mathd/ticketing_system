@@ -53,6 +53,11 @@ type Refund struct {
 	Currency         string
 	Status           string
 	Completed        bool
+	// TicketsVoided reports whether the ticket-voiding half of the reversal has been
+	// discharged (TKT-157). Money and reversal are tracked separately on purpose: a
+	// refund whose money moved but whose tickets are still valid is a real state, and
+	// it has to be visible rather than rounded up to "done".
+	TicketsVoided bool
 	BuyerID          uuid.UUID
 	PaymentFactID    uuid.UUID
 	RefundedQty      int32
@@ -191,11 +196,12 @@ func lookupRefund(ctx context.Context, q rowQuerier, org, id uuid.UUID) (storedR
 	var s storedRefund
 	var factID uuid.NullUUID
 	var createdAt time.Time
+	var voidedAt sql.NullTime
 	err := q.QueryRowContext(ctx, `
-		SELECT id,order_id,request_fingerprint,quantity,unit_amount,amount,currency,status,payment_fact_id,created_at
+		SELECT id,order_id,request_fingerprint,quantity,unit_amount,amount,currency,status,payment_fact_id,created_at,tickets_voided_at
 		FROM order_refunds WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.refund.ID, &s.refund.OrderID, &s.fingerprint, &s.refund.Quantity, &s.refund.UnitAmount,
-			&s.refund.Amount, &s.refund.Currency, &s.refund.Status, &factID, &createdAt)
+			&s.refund.Amount, &s.refund.Currency, &s.refund.Status, &factID, &createdAt, &voidedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedRefund{}, false, nil
 	}
@@ -204,6 +210,7 @@ func lookupRefund(ctx context.Context, q rowQuerier, org, id uuid.UUID) (storedR
 	}
 	s.refund.PaymentFactID = factID.UUID
 	s.refund.Completed = s.refund.Status == "completed"
+	s.refund.TicketsVoided = voidedAt.Valid
 	s.refund.CreatedAt = createdAt.UTC().Truncate(time.Microsecond)
 	return s, true, nil
 }
@@ -272,4 +279,14 @@ func CompleteOrderRefund(ctx context.Context, db *sql.DB, org, refundID, payment
 		return err
 	}
 	return tx.Commit()
+}
+
+// MarkRefundTicketsVoided records that a refund's tickets have been voided. Guarded on
+// the column still being NULL so a replay keeps the original instant — the timestamp is
+// evidence of when the obligation was discharged, and a retry must not rewrite it.
+func MarkRefundTicketsVoided(ctx context.Context, db *sql.DB, org, refundID uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE order_refunds SET tickets_voided_at=now()
+		WHERE organizer_id=$1 AND id=$2 AND tickets_voided_at IS NULL`, org, refundID)
+	return err
 }
