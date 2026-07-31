@@ -23,24 +23,15 @@ CREATE UNIQUE INDEX lifecycle_events_singleton_type_uidx
   WHERE event_type IN ('issued', 'delivered', 'redeemed', 'refunded');
 
 -- +goose Down
--- Lock before the guard: checking first leaves a window in which a refund voids
--- a ticket between the check and the DROP, and silently destroying the record of
--- a voided ticket is worse than refusing to roll back.
-LOCK TABLE lifecycle_events IN ACCESS EXCLUSIVE MODE;
+-- Unconditionally irreversible, like 0004, 0005 and 0006 before it. Access
+-- migrations over the lifecycle trail do not roll back: the trail is signed and
+-- immutable, and three tests in this service assert that the head migration
+-- refuses. A conditional guard ("only if no refunded rows exist") would be
+-- weaker than the convention and would quietly make the head reversible on any
+-- database that simply had not refunded anything yet.
 -- +goose StatementBegin
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM lifecycle_events WHERE event_type='refunded') THEN
-    RAISE EXCEPTION 'cannot roll back 0007: tickets have been voided by refunds';
-  END IF;
+  RAISE EXCEPTION 'migration 0007 is irreversible: ticket lifecycle history is immutable';
 END $$;
 -- +goose StatementEnd
-DROP INDEX lifecycle_events_singleton_type_uidx;
-CREATE UNIQUE INDEX lifecycle_events_singleton_type_uidx
-  ON lifecycle_events (ticket_id, event_type)
-  WHERE event_type IN ('issued', 'delivered', 'redeemed');
-ALTER TABLE lifecycle_events
-  ADD CONSTRAINT lifecycle_events_event_type_admission_check
-  CHECK (event_type IN ('issued','delivered','redeemed','entry','exit','duplicate_admit'));
-ALTER TABLE lifecycle_events
-  DROP CONSTRAINT lifecycle_events_event_type_refund_check;

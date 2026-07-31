@@ -290,7 +290,7 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	if err != nil || current != 6 || target != 6 {
+	if err != nil || current != 7 || target != 7 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 
@@ -421,7 +421,7 @@ func TestRepeatableAdmissionMigrationEnforcesPartialSingletonUniqueness(t *testi
 			uuid.New(), ticketID, eventType)
 		return err
 	}
-	for _, singleton := range []string{"issued", "delivered", "redeemed"} {
+	for _, singleton := range []string{"issued", "delivered", "redeemed", "refunded"} {
 		if err := insert(singleton); err != nil {
 			t.Fatalf("first %s: %v", singleton, err)
 		}
@@ -437,7 +437,12 @@ func TestRepeatableAdmissionMigrationEnforcesPartialSingletonUniqueness(t *testi
 			t.Fatalf("second %s row rejected; %s is a repeatable type (ADR-025 §D1): %v", repeatable, repeatable, err)
 		}
 	}
-	if err := insert("refunded"); err == nil {
+	// `refunded` was this assertion's example of an unknown type until TKT-157 made
+	// it a real one — and a singleton one, so it moves into the loop above rather
+	// than merely being deleted from here. The stand-in is deliberately not a name
+	// from ADR-003's roadmap (transferred, resold, exchanged, reissued,
+	// invalidated), any of which could become real the same way.
+	if err := insert("not_a_real_event_type"); err == nil {
 		t.Fatal("unknown event type accepted; the widened CHECK is missing or too wide")
 	}
 
@@ -450,7 +455,7 @@ func TestRepeatableAdmissionMigrationEnforcesPartialSingletonUniqueness(t *testi
 		Scan(&predicate); err != nil {
 		t.Fatalf("partial unique index missing: %v", err)
 	}
-	for _, want := range []string{"issued", "delivered", "redeemed"} {
+	for _, want := range []string{"issued", "delivered", "redeemed", "refunded"} {
 		if !strings.Contains(predicate, want) {
 			t.Fatalf("partial index predicate %q lacks %q", predicate, want)
 		}
