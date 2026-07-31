@@ -428,6 +428,20 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 					verdicts[id] = SeatClaimDead
 					continue
 				}
+				// Fully returned AND still holding seats is a CONTRADICTION, not a live
+				// claim, and calling it live would assert something false about it
+				// (ai-review pass 3). Unknown is the verdict this file already reserves
+				// for degraded data: it keeps the pin — the safe direction, since
+				// deleting one orphans a sold seat — and `reconcile-pins` counts and
+				// reports it under "investigate before unpinning them by hand" rather
+				// than filing it silently among healthy claims.
+				//
+				// Deliberately NOT repaired here. Which side is true is exactly what is
+				// unknown: if the seat row is right and the counter is wrong, releasing
+				// the seat would destroy the true fact. A classification read does not
+				// get to mutate its way out of an ambiguity.
+				verdicts[id] = SeatClaimUnknown
+				continue
 			}
 			verdicts[id] = SeatClaimLive
 		case "expired", "released":

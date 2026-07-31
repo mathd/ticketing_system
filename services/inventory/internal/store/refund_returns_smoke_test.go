@@ -442,7 +442,13 @@ func TestFullyReturnedClaimWithLiveSeatsIsNotReconcileDead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if states[sh.Claim.ID] == SeatClaimDead {
-		t.Fatal("a fully returned claim that still holds a live seat was called dead; reconcile-pins would delete a pin inventory still needs")
+	// UNKNOWN, specifically — not dead and not live. Dead would let reconcile-pins delete
+	// a pin inventory still needs; live would assert this contradictory row set is a
+	// healthy claim and file it silently. Unknown keeps the pin AND reports it under the
+	// command's "investigate before unpinning them by hand" counter, which is the operator
+	// path for data that disagrees with itself.
+	if states[sh.Claim.ID] != SeatClaimUnknown {
+		t.Fatalf("fully returned claim still holding a live seat = %v, want unknown: dead deletes a pin inventory needs, live calls a contradiction healthy",
+			states[sh.Claim.ID])
 	}
 }
