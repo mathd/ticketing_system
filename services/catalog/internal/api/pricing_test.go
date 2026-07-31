@@ -22,6 +22,12 @@ import (
 
 // seedPricedTicketType wires a ticket type to a full scope chain in the fake
 // store so resolution has all five levels available.
+// pricingOrganizer is fixed so the identity fields can be ASSERTED. They were
+// added for TKT-153, which trusts them to authorize a sale and to place a hold —
+// an unset fixture would have let a regression emit a zero organizer with no
+// test noticing.
+var pricingOrganizer = uuid.MustParse("0e9a0000-0000-0000-0000-00000000000a")
+
 func seedPricedTicketType(t *testing.T, e *env, amount int64, currency string) (ttID uuid.UUID, scopes store.PricingScopes) {
 	t.Helper()
 	ttID, scopes = uuid.New(), store.PricingScopes{}
@@ -30,7 +36,8 @@ func seedPricedTicketType(t *testing.T, e *env, amount int64, currency string) (
 	scopes.SeriesID = &seriesID
 
 	e.store.ticketTypes[ttID] = store.TicketType{
-		ID: ttID, PerformanceID: scopes.SlotID, PriceAmount: amount, Currency: currency,
+		ID: ttID, OrganizerID: pricingOrganizer, PerformanceID: scopes.SlotID,
+		PriceAmount: amount, Currency: currency,
 	}
 	e.store.performances[scopes.SlotID] = store.Performance{ID: scopes.SlotID, EventID: scopes.EventID}
 	e.store.events[scopes.EventID] = store.Event{ID: scopes.EventID}
@@ -111,6 +118,14 @@ func TestResolveTicketTypePrice(t *testing.T) {
 	// to the constant it came from passes at any version, including one bumped
 	// by accident. TKT-152 raised it 1 -> 2 because window eligibility changes
 	// what the comparator means, and TKT-153 persists this number.
+	// Identity: commerce authorizes the sale with organizer_id and places the
+	// hold against performance_id, so a zero here is a defect it cannot detect.
+	if out.OrganizerId != pricingOrganizer {
+		t.Errorf("organizer_id = %v, want %v", out.OrganizerId, pricingOrganizer)
+	}
+	if out.PerformanceId != scopes.SlotID {
+		t.Errorf("performance_id = %v, want the ticket type's slot %v", out.PerformanceId, scopes.SlotID)
+	}
 	if out.ResolverVersion != 2 {
 		t.Errorf("ResolverVersion = %d, want 2", out.ResolverVersion)
 	}

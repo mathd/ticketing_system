@@ -139,15 +139,31 @@ func TestReserveFailsClosedOnUnusableResolution(t *testing.T) {
 		"catalog error":            {502, `{"error":"boom"}`},
 		"malformed json":           {200, `{`},
 		"winner and fallback both": {200, strings.Replace(resolutionBody(900, true), `"candidates":[]`, `"candidates":[],"fallback_reason":"no_eligible_rule"`, 1)},
-		"neither winner nor fallback": {200, strings.Replace(
-			strings.Replace(resolutionBody(2500, false), `,"fallback_reason":"no_eligible_rule"`, ``, 1),
-			`"winner":null`, `"winner":null`, 1)},
+		"neither winner nor fallback": {200,
+			strings.Replace(resolutionBody(2500, false), `,"fallback_reason":"no_eligible_rule"`, ``, 1)},
 		"resolved price disagrees with winner": {200, strings.Replace(resolutionBody(900, true),
 			`"resolved_price":{"amount":900`, `"resolved_price":{"amount":901`, 1)},
-		"non-absolute action":  {200, strings.Replace(resolutionBody(900, true), `"absolute"`, `"multiplier"`, 1)},
-		"negative amount":      {200, strings.Replace(resolutionBody(900, true), `"amount":900,"currency":"EUR"},"winner"`, `"amount":-1,"currency":"EUR"},"winner"`, 1)},
-		"wrong organizer":      {200, strings.Replace(resolutionBody(900, true), pricingOrg, "00000000-0000-0000-0000-0000000000ff", 1)},
-		"non-EUR currency":     {200, strings.ReplaceAll(resolutionBody(900, true), `"EUR"`, `"USD"`)},
+		"non-absolute action": {200, strings.Replace(resolutionBody(900, true), `"absolute"`, `"multiplier"`, 1)},
+		// Both the resolved price AND the winner's amount, so this fails on the
+		// NEGATIVE guard rather than on winner-disagreement. Changing only one
+		// made the fixture pass for the wrong reason: deleting the negative
+		// check would not have reddened it.
+		"negative amount":  {200, strings.ReplaceAll(resolutionBody(900, true), `"amount":900`, `"amount":-1`)},
+		"wrong organizer":  {200, strings.Replace(resolutionBody(900, true), pricingOrg, "00000000-0000-0000-0000-0000000000ff", 1)},
+		"non-EUR currency": {200, strings.ReplaceAll(resolutionBody(900, true), `"EUR"`, `"USD"`)},
+		// A resolver newer than this build understands. A future version exists
+		// BECAUSE the comparator's semantics changed, so pricing against it with
+		// today's assumptions is how a wrong number reaches a buyer quietly.
+		"future resolver version": {200, strings.Replace(resolutionBody(900, true), `"resolver_version":2`, `"resolver_version":999`, 1)},
+		// base_price absent decodes to a zero Money and is never inspected on
+		// the winner path, so the response would sail through.
+		"missing base_price":      {200, strings.Replace(resolutionBody(900, true), `"base_price":{"amount":2500,"currency":"EUR"},`, ``, 1)},
+		"missing evaluated_at":    {200, strings.Replace(resolutionBody(900, true), `"evaluated_at":"2026-07-31T00:00:00Z",`, ``, 1)},
+		"winner without scope_id": {200, strings.Replace(resolutionBody(900, true), `"scope_id":"00000000-0000-0000-0000-0000000000e1",`, ``, 1)},
+		// Valid JSON to Go, REJECTED by PostgreSQL jsonb. Without an early check
+		// this validates, creates the hold, and only then fails the insert --
+		// leaving an orphan hold and a 500 for the buyer.
+		"unstorable NUL in an unknown field": {200, strings.Replace(resolutionBody(900, true), `"candidates":[]`, `"candidates":[],"future_field":"\u0000"`, 1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, held, done := pricingStack(t, tc.status, tc.body)

@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -34,6 +36,11 @@ import (
 // Neither ever degrades to the base price. "No rule matched" is NOT in this
 // list: it is a successful resolution that answers with the base price, and
 // conflating the two is exactly how a sale silently prices itself wrong.
+// maxKnownResolverVersion is the newest comparator semantics this build can
+// price against. Catalog's own constant is the source; bumping it there without
+// bumping this deliberately makes commerce refuse rather than guess.
+const maxKnownResolverVersion int32 = 2
+
 var (
 	errResolveUnavailable = errors.New("price resolution unavailable")
 	errResolveUnusable    = errors.New("price resolution unusable")
@@ -47,6 +54,7 @@ type resolvedMoney struct {
 type resolvedRule struct {
 	RuleID     uuid.UUID `json:"rule_id"`
 	ScopeLevel string    `json:"scope_level"`
+	ScopeID    uuid.UUID `json:"scope_id"`
 	ActionKind string    `json:"action_kind"`
 	Amount     int64     `json:"amount"`
 	Currency   string    `json:"currency"`
@@ -54,6 +62,7 @@ type resolvedRule struct {
 
 type priceResolution struct {
 	ResolverVersion int32         `json:"resolver_version"`
+	EvaluatedAt     time.Time     `json:"evaluated_at"`
 	OrganizerID     uuid.UUID     `json:"organizer_id"`
 	PerformanceID   uuid.UUID     `json:"performance_id"`
 	BasePrice       resolvedMoney `json:"base_price"`
@@ -96,6 +105,15 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 		return priceResolution{}, fmt.Errorf("%w: body is not a PriceResolution", errResolveUnusable)
 	}
 	p.raw = append(json.RawMessage(nil), body...)
+	// The snapshot has to be STORABLE, and that has to be known before a hold
+	// exists. PostgreSQL's jsonb rejects the NUL code point while Go's decoder
+	// accepts it, so a response carrying one anywhere -- including in a field
+	// this build does not know -- would validate, create inventory, and only
+	// then fail the insert, leaving an orphan hold and a 500. Check it here,
+	// where failing is still free.
+	if bytes.Contains(body, []byte(`\u0000`)) {
+		return priceResolution{}, fmt.Errorf("%w: body is not storable as jsonb", errResolveUnusable)
+	}
 	if err := p.validate(organizerID, quantity); err != nil {
 		return priceResolution{}, err
 	}
@@ -107,8 +125,23 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 func (p priceResolution) validate(organizerID uuid.UUID, quantity int32) error {
 	bad := func(why string) error { return fmt.Errorf("%w: %s", errResolveUnusable, why) }
 
-	if p.ResolverVersion < 1 {
-		return bad("resolver_version below 1")
+	// Refuse a resolver this build does not understand. Accepting anything >= 1
+	// was the exact inversion of the rule this file claims to follow: a future
+	// version exists BECAUSE the comparator's semantics changed, so pricing a
+	// sale with today's assumptions against tomorrow's resolver is how a wrong
+	// number reaches a buyer silently. Same trap ADR-017 documents for event
+	// schemas -- judge the version before trusting the payload.
+	if p.ResolverVersion < 1 || p.ResolverVersion > maxKnownResolverVersion {
+		return bad("unsupported resolver_version")
+	}
+	// base_price absent decodes to a zero Money and would never be looked at on
+	// the winner path. Require it: a response that cannot say what the price was
+	// BEFORE rules is not a resolution.
+	if p.BasePrice.Currency == "" {
+		return bad("missing base_price")
+	}
+	if p.EvaluatedAt.IsZero() {
+		return bad("missing evaluated_at")
 	}
 	// Whose ticket type this is. Answering for a different tenant is not a
 	// pricing error, it is a tenancy breach (ADR-002).
@@ -143,7 +176,7 @@ func (p priceResolution) validate(organizerID uuid.UUID, quantity int32) error {
 		if p.Winner.Amount != p.ResolvedPrice.Amount || p.Winner.Currency != p.ResolvedPrice.Currency {
 			return bad("resolved_price disagrees with the winning rule")
 		}
-		if p.Winner.RuleID == uuid.Nil || p.Winner.ScopeLevel == "" {
+		if p.Winner.RuleID == uuid.Nil || p.Winner.ScopeLevel == "" || p.Winner.ScopeID == uuid.Nil {
 			return bad("winner is missing its identity")
 		}
 	}
