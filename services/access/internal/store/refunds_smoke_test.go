@@ -291,9 +291,20 @@ func TestRefundIDCannotVoidTicketsInASecondOrder(t *testing.T) {
 	}
 }
 
-// The same reuse, raced. The two requests lock DISJOINT ticket rows, so nothing in the
-// per-order locking serializes them — only the binding's primary key does.
-func TestConcurrentCrossOrderRefundIDReuseVoidsOneBatch(t *testing.T) {
+// The same reuse, with the interleaving PINNED rather than raced.
+//
+// A two-goroutine version was written first and the review was right about it: nothing
+// forces both transactions to read "no binding" before either inserts, so one can commit
+// first and the other returns the conflict from the ordinary binding CHECK — passing even
+// with the 23505 mapping deleted. That is the same defect as TKT-156's racing test, which
+// passed against deliberately broken code. When the fix is a specific error path, drive
+// that path.
+//
+// Here the binding row is held uncommitted by an outer transaction, so RefundOrderTickets
+// gets past its own binding check (which cannot see the uncommitted row), blocks on the
+// primary key, and receives 23505 the instant the outer transaction commits. That is
+// exactly the production interleaving, and it happens every run.
+func TestCrossOrderRefundIDLoserGetsAConflictNotAnInternalError(t *testing.T) {
 	ctx := context.Background()
 	db := migratedDB(t, ctx)
 	st := New(db, testConfig(t))
@@ -302,31 +313,38 @@ func TestConcurrentCrossOrderRefundIDReuseVoidsOneBatch(t *testing.T) {
 	orderB, _, _ := issueOrder(t, ctx, st, org, 2)
 	refundID := uuid.New()
 
-	errs := make(chan error, 2)
-	for _, order := range []uuid.UUID{orderA, orderB} {
-		go func(o uuid.UUID) {
-			_, err := st.RefundOrderTickets(ctx, org, o, refundID, 1)
-			errs <- err
-		}(order)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Counting successes is not enough: the loser must fail with the CONFLICT, not with a
-	// raw unique violation the API would map to 500 (ai-review pass 2 caught exactly that,
-	// because the first version of this test only counted).
-	var ok, conflicts int
-	for i := 0; i < 2; i++ {
-		switch err := <-errs; {
-		case err == nil:
-			ok++
-		case errors.Is(err, ErrRefundBatchConflict):
-			conflicts++
-		default:
-			t.Fatalf("loser failed with %v, want ErrRefundBatchConflict", err)
-		}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO ticket_refund_batches(organizer_id,refund_id,order_id,quantity) VALUES($1,$2,$3,1)`,
+		org, refundID, orderA); err != nil {
+		t.Fatal(err)
 	}
-	if ok != 1 || conflicts != 1 {
-		t.Fatalf("%d succeeded and %d conflicted, want exactly 1 of each", ok, conflicts)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.RefundOrderTickets(ctx, org, orderB, refundID, 1)
+		done <- err
+	}()
+
+	// It must be blocked on the primary key, not answering from the binding check: an
+	// uncommitted row is invisible to that check by construction.
+	select {
+	case err := <-done:
+		t.Fatalf("returned (%v) without contending on the binding primary key", err)
+	case <-time.After(750 * time.Millisecond):
 	}
-	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='refunded'`); n != 1 {
-		t.Fatalf("refunded events = %d, want 1", n)
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrRefundBatchConflict) {
+		t.Fatalf("err = %v, want ErrRefundBatchConflict — a raw 23505 becomes an API 500", err)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='refunded'`); n != 0 {
+		t.Fatalf("the losing request voided %d tickets", n)
 	}
 }

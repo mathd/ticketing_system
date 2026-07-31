@@ -57,8 +57,13 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 		// answers before the response validator can see it. Internal routes get the
 		// Error shape they declare.
 		if strings.HasPrefix(req.URL.Path, "/internal/") {
-			// 404 here means no operation matched at all. Preserve it rather than
-			// inventing a 400 for a route the contract does not describe.
+			// 404 covers BOTH an unknown path and a wrong method: the middleware
+			// reports every route-lookup failure as 404, and it is not worth
+			// distinguishing here (ai-review pass 3). This route already answers 404
+			// to any caller without the internal token, so answering 404 to a wrong
+			// method is the same deliberate silence rather than a new one — and 405
+			// is not a status this operation declares, so returning it would be the
+			// undeclared-status drift this handler exists to stop.
 			if status == http.StatusNotFound {
 				write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 				return
