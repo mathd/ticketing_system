@@ -542,3 +542,26 @@ func TestExchangeDeltaDirections(t *testing.T) {
 		})
 	}
 }
+
+// ai-review pass 4. The exchange hold is keyed on the exchange IDENTITY, so two concurrent
+// requests sharing an idempotency key and target share the hold. On ErrExchangeConflict the
+// OTHER request owns that exchange and is about to finalize this very claim — releasing it
+// would break the winner and leave a durable exchange bound to a released claim. Every
+// other bind error means nothing bound under this identity, so the hold is ours to return.
+func TestShouldReleaseHoldOnBindError(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"conflict — the winner shares this hold": {commercestore.ErrExchangeConflict, false},
+		"order already exchanged":                {commercestore.ErrOrderNotExchangeable, true},
+		"unknown order":                          {sql.ErrNoRows, true},
+		"anything else":                          {errors.New("connection reset"), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := shouldReleaseHoldOnBindError(tc.err); got != tc.want {
+				t.Fatalf("shouldRelease(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}

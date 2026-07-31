@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -150,12 +151,16 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 
 	ex, err := commercestore.BindOrderExchange(r.Context(), s.db, request)
 	if err != nil {
-		// Release the hold THIS request just took. A losing racer that keeps its hold
-		// consumes target capacity for the full TTL, so repeated attempts against an
-		// already-exchanged order drain an on-sale pool (ai-review pass 3). Best-effort and
-		// safe either way: the hold is keyed on this exchange identity, so releasing it
-		// cannot touch another request's claim.
-		s.releaseExchangeHold(r, in.OrganizerID, hold)
+		// Release the hold THIS request took — but only when it is certainly ours
+		// (ai-review pass 4). The hold is keyed on the exchange IDENTITY, and two
+		// concurrent requests sharing an idempotency key and target share that identity,
+		// so they share the hold. On ErrExchangeConflict the other request is the owner
+		// and is about to finalize this very claim; releasing it would make the WINNER
+		// fail, leaving a durable exchange bound to a released claim. Every other bind
+		// error means no exchange under this identity bound at all, so the hold is ours.
+		if shouldReleaseHoldOnBindError(err) {
+			s.releaseExchangeHold(r, in.OrganizerID, hold)
+		}
 		code, message := exchangeProblem(err)
 		if code == http.StatusInternalServerError {
 			slog.Default().ErrorContext(r.Context(), "bind order exchange", "err", err)
@@ -240,17 +245,33 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	writeExchange(w, ex, false)
 }
 
+// shouldReleaseHoldOnBindError decides whether the hold this request took belongs to it.
+//
+// ErrExchangeConflict is the one case where it does not: the same exchange identity is
+// already bound by another request, which therefore shares this hold and is about to
+// finalize it. Releasing then breaks the winner rather than tidying after the loser.
+func shouldReleaseHoldOnBindError(err error) bool {
+	return !errors.Is(err, commercestore.ErrExchangeConflict)
+}
+
 // releaseExchangeHold returns a hold this request created and will not use. Best-effort:
 // an unreleased hold expires on its own, so a failure here costs a TTL of capacity rather
 // than correctness — which is why it must not turn a refusal into a 500.
+//
+// It runs on a DETACHED context (ai-review pass 4). The commonest reason a bind fails is
+// the client giving up, and r.Context() is already cancelled by then — so cleanup keyed to
+// it cannot run at exactly the moment it is most needed, during the contention that made
+// the client give up. Bounded, because best-effort work must not outlive its usefulness.
 func (s *Server) releaseExchangeHold(r *http.Request, org, hold uuid.UUID) {
 	if hold == uuid.Nil {
 		return
 	}
-	code, _, err := s.call(r.Context(), http.MethodPost,
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	code, _, err := s.call(ctx, http.MethodPost,
 		fmt.Sprintf("%s/internal/holds/%s/release?organizer_id=%s", s.inventoryURL, hold, org), "", nil, true)
 	if err != nil || code != http.StatusOK {
-		slog.Default().WarnContext(r.Context(), "exchange target hold not released; it will expire",
+		slog.Default().WarnContext(ctx, "exchange target hold not released; it will expire",
 			"hold_id", hold, "status", code, "err", err)
 	}
 }
