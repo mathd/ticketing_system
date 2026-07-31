@@ -1,0 +1,126 @@
+{
+  "key": "TKT-168",
+  "type": "Task",
+  "parent": "TKT-10",
+  "classification": "complex",
+  "summary": "Payments exposes no provider-neutral amount evidence, so callers cannot prove what moved",
+  "description": "Found by the TKT-158 adversarial review (P3-5, P3-6).\n\n`GET /internal/operations` answers `resolved`, `status`, `fact_id`, `occurred_at` — deliberately provider-neutral, and deliberately not a ledger read. The consequence: **a caller cannot prove how much moved.** TKT-158's smoke test can assert that an exchange charge operation exists and captured, but changing the charge from the computed delta to `1` leaves every assertion green. There is no read-only evidence for a **refund leg** at all, so a downgrade whose refund call was replaced by a no-op also passes.\n\nThe tests are currently reduced to asserting commerce's own arithmetic back to itself, which is exactly the gap the review named. Fixing it in commerce is not possible — the evidence does not exist to assert against.\n\n**Not simply 'add the amount'.** `OperationState`'s neutrality is a deliberate ADR-032 property: no provider references, no payment-method reference, no secret material. Captured amount and currency are arguably fine under that rule — they are what the journal already records — but that is a decision to take explicitly rather than by adding a field.\n\n**Acceptance Criteria:**\n- [ ] A read-only, provider-neutral surface exposes the **captured amount and currency** for an operation, and the **completed state, amount and currency** for a refund leg keyed by (source key, refund key).\n- [ ] ADR-032's neutrality rule is re-stated or amended explicitly to cover it — no provider references, no payment-method reference, no secret material.\n- [ ] TKT-158's smoke assertions are strengthened to use it: the upgrade charge equals the delta, the downgrade refund leg completed for exactly `-delta`, and the opposite leg does not exist.\n\nQuality gates: `make check` green; contract tests; no change to what the journal records.",
+  "context": {
+    "capturedAt": "2026-07-31",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-31",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-31",
+        "rule": "Traceability is a must, for money and tickets: money-relevant records land as immutable, hash-chained, signed journal entries from the first order (corrections = compensating entries; read models = projections), and every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "Catalog is the SINGLE authority for the rule-resolved unit price and commerce consumes `resolved_price` without recomputing it. Any re-pricing (an exchange) resolves through catalog and persists the §5 provenance snapshot for the NEW reservation — never copies the old snapshot."
+      },
+      {
+        "id": "ADR-003",
+        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
+      },
+      {
+        "id": "ADR-032",
+        "why": "All provider money movement goes through the PSP port. `/internal/psp/refund` and the `payment_compensations` table already exist (TKT-114/116) — the PRIMARY KEY (organizer, source_idempotency_key, kind) is what converges duplicate refunds onto ONE provider idempotency key. Reuse it; do not add a parallel refund path."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
+      },
+      {
+        "id": "ADR-011",
+        "why": "The checkout journal protocol defines how commerce records money facts (order_facts row → payments /internal/facts, deterministic fact_id, idempotent). A post-purchase money movement uses the same protocol; do not invent a second one."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Inventory's claim transaction is the contention path. Giving capacity back must go through the same row-locked transaction discipline; a plain UPDATE outside it can drive confirmed_quantity negative or double-return under concurrency."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed. Responses are validated against the spec; an undeclared status code becomes a 500. Every new endpoint must declare every status it can answer, and a downstream answer commerce cannot validate aborts rather than degrades."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first. A new operation is written in the service's openapi.yaml first, then `openapi_gen.go` / `api-types.gen.ts` are regenerated and COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Commerce and inventory ARE inside the smoke happy-path coverage gate. A new documented 2xx operation must be exercised through the running stack or the suite fails."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's `migrate` subcommand as a one-shot Compose job. Add the SQL under the service's internal/store/migrations/ with the next number; the server path never migrates."
+      }
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Money-path tests currently assert a service's own response back to itself, because no independent evidence exists to assert against."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: read-only amount/currency evidence for operations and refund legs, and the ADR-032 clarification. OUT: any change to what the journal records or to provider dialects."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether captured amount belongs on the existing operation read or a separate evidence endpoint is a Planning-time call."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. TKT-158 and TKT-167 both benefit but neither blocks it."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend the operation read and add a refund-leg read; both organizer-scoped and internal-token protected, as their neighbours are."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Captured amount on the operation read, with TKT-158's upgrade assertion strengthened to use it."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable: change a charge amount in code and watch a smoke assertion fail, which it does not today."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Inherited from TKT-158. ADR-032's provider-neutrality rule is the constraint this must satisfy or amend."
+    }
+  },
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-158"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\nShapeable, with one genuine decision in it: whether a captured amount belongs on a surface ADR-032 made deliberately provider-neutral. It probably does — the journal already records it — but that is a decision, which is why this is a ticket and not a commit.\n\n**Concerns:** (1) the neutrality question above. (2) It exists because money-path tests could not prove what moved; until it lands, TKT-158's and TKT-167's payment assertions are weaker than they read.\n\n**Verdict:** CONCERNS — proceedable."
+    }
+  ],
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null
+}
