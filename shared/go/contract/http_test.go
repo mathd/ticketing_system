@@ -169,7 +169,7 @@ func TestResponseValidationUsesRequestContext(t *testing.T) {
 func TestCustomRequestValidationError(t *testing.T) {
 	handler, err := RequestValidatorWithErrorHandler(testSpec, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("invalid request reached handler")
-	}), nil, true, func(w http.ResponseWriter, _ string, _ int) {
+	}), nil, true, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) {
 		writeValidationError(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected"})
 	})
 	if err != nil {
@@ -348,5 +348,31 @@ func TestResponseValidatorDisabledPassesDriftUnmodified(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("disabled validation must not log drift: %q", buf.String())
+	}
+}
+
+// The handler receives the request, so a service whose established error representation
+// suits one route family can answer differently for another (TKT-157 ai-review F4).
+// Without it, access emitted its gate-shaped 422 on an internal route declaring no 422 —
+// an undeclared status reached through the one path that runs BEFORE the response
+// validator, so nothing downstream could catch it.
+func TestCustomRequestValidationErrorSeesTheRequest(t *testing.T) {
+	handler, err := RequestValidatorWithErrorHandler(testSpec, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid request reached handler")
+	}), nil, true, func(w http.ResponseWriter, r *http.Request, _ string, status int) {
+		if r == nil {
+			t.Fatal("error handler received no request")
+		}
+		writeValidationError(w, status, map[string]string{"path": r.URL.Path})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/things", strings.NewReader(`{"unknown":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, request)
+	if !strings.Contains(recorder.Body.String(), `"path":"/things"`) {
+		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }

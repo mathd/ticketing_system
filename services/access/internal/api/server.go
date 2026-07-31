@@ -48,7 +48,18 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/scans", s.scan)
 	r.Post("/scans/reconciliations", s.reconcile)
 	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
-	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, _ string, _ int) {
+	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, _ int) {
+		// The scan-shaped 422 is the gate's established representation and stays that
+		// way — but it is not this whole service's, and applying it to the internal
+		// refund route emitted a status that route does not declare (ai-review F4).
+		// An undeclared status is exactly the drift ADR-028's response validator exists
+		// to turn into a 500, and here it slipped past because the REQUEST validator
+		// answers before the response validator can see it. Internal routes get the
+		// Error shape they declare.
+		if strings.HasPrefix(req.URL.Path, "/internal/") {
+			write(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+			return
+		}
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 	})
 	if err != nil {

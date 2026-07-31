@@ -21,9 +21,15 @@ import (
 // that pass voided and select the NEXT q, voiding the order twice over.
 //
 // Stability comes from the lifecycle event id, which is derived from (refund, ticket).
-// A replay looks for events this refund itself wrote and answers with those tickets,
-// so no second table is needed to remember the choice — the trail already records it,
-// under a name only this refund can produce.
+// A replay looks for events this refund itself wrote and answers with those tickets —
+// the trail already records the choice, under a name only this refund can produce.
+//
+// That covers "which tickets", and it is not the whole binding. It says nothing about
+// which ORDER a refund id belongs to: presented against a different order, the same
+// refund id derives different event ids, finds nothing of its own, and voids a fresh
+// batch. `ticket_refund_batches` exists for exactly that one fact — (refund → order,
+// quantity) — and deliberately does not duplicate the ticket ids the trail already
+// holds (ai-review F2).
 
 // ErrTicketsNotIssued reports that the order does not have q unrefunded tickets to
 // void — including the case where it has none at all.
@@ -90,8 +96,27 @@ func (p *Postgres) RefundOrderTickets(ctx context.Context, org, order, refundID 
 	}
 	_ = rows.Close()
 
-	// The replay resolves BEFORE any selection and appends nothing — appendLifecycle's
-	// own contract is that idempotency is settled before it is called, never inside it.
+	// The refund id binds to exactly one (order, quantity), and that binding is checked
+	// BEFORE the per-ticket replay below. The event-id derivation cannot express it: the
+	// same refund id presented against a different order produces different event ids,
+	// so the per-ticket check would find nothing of its own and void a fresh batch
+	// (ai-review F2). The binding is what makes ErrRefundBatchConflict true.
+	var boundOrder uuid.UUID
+	var boundQty int32
+	err = tx.QueryRowContext(ctx, `SELECT order_id,quantity FROM ticket_refund_batches WHERE organizer_id=$1 AND refund_id=$2`, org, refundID).
+		Scan(&boundOrder, &boundQty)
+	switch {
+	case err == nil:
+		if boundOrder != order || boundQty != quantity {
+			return TicketRefundBatch{}, ErrRefundBatchConflict
+		}
+	case !errors.Is(err, sql.ErrNoRows):
+		return TicketRefundBatch{}, err
+	}
+
+	// The per-ticket replay resolves BEFORE any selection and appends nothing —
+	// appendLifecycle's own contract is that idempotency is settled before it is
+	// called, never inside it.
 	var mine, free []uuid.UUID
 	for _, id := range all {
 		voidedBy, err := refundThatVoided(ctx, tx, id)
@@ -116,6 +141,15 @@ func (p *Postgres) RefundOrderTickets(ctx context.Context, org, order, refundID 
 		return TicketRefundBatch{}, fmt.Errorf("%w: %d of %d available", ErrTicketsNotIssued, len(free), quantity)
 	}
 	selected := free[:quantity]
+
+	// Claim the binding in the same transaction as the events. A concurrent request
+	// reusing this refund id against another order loses on the primary key rather than
+	// voiding a second batch.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO ticket_refund_batches(organizer_id,refund_id,order_id,quantity) VALUES($1,$2,$3,$4)`,
+		org, refundID, order, quantity); err != nil {
+		return TicketRefundBatch{}, err
+	}
 
 	var identity TicketIdentity
 	if err := tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1`, selected[0]).

@@ -262,3 +262,63 @@ func TestRefundOrderTicketsIsOrganizerScoped(t *testing.T) {
 		t.Fatalf("err = %v, want the order to be invisible to another organizer", err)
 	}
 }
+
+// ai-review F2: a refund id belongs to ONE order. The event-id derivation cannot say so
+// — against a different order it derives different ids, finds nothing of its own, and
+// would happily void a second batch — so the binding is stored and checked.
+func TestRefundIDCannotVoidTicketsInASecondOrder(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	orderA, _, _ := issueOrder(t, ctx, st, org, 2)
+	orderB, _, _ := issueOrder(t, ctx, st, org, 2)
+	refundID := uuid.New()
+
+	if _, err := st.RefundOrderTickets(ctx, org, orderA, refundID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RefundOrderTickets(ctx, org, orderB, refundID, 1); !errors.Is(err, ErrRefundBatchConflict) {
+		t.Fatalf("err = %v, want ErrRefundBatchConflict — one refund id, one order", err)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='refunded'`); n != 1 {
+		t.Fatalf("refunded events = %d, want 1 (the second order must be untouched)", n)
+	}
+	// The same refund id with a different QUANTITY against its own order is equally a
+	// conflict — a replay must be the same request or no request.
+	if _, err := st.RefundOrderTickets(ctx, org, orderA, refundID, 2); !errors.Is(err, ErrRefundBatchConflict) {
+		t.Fatalf("err = %v, want ErrRefundBatchConflict for a changed quantity", err)
+	}
+}
+
+// The same reuse, raced. The two requests lock DISJOINT ticket rows, so nothing in the
+// per-order locking serializes them — only the binding's primary key does.
+func TestConcurrentCrossOrderRefundIDReuseVoidsOneBatch(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	orderA, _, _ := issueOrder(t, ctx, st, org, 2)
+	orderB, _, _ := issueOrder(t, ctx, st, org, 2)
+	refundID := uuid.New()
+
+	errs := make(chan error, 2)
+	for _, order := range []uuid.UUID{orderA, orderB} {
+		go func(o uuid.UUID) {
+			_, err := st.RefundOrderTickets(ctx, org, o, refundID, 1)
+			errs <- err
+		}(order)
+	}
+	var ok int
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err == nil {
+			ok++
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("%d of 2 cross-order reuses succeeded, want exactly 1", ok)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='refunded'`); n != 1 {
+		t.Fatalf("refunded events = %d, want 1", n)
+	}
+}

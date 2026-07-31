@@ -22,6 +22,26 @@ CREATE UNIQUE INDEX lifecycle_events_singleton_type_uidx
   ON lifecycle_events (ticket_id, event_type)
   WHERE event_type IN ('issued', 'delivered', 'redeemed', 'refunded');
 
+-- One refund id, one order, one quantity.
+--
+-- The lifecycle event id already records WHICH tickets a refund voided — it is
+-- derived from (refund_id, ticket_id), so an event under that id can only have
+-- been written by that refund. What it cannot express is the binding the other
+-- way: nothing stops the same refund id being presented against a DIFFERENT
+-- order, whose tickets produce different event ids, so the replay check finds
+-- nothing of its own and voids a fresh batch (ai-review F2).
+--
+-- Deliberately does NOT store the ticket ids. Those are in the trail, and
+-- copying them here would be a second, divergeable record of the same fact.
+CREATE TABLE ticket_refund_batches (
+  organizer_id uuid NOT NULL,
+  refund_id uuid NOT NULL,
+  order_id uuid NOT NULL,
+  quantity integer NOT NULL CHECK (quantity BETWEEN 1 AND 50),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (organizer_id, refund_id)
+);
+
 -- +goose Down
 -- Unconditionally irreversible, like 0004, 0005 and 0006 before it. Access
 -- migrations over the lifecycle trail do not roll back: the trail is signed and

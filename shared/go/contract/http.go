@@ -34,7 +34,14 @@ func RequestValidator(spec []byte, next http.Handler, log *slog.Logger, validate
 
 // RequestValidatorWithErrorHandler lets a service preserve an established
 // error representation for requests rejected before its handler runs.
-func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
+//
+// The handler receives the REQUEST, not just the message: a service's established
+// representation is rarely the right answer for every route it serves, and a handler
+// that cannot see which route it is answering for can only answer uniformly. Access
+// learned this by emitting its gate-shaped 422 on an internal route that declares no
+// 422 — an undeclared status, which is precisely the drift the response validator
+// exists to catch, reached through the one path that runs before it (TKT-157 ai-review).
+func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int)) (http.Handler, error) {
 	return requestValidator(spec, next, log, validateResponses, errorHandler)
 }
 
@@ -128,18 +135,18 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 	})
 }
 
-func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, string, int)) (http.Handler, error) {
+func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int)) (http.Handler, error) {
 	doc, router, err := load(spec)
 	if err != nil {
 		return nil, err
 	}
 	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, &oapimiddleware.Options{
-		ErrorHandler: func(w http.ResponseWriter, message string, status int) {
+		ErrorHandlerWithOpts: func(_ context.Context, err error, w http.ResponseWriter, r *http.Request, opts oapimiddleware.ErrorHandlerOpts) {
 			if errorHandler != nil {
-				errorHandler(w, message, status)
+				errorHandler(w, r, err.Error(), opts.StatusCode)
 				return
 			}
-			writeValidationError(w, status, map[string]string{"error": message})
+			writeValidationError(w, opts.StatusCode, map[string]string{"error": err.Error()})
 		},
 	})
 	inner := next

@@ -52,8 +52,14 @@ remembered.
 
 It is remembered by the lifecycle event id, derived from `(refund_id, ticket_id)`. An event under
 that id can only have been written by that refund against that ticket, so a replay finds its own
-work and answers with it. A separate batch table was designed and then dropped: it stored what the
-trail already recorded, under a name only the same refund could produce.
+work and answers with it.
+
+That covers *which tickets*, and it took an adversarial review to notice it is not the whole
+binding. It says nothing about which **order** a refund id belongs to: presented against a different
+order, the same refund id derives different event ids, finds nothing of its own, and voids a second
+batch. `ticket_refund_batches` therefore exists — but for that one fact only, `(refund → order,
+quantity)`. It deliberately does **not** store the ticket ids, which the trail already holds and
+which a second copy could only diverge from.
 
 Concurrent refunds of one order lock **every** ticket of the order in id order before selecting.
 Two refunds would otherwise read the same unrefunded set; locking in a total order also means they
@@ -74,8 +80,16 @@ Not folded into `already_redeemed`, which would assert an admission that never h
 integrity verdict, which describes chain health. `ScanRejected.reason` is an unconstrained string by
 design, so the new verdict reaches the wire without a contract change.
 
-**Offline reconciliation is out of scope and stays that way.** It records occurrences that already
-physically happened; denying them retroactively would falsify the trail rather than protect a gate.
+**Offline reconciliation is out of scope, and that bounds the claim.** Reconciliation records
+occurrences that already physically happened; refusing to record one would falsify the trail rather
+than protect a gate — the person is already inside. So say it precisely: **a refunded ticket is
+refused by a LIVE gate. An offline scanner will still admit it, and the sync will faithfully record
+that it did.**
+
+The missing capability is revocation propagation to offline scanners, which is a scanner/offline
+distribution feature (ADR-025's territory), not something this path can fix by denying a fact.
+Tracked as **TKT-162**. Raised by the TKT-157 adversarial review, which was right that the
+unqualified claim "a refunded ticket stops working at the gate" was too broad.
 
 ### 5. "Not enough tickets" is *not yet*, never *nothing to void*
 
@@ -101,7 +115,9 @@ field is **required** in the response, not omitted, because a caller who cannot 
 ### 7. No recovery runner
 
 Retry is a **replay of the same refund idempotency key**, which resumes whatever is outstanding —
-the path ADR-037 already built. A leased runner with claim tokens, attempts, backoff and fenced
+the path ADR-037 already built. **Nothing retries on its own**: an access outage, or a refund that
+outruns issuance, leaves the tickets valid until something replays the refund. That is the accepted
+cost, stated rather than papered over, and it is tracked as **TKT-163**. A leased runner with claim tokens, attempts, backoff and fenced
 writes was designed and rejected: the requirement is that outstanding work be *visible and
 retryable*, not automatically retried, and a second recovery state machine in commerce is a large
 cost against a requirement nobody stated. Adding one later is additive; shipping one now would
