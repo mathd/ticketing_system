@@ -49,6 +49,12 @@ type fakeStore struct {
 	seatSeats      map[uuid.UUID]fakeSeat
 	pinPage        []store.SeatMapPin // what ListSeatMapPins hands back (TKT-112)
 	pinLimits      []int              // the limits it was asked for
+	// TKT-151 pricing. The fake holds rules keyed by the ticket type they were
+	// seeded against, and runs the REAL pure comparator over them — the point of
+	// the API tests is the handler and the contract mapping, not a second
+	// re-implementation of ADR-036 §4 that could agree with a wrong resolver.
+	priceRules map[uuid.UUID][]store.PriceRule
+	priceScope map[uuid.UUID]store.PricingScopes
 }
 
 // fakeSection/fakeRow/fakeSeat carry the parent linkage the SQL enforces via
@@ -615,6 +621,62 @@ func (f *fakeStore) GetTicketType(_ context.Context, id uuid.UUID) (store.Ticket
 		return store.TicketType{}, store.ErrNotFound
 	}
 	return tt, nil
+}
+
+// CreatePriceRule mirrors the SQL write gate's contract: a scope_id that names
+// no seeded entity of that kind is ErrNotFound and nothing is stored.
+func (f *fakeStore) CreatePriceRule(_ context.Context, in store.PriceRuleInput) (store.PriceRule, error) {
+	known := false
+	switch in.ScopeLevel {
+	case store.ScopeTicketType:
+		_, known = f.ticketTypes[in.ScopeID]
+	case store.ScopeSlot:
+		_, known = f.performances[in.ScopeID]
+	case store.ScopeSeries:
+		_, known = f.series[in.ScopeID]
+	case store.ScopeEvent:
+		_, known = f.events[in.ScopeID]
+	case store.ScopeVenue:
+		_, known = f.venues[in.ScopeID]
+	}
+	if !known {
+		return store.PriceRule{}, store.ErrNotFound
+	}
+	r := store.PriceRule{
+		ID: uuid.New(), OrganizerID: in.OrganizerID, ScopeLevel: in.ScopeLevel,
+		ScopeID: in.ScopeID, ActionKind: store.ActionAbsolute, Amount: in.Amount,
+		Currency: in.Currency, Priority: in.Priority,
+		ForceAncestorOverride: in.ForceAncestorOverride, CreatedAt: time.Now().UTC(),
+	}
+	if f.priceRules == nil {
+		f.priceRules = map[uuid.UUID][]store.PriceRule{}
+	}
+	f.priceRules[in.ScopeID] = append(f.priceRules[in.ScopeID], r)
+	return r, nil
+}
+
+func (f *fakeStore) ResolveTicketTypePrice(_ context.Context, ticketTypeID uuid.UUID, at time.Time) (store.RuleSelection, error) {
+	tt, ok := f.ticketTypes[ticketTypeID]
+	if !ok {
+		return store.RuleSelection{}, store.ErrNotFound
+	}
+	scopes, ok := f.priceScope[ticketTypeID]
+	if !ok {
+		scopes = store.PricingScopes{TicketTypeID: ticketTypeID}
+	}
+	scopes.TicketTypeID = ticketTypeID
+	var rules []store.PriceRule
+	for _, id := range []uuid.UUID{scopes.TicketTypeID, scopes.SlotID, scopes.EventID, scopes.VenueID} {
+		rules = append(rules, f.priceRules[id]...)
+	}
+	if scopes.SeriesID != nil {
+		rules = append(rules, f.priceRules[*scopes.SeriesID]...)
+	}
+	return store.SelectPricingRule(at, store.PricingCandidates{
+		BasePrice: store.Money{Amount: tt.PriceAmount, Currency: tt.Currency},
+		Scopes:    scopes,
+		Rules:     rules,
+	})
 }
 
 func (f *fakeStore) GetPublishedPerformance(_ context.Context, id uuid.UUID) (store.Performance, error) {

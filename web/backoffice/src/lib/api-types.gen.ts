@@ -476,6 +476,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ticket-types/{ticketTypeId}/price-resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve a ticket type's unit price through the rule hierarchy, with provenance
+         * @description Answers "what does this ticket type cost right now, and why" (TKT-151, ADR-036). Rules attach to one of five scope levels — ticket_type, slot, series, event, venue — and the narrowest wins, except that a rule marked force_ancestor_override restricts the competition to forced rules and inverts the order, so the broadest house rule wins. Ties break on priority, then on lowest rule id.
+         *     With no applicable rule the ticket type's own price is returned and fallback_reason says so, so a catalog with no rules prices exactly as it did before this operation existed.
+         *     The evaluation instant is the server's, NOT a request parameter. Letting a caller choose it would let anyone ask a sale-time price endpoint for early-bird pricing after the window closed. TKT-152 adds effective windows; the instant stays server-side.
+         *     This is catalog's question, not commerce's: ADR-036 §6 amends ADR-002 so rule-based unit-price resolution sits with the rule definitions, while sale-time composition (price + fees + promos + taxes) stays in commerce.
+         *     Cache-Control: no-store. That is a correctness tier, not a performance one — a resolved price feeds a money decision, and once TKT-152 adds windows the answer's correctness expires at a known instant.
+         */
+        get: operations["resolveTicketTypePrice"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/public/events": {
         parameters: {
             query?: never;
@@ -663,6 +687,65 @@ export interface components {
         /** @description Locale-keyed text; adding a locale is data, not a schema change (TKT-36) */
         LocalizedString: {
             [key: string]: string;
+        };
+        /** @description One pricing rule as reported in a resolution's provenance (ADR-036 §5). */
+        PriceRuleProvenance: {
+            /** Format: uuid */
+            rule_id: string;
+            /** @enum {string} */
+            scope_level: "ticket_type" | "slot" | "series" | "event" | "venue";
+            /** Format: uuid */
+            scope_id: string;
+            /**
+             * @description Tagged union with one member today; widening it later is additive (ADR-036 §2).
+             * @enum {string}
+             */
+            action_kind: "absolute";
+            /** Format: int64 */
+            amount: number;
+            currency: string;
+            /**
+             * Format: date-time
+             * @description Always null until TKT-152 adds effective windows. Declared now, not later, because TKT-153 persists this provenance shape as a snapshot on the reservation — if the shape changed between TKT-151 and TKT-152, stored snapshots would span two formats.
+             */
+            effective_from: string | null;
+            /**
+             * Format: date-time
+             * @description Always null until TKT-152 — see effective_from.
+             */
+            effective_until: string | null;
+            /** Format: int32 */
+            priority: number;
+            /** @description force_ancestor_override — restricts the competition to forced rules and inverts the scope order. */
+            forced: boolean;
+        };
+        /** @description A candidate that did not win, and why. The reason enum is closed and total over the comparator: every way a rule can lose has a value. */
+        LosingPriceRule: {
+            rule: components["schemas"]["PriceRuleProvenance"];
+            /** @enum {string} */
+            reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
+        };
+        /** @description A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. */
+        PriceResolution: {
+            /**
+             * Format: int32
+             * @description Bumped when the comparator's semantics change. A commitment, not a decoration: TKT-153 persists snapshots that must stay interpretable.
+             */
+            resolver_version: number;
+            /**
+             * Format: date-time
+             * @description The server-side instant the rules were evaluated against.
+             */
+            evaluated_at: string;
+            base_price: components["schemas"]["Money"];
+            resolved_price: components["schemas"]["Money"];
+            winner: components["schemas"]["PriceRuleProvenance"] | null;
+            candidates: components["schemas"]["LosingPriceRule"][];
+            /**
+             * @description Present only when no rule applied and base_price is the answer.
+             * @enum {string}
+             */
+            fallback_reason?: "no_eligible_rule";
         };
         /** @description Integer minor units + ISO-4217 code (ADR-001); no floats, ever */
         Money: {
@@ -1161,6 +1244,8 @@ export interface components {
         CacheControl: string;
         /** @description ADR-004 volatility tier for a seat-map read, driven by the payload's statuses (TKT-107): the hours tier only when the response is non-empty and every seat map in it is published, otherwise no-store. Draft geometry is mutable, so an hour of shared-cache lifetime would make an authoring write look lost; a published version is immutable (ADR-029), which is what makes the hours branch correct. One response carries one header, so a list takes its least-cacheable member's tier, and an empty list fails closed. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. no-store closes the shared-cache vector only — it is not access control. */
         SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
+        /** @description Always no-store. A resolved price feeds a money decision (ADR-004's "never" tier), and once TKT-152 adds effective windows the response's correctness expires at a known instant — caching it past that instant would sell at a stale price. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
+        PriceResolutionCacheControl: "no-store";
     };
     pathItems: never;
 }
@@ -2027,6 +2112,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TicketType"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    resolveTicketTypePrice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticketTypeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resolved price with full provenance */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PriceResolutionCacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PriceResolution"];
                 };
             };
             400: components["responses"]["BadRequest"];

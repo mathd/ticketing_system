@@ -557,6 +557,19 @@ type Store interface {
 	CreateFestival(ctx context.Context, in FestivalInput) (Festival, error)
 	AttachDayToFestival(ctx context.Context, festivalID, performanceID uuid.UUID) (Festival, error)
 	GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error)
+	// CreatePriceRule attaches a pricing rule to one of ADR-036 §1's five scope
+	// levels. scope_id carries no FK (the target table depends on the level), so
+	// the store validates it: a scope_id that names no row of that kind owned by
+	// the organizer yields ErrNotFound and nothing is inserted.
+	CreatePriceRule(ctx context.Context, in PriceRuleInput) (PriceRule, error)
+	// ResolveTicketTypePrice returns the unit price for a ticket type at `at`
+	// plus the provenance of that answer: the winning rule and every candidate
+	// that lost, with its reason (ADR-036 §5). With no applicable rule the
+	// ticket type's own price is the answer and FallbackReason says so, so
+	// existing data resolves exactly as it did before this table existed.
+	// A rule whose currency differs from the ticket type's fails the resolution
+	// with ErrPriceRuleCurrencyMismatch rather than being skipped (§2).
+	ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, at time.Time) (RuleSelection, error)
 	GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error)
 	// GetPoolOfferState answers for an inventory pool id whatever it is — a
 	// performance in ANY lifecycle or a festival capacity group — so the
