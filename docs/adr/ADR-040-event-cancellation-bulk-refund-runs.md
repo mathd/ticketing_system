@@ -101,8 +101,14 @@ exactly the defect TKT-166 shipped and had to fix.
 
 The two are not the same failure and must not share a verdict.
 
-A **definite** refusal — the order is not refundable, the ceiling refuses it, there is no captured
-money — is terminal on the first attempt and consumes no retry. Retrying it only burns the book.
+A **definite** refusal — the order is not refundable, there is no captured money — is terminal on
+the first attempt. Retrying it only burns the book.
+
+A **moved ceiling** is not a refusal even though the ceiling raised it: a staff refund landed between
+the runner reading the remainder and binding it, so the fixed quantity is stale. That quantity is
+cleared and the row retried, which is the only way the remaining tickets are ever refunded. (The
+first version of this fix cleared the quantity and then finalized anyway, so nothing recomputed it —
+it stranded exactly the tickets it was meant to rescue.)
 
 An **ambiguous** failure is one where the money may already have moved: a provider timeout, an
 unavailable journal, a completion that did not persist. Finalizing those terminally is what leaves
@@ -113,7 +119,15 @@ lease is the backoff. Releasing it lets the very next claim in the same pass re-
 downstream and burn the whole budget in a tight loop. (Both halves of this were wrong in the first
 implementation and were caught in review.)
 
-An outstanding **reversal** is retryable for the same reason — the obligation may yet discharge.
+An outstanding **reversal** is retryable when it belongs to **this run's own refund** — replaying that
+refund re-drives the obligation, so a retry can genuinely discharge it. One belonging to a refund the
+run does **not** own is terminal at once: repairing it would need that refund's own idempotency key,
+which the ledger row does not carry, so retrying would only re-read the same state until the budget
+ran out.
+
+Attempts are charged at **claim** time, and **refunded when a claim is released undriven** (a
+shutdown, a lapsed lease) — the same thing `AbandonRecoveryClaim` does. Without the refund a row can
+arrive at its first real ambiguous failure with its budget already spent on work that never happened.
 
 The bound is what keeps §5 compatible with the report: a run only becomes readable (`200`) once every
 row is terminal, so an unbounded retry would make the report unreachable. This is why the `attempts`
@@ -140,9 +154,16 @@ starting another run — which §3 makes safe.
   them would need their original idempotency keys, which the refund row does not carry.
 - **`already_refunded` is decided from whether a PREVIOUS run had already refunded the order**, not
   from the refund unit's replay flag. Replay cannot tell a second run apart from this run resuming
-  after a crash, and would mis-attribute both directions. A residue remains: if run A moved provider
-  money but ended ambiguously, and run B completes it, B reports the refund as its own. Both reports
-  agree the money came back, which is the property that matters.
+  after a crash, and would mis-attribute both directions. The answer is recorded on the ledger row
+  when the quantity is fixed, so a resumed attempt attributes the outcome the way the first one would
+  have. **Two attribution residues remain, both accepted:** if run A moved provider money but ended
+  ambiguously and run B completes it, B reports the refund as its own; and two runner instances that
+  both read before either binds will both record "no prior run". In every case both reports agree the
+  money came back and every obligation is discharged, which is the property that matters — the
+  disagreement is only over which run gets the credit.
+- **A claimant whose lease lapsed can still be in flight while its successor works.** Both derive the
+  same refund key (§3), so they converge on one refund and cannot double-refund; the loser's verdict
+  is dropped by the claim fence. What is not guaranteed is which of the two verdicts is recorded.
 - **The `cancel:` idempotency-key prefix is reserved.** The staff refund endpoint rejects it. A staff
   refund under a derived key would produce the same refund identity with a different request
   fingerprint, and every cancellation run would then report that order failed forever — including one

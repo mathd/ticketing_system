@@ -151,6 +151,10 @@ func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out st
 func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork) error {
 	f.abandon[w.OrderID]++
 	delete(f.leased, w.OrderID)
+	// Mirrors the store: the attempt charge is refunded with the claim.
+	if f.attempts[w.OrderID] > 0 {
+		f.attempts[w.OrderID]--
+	}
 	return nil
 }
 
@@ -543,6 +547,75 @@ func TestCeilingMovingUnderTheRunnerClearsTheFixedQuantity(t *testing.T) {
 	}
 	if q, ok := f.fixed[order]; ok {
 		t.Fatalf("quantity still fixed at %d after the ceiling moved", q)
+	}
+	// And the row must NOT be terminal: clearing the quantity only helps if something
+	// recomputes it. The first version of this fix cleared it and finalized anyway, which
+	// stranded exactly the refundable tickets the clear was meant to rescue.
+	if got, terminal := f.final[order]; terminal {
+		t.Fatalf("a moved ceiling was finalized as %+v — nothing will ever recompute the quantity", got)
+	}
+
+	// Once the ceiling stops moving, the recomputed attempt succeeds.
+	f.orders[order].refuse = nil
+	f.expireLeases()
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+	if got := f.final[order].Outcome; got != "refunded" {
+		t.Fatalf("after the ceiling settled the order = %q, want refunded", got)
+	}
+}
+
+// Review pass 2, finding 3: attempts are charged at CLAIM time, so a row claimed and
+// released without being driven — a shutdown, a lapsed lease — must get its charge back.
+// Otherwise a row can arrive at its first real ambiguous failure with the budget already
+// spent on work that never happened.
+func TestAbandoningAClaimRefundsItsAttempt(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000)}
+	f.work = append(f.work, work(order))
+
+	// Cancelled DURING the refund, so the row is genuinely claimed (charging an attempt)
+	// and then released. A context cancelled before the pass starts would never claim at
+	// all, and the assertion below would hold for the wrong reason.
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := &cancelAfter{n: 0, cancel: cancel, inner: newFakeRefunder(f)}
+	New(f, stop, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+	if f.abandon[order] == 0 {
+		t.Fatal("the interrupted row was not released — the test is not exercising the refund")
+	}
+	if f.attempts[order] != 0 {
+		t.Fatalf("attempts = %d after an undriven claim, want the charge refunded to 0", f.attempts[order])
+	}
+	if _, terminal := f.final[order]; terminal {
+		t.Fatalf("an interruption was committed as a verdict: %+v", f.final[order])
+	}
+}
+
+// Review pass 2, finding 8: an outstanding reversal on a refund this run does NOT own
+// cannot be repaired by retrying — the row does not carry that refund's idempotency key.
+// Retrying it is five reads and a wait, so it is terminal at once.
+func TestForeignOutstandingReversalIsTerminalNotRetried(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	// Fully refunded by staff already, with an obligation still outstanding.
+	st := completedOrder(2, 1000)
+	st.RefundedQuantity, st.RefundStatus = 2, "full"
+	st.CapacityOutstanding = 1
+	f.orders[order] = &fakeOrder{state: st}
+	f.work = append(f.work, work(order))
+
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+
+	got, terminal := f.final[order]
+	if !terminal {
+		t.Fatal("a foreign outstanding reversal was left for retry; nothing will ever repair it")
+	}
+	if got.FailureCode != "reversal_outstanding" {
+		t.Fatalf("failure code = %q, want reversal_outstanding", got.FailureCode)
+	}
+	if f.attempts[order] != 1 {
+		t.Fatalf("it consumed %d attempts, want 1", f.attempts[order])
 	}
 }
 

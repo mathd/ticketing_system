@@ -78,7 +78,7 @@ CREATE TABLE cancellation_refund_orders (
   requested_quantity integer CHECK (requested_quantity > 0),
   refund_id uuid,
   outcome text CHECK (outcome IN ('refunded','already_refunded','failed')),
-  failure_code text CHECK (failure_code IN ('no_captured_money','not_refundable','refund_refused','reversal_outstanding','unavailable','internal')),
+  failure_code text CHECK (failure_code IN ('no_captured_money','not_refundable','refund_refused','ceiling_moved','reversal_outstanding','unavailable','internal')),
   failure_reason text CHECK (length(failure_reason) BETWEEN 1 AND 500),
   -- A SNAPSHOT at outcome time, not a live projection: the report has to stay readable
   -- after a later refund of the same order moves the order's own numbers. Do not "fix"

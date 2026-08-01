@@ -472,8 +472,14 @@ func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWo
 // work is reclaimable immediately rather than after the lease expires. Context cancellation
 // is an interruption, never a business outcome.
 func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWork) error {
+	// The attempt charge is REFUNDED with the claim. Attempts are charged at claim time, so
+	// a row claimed and released without being driven — a shutdown, a lapsed lease — would
+	// otherwise spend its whole retry budget on work that never happened, and its first real
+	// ambiguous failure would arrive already exhausted. Recovery's AbandonRecoveryClaim does
+	// the same for the same reason.
 	_, err := db.ExecContext(ctx, `
-		UPDATE cancellation_refund_orders SET claim_id=NULL, lease_until=NULL
+		UPDATE cancellation_refund_orders
+		SET claim_id=NULL, lease_until=NULL, attempts = greatest(attempts - 1, 0)
 		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL`,
 		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID)
 	return err

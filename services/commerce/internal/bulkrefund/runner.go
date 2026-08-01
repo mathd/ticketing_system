@@ -66,6 +66,11 @@ type plan struct {
 	priorRun bool
 	outcome  store.CancellationOutcome
 	decided  bool
+	// terminal marks a decided outcome that a retry cannot repair, so it is finalized
+	// rather than left for another attempt. The distinction matters for an outstanding
+	// reversal: one on THIS run's own refund is repaired by replaying it, while one on a
+	// staff refund this run does not own is not — retrying that is five reads and a wait.
+	terminal bool
 }
 
 func New(s Store, r Refunder, interval time.Duration, batch int, lease time.Duration) *Runner {
@@ -170,6 +175,9 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 	key := store.CancellationRefundKey(w.SlotID, w.OrderID)
 	p := r.resolveQuantity(ctx, w, key)
 	if p.decided {
+		if p.terminal {
+			return r.finalize(ctx, w, p.outcome)
+		}
 		return r.record(ctx, w, p.outcome)
 	}
 
@@ -190,7 +198,11 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 			if clearErr := r.store.ClearQuantity(context.WithoutCancel(ctx), w); clearErr != nil {
 				slog.Default().ErrorContext(ctx, "clear cancellation quantity", "order_id", w.OrderID, "err", clearErr)
 			}
-			return r.record(ctx, w, failure(refundFailureCode(err), err.Error()))
+			// `ceiling_moved`, NOT `refund_refused`: clearing the quantity only helps if
+			// something recomputes it, and a refusal is terminal. The first version of this
+			// fix cleared the quantity and then finalized anyway, which stranded exactly the
+			// refundable tickets it was meant to rescue.
+			return r.record(ctx, w, failure("ceiling_moved", err.Error()))
 		}
 		return r.record(ctx, w, failure(refundFailureCode(err), err.Error()))
 	}
@@ -232,7 +244,7 @@ func retryable(out store.CancellationOutcome) bool {
 		return false
 	}
 	switch out.FailureCode {
-	case "unavailable", "internal", "reversal_outstanding":
+	case "unavailable", "internal", "reversal_outstanding", "ceiling_moved":
 		return true
 	default:
 		// refund_refused, not_refundable, no_captured_money: definite answers. Retrying
@@ -295,7 +307,11 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 			out.TicketsVoided = state.VoidingOutstanding == 0
 			out.CapacityReturned = state.CapacityOutstanding == 0
 			out.RefundedQuantity, out.RefundedAmount = state.RefundedQuantity, state.RefundedAmount
-			return decidedPlan(out)
+			// Terminal: the outstanding obligation belongs to a refund this run did not
+			// create, and repairing it would need that refund's own idempotency key, which
+			// the row does not carry. Retrying would re-read the same state five times and
+			// then fail anyway.
+			return terminalPlan(out)
 		}
 		return decidedPlan(store.CancellationOutcome{
 			Outcome: "already_refunded", MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
@@ -319,6 +335,10 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 
 func decidedPlan(out store.CancellationOutcome) plan {
 	return plan{outcome: out, decided: true}
+}
+
+func terminalPlan(out store.CancellationOutcome) plan {
+	return plan{outcome: out, decided: true, terminal: true}
 }
 
 // classify reads the order back and decides the verdict from what is actually true, not
@@ -363,6 +383,15 @@ func (r *Runner) classify(ctx context.Context, w store.CancellationWork, p plan,
 func (r *Runner) finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) bool {
 	// Detached: a verdict reached just as the context ended is still a verdict, and losing
 	// it would make the next pass re-drive an order whose money already moved.
+	// A verdict reached just as the context ended is still a verdict, and losing a SUCCESS
+	// would re-drive an order whose money already moved — so the write is detached. But a
+	// FAILURE decided in that same window may have been caused by the shutdown itself, and
+	// committing it makes a permanent failure out of an interruption. Re-checked here
+	// because the check in `record` and this write are not atomic.
+	if ctx.Err() != nil && out.Outcome == "failed" {
+		r.abandon(w)
+		return false
+	}
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := r.store.Finalize(write, w, out); err != nil {
