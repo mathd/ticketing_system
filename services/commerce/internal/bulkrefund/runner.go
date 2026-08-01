@@ -75,8 +75,14 @@ func (r *Runner) Run(ctx context.Context) {
 
 // RunOnce enumerates every unfinished run's next pages, then drains the claimable work in
 // bounded batches, then completes whatever finished. Returns the number of orders resolved.
+// runListLimit bounds how many unfinished runs one pass enumerates. Deliberately NOT the
+// order batch: the order batch is sized for how many refunds fit in one lease, and reusing
+// it here means N concurrent cancellations starve the N+1th out of enumeration entirely —
+// its book never materializes, so its rows are never even claimable.
+const runListLimit = 64
+
 func (r *Runner) RunOnce(ctx context.Context) int {
-	runs, err := r.store.Runs(ctx, r.batch)
+	runs, err := r.store.Runs(ctx, runListLimit)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "list cancellation runs", "err", err)
 		return 0
@@ -182,6 +188,14 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 		return 0, failure("internal", "read existing cancellation refund"), true
 	}
 	if found {
+		// Persist it here too, not just on the branch that computes it. A later run finds
+		// this refund and takes THIS branch, and a row that reaches a `refunded` outcome
+		// with no requested_quantity is rejected by
+		// `cancellation_refund_orders_refunded_has_refund` — which fails the finalize, not
+		// the refund, so the row stays pending and its run never completes.
+		if err := r.store.FixQuantity(ctx, w, existing.Quantity); err != nil {
+			return 0, failure("internal", "persist refund quantity"), true
+		}
 		return existing.Quantity, store.CancellationOutcome{}, false
 	}
 
@@ -240,7 +254,14 @@ func (r *Runner) classify(ctx context.Context, w store.CancellationWork, result 
 	out.TicketsVoided, out.CapacityReturned = discharged, discharged
 	switch {
 	case out.MoneyRefunded && discharged:
+		// Replay means the money leg had ALREADY completed when this call reached it, so
+		// this run did not move money — that is `already_refunded`, and it is what a
+		// second run over the same book must report (AC 2). Deciding this from "did we
+		// bind a refund" instead would call every repeat run a fresh refund.
 		out.Outcome = "refunded"
+		if result.Replay {
+			out.Outcome = "already_refunded"
+		}
 	case out.MoneyRefunded:
 		out.Outcome = "failed"
 		out.FailureCode, out.FailureReason = "reversal_outstanding", "the money was returned but a reversal obligation is outstanding"

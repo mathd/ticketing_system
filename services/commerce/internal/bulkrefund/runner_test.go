@@ -80,8 +80,32 @@ func (f *fakeStore) OrderState(_ context.Context, _, order uuid.UUID) (store.Ord
 	return o.state, nil
 }
 
-func (f *fakeStore) LookupRefund(_ context.Context, _, _ uuid.UUID) (store.Refund, bool, error) {
+// LookupRefund answers from the refunds the fake refunder has actually bound, keyed the
+// way the real store keys them. The first version of this fake always answered "not
+// found", which made the SECOND-run path unreachable — and that path shipped two defects
+// the whole-stack suite had to find: a `refunded` verdict with no persisted quantity (the
+// database rejects it, the finalize fails, and the run never completes) and a repeat run
+// reporting `refunded` instead of `already_refunded`. A fake that cannot express a state
+// cannot test it.
+func (f *fakeStore) LookupRefund(_ context.Context, org, refundID uuid.UUID) (store.Refund, bool, error) {
+	for order, o := range f.orders {
+		if !o.refunded {
+			continue
+		}
+		if store.RefundID(org, store.CancellationRefundKey(f.slotOf(order), order)) == refundID {
+			return store.Refund{ID: refundID, OrderID: order, Quantity: o.quantity}, true, nil
+		}
+	}
 	return store.Refund{}, false, nil
+}
+
+func (f *fakeStore) slotOf(order uuid.UUID) uuid.UUID {
+	for _, w := range f.work {
+		if w.OrderID == order {
+			return w.SlotID
+		}
+	}
+	return uuid.Nil
 }
 
 func (f *fakeStore) FixQuantity(_ context.Context, w store.CancellationWork, q int32) error {
@@ -360,5 +384,53 @@ func TestRunOnceDrainsTheBookInBatches(t *testing.T) {
 	}
 	if f.claims < 3 {
 		t.Fatalf("%d claims for 5 orders at a batch of 2 — the claim is not batch-bounded", f.claims)
+	}
+}
+
+// AC 2 at the unit seam: a SECOND run over a book the first run already refunded must
+// report every order `already_refunded`, move no money, and — the part the database cares
+// about — persist a requested quantity, because a `refunded`/`already_refunded` verdict
+// with none is rejected by cancellation_refund_orders_refunded_has_refund. That rejection
+// fails the FINALIZE, not the refund: the row stays pending and its run never completes,
+// which is how this reached the whole-stack suite instead of dying here.
+func TestSecondRunOverARefundedBookReportsAlreadyRefunded(t *testing.T) {
+	f := newFakeStore()
+	orders := []uuid.UUID{uuid.New(), uuid.New()}
+	for _, id := range orders {
+		f.orders[id] = &fakeOrder{state: completedOrder(2, 1000)}
+		f.work = append(f.work, work(id))
+	}
+	first := newFakeRefunder(f)
+	runnerFor(f, first).RunOnce(context.Background())
+	for _, id := range orders {
+		if f.final[id].Outcome != "refunded" {
+			t.Fatalf("first run outcome for %s = %q, want refunded", id, f.final[id].Outcome)
+		}
+	}
+
+	// A second run means fresh ledger rows: no outcome, no fixed quantity. The orders and
+	// their refunds are the durable state that carries over.
+	f.final = map[uuid.UUID]store.CancellationOutcome{}
+	f.fixed = map[uuid.UUID]int32{}
+	second := newFakeRefunder(f)
+	runnerFor(f, second).RunOnce(context.Background())
+
+	for _, id := range orders {
+		got := f.final[id]
+		if got.Outcome != "already_refunded" {
+			t.Fatalf("second run outcome for %s = %q (%s/%s), want already_refunded",
+				id, got.Outcome, got.FailureCode, got.FailureReason)
+		}
+		if f.orders[id].moved != 1 {
+			t.Fatalf("order %s moved money %d times across two runs, want exactly 1", id, f.orders[id].moved)
+		}
+		if f.fixed[id] == 0 {
+			t.Fatalf("order %s reached a terminal success with no persisted quantity: the database refuses that row and the run never completes", id)
+		}
+		// And it converged on ONE refund identity, which is the whole point of a
+		// run-independent key.
+		if len(second.keys[id]) > 0 && len(first.keys[id]) > 0 && second.keys[id][0] != first.keys[id][0] {
+			t.Fatalf("order %s used key %q on the second run and %q on the first", id, second.keys[id][0], first.keys[id][0])
+		}
 	}
 }
