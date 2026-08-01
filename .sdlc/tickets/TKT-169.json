@@ -121,6 +121,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\nA decision ticket. The engineering is small once the product question is answered, and unanswerable before.\n\n**Concerns:** (1) The multi-entry pass case means 'already used' is not a boolean, so a rule written for single-entry tickets will not transfer. (2) Refusing pre-money adds an access dependency to the money path, which this epic has twice judged the wrong trade for refunds — but an exchange is not a refund, and TKT-158 already accepted that distinction.\n\n**Verdict:** CONCERNS — shapeable, needs the decision first."
+    },
+    {
+      "stage": "backlog",
+      "kind": "note",
+      "body": "<!-- sdlc:stage=backlog kind=note -->\n### Premise updated by TKT-166's ai-review\n\nThis ticket was filed as *\"a double admission is shipped and undefended\"*. It is not: TKT-166's review caught it before merge, and the switch now **refuses** an already-admitted source ticket.\n\nWhat is left is the harder half, and it is a product question rather than a defect: **the refusal costs a paid buyer their exchange**, and for a multi-entry pass it is almost certainly too strict — one `entry` on a 5-day pass should probably not block an exchange of the remaining days.\n\nStays at CONCERNS. The engineering is small; the decision is not."
     }
   ]
 }
