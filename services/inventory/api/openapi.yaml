@@ -64,6 +64,19 @@ paths:
       operationId: releaseHold
       parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
       responses: {'200': {$ref: '#/components/responses/Hold'}, '400': {$ref: '#/components/responses/Error'}, '401': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '500': {$ref: '#/components/responses/Error'}}
+  /internal/holds/{id}/seating:
+    get:
+      operationId: getHoldSeating
+      summary: Whether a claim holds seats (internal)
+      # TKT-158. Commerce cannot infer seatedness; inventory owns it. This exists so an
+      # exchange can refuse a seated line BEFORE any money moves — an exchange has no
+      # safe partial state, unlike a refund (ADR-038 §9 vs ADR-039).
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/OrganizerId'}]
+      responses:
+        '200': {description: Seating, content: {application/json: {schema: {$ref: '#/components/schemas/HoldSeating'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
   /internal/holds/{id}/refund-capacity:
     post:
       operationId: returnRefundedCapacity
@@ -253,6 +266,13 @@ components:
       properties:
         error: {type: string}
         code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
+    HoldSeating:
+      type: object
+      additionalProperties: false
+      required: [hold_id, seated]
+      properties:
+        hold_id: {type: string, format: uuid}
+        seated: {type: boolean}
     RefundCapacityReturnCreate:
       type: object
       additionalProperties: false

@@ -280,6 +280,12 @@ type HoldCreate struct {
 	UnitAmount   *int64              `json:"unit_amount,omitempty"`
 }
 
+// HoldSeating defines model for HoldSeating.
+type HoldSeating struct {
+	HoldId openapi_types.UUID `json:"hold_id"`
+	Seated bool               `json:"seated"`
+}
+
 // OperationalConvert defines model for OperationalConvert.
 type OperationalConvert struct {
 	Actor       string             `json:"actor"`
@@ -441,6 +447,11 @@ type FinalizeHoldParams struct {
 
 // ReleaseHoldParams defines parameters for ReleaseHold.
 type ReleaseHoldParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// GetHoldSeatingParams defines parameters for GetHoldSeating.
+type GetHoldSeatingParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 

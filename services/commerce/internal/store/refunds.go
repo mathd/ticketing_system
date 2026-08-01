@@ -151,6 +151,17 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	if status != "completed" {
 		return Refund{}, ErrOrderNotRefundable
 	}
+	// An order an exchange already owns cannot also be refunded — it would be reversed
+	// twice (TKT-158). Both paths take the order row lock above, so this read cannot race
+	// an exchange being bound; the lock is what makes the check meaningful rather than
+	// advisory.
+	var exchanges int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM order_exchanges WHERE source_order_id=$1`, in.OrderID).Scan(&exchanges); err != nil {
+		return Refund{}, err
+	}
+	if exchanges > 0 {
+		return Refund{}, ErrOrderNotRefundable
+	}
 	if unit <= 0 {
 		return Refund{}, ErrRefundNoMoney
 	}

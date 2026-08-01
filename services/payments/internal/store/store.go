@@ -121,7 +121,12 @@ func validate(f Fact) error {
 	// order.refunded joins the vocabulary (TKT-156): the compensating fact commerce
 	// appends when a completed order is refunded, in whole or in part. ADR-003 —
 	// corrections are new entries, never edits to the sale fact.
-	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "order.refunded": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
+	//
+	// order.exchange.reversed / .sold join it for TKT-158. They are a PAIR and both are
+	// written whichever way the money went: the provider moves only the difference, but
+	// the trail records that a line worth X was reversed and one worth Y was sold. What
+	// the provider does and what the trail records are not the same fact (ADR-039 §1).
+	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "order.refunded": true, "order.exchange.reversed": true, "order.exchange.sold": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
 	if !allowedTypes[f.Type] {
 		return errors.New("unsupported journal fact type")
 	}

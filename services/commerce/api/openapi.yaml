@@ -82,6 +82,27 @@ paths:
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/exchanges:
+    post:
+      operationId: exchangeOrder
+      summary: Staff exchange of a completed order for a different ticket type (settlement only)
+      # TKT-158 / ADR-039. Settles exactly the DIFFERENCE — one net provider movement, not
+      # a refund of the old gross plus a charge of the new — and journals both gross legs.
+      # Ends in `switch_pending`: the replacement is confirmed and the buyer still holds
+      # VALID OLD TICKETS. Switching the entitlement is TKT-166.
+      #
+      # Every refusal (seated source, currency mismatch, unavailable target) happens
+      # BEFORE any money moves, because an exchange has no safe partial state.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExchangeCreate'}}}}
+      responses:
+        '200': {description: Settled (or replay), content: {application/json: {schema: {$ref: '#/components/schemas/Exchange'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail
@@ -221,6 +242,35 @@ components:
         # will assume the first. A partial refund of a SEATED order stays false forever —
         # no subset of seats can be identified (TKT-164).
         capacity_returned: {type: boolean}
+    ExchangeCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, target_ticket_type_id, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        target_ticket_type_id: {type: string, format: uuid}
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    Exchange:
+      type: object
+      additionalProperties: false
+      required: [exchange_id, source_order_id, replacement_order_id, quantity, source_total, target_total, delta_amount, currency, status, tickets_exchanged, replay]
+      properties:
+        exchange_id: {type: string, format: uuid}
+        source_order_id: {type: string, format: uuid}
+        replacement_order_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        source_total: {type: integer, format: int64}
+        target_total: {type: integer, format: int64}
+        # SIGNED: positive is an upgrade the buyer paid, negative a downgrade refunded to
+        # them, zero settles nothing. Exactly one provider movement, or none.
+        delta_amount: {type: integer, format: int64}
+        currency: {type: string}
+        # switch_pending means the money is settled and the buyer still holds valid OLD
+        # tickets. It is a real, safe, durable state — not an error (TKT-166 closes it).
+        status: {type: string, enum: [switch_pending, completed]}
+        tickets_exchanged: {type: boolean}
+        replay: {type: boolean}
     DeliveryEmail:
       type: object
       additionalProperties: false

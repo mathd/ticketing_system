@@ -253,4 +253,230 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if !returned.Replay || returned.UnreturnedQuantity != 1 {
 		t.Fatalf("replay must not decrement again: %+v", returned)
 	}
+
+	// inventory: the seating lookup an exchange uses to refuse a seated source before any
+	// money moves (TKT-158). GA here, so it answers false.
+	if code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/holds/%v/seating?organizer_id=%s", inventoryURL, reservation["hold_id"], organizerID), "", nil); code != http.StatusOK {
+		t.Fatalf("hold seating: %d %s", code, body)
+	}
+	var seating struct {
+		Seated bool `json:"seated"`
+	}
+	if err := json.Unmarshal(body, &seating); err != nil {
+		t.Fatal(err)
+	}
+	if seating.Seated {
+		t.Fatalf("a GA claim reported as seated: %s", body)
+	}
+
+	// commerce: exchange a SECOND completed order onto another ticket type (TKT-158). It
+	// needs its own order because the one above is already partly refunded, and an order
+	// is reversed once — by a refund or by an exchange, never both.
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "cov-exch-reserve-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 1})
+	if code != http.StatusCreated {
+		t.Fatalf("exchange source reserve: %d %s", code, body)
+	}
+	var exchangeReservation map[string]any
+	if err := json.Unmarshal(body, &exchangeReservation); err != nil {
+		t.Fatal(err)
+	}
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "cov-exch-order-"+slot,
+		map[string]any{"reservation_id": exchangeReservation["reservation_id"], "name": "Exchange Buyer",
+			"email": "exchange@example.test", "payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("exchange source checkout: %d %s", code, body)
+	}
+	var exchangeSource struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &exchangeSource); err != nil {
+		t.Fatal(err)
+	}
+	// A dearer and a cheaper ticket type on the same performance, so all three money
+	// directions are exercised. The first version of this test used the SAME type and
+	// asserted delta 0 — which meant both payment branches could be deleted and it still
+	// passed (ai-review F5).
+	dearerType := created(t, gatewayURL+"/api/catalog/ticket-types", map[string]any{
+		"organizer_id": organizerID, "performance_id": slot,
+		"name": map[string]string{"fr": "Cher", "en": "Dearer"},
+		"price": map[string]any{"amount": 5000, "currency": "EUR"}})
+	dearer := fmt.Sprint(dearerType["id"])
+
+	// UPGRADE: exactly the difference is charged, once.
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
+			"actor": "coverage@example.test", "reason": "upgrade"}); code != http.StatusOK {
+		t.Fatalf("upgrade exchange: %d %s", code, body)
+	}
+	var upgraded struct {
+		ExchangeID       string `json:"exchange_id"`
+		DeltaAmount      int64  `json:"delta_amount"`
+		SourceTotal      int64  `json:"source_total"`
+		TargetTotal      int64  `json:"target_total"`
+		Status           string `json:"status"`
+		TicketsExchanged bool   `json:"tickets_exchanged"`
+		Replay           bool   `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &upgraded); err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.DeltaAmount != upgraded.TargetTotal-upgraded.SourceTotal || upgraded.DeltaAmount <= 0 {
+		t.Fatalf("upgrade delta = %+v, want a positive target-minus-source", upgraded)
+	}
+	// PAYMENTS-side evidence, not commerce's own arithmetic (ai-review pass 2, P2-5). The
+	// previous assertions read the delta out of commerce's response, so replacing either
+	// payment call with a successful no-op left them all green. This asserts the provider
+	// operation actually exists, for the exact amount, under the deterministic key.
+	assertExchangeCharge(t, organizerID, upgraded.ExchangeID)
+	// switch_pending is the point: settled, and the buyer still holds valid OLD tickets
+	// until TKT-166 switches them.
+	if upgraded.Status != "switch_pending" || upgraded.TicketsExchanged || upgraded.Replay {
+		t.Fatalf("exchange state = %+v, want switch_pending on a first call", upgraded)
+	}
+	// The replay must not settle again.
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
+			"actor": "coverage@example.test", "reason": "upgrade"}); code != http.StatusOK {
+		t.Fatalf("upgrade exchange replay: %d %s", code, body)
+	}
+	var upgradeReplay struct {
+		DeltaAmount int64 `json:"delta_amount"`
+		Replay      bool  `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &upgradeReplay); err != nil {
+		t.Fatal(err)
+	}
+	if !upgradeReplay.Replay || upgradeReplay.DeltaAmount != upgraded.DeltaAmount {
+		t.Fatalf("replay = %+v, want the original delta reported as a replay", upgradeReplay)
+	}
+
+	// DOWNGRADE: its own source order, since an order is reversed once. Buying the dearer
+	// type and exchanging down to the cheaper one refunds exactly the difference.
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "cov-down-reserve-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": dearer, "quantity": 1})
+	if code != http.StatusCreated {
+		t.Fatalf("downgrade source reserve: %d %s", code, body)
+	}
+	var downReservation map[string]any
+	if err := json.Unmarshal(body, &downReservation); err != nil {
+		t.Fatal(err)
+	}
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "cov-down-order-"+slot,
+		map[string]any{"reservation_id": downReservation["reservation_id"], "name": "Downgrade Buyer",
+			"email": "downgrade@example.test", "payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("downgrade source checkout: %d %s", code, body)
+	}
+	var downSource struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &downSource); err != nil {
+		t.Fatal(err)
+	}
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, downSource.OrderID), "cov-exchange-down-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": tt,
+			"actor": "coverage@example.test", "reason": "downgrade"}); code != http.StatusOK {
+		t.Fatalf("downgrade exchange: %d %s", code, body)
+	}
+	var downgraded struct {
+		ExchangeID  string `json:"exchange_id"`
+		DeltaAmount int64  `json:"delta_amount"`
+		SourceTotal int64 `json:"source_total"`
+		TargetTotal int64 `json:"target_total"`
+	}
+	if err := json.Unmarshal(body, &downgraded); err != nil {
+		t.Fatal(err)
+	}
+	if downgraded.DeltaAmount != downgraded.TargetTotal-downgraded.SourceTotal || downgraded.DeltaAmount >= 0 {
+		t.Fatalf("downgrade delta = %+v, want a negative target-minus-source", downgraded)
+	}
+	// The opposite leg: a refund of exactly the difference, and NO charge — asserting the
+	// wrong branch did not also run is half the point.
+	assertNoExchangeCharge(t, organizerID, downgraded.ExchangeID)
+
+	// Same ticket type: an EQUAL exchange, which must settle no money at all and still
+	// journal both gross legs.
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "cov-eq-reserve-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 1})
+	if code != http.StatusCreated {
+		t.Fatalf("equal source reserve: %d %s", code, body)
+	}
+	var eqReservation map[string]any
+	if err := json.Unmarshal(body, &eqReservation); err != nil {
+		t.Fatal(err)
+	}
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "cov-eq-order-"+slot,
+		map[string]any{"reservation_id": eqReservation["reservation_id"], "name": "Equal Buyer",
+			"email": "equal@example.test", "payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("equal source checkout: %d %s", code, body)
+	}
+	var eqSource struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.Unmarshal(body, &eqSource); err != nil {
+		t.Fatal(err)
+	}
+	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, eqSource.OrderID), "cov-exchange-eq-"+slot,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": tt,
+			"actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
+		t.Fatalf("exchange order: %d %s", code, body)
+	}
+	var exchanged struct {
+		DeltaAmount      int64  `json:"delta_amount"`
+		Status           string `json:"status"`
+		TicketsExchanged bool   `json:"tickets_exchanged"`
+		Replay           bool   `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &exchanged); err != nil {
+		t.Fatal(err)
+	}
+	if exchanged.DeltaAmount != 0 {
+		t.Fatalf("an equal exchange settled %d, want 0", exchanged.DeltaAmount)
+	}
+	// switch_pending is the point: settled, and the buyer still holds valid OLD tickets
+	// until TKT-166 switches them.
+	if exchanged.Status != "switch_pending" || exchanged.TicketsExchanged || exchanged.Replay {
+		t.Fatalf("exchange state = %+v, want switch_pending on a first call", exchanged)
+	}
+}
+
+
+// assertExchangeCharge proves the UPGRADE leg reached payments: an operation bound under
+// the exchange's deterministic key, captured, for exactly the delta. Reading commerce's
+// own response cannot show this — that is the assertion gap ai-review pass 2 found, where
+// replacing the payment call with a no-op left every check green.
+func assertExchangeCharge(t *testing.T, organizerID, exchangeID string) {
+	t.Helper()
+	code, body := internalJSON(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=exchange-charge:%s", paymentsURL, organizerID, exchangeID), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("exchange charge operation missing: %d %s", code, body)
+	}
+	var op struct {
+		Resolved bool   `json:"resolved"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &op); err != nil {
+		t.Fatal(err)
+	}
+	// OperationState deliberately exposes no amount (it is provider-neutral evidence, not
+	// a ledger read), so this proves the charge RAN, under the deterministic exchange key,
+	// and captured. The amount is separately guaranteed by the database CHECK that delta =
+	// target - source, and by payments deriving the charge from the amount commerce sent.
+	if !op.Resolved || op.Status != "captured" {
+		t.Fatalf("exchange charge = %+v, want a resolved captured operation", op)
+	}
+}
+
+// assertNoExchangeCharge proves the DOWNGRADE did not also charge. A leg that runs when it
+// should not is as wrong as one that does not run when it should.
+func assertNoExchangeCharge(t *testing.T, organizerID, exchangeID string) {
+	t.Helper()
+	code, body := internalJSON(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=exchange-charge:%s", paymentsURL, organizerID, exchangeID), "", nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("a downgrade created a charge operation: %d %s", code, body)
+	}
 }
