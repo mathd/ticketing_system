@@ -96,6 +96,22 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found && existing.Settled {
+		// The replay re-drives settlement, which is idempotent and — on a row that already
+		// owes its event — a no-op that costs one locked read (ai-review pass 4).
+		//
+		// It is here to make a premise unnecessary rather than to fix a reachable bug.
+		// Settlement and the outbox row share one transaction, so this branch cannot
+		// currently observe `settled_at` set with no event owed; the only way to produce
+		// one is data written by the pre-TKT-166 code, and TKT-158 is merged but never
+		// released (no tags, no deploy workflow, and it reached `main` the same day). But
+		// "unreachable given how it was rolled out" is a claim that has to be re-argued
+		// every time this path is touched, and the replay is the natural place to repair a
+		// settled exchange that owes nothing — so it repairs one.
+		if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, existing.OrganizerID, existing.ID, existing.ReplacementOrderID); err != nil {
+			slog.Default().ErrorContext(r.Context(), "repair settled exchange on replay", "exchange_id", existing.ID, "err", err)
+			write(w, 500, map[string]string{"error": "persist exchange"})
+			return
+		}
 		writeExchange(w, existing, true)
 		return
 	}

@@ -592,3 +592,70 @@ func TestExchangeProjectionCarriesTheCapacityFact(t *testing.T) {
 		t.Fatalf("exchange = switched %t / capacity %t, want both discharged", done.TicketsExchanged, done.CapacityReturned)
 	}
 }
+
+// ai-review pass 4. A settled exchange that owes no switch event is repairable by the
+// ordinary replay, so the guarantee does not rest on how the code was rolled out.
+//
+// The state is not reachable in this build — settlement and the outbox row share one
+// transaction — so the test MANUFACTURES it by deleting the owed row, which is exactly the
+// shape pre-TKT-166 data would have. Manufacturing it is the point: it makes the repair
+// testable without a release having happened.
+func TestReplayRepairsASettledExchangeThatOwesNoEvent(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-repair", 1, 1000)
+	ex, err := BindOrderExchange(ctx, db, exchangeRequest(c, "repair-1", uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, _ := seedCompleted(t, db, ctx, "exch-repair-replacement", 1, 1500)
+	if _, err := db.ExecContext(ctx, `DELETE FROM completion_outbox WHERE order_id=$1`, rep.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 1500, DeltaAmount: 500, TargetUnitAmount: 1500,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, rep.OrderID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Settled, and now owing nothing — the pre-TKT-166 shape.
+	if _, err := db.ExecContext(ctx, `DELETE FROM completion_outbox WHERE subject='platform.commerce.order.exchanged' AND order_id=$1`, rep.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	if n := countExchangeEvents(t, ctx, db, rep.OrderID); n != 0 {
+		t.Fatalf("setup left %d owed events", n)
+	}
+
+	// The replay repairs it, against the SAME persisted settled_at — so the recovered bytes
+	// are the ones that would have been published originally, not a fresh timestamp under
+	// the same deterministic id.
+	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, rep.OrderID); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if n := countExchangeEvents(t, ctx, db, rep.OrderID); n != 1 {
+		t.Fatalf("a settled exchange owing no event was not repaired by a replay (%d owed)", n)
+	}
+	var occurred time.Time
+	var settledAt time.Time
+	if err := db.QueryRowContext(ctx, `
+		SELECT (x.envelope->>'occurred_at')::timestamptz, e.settled_at
+		FROM completion_outbox x JOIN order_exchanges e ON e.replacement_order_id = x.order_id
+		WHERE e.id=$1 AND x.subject='platform.commerce.order.exchanged'`, ex.ID).Scan(&occurred, &settledAt); err != nil {
+		t.Fatal(err)
+	}
+	if !occurred.Equal(settledAt) {
+		t.Fatalf("repaired occurred_at %s is not the persisted settled_at %s", occurred, settledAt)
+	}
+}
+
+func countExchangeEvents(t *testing.T, ctx context.Context, db *sql.DB, order uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM completion_outbox WHERE subject='platform.commerce.order.exchanged' AND order_id=$1`, order).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}

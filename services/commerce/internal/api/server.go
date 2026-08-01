@@ -42,7 +42,7 @@ type Server struct {
 	// leaves the obligation outstanding rather than failing the refund — the money has
 	// already moved by then.
 	accessURL string
-	publisher                                    commerceevents.Publisher
+	publisher commerceevents.Publisher
 }
 
 func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token string, publishers ...commerceevents.Publisher) *Server {
