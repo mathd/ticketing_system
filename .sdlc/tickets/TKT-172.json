@@ -1,0 +1,98 @@
+{
+  "key": "TKT-172",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-020: A buyer can see which seats are already taken",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**As** a buyer looking at a seated performance, **I want** the map to show me which seats are still free, **so that** I can pick one that I will actually get.\n\n**Priority:** P2  **Depends on:** — (TKT-80/US-017 shipped the seat-claim core; TKT-103/104/105 shipped the seat maps)\n\n**The gap.** Every ingredient of a seat picker exists except the one that makes it a picker. Catalog serves the geometry publicly (`GET /public/seat-maps/{seatMapId}`, hours tier per the ADR-004 TKT-107 amendment) and inventory holds seats atomically (`POST /holds/seats`, `claim_seats.released_at IS NULL` is the liveness predicate — ADR-031). But **nothing tells a buyer which seats are occupied**, and nothing on the public catalog contract says a performance is seated at all: `PublicPerformanceDetail` carries `venue` and `ticket_types` and no `seat_map_id`, even though `performances.seat_map_id` has existed since catalog migration 0010. So the storefront can neither discover that a slot is seated nor render occupancy.\n\n**Scope is the read path only.** This story adds no write, no UI, and no selection rules.\n\n**Acceptance Criteria:**\n- [ ] Catalog's `PublicPerformanceDetail` gains an optional `seat_map_id` (the published version the slot is seated against; absent for a GA slot), sourced from `performances.seat_map_id`. A GA performance's payload is byte-identical to today's.\n- [ ] Inventory serves a public seat-occupancy read for a seated slot returning the slot id, its `seat_map_id`, and the seat identities that are **not claimable right now**. Liveness uses the same predicate the claim path enforces (`claim_seats.released_at IS NULL`, ADR-031) — **not** claim status, which leaks the `finalizing` window.\n- [ ] The read declares and emits ADR-004 rule 1's **seconds** tier (`public, max-age=5, s-maxage=5`), the same tier as `getAvailability`, declared in the contract as a single-value enum so ADR-028's response validator fails closed on drift — the shape TKT-110 established for `AvailabilityCacheControl`.\n- [ ] A GA slot is refused with a 409 (it has no seats), and an unknown slot with a 404 — distinguishable, not collapsed.\n- [ ] The occupancy query is scoped by pool and proven scoped: a test asserts both the result set and that the plan uses `claim_seats_one_live_per_seat` / `claim_seats_by_claim` rather than a sequential scan (ADR-019's two-test rule, applied to inventory).\n- [ ] Both specs declared, generated code (`openapi_gen.go`, `api-types.gen.ts`) committed before the gate, and the new operations covered by the smoke suite (ADR-009 / ADR-028 / ADR-030).\n\nQuality gates: `make check` green; contract tests; `organizer_id`-scoped where the surrounding operations are. **This ticket moves no money and issues no ticket.**",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Without it a seat picker cannot exist: the buyer has geometry but no occupancy, and cannot even tell a seated performance from a GA one."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the catalog `seat_map_id` exposure, the inventory occupancy read, its cache tier, its error taxonomy, its index proof. OUT: any UI (TKT-174), any write (TKT-173), orphan rules (TKT-175), best-available (TKT-81)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the occupancy read lives at `/slots/{id}/seats` or extends `/slots/{id}/availability` with a seat list is a Planning-time call. A separate path is the more reversible option (it does not change an existing hot response shape) and is the presumed default; the AC constrains the observable properties, not the URL."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None open. TKT-80 (seat claims), TKT-103/104/105 (seat maps, publish, edit), TKT-110 (the declared-tier pattern) are all merged."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror `getAvailability` end to end — the handler, the declared single-value cache header, the 404/409 taxonomy and the smoke registration all have a working precedent one operation away in the same service."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One seated slot with one held seat: the read returns exactly that identity, at the seconds tier."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable through the gateway with curl: hold a seat, watch it appear in the occupancy read, release it, watch it leave."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition (2026-08-01). Re-resolve `governingAdrs` against docs/adr/ at claim time — ADR-029/031 are recent and this epic's area is actively moving."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-01",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-01",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map (US-017/US-018 are the seat-claim core; this epic is the buyer-facing picker)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "Fixes the tier: remaining availability is the **seconds** tier (`max-age=5`), and seat-map geometry is the hours tier. Occupancy is availability, not geometry — do not inherit the seat-map tier just because the payload names seats. Rule 1 also requires the tier be *declared*, not merely emitted."
+      },
+      {
+        "id": "ADR-028",
+        "why": "The response validator fails closed, so a declared header the handler does not emit (or vice versa) is a 5xx, not a lint warning. The single-value enum + handler constant pairing (`CacheControlPublicAvailability`) is the shape that survives it."
+      },
+      {
+        "id": "ADR-031",
+        "why": "`released_at IS NULL` — not claim status — is the liveness predicate for a seat. Reading occupancy by status leaks the `finalizing` window and shows a sold seat as free. Also: expired holds are swept lazily on the next seat hold, so a quiet pool can carry stale live rows; decide deliberately whether the read sweeps, filters on `expires_at`, or reports them."
+      },
+      {
+        "id": "ADR-019",
+        "why": "Written for catalog but its rule is general and this AC applies it here: a scoped read is only scoped if an index backs the filter, and proving it takes two tests (the result is scoped **and** the scan is)."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: both specs change, both generated artifacts are committed **before** the gate runs, or `check-generate` reads the regen as drift."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Defines what the coverage gate demands of a new catalog operation — the `seat_map_id` field lands on an existing operation, so check whether that trips the gate's scope."
+      },
+      {
+        "id": "ADR-010",
+        "why": "The claim transaction owns the lock order and the pool row. A read that takes locks in a different order, or holds one across an HTTP call, is the classic way to deadlock the on-sale path this read is meant to serve."
+      }
+    ]
+  },
+  "comments": []
+}
