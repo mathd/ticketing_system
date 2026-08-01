@@ -239,6 +239,71 @@ type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// LookupRefundByID reads one refund by its derived identity. Exported for the bulk
+// cancellation runner (TKT-159), which must resolve whether a cancellation refund for an
+// order ALREADY exists before it computes anything: a resumed run has to replay its own
+// earlier attempt rather than bind a second refund against a ceiling the first one is
+// already consuming. Same query as the internal lookup — deliberately not a second one.
+//
+// OrganizerID/BuyerID/HoldID/PaymentSourceKey are not populated: they live on the order
+// and reservation, and the caller that needs them reads them through BindOrderRefund.
+func LookupRefundByID(ctx context.Context, db *sql.DB, org, id uuid.UUID) (Refund, bool, error) {
+	s, found, err := lookupRefund(ctx, db, org, id)
+	if err != nil || !found {
+		return Refund{}, false, err
+	}
+	s.refund.OrganizerID = org
+	return s.refund, true, nil
+}
+
+// OrderCancellationState is what the bulk runner decides an order's outcome from: the
+// quantity ceiling, the money already returned, and whether EVERY refund of the order has
+// discharged both of its obligations.
+type OrderCancellationState struct {
+	SoldQuantity     int32
+	UnitAmount       int64
+	Currency         string
+	OrderStatus      string
+	RefundedQuantity int32
+	RefundedAmount   int64
+	RefundStatus     string
+	// OutstandingRefunds are completed refunds of this order whose tickets are not
+	// voided or whose capacity has not come back. They are the reason an order with all
+	// its money returned can still not be reported as done (ADR-039).
+	OutstandingRefunds []uuid.UUID
+}
+
+// ReadOrderCancellationState reads an order's refund position for the bulk runner, scoped
+// by organizer through the reservation — `orders` carries no organizer_id of its own.
+func ReadOrderCancellationState(ctx context.Context, db *sql.DB, org, order uuid.UUID) (OrderCancellationState, error) {
+	var s OrderCancellationState
+	if err := db.QueryRowContext(ctx, `
+		SELECT r.quantity, r.unit_amount, r.currency, o.status, o.refunded_quantity, o.refunded_amount, o.refund_status
+		FROM orders o JOIN reservations r ON r.id = o.reservation_id
+		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
+		Scan(&s.SoldQuantity, &s.UnitAmount, &s.Currency, &s.OrderStatus,
+			&s.RefundedQuantity, &s.RefundedAmount, &s.RefundStatus); err != nil {
+		return OrderCancellationState{}, err
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT id FROM order_refunds
+		WHERE organizer_id=$1 AND order_id=$2 AND status='completed'
+		  AND (tickets_voided_at IS NULL OR capacity_returned_at IS NULL)
+		ORDER BY created_at, id`, org, order)
+	if err != nil {
+		return OrderCancellationState{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return OrderCancellationState{}, err
+		}
+		s.OutstandingRefunds = append(s.OutstandingRefunds, id)
+	}
+	return s, rows.Err()
+}
+
 // OrderRefundProjection reads an order's aggregate refund state. Exported for the
 // handler, which needs the projection AFTER completing a refund and must not re-bind the
 // refund (and re-take the order lock) just to read three columns.

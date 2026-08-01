@@ -21,6 +21,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	commerceapi "ticketing/services/commerce/internal/api"
+	"ticketing/services/commerce/internal/bulkrefund"
 	commerceevents "ticketing/services/commerce/internal/events"
 	"ticketing/services/commerce/internal/outbox"
 	"ticketing/services/commerce/internal/recovery"
@@ -163,8 +164,12 @@ func run() error {
 	// still returns the money and leaves ticket voiding outstanding and retryable —
 	// degrading rather than refusing to start is the right failure for an obligation
 	// that is discharged after the money has already moved.
-	r.Mount("/", commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
-		WithAccess(os.Getenv("ACCESS_URL")).Router(log, validateResponses))
+	//
+	// Bound to a variable rather than inlined: the cancellation refund runner (TKT-159)
+	// refunds through this server's own refund unit, so both callers share one money path.
+	srvHandler := commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
+		WithAccess(os.Getenv("ACCESS_URL"))
+	r.Mount("/", srvHandler.Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
@@ -217,12 +222,24 @@ func run() error {
 		recovery.StoreCompleter{DB: db}, recoveryInterval(), recoveryBatch(), recoveryCallTimeout, log)
 	stopRecovery := start(log, "recovery runner", recoverer.Run)
 
+	// Event-cancellation bulk refunds (TKT-159). It refunds through the API server's own
+	// refund unit — the SAME code the staff endpoint runs — so there is one money path
+	// with two callers rather than two implementations of one protocol.
+	cancellations := bulkrefund.New(bulkrefund.DBStore{DB: db}, srvHandler.Refunds(),
+		cancellationInterval(), cancellationBatch(),
+		recovery.LeaseFor(cancellationBatch(), recoveryCallTimeout))
+	stopCancellations := start(log, "cancellation refund runner", cancellations.Run)
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
 
 	stopWorkers := func() {
-		// Recovery first: it completes orders through the outbox, so stopping the
+		// Cancellations first: a claimed order mid-refund must release its lease before
+		// the paths it depends on go away, so a successor reclaims it immediately rather
+		// than after the lease expires.
+		stopCancellations()
+		// Recovery next: it completes orders through the outbox, so stopping the
 		// drainer first would strand a row this pass just owed until the next boot.
 		stopRecovery()
 		stopDrainer()
@@ -302,4 +319,29 @@ func recoveryBatch() int {
 		}
 	}
 	return 16
+}
+
+// cancellationInterval bounds how long a cancellation run's next batch waits. Shorter than
+// recovery's: a cancelled event's buyers are owed money now, and unlike a stuck checkout
+// there is no grace period to respect — the run was created by an operator who is waiting
+// for the report.
+func cancellationInterval() time.Duration {
+	if v := os.Getenv("CANCELLATION_REFUND_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 10 * time.Second
+}
+
+// cancellationBatch bounds one claim, and with it the lease. Smaller than recovery's: each
+// order here makes up to four downstream calls (payments, journal, access, inventory), and
+// the lease has to outlast the whole batch.
+func cancellationBatch() int {
+	if v := os.Getenv("CANCELLATION_REFUND_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 8
 }

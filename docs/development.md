@@ -347,6 +347,42 @@ so the switch is a no-op, and the callback runs **anyway** — `processExchanged
 whether the switch was fresh. That is deliberate and pinned by a test; without it a capacity return
 lost to an outage could never be recovered.
 
+## Event-cancellation bulk refunds (TKT-159)
+
+Refunds every completed, not-fully-refunded order on one slot, with a per-order outcome. Internal
+and on demand — it does **not** require the slot to be in a cancelled state, and never reads catalog.
+
+```bash
+# start a run (Idempotency-Key is required; the same key replays the same run)
+curl -X POST "$COMMERCE_URL/internal/slots/$SLOT_ID/cancellation-refunds" \
+  -H "X-Internal-Token: $INTERNAL_SERVICE_TOKEN" -H "Idempotency-Key: cancel-$SLOT_ID-1" \
+  -H 'Content-Type: application/json' \
+  -d '{"organizer_id":"'"$ORGANIZER_ID"'","actor":"ops@example.test","reason":"event cancelled"}'
+
+# read the report (202 while it is still running, with the counts; 200 when complete, with the rows)
+curl "$COMMERCE_URL/internal/cancellation-refunds/$RUN_ID?organizer_id=$ORGANIZER_ID"
+```
+
+Reading the outcomes:
+
+| Outcome | Means |
+|---|---|
+| `refunded` | This run returned the money **and** the tickets are void **and** the seat is back. |
+| `already_refunded` | The order was already fully refunded, with every obligation discharged. No provider call was made. |
+| `failed` + `reversal_outstanding` | The money is back but a reversal is not done. `money_refunded`/`tickets_voided`/`capacity_returned` say which half. A **seated** order stays here permanently (TKT-164). |
+| `failed` + `no_captured_money` | A zero-price (comped) order. It has no money leg — and therefore got **no reversal at all**, so its tickets still admit. |
+| `failed` + `refund_refused` / `unavailable` / `not_refundable` / `internal` | The refund did not happen. Failures are terminal **for that run**; retry by starting another run, which is safe. |
+
+`incomplete_at_cutoff` on the report is the count of orders that existed on the slot at the run's
+cutoff but were not completed, so this run could not refund them. Non-zero means a later run may owe
+somebody money.
+
+Tuning: `CANCELLATION_REFUND_INTERVAL` (default `10s`) and `CANCELLATION_REFUND_BATCH` (default `8`).
+The batch bounds one claim and, through it, the lease.
+
+Why a second run cannot double-refund, and why the refund key ignores the run:
+[ADR-040](adr/ADR-040-event-cancellation-bulk-refund-runs.md) §3.
+
 ## Journal signing key rotation
 
 The payments money journal is signed with HMAC-SHA256 under a **keyring**: one active key that new

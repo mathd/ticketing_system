@@ -234,3 +234,35 @@ func TestPriceResolutionSnapshotColumns(t *testing.T) {
 		t.Error("a non-object snapshot must be rejected")
 	}
 }
+
+// 0012's Down must refuse to run once a cancellation refund run exists. Silently dropping
+// the record of who was repaid on a cancelled event is worse than refusing to roll back —
+// it is the only place that record lives per-order.
+func TestMigration0012DownRefusesToDestroyCancellationHistory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	org, run := uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO cancellation_refund_runs(organizer_id,id,slot_id,idempotency_key,request_fingerprint,actor,reason,cutoff_at)
+		VALUES($1,$2,$3,'k','fp','ops@example.test','event cancelled',now())`,
+		org, run, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(ctx); err == nil {
+		t.Fatal("0012 rolled back over an existing cancellation refund run — the guard is missing")
+	}
+
+	// And with the history cleared it rolls back cleanly, so the guard is a guard and not
+	// a permanently broken Down.
+	if _, err := db.ExecContext(ctx, `DELETE FROM cancellation_refund_runs`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(ctx); err != nil {
+		t.Fatalf("0012 down on an empty history: %v", err)
+	}
+}

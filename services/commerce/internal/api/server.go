@@ -21,6 +21,7 @@ import (
 
 	apispec "ticketing/services/commerce/api"
 	commerceevents "ticketing/services/commerce/internal/events"
+	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/fakepsp"
@@ -43,6 +44,10 @@ type Server struct {
 	// already moved by then.
 	accessURL string
 	publisher commerceevents.Publisher
+	// refunds is the one unit of work for refunding an order, shared with the
+	// event-cancellation bulk runner (TKT-159). Rebuilt by WithAccess because the access
+	// URL arrives after New.
+	refunds *refunds.Service
 }
 
 func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token string, publishers ...commerceevents.Publisher) *Server {
@@ -50,14 +55,24 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 	if len(publishers) > 0 {
 		publisher = publishers[0]
 	}
-	return &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
+	s := &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
+	s.refunds = refunds.New(db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
+	return s
 }
+
+// Refunds exposes the shared refund unit of work so the event-cancellation bulk runner
+// (TKT-159) refunds through exactly the same protocol the staff endpoint does, rather than
+// composing a second money path.
+func (s *Server) Refunds() *refunds.Service { return s.refunds }
 
 // WithAccess supplies the access base URL for refund ticket voiding. A separate setter
 // rather than a seventh positional argument: every existing New caller keeps compiling,
 // and a server without it degrades to leaving reversals outstanding instead of failing.
 func (s *Server) WithAccess(access string) *Server {
 	s.accessURL = strings.TrimSuffix(access, "/")
+	// Rebuild the refund unit: it captured an empty access URL at New, and a coordinator
+	// that cannot reach access would leave every ticket-voiding obligation outstanding.
+	s.refunds = refunds.New(s.db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 	return s
 }
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
@@ -71,6 +86,8 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/orders", s.checkout)
 	r.Get("/orders/{id}", s.getOrder)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
+	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
+	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)
 	r.Post("/internal/orders/{id}/exchanges", s.exchangeOrder)
 	r.Post("/internal/exchanges/{id}/tickets-switched", s.exchangeTicketsSwitched)
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
