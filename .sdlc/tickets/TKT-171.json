@@ -1,0 +1,20 @@
+{
+  "key": "TKT-171",
+  "type": "Story",
+  "parent": "TKT-9",
+  "classification": "standard",
+  "summary": "A comped (zero-price) order survives an event cancellation — its tickets still admit",
+  "description": "**As** an organizer whose event is cancelled, **I want** comped tickets to stop\nworking and their seats to come back, **so that** a cancelled event does not still admit people.\n\nFound by TKT-159 and recorded rather than closed there, because closing it needs a reversal path\nthat does not exist yet.\n\n**The gap.** `store.BindOrderRefund` refuses `unit <= 0` with `ErrRefundNoMoney`, while\n`reservations.unit_amount` permits `0` (`CHECK(unit_amount >= 0)`, commerce migration 0001). The whole\nreversal — ticket voiding and capacity return — hangs off a refund, so an order with no money leg\ngets **no reversal at all**: its tickets keep admitting and its seat stays sold.\n\nThe event-cancellation run reports these as `failed/no_captured_money` (ADR-040 §Consequences), so\nthey are **visible today, not silent** — but nothing repairs them.\n\n**Acceptance Criteria:**\n- [ ] A cancelled event's comped orders have their tickets voided and their capacity returned.\n- [ ] No zero-amount provider call is made and no money fact is fabricated — a comped order's\n      reversal is not a refund (ADR-003: the journal records what happened, not what didn't).\n- [ ] The cancellation report distinguishes a comped order that was reversed from one that failed;\n      `no_captured_money` stops meaning \"we did nothing\".\n- [ ] A test cancels a slot holding both a paid and a comped order and proves both stop admitting\n      and both seats come back.\n- [ ] The staff path is considered too: whether a comped order can be \"refunded\" on its own is a\n      product decision this ticket must state, not assume.\n\n**Out of scope:** partial reversal of a comped order; pricing/fee policy.\n\nQuality gates: `make check` green; entities `organizer_id`-scoped (ADR-002); lifecycle events through\n`store.appendLifecycle` only (ADR-021); capacity return through inventory's row-locked path (ADR-010),\nand **after** voiding, never before (ADR-038 §1).",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCarved out of **TKT-159** (US-O4), which found it and recorded it deliberately rather than widening\nits own diff. TKT-159's whole design hangs off the money leg, and a reversal with no money leg is a\ndifferent shape — see ADR-040 §Consequences (\"what this does not cover, deliberately\").\n\n**Not shaped yet:** the 8-item DoR is unfilled and the reversal-without-refund shape is an open\ndesign question. Shape before prioritising."
+    }
+  ],
+  "links": []
+}
