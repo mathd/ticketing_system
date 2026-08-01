@@ -4,7 +4,7 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-020: A buyer can see which seats are already taken",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
