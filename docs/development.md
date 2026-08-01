@@ -285,6 +285,42 @@ who can write to the Access database. It is a producer-schema check against hone
 changes (ADR-021 §The trust boundary). `device_occurred_at` is device-*claimed* and correlates with
 a physical gate event, so the payload is bounded, not anonymous.
 
+### Exchange entitlement switches (TKT-166)
+
+An exchange voids the source order's tickets and issues the replacement set **in one access
+transaction** (`store.SwitchExchange`, [ADR-039 §3](adr/ADR-039-exchange-settles-the-difference.md)).
+Two transactions would each be individually correct and jointly wrong: void-then-issue opens a
+window where **neither** ticket admits, issue-then-void one where **both** do. Neither is
+recoverable by a retry, because the harm lands during the window.
+
+Operationally that means:
+
+- **`exchanged` is a lifecycle event like any other.** It goes through `appendLifecycle`, it is
+  once-per-ticket, and `access verify-lifecycle` asserts one-to-one coverage over it. A direct
+  INSERT into `lifecycle_events` reads as tampering — the same rule as every other event type.
+- **A stuck exchange leaves the OLD tickets valid.** If the switch transaction rolls back, the
+  `consumed_events` receipt rolls back with it, so the event is still owed and JetStream redelivers.
+  The buyer keeps a working entitlement throughout. The recovery path is the ordinary sanitized
+  failed-event procedure above; nothing exchange-specific is needed.
+- **`switched, capacity outstanding` is a real state.** Commerce sets `tickets_exchanged_at`
+  *before* asking inventory to return the old capacity, so the safety ordering is checkable
+  (ADR-039 §3b). A crash in between leaves `capacity_returned_at` NULL — under-sold, visible, and
+  retried by the unacknowledged message. Query it with:
+
+  ```sql
+  SELECT id, source_order_id, settled_at, tickets_exchanged_at, capacity_returned_at
+  FROM order_exchanges
+  WHERE settled_at IS NOT NULL AND capacity_returned_at IS NULL;
+  ```
+
+- **A gate refusing `exchanged` is not an integrity problem.** The verdict is its own
+  (`DecisionExchanged`), distinct from `refunded`, and it is checked **before** chain verification —
+  the degraded posture admits once (ADR-021 §D6), and an exchanged ticket must not be the one it
+  admits. The buyer holding it has a live replacement under the **same** guest-order link.
+
+**What this does not close:** a source ticket already redeemed before the switch is still switched,
+so the holder can end up admitted twice for one exchange. Named in ADR-039 §2 and owned by TKT-169.
+
 ## Journal signing key rotation
 
 The payments money journal is signed with HMAC-SHA256 under a **keyring**: one active key that new

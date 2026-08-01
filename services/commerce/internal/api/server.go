@@ -72,6 +72,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Get("/orders/{id}", s.getOrder)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/orders/{id}/exchanges", s.exchangeOrder)
+	r.Post("/internal/exchanges/{id}/tickets-switched", s.exchangeTicketsSwitched)
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
 	r.Post("/internal/operational-holds/{id}/convert", s.convertOperational)
 	r.Post("/internal/group-reservations/{id}/draw-down", s.drawDownGroupReservation)

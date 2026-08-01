@@ -109,6 +109,18 @@ type ExchangeCreate struct {
 	TargetTicketTypeId openapi_types.UUID `json:"target_ticket_type_id"`
 }
 
+// ExchangeSwitchResult defines model for ExchangeSwitchResult.
+type ExchangeSwitchResult struct {
+	CapacityReturned bool               `json:"capacity_returned"`
+	ExchangeId       openapi_types.UUID `json:"exchange_id"`
+	TicketsExchanged bool               `json:"tickets_exchanged"`
+}
+
+// ExchangeSwitched defines model for ExchangeSwitched.
+type ExchangeSwitched struct {
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+}
+
 // OperationalConversion defines model for OperationalConversion.
 type OperationalConversion struct {
 	Amount          int64              `json:"amount"`
@@ -246,6 +258,9 @@ type CheckoutParams struct {
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
+
+// ExchangeTicketsSwitchedJSONRequestBody defines body for ExchangeTicketsSwitched for application/json ContentType.
+type ExchangeTicketsSwitchedJSONRequestBody = ExchangeSwitched
 
 // DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
 type DrawDownGroupReservationJSONRequestBody = OperationalConversionCreate

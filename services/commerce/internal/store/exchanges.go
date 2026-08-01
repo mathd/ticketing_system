@@ -6,10 +6,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"ticketing/services/commerce/internal/events"
 )
 
 // isUniqueViolation reports PostgreSQL unique_violation (23505) without the caller having
@@ -339,21 +342,164 @@ func LookupExchangeFor(ctx context.Context, db *sql.DB, in ExchangeRequest) (Exc
 // the signed delta, and the instant it settled. Guarded on `settled_at IS NULL`, so a
 // replay keeps the original result — the timestamp is evidence of when the difference
 // moved, and a retry must not rewrite it.
+// It settles and OWES THE SWITCH EVENT in one transaction (TKT-166). A settled exchange
+// that owes no switch work is a permanent `switch_pending`: the money moved, the
+// replacement order exists, and nothing will ever issue its tickets — because that order
+// deliberately owes no `order.completed` (ADR-039 §4), so this event is the only trigger
+// there is. Committing the settlement without the outbox row leaves the buyer paid-up
+// holding tickets to an event they exchanged away, and no retry can notice.
+//
+// This is ADR-016 §Decision 6's rule applied to a second subject, and the reason it is a
+// transaction rather than two statements.
 func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID, replacementOrder uuid.UUID) error {
-	_, err := db.ExecContext(ctx, `
-		UPDATE order_exchanges SET replacement_order_id=$3, settled_at=now()
-		WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL AND basis_at IS NOT NULL`,
-		org, exchangeID, replacementOrder)
-	return err
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Lock the exchange before reading its settlement state: two requests completing the
+	// same exchange would otherwise both see `settled_at IS NULL`, both build an envelope
+	// from their own clock, and race on the outbox primary key with different bytes under
+	// one deterministic id.
+	var settledAt sql.NullTime
+	var alreadyReplacement uuid.NullUUID
+	err = tx.QueryRowContext(ctx, `
+		SELECT settled_at, replacement_order_id FROM order_exchanges
+		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NOT NULL FOR UPDATE`, org, exchangeID).
+		Scan(&settledAt, &alreadyReplacement)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// No row, or no basis yet. A no-op, exactly as before this function became
+			// transactional (TKT-158's asserted contract): settlement cannot precede the
+			// basis, and the caller's flow always records one first.
+			return nil
+		}
+		return err
+	}
+	if settledAt.Valid {
+		// Already settled. The event is still owed if a crash landed between the two
+		// writes before they shared a transaction, so this path is not a no-op — but it
+		// must settle against the SAME instant, or the replayed bytes would differ from
+		// the published ones under one id.
+		// The caller's argument is IGNORED on this path, not validated against. Settlement
+		// is once-only (TKT-158): the persisted replacement is the one the money settled
+		// against, and it is the only one the frozen bytes may describe.
+		replacementOrder = alreadyReplacement.UUID
+	} else {
+		if err := tx.QueryRowContext(ctx, `
+			UPDATE order_exchanges SET replacement_order_id=$3, settled_at=now()
+			WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL AND basis_at IS NOT NULL
+			RETURNING settled_at`, org, exchangeID, replacementOrder).Scan(&settledAt); err != nil {
+			return err
+		}
+	}
+
+	// The payload comes from the PERSISTED rows, never from a caller's in-memory copy:
+	// the frozen bytes must describe what actually committed, and on the replay path
+	// there is no in-memory copy to trust anyway.
+	data := events.OrderExchangedData{ExchangeID: exchangeID, ReplacementOrderID: replacementOrder, OrganizerID: org}
+	err = tx.QueryRowContext(ctx, `
+		SELECT x.source_order_id, o.guest_order_ref, r.buyer_id, x.target_slot_id, x.target_ticket_type_id, x.quantity
+		FROM order_exchanges x
+		JOIN orders o ON o.id = x.source_order_id
+		JOIN orders ro ON ro.id = x.replacement_order_id
+		JOIN reservations r ON r.id = ro.reservation_id
+		WHERE x.organizer_id=$1 AND x.id=$2`, org, exchangeID).
+		Scan(&data.SourceOrderID, &data.GuestOrderRef, &data.BuyerID, &data.SlotID, &data.TicketTypeID, &data.Quantity)
+	if err != nil {
+		return fmt.Errorf("read exchange event basis: %w", err)
+	}
+
+	eventID := events.ExchangedEventID(exchangeID)
+	envelope, err := events.OrderExchangedEnvelope(eventID, data, settledAt.Time.UTC())
+	if err != nil {
+		return fmt.Errorf("freeze exchange envelope: %w", err)
+	}
+	// Same ownership check CompleteOrder makes: DO NOTHING on a row belonging to a
+	// different order would let this exchange settle owing nothing. The outbox is keyed
+	// by event id and its order_id is the REPLACEMENT order — the one whose tickets the
+	// event issues, and the one no other outbox row can claim.
+	var owner uuid.UUID
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO completion_outbox(event_id,order_id,subject,envelope) VALUES($1,$2,$3,$4)
+		ON CONFLICT (event_id) DO UPDATE SET event_id=completion_outbox.event_id
+		RETURNING order_id`, eventID, replacementOrder, events.SubjectOrderExchanged, envelope).Scan(&owner)
+	if err != nil {
+		return fmt.Errorf("owe exchange event: %w", err)
+	}
+	if owner != replacementOrder {
+		return fmt.Errorf("exchange event %s is owned by order %s, not %s", eventID, owner, replacementOrder)
+	}
+	return tx.Commit()
 }
 
-// MarkExchangeTicketsSwitched is TKT-166's half, declared here so the shape of the whole
-// operation is visible in one place: the reversal is complete when both timestamps are
-// set, and the constraint refuses a switch that precedes settlement.
+// MarkExchangeTicketsSwitched records that access committed the switch.
+//
+// Set BEFORE the capacity return, not after (TKT-166). That ordering is what makes
+// ADR-038 §1 checkable: capacity may only come back once the old tickets have stopped
+// admitting, and the database enforces exactly that with
+// `order_exchanges_capacity_after_switch`. Marking it after the return would invert the
+// evidence — capacity freed while the row still claims the switch never happened.
+//
+// The cost is a real substate: switched, capacity outstanding. That is what
+// `capacity_returned_at` exists to name (migration 0011); it under-sells until the retry
+// lands, which is the safe direction.
 func MarkExchangeTicketsSwitched(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE order_exchanges SET tickets_exchanged_at=now()
 		WHERE organizer_id=$1 AND id=$2 AND tickets_exchanged_at IS NULL AND settled_at IS NOT NULL`,
 		org, exchangeID)
 	return err
+}
+
+// MarkExchangeCapacityReturned closes the reversal. Guarded on the switch having happened,
+// so the row cannot claim a return that preceded it even if a caller asks out of order.
+func MarkExchangeCapacityReturned(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE order_exchanges SET capacity_returned_at=now()
+		WHERE organizer_id=$1 AND id=$2 AND capacity_returned_at IS NULL AND tickets_exchanged_at IS NOT NULL`,
+		org, exchangeID)
+	return err
+}
+
+// ExchangeSwitch is what the tickets-switched callback needs: which hold gives capacity
+// back, how much, and what has already been discharged.
+type ExchangeSwitch struct {
+	ID, OrganizerID  uuid.UUID
+	SourceHoldID     uuid.UUID
+	Quantity         int32
+	TicketsExchanged bool
+	CapacityReturned bool
+}
+
+// ErrExchangeNotSettled reports an exchange that is unknown, or known and not yet settled.
+// The switch cannot precede the money: access is told to switch by an event that only a
+// settled exchange produces, so this is a forged or badly-ordered call, not a race.
+var ErrExchangeNotSettled = errors.New("exchange is not settled")
+
+// LoadExchangeSwitch reads the reversal state, organizer-scoped. The hold is the SOURCE
+// order's — the one holding the capacity the exchange is giving back.
+func LoadExchangeSwitch(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID) (ExchangeSwitch, error) {
+	out := ExchangeSwitch{ID: exchangeID, OrganizerID: org}
+	var settled sql.NullTime
+	var switched, returned sql.NullTime
+	err := db.QueryRowContext(ctx, `
+		SELECT x.settled_at, x.tickets_exchanged_at, x.capacity_returned_at, x.quantity, r.hold_id
+		FROM order_exchanges x
+		JOIN orders o ON o.id = x.source_order_id
+		JOIN reservations r ON r.id = o.reservation_id
+		WHERE x.organizer_id=$1 AND x.id=$2`, org, exchangeID).
+		Scan(&settled, &switched, &returned, &out.Quantity, &out.SourceHoldID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ExchangeSwitch{}, ErrExchangeNotSettled
+		}
+		return ExchangeSwitch{}, err
+	}
+	if !settled.Valid {
+		return ExchangeSwitch{}, ErrExchangeNotSettled
+	}
+	out.TicketsExchanged, out.CapacityReturned = switched.Valid, returned.Valid
+	return out, nil
 }

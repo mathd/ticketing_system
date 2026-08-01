@@ -1,0 +1,177 @@
+package consumer
+
+import (
+	"context"
+	"testing"
+
+	"github.com/google/uuid"
+)
+
+// The order.exchanged arm (TKT-166, ADR-039 §5).
+//
+// EVERY envelope in this file is hand-written JSON. Not one is marshaled from
+// exchangedData, and that is the whole point: a fixture built from the type under test
+// encodes the compatibility it claims to prove and CANNOT FAIL (ADR-017 §5b′). TKT-61
+// shipped this exact bug twice — past a mutation-checked suite and a full review pass —
+// which is why the rule is written down rather than assumed.
+
+// A well-formed schema-1 exchange reaches processing. The baseline the skew cases are
+// measured against: if this did not pass, "parked" below would prove nothing.
+const validExchangedJSON = `{"id":"20000000-0000-0000-0000-000000000001",` +
+	`"type":"platform.commerce.order.exchanged","occurred_at":"2026-07-31T10:00:00Z","schema":1,` +
+	`"data":{"exchange_id":"30000000-0000-0000-0000-000000000001",` +
+	`"source_order_id":"30000000-0000-0000-0000-000000000002",` +
+	`"replacement_order_id":"30000000-0000-0000-0000-000000000003",` +
+	`"guest_order_ref":"30000000-0000-0000-0000-000000000004",` +
+	`"organizer_id":"30000000-0000-0000-0000-000000000005",` +
+	`"buyer_id":"30000000-0000-0000-0000-000000000006",` +
+	`"slot_id":"30000000-0000-0000-0000-000000000007",` +
+	`"ticket_type_id":"30000000-0000-0000-0000-000000000008","quantity":2}}`
+
+func TestExchangedEventIsProcessedAndAcked(t *testing.T) {
+	var seen exchanged
+	c := testConsumer(func(context.Context, FailureEvent) error {
+		t.Fatal("a valid event must not publish a failure record")
+		return nil
+	})
+	c.processExchange = func(_ context.Context, e exchanged) (FailureStage, error) { seen = e; return "", nil }
+	msg := &fakeMsg{data: []byte(validExchangedJSON), delivery: 1}
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "ack" {
+		t.Fatalf("actions = %v, want ack", msg.actions)
+	}
+	if seen.Data.Quantity != 2 || seen.Data.ExchangeID == uuid.Nil || seen.Data.ReplacementOrderID == uuid.Nil {
+		t.Fatalf("decoded payload is wrong: %+v", seen.Data)
+	}
+	// The SOURCE order's guest reference travels with the event, so the buyer's existing
+	// link shows old and new tickets together.
+	if seen.Data.GuestOrderRef == uuid.Nil {
+		t.Fatal("guest_order_ref did not survive decoding")
+	}
+}
+
+// AC5. A future variant of THIS subject is parked and latches readiness — it is not a
+// failure, and judging its `data` by today's struct would terminate a settled exchange
+// whose buyer has already paid the difference.
+//
+// The renamed-keys case is the one that matters: it decodes cleanly into exchangedData as
+// a zero value, so an implementation that decoded before checking the schema would call it
+// an invalid contract and terminate it. Parse compatibility is not semantic compatibility
+// (ADR-017 §3).
+func TestFutureExchangedSchemaIsParkedNotJudged(t *testing.T) {
+	cases := map[string]string{
+		"renamed keys, changed types": `{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.exchanged","schema":2,"data":{"exchange":"e-1","qty":"2"}}`,
+		"empty data":                  `{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.exchanged","schema":2,"data":{}}`,
+		"data not an object":          `{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.exchanged","schema":7,"data":[1,2,3]}`,
+		"otherwise valid schema 2":    `{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.exchanged","schema":2,"data":{"exchange_id":"30000000-0000-0000-0000-000000000001","source_order_id":"30000000-0000-0000-0000-000000000002","replacement_order_id":"30000000-0000-0000-0000-000000000003","guest_order_ref":"30000000-0000-0000-0000-000000000004","organizer_id":"30000000-0000-0000-0000-000000000005","buyer_id":"30000000-0000-0000-0000-000000000006","slot_id":"30000000-0000-0000-0000-000000000007","ticket_type_id":"30000000-0000-0000-0000-000000000008","quantity":2}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			published := false
+			c := testConsumer(func(context.Context, FailureEvent) error { published = true; return nil })
+			c.processExchange = func(context.Context, exchanged) (FailureStage, error) {
+				t.Fatal("a future variant reached processing — it was judged, not parked")
+				return "", nil
+			}
+			msg := &fakeMsg{data: []byte(body), delivery: 1}
+			c.handle(context.Background(), msg)
+			if len(msg.actions) != 1 || msg.actions[0] != "nak-delay" {
+				t.Fatalf("actions = %v, want parked (nak-delay)", msg.actions)
+			}
+			if published {
+				t.Fatal("published a failure record for a future variant — it is not a failure")
+			}
+			if c.Ready() {
+				t.Fatal("readiness not latched false on version skew")
+			}
+		})
+	}
+}
+
+// The BOTTOM end of the poison/skew line, which is the half that gets forgotten
+// (ADR-017 §5b). `schema <= 0` is a broken envelope, not the future: parking it would NAK
+// forever and latch readiness for an event no binary will ever apply.
+func TestBrokenExchangedEnvelopeTerminatesAndStaysReady(t *testing.T) {
+	cases := map[string]string{
+		"schema zero":     `{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.exchanged","schema":0,"data":{}}`,
+		"schema negative": `{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.exchanged","schema":-3,"data":{}}`,
+		"no id":           `{"id":"00000000-0000-0000-0000-000000000000","type":"platform.commerce.order.exchanged","schema":1,"data":{}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			published := false
+			c := testConsumer(func(context.Context, FailureEvent) error { published = true; return nil })
+			msg := &fakeMsg{data: []byte(body), delivery: 1}
+			c.handle(context.Background(), msg)
+			if len(msg.actions) != 1 || msg.actions[0] != "term" {
+				t.Fatalf("actions = %v, want term", msg.actions)
+			}
+			if !published {
+				t.Fatal("a broken envelope must publish its failure record before terminating")
+			}
+			if !c.Ready() {
+				t.Fatal("readiness must NOT be latched by a broken producer")
+			}
+		})
+	}
+}
+
+// The two subjects version INDEPENDENTLY. A schema-2 `order.completed` is still parked
+// after this ticket, and a schema-1 `order.exchanged` is still processed — one shared
+// ceiling would couple them and park a readable event because the other subject moved on.
+func TestSubjectCeilingsAreIndependent(t *testing.T) {
+	c := testConsumer(func(context.Context, FailureEvent) error { return nil })
+	reached := false
+	c.processExchange = func(context.Context, exchanged) (FailureStage, error) { reached = true; return "", nil }
+	c.process = func(context.Context, completed) (FailureStage, error) {
+		t.Fatal("a schema-2 order.completed reached processing")
+		return "", nil
+	}
+
+	skewed := &fakeMsg{data: bumpSchema(t, 2), delivery: 1}
+	c.handle(context.Background(), skewed)
+	if len(skewed.actions) != 1 || skewed.actions[0] != "nak-delay" {
+		t.Fatalf("completed skew actions = %v, want parked", skewed.actions)
+	}
+
+	c.ready.Store(true)
+	fine := &fakeMsg{data: []byte(validExchangedJSON), delivery: 1}
+	c.handle(context.Background(), fine)
+	if !reached {
+		t.Fatal("a schema-1 exchange was not processed")
+	}
+	if len(fine.actions) != 1 || fine.actions[0] != "ack" {
+		t.Fatalf("exchange actions = %v, want ack", fine.actions)
+	}
+}
+
+// An unknown subject is still an invalid contract, terminated without touching readiness.
+// Adding a second arm must not turn the dispatch into "anything goes".
+func TestUnknownSubjectIsStillRefused(t *testing.T) {
+	published := false
+	c := testConsumer(func(context.Context, FailureEvent) error { published = true; return nil })
+	msg := &fakeMsg{data: []byte(`{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.cancelled","schema":1,"data":{}}`), delivery: 1}
+	c.handle(context.Background(), msg)
+	if len(msg.actions) != 1 || msg.actions[0] != "term" {
+		t.Fatalf("actions = %v, want term", msg.actions)
+	}
+	if !published || !c.Ready() {
+		t.Fatalf("published=%t ready=%t — an unknown subject is a contract failure, not skew", published, c.Ready())
+	}
+}
+
+// A payload missing its required fields is a contract failure of a KNOWN variant, and is
+// terminated after its retries — not parked.
+func TestInvalidExchangedPayloadIsRefused(t *testing.T) {
+	published := false
+	c := testConsumer(func(context.Context, FailureEvent) error { published = true; return nil })
+	msg := &fakeMsg{data: []byte(`{"id":"20000000-0000-0000-0000-000000000001","type":"platform.commerce.order.exchanged","schema":1,"data":{"quantity":0}}`), delivery: 1}
+	c.handle(context.Background(), msg)
+	if len(msg.actions) != 1 || msg.actions[0] != "term" {
+		t.Fatalf("actions = %v, want term", msg.actions)
+	}
+	if !published {
+		t.Fatal("an invalid known-variant payload must publish its failure record")
+	}
+}

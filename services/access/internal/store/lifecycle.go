@@ -77,6 +77,17 @@ const (
 	// admission that never happened, or of an integrity verdict, which describes chain
 	// health rather than commercial validity.
 	DecisionRefunded Decision = "refunded"
+
+	// DecisionExchanged denies a ticket an exchange has voided (TKT-166, ADR-039). It is
+	// deliberately DISTINCT from DecisionRefunded rather than folded into it or into a
+	// generic "commercially void": both deny admission, but they are different facts and
+	// the difference is operational. A gate handing back "refunded" for a ticket the buyer
+	// exchanged sends them to look for a refund that does not exist, when what they hold is
+	// a replacement ticket under the same link.
+	//
+	// If dishonest database state somehow carries both, `refunded` keeps precedence — the
+	// order the two checks run in, not an accident.
+	DecisionExchanged Decision = "exchanged"
 )
 
 // Mode is an organizer's degraded-mode posture (ADR-021 §D6).

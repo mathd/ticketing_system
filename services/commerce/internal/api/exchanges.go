@@ -438,3 +438,100 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 	}
 	return replacement, nil
 }
+
+// exchangeTicketsSwitched is access reporting that its switch transaction COMMITTED
+// (TKT-166, ADR-038 §1).
+//
+// The whole endpoint exists to make one ordering checkable across a service boundary.
+// Commerce cannot see access's transaction, and access has no authority over the source
+// hold — so without an explicit callback, either capacity comes back on a timer that
+// cannot know whether the old tickets still admit, or access acquires hold authority it
+// should not have. Both are worse than one call.
+//
+// The marker is recorded BEFORE inventory is asked. That order is deliberate and it is
+// the reason `capacity_returned_at` exists (migration 0011): marking after would mean a
+// crash could free capacity while the row still claimed the switch never happened, and
+// the ordering this endpoint enforces would be unauditable. Marking first leaves the
+// opposite substate — switched, capacity outstanding — which under-sells until the retry
+// lands, and is visible.
+//
+// This is an HONEST-CALLER guarantee, not tamper-evidence (ADR-021): anyone holding the
+// internal token can call inventory's refund-capacity directly and skip all of this. The
+// adversary being defended against here is a crash, not a writer.
+func (s *Server) exchangeTicketsSwitched(w http.ResponseWriter, r *http.Request) {
+	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid exchange"})
+		return
+	}
+	var body struct {
+		OrganizerID uuid.UUID `json:"organizer_id"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if body.OrganizerID == uuid.Nil {
+		write(w, http.StatusBadRequest, map[string]string{"error": "invalid switch notification"})
+		return
+	}
+	ex, err := commercestore.LoadExchangeSwitch(r.Context(), s.db, body.OrganizerID, id)
+	if err != nil {
+		if errors.Is(err, commercestore.ErrExchangeNotSettled) {
+			write(w, http.StatusNotFound, map[string]string{"error": "no settled exchange"})
+			return
+		}
+		slog.Default().ErrorContext(r.Context(), "load exchange switch", "exchange_id", id, "err", err)
+		write(w, 500, map[string]string{"error": "load exchange"})
+		return
+	}
+	if !ex.TicketsExchanged {
+		if err := commercestore.MarkExchangeTicketsSwitched(r.Context(), s.db, ex.OrganizerID, ex.ID); err != nil {
+			slog.Default().ErrorContext(r.Context(), "record exchange switch", "exchange_id", id, "err", err)
+			write(w, 500, map[string]string{"error": "record switch"})
+			return
+		}
+		ex.TicketsExchanged = true
+	}
+	ex = s.returnExchangedCapacity(r, ex)
+	if !ex.CapacityReturned {
+		// The switch is committed and recorded either way — that is the half that had to
+		// happen first. Answering 502 keeps the caller's message unacknowledged so the
+		// return is retried; a replay finds the marker set and drives only the remainder.
+		write(w, http.StatusBadGateway, map[string]string{"error": "capacity return unresolved"})
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"exchange_id": ex.ID, "tickets_exchanged": true, "capacity_returned": true})
+}
+
+// returnExchangedCapacity gives the OLD line's capacity back, reusing the refund-capacity
+// operation and its receipt. The exchange id is the deterministic `refund_id`, so a repeat
+// answers as a replay rather than returning capacity twice.
+//
+// Reusing a refund-named contract for an exchange is a real cost — the receipt in
+// `claim_history` says `refund_return` for something nobody refunded — and it buys the
+// idempotent, seated-aware return that already exists. The source claim is GA by
+// construction (TKT-158 refuses a seated source), and the return is FULL, which is the
+// case ADR-038 §9 says is the only one seated claims accept anyway.
+func (s *Server) returnExchangedCapacity(r *http.Request, ex commercestore.ExchangeSwitch) commercestore.ExchangeSwitch {
+	if ex.CapacityReturned || s.inventoryURL == "" || ex.SourceHoldID == uuid.Nil {
+		return ex
+	}
+	code, _, err := s.call(r.Context(), http.MethodPost,
+		fmt.Sprintf("%s/internal/holds/%s/refund-capacity", s.inventoryURL, ex.SourceHoldID), "",
+		map[string]any{"organizer_id": ex.OrganizerID, "refund_id": ex.ID, "quantity": ex.Quantity}, true)
+	if err != nil || code != http.StatusOK {
+		slog.Default().WarnContext(r.Context(), "exchange capacity not returned; left outstanding",
+			"exchange_id", ex.ID, "hold_id", ex.SourceHoldID, "status", code, "err", err)
+		return ex
+	}
+	if err := commercestore.MarkExchangeCapacityReturned(r.Context(), s.db, ex.OrganizerID, ex.ID); err != nil {
+		slog.Default().ErrorContext(r.Context(), "record exchange capacity return", "exchange_id", ex.ID, "err", err)
+		return ex
+	}
+	ex.CapacityReturned = true
+	return ex
+}

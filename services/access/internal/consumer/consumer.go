@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,6 +28,11 @@ import (
 
 const (
 	SubjectOrderCompleted = "platform.commerce.order.completed"
+	// SubjectOrderExchanged carries a settled exchange whose entitlement has not yet
+	// switched (TKT-166, ADR-039 §5). A second subject rather than an order.completed
+	// schema bump: bumping would put every existing consumer of the issuance path under
+	// ADR-017's skew rules to describe an event most of them never see.
+	SubjectOrderExchanged = "platform.commerce.order.exchanged"
 	SubjectFailure        = "platform.access.ticket-issuance.failed"
 )
 
@@ -120,6 +126,7 @@ type Consumer struct {
 	maxDeliver                    int
 	backoff                       []time.Duration
 	process                       func(context.Context, completed) (FailureStage, error)
+	processExchange               func(context.Context, exchanged) (FailureStage, error)
 	failurePublisher              func(context.Context, FailureEvent) error
 	failureCounter                metric.Int64Counter
 	retryCounter                  metric.Int64Counter
@@ -176,6 +183,122 @@ type completedData struct {
 }
 
 type completed = domainevent.Decoded[completedData]
+
+// maxKnownExchangedSchema is the highest order.exchanged variant this binary can read.
+// Per-SUBJECT, not shared with maxKnownCompletedSchema: the two subjects version
+// independently, and one ceiling for both would park a perfectly readable event of one
+// subject because the other had moved on (ADR-017).
+const maxKnownExchangedSchema = 1
+
+// exchangedData is the schema-1 order.exchanged payload (TKT-166, ADR-039 §5).
+//
+// GuestOrderRef is the SOURCE order's reference. The replacement tickets carry it so the
+// buyer's existing link shows the old and new tickets together; the replacement commerce
+// order keeps its own unset one.
+type exchangedData struct {
+	ExchangeID         uuid.UUID `json:"exchange_id"`
+	SourceOrderID      uuid.UUID `json:"source_order_id"`
+	ReplacementOrderID uuid.UUID `json:"replacement_order_id"`
+	GuestOrderRef      uuid.UUID `json:"guest_order_ref"`
+	OrganizerID        uuid.UUID `json:"organizer_id"`
+	BuyerID            uuid.UUID `json:"buyer_id"`
+	SlotID             uuid.UUID `json:"slot_id"`
+	TicketTypeID       uuid.UUID `json:"ticket_type_id"`
+	Quantity           int32     `json:"quantity"`
+}
+
+type exchanged = domainevent.Decoded[exchangedData]
+
+// maxKnownSchema answers the ceiling question for a subject, so handle can ask it BEFORE
+// it knows which payload type applies — which is the whole ADR-017 §5b' ordering.
+func maxKnownSchema(subject string) (int, bool) {
+	switch subject {
+	case SubjectOrderCompleted:
+		return maxKnownCompletedSchema, true
+	case SubjectOrderExchanged:
+		return maxKnownExchangedSchema, true
+	}
+	return 0, false
+}
+
+func validateExchanged(e exchanged) error {
+	if e.Data.ExchangeID == uuid.Nil || e.Data.SourceOrderID == uuid.Nil || e.Data.ReplacementOrderID == uuid.Nil ||
+		e.Data.GuestOrderRef == uuid.Nil || e.Data.OrganizerID == uuid.Nil || e.Data.BuyerID == uuid.Nil ||
+		e.Data.SlotID == uuid.Nil || e.Data.TicketTypeID == uuid.Nil || e.Data.Quantity < 1 || e.Data.Quantity > 50 {
+		return errors.New("invalid exchanged order event")
+	}
+	return nil
+}
+
+// switchEntitlement issues the replacement tickets and voids the source order's in ONE
+// access transaction (ADR-039 §3). The signing and derivation are ordinary issuance's —
+// the replacement tickets are tickets, and nothing about them is exchange-specific except
+// what they replace.
+func (c *Consumer) switchEntitlement(ctx context.Context, e exchanged) error {
+	now := time.Now().UTC()
+	in := store.SwitchExchangeInput{
+		EventID: e.ID, ExchangeID: e.Data.ExchangeID,
+		SourceOrderID: e.Data.SourceOrderID, OrganizerID: e.Data.OrganizerID,
+	}
+	for i := int32(0); i < e.Data.Quantity; i++ {
+		id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(e.ID.String()+fmt.Sprintf(":%d", i)))
+		payload, err := c.signer.Payload(id, e.Data.ReplacementOrderID, e.Data.OrganizerID, e.Data.SlotID, now)
+		if err != nil {
+			return err
+		}
+		in.Tickets = append(in.Tickets, store.Ticket{
+			ID: id, OrderID: e.Data.ReplacementOrderID, GuestOrderRef: e.Data.GuestOrderRef,
+			OrganizerID: e.Data.OrganizerID, BuyerID: e.Data.BuyerID, SlotID: e.Data.SlotID,
+			TicketTypeID: e.Data.TicketTypeID, Payload: payload, IssuedAt: now,
+		})
+	}
+	return c.st.SwitchExchange(ctx, in)
+}
+
+// notifySwitched tells commerce the switch COMMITTED, which is what lets it return the old
+// capacity (ADR-038 §1). Called only after SwitchExchange returns: capacity freed while the
+// old tickets still admit is the one ordering that oversells, and this call is the evidence
+// that ordering was honoured. Commerce owns the return itself — access has no authority
+// over the source hold and should not acquire any.
+func (c *Consumer) notifySwitched(ctx context.Context, e exchanged) error {
+	body, err := json.Marshal(map[string]any{"organizer_id": e.Data.OrganizerID})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.commerceURL+"/internal/exchanges/"+e.Data.ExchangeID.String()+"/tickets-switched", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Internal-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("commerce exchange switch callback: %d", res.StatusCode)
+	}
+	return nil
+}
+
+// processExchanged runs the three steps in their safety order: switch, then capacity, then
+// deliver. A failure at any step leaves the message unacknowledged, and every step is
+// idempotent — the switch on `consumed_events`, the capacity return on inventory's receipt,
+// the delivery on `delivery_attempts`.
+func (c *Consumer) processExchanged(ctx context.Context, event exchanged) (FailureStage, error) {
+	if err := c.switchEntitlement(ctx, event); err != nil {
+		return StageIssuance, err
+	}
+	if err := c.notifySwitched(ctx, event); err != nil {
+		return StageIssuance, err
+	}
+	if err := c.deliver(ctx, event.Data.ReplacementOrderID); err != nil {
+		return StageDelivery, err
+	}
+	return "", nil
+}
 
 func (c *Consumer) issue(ctx context.Context, e completed) error {
 	now := time.Now().UTC()
@@ -261,7 +384,10 @@ func (c *Consumer) processCompleted(ctx context.Context, event completed) (Failu
 
 func (c *Consumer) consumerConfig(durable string) jetstream.ConsumerConfig {
 	return jetstream.ConsumerConfig{
-		Durable: durable, FilterSubject: SubjectOrderCompleted, DeliverPolicy: jetstream.DeliverAllPolicy,
+		// FilterSubjects (plural): this consumer now judges two subjects, and a single
+		// FilterSubject would silently drop every exchange.
+		Durable: durable, FilterSubjects: []string{SubjectOrderCompleted, SubjectOrderExchanged},
+		DeliverPolicy: jetstream.DeliverAllPolicy,
 		// Processing is bounded explicitly by maxProcessAttempts. Publication of
 		// the terminal failure record must remain retryable until it succeeds.
 		AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: -1, BackOff: append([]time.Duration(nil), c.backoff...),
@@ -358,7 +484,8 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		c.reject(ctx, msg, failureRecord(msg.Data(), uuid.Nil, StageContract, ReasonInvalidJSON, attempts))
 		return
 	}
-	if decodeErr != nil || env.Type != SubjectOrderCompleted || env.ID == uuid.Nil {
+	ceiling, known := maxKnownSchema(env.Type)
+	if decodeErr != nil || !known || env.ID == uuid.Nil {
 		// Broken envelope: id, type and schema are stable across every variant
 		// (ADR-009 §5), so their absence is poison even when schema claims to
 		// be from the future — parking it would NAK forever and latch
@@ -368,7 +495,7 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		c.reject(ctx, msg, failureRecord(msg.Data(), env.ID, StageContract, ReasonInvalidContract, attempts))
 		return
 	}
-	if env.Schema > maxKnownCompletedSchema {
+	if env.Schema > ceiling {
 		// Version skew, not a failure: the variant is well-formed and a newer
 		// binary can issue from it. Park it on the stream and go loudly
 		// unready — terminating would drop tickets for a paid order with only
@@ -377,6 +504,10 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		c.log.Error("unsupported completed order schema; parking", "event_id", env.ID, "schema", env.Schema)
 		c.ready.Store(false)
 		_ = msg.NakWithDelay(c.retryDelay(attempts))
+		return
+	}
+	if env.Type == SubjectOrderExchanged {
+		c.handleExchanged(ctx, msg, env, attempts)
 		return
 	}
 	var event completed
@@ -411,6 +542,43 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 		addCounter(ctx, c.retryCounter, attribute.String("stage", string(stage)))
 		// Intentionally leave the message unacknowledged: JetStream applies the
 		// configured BackOff schedule. Explicit NAKs bypass that schedule.
+		return
+	}
+	_ = msg.Ack()
+}
+
+// handleExchanged decodes and processes the exchange arm. It is reached only AFTER
+// handle has judged the envelope and the schema ceiling — the split is where the payload
+// type is first allowed to matter, not where dispatch happens.
+func (c *Consumer) handleExchanged(ctx context.Context, msg jetstream.Msg, env domainevent.Raw, attempts uint64) {
+	var event exchanged
+	if err := json.Unmarshal(msg.Data(), &event); err != nil {
+		c.log.Error("invalid exchanged order event", "event_id", env.ID, "reason", ReasonInvalidJSON)
+		c.reject(ctx, msg, failureRecord(msg.Data(), env.ID, StageContract, ReasonInvalidJSON, attempts))
+		return
+	}
+	if err := validateExchanged(event); err != nil {
+		c.log.Error("invalid exchanged order event", "event_id", event.ID, "reason", ReasonInvalidContract)
+		c.reject(ctx, msg, failureRecord(msg.Data(), event.ID, StageContract, ReasonInvalidContract, attempts))
+		return
+	}
+	process := c.processExchange
+	if process == nil {
+		process = c.processExchanged
+	}
+	stage, err := process(ctx, event)
+	if err != nil {
+		if attempts >= uint64(c.maxProcessAttempts) {
+			reason := ReasonIssuanceExhausted
+			if stage == StageDelivery {
+				reason = ReasonDeliveryExhausted
+			}
+			c.log.Error("exchange retries exhausted", "event_id", event.ID, "stage", stage, "attempts", attempts, "err", err)
+			c.reject(ctx, msg, failureRecord(msg.Data(), event.ID, stage, reason, attempts))
+			return
+		}
+		c.log.Error("transient exchange failure", "event_id", event.ID, "stage", stage, "attempt", attempts, "err", err)
+		addCounter(ctx, c.retryCounter, attribute.String("stage", string(stage)))
 		return
 	}
 	_ = msg.Ack()
