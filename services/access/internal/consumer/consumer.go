@@ -237,11 +237,34 @@ func maxKnownSchema(subject string) (int, bool) {
 	return 0, false
 }
 
+// exchangedEventID re-derives what commerce derives. Duplicated deliberately rather than
+// imported: access does not depend on commerce's packages, and ADR-033 puts only the
+// envelope in the shared kernel. The wire contract is the shared thing, and this is a
+// consumer-side check of it.
+func exchangedEventID(exchangeID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(SubjectOrderExchanged+":"+exchangeID.String()))
+}
+
 func validateExchanged(e exchanged) error {
 	if e.Data.ExchangeID == uuid.Nil || e.Data.SourceOrderID == uuid.Nil || e.Data.ReplacementOrderID == uuid.Nil ||
 		e.Data.GuestOrderRef == uuid.Nil || e.Data.OrganizerID == uuid.Nil || e.Data.BuyerID == uuid.Nil ||
 		e.Data.SlotID == uuid.Nil || e.Data.TicketTypeID == uuid.Nil || e.Data.Quantity < 1 || e.Data.Quantity > 50 {
 		return errors.New("invalid exchanged order event")
+	}
+	// The envelope id is DERIVED from the exchange id, so the two are checkable against
+	// each other without asking anyone (ai-review pass 3). Without this, `exchange_id` is
+	// just another field the payload asserts about itself, and a message that named
+	// exchange A while carrying order B's identifiers would be voided as valid — access
+	// would then use its internal credential to report exchange A switched and release A's
+	// capacity. Cheap, local, and it makes one field no longer free-floating.
+	//
+	// It is NOT the whole binding. Nothing here proves `source_order_id` belongs to that
+	// exchange; only commerce knows that, and asking would put a synchronous dependency on
+	// the switch path. That gap is the platform's standing "the broker is trusted" posture
+	// — `order.completed` is trusted exactly as completely, and a forger who can publish
+	// can already mint tickets outright — not something this subject should close alone.
+	if e.ID != exchangedEventID(e.Data.ExchangeID) {
+		return errors.New("exchanged event id does not derive from its exchange")
 	}
 	return nil
 }

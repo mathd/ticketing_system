@@ -73,8 +73,14 @@ type Exchange struct {
 	Currency           string
 	// Settled is the money half: the delta moved (or was zero) and the replacement order
 	// exists. TicketsExchanged is TKT-166's half. Settled && !TicketsExchanged is
-	// `switch_pending` — the state this slice deliberately ends in.
+	// `switch_pending` — the state TKT-158 deliberately ended in.
 	Settled, TicketsExchanged bool
+	// CapacityReturned is the THIRD fact, and it is projected because it is reportable
+	// (ai-review pass 3). Migration 0011 added the column precisely to make "switched, old
+	// capacity still outstanding" visible; leaving it out of the projection and calling the
+	// exchange `completed` from TicketsExchanged alone hid the exact substate the column
+	// was introduced to expose, and left an under-selling exchange findable only by hand.
+	CapacityReturned bool
 	// BasisRecorded is the pre-money commitment (ai-review F3): target hold, replacement
 	// reservation, target total and signed delta, all persisted BEFORE the provider is
 	// called. A retry settles against these, never against a re-resolved price or a
@@ -259,18 +265,18 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	var s storedExchange
 	var replacement uuid.NullUUID
 	var target, delta sql.NullInt64
-	var settled, switched, basis sql.NullTime
+	var settled, switched, returned, basis sql.NullTime
 	var targetHold, replacementReservation, targetSlot uuid.NullUUID
 	var targetUnit sql.NullInt64
 	var createdAt time.Time
 	err := q.QueryRowContext(ctx, `
 		SELECT id,source_order_id,replacement_order_id,target_ticket_type_id,request_fingerprint,quantity,
-		       source_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,
+		       source_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,capacity_returned_at,
 		       target_hold_id,replacement_reservation_id,basis_at,target_unit_amount,target_slot_id,target_price_snapshot
 		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.exchange.ID, &s.exchange.SourceOrderID, &replacement, &s.exchange.TargetTicketTypeID,
 			&s.fingerprint, &s.exchange.Quantity, &s.exchange.SourceTotal, &target, &delta,
-			&s.exchange.Currency, &createdAt, &settled, &switched, &targetHold, &replacementReservation, &basis,
+			&s.exchange.Currency, &createdAt, &settled, &switched, &returned, &targetHold, &replacementReservation, &basis,
 			&targetUnit, &targetSlot, &s.exchange.TargetPriceSnapshot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedExchange{}, false, nil
@@ -282,6 +288,7 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	s.exchange.ReplacementOrderID = replacement.UUID
 	s.exchange.TargetTotal, s.exchange.DeltaAmount = target.Int64, delta.Int64
 	s.exchange.Settled, s.exchange.TicketsExchanged = settled.Valid, switched.Valid
+	s.exchange.CapacityReturned = returned.Valid
 	s.exchange.BasisRecorded = basis.Valid
 	s.exchange.TargetHoldID, s.exchange.ReplacementReservationID = targetHold.UUID, replacementReservation.UUID
 	s.exchange.TargetUnitAmount, s.exchange.TargetSlotID = targetUnit.Int64, targetSlot.UUID

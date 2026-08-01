@@ -538,3 +538,57 @@ func TestExchangeReversalProgressIsThreeOrderedFacts(t *testing.T) {
 		t.Fatalf("a replayed switch callback moved the timestamp: %s → %s", before, after)
 	}
 }
+
+// ai-review pass 3 F2. The projection must carry the third fact, because the API reports
+// from it — and an exchange whose capacity return failed is under-selling, not done.
+//
+// Migration 0011 added `capacity_returned_at` precisely to make this state expressible.
+// Adding the column and then not projecting it left the staff endpoint answering
+// `completed` for a switched exchange whose old seats were still withheld, findable only
+// by hand-written SQL. The column and the projection are one decision, not two.
+func TestExchangeProjectionCarriesTheCapacityFact(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-projection", 1, 1000)
+	ex, err := BindOrderExchange(ctx, db, exchangeRequest(c, "proj-1", uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, _ := seedCompleted(t, db, ctx, "exch-projection-replacement", 1, 1500)
+	if _, err := db.ExecContext(ctx, `DELETE FROM completion_outbox WHERE order_id=$1`, rep.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 1500, DeltaAmount: 500, TargetUnitAmount: 1500,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteExchangeSettlement(ctx, db, ex.OrganizerID, ex.ID, rep.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkExchangeTicketsSwitched(ctx, db, ex.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Switched, capacity NOT returned — the substate the whole column exists for. A replay
+	// of the staff request must report it rather than claiming the exchange is done.
+	reloaded, err := BindOrderExchange(ctx, db, exchangeRequest(c, "proj-1", ex.TargetTicketTypeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.TicketsExchanged || reloaded.CapacityReturned {
+		t.Fatalf("exchange = switched %t / capacity %t, want switched with capacity STILL OUTSTANDING",
+			reloaded.TicketsExchanged, reloaded.CapacityReturned)
+	}
+
+	if err := MarkExchangeCapacityReturned(ctx, db, ex.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+	done, err := BindOrderExchange(ctx, db, exchangeRequest(c, "proj-1", ex.TargetTicketTypeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !done.TicketsExchanged || !done.CapacityReturned {
+		t.Fatalf("exchange = switched %t / capacity %t, want both discharged", done.TicketsExchanged, done.CapacityReturned)
+	}
+}

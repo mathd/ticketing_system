@@ -292,16 +292,23 @@ func (s *Server) transitionExchangeHold(r *http.Request, ex commercestore.Exchan
 // is a real state and the response says so: the delta is settled and the replacement is
 // confirmed, and the buyer still holds valid old tickets until TKT-166 switches them.
 func writeExchange(w http.ResponseWriter, ex commercestore.Exchange, replay bool) {
+	// Three states, not two (ai-review pass 3). `completed` used to mean only that the
+	// tickets had switched, which reported an exchange as done while the old capacity was
+	// still withheld — hiding the very substate migration 0011 exists to expose.
 	status := "switch_pending"
-	if ex.TicketsExchanged {
+	switch {
+	case ex.TicketsExchanged && ex.CapacityReturned:
 		status = "completed"
+	case ex.TicketsExchanged:
+		status = "capacity_pending"
 	}
 	write(w, 200, map[string]any{
 		"exchange_id": ex.ID, "source_order_id": ex.SourceOrderID,
 		"replacement_order_id": ex.ReplacementOrderID, "quantity": ex.Quantity,
 		"source_total": ex.SourceTotal, "target_total": ex.TargetTotal,
 		"delta_amount": ex.DeltaAmount, "currency": ex.Currency,
-		"status": status, "tickets_exchanged": ex.TicketsExchanged, "replay": replay,
+		"status": status, "tickets_exchanged": ex.TicketsExchanged,
+		"capacity_returned": ex.CapacityReturned, "replay": replay,
 	})
 }
 

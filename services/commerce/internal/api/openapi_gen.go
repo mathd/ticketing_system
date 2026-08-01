@@ -13,13 +13,16 @@ import (
 
 // Defines values for ExchangeStatus.
 const (
-	ExchangeStatusCompleted     ExchangeStatus = "completed"
-	ExchangeStatusSwitchPending ExchangeStatus = "switch_pending"
+	ExchangeStatusCapacityPending ExchangeStatus = "capacity_pending"
+	ExchangeStatusCompleted       ExchangeStatus = "completed"
+	ExchangeStatusSwitchPending   ExchangeStatus = "switch_pending"
 )
 
 // Valid indicates whether the value is a known member of the ExchangeStatus enum.
 func (e ExchangeStatus) Valid() bool {
 	switch e {
+	case ExchangeStatusCapacityPending:
+		return true
 	case ExchangeStatusCompleted:
 		return true
 	case ExchangeStatusSwitchPending:
@@ -85,6 +88,7 @@ type Error struct {
 
 // Exchange defines model for Exchange.
 type Exchange struct {
+	CapacityReturned   bool               `json:"capacity_returned"`
 	Currency           string             `json:"currency"`
 	DeltaAmount        int64              `json:"delta_amount"`
 	ExchangeId         openapi_types.UUID `json:"exchange_id"`

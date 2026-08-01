@@ -21,7 +21,10 @@ import (
 
 // A well-formed schema-1 exchange reaches processing. The baseline the skew cases are
 // measured against: if this did not pass, "parked" below would prove nothing.
-const validExchangedJSON = `{"id":"20000000-0000-0000-0000-000000000001",` +
+// The id is the DERIVED one for exchange 3000…0001, written out as a literal. Calling
+// exchangedEventID here would make the fixture agree with the code by construction —
+// the same trap as building a payload from the type under test.
+const validExchangedJSON = `{"id":"edb420ae-aec5-5ed1-8a88-c229e70f6e55",` +
 	`"type":"platform.commerce.order.exchanged","occurred_at":"2026-07-31T10:00:00Z","schema":1,` +
 	`"data":{"exchange_id":"30000000-0000-0000-0000-000000000001",` +
 	`"source_order_id":"30000000-0000-0000-0000-000000000002",` +
@@ -262,5 +265,67 @@ func TestPermanentExchangeRefusalTerminatesImmediately(t *testing.T) {
 				t.Fatal("a refused exchange must not latch readiness")
 			}
 		})
+	}
+}
+
+// ai-review pass 3 F1, the half that is closeable without a round trip.
+//
+// The envelope id is derived from the exchange id, so a payload naming exchange A while
+// carrying another exchange's orders is self-inconsistent and detectable locally. Without
+// this check `exchange_id` is a field the message merely asserts about itself: access
+// would void the named source order and then use its internal credential to report a
+// DIFFERENT exchange switched, releasing that exchange's capacity.
+// Same payload, an id that belongs to no exchange in it.
+const mismatchedExchangedJSON = `{"id":"20000000-0000-0000-0000-000000000001",` +
+	`"type":"platform.commerce.order.exchanged","occurred_at":"2026-07-31T10:00:00Z","schema":1,` +
+	`"data":{"exchange_id":"30000000-0000-0000-0000-000000000001",` +
+	`"source_order_id":"30000000-0000-0000-0000-000000000002",` +
+	`"replacement_order_id":"30000000-0000-0000-0000-000000000003",` +
+	`"guest_order_ref":"30000000-0000-0000-0000-000000000004",` +
+	`"organizer_id":"30000000-0000-0000-0000-000000000005",` +
+	`"buyer_id":"30000000-0000-0000-0000-000000000006",` +
+	`"slot_id":"30000000-0000-0000-0000-000000000007",` +
+	`"ticket_type_id":"30000000-0000-0000-0000-000000000008","quantity":2}}`
+
+func TestExchangedEventMustDeriveFromItsExchange(t *testing.T) {
+	published := false
+	c := testConsumer(func(context.Context, FailureEvent) error { published = true; return nil })
+	c.processExchange = func(context.Context, exchanged) (FailureStage, error) {
+		t.Fatal("a mismatched event id reached processing")
+		return "", nil
+	}
+	// Every field is well-formed; only the pairing is wrong — which is exactly the shape a
+	// confused-deputy message has, and exactly what a non-nil check cannot see.
+	msg := &fakeMsg{data: []byte(mismatchedExchangedJSON), delivery: 1}
+	c.handle(context.Background(), msg)
+	if len(msg.actions) != 1 || msg.actions[0] != "term" {
+		t.Fatalf("actions = %v, want term", msg.actions)
+	}
+	if !published {
+		t.Fatal("a mismatched event must publish its failure record")
+	}
+}
+
+// And the honest producer's event passes, which is what stops the check above from being
+// satisfiable by rejecting everything. The id here is derived, not hand-picked.
+func TestDerivedExchangedEventIsAccepted(t *testing.T) {
+	exchangeID := uuid.MustParse("30000000-0000-0000-0000-000000000001")
+	body := `{"id":"` + exchangedEventID(exchangeID).String() + `",` +
+		`"type":"platform.commerce.order.exchanged","occurred_at":"2026-07-31T10:00:00Z","schema":1,` +
+		`"data":{"exchange_id":"` + exchangeID.String() + `",` +
+		`"source_order_id":"30000000-0000-0000-0000-000000000002",` +
+		`"replacement_order_id":"30000000-0000-0000-0000-000000000003",` +
+		`"guest_order_ref":"30000000-0000-0000-0000-000000000004",` +
+		`"organizer_id":"30000000-0000-0000-0000-000000000005",` +
+		`"buyer_id":"30000000-0000-0000-0000-000000000006",` +
+		`"slot_id":"30000000-0000-0000-0000-000000000007",` +
+		`"ticket_type_id":"30000000-0000-0000-0000-000000000008","quantity":2}}`
+	reached := false
+	c := testConsumer(func(context.Context, FailureEvent) error { return nil })
+	c.processExchange = func(context.Context, exchanged) (FailureStage, error) { reached = true; return "", nil }
+	msg := &fakeMsg{data: []byte(body), delivery: 1}
+	c.handle(context.Background(), msg)
+	if !reached || len(msg.actions) != 1 || msg.actions[0] != "ack" {
+		t.Fatalf("a correctly derived event was refused: reached=%t actions=%v", reached, msg.actions)
 	}
 }

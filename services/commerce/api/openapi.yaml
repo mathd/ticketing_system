@@ -274,7 +274,7 @@ components:
     Exchange:
       type: object
       additionalProperties: false
-      required: [exchange_id, source_order_id, replacement_order_id, quantity, source_total, target_total, delta_amount, currency, status, tickets_exchanged, replay]
+      required: [exchange_id, source_order_id, replacement_order_id, quantity, source_total, target_total, delta_amount, currency, status, tickets_exchanged, capacity_returned, replay]
       properties:
         exchange_id: {type: string, format: uuid}
         source_order_id: {type: string, format: uuid}
@@ -288,8 +288,12 @@ components:
         currency: {type: string}
         # switch_pending means the money is settled and the buyer still holds valid OLD
         # tickets. It is a real, safe, durable state — not an error (TKT-166 closes it).
-        status: {type: string, enum: [switch_pending, completed]}
+        # capacity_pending is switched-but-under-selling: the old tickets have stopped
+        # admitting and the old capacity has not come back yet. It is a real, retryable
+        # substate, and reporting it as `completed` hid an under-selling exchange (TKT-166).
+        status: {type: string, enum: [switch_pending, capacity_pending, completed]}
         tickets_exchanged: {type: boolean}
+        capacity_returned: {type: boolean}
         replay: {type: boolean}
     ExchangeSwitched:
       type: object
