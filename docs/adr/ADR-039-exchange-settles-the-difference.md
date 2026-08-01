@@ -58,12 +58,24 @@ scan in during `switch_pending`, and then have the used ticket voided and a fres
 replacement issued — **two admissions for one exchange**. The window is normally short and grows
 with any delay in the switch.
 
-TKT-166 deliberately did not close it, and the reasoning is the point: the money moved in TKT-158,
-so refusing to switch would strand a paid exchange, which is worse than the hole. It switches as its
-AC requires. Whether a used ticket may be exchanged at all — and whether the entry should carry
-forward to the replacement, which is not even binary for a multi-entry pass (ADR-005) — is a
-product decision nobody has taken. **TKT-169** owns it. Until then this clause reads: every refusal
-this ADR *enumerates* happens before money moves.
+**TKT-166's ai-review reversed the first answer here, and the reversal is the interesting part.**
+The plan proposed switching anyway and merely documenting the gap, reasoning that refusing would
+strand a paid exchange. The review pointed out that the gap is *created* by that ticket — TKT-158
+could not produce it, because it never switched anything — and that a follow-up ticket does not make
+a shipped double-admission un-shipped.
+
+So the switch now **refuses a source ticket that has already been admitted**
+(`ErrSourceTicketsAlreadyAdmitted`, checked under the same row lock as the void, covering both
+`redeemed` and a pass `entry`). The cost is a settled exchange that never switches — which is not a
+new failure state at all: it is exactly what TKT-158 shipped for *every* exchange. The refusal keeps
+that previously-safe behaviour for the one case where switching is unsafe, and the outstanding
+obligation is visible as `tickets_exchanged_at IS NULL`.
+
+That is a safe default, not the answer. Whether a used ticket should be exchangeable **at all** —
+refused before the money moves — or whether the entry should **carry forward** to the replacement,
+which is not even binary for a multi-entry pass (ADR-005), is a product decision nobody has taken.
+**TKT-169** owns it. Until then this clause reads: every refusal this ADR *enumerates* happens
+before money moves, and the one it does not enumerate happens after, by refusing the switch.
 
 ### 3. `switch_pending` is a real, safe, durable state
 

@@ -341,3 +341,101 @@ func TestExchangedIsAdmittedAndUnknownTypesAreNot(t *testing.T) {
 		t.Fatal("the widened CHECK admits an unknown event type")
 	}
 }
+
+// ai-review F1. The double admission this ticket would otherwise have introduced.
+//
+// The buyer scans in on the old ticket during `switch_pending`, and the switch then voids
+// that used ticket and issues a fresh unredeemed one. Two admissions, one paid
+// entitlement. TKT-158 could not produce this — it never switched anything — so it is new
+// here, and a follow-up ticket does not make it un-shipped.
+//
+// The refusal costs a settled exchange that never switches, which is precisely the state
+// TKT-158 shipped for EVERY exchange. Degrading to the previously-safe behaviour for the
+// one unsafe case is the trade.
+func TestSwitchExchangeRefusesAnAlreadyAdmittedSourceTicket(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, seeds := issueOrder(t, ctx, st, org, 2)
+
+	// The buyer goes through the door on one of the old tickets.
+	result, err := st.Redeem(ctx, seeds[0].redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted {
+		t.Fatalf("the source ticket must admit before the exchange: %+v", result)
+	}
+
+	replacement := replacementTickets(uuid.New(), org, uuid.New(), 2)
+	err = st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID: uuid.New(), ExchangeID: uuid.New(), SourceOrderID: source, OrganizerID: org,
+		Tickets: replacement,
+	})
+	if !errors.Is(err, ErrSourceTicketsAlreadyAdmitted) {
+		t.Fatalf("err = %v, want ErrSourceTicketsAlreadyAdmitted", err)
+	}
+	// No fresh credential exists, so there is nothing to admit a second time.
+	for _, tk := range replacement {
+		if n := countRows(t, ctx, db, `SELECT count(*) FROM tickets WHERE id='`+tk.ID.String()+`'`); n != 0 {
+			t.Fatalf("a refused switch issued replacement ticket %s", tk.ID)
+		}
+	}
+	// And the other source ticket — never used — is untouched and still admits.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='exchanged'`); n != 0 {
+		t.Fatalf("a refused switch voided %d source tickets", n)
+	}
+	live, err := st.Redeem(ctx, seeds[1].redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live.Accepted {
+		t.Fatalf("the unused source ticket must still admit: %+v", live)
+	}
+}
+
+// A pass `entry` counts as admission too — the pass vocabulary is not `redeemed`
+// (ADR-005), and checking only one of the two would leave the hole open for passes.
+func TestAdmissionCheckCoversBothVocabularies(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, sourceIDs, _ := issueOrder(t, ctx, st, org, 1)
+
+	// Appended through the store's own path so the chain stays verifiable.
+	if _, err := st.appendLifecycleForTest(ctx, sourceIDs[0], source, org, "entry"); err != nil {
+		t.Fatal(err)
+	}
+	err := st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID: uuid.New(), ExchangeID: uuid.New(), SourceOrderID: source, OrganizerID: org,
+		Tickets: replacementTickets(uuid.New(), org, uuid.New(), 1),
+	})
+	if !errors.Is(err, ErrSourceTicketsAlreadyAdmitted) {
+		t.Fatalf("err = %v, want a pass `entry` to count as admission", err)
+	}
+}
+
+// appendLifecycleForTest appends one event through the real append path, so the chain and
+// its coverage stay verifiable. A direct INSERT would read as tampering.
+func (p *Postgres) appendLifecycleForTest(ctx context.Context, ticketID, orderID, org uuid.UUID, eventType string) (uuid.UUID, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var id TicketIdentity
+	if err := tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, ticketID).
+		Scan(&id.OrderID, &id.OrganizerID, &id.SlotID); err != nil {
+		return uuid.Nil, err
+	}
+	eventID := uuid.New()
+	if _, err := p.appendLifecycle(ctx, tx, appendInput{
+		TicketID: ticketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
+		EventID: eventID, Type: eventType,
+	}); err != nil {
+		return uuid.Nil, err
+	}
+	return eventID, tx.Commit()
+}

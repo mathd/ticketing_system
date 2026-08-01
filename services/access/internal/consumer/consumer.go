@@ -127,10 +127,16 @@ type Consumer struct {
 	backoff                       []time.Duration
 	process                       func(context.Context, completed) (FailureStage, error)
 	processExchange               func(context.Context, exchanged) (FailureStage, error)
-	failurePublisher              func(context.Context, FailureEvent) error
-	failureCounter                metric.Int64Counter
-	retryCounter                  metric.Int64Counter
-	failurePublishCounter         metric.Int64Counter
+	// The three steps of processExchanged, overridable so their ORDER and their
+	// disposition can be exercised without a database, a broker or commerce. Nil in
+	// production, where the methods below are used directly.
+	switchExchange         func(context.Context, exchanged) error
+	notifyExchangeSwitched func(context.Context, exchanged) error
+	deliverOrder           func(context.Context, uuid.UUID) error
+	failurePublisher       func(context.Context, FailureEvent) error
+	failureCounter         metric.Int64Counter
+	retryCounter           metric.Int64Counter
+	failurePublishCounter  metric.Int64Counter
 }
 
 func New(js jetstream.JetStream, st *store.Postgres, signer *ticket.Signer, client *http.Client, commerceURL, token, publicURL string, mailer Mailer, log *slog.Logger, configured ...Options) *Consumer {
@@ -288,13 +294,27 @@ func (c *Consumer) notifySwitched(ctx context.Context, e exchanged) error {
 // idempotent — the switch on `consumed_events`, the capacity return on inventory's receipt,
 // the delivery on `delivery_attempts`.
 func (c *Consumer) processExchanged(ctx context.Context, event exchanged) (FailureStage, error) {
-	if err := c.switchEntitlement(ctx, event); err != nil {
+	// Deliberately NOT conditional on whether the switch was fresh. A redelivery whose
+	// receipt already exists still drives the callback, and that is the property the
+	// documented republish recovery depends on (ai-review F2): the switch is idempotent,
+	// so re-running it is free, and re-running the callback is the whole point.
+	switchStep, notify, deliver := c.switchEntitlement, c.notifySwitched, c.deliver
+	if c.switchExchange != nil {
+		switchStep = c.switchExchange
+	}
+	if c.notifyExchangeSwitched != nil {
+		notify = c.notifyExchangeSwitched
+	}
+	if c.deliverOrder != nil {
+		deliver = c.deliverOrder
+	}
+	if err := switchStep(ctx, event); err != nil {
 		return StageIssuance, err
 	}
-	if err := c.notifySwitched(ctx, event); err != nil {
+	if err := notify(ctx, event); err != nil {
 		return StageIssuance, err
 	}
-	if err := c.deliver(ctx, event.Data.ReplacementOrderID); err != nil {
+	if err := deliver(ctx, event.Data.ReplacementOrderID); err != nil {
 		return StageDelivery, err
 	}
 	return "", nil

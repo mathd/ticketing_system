@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -173,5 +174,55 @@ func TestInvalidExchangedPayloadIsRefused(t *testing.T) {
 	}
 	if !published {
 		t.Fatal("an invalid known-variant payload must publish its failure record")
+	}
+}
+
+// ai-review F2, and the half of it that is false.
+//
+// The finding says a callback outage past `MaxProcessAttempts` strands capacity
+// "indefinitely" because nothing scans for the unfinished obligation. The scan does not
+// exist — that part is true — but the recovery does: the terminal failure record and its
+// documented republish converge, and this test is why.
+//
+// A republished event finds its `consumed_events` receipt, so SwitchExchange is a no-op —
+// and the callback runs ANYWAY, because processExchanged does not branch on whether the
+// switch was fresh. That is what makes the manual procedure sufficient. If someone ever
+// "optimises" the replay path by returning early on a receipt hit, capacity really would
+// be stranded forever, and this test is what fails.
+func TestReplayedExchangeStillDrivesTheCallback(t *testing.T) {
+	var switches, callbacks int
+	c := testConsumer(func(context.Context, FailureEvent) error { return nil })
+	c.processExchange = nil
+	c.switchExchange = func(context.Context, exchanged) error { switches++; return nil }
+	c.notifyExchangeSwitched = func(context.Context, exchanged) error { callbacks++; return nil }
+	c.deliverOrder = func(context.Context, uuid.UUID) error { return nil }
+
+	for i := 0; i < 2; i++ {
+		msg := &fakeMsg{data: []byte(validExchangedJSON), delivery: uint64(i + 1)}
+		c.handle(context.Background(), msg)
+		if len(msg.actions) != 1 || msg.actions[0] != "ack" {
+			t.Fatalf("delivery %d actions = %v, want ack", i+1, msg.actions)
+		}
+	}
+	if switches != 2 || callbacks != 2 {
+		t.Fatalf("switches=%d callbacks=%d — a redelivery must re-drive the callback, which is what makes the documented republish converge", switches, callbacks)
+	}
+}
+
+// The callback failing is a RETRY, not a switch failure. The switch has committed by then,
+// so the message must stay unacknowledged rather than be acked as done.
+func TestCallbackFailureLeavesTheMessageUnacknowledged(t *testing.T) {
+	c := testConsumer(func(context.Context, FailureEvent) error { return nil })
+	c.processExchange = nil
+	c.switchExchange = func(context.Context, exchanged) error { return nil }
+	c.notifyExchangeSwitched = func(context.Context, exchanged) error { return errors.New("commerce down") }
+	c.deliverOrder = func(context.Context, uuid.UUID) error {
+		t.Fatal("delivery ran despite an unfinished capacity return")
+		return nil
+	}
+	msg := &fakeMsg{data: []byte(validExchangedJSON), delivery: 1}
+	c.handle(context.Background(), msg)
+	if len(msg.actions) != 0 {
+		t.Fatalf("actions = %v, want the message left unacknowledged for the backoff schedule", msg.actions)
 	}
 }

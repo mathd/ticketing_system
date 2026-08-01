@@ -42,6 +42,26 @@ var ErrExchangeTicketsNotIssued = errors.New("source order does not have its ful
 // ticket that already has one and collide on the singleton index halfway through.
 var ErrSourceTicketsAlreadyVoided = errors.New("source order tickets are already voided")
 
+// ErrSourceTicketsAlreadyAdmitted reports a source ticket that has already been used.
+//
+// This refusal exists because switching anyway is a DOUBLE ADMISSION (ai-review F1). The
+// holder went through the door on the old ticket; voiding it and issuing a fresh
+// unredeemed replacement lets them go through again, on one paid entitlement. The window
+// is small — a scan during `switch_pending` — and it is real, and it grows with any delay
+// in the switch.
+//
+// The cost is a settled exchange that never switches: the buyer paid the difference and
+// keeps their used old ticket. That is NOT a new failure state. It is exactly what TKT-158
+// shipped for every exchange, and this refusal simply keeps that behaviour for the one
+// case where switching is unsafe. Under-selling one exchange beats admitting twice, and
+// the obligation is visible (`tickets_exchanged_at IS NULL`) rather than silent.
+//
+// It is not the whole answer. Whether a used ticket should be exchangeable AT ALL —
+// refused before the money moves — and whether the entry should instead carry forward to
+// the replacement, which is not even binary for a multi-entry pass (ADR-005), is a product
+// decision. TKT-169 owns it. This is the safe default until it is taken.
+var ErrSourceTicketsAlreadyAdmitted = errors.New("source order tickets have already been admitted")
+
 // SwitchExchangeInput is one exchange's switch: which source order loses its tickets, and
 // which replacement tickets take their place.
 type SwitchExchangeInput struct {
@@ -136,6 +156,15 @@ func (p *Postgres) SwitchExchange(ctx context.Context, in SwitchExchangeInput) e
 		if voided {
 			return fmt.Errorf("%w: ticket %s", ErrSourceTicketsAlreadyVoided, id)
 		}
+		// Checked under the same row lock as the void, so a scan cannot commit between
+		// the two. Without the lock this would be a read that both paths could lose.
+		admitted, err := ticketAdmitted(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if admitted {
+			return fmt.Errorf("%w: ticket %s", ErrSourceTicketsAlreadyAdmitted, id)
+		}
 	}
 
 	var identity TicketIdentity
@@ -179,5 +208,18 @@ func ticketCommerciallyVoid(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID)
 func ticketExchanged(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID) (bool, error) {
 	var exists bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE ticket_id=$1 AND event_type='exchanged')`, ticketID).Scan(&exists)
+	return exists, err
+}
+
+// ticketAdmitted reports whether a ticket has been used to go through a door. Both
+// vocabularies count: `redeemed` for a single-entry ticket, `entry` for a pass occurrence
+// (ADR-005). `duplicate_admit` deliberately does not — it records a DENIAL, and treating a
+// refused second scan as an admission would block an exchange for someone who never got in
+// twice in the first place.
+func ticketAdmitted(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID) (bool, error) {
+	var exists bool
+	err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE ticket_id=$1 AND event_type IN ('redeemed','entry'))`,
+		ticketID).Scan(&exists)
 	return exists, err
 }
