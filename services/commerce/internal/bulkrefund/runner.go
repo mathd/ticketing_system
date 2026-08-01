@@ -98,10 +98,7 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 	}
 
 	resolved := 0
-	for {
-		if ctx.Err() != nil {
-			break
-		}
+	for ctx.Err() == nil {
 		claimed, err := r.store.Claim(ctx, r.batch, r.lease)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "claim cancellation orders", "err", err)
