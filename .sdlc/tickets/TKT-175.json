@@ -1,0 +1,100 @@
+{
+  "key": "TKT-175",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-023: A selection that would strand a lone seat is refused, per the map's own rule",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-174"
+    }
+  ],
+  "description": "**As** an organizer, **I want** the system to stop buyers leaving single unsellable seats between parties, **so that** I do not finish the on-sale with a row full of gaps I can never sell.\n\n**Priority:** P2  **Depends on:** TKT-174 (a picker to refuse a selection in)\n\n**The third epic COS**, and the only one with no existing machinery: *\"Orphan-single-seat prevention rules configurable per map.\"* An orphan is a free seat with no free neighbour left in its row after a selection is taken. Preventing it is standard practice in reserved seating and is worth real revenue; making it **configurable per map** matters because the rule is wrong for some venues (general-admission-style rows, boxes, accessible pairs).\n\n**Acceptance Criteria:**\n- [ ] A seat map carries an orphan-prevention setting owned by catalog alongside the geometry, defaulting to **off** so every existing map behaves exactly as it does today.\n- [ ] With the rule on, a seat selection whose commitment would leave a free seat with no free neighbour in its row is refused **server-side, at claim time** — the arbiter is the same transaction that decides the claim, not the browser. A refusal names the seat(s) that would be stranded.\n- [ ] The rule reads the seat map version the pool is seated against, so an edit that republishes the map cannot silently change the rule applied to a live claim (ADR-029: a published version is immutable).\n- [ ] With the rule off, behaviour is byte-identical to TKT-173's: no extra read, no extra latency on the claim path.\n- [ ] Row ends are handled explicitly and deliberately: a seat at the end of a row has one neighbour, not two, and the rule must state and test what it does there.\n- [ ] The picker surfaces the refusal legibly and the map stays usable afterwards (the buyer can adjust the selection without reloading).\n- [ ] The rule is exercised under the seated contention test: concurrent claimants cannot each pass the check and jointly strand a seat — the check is only real if it holds under the transaction that decides.\n- [ ] Spec declared, generated code committed before the gate, smoke coverage (ADR-009 / ADR-028 / ADR-030).\n\nQuality gates: `make check` green; contract tests; browser submit evidence for the UI surface. **This ticket moves no money.**",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "It is the epic's third COS and the only one with no existing machinery; without it the epic closes incomplete."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the per-map setting, server-side enforcement at claim time, row-end semantics, the UI surface, the contention proof. OUT: adjacency-aware best-available (TKT-81), price-tier or accessibility-seat rules, multi-row party splitting, retro-fitting the rule to already-sold maps."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "**Where the check runs is a real architectural decision, not a coin flip.** Inventory decides the claim and knows occupancy but holds seat identities as opaque `section/row/seat` strings — it has no row ordering. Catalog owns the geometry and the rule but does not decide claims. Three candidate shapes: (a) inventory calls catalog on the claim path — simplest, but puts a synchronous cross-service call inside the hottest transaction in the system, which ADR-010 exists to keep short; (b) inventory caches the row layout from the `seat_map.published` event it already consumes — no hot-path call, at the cost of a projection to keep correct; (c) the check runs in commerce between the price resolution and the claim — no hot-path cost, but it is then advisory, and a check that does not run inside the deciding transaction cannot satisfy the contention AC. Planning must choose and record a reason; the choice likely warrants an ADR."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-174. Nothing outside this epic is open."
+    },
+    "approach": {
+      "state": "deferred",
+      "note": "Follows from the uncertainty above. Inventory's consumer already receives catalog seat-map events and already holds a catalog HTTP client for pinning, so both (a) and (b) have an existing seam — which one is right is Planning's call."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "A single row of five seats with the rule on: selecting seats 1 and 2 is refused because seat 3 would strand against an already-taken 4; selecting 1-3 succeeds."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable in the browser: turn the rule on for a map, try to strand a seat, get refused with the seat named."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition (2026-08-01). Re-resolve at claim — this is the last ticket of the epic and three others land before it."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-01",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-01",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map (US-017/US-018 are the seat-claim core; this epic is the buyer-facing picker)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "The claim transaction is the hottest path in the platform and is deliberately kept short and lock-ordered. A synchronous cross-service call added inside it is the single most expensive thing this ticket could do — if Planning chooses that shape, it must justify it against this ADR, not around it."
+      },
+      {
+        "id": "ADR-031",
+        "why": "Seat claim/pin coordination: `released_at IS NULL` is liveness, and expired holds are swept lazily. An orphan check that counts a lazily-unswept expired hold as occupying a seat will refuse a legal selection."
+      },
+      {
+        "id": "ADR-029",
+        "why": "A published seat-map version is immutable and an edit mints a NEW version; a pool is seated against one specific version. The rule and the geometry it reads must both come from the version the pool names, or a republish silently changes the rule under a live claim. Also: the family-scoped advisory lock, not a row lock, is what closes the edit-vs-claim race."
+      },
+      {
+        "id": "ADR-004",
+        "why": "If the check reads geometry, it reads the hours tier — legitimately cacheable. If it reads occupancy, that is the seconds tier and inside the deciding transaction it must not be read from any cache at all."
+      },
+      {
+        "id": "ADR-019",
+        "why": "Whatever query backs the rule, a scoped read is only scoped if an index backs the filter — and proving it takes two tests."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the per-map setting is a catalog contract change; generated code committed before the gate."
+      }
+    ]
+  },
+  "comments": []
+}
