@@ -1,0 +1,112 @@
+{
+  "key": "TKT-174",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-022: The buyer picks seats on the map and checks out",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-172"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-173"
+    }
+  ],
+  "description": "**As** a buyer, **I want** to see the venue's seats and click the ones I want, **so that** I choose where I sit instead of accepting whatever a quantity box gives me.\n\n**Priority:** P2  **Depends on:** TKT-172 (occupancy + seated-ness), TKT-173 (a reservation that accepts named seats)\n\n**The gap.** This is the epic's headline and the piece nobody owned: the designer (TKT-3) and the claim core (TKT-4) both existed, but the buyer-facing picker did not. The storefront's only purchase control is `HoldPicker.tsx` — a quantity input. A seated performance renders today exactly like a GA one.\n\n**Acceptance Criteria:**\n- [ ] A seated performance's storefront page renders its seat map: sections, rows and seats laid out by their `position` values, with free / taken / selected visually and textually distinguishable (colour is never the only channel).\n- [ ] Clicking a free seat selects it and clicking again deselects it; taken seats are not selectable and are announced as such to assistive technology. Selection is bounded by the same 1..50 band the claim path enforces.\n- [ ] Reserving the selection calls the seated reservation from TKT-173 and, on success, hands off to the existing hold-countdown + checkout flow — one checkout path, not a seated fork of it.\n- [ ] A seat taken between render and reserve produces a legible message naming the lost seats and a re-render showing them taken — the buyer is never left staring at a stale map after a conflict.\n- [ ] A GA performance is unchanged: it still renders the quantity picker, and its existing tests stay green.\n- [ ] Both locales (FR + EN) carry the new strings; no hardcoded English.\n- [ ] **Browser-verified**: the real stack (`make up`) is driven in a browser and the seat selection is actually *submitted*, not merely rendered — per the repo's working agreement, an unsubmitted UI change is unverified. Evidence in the PR.\n\nQuality gates: `make check` green; storefront component tests; browser submit evidence. **This ticket moves no money of its own** — it drives TKT-173's reservation and the existing checkout.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "This is the epic's reason to exist: the buyer-facing picker that neither the seat-map designer nor the claim core covered."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: rendering the map, selection, reserve hand-off, conflict re-render, i18n, accessibility, browser verification. OUT: best-available (TKT-81), orphan rules (TKT-175), zoom/pan and price-tier colouring on the map, mobile gesture work."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "SVG vs a CSS grid of buttons is a Planning-time call. A grid of real `<button>` elements is the more reversible option and gets keyboard and screen-reader behaviour for free; SVG scales better to a 20k-seat arena. Either satisfies the AC. Also open: whether the geometry is fetched at SSR or in the island — ADR-006 and ADR-004's cache-ownership rule constrain this and Planning must state which it chose."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-172 and TKT-173, both in this epic. `SeatMapEditor.tsx` in the back office is a working reader of the same geometry shape — a prior art reference, not a dependency."
+    },
+    "approach": {
+      "state": "met",
+      "note": "A React island in the Astro storefront, mounted next to (or in place of) `HoldPicker` when the performance carries a `seat_map_id`. The existing hold countdown and checkout form are reused verbatim."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "A one-section, three-row map: pick two adjacent free seats, reserve, pay, see the tickets."
+    },
+    "success": {
+      "state": "met",
+      "note": "The most demoable ticket in the epic — a human clicks seats in a browser and buys them."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition (2026-08-01). Re-resolve at claim; two of this epic's tickets land first and may amend the contracts this one consumes."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-01",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-01",
+        "rule": "A web-UI ticket isn't verified until a browser has *submitted* its forms. `make check`'s smoke suite exercises the catalog API directly and only *renders* back-office pages — it never submits an Astro form, so the whole class of \"the SSR layer rejects/mangles the request before the handler runs\" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it. For any back-office/storefront/scanner ticket that adds or changes a write form, drive the real stack (`make up`) in a browser and submit the write path, not just the render."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-01",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map (US-017/US-018 are the seat-claim core; this epic is the buyer-facing picker)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      },
+      {
+        "summary": "Prior art: the back office reads the same nested geometry (sections -> rows -> seats, each with a position) and serializes it back",
+        "link": "web/backoffice/src/components/SeatMapEditor.tsx"
+      },
+      {
+        "summary": "Prior art: the storefront's existing purchase island — hold countdown, conflict handling, checkout form, FR/EN strings",
+        "link": "web/storefront/src/components/HoldPicker.tsx"
+      },
+      {
+        "summary": "Why an unsubmitted Astro form proves nothing",
+        "link": "docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-006",
+        "why": "Astro storefront shell: pages are SSR with React islands. The picker is an island; the page around it stays server-rendered. Do not turn the event page into an SPA to get interactivity."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Two tiers meet on this page and they must not be merged: geometry is the hours tier, occupancy the seconds tier, hold/order state is never cached. The SSR process holds ONE page-data cache (`PageDataCache`, the minutes-tier owner) — routing a seconds-tier read through it would freeze occupancy for minutes. The page's outgoing TTL is the REMAINING freshness so staleness never stacks."
+      },
+      {
+        "id": "ADR-002",
+        "why": "The storefront consumes the public contract through the gateway (`/api/...`) and never reaches a service directly."
+      },
+      {
+        "id": "ADR-028",
+        "why": "The buyer-facing read is validated fail-closed upstream; a UI that tolerates an undeclared field is coding against a response the platform will refuse to send."
+      }
+    ]
+  },
+  "comments": []
+}
