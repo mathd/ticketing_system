@@ -565,3 +565,109 @@ func TestShouldReleaseHoldOnBindError(t *testing.T) {
 		})
 	}
 }
+
+// TKT-159: the cancellation-refund handlers are internal-only for the same reason every
+// other staff operation in commerce is — the gateway denies /internal/* at the edge, and
+// commerce fails closed to 404 rather than inventing a 401 convention. An unconfigured
+// token must not open either endpoint.
+func TestCancellationRefundEndpointsRequireInternalToken(t *testing.T) {
+	slot, run := uuid.New(), uuid.New()
+	for name, token := range map[string]string{"no token configured": "", "wrong token": "expected"} {
+		t.Run(name, func(t *testing.T) {
+			s := New(nil, http.DefaultClient, "", "", "", token)
+			router := s.Router(nil, true)
+
+			create := httptest.NewRequest(http.MethodPost, "/internal/slots/"+slot.String()+"/cancellation-refunds",
+				bytes.NewBufferString(`{"organizer_id":"00000000-0000-0000-0000-000000000001","actor":"a","reason":"r"}`))
+			create.Header.Set("Content-Type", "application/json")
+			create.Header.Set("Idempotency-Key", "cancel-auth")
+			res := httptest.NewRecorder()
+			router.ServeHTTP(res, create)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("create status = %d, want 404", res.Code)
+			}
+
+			report := httptest.NewRequest(http.MethodGet,
+				"/internal/cancellation-refunds/"+run.String()+"?organizer_id="+uuid.Nil.String(), nil)
+			res = httptest.NewRecorder()
+			router.ServeHTTP(res, report)
+			if res.Code != http.StatusNotFound {
+				t.Fatalf("report status = %d, want 404", res.Code)
+			}
+		})
+	}
+}
+
+// ADR-028: every status these handlers can answer before they reach the database must be
+// one the contract declares — an undeclared status becomes a 500 under the fail-closed
+// validator. The rejections below are the ones reachable with a nil *sql.DB, which is
+// exactly the set that must never get as far as a query.
+func TestCancellationRefundRequestRejectionsAreDeclaredStatuses(t *testing.T) {
+	const token = "t"
+	declaredCreate := map[int]bool{200: true, 201: true, 400: true, 404: true, 409: true, 500: true}
+	declaredReport := map[int]bool{200: true, 202: true, 400: true, 404: true, 500: true}
+	s := New(nil, http.DefaultClient, "", "", "", token)
+	router := s.Router(nil, true)
+	slot, run := uuid.New(), uuid.New()
+
+	create := func(path, key, body string) int {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Internal-Token", token)
+		if key != "" {
+			req.Header.Set("Idempotency-Key", key)
+		}
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		return res.Code
+	}
+	good := `{"organizer_id":"00000000-0000-0000-0000-000000000001","actor":"a","reason":"r"}`
+	for name, tc := range map[string]struct {
+		path, key, body string
+		want            int
+	}{
+		"missing idempotency key": {"/internal/slots/" + slot.String() + "/cancellation-refunds", "", good, 400},
+		"invalid slot":            {"/internal/slots/not-a-uuid/cancellation-refunds", "k", good, 400},
+		"missing organizer":       {"/internal/slots/" + slot.String() + "/cancellation-refunds", "k", `{"actor":"a","reason":"r"}`, 400},
+		"blank actor":             {"/internal/slots/" + slot.String() + "/cancellation-refunds", "k", `{"organizer_id":"00000000-0000-0000-0000-000000000001","actor":" ","reason":"r"}`, 400},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code := create(tc.path, tc.key, tc.body)
+			if code != tc.want {
+				t.Fatalf("status = %d, want %d", code, tc.want)
+			}
+			if !declaredCreate[code] {
+				t.Fatalf("status %d is not declared by createCancellationRefundRun", code)
+			}
+		})
+	}
+
+	// A REAL organizer in the cases that are not about the organizer: uuid.Nil is itself
+	// rejected, so reusing it here would make every one of these pass for the wrong reason
+	// and stop testing the limit and cursor rejections entirely.
+	org := uuid.New().String()
+	for name, tc := range map[string]struct {
+		query string
+		want  int
+	}{
+		"missing organizer":  {"", 400},
+		"invalid organizer":  {"?organizer_id=not-a-uuid", 400},
+		"nil organizer":      {"?organizer_id=" + uuid.Nil.String(), 400},
+		"limit out of range": {"?organizer_id=" + org + "&limit=0", 400},
+		"limit too large":    {"?organizer_id=" + org + "&limit=201", 400},
+		"invalid cursor":     {"?organizer_id=" + org + "&after_order_id=nope", 400},
+	} {
+		t.Run("report "+name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/internal/cancellation-refunds/"+run.String()+tc.query, nil)
+			req.Header.Set("X-Internal-Token", token)
+			res := httptest.NewRecorder()
+			router.ServeHTTP(res, req)
+			if res.Code != tc.want {
+				t.Fatalf("status = %d, want %d", res.Code, tc.want)
+			}
+			if !declaredReport[res.Code] {
+				t.Fatalf("status %d is not declared by getCancellationRefundReport", res.Code)
+			}
+		})
+	}
+}

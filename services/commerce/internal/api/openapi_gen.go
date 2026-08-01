@@ -11,6 +11,81 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for CancellationRefundFailureCode.
+const (
+	CeilingMoved        CancellationRefundFailureCode = "ceiling_moved"
+	Internal            CancellationRefundFailureCode = "internal"
+	NoCapturedMoney     CancellationRefundFailureCode = "no_captured_money"
+	NotRefundable       CancellationRefundFailureCode = "not_refundable"
+	RefundRefused       CancellationRefundFailureCode = "refund_refused"
+	ReversalOutstanding CancellationRefundFailureCode = "reversal_outstanding"
+	Unavailable         CancellationRefundFailureCode = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the CancellationRefundFailureCode enum.
+func (e CancellationRefundFailureCode) Valid() bool {
+	switch e {
+	case CeilingMoved:
+		return true
+	case Internal:
+		return true
+	case NoCapturedMoney:
+		return true
+	case NotRefundable:
+		return true
+	case RefundRefused:
+		return true
+	case ReversalOutstanding:
+		return true
+	case Unavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CancellationRefundOutcomeOutcome.
+const (
+	AlreadyRefunded CancellationRefundOutcomeOutcome = "already_refunded"
+	Failed          CancellationRefundOutcomeOutcome = "failed"
+	Refunded        CancellationRefundOutcomeOutcome = "refunded"
+)
+
+// Valid indicates whether the value is a known member of the CancellationRefundOutcomeOutcome enum.
+func (e CancellationRefundOutcomeOutcome) Valid() bool {
+	switch e {
+	case AlreadyRefunded:
+		return true
+	case Failed:
+		return true
+	case Refunded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CancellationRefundRunStatus.
+const (
+	CancellationRefundRunStatusCompleted CancellationRefundRunStatus = "completed"
+	CancellationRefundRunStatusPending   CancellationRefundRunStatus = "pending"
+	CancellationRefundRunStatusRunning   CancellationRefundRunStatus = "running"
+)
+
+// Valid indicates whether the value is a known member of the CancellationRefundRunStatus enum.
+func (e CancellationRefundRunStatus) Valid() bool {
+	switch e {
+	case CancellationRefundRunStatusCompleted:
+		return true
+	case CancellationRefundRunStatusPending:
+		return true
+	case CancellationRefundRunStatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ExchangeStatus.
 const (
 	ExchangeStatusCapacityPending ExchangeStatus = "capacity_pending"
@@ -34,13 +109,13 @@ func (e ExchangeStatus) Valid() bool {
 
 // Defines values for OrderResultStatus.
 const (
-	OrderResultStatusCompleted OrderResultStatus = "completed"
+	Completed OrderResultStatus = "completed"
 )
 
 // Valid indicates whether the value is a known member of the OrderResultStatus enum.
 func (e OrderResultStatus) Valid() bool {
 	switch e {
-	case OrderResultStatusCompleted:
+	case Completed:
 		return true
 	default:
 		return false
@@ -67,6 +142,72 @@ func (e RefundRefundStatus) Valid() bool {
 		return false
 	}
 }
+
+// CancellationRefundCounts defines model for CancellationRefundCounts.
+type CancellationRefundCounts struct {
+	AlreadyRefunded int `json:"already_refunded"`
+	Failed          int `json:"failed"`
+	Pending         int `json:"pending"`
+	Refunded        int `json:"refunded"`
+	Total           int `json:"total"`
+}
+
+// CancellationRefundCreate defines model for CancellationRefundCreate.
+type CancellationRefundCreate struct {
+	Actor       string             `json:"actor"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Reason      string             `json:"reason"`
+}
+
+// CancellationRefundFailure defines model for CancellationRefundFailure.
+type CancellationRefundFailure struct {
+	Code   CancellationRefundFailureCode `json:"code"`
+	Reason string                        `json:"reason"`
+}
+
+// CancellationRefundFailureCode defines model for CancellationRefundFailure.Code.
+type CancellationRefundFailureCode string
+
+// CancellationRefundOutcome defines model for CancellationRefundOutcome.
+type CancellationRefundOutcome struct {
+	CapacityReturned bool                             `json:"capacity_returned"`
+	Currency         string                           `json:"currency"`
+	Failure          *CancellationRefundFailure       `json:"failure,omitempty"`
+	MoneyRefunded    bool                             `json:"money_refunded"`
+	OrderId          openapi_types.UUID               `json:"order_id"`
+	Outcome          CancellationRefundOutcomeOutcome `json:"outcome"`
+	RefundId         *openapi_types.UUID              `json:"refund_id,omitempty"`
+	RefundedAmount   int64                            `json:"refunded_amount"`
+	RefundedQuantity int                              `json:"refunded_quantity"`
+	TicketsVoided    bool                             `json:"tickets_voided"`
+}
+
+// CancellationRefundOutcomeOutcome defines model for CancellationRefundOutcome.Outcome.
+type CancellationRefundOutcomeOutcome string
+
+// CancellationRefundReport defines model for CancellationRefundReport.
+type CancellationRefundReport struct {
+	Counts                  CancellationRefundCounts    `json:"counts"`
+	IncompleteAtEnumeration int                         `json:"incomplete_at_enumeration"`
+	NextAfterOrderId        *openapi_types.UUID         `json:"next_after_order_id,omitempty"`
+	Orders                  []CancellationRefundOutcome `json:"orders"`
+	Run                     CancellationRefundRun       `json:"run"`
+}
+
+// CancellationRefundRun defines model for CancellationRefundRun.
+type CancellationRefundRun struct {
+	CompletedAt *time.Time                  `json:"completed_at,omitempty"`
+	CreatedAt   time.Time                   `json:"created_at"`
+	CutoffAt    time.Time                   `json:"cutoff_at"`
+	OrganizerId openapi_types.UUID          `json:"organizer_id"`
+	Replay      bool                        `json:"replay"`
+	RunId       openapi_types.UUID          `json:"run_id"`
+	SlotId      openapi_types.UUID          `json:"slot_id"`
+	Status      CancellationRefundRunStatus `json:"status"`
+}
+
+// CancellationRefundRunStatus defines model for CancellationRefundRun.Status.
+type CancellationRefundRunStatus string
 
 // Checkout defines model for Checkout.
 type Checkout struct {
@@ -227,11 +368,27 @@ type ReservationCreate struct {
 	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
 }
 
+// AfterOrderId defines model for AfterOrderId.
+type AfterOrderId = openapi_types.UUID
+
 // Id defines model for Id.
 type Id = openapi_types.UUID
 
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
+
+// OrganizerIdQuery defines model for OrganizerIdQuery.
+type OrganizerIdQuery = openapi_types.UUID
+
+// ReportLimit defines model for ReportLimit.
+type ReportLimit = int
+
+// GetCancellationRefundReportParams defines parameters for GetCancellationRefundReport.
+type GetCancellationRefundReportParams struct {
+	OrganizerId  OrganizerIdQuery `form:"organizer_id" json:"organizer_id"`
+	Limit        *ReportLimit     `form:"limit,omitempty" json:"limit,omitempty"`
+	AfterOrderId *AfterOrderId    `form:"after_order_id,omitempty" json:"after_order_id,omitempty"`
+}
 
 // DrawDownGroupReservationParams defines parameters for DrawDownGroupReservation.
 type DrawDownGroupReservationParams struct {
@@ -250,6 +407,11 @@ type ExchangeOrderParams struct {
 
 // RefundOrderParams defines parameters for RefundOrder.
 type RefundOrderParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// CreateCancellationRefundRunParams defines parameters for CreateCancellationRefundRun.
+type CreateCancellationRefundRunParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
@@ -277,6 +439,9 @@ type ExchangeOrderJSONRequestBody = ExchangeCreate
 
 // RefundOrderJSONRequestBody defines body for RefundOrder for application/json ContentType.
 type RefundOrderJSONRequestBody = RefundCreate
+
+// CreateCancellationRefundRunJSONRequestBody defines body for CreateCancellationRefundRun for application/json ContentType.
+type CreateCancellationRefundRunJSONRequestBody = CancellationRefundCreate
 
 // CheckoutJSONRequestBody defines body for Checkout for application/json ContentType.
 type CheckoutJSONRequestBody = Checkout

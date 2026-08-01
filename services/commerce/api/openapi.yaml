@@ -123,6 +123,52 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
+  /internal/slots/{id}/cancellation-refunds:
+    post:
+      operationId: createCancellationRefundRun
+      summary: Refund a cancelled event's whole order book, with a per-order outcome
+      # TKT-159 / ADR-040. Starts a DURABLE run over one slot's completed order book and
+      # returns immediately; a commerce background runner does the work in bounded
+      # batches. The run is the unit of resumability — nothing here holds a transaction
+      # or a lock across the book.
+      #
+      # `id` is the SLOT. No catalog lookup and no cancelled-state precondition: this
+      # refunds an order book ON DEMAND, and coupling it to the slot transition would
+      # pull in TKT-2/ADR-018, which is out of scope. A slot with no orders is a valid
+      # run that completes with zero outcomes.
+      #
+      # `cutoff_at` bounds the RESERVATION set the run pages through, which is what makes
+      # the book finite and the run resumable. It does not bound order completion: an order
+      # not yet completed when its page is read belongs to a later run — see
+      # `incomplete_at_enumeration` on the report, which is how that stops being silent.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CancellationRefundCreate'}}}}
+      responses:
+        '201': {description: Run created, content: {application/json: {schema: {$ref: '#/components/schemas/CancellationRefundRun'}}}}
+        '200': {description: Replay of an identical run request, content: {application/json: {schema: {$ref: '#/components/schemas/CancellationRefundRun'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /internal/cancellation-refunds/{id}:
+    get:
+      operationId: getCancellationRefundReport
+      summary: Per-order outcomes of a cancellation refund run
+      # TKT-159 / ADR-040. Per-order rows are served only once the run is COMPLETE: a
+      # paginating reader must not have the membership grow underneath it. While the run
+      # is still going this answers 202 with the run plus the counts so far, so progress
+      # is visible without pretending the report is final.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/OrganizerIdQuery'}
+        - {$ref: '#/components/parameters/ReportLimit'}
+        - {$ref: '#/components/parameters/AfterOrderId'}
+      responses:
+        '200': {description: Completed report page, content: {application/json: {schema: {$ref: '#/components/schemas/CancellationRefundReport'}}}}
+        '202': {description: Run still enumerating or processing, content: {application/json: {schema: {$ref: '#/components/schemas/CancellationRefundReport'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail
@@ -136,6 +182,9 @@ components:
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    OrganizerIdQuery: {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
+    ReportLimit: {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200}}
+    AfterOrderId: {name: after_order_id, in: query, required: false, schema: {type: string, format: uuid}}
   responses:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
@@ -316,3 +365,93 @@ components:
       additionalProperties: false
       required: [email]
       properties: {email: {type: string}}
+    CancellationRefundCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        # The OPERATOR's attribution, recorded on the run. It is deliberately NOT the
+        # attribution the individual refunds bind under: those use fixed constants so a
+        # second run replays the first attempt instead of colliding on the request
+        # fingerprint, which covers actor and reason (ADR-040 §3).
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    CancellationRefundRun:
+      type: object
+      additionalProperties: false
+      required: [run_id, organizer_id, slot_id, status, cutoff_at, created_at, replay]
+      properties:
+        run_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        status: {type: string, enum: [pending, running, completed]}
+        # The book is the set of orders completed at or before this instant. Recorded in
+        # the same transaction as the run row, so it is durable before any work starts.
+        cutoff_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+        replay: {type: boolean}
+    CancellationRefundCounts:
+      type: object
+      additionalProperties: false
+      required: [total, refunded, already_refunded, failed, pending]
+      properties:
+        total: {type: integer}
+        refunded: {type: integer}
+        already_refunded: {type: integer}
+        failed: {type: integer}
+        # Rows with no terminal outcome yet. Zero on a completed run, by construction —
+        # a run completes only once every row is terminal.
+        pending: {type: integer}
+    CancellationRefundOutcome:
+      type: object
+      additionalProperties: false
+      required: [order_id, outcome, refunded_quantity, refunded_amount, currency, money_refunded, tickets_voided, capacity_returned]
+      properties:
+        order_id: {type: string, format: uuid}
+        # `refunded` and `already_refunded` BOTH mean every obligation is discharged —
+        # money returned, tickets voided, capacity back. An order whose money came back
+        # but whose reversal is outstanding is `failed`, with the booleans below telling
+        # the truth about which half is missing. Rounding it up to `refunded` is exactly
+        # what ADR-039 exists to prevent.
+        outcome: {type: string, enum: [refunded, already_refunded, failed]}
+        refund_id: {type: string, format: uuid}
+        # A SNAPSHOT at outcome time, not a live projection: the report has to stay
+        # readable after a later refund of the same order moves the order's own numbers.
+        refunded_quantity: {type: integer}
+        refunded_amount: {type: integer, format: int64}
+        currency: {type: string}
+        money_refunded: {type: boolean}
+        tickets_voided: {type: boolean}
+        capacity_returned: {type: boolean}
+        failure: {$ref: '#/components/schemas/CancellationRefundFailure'}
+    CancellationRefundFailure:
+      type: object
+      additionalProperties: false
+      required: [code, reason]
+      properties:
+        # A bounded vocabulary, never a raw downstream body: `no_captured_money` is a
+        # zero-price (comped) order, which has no money leg to refund and therefore gets
+        # no reversal at all — a real gap, made visible here rather than silently skipped.
+        # Must list EVERY code the ledger can store: an undeclared one fails the response
+        # validator and turns a perfectly readable report into a 500 (ADR-028).
+        # `ceiling_moved` = a staff refund moved the order's ceiling under the run.
+        code: {type: string, enum: [no_captured_money, not_refundable, refund_refused, ceiling_moved, reversal_outstanding, unavailable, internal]}
+        reason: {type: string, maxLength: 500}
+    CancellationRefundReport:
+      type: object
+      additionalProperties: false
+      required: [run, counts, incomplete_at_enumeration, orders]
+      properties:
+        run: {$ref: '#/components/schemas/CancellationRefundRun'}
+        counts: {$ref: '#/components/schemas/CancellationRefundCounts'}
+        # Orders on the slot that were NOT completed when their page was enumerated, so this
+        # run could not refund them. Named for enumeration, not the cutoff: the cutoff bounds
+        # the RESERVATION set, while completion is necessarily sampled when the page is read.
+        # Non-zero means a later run may owe somebody money — one COUNT is what keeps a
+        # silent under-refund from being invisible (ADR-040 §2).
+        incomplete_at_enumeration: {type: integer}
+        # Empty until the run completes — see the 202 on the operation.
+        orders: {type: array, items: {$ref: '#/components/schemas/CancellationRefundOutcome'}}
+        next_after_order_id: {type: string, format: uuid}

@@ -239,6 +239,76 @@ type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// LookupRefundByID reads one refund by its derived identity. Exported for the bulk
+// cancellation runner (TKT-159), which must resolve whether a cancellation refund for an
+// order ALREADY exists before it computes anything: a resumed run has to replay its own
+// earlier attempt rather than bind a second refund against a ceiling the first one is
+// already consuming. Same query as the internal lookup — deliberately not a second one.
+//
+// OrganizerID/BuyerID/HoldID/PaymentSourceKey are not populated: they live on the order
+// and reservation, and the caller that needs them reads them through BindOrderRefund.
+func LookupRefundByID(ctx context.Context, db *sql.DB, org, id uuid.UUID) (Refund, bool, error) {
+	s, found, err := lookupRefund(ctx, db, org, id)
+	if err != nil || !found {
+		return Refund{}, false, err
+	}
+	s.refund.OrganizerID = org
+	return s.refund, true, nil
+}
+
+// OrderCancellationState is what the bulk runner decides an order's outcome from: the
+// quantity ceiling, the money already returned, and whether EVERY refund of the order has
+// discharged both of its obligations.
+type OrderCancellationState struct {
+	SoldQuantity     int32
+	UnitAmount       int64
+	Currency         string
+	OrderStatus      string
+	RefundedQuantity int32
+	RefundedAmount   int64
+	RefundStatus     string
+	// The two obligations are counted SEPARATELY, not collapsed into one "outstanding"
+	// flag. Voiding can succeed while the capacity return fails — that is the ordinary
+	// case for a seated order — and a report that says both are outstanding is telling the
+	// operator to chase work that is already done (ADR-038 §6: independent obligations).
+	VoidingOutstanding  int
+	CapacityOutstanding int
+	// OwnOutstanding counts obligations on the caller's OWN refund (the one whose id it
+	// passed). Only those are repairable by retrying — replaying that refund re-drives
+	// them. An obligation on someone else's refund needs that refund's idempotency key,
+	// which this row does not have, so retrying it is pure waste.
+	OwnOutstanding int
+}
+
+// Outstanding reports whether either obligation is still owed.
+func (s OrderCancellationState) Outstanding() bool {
+	return s.VoidingOutstanding > 0 || s.CapacityOutstanding > 0
+}
+
+// ReadOrderCancellationState reads an order's refund position for the bulk runner, scoped
+// by organizer through the reservation — `orders` carries no organizer_id of its own.
+func ReadOrderCancellationState(ctx context.Context, db *sql.DB, org, order, ownRefund uuid.UUID) (OrderCancellationState, error) {
+	var s OrderCancellationState
+	if err := db.QueryRowContext(ctx, `
+		SELECT r.quantity, r.unit_amount, r.currency, o.status, o.refunded_quantity, o.refunded_amount, o.refund_status
+		FROM orders o JOIN reservations r ON r.id = o.reservation_id
+		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
+		Scan(&s.SoldQuantity, &s.UnitAmount, &s.Currency, &s.OrderStatus,
+			&s.RefundedQuantity, &s.RefundedAmount, &s.RefundStatus); err != nil {
+		return OrderCancellationState{}, err
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FILTER (WHERE tickets_voided_at IS NULL),
+		       count(*) FILTER (WHERE capacity_returned_at IS NULL),
+		       count(*) FILTER (WHERE id=$3 AND (tickets_voided_at IS NULL OR capacity_returned_at IS NULL))
+		FROM order_refunds
+		WHERE organizer_id=$1 AND order_id=$2 AND status='completed'`, org, order, ownRefund).
+		Scan(&s.VoidingOutstanding, &s.CapacityOutstanding, &s.OwnOutstanding); err != nil {
+		return OrderCancellationState{}, err
+	}
+	return s, nil
+}
+
 // OrderRefundProjection reads an order's aggregate refund state. Exported for the
 // handler, which needs the projection AFTER completing a refund and must not re-bind the
 // refund (and re-take the order lock) just to read three columns.
