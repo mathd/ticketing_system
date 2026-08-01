@@ -39,6 +39,10 @@ func (d DBStore) FixQuantity(ctx context.Context, w store.CancellationWork, quan
 	return store.FixCancellationRequestedQuantity(ctx, d.DB, w, quantity)
 }
 
+func (d DBStore) ClearQuantity(ctx context.Context, w store.CancellationWork) error {
+	return store.ClearCancellationRequestedQuantity(ctx, d.DB, w)
+}
+
 func (d DBStore) Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) error {
 	return store.FinalizeCancellationOrder(ctx, d.DB, w, out)
 }

@@ -34,6 +34,7 @@ type Store interface {
 	OrderState(ctx context.Context, org, order uuid.UUID) (store.OrderCancellationState, error)
 	LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error)
 	FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32) error
+	ClearQuantity(ctx context.Context, w store.CancellationWork) error
 	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) error
 	Abandon(ctx context.Context, w store.CancellationWork) error
 	CompleteRuns(ctx context.Context) (int, error)
@@ -52,10 +53,15 @@ type Runner struct {
 	interval time.Duration
 	batch    int
 	lease    time.Duration
+	// priorRun records, per order within one pass, whether the cancellation refund existed
+	// before this run touched it. Pass-scoped: it is an attribution detail of the verdict
+	// being written now, not durable state.
+	priorRun map[uuid.UUID]bool
 }
 
 func New(s Store, r Refunder, interval time.Duration, batch int, lease time.Duration) *Runner {
-	return &Runner{store: s, refunder: r, interval: interval, batch: batch, lease: lease}
+	return &Runner{store: s, refunder: r, interval: interval, batch: batch, lease: lease,
+		priorRun: map[uuid.UUID]bool{}}
 }
 
 // Run drives passes until the context ends, starting with one immediately: a run created
@@ -80,6 +86,14 @@ func (r *Runner) Run(ctx context.Context) {
 // it here means N concurrent cancellations starve the N+1th out of enumeration entirely —
 // its book never materializes, so its rows are never even claimable.
 const runListLimit = 64
+
+// maxAttempts bounds retries of AMBIGUOUS failures only — a provider timeout, an
+// unavailable journal, a completion that did not persist. Those must not be terminal on the
+// first try: the money may already have moved, and a terminal verdict leaves it moved with
+// the tickets still valid and nothing driving the reversal. They must not retry forever
+// either, or the run never completes and its report is never readable. A DEFINITE refusal
+// is terminal immediately and never consumes an attempt.
+const maxAttempts = 5
 
 func (r *Runner) RunOnce(ctx context.Context) int {
 	runs, err := r.store.Runs(ctx, runListLimit)
@@ -148,7 +162,7 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 	key := store.CancellationRefundKey(w.SlotID, w.OrderID)
 	quantity, outcome, decided := r.resolveQuantity(ctx, w, key)
 	if decided {
-		return r.finalize(ctx, w, outcome)
+		return r.record(ctx, w, outcome)
 	}
 
 	result, err := r.refunder.Refund(ctx, store.RefundRequest{
@@ -160,15 +174,63 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 		Actor: store.CancellationRefundActor, Reason: store.CancellationRefundReason,
 	})
 	if err != nil {
-		// An interruption is not a verdict. Leave the row reclaimable — a successor
-		// re-derives the same key and converges on the same refund.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-			r.abandon(w)
-			return false
+		// The ceiling moved under us: a staff refund landed between reading the remainder
+		// and binding, so the number this row fixed is now wrong and every retry of it
+		// would fail the same way. Clear it so the next attempt recomputes, rather than
+		// stranding a refundable order on a stale quantity.
+		if errors.Is(err, store.ErrRefundExceedsOrder) {
+			if clearErr := r.store.ClearQuantity(context.WithoutCancel(ctx), w); clearErr != nil {
+				slog.Default().ErrorContext(ctx, "clear cancellation quantity", "order_id", w.OrderID, "err", clearErr)
+			}
+			return r.record(ctx, w, failure(refundFailureCode(err), err.Error()))
 		}
-		return r.finalize(ctx, w, failure(refundFailureCode(err), err.Error()))
+		return r.record(ctx, w, failure(refundFailureCode(err), err.Error()))
 	}
-	return r.finalize(ctx, w, r.classify(ctx, w, result))
+	return r.record(ctx, w, r.classify(ctx, w, result))
+}
+
+// record commits a verdict — unless the verdict is one that must not stick.
+//
+// Two things are deliberately NOT terminal here. An interruption is not a business outcome:
+// if the context ended, the row goes back to the queue whatever the in-flight verdict said,
+// because a shutdown between a successful refund and its classification would otherwise
+// commit a permanent `failed` for an order that is fully discharged. And an AMBIGUOUS
+// failure — one where the money may already have moved — is retried within the run until
+// maxAttempts, because a terminal verdict on it leaves money gone with the tickets still
+// valid and nothing driving the reversal.
+func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) bool {
+	// An interruption releases the claim immediately: a successor should pick the row up
+	// now, not after a lease it never used.
+	if ctx.Err() != nil {
+		r.abandon(w)
+		return false
+	}
+	// A retryable failure deliberately does NOT release the claim. Leaving the lease in
+	// place IS the backoff — releasing it would let the very next claim in the same pass
+	// re-drive an unavailable downstream, burning the whole attempt budget in a tight loop
+	// instead of spreading it over lease-length intervals.
+	if retryable(out) && w.Attempts < maxAttempts {
+		slog.Default().WarnContext(ctx, "cancellation order left for retry",
+			"order_id", w.OrderID, "attempt", w.Attempts, "code", out.FailureCode)
+		return false
+	}
+	return r.finalize(ctx, w, out)
+}
+
+// retryable reports whether a failure leaves the order worth attempting again. The test is
+// "could this have moved money, or could it succeed later" — not "was it annoying".
+func retryable(out store.CancellationOutcome) bool {
+	if out.Outcome != "failed" {
+		return false
+	}
+	switch out.FailureCode {
+	case "unavailable", "internal", "reversal_outstanding":
+		return true
+	default:
+		// refund_refused, not_refundable, no_captured_money: definite answers. Retrying
+		// them just burns the book.
+		return false
+	}
 }
 
 // resolveQuantity decides how much this row refunds, or decides the row outright when
@@ -187,6 +249,11 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 	if err != nil {
 		return 0, failure("internal", "read existing cancellation refund"), true
 	}
+	// This run found a refund it did not create and has done no work of its own for this
+	// order: a PREVIOUS run already refunded it. That, not the replay flag, is what
+	// `already_refunded` means — the replay flag cannot tell a second run apart from this
+	// run resuming after a crash, and would mis-attribute both.
+	priorRun := found && !w.RequestedQuantity.Valid
 	if found {
 		// Persist it here too, not just on the branch that computes it. A later run finds
 		// this refund and takes THIS branch, and a row that reaches a `refunded` outcome
@@ -196,6 +263,7 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 		if err := r.store.FixQuantity(ctx, w, existing.Quantity); err != nil {
 			return 0, failure("internal", "persist refund quantity"), true
 		}
+		r.priorRun[w.OrderID] = priorRun
 		return existing.Quantity, store.CancellationOutcome{}, false
 	}
 
@@ -211,9 +279,11 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 		// Already fully refunded by someone else. It is only DONE if that refund's
 		// obligations were discharged too — money back with the tickets still valid is
 		// not a success (ADR-039).
-		if len(state.OutstandingRefunds) > 0 {
+		if state.Outstanding() {
 			out := failure("reversal_outstanding", "the order is fully refunded but a reversal obligation is outstanding")
 			out.MoneyRefunded = true
+			out.TicketsVoided = state.VoidingOutstanding == 0
+			out.CapacityReturned = state.CapacityOutstanding == 0
 			out.RefundedQuantity, out.RefundedAmount = state.RefundedQuantity, state.RefundedAmount
 			return 0, out, true
 		}
@@ -234,6 +304,7 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 	if err := r.store.FixQuantity(ctx, w, remaining); err != nil {
 		return 0, failure("internal", "persist refund quantity"), true
 	}
+	r.priorRun[w.OrderID] = false
 	return remaining, store.CancellationOutcome{}, false
 }
 
@@ -250,16 +321,20 @@ func (r *Runner) classify(ctx context.Context, w store.CancellationWork, result 
 		RefundedQuantity: state.RefundedQuantity,
 		RefundedAmount:   state.RefundedAmount,
 	}
-	discharged := len(state.OutstandingRefunds) == 0
-	out.TicketsVoided, out.CapacityReturned = discharged, discharged
+	// Reported SEPARATELY. Voiding can succeed while the capacity return fails — the
+	// ordinary case for a seated order — and collapsing them tells the operator to chase
+	// work that is already done.
+	out.TicketsVoided = state.VoidingOutstanding == 0
+	out.CapacityReturned = state.CapacityOutstanding == 0
+	discharged := !state.Outstanding()
 	switch {
 	case out.MoneyRefunded && discharged:
-		// Replay means the money leg had ALREADY completed when this call reached it, so
-		// this run did not move money — that is `already_refunded`, and it is what a
-		// second run over the same book must report (AC 2). Deciding this from "did we
-		// bind a refund" instead would call every repeat run a fresh refund.
+		// `already_refunded` means a PREVIOUS run had already refunded this order when
+		// this one arrived — decided from that, not from the refund unit's replay flag.
+		// Replay cannot tell a second run apart from this run resuming after a crash, so
+		// it mis-attributes both directions.
 		out.Outcome = "refunded"
-		if result.Replay {
+		if r.priorRun[w.OrderID] {
 			out.Outcome = "already_refunded"
 		}
 	case out.MoneyRefunded:

@@ -53,7 +53,7 @@ type CancellationRun struct {
 	Status                  string
 	CutoffAt, CreatedAt     time.Time
 	CompletedAt             sql.NullTime
-	IncompleteAtCutoff      int
+	IncompleteAtEnumeration int
 	Replay                  bool
 }
 
@@ -65,6 +65,9 @@ type CancellationWork struct {
 	// refund's request fingerprint and turn a crash-resume into a conflict with itself.
 	RequestedQuantity sql.NullInt32
 	Currency          string
+	// Attempts includes THIS claim. The runner uses it to bound retries of ambiguous
+	// failures — the ones where the money may or may not have moved.
+	Attempts int
 }
 
 // CancellationOutcome is a row's terminal verdict.
@@ -103,11 +106,11 @@ type CancellationOrderOutcome struct {
 
 // CancellationReportPage is a run plus one page of its outcomes.
 type CancellationReportPage struct {
-	Run                CancellationRun
-	Counts             CancellationCounts
-	IncompleteAtCutoff int
-	Orders             []CancellationOrderOutcome
-	NextAfterOrderID   uuid.NullUUID
+	Run                     CancellationRun
+	Counts                  CancellationCounts
+	IncompleteAtEnumeration int
+	Orders                  []CancellationOrderOutcome
+	NextAfterOrderID        uuid.NullUUID
 }
 
 // CancellationRunID derives a run's identity from its organizer and idempotency key, so a
@@ -129,8 +132,14 @@ func CancellationRunID(org uuid.UUID, idempotencyKey string) uuid.UUID {
 // attempt and reporting the order failed forever. A run-independent key makes the second
 // run REPLAY the first attempt, which is what the single-order path already does.
 func CancellationRefundKey(slot, order uuid.UUID) string {
-	return "cancel:" + slot.String() + ":" + order.String()
+	return CancellationRefundKeyPrefix + slot.String() + ":" + order.String()
 }
+
+// CancellationRefundKeyPrefix is RESERVED: the staff refund endpoint rejects an
+// Idempotency-Key carrying it. A staff refund under a derived key would produce the same
+// refund identity while disagreeing with its request fingerprint, and every cancellation run
+// would then report that order failed forever — even one whose staff refund fully succeeded.
+const CancellationRefundKeyPrefix = "cancel:"
 
 func cancellationRunFingerprint(in CancellationRunRequest) string {
 	sum := sha256.Sum256([]byte(in.SlotID.String() + "\x00" + in.Actor + "\x00" + in.Reason))
@@ -187,10 +196,10 @@ type storedCancellationRun struct {
 func lookupCancellationRun(ctx context.Context, q rowQuerier, org, id uuid.UUID) (storedCancellationRun, bool, error) {
 	var s storedCancellationRun
 	err := q.QueryRowContext(ctx, `
-		SELECT id,organizer_id,slot_id,request_fingerprint,status,cutoff_at,created_at,completed_at,incomplete_at_cutoff
+		SELECT id,organizer_id,slot_id,request_fingerprint,status,cutoff_at,created_at,completed_at,incomplete_at_enumeration
 		FROM cancellation_refund_runs WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.run.ID, &s.run.OrganizerID, &s.run.SlotID, &s.fingerprint, &s.run.Status,
-			&s.run.CutoffAt, &s.run.CreatedAt, &s.run.CompletedAt, &s.run.IncompleteAtCutoff)
+			&s.run.CutoffAt, &s.run.CreatedAt, &s.run.CompletedAt, &s.run.IncompleteAtEnumeration)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedCancellationRun{}, false, nil
 	}
@@ -204,7 +213,7 @@ func lookupCancellationRun(ctx context.Context, q rowQuerier, org, id uuid.UUID)
 // the runner to enumerate. Enumeration itself takes the run row lock for one page.
 func ClaimCancellationRuns(ctx context.Context, db *sql.DB, limit int) ([]CancellationRun, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id,organizer_id,slot_id,status,cutoff_at,created_at,completed_at,incomplete_at_cutoff
+		SELECT id,organizer_id,slot_id,status,cutoff_at,created_at,completed_at,incomplete_at_enumeration
 		FROM cancellation_refund_runs WHERE status <> 'completed'
 		ORDER BY created_at, id LIMIT $1`, limit)
 	if err != nil {
@@ -215,7 +224,7 @@ func ClaimCancellationRuns(ctx context.Context, db *sql.DB, limit int) ([]Cancel
 	for rows.Next() {
 		var r CancellationRun
 		if err := rows.Scan(&r.ID, &r.OrganizerID, &r.SlotID, &r.Status, &r.CutoffAt,
-			&r.CreatedAt, &r.CompletedAt, &r.IncompleteAtCutoff); err != nil {
+			&r.CreatedAt, &r.CompletedAt, &r.IncompleteAtEnumeration); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -257,20 +266,16 @@ func EnumerateCancellationBook(ctx context.Context, db *sql.DB, org, runID uuid.
 		return true, tx.Commit()
 	}
 
-	// The keyset predicate. A NULL cursor is the first page; the sentinel keeps the
-	// comparison a single indexable expression rather than two query shapes.
-	from := cutoff.Add(-time.Hour * 24 * 365 * 100)
-	fromID := uuid.Nil
-	if cursorAt.Valid {
-		from, fromID = cursorAt.Time, cursorID.UUID
-	}
+	// A NULL cursor means "the first page" and is tested as NULL rather than as a
+	// far-past sentinel: a sentinel silently skips any reservation older than it, which an
+	// imported or backdated book can be.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT r.id, r.created_at, r.currency, o.id, o.status
 		FROM reservations r LEFT JOIN orders o ON o.reservation_id = r.id
 		WHERE r.organizer_id=$1 AND r.slot_id=$2 AND r.created_at <= $3
-		  AND (r.created_at, r.id) > ($4, $5)
+		  AND ($4::timestamptz IS NULL OR (r.created_at, r.id) > ($4, $5))
 		ORDER BY r.created_at, r.id
-		LIMIT $6`, org, slot, cutoff, from, fromID, batch)
+		LIMIT $6`, org, slot, cutoff, cursorAt, cursorID, batch)
 	if err != nil {
 		return false, err
 	}
@@ -322,7 +327,7 @@ func EnumerateCancellationBook(ctx context.Context, db *sql.DB, org, runID uuid.
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE cancellation_refund_runs
 			SET cursor_created_at=$3, cursor_reservation_id=$4,
-			    incomplete_at_cutoff = incomplete_at_cutoff + $5,
+			    incomplete_at_enumeration = incomplete_at_enumeration + $5,
 			    status = CASE WHEN status='pending' THEN 'running' ELSE status END,
 			    updated_at = now()
 			WHERE organizer_id=$1 AND id=$2`, org, runID, last.createdAt, last.resID, incomplete); err != nil {
@@ -359,12 +364,12 @@ func ClaimCancellationOrders(ctx context.Context, db *sql.DB, limit int, lease t
 			FOR UPDATE SKIP LOCKED
 		), claimed AS (
 			UPDATE cancellation_refund_orders c
-			SET claim_id=$3, lease_until = now() + make_interval(secs => $2)
+			SET claim_id=$3, lease_until = now() + make_interval(secs => $2), attempts = c.attempts + 1
 			FROM claimable k
 			WHERE c.organizer_id=k.organizer_id AND c.run_id=k.run_id AND c.order_id=k.order_id
-			RETURNING c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency
+			RETURNING c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, c.attempts
 		)
-		SELECT c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, r.slot_id
+		SELECT c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, c.attempts, r.slot_id
 		FROM claimed c JOIN cancellation_refund_runs r ON r.organizer_id=c.organizer_id AND r.id=c.run_id`,
 		limit, lease.Seconds(), claim)
 	if err != nil {
@@ -374,7 +379,7 @@ func ClaimCancellationOrders(ctx context.Context, db *sql.DB, limit int, lease t
 	var out []CancellationWork
 	for rows.Next() {
 		w := CancellationWork{ClaimID: claim}
-		if err := rows.Scan(&w.OrganizerID, &w.RunID, &w.OrderID, &w.RequestedQuantity, &w.Currency, &w.SlotID); err != nil {
+		if err := rows.Scan(&w.OrganizerID, &w.RunID, &w.OrderID, &w.RequestedQuantity, &w.Currency, &w.Attempts, &w.SlotID); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -387,10 +392,37 @@ func ClaimCancellationOrders(ctx context.Context, db *sql.DB, limit int, lease t
 // original number: the refund's request fingerprint covers the quantity, and a recomputed
 // one would conflict with its own earlier attempt.
 func FixCancellationRequestedQuantity(ctx context.Context, db *sql.DB, w CancellationWork, quantity int32) error {
-	_, err := db.ExecContext(ctx, `
+	// COALESCE, not `IS NULL`: a row this claimant already fixed to the same number is a
+	// success, while a row whose claim has moved on is ErrCancellationClaimLost. Ignoring
+	// RowsAffected here let a claimant whose lease had lapsed keep driving the refund and
+	// then lose its finalize to the successor, leaving a discharged order reported failed.
+	res, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders SET requested_quantity=$5
-		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND requested_quantity IS NULL`,
+		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4
+		  AND outcome IS NULL AND COALESCE(requested_quantity,$5)=$5`,
 		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, quantity)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrCancellationClaimLost
+	}
+	return nil
+}
+
+// ClearCancellationRequestedQuantity releases a fixed quantity so the next attempt
+// recomputes it. Used for exactly one case: the order's refund ceiling moved under the
+// runner (a staff refund landed between reading the remainder and binding), so the fixed
+// number is now wrong and retrying it would fail forever.
+func ClearCancellationRequestedQuantity(ctx context.Context, db *sql.DB, w CancellationWork) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE cancellation_refund_orders SET requested_quantity=NULL
+		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL`,
+		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID)
 	return err
 }
 
@@ -473,7 +505,7 @@ func CancellationReport(ctx context.Context, db *sql.DB, org, runID uuid.UUID, l
 	if !found {
 		return CancellationReportPage{}, sql.ErrNoRows
 	}
-	page := CancellationReportPage{Run: stored.run, IncompleteAtCutoff: stored.run.IncompleteAtCutoff}
+	page := CancellationReportPage{Run: stored.run, IncompleteAtEnumeration: stored.run.IncompleteAtEnumeration}
 
 	if err := db.QueryRowContext(ctx, `
 		SELECT count(*),

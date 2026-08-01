@@ -42,15 +42,25 @@ Reverse this only if catalog gains a transactional cancellation outbox and the p
 "refund on demand" to "every cancellation starts exactly one run". The event would then become the
 trigger; the durable run and ledger stay either way.
 
-### 2. Membership is the book at a durable cutoff, and what falls outside it is COUNTED
+### 2. The cutoff bounds the RESERVATION set, not order completion
 
-`cutoff_at` is stamped in the same transaction as the run row, so the book is fixed before any work
-starts and a replayed create answers with the original cutoff rather than silently widening it.
+`cutoff_at` is stamped in the same transaction as the run row, and it bounds the set of
+**reservations** the run pages through. That is what makes the book finite and the run resumable: the
+keyset cursor walks a set that cannot grow underneath it.
 
-An order that was on the slot at the cutoff but **not yet completed** cannot be refunded by this
-run. It is recorded as `incomplete_at_cutoff` on the report rather than skipped. One `COUNT` is the
-difference between "a later run may owe somebody money" and a silent under-refund on the flow where
-silence is most expensive.
+It deliberately does **not** bound order completion. Whether an order is `completed` is necessarily
+sampled when its page is read, because there is no completion timestamp to filter on. Two consequences,
+and both are the honest ones rather than accidents:
+
+- an order still in flight at the cutoff but completed before its page is read **is** refunded — which
+  is what an operator cancelling an event wants;
+- an order completed *after* its page has been passed is **not** in this run. It is counted as
+  `incomplete_at_enumeration` on the report — named for enumeration, not the cutoff, because that is
+  when the decision was actually taken.
+
+One `COUNT` is the difference between "a later run may owe somebody money" and a silent under-refund
+on the flow where silence is most expensive. Membership is therefore reproducible only up to runner
+timing; the count is what makes that visible instead of hidden.
 
 ### 3. The per-order refund idempotency key is derived from `(slot, order)` — never from the run
 
@@ -87,15 +97,31 @@ rather than a runner convention: a bug in the runner cannot report an under-sell
 done. The temptation to round it up is real — it makes the double-run test simpler — and it is
 exactly the defect TKT-166 shipped and had to fix.
 
-### 5. A failure is terminal **for its run**; retrying means starting another run
+### 5. A DEFINITE refusal is terminal at once; an AMBIGUOUS failure is retried, bounded
 
-AC 3 asks that a failure be recorded with its reason and the run continue, which is what happens: no
-attempt counter, no backoff, no parking. A permanently failing order therefore cannot prevent the run
-from completing — and the report only becomes readable (`200`) when the run completes, so a run that
-could never finish would make the report unreachable.
+The two are not the same failure and must not share a verdict.
 
-Retrying is starting another run, which §3 makes safe. This is why there is no `attempts` column: it
-would have had no reader.
+A **definite** refusal — the order is not refundable, the ceiling refuses it, there is no captured
+money — is terminal on the first attempt and consumes no retry. Retrying it only burns the book.
+
+An **ambiguous** failure is one where the money may already have moved: a provider timeout, an
+unavailable journal, a completion that did not persist. Finalizing those terminally is what leaves
+money gone with the tickets still valid and *nothing* driving the reversal — the run then completes
+over the top of it and only a new run would ever pick it up. So they are retried within the run, up
+to `maxAttempts`, and the row's **lease is deliberately left in place** rather than released: the
+lease is the backoff. Releasing it lets the very next claim in the same pass re-drive an unavailable
+downstream and burn the whole budget in a tight loop. (Both halves of this were wrong in the first
+implementation and were caught in review.)
+
+An outstanding **reversal** is retryable for the same reason — the obligation may yet discharge.
+
+The bound is what keeps §5 compatible with the report: a run only becomes readable (`200`) once every
+row is terminal, so an unbounded retry would make the report unreachable. This is why the `attempts`
+column exists; an earlier draft dropped it on the grounds that nothing read it, which was true only
+while ambiguous failures were (wrongly) terminal.
+
+Once attempts are spent the row is finalized `failed` with its last reason, and retrying then means
+starting another run — which §3 makes safe.
 
 ## Consequences
 
@@ -112,6 +138,15 @@ would have had no reader.
   money and the tickets are void.
 - **Outstanding obligations on refunds this run did not create are reported, not repaired.** Driving
   them would need their original idempotency keys, which the refund row does not carry.
+- **`already_refunded` is decided from whether a PREVIOUS run had already refunded the order**, not
+  from the refund unit's replay flag. Replay cannot tell a second run apart from this run resuming
+  after a crash, and would mis-attribute both directions. A residue remains: if run A moved provider
+  money but ended ambiguously, and run B completes it, B reports the refund as its own. Both reports
+  agree the money came back, which is the property that matters.
+- **The `cancel:` idempotency-key prefix is reserved.** The staff refund endpoint rejects it. A staff
+  refund under a derived key would produce the same refund identity with a different request
+  fingerprint, and every cancellation run would then report that order failed forever — including one
+  whose staff refund had fully succeeded.
 - **No catalog coupling and no RBAC.** The slot's lifecycle state is never read, and the existing
   internal-token convention stands (a wrong token answers `404`, like every other commerce internal
   route).

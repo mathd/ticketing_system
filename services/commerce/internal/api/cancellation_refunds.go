@@ -48,7 +48,12 @@ func (s *Server) createCancellationRefundRun(w http.ResponseWriter, r *http.Requ
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.OrganizerID == uuid.Nil || strings.TrimSpace(in.Actor) == "" || strings.TrimSpace(in.Reason) == "" {
+	// The length bounds are the DATABASE's (actor 1..200, reason 1..500). Validating only
+	// non-blankness here let an over-long field through to a CHECK violation, which surfaces
+	// as a misleading 500 for what is a bad request.
+	if in.OrganizerID == uuid.Nil ||
+		strings.TrimSpace(in.Actor) == "" || len(in.Actor) > 200 ||
+		strings.TrimSpace(in.Reason) == "" || len(in.Reason) > 500 {
 		write(w, 400, map[string]string{"error": "invalid cancellation refund run"})
 		return
 	}
@@ -142,8 +147,8 @@ func (s *Server) getCancellationRefundReport(w http.ResponseWriter, r *http.Requ
 			"already_refunded": page.Counts.AlreadyRefunded, "failed": page.Counts.Failed,
 			"pending": page.Counts.Pending,
 		},
-		"incomplete_at_cutoff": page.IncompleteAtCutoff,
-		"orders":               orders,
+		"incomplete_at_enumeration": page.IncompleteAtEnumeration,
+		"orders":                    orders,
 	}
 	if page.NextAfterOrderID.Valid {
 		body["next_after_order_id"] = page.NextAfterOrderID.UUID

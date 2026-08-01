@@ -267,10 +267,17 @@ type OrderCancellationState struct {
 	RefundedQuantity int32
 	RefundedAmount   int64
 	RefundStatus     string
-	// OutstandingRefunds are completed refunds of this order whose tickets are not
-	// voided or whose capacity has not come back. They are the reason an order with all
-	// its money returned can still not be reported as done (ADR-039).
-	OutstandingRefunds []uuid.UUID
+	// The two obligations are counted SEPARATELY, not collapsed into one "outstanding"
+	// flag. Voiding can succeed while the capacity return fails — that is the ordinary
+	// case for a seated order — and a report that says both are outstanding is telling the
+	// operator to chase work that is already done (ADR-038 §6: independent obligations).
+	VoidingOutstanding  int
+	CapacityOutstanding int
+}
+
+// Outstanding reports whether either obligation is still owed.
+func (s OrderCancellationState) Outstanding() bool {
+	return s.VoidingOutstanding > 0 || s.CapacityOutstanding > 0
 }
 
 // ReadOrderCancellationState reads an order's refund position for the bulk runner, scoped
@@ -285,23 +292,15 @@ func ReadOrderCancellationState(ctx context.Context, db *sql.DB, org, order uuid
 			&s.RefundedQuantity, &s.RefundedAmount, &s.RefundStatus); err != nil {
 		return OrderCancellationState{}, err
 	}
-	rows, err := db.QueryContext(ctx, `
-		SELECT id FROM order_refunds
-		WHERE organizer_id=$1 AND order_id=$2 AND status='completed'
-		  AND (tickets_voided_at IS NULL OR capacity_returned_at IS NULL)
-		ORDER BY created_at, id`, org, order)
-	if err != nil {
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FILTER (WHERE tickets_voided_at IS NULL),
+		       count(*) FILTER (WHERE capacity_returned_at IS NULL)
+		FROM order_refunds
+		WHERE organizer_id=$1 AND order_id=$2 AND status='completed'`, org, order).
+		Scan(&s.VoidingOutstanding, &s.CapacityOutstanding); err != nil {
 		return OrderCancellationState{}, err
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return OrderCancellationState{}, err
-		}
-		s.OutstandingRefunds = append(s.OutstandingRefunds, id)
-	}
-	return s, rows.Err()
+	return s, nil
 }
 
 // OrderRefundProjection reads an order's aggregate refund state. Exported for the

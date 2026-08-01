@@ -184,11 +184,11 @@ type CancellationRefundOutcomeOutcome string
 
 // CancellationRefundReport defines model for CancellationRefundReport.
 type CancellationRefundReport struct {
-	Counts             CancellationRefundCounts    `json:"counts"`
-	IncompleteAtCutoff int                         `json:"incomplete_at_cutoff"`
-	NextAfterOrderId   *openapi_types.UUID         `json:"next_after_order_id,omitempty"`
-	Orders             []CancellationRefundOutcome `json:"orders"`
-	Run                CancellationRefundRun       `json:"run"`
+	Counts                  CancellationRefundCounts    `json:"counts"`
+	IncompleteAtEnumeration int                         `json:"incomplete_at_enumeration"`
+	NextAfterOrderId        *openapi_types.UUID         `json:"next_after_order_id,omitempty"`
+	Orders                  []CancellationRefundOutcome `json:"orders"`
+	Run                     CancellationRefundRun       `json:"run"`
 }
 
 // CancellationRefundRun defines model for CancellationRefundRun.

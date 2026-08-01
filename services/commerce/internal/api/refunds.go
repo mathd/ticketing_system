@@ -68,6 +68,15 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
 		return
 	}
+	// The `cancel:` namespace belongs to the event-cancellation runner, which DERIVES its
+	// keys (TKT-159). A staff refund that borrowed one would create the same refund id under
+	// a human actor/reason, and every cancellation run would then find that row, disagree
+	// with its fingerprint, and report the order failed forever — even when the staff refund
+	// had fully succeeded. Reserving the prefix is cheaper than reconciling the collision.
+	if strings.HasPrefix(key, commercestore.CancellationRefundKeyPrefix) {
+		write(w, 400, map[string]string{"error": "Idempotency-Key uses a reserved prefix"})
+		return
+	}
 	order, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		write(w, 400, map[string]string{"error": "invalid order"})

@@ -373,7 +373,7 @@ Reading the outcomes:
 | `failed` + `no_captured_money` | A zero-price (comped) order. It has no money leg — and therefore got **no reversal at all**, so its tickets still admit. |
 | `failed` + `refund_refused` / `unavailable` / `not_refundable` / `internal` | The refund did not happen. Failures are terminal **for that run**; retry by starting another run, which is safe. |
 
-`incomplete_at_cutoff` on the report is the count of orders that existed on the slot at the run's
+`incomplete_at_enumeration` on the report is the count of orders that existed on the slot at the run's
 cutoff but were not completed, so this run could not refund them. Non-zero means a later run may owe
 somebody money.
 

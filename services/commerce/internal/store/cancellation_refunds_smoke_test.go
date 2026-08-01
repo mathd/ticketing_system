@@ -184,11 +184,11 @@ func TestEnumerateCancellationBookScopesTheSlot(t *testing.T) {
 	}
 
 	var incomplete int
-	if err := db.QueryRowContext(ctx, `SELECT incomplete_at_cutoff FROM cancellation_refund_runs WHERE organizer_id=$1 AND id=$2`, run.OrganizerID, run.ID).Scan(&incomplete); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT incomplete_at_enumeration FROM cancellation_refund_runs WHERE organizer_id=$1 AND id=$2`, run.OrganizerID, run.ID).Scan(&incomplete); err != nil {
 		t.Fatal(err)
 	}
 	if incomplete != 1 {
-		t.Fatalf("incomplete_at_cutoff = %d, want 1 — an order that could not be enumerated must not vanish silently", incomplete)
+		t.Fatalf("incomplete_at_enumeration = %d, want 1 — an order that could not be enumerated must not vanish silently", incomplete)
 	}
 }
 

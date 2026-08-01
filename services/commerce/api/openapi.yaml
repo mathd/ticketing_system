@@ -137,9 +137,10 @@ paths:
       # pull in TKT-2/ADR-018, which is out of scope. A slot with no orders is a valid
       # run that completes with zero outcomes.
       #
-      # Membership is the book at `cutoff_at`. An order that completes after the cutoff
-      # belongs to a later run — see `incomplete_at_cutoff` on the report, which is how
-      # that case stops being silent.
+      # `cutoff_at` bounds the RESERVATION set the run pages through, which is what makes
+      # the book finite and the run resumable. It does not bound order completion: an order
+      # not yet completed when its page is read belongs to a later run — see
+      # `incomplete_at_enumeration` on the report, which is how that stops being silent.
       parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CancellationRefundCreate'}}}}
       responses:
@@ -438,14 +439,16 @@ components:
     CancellationRefundReport:
       type: object
       additionalProperties: false
-      required: [run, counts, incomplete_at_cutoff, orders]
+      required: [run, counts, incomplete_at_enumeration, orders]
       properties:
         run: {$ref: '#/components/schemas/CancellationRefundRun'}
         counts: {$ref: '#/components/schemas/CancellationRefundCounts'}
-        # Orders on the slot that existed at the cutoff and were NOT completed, so could
-        # not be enumerated. Non-zero means a later run may owe somebody money. One COUNT
-        # is what keeps a silent under-refund from being invisible (ADR-040 §5).
-        incomplete_at_cutoff: {type: integer}
+        # Orders on the slot that were NOT completed when their page was enumerated, so this
+        # run could not refund them. Named for enumeration, not the cutoff: the cutoff bounds
+        # the RESERVATION set, while completion is necessarily sampled when the page is read.
+        # Non-zero means a later run may owe somebody money — one COUNT is what keeps a
+        # silent under-refund from being invisible (ADR-040 §2).
+        incomplete_at_enumeration: {type: integer}
         # Empty until the run completes — see the 202 on the operation.
         orders: {type: array, items: {$ref: '#/components/schemas/CancellationRefundOutcome'}}
         next_after_order_id: {type: string, format: uuid}

@@ -21,12 +21,13 @@ import (
 // against real PostgreSQL by the store's smoke tests.
 
 type fakeOrder struct {
-	state    store.OrderCancellationState
-	refunded bool // a cancellation refund has been bound for this order
-	moved    int  // how many times money ACTUALLY moved — the double-refund detector
-	refuse   error
-	failVoid bool
-	quantity int32
+	state        store.OrderCancellationState
+	refunded     bool // a cancellation refund has been bound for this order
+	moved        int  // how many times money ACTUALLY moved — the double-refund detector
+	refuse       error
+	failVoid     bool
+	failCapacity bool
+	quantity     int32
 }
 
 type fakeStore struct {
@@ -36,6 +37,13 @@ type fakeStore struct {
 	fixed    map[uuid.UUID]int32
 	final    map[uuid.UUID]store.CancellationOutcome
 	abandon  map[uuid.UUID]int
+	cleared  map[uuid.UUID]int
+	attempts map[uuid.UUID]int
+	// leased models the real lease: a claimed row is NOT claimable again until it is
+	// abandoned or its lease expires. Without this the fake re-claims instantly and a
+	// retry budget meant to be spread over lease-length intervals burns inside one pass —
+	// which is exactly the bug the first version of the retry fix had.
+	leased   map[uuid.UUID]bool
 	claims   int
 	enumDone bool
 }
@@ -44,6 +52,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{
 		orders: map[uuid.UUID]*fakeOrder{}, fixed: map[uuid.UUID]int32{},
 		final: map[uuid.UUID]store.CancellationOutcome{}, abandon: map[uuid.UUID]int{},
+		cleared: map[uuid.UUID]int{}, attempts: map[uuid.UUID]int{}, leased: map[uuid.UUID]bool{},
 		enumDone: true,
 	}
 }
@@ -60,13 +69,19 @@ func (f *fakeStore) Claim(_ context.Context, limit int, _ time.Duration) ([]stor
 		if _, done := f.final[w.OrderID]; done {
 			continue
 		}
+		if f.leased[w.OrderID] {
+			continue
+		}
 		if len(out) == limit {
 			break
 		}
 		if q, ok := f.fixed[w.OrderID]; ok {
 			w.RequestedQuantity = sql.NullInt32{Int32: q, Valid: true}
 		}
+		f.attempts[w.OrderID]++
+		w.Attempts = f.attempts[w.OrderID]
 		w.ClaimID = uuid.New()
+		f.leased[w.OrderID] = true
 		out = append(out, w)
 	}
 	return out, nil
@@ -113,18 +128,29 @@ func (f *fakeStore) FixQuantity(_ context.Context, w store.CancellationWork, q i
 	return nil
 }
 
+func (f *fakeStore) ClearQuantity(_ context.Context, w store.CancellationWork) error {
+	delete(f.fixed, w.OrderID)
+	f.cleared[w.OrderID]++
+	return nil
+}
+
 func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out store.CancellationOutcome) error {
 	if _, done := f.final[w.OrderID]; done {
 		return store.ErrCancellationClaimLost
 	}
 	f.final[w.OrderID] = out
+	delete(f.leased, w.OrderID)
 	return nil
 }
 
 func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork) error {
 	f.abandon[w.OrderID]++
+	delete(f.leased, w.OrderID)
 	return nil
 }
+
+// expireLeases is the passage of time between runner passes.
+func (f *fakeStore) expireLeases()                             { f.leased = map[uuid.UUID]bool{} }
 func (f *fakeStore) CompleteRuns(context.Context) (int, error) { return 0, nil }
 
 // fakeRefunder records the idempotency key every attempt used, per order — the thing that
@@ -156,9 +182,14 @@ func (f *fakeRefunder) Refund(_ context.Context, in store.RefundRequest) (refund
 		o.quantity = in.Quantity
 	}
 	if o.failVoid {
-		o.state.OutstandingRefunds = []uuid.UUID{uuid.New()}
+		// Voiding failed, so the capacity return never runs either (ADR-038 §1 ordering).
+		o.state.VoidingOutstanding, o.state.CapacityOutstanding = 1, 1
+	} else if o.failCapacity {
+		// The seated case: the tickets ARE void, only the seat did not come back. The
+		// report has to distinguish this from "we did not get to either".
+		o.state.VoidingOutstanding, o.state.CapacityOutstanding = 0, 1
 	} else {
-		o.state.OutstandingRefunds = nil
+		o.state.VoidingOutstanding, o.state.CapacityOutstanding = 0, 0
 	}
 	return refunds.Result{Refund: store.Refund{OrderID: in.OrderID, Quantity: in.Quantity}, Replay: replay}, nil
 }
@@ -257,8 +288,12 @@ func TestMoneyBackWithOutstandingReversalIsNotASuccess(t *testing.T) {
 	order := uuid.New()
 	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), failVoid: true}
 	f.work = append(f.work, work(order))
-	r := newFakeRefunder(f)
-	runnerFor(f, r).RunOnce(context.Background())
+	// An outstanding reversal is RETRYABLE — the obligation may still discharge — so the
+	// verdict that sticks is the one after the attempt budget is spent.
+	for range maxAttempts + 1 {
+		f.expireLeases()
+		runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+	}
 
 	got := f.final[order]
 	if got.Outcome != "failed" || got.FailureCode != "reversal_outstanding" {
@@ -433,4 +468,137 @@ func TestSecondRunOverARefundedBookReportsAlreadyRefunded(t *testing.T) {
 			t.Fatalf("order %s used key %q on the second run and %q on the first", id, second.keys[id][0], first.keys[id][0])
 		}
 	}
+}
+
+// Review finding 1: an AMBIGUOUS failure — the money may or may not have moved — must not be
+// terminal on the first attempt. Finalizing it strands money with the tickets still valid and
+// nothing driving the reversal, and the run then completes over the top of it.
+func TestAmbiguousFailureIsRetriedNotFinalized(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
+	f.work = append(f.work, work(order))
+
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+
+	if _, terminal := f.final[order]; terminal {
+		t.Fatalf("an ambiguous payments failure was finalized on attempt 1: %+v", f.final[order])
+	}
+	if f.abandon[order] != 0 {
+		t.Fatal("a retryable failure released its lease: the next claim re-drives it immediately, " +
+			"burning the whole attempt budget in one pass instead of spacing it over the lease")
+	}
+	// But it does not retry forever: the run has to be able to complete.
+	for range maxAttempts + 2 {
+		f.expireLeases()
+		runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+	}
+	got, terminal := f.final[order]
+	if !terminal {
+		t.Fatalf("still not terminal after %d attempts — the run can never complete", f.attempts[order])
+	}
+	if got.Outcome != "failed" || got.FailureCode != "unavailable" {
+		t.Fatalf("final outcome = %+v, want failed/unavailable", got)
+	}
+}
+
+// A DEFINITE refusal is terminal immediately and never consumes a retry: retrying it just
+// burns the book.
+func TestDefiniteRefusalIsTerminalOnTheFirstAttempt(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsRefused}
+	f.work = append(f.work, work(order))
+
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+
+	got, terminal := f.final[order]
+	if !terminal || got.FailureCode != "refund_refused" {
+		t.Fatalf("outcome = %+v (terminal=%v), want an immediate failed/refund_refused", got, terminal)
+	}
+	if f.attempts[order] != 1 {
+		t.Fatalf("a definite refusal consumed %d attempts, want 1", f.attempts[order])
+	}
+}
+
+// Review finding 2: the ceiling can move between reading the remainder and binding — a staff
+// refund lands in between. The fixed quantity is then wrong forever, so it must be CLEARED
+// and recomputed rather than stranding a refundable order on a stale number.
+func TestCeilingMovingUnderTheRunnerClearsTheFixedQuantity(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(10, 1000), refuse: store.ErrRefundExceedsOrder}
+	f.work = append(f.work, work(order))
+
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+
+	if f.cleared[order] == 0 {
+		t.Fatal("the stale quantity was not cleared — every retry would fail the same way")
+	}
+	if q, ok := f.fixed[order]; ok {
+		t.Fatalf("quantity still fixed at %d after the ceiling moved", q)
+	}
+}
+
+// Review finding 4: the two obligations are independent. Voiding can succeed while the
+// capacity return fails — the ordinary seated case — and a report that says both are
+// outstanding sends the operator after work that is already done.
+func TestObligationsAreReportedSeparately(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), failCapacity: true}
+	f.work = append(f.work, work(order))
+
+	// Drive past the retry budget: reversal_outstanding is retryable, and the verdict that
+	// sticks is the one after the attempts are spent.
+	for range maxAttempts + 1 {
+		f.expireLeases()
+		runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+	}
+	got := f.final[order]
+	if got.Outcome != "failed" || got.FailureCode != "reversal_outstanding" {
+		t.Fatalf("outcome = %+v, want failed/reversal_outstanding", got)
+	}
+	if !got.TicketsVoided {
+		t.Fatal("tickets WERE voided; reporting otherwise sends the operator after work already done")
+	}
+	if got.CapacityReturned {
+		t.Fatal("the capacity did not come back; the report must say so")
+	}
+}
+
+// Review finding 6: a shutdown between a successful refund and its classification must not
+// commit a permanent `failed` for an order that is in fact fully discharged.
+func TestCancellationDuringClassificationIsNotAVerdict(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000)}
+	f.work = append(f.work, work(order))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := newFakeRefunder(f)
+	// Cancel the moment the refund itself has succeeded, i.e. before classification.
+	New(f, &cancelAfterSuccess{cancel: cancel, inner: r}, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+	if got, terminal := f.final[order]; terminal && got.Outcome == "failed" {
+		t.Fatalf("a shutdown after a successful refund was committed as %+v", got)
+	}
+	if f.orders[order].moved != 1 {
+		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)
+	}
+}
+
+type cancelAfterSuccess struct {
+	cancel context.CancelFunc
+	inner  *fakeRefunder
+}
+
+func (c *cancelAfterSuccess) Refund(ctx context.Context, in store.RefundRequest) (refunds.Result, error) {
+	out, err := c.inner.Refund(ctx, in)
+	c.cancel()
+	return out, err
+}
+
+func (c *cancelAfterSuccess) DriveReversal(ctx context.Context, r store.Refund) store.Refund {
+	return c.inner.DriveReversal(ctx, r)
 }

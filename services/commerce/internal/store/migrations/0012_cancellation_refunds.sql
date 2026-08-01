@@ -30,10 +30,10 @@ CREATE TABLE cancellation_refund_runs (
   actor text NOT NULL CHECK (length(actor) BETWEEN 1 AND 200),
   reason text NOT NULL CHECK (length(reason) BETWEEN 1 AND 500),
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','completed')),
-  -- The book is the orders completed at or before this instant, recorded in the same
-  -- transaction as the row so it is durable before any work starts. An order completing
-  -- after it belongs to a later run — `incomplete_at_cutoff` on the report is what stops
-  -- that from being silent.
+  -- Bounds the RESERVATION set this run will page through, recorded in the same transaction
+  -- as the row so the book is finite and durable before any work starts. It does NOT bound
+  -- order completion: whether an order is completed is necessarily sampled when its page is
+  -- read (see incomplete_at_enumeration below).
   cutoff_at timestamptz NOT NULL,
   -- Keyset cursor over the slot's reservations, advanced across the WHOLE page (including
   -- reservations with no completed order) so no later state change can leave a gap behind
@@ -41,7 +41,12 @@ CREATE TABLE cancellation_refund_runs (
   cursor_created_at timestamptz,
   cursor_reservation_id uuid,
   enumeration_completed_at timestamptz,
-  incomplete_at_cutoff integer NOT NULL DEFAULT 0 CHECK (incomplete_at_cutoff >= 0),
+  -- Orders on the slot that were NOT completed when their page was enumerated. Named for
+  -- enumeration, not the cutoff: the cutoff bounds the RESERVATION set (which is what makes
+  -- the run finite and resumable), while an order's completion is necessarily sampled when
+  -- its page is read. An order that completes after its page has been passed is not in this
+  -- run — that is what this count tells the operator.
+  incomplete_at_enumeration integer NOT NULL DEFAULT 0 CHECK (incomplete_at_enumeration >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
@@ -87,6 +92,12 @@ CREATE TABLE cancellation_refund_orders (
   -- provider call, so nothing holds a database lock across an external call.
   claim_id uuid,
   lease_until timestamptz,
+  -- Charged per claim, and bounded. It exists for ONE class of failure: the ambiguous kind,
+  -- where the money may or may not have moved (a provider timeout, an unavailable journal, a
+  -- completion that did not persist). Finalizing those terminally is what strands money with
+  -- the tickets still valid; retrying them forever is what stops a run from ever completing.
+  -- A definite refusal is still terminal on the first attempt and never consumes this.
+  attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
   -- One row per order per run: a second outcome for the same order in the same run is not

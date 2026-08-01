@@ -36,7 +36,7 @@ type cancellationReport struct {
 		Failed          int `json:"failed"`
 		Pending         int `json:"pending"`
 	} `json:"counts"`
-	IncompleteAtCutoff int `json:"incomplete_at_cutoff"`
+	IncompleteAtEnumeration int `json:"incomplete_at_enumeration"`
 	Orders             []struct {
 		OrderID          string `json:"order_id"`
 		Outcome          string `json:"outcome"`
@@ -162,8 +162,8 @@ func TestEventCancellationRefundsTheBookAndIsIdempotent(t *testing.T) {
 	if report.Counts.Failed != 0 || report.Counts.Pending != 0 {
 		t.Fatalf("counts = %+v, want no failures and nothing pending", report.Counts)
 	}
-	if report.IncompleteAtCutoff != 0 {
-		t.Fatalf("incomplete_at_cutoff = %d, want 0 — every order on the slot was completed", report.IncompleteAtCutoff)
+	if report.IncompleteAtEnumeration != 0 {
+		t.Fatalf("incomplete_at_enumeration = %d, want 0 — every order on the slot was completed", report.IncompleteAtEnumeration)
 	}
 	if len(report.Orders) != 2 {
 		t.Fatalf("report rows = %d, want 2", len(report.Orders))
