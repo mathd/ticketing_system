@@ -351,6 +351,55 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("replay = %+v, want the original delta reported as a replay", upgradeReplay)
 	}
 
+	// TKT-166: the switch is ASYNCHRONOUS — commerce owes an `order.exchanged` event, the
+	// drainer publishes it, access voids the old tickets and issues the replacement in one
+	// transaction, and only then does it call back so the old capacity can be returned.
+	// Nothing above proves any of that ran; the settlement response is built before the
+	// event is even published.
+	if err := poll(30*time.Second, 250*time.Millisecond, func() error {
+		code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
+			map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
+				"actor": "coverage@example.test", "reason": "upgrade"})
+		if code != http.StatusOK {
+			return fmt.Errorf("exchange state: %d %s", code, body)
+		}
+		var state struct {
+			Status           string `json:"status"`
+			TicketsExchanged bool   `json:"tickets_exchanged"`
+		}
+		if err := json.Unmarshal(body, &state); err != nil {
+			return err
+		}
+		if !state.TicketsExchanged || state.Status != "completed" {
+			return fmt.Errorf("exchange is still %s (switched=%t)", state.Status, state.TicketsExchanged)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("the entitlement never switched: %v", err)
+	}
+
+	// And the callback itself, driven directly for its documented 2xx. Deliberately AFTER
+	// the wait above: this endpoint exists to be called once the switch has committed, and
+	// calling it before would set `tickets_exchanged_at` for a switch that had not
+	// happened — inverting in the smoke run the exact ordering it is here to protect. As a
+	// replay it must still answer 200, and both halves must report discharged.
+	code, body = internalJSON(t, http.MethodPost,
+		fmt.Sprintf("%s/internal/exchanges/%s/tickets-switched", commerceURL, upgraded.ExchangeID), "",
+		map[string]any{"organizer_id": organizerID})
+	if code != http.StatusOK {
+		t.Fatalf("tickets-switched replay: %d %s", code, body)
+	}
+	var switched struct {
+		TicketsExchanged bool `json:"tickets_exchanged"`
+		CapacityReturned bool `json:"capacity_returned"`
+	}
+	if err := json.Unmarshal(body, &switched); err != nil {
+		t.Fatal(err)
+	}
+	if !switched.TicketsExchanged || !switched.CapacityReturned {
+		t.Fatalf("switch callback = %+v, want both halves discharged", switched)
+	}
+
 	// DOWNGRADE: its own source order, since an order is reversed once. Buying the dearer
 	// type and exchanging down to the cheaper one refunds exactly the difference.
 	code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", "cov-down-reserve-"+slot,
