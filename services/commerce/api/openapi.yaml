@@ -434,7 +434,10 @@ components:
         # A bounded vocabulary, never a raw downstream body: `no_captured_money` is a
         # zero-price (comped) order, which has no money leg to refund and therefore gets
         # no reversal at all — a real gap, made visible here rather than silently skipped.
-        code: {type: string, enum: [no_captured_money, not_refundable, refund_refused, reversal_outstanding, unavailable, internal]}
+        # Must list EVERY code the ledger can store: an undeclared one fails the response
+        # validator and turns a perfectly readable report into a 500 (ADR-028).
+        # `ceiling_moved` = a staff refund moved the order's ceiling under the run.
+        code: {type: string, enum: [no_captured_money, not_refundable, refund_refused, ceiling_moved, reversal_outstanding, unavailable, internal]}
         reason: {type: string, maxLength: 500}
     CancellationRefundReport:
       type: object

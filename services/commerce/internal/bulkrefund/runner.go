@@ -31,12 +31,12 @@ type Store interface {
 	Runs(ctx context.Context, limit int) ([]store.CancellationRun, error)
 	Enumerate(ctx context.Context, org, runID uuid.UUID, batch int) (bool, error)
 	Claim(ctx context.Context, limit int, lease time.Duration) ([]store.CancellationWork, error)
-	OrderState(ctx context.Context, org, order uuid.UUID) (store.OrderCancellationState, error)
+	OrderState(ctx context.Context, org, order, ownRefund uuid.UUID) (store.OrderCancellationState, error)
 	LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error)
 	FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32, priorRun bool) error
 	ClearQuantity(ctx context.Context, w store.CancellationWork) error
 	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) error
-	Abandon(ctx context.Context, w store.CancellationWork) error
+	Abandon(ctx context.Context, w store.CancellationWork, refundAttempt bool) error
 	CompleteRuns(ctx context.Context) (int, error)
 }
 
@@ -144,7 +144,8 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 			// The context is checked per ORDER, not per batch: an interrupted runner must
 			// leave the rest of its claim reclaimable rather than half-driving it.
 			if ctx.Err() != nil {
-				r.abandon(w)
+				// Never driven, so the attempt charge comes back.
+				r.abandon(w, true)
 				continue
 			}
 			if r.process(ctx, w) {
@@ -161,10 +162,10 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 
 // abandon releases a claim without a verdict, on a context detached from the cancelled one
 // — the whole point is to record the release, and a cancelled context cannot.
-func (r *Runner) abandon(w store.CancellationWork) {
+func (r *Runner) abandon(w store.CancellationWork, refundAttempt bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
 	defer cancel()
-	if err := r.store.Abandon(ctx, w); err != nil {
+	if err := r.store.Abandon(ctx, w, refundAttempt); err != nil {
 		slog.Default().ErrorContext(ctx, "abandon cancellation claim", "order_id", w.OrderID, "err", err)
 	}
 }
@@ -178,7 +179,7 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 		if p.terminal {
 			return r.finalize(ctx, w, p.outcome)
 		}
-		return r.record(ctx, w, p.outcome)
+		return r.record(ctx, w, p.outcome, false)
 	}
 
 	result, err := r.refunder.Refund(ctx, store.RefundRequest{
@@ -202,11 +203,15 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 			// something recomputes it, and a refusal is terminal. The first version of this
 			// fix cleared the quantity and then finalized anyway, which stranded exactly the
 			// refundable tickets it was meant to rescue.
-			return r.record(ctx, w, failure("ceiling_moved", err.Error()))
+			return r.record(ctx, w, failure("ceiling_moved", err.Error()), true)
 		}
-		return r.record(ctx, w, failure(refundFailureCode(err), err.Error()))
+		return r.record(ctx, w, failure(refundFailureCode(err), err.Error()), true)
 	}
-	return r.record(ctx, w, r.classify(ctx, w, p, result))
+	out, terminal := r.classify(ctx, w, p, result)
+	if terminal {
+		return r.finalize(ctx, w, out)
+	}
+	return r.record(ctx, w, out, true)
 }
 
 // record commits a verdict — unless the verdict is one that must not stick.
@@ -218,11 +223,14 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 // failure — one where the money may already have moved — is retried within the run until
 // maxAttempts, because a terminal verdict on it leaves money gone with the tickets still
 // valid and nothing driving the reversal.
-func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) bool {
+func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, drove bool) bool {
 	// An interruption releases the claim immediately: a successor should pick the row up
-	// now, not after a lease it never used.
+	// now, not after a lease it never used. The attempt charge comes back only if the
+	// refund unit was never called — a claim released after real money-path work keeps it,
+	// or a cancellation window recurring at exactly that point would hold the row below the
+	// cap forever and its run would never complete.
 	if ctx.Err() != nil {
-		r.abandon(w)
+		r.abandon(w, !drove)
 		return false
 	}
 	// A retryable failure deliberately does NOT release the claim. Leaving the lease in
@@ -262,13 +270,36 @@ func retryable(out store.CancellationOutcome) bool {
 //     crash between the fix and the bind;
 //  3. only then, the order's remaining quantity.
 func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, key string) plan {
+	refundID := store.RefundID(w.OrganizerID, key)
 	if w.RequestedQuantity.Valid {
 		// A resumed attempt. The attribution comes from the row, not from re-deriving it:
 		// a lookup here cannot tell "a previous run refunded this" from "this run did,
 		// before it was interrupted".
-		return plan{quantity: w.RequestedQuantity.Int32, priorRun: w.PriorRun}
+		p := plan{quantity: w.RequestedQuantity.Int32, priorRun: w.PriorRun}
+		if _, bound, err := r.store.LookupRefund(ctx, w.OrganizerID, refundID); err == nil && bound {
+			// A bound refund vouches for the number: it is already in that refund's
+			// request fingerprint, so it must not be second-guessed.
+			return p
+		}
+		// Nothing is bound under it, so the number is only a note this run left itself —
+		// and it may be stale, because the ceiling can move between fixing it and binding.
+		// Re-validate rather than resubmitting it forever: a clear that failed transiently
+		// would otherwise make every successor repeat the same oversized request until the
+		// budget ran out, permanently under-refunding the order.
+		state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID, refundID)
+		if err != nil {
+			return decidedPlan(failure("internal", "read order state"))
+		}
+		if remaining := state.SoldQuantity - state.RefundedQuantity; remaining < p.quantity {
+			if err := r.store.ClearQuantity(ctx, w); err != nil {
+				return decidedPlan(failure("internal", "clear stale refund quantity"))
+			}
+			w.RequestedQuantity.Valid = false
+			return r.resolveQuantity(ctx, w, key)
+		}
+		return p
 	}
-	existing, found, err := r.store.LookupRefund(ctx, w.OrganizerID, store.RefundID(w.OrganizerID, key))
+	existing, found, err := r.store.LookupRefund(ctx, w.OrganizerID, refundID)
 	if err != nil {
 		return decidedPlan(failure("internal", "read existing cancellation refund"))
 	}
@@ -289,7 +320,7 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 		return plan{quantity: existing.Quantity, priorRun: priorRun}
 	}
 
-	state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID)
+	state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID, refundID)
 	if err != nil {
 		return decidedPlan(failure("internal", "read order state"))
 	}
@@ -343,10 +374,13 @@ func terminalPlan(out store.CancellationOutcome) plan {
 
 // classify reads the order back and decides the verdict from what is actually true, not
 // from what the refund call returned. A success requires EVERY obligation discharged.
-func (r *Runner) classify(ctx context.Context, w store.CancellationWork, p plan, result refunds.Result) store.CancellationOutcome {
-	state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID)
+// classify decides the verdict from what is actually true afterwards, not from what the
+// refund call returned. The second result reports that the verdict cannot be improved by
+// retrying, so it is finalized rather than left for another attempt.
+func (r *Runner) classify(ctx context.Context, w store.CancellationWork, p plan, result refunds.Result) (store.CancellationOutcome, bool) {
+	state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID, result.Refund.ID)
 	if err != nil {
-		return failure("internal", "read order state after refund")
+		return failure("internal", "read order state after refund"), false
 	}
 	out := store.CancellationOutcome{
 		RefundID:         result.Refund.ID,
@@ -370,26 +404,39 @@ func (r *Runner) classify(ctx context.Context, w store.CancellationWork, p plan,
 		if p.priorRun {
 			out.Outcome = "already_refunded"
 		}
+		return out, false
 	case out.MoneyRefunded:
 		out.Outcome = "failed"
 		out.FailureCode, out.FailureReason = "reversal_outstanding", "the money was returned but a reversal obligation is outstanding"
+		if state.OwnOutstanding == 0 {
+			// Only a FOREIGN obligation is left — this run's own refund is fully
+			// discharged. Replaying it would re-drive nothing, so five retries would be
+			// five reads and a wait before failing anyway.
+			out.FailureReason = "the money was returned but another refund's reversal obligation is outstanding"
+			return out, true
+		}
+		return out, false
 	default:
 		out.Outcome = "failed"
 		out.FailureCode, out.FailureReason = "refund_refused", "the refund did not return the whole order"
+		return out, false
 	}
-	return out
 }
 
 func (r *Runner) finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) bool {
 	// Detached: a verdict reached just as the context ended is still a verdict, and losing
 	// it would make the next pass re-drive an order whose money already moved.
 	// A verdict reached just as the context ended is still a verdict, and losing a SUCCESS
-	// would re-drive an order whose money already moved — so the write is detached. But a
-	// FAILURE decided in that same window may have been caused by the shutdown itself, and
-	// committing it makes a permanent failure out of an interruption. Re-checked here
-	// because the check in `record` and this write are not atomic.
+	// would re-drive an order whose money already moved — so the write is detached. A FAILURE
+	// decided in that window may instead have been caused by the shutdown, so it is re-checked
+	// here, `record`'s check and this write not being atomic.
+	//
+	// This NARROWS the window; it does not close it, and no check-then-write can. What makes
+	// that acceptable is which failures can slip through: one caused by the shutdown surfaces
+	// as a context error and is handled in `process` before ever reaching here, so a failure
+	// that survives both checks is a genuine one, and committing it is correct.
 	if ctx.Err() != nil && out.Outcome == "failed" {
-		r.abandon(w)
+		r.abandon(w, false)
 		return false
 	}
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

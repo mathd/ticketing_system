@@ -27,8 +27,8 @@ func (d DBStore) Claim(ctx context.Context, limit int, lease time.Duration) ([]s
 	return store.ClaimCancellationOrders(ctx, d.DB, limit, lease)
 }
 
-func (d DBStore) OrderState(ctx context.Context, org, order uuid.UUID) (store.OrderCancellationState, error) {
-	return store.ReadOrderCancellationState(ctx, d.DB, org, order)
+func (d DBStore) OrderState(ctx context.Context, org, order, ownRefund uuid.UUID) (store.OrderCancellationState, error) {
+	return store.ReadOrderCancellationState(ctx, d.DB, org, order, ownRefund)
 }
 
 func (d DBStore) LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error) {
@@ -47,8 +47,8 @@ func (d DBStore) Finalize(ctx context.Context, w store.CancellationWork, out sto
 	return store.FinalizeCancellationOrder(ctx, d.DB, w, out)
 }
 
-func (d DBStore) Abandon(ctx context.Context, w store.CancellationWork) error {
-	return store.AbandonCancellationClaim(ctx, d.DB, w)
+func (d DBStore) Abandon(ctx context.Context, w store.CancellationWork, refundAttempt bool) error {
+	return store.AbandonCancellationClaim(ctx, d.DB, w, refundAttempt)
 }
 
 func (d DBStore) CompleteRuns(ctx context.Context) (int, error) {

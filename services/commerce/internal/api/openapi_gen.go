@@ -13,6 +13,7 @@ import (
 
 // Defines values for CancellationRefundFailureCode.
 const (
+	CeilingMoved        CancellationRefundFailureCode = "ceiling_moved"
 	Internal            CancellationRefundFailureCode = "internal"
 	NoCapturedMoney     CancellationRefundFailureCode = "no_captured_money"
 	NotRefundable       CancellationRefundFailureCode = "not_refundable"
@@ -24,6 +25,8 @@ const (
 // Valid indicates whether the value is a known member of the CancellationRefundFailureCode enum.
 func (e CancellationRefundFailureCode) Valid() bool {
 	switch e {
+	case CeilingMoved:
+		return true
 	case Internal:
 		return true
 	case NoCapturedMoney:

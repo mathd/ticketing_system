@@ -471,17 +471,22 @@ func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWo
 // AbandonCancellationClaim releases a lease without a verdict, so an interrupted runner's
 // work is reclaimable immediately rather than after the lease expires. Context cancellation
 // is an interruption, never a business outcome.
-func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWork) error {
+func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWork, refundAttempt bool) error {
 	// The attempt charge is REFUNDED with the claim. Attempts are charged at claim time, so
 	// a row claimed and released without being driven — a shutdown, a lapsed lease — would
 	// otherwise spend its whole retry budget on work that never happened, and its first real
 	// ambiguous failure would arrive already exhausted. Recovery's AbandonRecoveryClaim does
 	// the same for the same reason.
+	// Only an UNDRIVEN claim gets its charge back. A claim released after the refund unit was
+	// already called has done real money-path work, and refunding its attempt would let a
+	// cancellation window that recurs at exactly that point keep the row below the cap
+	// forever — so the run would never complete and its report never become readable.
 	_, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders
-		SET claim_id=NULL, lease_until=NULL, attempts = greatest(attempts - 1, 0)
+		SET claim_id=NULL, lease_until=NULL,
+		    attempts = CASE WHEN $5 THEN greatest(attempts - 1, 0) ELSE attempts END
 		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL`,
-		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID)
+		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, refundAttempt)
 	return err
 }
 

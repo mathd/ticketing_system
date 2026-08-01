@@ -90,7 +90,7 @@ func (f *fakeStore) Claim(_ context.Context, limit int, _ time.Duration) ([]stor
 	return out, nil
 }
 
-func (f *fakeStore) OrderState(_ context.Context, _, order uuid.UUID) (store.OrderCancellationState, error) {
+func (f *fakeStore) OrderState(_ context.Context, _, order, _ uuid.UUID) (store.OrderCancellationState, error) {
 	o, ok := f.orders[order]
 	if !ok {
 		return store.OrderCancellationState{}, errors.New("no such order")
@@ -148,11 +148,11 @@ func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out st
 	return nil
 }
 
-func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork) error {
+func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork, refundAttempt bool) error {
 	f.abandon[w.OrderID]++
 	delete(f.leased, w.OrderID)
-	// Mirrors the store: the attempt charge is refunded with the claim.
-	if f.attempts[w.OrderID] > 0 {
+	// Mirrors the store: only an UNDRIVEN claim gets its charge back.
+	if refundAttempt && f.attempts[w.OrderID] > 0 {
 		f.attempts[w.OrderID]--
 	}
 	return nil
@@ -564,31 +564,36 @@ func TestCeilingMovingUnderTheRunnerClearsTheFixedQuantity(t *testing.T) {
 	}
 }
 
-// Review pass 2, finding 3: attempts are charged at CLAIM time, so a row claimed and
-// released without being driven — a shutdown, a lapsed lease — must get its charge back.
-// Otherwise a row can arrive at its first real ambiguous failure with the budget already
-// spent on work that never happened.
-func TestAbandoningAClaimRefundsItsAttempt(t *testing.T) {
+// Attempts are charged at CLAIM time, so the charge must come back when a claim is released
+// WITHOUT being driven — a shutdown between claim and work, a lapsed lease. Otherwise a row
+// arrives at its first real ambiguous failure with the budget spent on work that never
+// happened. But a claim released AFTER the refund unit was called keeps its charge: refunding
+// that would let a cancellation window recurring at exactly that point hold the row below the
+// cap forever, so the run would never complete and its report never become readable.
+func TestOnlyAnUndrivenClaimGetsItsAttemptBack(t *testing.T) {
 	f := newFakeStore()
-	order := uuid.New()
-	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000)}
-	f.work = append(f.work, work(order))
+	driven, undriven := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{driven, undriven} {
+		f.orders[id] = &fakeOrder{state: completedOrder(1, 1000)}
+		f.work = append(f.work, work(id))
+	}
 
-	// Cancelled DURING the refund, so the row is genuinely claimed (charging an attempt)
-	// and then released. A context cancelled before the pass starts would never claim at
-	// all, and the assertion below would hold for the wrong reason.
+	// Cancel the instant the FIRST order's refund succeeds: that claim was driven, and the
+	// second is then released at the top of the loop, before the refund unit is ever called
+	// for it.
 	ctx, cancel := context.WithCancel(context.Background())
-	stop := &cancelAfter{n: 0, cancel: cancel, inner: newFakeRefunder(f)}
+	stop := &cancelAfterSuccess{cancel: cancel, inner: newFakeRefunder(f)}
 	New(f, stop, time.Minute, 10, time.Minute).RunOnce(ctx)
 
-	if f.abandon[order] == 0 {
-		t.Fatal("the interrupted row was not released — the test is not exercising the refund")
+	if f.abandon[undriven] == 0 {
+		t.Fatal("the undriven claim was not released")
 	}
-	if f.attempts[order] != 0 {
-		t.Fatalf("attempts = %d after an undriven claim, want the charge refunded to 0", f.attempts[order])
+	if f.attempts[undriven] != 0 {
+		t.Fatalf("undriven claim kept %d attempt(s); the charge must come back", f.attempts[undriven])
 	}
-	if _, terminal := f.final[order]; terminal {
-		t.Fatalf("an interruption was committed as a verdict: %+v", f.final[order])
+	if f.attempts[driven] == 0 && f.abandon[driven] > 0 {
+		t.Fatal("a claim released after the refund unit ran got its charge back; a recurring " +
+			"cancellation there would hold the row below the cap forever")
 	}
 }
 

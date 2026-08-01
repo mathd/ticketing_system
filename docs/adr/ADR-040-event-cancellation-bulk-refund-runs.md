@@ -161,6 +161,10 @@ starting another run — which §3 makes safe.
   both read before either binds will both record "no prior run". In every case both reports agree the
   money came back and every obligation is discharged, which is the property that matters — the
   disagreement is only over which run gets the credit.
+- **A verdict can still be committed microseconds after the context ends.** The check and the
+  write are not atomic and no check-then-write can be. It is acceptable because of *which* failures
+  survive both checks: one caused by the shutdown surfaces as a context error and is handled before
+  the write is reached, so what gets through is a genuine failure that deserves committing.
 - **A claimant whose lease lapsed can still be in flight while its successor works.** Both derive the
   same refund key (§3), so they converge on one refund and cannot double-refund; the loser's verdict
   is dropped by the claim fence. What is not guaranteed is which of the two verdicts is recorded.

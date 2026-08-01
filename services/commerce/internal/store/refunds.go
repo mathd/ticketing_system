@@ -273,6 +273,11 @@ type OrderCancellationState struct {
 	// operator to chase work that is already done (ADR-038 §6: independent obligations).
 	VoidingOutstanding  int
 	CapacityOutstanding int
+	// OwnOutstanding counts obligations on the caller's OWN refund (the one whose id it
+	// passed). Only those are repairable by retrying — replaying that refund re-drives
+	// them. An obligation on someone else's refund needs that refund's idempotency key,
+	// which this row does not have, so retrying it is pure waste.
+	OwnOutstanding int
 }
 
 // Outstanding reports whether either obligation is still owed.
@@ -282,7 +287,7 @@ func (s OrderCancellationState) Outstanding() bool {
 
 // ReadOrderCancellationState reads an order's refund position for the bulk runner, scoped
 // by organizer through the reservation — `orders` carries no organizer_id of its own.
-func ReadOrderCancellationState(ctx context.Context, db *sql.DB, org, order uuid.UUID) (OrderCancellationState, error) {
+func ReadOrderCancellationState(ctx context.Context, db *sql.DB, org, order, ownRefund uuid.UUID) (OrderCancellationState, error) {
 	var s OrderCancellationState
 	if err := db.QueryRowContext(ctx, `
 		SELECT r.quantity, r.unit_amount, r.currency, o.status, o.refunded_quantity, o.refunded_amount, o.refund_status
@@ -294,10 +299,11 @@ func ReadOrderCancellationState(ctx context.Context, db *sql.DB, org, order uuid
 	}
 	if err := db.QueryRowContext(ctx, `
 		SELECT count(*) FILTER (WHERE tickets_voided_at IS NULL),
-		       count(*) FILTER (WHERE capacity_returned_at IS NULL)
+		       count(*) FILTER (WHERE capacity_returned_at IS NULL),
+		       count(*) FILTER (WHERE id=$3 AND (tickets_voided_at IS NULL OR capacity_returned_at IS NULL))
 		FROM order_refunds
-		WHERE organizer_id=$1 AND order_id=$2 AND status='completed'`, org, order).
-		Scan(&s.VoidingOutstanding, &s.CapacityOutstanding); err != nil {
+		WHERE organizer_id=$1 AND order_id=$2 AND status='completed'`, org, order, ownRefund).
+		Scan(&s.VoidingOutstanding, &s.CapacityOutstanding, &s.OwnOutstanding); err != nil {
 		return OrderCancellationState{}, err
 	}
 	return s, nil
