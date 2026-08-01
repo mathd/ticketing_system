@@ -4,7 +4,7 @@
   "parent": "TKT-9",
   "classification": "complex",
   "summary": "US-O3b: An exchange switches the entitlement — old tickets out, new tickets in",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
