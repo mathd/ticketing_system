@@ -103,6 +103,26 @@ paths:
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/exchanges/{id}/tickets-switched:
+    post:
+      operationId: exchangeTicketsSwitched
+      summary: Access reports that an exchange's entitlement switch has committed
+      # TKT-166 / ADR-038 §1, ADR-039 §6. Access calls this AFTER its switch transaction
+      # commits. Commerce records `tickets_exchanged_at` and only THEN returns the old
+      # capacity to inventory: freeing capacity while the old tickets still admit is the
+      # one ordering that can oversell, and this call is the evidence it was honoured.
+      #
+      # Idempotent — a lost response is retried by an unacknowledged JetStream message,
+      # and both the marker and inventory's receipt absorb the repeat.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExchangeSwitched'}}}}
+      responses:
+        '200': {description: Switch recorded and old capacity returned, content: {application/json: {schema: {$ref: '#/components/schemas/ExchangeSwitchResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail
@@ -254,7 +274,7 @@ components:
     Exchange:
       type: object
       additionalProperties: false
-      required: [exchange_id, source_order_id, replacement_order_id, quantity, source_total, target_total, delta_amount, currency, status, tickets_exchanged, replay]
+      required: [exchange_id, source_order_id, replacement_order_id, quantity, source_total, target_total, delta_amount, currency, status, tickets_exchanged, capacity_returned, replay]
       properties:
         exchange_id: {type: string, format: uuid}
         source_order_id: {type: string, format: uuid}
@@ -268,9 +288,29 @@ components:
         currency: {type: string}
         # switch_pending means the money is settled and the buyer still holds valid OLD
         # tickets. It is a real, safe, durable state — not an error (TKT-166 closes it).
-        status: {type: string, enum: [switch_pending, completed]}
+        # capacity_pending is switched-but-under-selling: the old tickets have stopped
+        # admitting and the old capacity has not come back yet. It is a real, retryable
+        # substate, and reporting it as `completed` hid an under-selling exchange (TKT-166).
+        status: {type: string, enum: [switch_pending, capacity_pending, completed]}
         tickets_exchanged: {type: boolean}
+        capacity_returned: {type: boolean}
         replay: {type: boolean}
+    ExchangeSwitched:
+      type: object
+      additionalProperties: false
+      required: [organizer_id]
+      properties: {organizer_id: {type: string, format: uuid}}
+    ExchangeSwitchResult:
+      type: object
+      additionalProperties: false
+      required: [exchange_id, tickets_exchanged, capacity_returned]
+      properties:
+        exchange_id: {type: string, format: uuid}
+        tickets_exchanged: {type: boolean}
+        # False only if the capacity return did not land — which is a retryable substate,
+        # not a failure of the switch. The switch is committed either way, and it is the
+        # half that had to happen first.
+        capacity_returned: {type: boolean}
     DeliveryEmail:
       type: object
       additionalProperties: false

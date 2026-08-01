@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,7 +289,8 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("exchange source checkout: %d %s", code, body)
 	}
 	var exchangeSource struct {
-		OrderID string `json:"order_id"`
+		OrderID       string `json:"order_id"`
+		GuestOrderRef string `json:"guest_order_ref"`
 	}
 	if err := json.Unmarshal(body, &exchangeSource); err != nil {
 		t.Fatal(err)
@@ -349,6 +351,111 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	}
 	if !upgradeReplay.Replay || upgradeReplay.DeltaAmount != upgraded.DeltaAmount {
 		t.Fatalf("replay = %+v, want the original delta reported as a replay", upgradeReplay)
+	}
+
+	// TKT-166: the switch is ASYNCHRONOUS — commerce owes an `order.exchanged` event, the
+	// drainer publishes it, access voids the old tickets and issues the replacement in one
+	// transaction, and only then does it call back so the old capacity can be returned.
+	// Nothing above proves any of that ran; the settlement response is built before the
+	// event is even published.
+	if err := poll(30*time.Second, 250*time.Millisecond, func() error {
+		code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
+			map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
+				"actor": "coverage@example.test", "reason": "upgrade"})
+		if code != http.StatusOK {
+			return fmt.Errorf("exchange state: %d %s", code, body)
+		}
+		var state struct {
+			Status           string `json:"status"`
+			TicketsExchanged bool   `json:"tickets_exchanged"`
+		}
+		if err := json.Unmarshal(body, &state); err != nil {
+			return err
+		}
+		if !state.TicketsExchanged || state.Status != "completed" {
+			return fmt.Errorf("exchange is still %s (switched=%t)", state.Status, state.TicketsExchanged)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("the entitlement never switched: %v", err)
+	}
+
+	// And the callback itself, driven directly for its documented 2xx. Deliberately AFTER
+	// the wait above: this endpoint exists to be called once the switch has committed, and
+	// calling it before would set `tickets_exchanged_at` for a switch that had not
+	// happened — inverting in the smoke run the exact ordering it is here to protect. As a
+	// replay it must still answer 200, and both halves must report discharged.
+	code, body = internalJSON(t, http.MethodPost,
+		fmt.Sprintf("%s/internal/exchanges/%s/tickets-switched", commerceURL, upgraded.ExchangeID), "",
+		map[string]any{"organizer_id": organizerID})
+	if code != http.StatusOK {
+		t.Fatalf("tickets-switched replay: %d %s", code, body)
+	}
+	var switched struct {
+		TicketsExchanged bool `json:"tickets_exchanged"`
+		CapacityReturned bool `json:"capacity_returned"`
+	}
+	if err := json.Unmarshal(body, &switched); err != nil {
+		t.Fatal(err)
+	}
+	if !switched.TicketsExchanged || !switched.CapacityReturned {
+		t.Fatalf("switch callback = %+v, want both halves discharged", switched)
+	}
+
+	// ai-review pass 2 F2, verified through the SSR layer rather than asserted about it.
+	//
+	// The replacement tickets share the SOURCE order's guest reference deliberately, so this
+	// one link now carries both the voided originals and the live replacements. Rendering
+	// every one of them as an identically numbered QR is how a buyer ends up at the gate
+	// finding out which two work. The page must suppress the dead ones — and it must still
+	// render, because the code path that decides this only runs for buyers who exchanged.
+	if err := poll(20*time.Second, 250*time.Millisecond, func() error {
+		code, body, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+exchangeSource.GuestOrderRef+"/tickets")
+		if code != http.StatusOK {
+			return fmt.Errorf("ticket bundle %d %s", code, body)
+		}
+		var bundle struct {
+			Tickets []struct {
+				History []struct {
+					Type string `json:"type"`
+				} `json:"history"`
+			} `json:"tickets"`
+		}
+		if err := json.Unmarshal(body, &bundle); err != nil {
+			return err
+		}
+		var voided, live int
+		for _, tk := range bundle.Tickets {
+			isVoid := false
+			for _, e := range tk.History {
+				if e.Type == "exchanged" {
+					isVoid = true
+				}
+			}
+			if isVoid {
+				voided++
+			} else {
+				live++
+			}
+		}
+		if voided == 0 || live == 0 {
+			return fmt.Errorf("bundle has %d voided and %d live tickets, want both under one reference", voided, live)
+		}
+		// The page itself, server-rendered: it must come back 200 and it must show one QR
+		// per LIVE ticket, not one per ticket.
+		pageCode, page := get(t, gatewayURL+"/en/tickets/"+exchangeSource.GuestOrderRef, nil)
+		if pageCode != http.StatusOK {
+			return fmt.Errorf("ticket page %d", pageCode)
+		}
+		if qrs := strings.Count(string(page), "<img"); qrs != live {
+			return fmt.Errorf("ticket page renders %d QR images for %d live and %d voided tickets", qrs, live, voided)
+		}
+		if !strings.Contains(string(page), "No longer valid") {
+			return fmt.Errorf("ticket page does not tell the buyer the exchanged tickets are dead")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("buyer ticket page after an exchange: %v", err)
 	}
 
 	// DOWNGRADE: its own source order, since an order is reversed once. Buying the dearer

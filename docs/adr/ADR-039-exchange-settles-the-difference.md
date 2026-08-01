@@ -51,6 +51,32 @@ Seatedness is **any** `claim_seats` row, released or not — the rule TKT-161's 
 `claims.status` and `claim_seats.released_at` are not schema-coupled, so a seated claim whose rows
 were already released is representable and is still seated.
 
+**Qualification (TKT-166): "every refusal" is not every refusal.** This clause does not cover a
+source ticket that has **already been redeemed**. Commerce checks seatedness, currency and
+availability; nothing asks access whether the old tickets have been used. So a buyer can exchange,
+scan in during `switch_pending`, and then have the used ticket voided and a fresh unredeemed
+replacement issued — **two admissions for one exchange**. The window is normally short and grows
+with any delay in the switch.
+
+**TKT-166's ai-review reversed the first answer here, and the reversal is the interesting part.**
+The plan proposed switching anyway and merely documenting the gap, reasoning that refusing would
+strand a paid exchange. The review pointed out that the gap is *created* by that ticket — TKT-158
+could not produce it, because it never switched anything — and that a follow-up ticket does not make
+a shipped double-admission un-shipped.
+
+So the switch now **refuses a source ticket that has already been admitted**
+(`ErrSourceTicketsAlreadyAdmitted`, checked under the same row lock as the void, covering both
+`redeemed` and a pass `entry`). The cost is a settled exchange that never switches — which is not a
+new failure state at all: it is exactly what TKT-158 shipped for *every* exchange. The refusal keeps
+that previously-safe behaviour for the one case where switching is unsafe, and the outstanding
+obligation is visible as `tickets_exchanged_at IS NULL`.
+
+That is a safe default, not the answer. Whether a used ticket should be exchangeable **at all** —
+refused before the money moves — or whether the entry should **carry forward** to the replacement,
+which is not even binary for a multi-entry pass (ADR-005), is a product decision nobody has taken.
+**TKT-169** owns it. Until then this clause reads: every refusal this ADR *enumerates* happens
+before money moves, and the one it does not enumerate happens after, by refusing the switch.
+
 ### 3. `switch_pending` is a real, safe, durable state
 
 This slice ends with the delta settled and the replacement order confirmed, while **the buyer still
@@ -67,6 +93,28 @@ The four orderings rejected to arrive at it:
 Progress is nullable timestamps (`settled_at`, `tickets_exchanged_at`), the shape ADR-038 §6
 settled on, with a CHECK refusing a switch that precedes settlement. Independent storage,
 **safety-ordered execution** — the correction ADR-038 §6 itself had to make.
+
+### 3b. The switch commits, then the capacity comes back — and the marker precedes both (TKT-166)
+
+Access commits its switch transaction, then calls commerce
+(`POST /internal/exchanges/{id}/tickets-switched`). Commerce records `tickets_exchanged_at` and
+only **then** asks inventory to return the old capacity. Freeing capacity while the old tickets
+still admit is the one ordering that can **oversell** ([ADR-038 §1](./ADR-038-refund-reversal-ticket-voiding.md)),
+and the callback is what makes that ordering checkable across a boundary the databases do not share.
+
+The marker is set **before** the inventory call, not after. Marking after would invert the evidence:
+a crash could free capacity while the row still claimed the switch never happened. Marking first
+leaves the opposite substate — switched, capacity outstanding — which under-sells and is visible.
+
+Naming that substate needs a **third** timestamp, `capacity_returned_at`, added in migration 0011.
+0010 shipped two, which was one short: the reversal has three facts, and the third is separated from
+the second by a network call. `order_refunds` already carries this column for the same reason
+([ADR-038 §6](./ADR-038-refund-reversal-ticket-voiding.md)); a state the projection cannot express
+is strictly worse than a nullable column.
+
+This is an **honest-caller** guarantee, not tamper-evidence ([ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)):
+anyone holding the internal token can call inventory directly and skip all of it. The adversary here
+is a crash, not a writer.
 
 ### 4. The replacement order deliberately owes no issuance event
 
@@ -89,11 +137,24 @@ Note the distinction from the draft's own rejection of "a new event *followed by
 issuance": that is non-atomic and correctly rejected. This is a new event **instead of** ordinary
 issuance for the exchange path, which is atomic in one access transaction.
 
+**Settlement and the owed event commit together (TKT-166).** `CompleteExchangeSettlement` sets
+`settled_at` and inserts the `order.exchanged` outbox row in one transaction, freezing the bytes at
+the persisted `settled_at` so a republish cannot differ. This is [ADR-016](./ADR-016-checkout-recovery-state-machine.md)
+§Decision 6's rule applied to a second subject, and it matters more here than for `order.completed`:
+because §4 leaves the replacement owing no completion event, this row is the **only** thing that
+will ever issue its tickets. A settlement that committed without it would be a permanent
+`switch_pending` no retry could notice.
+
 ### 6. An order is reversed once
 
 A refund and an exchange both take the source order's row lock, and each refuses an order the other
-already owns. A partial unique index on `source_order_id` enforces one exchange per order under
+already owns. A unique index on `source_order_id` enforces one exchange per order under
 concurrency — a read either path could lose is not enough.
+
+**Correction (TKT-166).** This clause said *partial* unique index; migration 0010 creates an
+unconditional one, and the code is right. A partial index would need a predicate, and there is
+nothing to predicate on: an exchange has no cancelled or inactive state, so every row is live. The
+prose described a hedge the design does not need and does not have.
 
 ## Consequences
 

@@ -240,7 +240,10 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 			// TKT-157: the Decision value is already the wire reason, and
 			// ScanRejected.reason is an unconstrained string by design — no
 			// contract change is needed to carry it.
-			store.DecisionRefunded:
+			store.DecisionRefunded,
+			// TKT-166: likewise, and deliberately a different reason string —
+			// "refunded" would send an exchanging buyer looking for money back.
+			store.DecisionExchanged:
 			reason = string(result.Decision)
 		}
 		// No cryptographic detail leaves the gate: which field failed to verify

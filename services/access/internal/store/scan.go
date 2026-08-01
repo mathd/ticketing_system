@@ -102,6 +102,17 @@ func (p *Postgres) admitPass(ctx context.Context, in RedeemInput, direction Admi
 		}
 		return RedeemResult{Decision: DecisionRefunded, OccurredAt: p.now()}, nil
 	}
+	// And the exchange verdict, in the same position (TKT-166, ADR-039).
+	exchanged, err := ticketExchanged(ctx, tx, in.TicketID)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	if exchanged {
+		if err = tx.Commit(); err != nil {
+			return RedeemResult{}, err
+		}
+		return RedeemResult{Decision: DecisionExchanged, OccurredAt: p.now()}, nil
+	}
 
 	// A chain that does not verify takes the unchanged §D6 posture for
 	// ENTRIES — admit once, alarm, deny later distinct occurrences. Policy

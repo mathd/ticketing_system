@@ -290,7 +290,7 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	if err != nil || current != 7 || target != 7 {
+	if err != nil || current != 8 || target != 8 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 

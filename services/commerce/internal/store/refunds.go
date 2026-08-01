@@ -44,15 +44,15 @@ type RefundRequest struct {
 
 // Refund is a durable refund attempt.
 type Refund struct {
-	ID               uuid.UUID
-	OrderID          uuid.UUID
-	OrganizerID      uuid.UUID
-	Quantity         int32
-	UnitAmount       int64
-	Amount           int64
-	Currency         string
-	Status           string
-	Completed        bool
+	ID          uuid.UUID
+	OrderID     uuid.UUID
+	OrganizerID uuid.UUID
+	Quantity    int32
+	UnitAmount  int64
+	Amount      int64
+	Currency    string
+	Status      string
+	Completed   bool
 	// TicketsVoided reports whether the ticket-voiding half of the reversal has been
 	// discharged (TKT-157). Money and reversal are tracked separately on purpose: a
 	// refund whose money moved but whose tickets are still valid is a real state, and
@@ -65,7 +65,7 @@ type Refund struct {
 	CapacityReturned bool
 	// HoldID is the inventory claim the reservation holds — the thing capacity is
 	// returned against.
-	HoldID uuid.UUID
+	HoldID           uuid.UUID
 	BuyerID          uuid.UUID
 	PaymentFactID    uuid.UUID
 	RefundedQty      int32

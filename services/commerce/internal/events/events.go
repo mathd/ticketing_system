@@ -26,6 +26,57 @@ type OrderCompletedData struct {
 	Quantity      int32     `json:"quantity"`
 }
 
+// SubjectOrderExchanged carries an exchange whose money has settled and whose
+// entitlement has not yet switched (TKT-166, ADR-039 §5).
+//
+// It is a NEW SUBJECT rather than `order.completed` schema 2. Bumping the completed
+// schema would drag ADR-017's skew rules across the issuance path every consumer already
+// depends on, to describe an event most of them will never see — and TKT-61 shipped that
+// exact ordering bug twice. A new subject cannot break `order.completed`'s decode at all.
+//
+// It is also not "an event followed by ordinary issuance": the replacement order
+// deliberately owes no `order.completed`, so this event is the SOLE trigger that issues
+// its tickets, and the consumer voids the old ones in the same transaction. Anything
+// looser reopens the both-admit window (ADR-039 §3).
+const SubjectOrderExchanged = "platform.commerce.order.exchanged"
+
+// OrderExchangedData names both sides of the switch: the source order whose tickets are
+// voided, and the replacement line whose tickets are issued.
+//
+// GuestOrderRef is the SOURCE order's reference, not the replacement's. The buyer's link
+// is a capability they already hold and have possibly already been emailed; reusing it
+// means the old and new tickets appear together under one link. The replacement commerce
+// order keeps its own (nullable, unset) reference — `orders.guest_order_ref` is unique,
+// so it could not have carried the source's even if that were wanted.
+type OrderExchangedData struct {
+	ExchangeID         uuid.UUID `json:"exchange_id"`
+	SourceOrderID      uuid.UUID `json:"source_order_id"`
+	ReplacementOrderID uuid.UUID `json:"replacement_order_id"`
+	GuestOrderRef      uuid.UUID `json:"guest_order_ref"`
+	OrganizerID        uuid.UUID `json:"organizer_id"`
+	BuyerID            uuid.UUID `json:"buyer_id"`
+	SlotID             uuid.UUID `json:"slot_id"`
+	TicketTypeID       uuid.UUID `json:"ticket_type_id"`
+	Quantity           int32     `json:"quantity"`
+}
+
+// ExchangedEventID derives the deterministic id from the exchange, so a republish of the
+// frozen bytes dedupes at the broker on Nats-Msg-Id.
+func ExchangedEventID(exchangeID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(SubjectOrderExchanged+":"+exchangeID.String()))
+}
+
+// OrderExchangedEnvelope is the ONE definition of these bytes, as
+// OrderCompletedEnvelope is for its subject: the settlement transaction freezes what it
+// returns and the drainer publishes that verbatim.
+func OrderExchangedEnvelope(id uuid.UUID, data OrderExchangedData, occurred time.Time) ([]byte, error) {
+	body, err := json.Marshal(domainevent.Envelope[OrderExchangedData]{ID: id, Type: SubjectOrderExchanged, OccurredAt: occurred, Schema: 1, Data: data})
+	if err != nil {
+		return nil, fmt.Errorf("marshal order exchanged: %w", err)
+	}
+	return body, nil
+}
+
 type Publisher interface {
 	OrderCompleted(context.Context, OrderCompletedData) error
 	// PublishRaw transmits an already-frozen envelope. Callers holding committed

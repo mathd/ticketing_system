@@ -13,13 +13,16 @@ import (
 
 // Defines values for ExchangeStatus.
 const (
-	ExchangeStatusCompleted     ExchangeStatus = "completed"
-	ExchangeStatusSwitchPending ExchangeStatus = "switch_pending"
+	ExchangeStatusCapacityPending ExchangeStatus = "capacity_pending"
+	ExchangeStatusCompleted       ExchangeStatus = "completed"
+	ExchangeStatusSwitchPending   ExchangeStatus = "switch_pending"
 )
 
 // Valid indicates whether the value is a known member of the ExchangeStatus enum.
 func (e ExchangeStatus) Valid() bool {
 	switch e {
+	case ExchangeStatusCapacityPending:
+		return true
 	case ExchangeStatusCompleted:
 		return true
 	case ExchangeStatusSwitchPending:
@@ -85,6 +88,7 @@ type Error struct {
 
 // Exchange defines model for Exchange.
 type Exchange struct {
+	CapacityReturned   bool               `json:"capacity_returned"`
 	Currency           string             `json:"currency"`
 	DeltaAmount        int64              `json:"delta_amount"`
 	ExchangeId         openapi_types.UUID `json:"exchange_id"`
@@ -107,6 +111,18 @@ type ExchangeCreate struct {
 	OrganizerId        openapi_types.UUID `json:"organizer_id"`
 	Reason             string             `json:"reason"`
 	TargetTicketTypeId openapi_types.UUID `json:"target_ticket_type_id"`
+}
+
+// ExchangeSwitchResult defines model for ExchangeSwitchResult.
+type ExchangeSwitchResult struct {
+	CapacityReturned bool               `json:"capacity_returned"`
+	ExchangeId       openapi_types.UUID `json:"exchange_id"`
+	TicketsExchanged bool               `json:"tickets_exchanged"`
+}
+
+// ExchangeSwitched defines model for ExchangeSwitched.
+type ExchangeSwitched struct {
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
 // OperationalConversion defines model for OperationalConversion.
@@ -246,6 +262,9 @@ type CheckoutParams struct {
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
+
+// ExchangeTicketsSwitchedJSONRequestBody defines body for ExchangeTicketsSwitched for application/json ContentType.
+type ExchangeTicketsSwitchedJSONRequestBody = ExchangeSwitched
 
 // DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
 type DrawDownGroupReservationJSONRequestBody = OperationalConversionCreate

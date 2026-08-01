@@ -40,8 +40,9 @@ CREATE TABLE order_exchanges (
     PRIMARY KEY (organizer_id, id),
     UNIQUE (organizer_id, idempotency_key),
     -- One live exchange per source order. An order reversed twice is the failure this
-    -- prevents, and it is enforced here rather than by a read: a partial unique index is
-    -- the only thing that holds under concurrency.
+    -- prevents, and it is enforced here rather than by a read: a unique index is the only
+    -- thing that holds under concurrency. Not partial — there is nothing to predicate on,
+    -- because an exchange has no cancelled or inactive state (ADR-039 §6, TKT-166).
     -- The BASIS is persisted before any money moves (ai-review F3): target hold, target
     -- total and the signed delta. A retry after a provider call that succeeded and a
     -- later step that failed must settle against the SAME numbers — re-resolving the

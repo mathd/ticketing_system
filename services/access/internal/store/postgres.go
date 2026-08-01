@@ -112,20 +112,29 @@ func (p *Postgres) Issue(ctx context.Context, in IssueInput) error {
 		return tx.Commit()
 	}
 	for _, t := range in.Tickets {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, t.ID, t.OrderID, t.GuestOrderRef, t.OrganizerID, t.BuyerID, t.SlotID, t.TicketTypeID, t.Payload, t.IssuedAt); err != nil {
-			return err
-		}
-		// The ticket row was created in this transaction, so nothing else can see
-		// it yet: the append needs no FOR UPDATE to serialize against.
-		issued := uuid.NewSHA1(uuid.NameSpaceOID, []byte(t.ID.String()+":issued"))
-		if _, err = p.appendLifecycle(ctx, tx, appendInput{
-			TicketID: t.ID, OrderID: t.OrderID, OrganizerID: t.OrganizerID, SlotID: t.SlotID,
-			EventID: issued, Type: "issued", OccurredAt: t.IssuedAt,
-		}); err != nil {
+		if err := p.insertIssuedTicket(ctx, tx, t); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// insertIssuedTicket writes one ticket row and its `issued` event on the caller's
+// transaction. Extracted so ordinary issuance and the exchange switch (TKT-166) cannot
+// drift apart: two copies of "insert the row, then chain its first lifecycle event" would
+// be two places to forget the append, and the verifier would call the second one tampering.
+func (p *Postgres) insertIssuedTicket(ctx context.Context, tx *sql.Tx, t Ticket) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, t.ID, t.OrderID, t.GuestOrderRef, t.OrganizerID, t.BuyerID, t.SlotID, t.TicketTypeID, t.Payload, t.IssuedAt); err != nil {
+		return err
+	}
+	// The ticket row was created in this transaction, so nothing else can see
+	// it yet: the append needs no FOR UPDATE to serialize against.
+	issued := uuid.NewSHA1(uuid.NameSpaceOID, []byte(t.ID.String()+":issued"))
+	_, err := p.appendLifecycle(ctx, tx, appendInput{
+		TicketID: t.ID, OrderID: t.OrderID, OrganizerID: t.OrganizerID, SlotID: t.SlotID,
+		EventID: issued, Type: "issued", OccurredAt: t.IssuedAt,
+	})
+	return err
 }
 
 func (p *Postgres) PendingDeliveries(ctx context.Context, orderID uuid.UUID) ([]Ticket, error) {
@@ -316,6 +325,19 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 			return RedeemResult{}, err
 		}
 		return RedeemResult{Decision: DecisionRefunded, OccurredAt: p.now()}, nil
+	}
+	// Same position, same reason, different fact (TKT-166, ADR-039). An exchanged ticket
+	// has a live replacement somewhere; letting the degraded posture admit it once would
+	// admit the exchange twice.
+	exchanged, err := ticketExchanged(ctx, tx, in.TicketID)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	if exchanged {
+		if err = tx.Commit(); err != nil {
+			return RedeemResult{}, err
+		}
+		return RedeemResult{Decision: DecisionExchanged, OccurredAt: p.now()}, nil
 	}
 
 	if chainErr := p.verifyTicketChain(ctx, tx, in.TicketID, id); chainErr != nil {
