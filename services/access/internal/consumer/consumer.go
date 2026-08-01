@@ -49,6 +49,16 @@ const (
 	ReasonInvalidContract   = "invalid_contract"
 	ReasonIssuanceExhausted = "issuance_retries_exhausted"
 	ReasonDeliveryExhausted = "delivery_retries_exhausted"
+	// ReasonExchangeRefused marks a switch that CANNOT succeed on any retry: its source
+	// tickets were already admitted, or already voided by another reversal. Both are
+	// permanent facts about history.
+	//
+	// It exists because reporting these as `issuance_retries_exhausted` is a lie an
+	// operator acts on (TKT-166 ai-review). Exhaustion says "something was transiently
+	// broken, look at the dependency"; this says "the exchange is settled, it will never
+	// switch, and a human has to decide what the buyer gets". Retrying for 36 seconds
+	// first only delays that page.
+	ReasonExchangeRefused = "exchange_refused"
 )
 
 // FailureEvent is an emitted envelope, not a consumed one: access publishes it
@@ -588,6 +598,14 @@ func (c *Consumer) handleExchanged(ctx context.Context, msg jetstream.Msg, env d
 	}
 	stage, err := process(ctx, event)
 	if err != nil {
+		// A permanent refusal terminates on the FIRST delivery. The alternative is
+		// burning the retry budget on a fact that cannot change and then filing it under
+		// a reason that misdirects whoever reads it.
+		if errors.Is(err, store.ErrSourceTicketsAlreadyAdmitted) || errors.Is(err, store.ErrSourceTicketsAlreadyVoided) {
+			c.log.Error("exchange refused permanently", "event_id", event.ID, "exchange_id", event.Data.ExchangeID, "err", err)
+			c.reject(ctx, msg, failureRecord(msg.Data(), event.ID, stage, ReasonExchangeRefused, attempts))
+			return
+		}
 		if attempts >= uint64(c.maxProcessAttempts) {
 			reason := ReasonIssuanceExhausted
 			if stage == StageDelivery {

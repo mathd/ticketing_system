@@ -3,9 +3,12 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"ticketing/services/access/internal/store"
 )
 
 // The order.exchanged arm (TKT-166, ADR-039 §5).
@@ -224,5 +227,40 @@ func TestCallbackFailureLeavesTheMessageUnacknowledged(t *testing.T) {
 	c.handle(context.Background(), msg)
 	if len(msg.actions) != 0 {
 		t.Fatalf("actions = %v, want the message left unacknowledged for the backoff schedule", msg.actions)
+	}
+}
+
+// A permanent refusal must not be reported as exhaustion. The two say different things to
+// whoever reads the failure record: exhaustion means "a dependency was broken, retry it",
+// while this means "the exchange is settled, it will never switch, decide what the buyer
+// gets". Terminating on the first delivery is the point — nothing about an admission that
+// already happened will be different in 36 seconds.
+func TestPermanentExchangeRefusalTerminatesImmediately(t *testing.T) {
+	for name, cause := range map[string]error{
+		"already admitted": store.ErrSourceTicketsAlreadyAdmitted,
+		"already voided":   store.ErrSourceTicketsAlreadyVoided,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var record FailureEvent
+			c := testConsumer(func(_ context.Context, e FailureEvent) error { record = e; return nil })
+			c.processExchange = nil
+			c.switchExchange = func(context.Context, exchanged) error { return fmt.Errorf("switch: %w", cause) }
+			c.notifyExchangeSwitched = func(context.Context, exchanged) error {
+				t.Fatal("the callback ran after a refused switch — capacity must not be returned")
+				return nil
+			}
+			// delivery 1: the FIRST attempt, far below maxProcessAttempts.
+			msg := &fakeMsg{data: []byte(validExchangedJSON), delivery: 1}
+			c.handle(context.Background(), msg)
+			if len(msg.actions) != 1 || msg.actions[0] != "term" {
+				t.Fatalf("actions = %v, want term on the first delivery", msg.actions)
+			}
+			if record.Data.Reason != ReasonExchangeRefused {
+				t.Fatalf("reason = %q, want %q — exhaustion would misdirect the operator", record.Data.Reason, ReasonExchangeRefused)
+			}
+			if !c.Ready() {
+				t.Fatal("a refused exchange must not latch readiness")
+			}
+		})
 	}
 }

@@ -16,24 +16,52 @@ for (let attempt = 0; attempt < 12; attempt += 1) {
 if (!response?.ok) return new Response('Not found', { status: response?.status ?? 503 });
 const bundle = await response.json() as { tickets: Array<{ ticket_id: string; issued_at: string; history: Array<{ type: string; occurred_at: string }>; qr_url: string }> };
 const t = UI_STRINGS[locale];
+
+// A ticket the buyer no longer holds must not be handed to them as a scannable code
+// (TKT-166 ai-review F2). It was already wrong for a refund; an EXCHANGE makes it acute,
+// because the replacement tickets deliberately share the source order's link, so the dead
+// and the live credentials sit side by side under one reference. Rendering four identical
+// numbered QRs and letting the buyer discover at the gate which two work is not a
+// presentation detail.
+//
+// The verdict comes from the history the bundle already carries — no contract change, and
+// no second source of truth about what is valid. The gate remains the authority; this only
+// stops the page contradicting it.
+const VOIDING = { exchanged: t.ticketVoidedExchanged, refunded: t.ticketVoidedRefunded } as const;
+const voidedReason = (history: Array<{ type: string }>) => {
+  for (const event of history) {
+    const reason = VOIDING[event.type as keyof typeof VOIDING];
+    if (reason) return reason;
+  }
+  return undefined;
+};
 Astro.response.headers.set('Cache-Control', 'no-store');
 ---
 
 <Layout locale={locale} title={t.myTickets}>
   <h1>{t.myTickets}</h1>
   <p>{t.ticketDeliveryNotice}</p>
-  {bundle.tickets.map((ticket, index) => (
-    <article class="ticket">
-      <h2>{t.ticket} {index + 1}</h2>
-      <img src={ticket.qr_url} width="256" height="256" alt={t.ticketQrAlt} />
-      <ul aria-label={t.ticketHistory}>
-        {ticket.history.map((event) => <li>{event.type} — {new Date(event.occurred_at).toLocaleString(locale)}</li>)}
-      </ul>
-    </article>
-  ))}
+  {bundle.tickets.map((ticket, index) => {
+    const voided = voidedReason(ticket.history);
+    return (
+      <article class={voided ? 'ticket ticket--voided' : 'ticket'}>
+        <h2>{t.ticket} {index + 1}</h2>
+        {voided ? (
+          <p class="voided" role="status"><strong>{t.ticketVoided}</strong><br />{voided}</p>
+        ) : (
+          <img src={ticket.qr_url} width="256" height="256" alt={t.ticketQrAlt} />
+        )}
+        <ul aria-label={t.ticketHistory}>
+          {ticket.history.map((event) => <li>{event.type} — {new Date(event.occurred_at).toLocaleString(locale)}</li>)}
+        </ul>
+      </article>
+    );
+  })}
 </Layout>
 
 <style>
   .ticket { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; margin: 1rem 0; padding: 1rem; }
   img { display: block; background: white; max-width: 100%; }
+  .ticket--voided { opacity: .72; }
+  .voided { border-left: 3px solid var(--line); margin: 0 0 .75rem; padding-left: .75rem; }
 </style>

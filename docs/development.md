@@ -323,7 +323,23 @@ Operationally that means:
   otherwise voiding a used ticket and issuing a fresh one would admit the same entitlement twice.
   The exchange stays settled-but-unswitched, which is visible in the query above and is what every
   exchange looked like before TKT-166. Resolving one is a **human decision**, not a retry: whether a
-  used ticket may be exchanged at all is still open (ADR-039 §2, TKT-169).
+  used ticket may be exchanged at all is still open (ADR-039 §2, TKT-169). The failure record
+  says `exchange_refused`, **not** `issuance_retries_exhausted`, and it is published on the first
+  delivery — retrying a fact about history cannot change it, and filing it under exhaustion would
+  send an operator looking for a broken dependency.
+
+  Note what this state costs: the buyer paid the difference and gets no replacement. That is a
+  **stranded paid exchange**, and it is the deliberate trade — the alternative available without a
+  product decision is admitting the same entitlement twice. Fencing the source tickets during
+  `switch_pending` would remove the strand, and would do it by **denying a legitimate holder entry
+  at the gate** while an exchange is mid-flight. For a ticketing system that is the worse failure,
+  which is exactly why it is a decision (TKT-169) and not a fix.
+
+- **The buyer's link shows the old tickets too, without QR codes.** Replacement tickets share the
+  source order's guest reference deliberately, so one link covers the whole story. The storefront
+  suppresses the QR for any ticket whose history contains `exchanged` or `refunded` and labels it
+  unmistakably — otherwise the buyer is handed four identical numbered codes and discovers at the
+  gate which two work.
 
 **When a switch exhausts its retries**, the terminal failure record and the republish procedure
 above are the recovery, and they converge: a republished event finds its `consumed_events` receipt,
