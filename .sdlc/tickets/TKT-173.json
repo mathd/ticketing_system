@@ -1,0 +1,108 @@
+{
+  "key": "TKT-173",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-021: A buyer reserves the exact seats they named",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-172"
+    }
+  ],
+  "description": "**As** a buyer who has chosen seats, **I want** to reserve exactly those seats, **so that** nobody else can take them while I pay.\n\n**Priority:** P2  **Depends on:** TKT-172 (a buyer can only name seats they were shown)\n\n**The gap.** Inventory can already claim a named seat set atomically (`POST /holds/seats`, TKT-80) and catalog can already pin those identities against a map version (ADR-029/031). But **the buyer path cannot reach it**: commerce's `ReservationCreate` carries `{organizer_id, ticket_type_id, quantity}` and nothing else, so `POST /api/commerce/reservations` — the only reservation door the storefront has — can express \"three tickets\" but never \"A/12/7\". Seated inventory is therefore reachable only by a service-to-service caller, which no buyer is.\n\n**Acceptance Criteria:**\n- [ ] `ReservationCreate` accepts a seat set as an alternative to `quantity`; naming both, or neither, is a 400. The GA path is untouched and its existing tests stay green.\n- [ ] A seated reservation routes to inventory's seat-claim (`POST /holds/seats`), not the quantity hold, and the resulting `Reservation` echoes the seats that were actually claimed — the buyer must be able to see what they hold, and the echoed set is the claim's, never the request's.\n- [ ] Price stays catalog-resolved: commerce consumes the resolved unit price for the ticket type and multiplies by the seat count (ADR-036 — commerce never recomputes a price). Amounts are integer minor units + ISO currency.\n- [ ] A seat lost to a competing claimant between display and reserve returns a distinguishable conflict naming the contended seats — enough for the UI to re-render, not a bare 409.\n- [ ] Idempotency behaves as it does for GA: replaying the same `Idempotency-Key` with the same seat set returns the same reservation, and inventory's canonical seat ordering means `[A,B]` and `[B,A]` replay as one claim, not two.\n- [ ] Checkout over a seated reservation completes end to end (`POST /orders`), issuing tickets for the seat count, with the checkout journal and lifecycle invariants unchanged (ADR-011 / ADR-021).\n- [ ] Spec declared, generated code committed before the gate, smoke coverage for the seated reservation (ADR-009 / ADR-028 / ADR-030).\n\nQuality gates: `make check` green; `access verify-lifecycle` green; contract tests. **This ticket touches the money path** — it prices a reservation. It introduces no new pricing rule and no new PSP interaction; it multiplies the catalog-resolved unit price by a seat count.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Without it the seat picker has nothing to submit to: seated inventory is unreachable from the only reservation endpoint a buyer can call."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the seated reservation request/response, its routing to the seat claim, its pricing, its conflict shape, its idempotency, and seated checkout. OUT: the UI (TKT-174), orphan rules (TKT-175), best-available (TKT-81), seat-aware refunds/exchanges (TKT-164)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the seated variant is a new field on `ReservationCreate` (a `oneOf`-style either/or) or a separate `/reservations/seats` operation is a Planning-time call. A field on the existing schema keeps one checkout path downstream and is the presumed default; a separate path is the more reversible option if the either/or proves hard to express in the generated types. The AC constrains behaviour, not the shape."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-172. Inventory's `POST /holds/seats`, the pin coordination and the checkout/journal path are all merged."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Commerce already proxies a claim to inventory for GA. The seated variant is the same call shape against a different inventory operation; `SeatHoldCreate` already demands `{organizer_id, slot_id, seat_identities, ticket_type_id, unit_amount, currency}`, so the mapping is mechanical once the price is resolved."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One buyer reserves two named seats and pays: the order completes, the seats are confirmed, a second buyer naming one of them is refused."
+    },
+    "success": {
+      "state": "met",
+      "note": "Demoable through the gateway with curl end to end — reserve named seats, check out, see the tickets."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition (2026-08-01). Re-resolve at claim; TKT-172 will have landed and may itself have amended this area."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-01",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-01",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-01",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map (US-017/US-018 are the seat-claim core; this epic is the buyer-facing picker)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "Catalog is the SINGLE authority for the rule-resolved unit price; commerce consumes it and never recomputes. A seated reservation must resolve the price the same way the GA one does and multiply by the seat count — deriving a price from the seat set is the violation to avoid."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Owns the claim transaction, lock order, idempotency and TTL. The seat path extends this lifecycle rather than forking it; commerce must not invent a second claim protocol for seats."
+      },
+      {
+        "id": "ADR-031",
+        "why": "The pin/claim coordination is inventory's, done post-commit by the inventory API caller. Commerce must not pin, unpin, or reason about pins — routing to `/holds/seats` inherits all of it. Also names the lazy expired-pin sweep, which is why a seat hold can return `ExpiredPins`."
+      },
+      {
+        "id": "ADR-011",
+        "why": "The checkout journal protocol is unchanged by seating; a seated order must land the same immutable entries. If the seat set has to appear anywhere in the journal, it is pseudonymous seat identities, not buyer data (ADR-003)."
+      },
+      {
+        "id": "ADR-016",
+        "why": "Checkout recovery state machine — a seated checkout that times out mid-payment must reach the same terminal states as a GA one, with no seat-specific escape hatch."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the commerce spec changes and `openapi_gen.go` is committed before the gate."
+      },
+      {
+        "id": "ADR-028",
+        "why": "The response validator fails closed — a `Reservation` that gains a `seats` field the spec does not declare is a 5xx at runtime, not a silent extra key."
+      }
+    ]
+  },
+  "comments": []
+}
