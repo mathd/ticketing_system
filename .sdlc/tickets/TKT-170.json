@@ -1,0 +1,126 @@
+{
+  "key": "TKT-170",
+  "type": "Task",
+  "parent": null,
+  "classification": "complex",
+  "summary": "Who may publish to the PLATFORM stream, and what must a consumer verify before acting on an event?",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Raised by TKT-166's third ai-review pass, as a platform question rather than a subject one.\n\n**The finding.** Access consumes `order.exchanged`, voids the named source order, issues the named replacement, and then uses its internal token to tell commerce that exchange to release its capacity. The payload's fields are not bound to each other beyond what the consumer can check locally, so a forged message can make access a **credentialed confused deputy**.\n\n**What TKT-166 closed.** The envelope id is derived from the exchange id, so access now refuses an event whose id does not derive from the `exchange_id` it carries. That makes one field no longer free-floating, locally and with no round trip.\n\n**What it deliberately did not close, and why it belongs here.** Nothing proves `source_order_id` belongs to that exchange; only commerce knows. Requiring that would put a synchronous commerce call on the switch path — and it would be **inconsistent**: `order.completed` is trusted exactly as completely, and an adversary who can publish to the stream can already mint tickets outright by forging a completion. Hardening one subject while the rest of the platform stays open buys very little and costs a dependency.\n\nSo the real question is the platform's, and it has three parts:\n1. **Publisher ACLs.** Today any client with stream credentials can publish any subject. NATS supports per-subject publish permissions; nothing uses them.\n2. **What a consumer must verify.** Derivable-id self-consistency is the cheap floor and TKT-166 shows it is worth having. Is that the rule for every subject, or do money-adjacent subjects need a signature or an authoritative read-back?\n3. **Name the adversary** (ADR-021). None of this is tamper-evidence against a writer with database access. Say which adversary the answer defends against before claiming anything.\n\n**Acceptance Criteria:**\n- [ ] An ADR answering (1) and (2), amending ADR-033/ADR-034 where it lands.\n- [ ] The rule is applied uniformly, or the exceptions are named with reasons.\n- [ ] A test per consumer that a mis-paired or forged event is refused before any mutation.\n- [ ] The trust boundary is written down where an operator will find it.\n\nQuality gates: `make check` green.",
+  "context": {
+    "capturedAt": "2026-07-31",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-07-31",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+      },
+      {
+        "id": "PRD-v1",
+        "date": "2026-07-31",
+        "rule": "Traceability is a must, for money and tickets: money-relevant records land as immutable, hash-chained, signed journal entries from the first order (corrections = compensating entries; read models = projections), and every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and capability map",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "Catalog is the SINGLE authority for the rule-resolved unit price and commerce consumes `resolved_price` without recomputing it. Any re-pricing (an exchange) resolves through catalog and persists the §5 provenance snapshot for the NEW reservation — never copies the old snapshot."
+      },
+      {
+        "id": "ADR-003",
+        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
+      },
+      {
+        "id": "ADR-032",
+        "why": "All provider money movement goes through the PSP port. `/internal/psp/refund` and the `payment_compensations` table already exist (TKT-114/116) — the PRIMARY KEY (organizer, source_idempotency_key, kind) is what converges duplicate refunds onto ONE provider idempotency key. Reuse it; do not add a parallel refund path."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
+      },
+      {
+        "id": "ADR-011",
+        "why": "The checkout journal protocol defines how commerce records money facts (order_facts row → payments /internal/facts, deterministic fact_id, idempotent). A post-purchase money movement uses the same protocol; do not invent a second one."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Inventory's claim transaction is the contention path. Giving capacity back must go through the same row-locked transaction discipline; a plain UPDATE outside it can drive confirmed_quantity negative or double-return under concurrency."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed. Responses are validated against the spec; an undeclared status code becomes a 500. Every new endpoint must declare every status it can answer, and a downstream answer commerce cannot validate aborts rather than degrades."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first. A new operation is written in the service's openapi.yaml first, then `openapi_gen.go` / `api-types.gen.ts` are regenerated and COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-030",
+        "why": "Commerce and inventory ARE inside the smoke happy-path coverage gate. A new documented 2xx operation must be exercised through the running stack or the suite fails."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's `migrate` subcommand as a one-shot Compose job. Add the SQL under the service's internal/store/migrations/ with the next number; the server path never migrates."
+      }
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A consumer acting on an unauthenticated message with its own internal credential is a real escalation shape, even if the broker is currently trusted."
+    },
+    "scope": {
+      "state": "open",
+      "note": "ACLs, consumer-side verification, or both — and whether the rule is uniform across subjects."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "Whether per-subject NATS ACLs are enough on their own, and what they cost operationally in Compose and in a real deployment."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None blocking. Touches every consumer, so it wants doing before the consumer count grows."
+    },
+    "approach": {
+      "state": "open",
+      "note": "Blocked on the scope decision."
+    },
+    "first_slice": {
+      "state": "open",
+      "note": "Plausibly: publisher ACLs alone, since they are configuration rather than code."
+    },
+    "success": {
+      "state": "met",
+      "note": "A forged event is refused before any mutation, and the boundary is written down."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "ADR-033 (shared envelope), ADR-034 (durable consumer lifecycle), ADR-021 §The trust boundary (name the adversary), ADR-017 (dispatch order)."
+    }
+  },
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-166"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\nA platform-wide trust question surfaced by one subject's review. Filed here rather than fixed in TKT-166 on purpose: hardening `order.exchanged` alone while `order.completed` stays open would add a synchronous dependency to the switch path and close the smaller hole.\n\n**Concerns:** the scope is genuinely open (ACLs vs consumer verification vs both), and the answer touches every consumer. Worth doing while there are five of them rather than fifteen.\n\n**Verdict:** CONCERNS — shapeable, wants a decision on scope first."
+    }
+  ]
+}
