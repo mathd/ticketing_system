@@ -65,6 +65,10 @@ type CancellationWork struct {
 	// refund's request fingerprint and turn a crash-resume into a conflict with itself.
 	RequestedQuantity sql.NullInt32
 	Currency          string
+	// PriorRun reports that a previous run had already refunded this order when this row
+	// first resolved its quantity. Read back on every attempt so a resumed one attributes
+	// the outcome the same way the first one would have.
+	PriorRun bool
 	// Attempts includes THIS claim. The runner uses it to bound retries of ambiguous
 	// failures — the ones where the money may or may not have moved.
 	Attempts int
@@ -367,9 +371,9 @@ func ClaimCancellationOrders(ctx context.Context, db *sql.DB, limit int, lease t
 			SET claim_id=$3, lease_until = now() + make_interval(secs => $2), attempts = c.attempts + 1
 			FROM claimable k
 			WHERE c.organizer_id=k.organizer_id AND c.run_id=k.run_id AND c.order_id=k.order_id
-			RETURNING c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, c.attempts
+			RETURNING c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, c.attempts, c.prior_run
 		)
-		SELECT c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, c.attempts, r.slot_id
+		SELECT c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, c.attempts, c.prior_run, r.slot_id
 		FROM claimed c JOIN cancellation_refund_runs r ON r.organizer_id=c.organizer_id AND r.id=c.run_id`,
 		limit, lease.Seconds(), claim)
 	if err != nil {
@@ -379,7 +383,7 @@ func ClaimCancellationOrders(ctx context.Context, db *sql.DB, limit int, lease t
 	var out []CancellationWork
 	for rows.Next() {
 		w := CancellationWork{ClaimID: claim}
-		if err := rows.Scan(&w.OrganizerID, &w.RunID, &w.OrderID, &w.RequestedQuantity, &w.Currency, &w.Attempts, &w.SlotID); err != nil {
+		if err := rows.Scan(&w.OrganizerID, &w.RunID, &w.OrderID, &w.RequestedQuantity, &w.Currency, &w.Attempts, &w.PriorRun, &w.SlotID); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -391,16 +395,16 @@ func ClaimCancellationOrders(ctx context.Context, db *sql.DB, limit int, lease t
 // external call. Guarded on the column still being NULL so a resumed attempt keeps the
 // original number: the refund's request fingerprint covers the quantity, and a recomputed
 // one would conflict with its own earlier attempt.
-func FixCancellationRequestedQuantity(ctx context.Context, db *sql.DB, w CancellationWork, quantity int32) error {
+func FixCancellationRequestedQuantity(ctx context.Context, db *sql.DB, w CancellationWork, quantity int32, priorRun bool) error {
 	// COALESCE, not `IS NULL`: a row this claimant already fixed to the same number is a
 	// success, while a row whose claim has moved on is ErrCancellationClaimLost. Ignoring
 	// RowsAffected here let a claimant whose lease had lapsed keep driving the refund and
 	// then lose its finalize to the successor, leaving a discharged order reported failed.
 	res, err := db.ExecContext(ctx, `
-		UPDATE cancellation_refund_orders SET requested_quantity=$5
+		UPDATE cancellation_refund_orders SET requested_quantity=$5, prior_run=$6
 		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4
 		  AND outcome IS NULL AND COALESCE(requested_quantity,$5)=$5`,
-		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, quantity)
+		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, quantity, priorRun)
 	if err != nil {
 		return err
 	}

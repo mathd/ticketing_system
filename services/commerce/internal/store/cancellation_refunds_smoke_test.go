@@ -254,7 +254,7 @@ func TestFinalizeCancellationOrderIsClaimFencedAndOnceOnly(t *testing.T) {
 		t.Fatalf("stale claim finalize = %v, want ErrCancellationClaimLost", err)
 	}
 
-	if err := FixCancellationRequestedQuantity(ctx, db, w, 1); err != nil {
+	if err := FixCancellationRequestedQuantity(ctx, db, w, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := FinalizeCancellationOrder(ctx, db, w, CancellationOutcome{
@@ -300,7 +300,7 @@ func TestSuccessfulOutcomeCannotHideAnOutstandingObligation(t *testing.T) {
 	// constraint left to reject it is the obligation one. Asserting on the constraint by
 	// name matters: without it this test passes for the wrong reason the moment some other
 	// CHECK happens to fire first.
-	if err := FixCancellationRequestedQuantity(ctx, db, claimed[0], 1); err != nil {
+	if err := FixCancellationRequestedQuantity(ctx, db, claimed[0], 1, false); err != nil {
 		t.Fatal(err)
 	}
 	err = FinalizeCancellationOrder(ctx, db, claimed[0], CancellationOutcome{

@@ -38,6 +38,7 @@ type fakeStore struct {
 	final    map[uuid.UUID]store.CancellationOutcome
 	abandon  map[uuid.UUID]int
 	cleared  map[uuid.UUID]int
+	prior    map[uuid.UUID]bool
 	attempts map[uuid.UUID]int
 	// leased models the real lease: a claimed row is NOT claimable again until it is
 	// abandoned or its lease expires. Without this the fake re-claims instantly and a
@@ -53,6 +54,7 @@ func newFakeStore() *fakeStore {
 		orders: map[uuid.UUID]*fakeOrder{}, fixed: map[uuid.UUID]int32{},
 		final: map[uuid.UUID]store.CancellationOutcome{}, abandon: map[uuid.UUID]int{},
 		cleared: map[uuid.UUID]int{}, attempts: map[uuid.UUID]int{}, leased: map[uuid.UUID]bool{},
+		prior:    map[uuid.UUID]bool{},
 		enumDone: true,
 	}
 }
@@ -78,6 +80,7 @@ func (f *fakeStore) Claim(_ context.Context, limit int, _ time.Duration) ([]stor
 		if q, ok := f.fixed[w.OrderID]; ok {
 			w.RequestedQuantity = sql.NullInt32{Int32: q, Valid: true}
 		}
+		w.PriorRun = f.prior[w.OrderID]
 		f.attempts[w.OrderID]++
 		w.Attempts = f.attempts[w.OrderID]
 		w.ClaimID = uuid.New()
@@ -123,13 +126,15 @@ func (f *fakeStore) slotOf(order uuid.UUID) uuid.UUID {
 	return uuid.Nil
 }
 
-func (f *fakeStore) FixQuantity(_ context.Context, w store.CancellationWork, q int32) error {
+func (f *fakeStore) FixQuantity(_ context.Context, w store.CancellationWork, q int32, priorRun bool) error {
 	f.fixed[w.OrderID] = q
+	f.prior[w.OrderID] = priorRun
 	return nil
 }
 
 func (f *fakeStore) ClearQuantity(_ context.Context, w store.CancellationWork) error {
 	delete(f.fixed, w.OrderID)
+	delete(f.prior, w.OrderID)
 	f.cleared[w.OrderID]++
 	return nil
 }
@@ -447,6 +452,7 @@ func TestSecondRunOverARefundedBookReportsAlreadyRefunded(t *testing.T) {
 	// their refunds are the durable state that carries over.
 	f.final = map[uuid.UUID]store.CancellationOutcome{}
 	f.fixed = map[uuid.UUID]int32{}
+	f.prior = map[uuid.UUID]bool{}
 	second := newFakeRefunder(f)
 	runnerFor(f, second).RunOnce(context.Background())
 
@@ -601,4 +607,47 @@ func (c *cancelAfterSuccess) Refund(ctx context.Context, in store.RefundRequest)
 
 func (c *cancelAfterSuccess) DriveReversal(ctx context.Context, r store.Refund) store.Refund {
 	return c.inner.DriveReversal(ctx, r)
+}
+
+// A second run whose FIRST attempt was interrupted must still report already_refunded when it
+// resumes. The attribution is read back from the row, because a resumed attempt cannot
+// re-derive it: a lookup then cannot tell "a previous run refunded this" from "this run did,
+// before it was interrupted".
+func TestResumedSecondRunStillReportsAlreadyRefunded(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(2, 1000)}
+	f.work = append(f.work, work(order))
+
+	// Run 1 refunds it.
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+	if f.final[order].Outcome != "refunded" {
+		t.Fatalf("run 1 outcome = %q, want refunded", f.final[order].Outcome)
+	}
+
+	// Run 2: fresh ledger row. Its first attempt fixes the quantity and records the
+	// attribution, then fails ambiguously, so the row is retried rather than finalized.
+	f.final = map[uuid.UUID]store.CancellationOutcome{}
+	f.fixed = map[uuid.UUID]int32{}
+	f.prior = map[uuid.UUID]bool{}
+	f.orders[order].refuse = refunds.ErrPaymentsUnresolved
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+	if _, terminal := f.final[order]; terminal {
+		t.Fatalf("an ambiguous failure was finalized: %+v", f.final[order])
+	}
+	if !f.prior[order] {
+		t.Fatal("the attribution was not recorded when the quantity was fixed")
+	}
+
+	// The downstream recovers and the row resumes.
+	f.orders[order].refuse = nil
+	f.expireLeases()
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+
+	if got := f.final[order].Outcome; got != "already_refunded" {
+		t.Fatalf("resumed second run reported %q, want already_refunded — the attribution was lost across the retry", got)
+	}
+	if f.orders[order].moved != 1 {
+		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)
+	}
 }

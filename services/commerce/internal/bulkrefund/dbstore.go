@@ -35,8 +35,8 @@ func (d DBStore) LookupRefund(ctx context.Context, org, refundID uuid.UUID) (sto
 	return store.LookupRefundByID(ctx, d.DB, org, refundID)
 }
 
-func (d DBStore) FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32) error {
-	return store.FixCancellationRequestedQuantity(ctx, d.DB, w, quantity)
+func (d DBStore) FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32, priorRun bool) error {
+	return store.FixCancellationRequestedQuantity(ctx, d.DB, w, quantity, priorRun)
 }
 
 func (d DBStore) ClearQuantity(ctx context.Context, w store.CancellationWork) error {

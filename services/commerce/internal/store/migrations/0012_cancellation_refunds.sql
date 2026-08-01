@@ -98,6 +98,12 @@ CREATE TABLE cancellation_refund_orders (
   -- the tickets still valid; retrying them forever is what stops a run from ever completing.
   -- A definite refusal is still terminal on the first attempt and never consumes this.
   attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  -- Recorded when this row first resolves its quantity: a completed cancellation refund for
+  -- the order ALREADY existed, so a previous run refunded it and this one only replays it.
+  -- Durable rather than inferred, because a retried attempt cannot tell "a previous run did
+  -- this" from "this run did it before being interrupted" — and that difference is the whole
+  -- distinction between `refunded` and `already_refunded`.
+  prior_run boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
   -- One row per order per run: a second outcome for the same order in the same run is not

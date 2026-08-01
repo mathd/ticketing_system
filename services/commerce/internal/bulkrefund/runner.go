@@ -33,7 +33,7 @@ type Store interface {
 	Claim(ctx context.Context, limit int, lease time.Duration) ([]store.CancellationWork, error)
 	OrderState(ctx context.Context, org, order uuid.UUID) (store.OrderCancellationState, error)
 	LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error)
-	FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32) error
+	FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32, priorRun bool) error
 	ClearQuantity(ctx context.Context, w store.CancellationWork) error
 	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) error
 	Abandon(ctx context.Context, w store.CancellationWork) error
@@ -53,15 +53,23 @@ type Runner struct {
 	interval time.Duration
 	batch    int
 	lease    time.Duration
-	// priorRun records, per order within one pass, whether the cancellation refund existed
-	// before this run touched it. Pass-scoped: it is an attribution detail of the verdict
-	// being written now, not durable state.
-	priorRun map[uuid.UUID]bool
+}
+
+// plan is what resolveQuantity decided for one order. Threaded through the call rather than
+// stashed on the Runner: a per-order map on a process-lifetime struct grows without bound and
+// keeps every order id the service has ever refunded.
+type plan struct {
+	quantity int32
+	// priorRun records that the cancellation refund already existed before this run touched
+	// the order — i.e. a PREVIOUS run refunded it. That, not the refund unit's replay flag,
+	// is what `already_refunded` means.
+	priorRun bool
+	outcome  store.CancellationOutcome
+	decided  bool
 }
 
 func New(s Store, r Refunder, interval time.Duration, batch int, lease time.Duration) *Runner {
-	return &Runner{store: s, refunder: r, interval: interval, batch: batch, lease: lease,
-		priorRun: map[uuid.UUID]bool{}}
+	return &Runner{store: s, refunder: r, interval: interval, batch: batch, lease: lease}
 }
 
 // Run drives passes until the context ends, starting with one immediately: a run created
@@ -160,13 +168,13 @@ func (r *Runner) abandon(w store.CancellationWork) {
 // row, not of the run (AC 3). It reports whether the row reached a terminal verdict.
 func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 	key := store.CancellationRefundKey(w.SlotID, w.OrderID)
-	quantity, outcome, decided := r.resolveQuantity(ctx, w, key)
-	if decided {
-		return r.record(ctx, w, outcome)
+	p := r.resolveQuantity(ctx, w, key)
+	if p.decided {
+		return r.record(ctx, w, p.outcome)
 	}
 
 	result, err := r.refunder.Refund(ctx, store.RefundRequest{
-		OrderID: w.OrderID, OrganizerID: w.OrganizerID, Quantity: quantity,
+		OrderID: w.OrderID, OrganizerID: w.OrganizerID, Quantity: p.quantity,
 		IdempotencyKey: key,
 		// FIXED attribution, not the operator's: order_refunds.request_fingerprint covers
 		// actor and reason, so a second run carrying a different operator would conflict
@@ -186,7 +194,7 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 		}
 		return r.record(ctx, w, failure(refundFailureCode(err), err.Error()))
 	}
-	return r.record(ctx, w, r.classify(ctx, w, result))
+	return r.record(ctx, w, r.classify(ctx, w, p, result))
 }
 
 // record commits a verdict — unless the verdict is one that must not stick.
@@ -241,38 +249,40 @@ func retryable(out store.CancellationOutcome) bool {
 //  2. the quantity an existing cancellation refund was bound with — same reason, for a
 //     crash between the fix and the bind;
 //  3. only then, the order's remaining quantity.
-func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, key string) (int32, store.CancellationOutcome, bool) {
+func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, key string) plan {
 	if w.RequestedQuantity.Valid {
-		return w.RequestedQuantity.Int32, store.CancellationOutcome{}, false
+		// A resumed attempt. The attribution comes from the row, not from re-deriving it:
+		// a lookup here cannot tell "a previous run refunded this" from "this run did,
+		// before it was interrupted".
+		return plan{quantity: w.RequestedQuantity.Int32, priorRun: w.PriorRun}
 	}
 	existing, found, err := r.store.LookupRefund(ctx, w.OrganizerID, store.RefundID(w.OrganizerID, key))
 	if err != nil {
-		return 0, failure("internal", "read existing cancellation refund"), true
+		return decidedPlan(failure("internal", "read existing cancellation refund"))
 	}
 	// This run found a refund it did not create and has done no work of its own for this
 	// order: a PREVIOUS run already refunded it. That, not the replay flag, is what
 	// `already_refunded` means — the replay flag cannot tell a second run apart from this
 	// run resuming after a crash, and would mis-attribute both.
-	priorRun := found && !w.RequestedQuantity.Valid
+	priorRun := found
 	if found {
 		// Persist it here too, not just on the branch that computes it. A later run finds
 		// this refund and takes THIS branch, and a row that reaches a `refunded` outcome
 		// with no requested_quantity is rejected by
 		// `cancellation_refund_orders_refunded_has_refund` — which fails the finalize, not
 		// the refund, so the row stays pending and its run never completes.
-		if err := r.store.FixQuantity(ctx, w, existing.Quantity); err != nil {
-			return 0, failure("internal", "persist refund quantity"), true
+		if err := r.store.FixQuantity(ctx, w, existing.Quantity, priorRun); err != nil {
+			return decidedPlan(failure("internal", "persist refund quantity"))
 		}
-		r.priorRun[w.OrderID] = priorRun
-		return existing.Quantity, store.CancellationOutcome{}, false
+		return plan{quantity: existing.Quantity, priorRun: priorRun}
 	}
 
 	state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID)
 	if err != nil {
-		return 0, failure("internal", "read order state"), true
+		return decidedPlan(failure("internal", "read order state"))
 	}
 	if state.OrderStatus != "completed" {
-		return 0, failure("not_refundable", "only a completed order can be refunded"), true
+		return decidedPlan(failure("not_refundable", "only a completed order can be refunded"))
 	}
 	remaining := state.SoldQuantity - state.RefundedQuantity
 	if remaining <= 0 {
@@ -285,32 +295,35 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 			out.TicketsVoided = state.VoidingOutstanding == 0
 			out.CapacityReturned = state.CapacityOutstanding == 0
 			out.RefundedQuantity, out.RefundedAmount = state.RefundedQuantity, state.RefundedAmount
-			return 0, out, true
+			return decidedPlan(out)
 		}
-		return 0, store.CancellationOutcome{
+		return decidedPlan(store.CancellationOutcome{
 			Outcome: "already_refunded", MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
 			RefundedQuantity: state.RefundedQuantity, RefundedAmount: state.RefundedAmount,
-		}, true
+		})
 	}
 	if state.UnitAmount <= 0 {
 		// A comped order has no money leg — and therefore gets no reversal at all, so its
 		// tickets keep admitting. Recorded visibly rather than skipped; closing it is a
 		// follow-up, not this ticket (ADR-040 §6).
-		return 0, failure("no_captured_money", "order has no captured money to refund"), true
+		return decidedPlan(failure("no_captured_money", "order has no captured money to refund"))
 	}
 	// Fixed BEFORE the provider call: recomputing it afterwards reads a different
 	// remainder, which would change the refund's request fingerprint and turn a resume
 	// into a conflict with its own earlier attempt.
-	if err := r.store.FixQuantity(ctx, w, remaining); err != nil {
-		return 0, failure("internal", "persist refund quantity"), true
+	if err := r.store.FixQuantity(ctx, w, remaining, false); err != nil {
+		return decidedPlan(failure("internal", "persist refund quantity"))
 	}
-	r.priorRun[w.OrderID] = false
-	return remaining, store.CancellationOutcome{}, false
+	return plan{quantity: remaining}
+}
+
+func decidedPlan(out store.CancellationOutcome) plan {
+	return plan{outcome: out, decided: true}
 }
 
 // classify reads the order back and decides the verdict from what is actually true, not
 // from what the refund call returned. A success requires EVERY obligation discharged.
-func (r *Runner) classify(ctx context.Context, w store.CancellationWork, result refunds.Result) store.CancellationOutcome {
+func (r *Runner) classify(ctx context.Context, w store.CancellationWork, p plan, result refunds.Result) store.CancellationOutcome {
 	state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID)
 	if err != nil {
 		return failure("internal", "read order state after refund")
@@ -334,7 +347,7 @@ func (r *Runner) classify(ctx context.Context, w store.CancellationWork, result 
 		// Replay cannot tell a second run apart from this run resuming after a crash, so
 		// it mis-attributes both directions.
 		out.Outcome = "refunded"
-		if r.priorRun[w.OrderID] {
+		if p.priorRun {
 			out.Outcome = "already_refunded"
 		}
 	case out.MoneyRefunded:
