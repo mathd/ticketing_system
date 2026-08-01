@@ -108,9 +108,17 @@
       "key": "TKT-161"
     }
   ],
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed** — TKT-159, US-O4: cancelling an event refunds its whole order book, with a per-order outcome.\n\n**Gate waiver (recorded, as required).** The owner asked for TKT-9 to run **fully autonomously, Ready\nto Done, in one continuous run**, and **deliberately waived all four human gates as a process\nexperiment**. This ticket runs under that waiver:\n- **Gate 1 (priority)** — given at the epic; I moved `Backlog → Ready` myself.\n- **Gate 2 (plan approval)** — after the cross-model critique I resolve the open decisions myself,\n  preferring what the critique recommends, else the most reversible option; every self-made decision\n  is recorded in `kind=plan-final`.\n- **Gate 3 (review + merge)** — after the adversarial review converges I squash-merge myself, but the\n  review guide is posted first: it is the audit record.\n- **Gate 4 (PO acceptance)** — I self-validate each COS against test evidence on the merged code.\n\nEverything else in the pipeline applies unchanged: `config.models` routing never substituted\n(plan=`gpt-5.6-sol`, planReview=`main-agent`, implement=`main-agent`, aiReview=`gpt-5.6-sol`),\ncross-model review for plan and code, TDD with tests observed red first, `make check` green before\nevery push and after the merge, no AI attribution anywhere.\n\n**Selection reason.** Next in the epic's dependency order and the last unstarted slice of TKT-9's\n**COS 3**; its only blocker, TKT-161 (capacity return), is **Done**. DoR is `met` on seven items with\n`uncertainties: deferred` — the deferred item (synchronous batched run vs. durable job row vs.\nevent-driven) is exactly a Planning-time call, and all three shapes are reversible.\n\n**Blockers verified:** `blocked-by TKT-161` → Done. No other open links.\n\n**Branch:** `TKT-159-cancellation-bulk-refund` off `origin/main` @ `330d9303`.\n\n**Governing ADRs re-resolved at claim time** (the mémo's list is a 2026-07-31 shaping snapshot;\n**ADR-037/038/039 landed after it** and are the ones this ticket actually sits on):\n- **ADR-037** — refund state is a *separate dimension* (`refund_status`/`refunded_quantity`/\n  `refunded_amount` + `order_refunds`); `orders.status` stays `completed`. Partial refunds have their\n  own payments identity (`payment_refund_legs`, `store.RefundLegKey`). This supersedes the mémo's\n  ADR-016/ADR-032 entries in practice — the trap they name is already closed by ADR-037's design.\n- **ADR-038** — a refund's reversal is independent obligations: **void first, return capacity\n  second** (the reverse is the one order that can oversell); `refunded` is a lifecycle event through\n  `store.appendLifecycle`; replay safety comes from the event id derived from `(refund_id, ticket_id)`\n  plus `ticket_refund_batches` binding `(refund → order, quantity)`.\n- **ADR-039** (TKT-158/166) — the three-state discipline for a multi-obligation operation\n  (`switch_pending → capacity_pending → completed`, where completed means *both* obligations\n  discharged). A bulk run needs the same per-order discipline: an order is not \"refunded\" until its\n  obligations are discharged, and the report must be able to express \"refunded, capacity outstanding\".\n- Unchanged from the mémo and still binding: **ADR-003** (compensating entries, journal is\n  UPDATE/DELETE-trapped), **ADR-010** (capacity return through inventory's row-locked claim\n  transaction), **ADR-021** (lifecycle through `appendLifecycle`; name the adversary),\n  **ADR-028** (declare every status or fail closed), **ADR-009** (contract-first, commit the regen),\n  **ADR-030** (commerce is inside the smoke coverage gate — a new documented 2xx needs a smoke\n  happy-path driven by the test itself), **ADR-002** (`organizer_id` scoping), **ADR-022**\n  (out-of-band migrations).\n\nNext: `agent:planning` — plan drafted by `gpt-5.6-sol` via codex."
+    }
+  ]
 }
