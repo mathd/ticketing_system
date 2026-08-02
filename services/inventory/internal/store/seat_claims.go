@@ -238,6 +238,24 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 		return SeatHold{}, ErrUnavailable
 	}
 
+	// Arbitrate BEFORE writing anything (ai-review). The pool row is held FOR UPDATE
+	// and claim_seats_one_live_per_seat is scoped to (pool_id, seat_identity), so
+	// every writer for this pool is serialised behind us: what this read sees is what
+	// the insert would have hit, and no concurrent claim can slip a seat in between.
+	// The unique index remains the backstop — this is an optimisation and a better
+	// error, not the correctness boundary.
+	//
+	// Reading the whole contended set rather than stopping at the first is the point:
+	// a buyer whose selection partly collided has to re-render every seat they must
+	// give up, and the per-seat loop this replaces returned on the first violation.
+	contended, err := contendedSeats(ctx, tx, slot, canon)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	if len(contended) > 0 {
+		return SeatHold{}, &SeatTakenError{Seats: contended}
+	}
+
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
 		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer') RETURNING expires_at,now()`,
@@ -245,22 +263,16 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	if err != nil {
 		return SeatHold{}, err
 	}
-	// One statement, not a per-seat loop, so the FULL losing set is knowable (TKT-173).
-	// The loop this replaces returned on the first unique violation, which meant a
-	// partly-colliding selection could only ever report one contended seat however
-	// many actually collided — correct-looking and wrong.
-	//
-	// ON CONFLICT DO NOTHING carries no conflict target, so it swallows a conflict on
-	// ANY constraint, and claim_seats has two: the PK (claim_id, seat_identity) and
-	// the partial live-seat index. A PK conflict is impossible here — the claim id is
-	// freshly generated and canonicalSeats has already de-duplicated — so every seat
-	// missing from RETURNING lost to the live-seat index and nothing else. **That
-	// reasoning depends on the de-duplication**: drop it and a request naming the same
-	// seat twice would report a phantom conflict against itself.
+	// Every free seat inserts and the claim row is already written, so a losing
+	// request does N doomed inserts before rolling back. That matters here and
+	// nowhere else: this runs under the pool row lock, so it serialises every claim
+	// on the performance while doing aborted heap and index work — and a request
+	// mixing one known-taken seat with 49 free ones is an easy way to make that
+	// expensive on purpose during an on-sale (ai-review). The check below moves the
+	// arbitration BEFORE any write.
 	inserted := map[string]struct{}{}
 	seatRows, err := tx.QueryContext(ctx, `INSERT INTO claim_seats(claim_id,pool_id,seat_identity)
 		SELECT $1, $2, s FROM unnest($3::text[]) AS s
-		ON CONFLICT DO NOTHING
 		RETURNING seat_identity`, c.ID, slot, canon)
 	if err != nil {
 		return SeatHold{}, err
@@ -281,16 +293,7 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 		return SeatHold{}, err
 	}
 	if len(inserted) != len(canon) {
-		// canon is already sorted, so the difference comes out sorted too.
-		contended := make([]string, 0, len(canon)-len(inserted))
-		for _, seat := range canon {
-			if _, ok := inserted[seat]; !ok {
-				contended = append(contended, seat)
-			}
-		}
-		// The deferred Rollback discards the claims row and every seat row that DID
-		// insert — a partly-materialised losing claim would hold seats nobody owns.
-		return SeatHold{}, &SeatTakenError{Seats: contended}
+		return SeatHold{}, fmt.Errorf("seat insert wrote %d of %d rows", len(inserted), len(canon))
 	}
 	if err = appendHistory(ctx, tx, org, c.ID, nil, "create", "buyer", "seat_hold", qty, qty, "held", nil, nil); err != nil {
 		return SeatHold{}, err
@@ -443,6 +446,33 @@ func (p *Postgres) SeatOccupancy(ctx context.Context, org, slot uuid.UUID) (Seat
 		occ.Unavailable = append(occ.Unavailable, seat)
 	}
 	return occ, rows.Err()
+}
+
+// contendedSeats returns which of the requested identities another live claim already
+// holds, sorted, under the caller's pool lock. Empty means the claim can proceed.
+//
+// `canon` is sorted, so the result is too. It uses the same partial-index predicate
+// the unique constraint enforces (released_at IS NULL) — not claim status — because
+// that index is the arbiter, and a status-based read would disagree with it exactly
+// in the finalizing window.
+func contendedSeats(ctx context.Context, tx *sql.Tx, pool uuid.UUID, canon []string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT s FROM unnest($2::text[]) AS s
+		WHERE EXISTS (SELECT 1 FROM claim_seats cs
+		              WHERE cs.pool_id=$1 AND cs.seat_identity=s AND cs.released_at IS NULL)
+		ORDER BY s`, pool, canon)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var seat string
+		if err = rows.Scan(&seat); err != nil {
+			return nil, err
+		}
+		out = append(out, seat)
+	}
+	return out, rows.Err()
 }
 
 // seatsAboutToExpire returns the pin refs for held seated claims in this pool whose TTL

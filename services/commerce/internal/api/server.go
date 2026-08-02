@@ -209,6 +209,22 @@ func (in reserveRequest) units() int32 {
 	return int32(len(in.canonicalSeatSet()))
 }
 
+// subsetOf reports whether every identity in got appears in want, with no duplicates.
+// want is canonical (sorted, de-duplicated); got is whatever the far service sent.
+func subsetOf(got, want []string) bool {
+	allowed := make(map[string]struct{}, len(want))
+	for _, seat := range want {
+		allowed[seat] = struct{}{}
+	}
+	for _, seat := range got {
+		if _, ok := allowed[seat]; !ok {
+			return false
+		}
+		delete(allowed, seat) // a repeat is not a subset either
+	}
+	return true
+}
+
 // sameSeats reports whether a persisted (already canonical) set is the set this
 // request names.
 func sameSeats(persisted, requested []string) bool {
@@ -336,7 +352,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			code, body, err := s.call(r.Context(), http.MethodPost, replayURL, key, replayBody, false)
 			if err != nil || (code != 200 && code != 201) {
 				if len(pinnedSeats) > 0 {
-					seatedInventoryRefusal(w, code, body)
+					seatedInventoryRefusal(w, code, body, pinnedSeats)
 					return
 				}
 				write(w, 409, map[string]string{"error": "inventory unavailable"})
@@ -412,7 +428,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	code, body, err := s.call(r.Context(), http.MethodPost, holdURL, key, holdBody, false)
 	if err != nil || (code != 200 && code != 201) {
 		if in.seated() {
-			seatedInventoryRefusal(w, code, body)
+			seatedInventoryRefusal(w, code, body, in.canonicalSeatSet())
 			return
 		}
 		write(w, 409, map[string]string{"error": "inventory unavailable"})
@@ -423,6 +439,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt  time.Time `json:"expires_at"`
 		ServerTime time.Time `json:"server_time"`
 		Seats      []string  `json:"seats"`
+		Quantity   int32     `json:"quantity"`
 	}
 	if json.Unmarshal(body, &hold) != nil {
 		write(w, 502, map[string]string{"error": "invalid inventory response"})
@@ -434,11 +451,19 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	// for a seat nobody holds.
 	quantity := in.Quantity
 	if in.seated() {
-		// The claim must hold exactly what was priced. If inventory canonicalised to a
-		// different count than units() did, the quote was resolved for a quantity the
-		// buyer is not getting — and a quantity-tiered rule could make that the wrong
-		// price. Refuse rather than charge an amount nothing resolved.
-		if len(hold.Seats) == 0 || int32(len(hold.Seats)) != in.units() {
+		// Fail closed on the whole invariant, not just the count (ai-review). A
+		// response that is schema-valid but inconsistent — different seats of the same
+		// count, or a quantity that disagrees with its own seat list — would otherwise
+		// be persisted, billed from, and later refunded against. That needs an
+		// inventory defect or version skew to happen, which is precisely when a
+		// cross-service check earns its keep: the failure mode is a wrong-seat sale.
+		//
+		// The set must be EQUAL, not merely the same size, and it is compared against
+		// the locally canonicalised request — the same function the idempotent-terms
+		// check uses, so "what we asked for" has one definition here.
+		if len(hold.Seats) == 0 ||
+			hold.Quantity != int32(len(hold.Seats)) ||
+			!sameSeats(hold.Seats, in.canonicalSeatSet()) {
 			write(w, 502, map[string]string{"error": "invalid inventory response"})
 			return
 		}
@@ -483,14 +508,20 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 // It never SYNTHESISES identities. Echoing the request would name seats that were
 // never contended — plausible-looking and false, and precisely the lie AC4 exists to
 // prevent. An inventory `seat_taken` with no usable list is a broken upstream: 502.
-func seatedInventoryRefusal(w http.ResponseWriter, code int, body []byte) {
+func seatedInventoryRefusal(w http.ResponseWriter, code int, body []byte, requested []string) {
 	var refusal struct {
 		Error string   `json:"error"`
 		Code  string   `json:"code"`
 		Seats []string `json:"seat_identities"`
 	}
 	if code == 409 && json.Unmarshal(body, &refusal) == nil && refusal.Code == "seat_taken" {
-		if len(refusal.Seats) == 0 {
+		// Non-empty, and a SUBSET of what this buyer asked for. Forwarding verbatim
+		// would let an inventory defect or a version skew name seats this request
+		// never mentioned, which the response schema cannot catch — it is a semantic
+		// mismatch, not a shape one — and a picker would then grey out somebody
+		// else's seats. Commerce's contract promises only requested, actually
+		// contended identities; this is what makes that true rather than hopeful.
+		if len(refusal.Seats) == 0 || !subsetOf(refusal.Seats, requested) {
 			write(w, 502, map[string]string{"error": "invalid inventory response"})
 			return
 		}

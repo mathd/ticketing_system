@@ -435,3 +435,71 @@ func TestReserveRefusesToInventContendedSeats(t *testing.T) {
 		})
 	}
 }
+
+// TestReserveFailsClosedOnInconsistentSeatClaim is the ai-review finding: a
+// schema-valid but inconsistent inventory response must not be persisted, billed
+// from, or later refunded against.
+//
+// Each case needs an inventory defect or a version skew to occur, which is exactly
+// when a cross-service check earns its keep — the failure mode is a wrong-seat sale,
+// and no response validator can see it, because every one of these bodies is
+// perfectly well-shaped.
+//
+// The handler is built with a nil database on purpose: every assertion here must be
+// refused BEFORE anything is persisted, so reaching the insert would panic rather
+// than pass.
+func TestReserveFailsClosedOnInconsistentSeatClaim(t *testing.T) {
+	const holdID = `"hold_id":"11111111-1111-1111-1111-111111111111"`
+	const times = `"expires_at":"2026-11-05T20:00:00Z","server_time":"2026-11-05T19:00:00Z"`
+	for name, body := range map[string]string{
+		// Same count, different seats: the buyer would be charged the right amount
+		// for the wrong seats, and would be issued tickets for them.
+		"seat substitution": `{` + holdID + `,` + times + `,"quantity":2,"seats":["Z/9/1","Z/9/2"]}`,
+		// The claim's own quantity disagrees with its own seat list. Whichever is
+		// right, commerce cannot know, and it drives money from one and inventory
+		// reconciliation from the other.
+		"quantity disagrees with the seat list": `{` + holdID + `,` + times + `,"quantity":3,"seats":["A/1/1","A/1/2"]}`,
+		"no seats at all":                       `{` + holdID + `,` + times + `,"quantity":2,"seats":[]}`,
+		"a seat the buyer never asked for":      `{` + holdID + `,` + times + `,"quantity":2,"seats":["A/1/1","Z/9/9"]}`,
+		"fewer seats than requested":            `{` + holdID + `,` + times + `,"quantity":1,"seats":["A/1/1"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, done := seatedStack(t, 201, body)
+			defer done()
+
+			res := reserveSeats(t, s, "inconsistent-"+name, `["A/1/1","A/1/2"]`)
+
+			if res.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d want 502 — an inconsistent claim must never be "+
+					"persisted or billed: %s", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
+// TestReserveRefusesUnrequestedContendedSeats: a refusal may only name seats this
+// buyer actually asked for. Forwarding verbatim would let a defect or a skew grey
+// out somebody else's seats in the picker, and the response schema cannot catch it —
+// it is a semantic mismatch, not a shape one.
+func TestReserveRefusesUnrequestedContendedSeats(t *testing.T) {
+	for name, seats := range map[string]string{
+		"an unrelated seat":         `["Z/9/9"]`,
+		"one requested one not":     `["A/1/1","Z/9/9"]`,
+		"a repeat of one requested": `["A/1/1","A/1/1"]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, done := seatedStack(t, 409,
+				`{"error":"seat taken","code":"seat_taken","seat_identities":`+seats+`}`)
+			defer done()
+
+			res := reserveSeats(t, s, "unrequested-"+name, `["A/1/1","A/1/2"]`)
+
+			if res.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d want 502: %s", res.Code, res.Body.String())
+			}
+			if strings.Contains(res.Body.String(), "Z/9/9") {
+				t.Fatalf("commerce leaked an unrequested identity: %s", res.Body.String())
+			}
+		})
+	}
+}
