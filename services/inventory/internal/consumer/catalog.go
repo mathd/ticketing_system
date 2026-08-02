@@ -59,6 +59,13 @@ type PublishedPerformance struct {
 	SharedCapacity  *int32
 }
 
+// geometrySeat is the boundary decode of one seat. Named rather than inlined so the
+// validation below can copy and sort a row without restating the shape.
+type geometrySeat struct {
+	SeatIdentity string `json:"seat_identity"`
+	Position     int32  `json:"position"`
+}
+
 // SeatAdjacency is one seat and its immediate neighbours in its row, derived from the
 // published geometry's `position` order. A nil neighbour is a row end — a real answer,
 // not missing data.
@@ -196,10 +203,7 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 		} `json:"map"`
 		Sections []struct {
 			Rows []struct {
-				Seats []struct {
-					SeatIdentity string `json:"seat_identity"`
-					Position     int32  `json:"position"`
-				} `json:"seats"`
+				Seats []geometrySeat `json:"seats"`
 			} `json:"rows"`
 		} `json:"sections"`
 	}
@@ -217,29 +221,49 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 	}
 
 	var out []SeatAdjacency
+	// Identities are compared AFTER trimming, and stored trimmed: "A" and " A" are the
+	// same seat to any human and to catalog's own identity composition, so letting both
+	// survive would put two adjacency rows on one seat and make the claim-path lookup
+	// depend on which one it happened to match (ai-review).
 	seen := map[string]struct{}{}
 	for _, section := range body.Sections {
 		for _, row := range section.Rows {
-			seats := append([]struct {
-				SeatIdentity string `json:"seat_identity"`
-				Position     int32  `json:"position"`
-			}(nil), row.Seats...)
+			seats := append([]geometrySeat(nil), row.Seats...)
+			// Positions must be present, positive and unique within the row. A missing
+			// position decodes as zero and a duplicate makes sort order arbitrary — either
+			// one invents neighbours that do not exist, and an invented neighbour is worse
+			// than no rule at all because it refuses legal selections.
+			positions := map[int32]struct{}{}
+			for _, seat := range seats {
+				if seat.Position <= 0 {
+					return nil, fmt.Errorf("seat map %s has a seat with position %d", seatMapID, seat.Position)
+				}
+				if _, dup := positions[seat.Position]; dup {
+					return nil, fmt.Errorf("seat map %s repeats position %d within a row", seatMapID, seat.Position)
+				}
+				positions[seat.Position] = struct{}{}
+			}
 			sort.Slice(seats, func(i, j int) bool { return seats[i].Position < seats[j].Position })
-			for i, seat := range seats {
-				if strings.TrimSpace(seat.SeatIdentity) == "" {
+			identities := make([]string, 0, len(seats))
+			for _, seat := range seats {
+				id := strings.TrimSpace(seat.SeatIdentity)
+				if id == "" {
 					return nil, fmt.Errorf("seat map %s has a seat with no identity", seatMapID)
 				}
-				if _, dup := seen[seat.SeatIdentity]; dup {
-					return nil, fmt.Errorf("seat map %s repeats identity %q", seatMapID, seat.SeatIdentity)
+				if _, dup := seen[id]; dup {
+					return nil, fmt.Errorf("seat map %s repeats identity %q", seatMapID, id)
 				}
-				seen[seat.SeatIdentity] = struct{}{}
-				adj := SeatAdjacency{SeatIdentity: seat.SeatIdentity}
+				seen[id] = struct{}{}
+				identities = append(identities, id)
+			}
+			for i, id := range identities {
+				adj := SeatAdjacency{SeatIdentity: id}
 				if i > 0 {
-					left := seats[i-1].SeatIdentity
+					left := identities[i-1]
 					adj.Left = &left
 				}
-				if i < len(seats)-1 {
-					right := seats[i+1].SeatIdentity
+				if i < len(identities)-1 {
+					right := identities[i+1]
 					adj.Right = &right
 				}
 				out = append(out, adj)

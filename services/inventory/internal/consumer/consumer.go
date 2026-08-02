@@ -178,10 +178,12 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		}
 		adjacency, err := c.resolver.SeatMapAdjacency(ctx, *e.Data.SeatMapID)
 		if err != nil {
-			// Fail closed. The caller NAKs, nothing is provisioned, and the event is
-			// retried — which is recoverable. Provisioning without the projection is
-			// not: the consumed-event row would make it permanent.
-			return provisionInput{}, fmt.Errorf("schema-5 adjacency projection: %w", err)
+			// Fail closed, and mark it RETRYABLE. Nothing is provisioned and the event
+			// comes back — which is recoverable. Provisioning without the projection is
+			// not: the consumed-event row would make it permanent. Terminating is not
+			// either: the publication would be gone and the slot would have no
+			// inventory at all.
+			return provisionInput{}, fmt.Errorf("%w: schema-5 adjacency projection: %v", errResolveUnavailable, err)
 		}
 		for _, a := range adjacency {
 			in.adjacency = append(in.adjacency, store.SeatAdjacencyRow{
@@ -235,6 +237,12 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 // consumed event and can never repair it. TKT-180 removed exactly such an arm for that
 // reason. This one fetches the geometry BEFORE the transaction and fails closed if it cannot.
 const maxKnownPublicationSchema = 5
+
+// errResolveUnavailable marks a failure to REACH catalog, as opposed to a failure to
+// understand the payload. The two get opposite dispositions — retry versus terminate —
+// and conflating them either drops good events on a blip or retries corrupt ones for
+// ever.
+var errResolveUnavailable = errors.New("catalog resolution unavailable")
 
 // knownSchemas is the per-subject registry of variants this binary can read (ADR-017 §5b′).
 // Above max is the future (park + latch unready); at or below zero is a broken envelope; a gap
@@ -380,9 +388,13 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 	}
 	input, err := c.provisionInput(ctx, e)
 	if err != nil {
-		if e.Schema == 1 {
-			// Schema 1 resolves against catalog; its failures are transient.
-			c.log.Error("resolve legacy publication", "event_id", e.ID, "err", err)
+		// A CATALOG lookup failure is a dependency outage, not corrupt data, and the
+		// distinction is the difference between a retry and permanent loss. Schema 1
+		// and schema 5 both call catalog; terminating on a timeout would drop the
+		// publication for ever and leave the slot with no inventory at all
+		// (ai-review). Payload validation failures below are genuinely poison.
+		if e.Schema == 1 || errors.Is(err, errResolveUnavailable) {
+			c.log.Error("resolve publication against catalog", "event_id", e.ID, "schema", e.Schema, "err", err)
 			_ = msg.NakWithDelay(5 * time.Second)
 			return
 		}

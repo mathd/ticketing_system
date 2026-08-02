@@ -655,3 +655,74 @@ func withSubjectType(subject, body string) string {
 	}
 	return `{"type":"` + subject + `",` + body[1:]
 }
+
+// TestSchema5ResolverOutageIsRetriedNotTerminated is the critical ai-review finding.
+//
+// SeatMapAdjacency is an HTTP call, so timeouts and 5xx are dependency outages, not
+// corrupt data. The disposition branch retried only schema 1, so a brief catalog
+// outage classified every schema-5 publication as poison and TERMINATED it: the event
+// gone for ever and the slot left with no inventory at all. The code even claimed the
+// opposite in a comment.
+func TestSchema5ResolverOutageIsRetriedNotTerminated(t *testing.T) {
+	st := &fakeCatalogStore{}
+	c := offeringConsumer(st, fakeResolver{adjacencyErr: errors.New("connection refused")})
+
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+		`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400,` +
+		`"orphan_prevention_enabled":true}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "nak-delay" {
+		t.Fatalf("actions = %v, want nak-delay — a catalog outage is retryable; terminating "+
+			"loses the publication permanently", msg.actions)
+	}
+	if len(st.seatProvisioned) != 0 || len(st.provisioned) != 0 {
+		t.Fatal("nothing may be provisioned when the projection could not be fetched")
+	}
+}
+
+// A MALFORMED schema-5 payload is still poison: no binary can provision it, so
+// retrying for ever is the wrong answer. The two failures must not be conflated.
+func TestSchema5MalformedPayloadIsStillTerminated(t *testing.T) {
+	st := &fakeCatalogStore{}
+	c := offeringConsumer(st, fakeResolver{})
+
+	// Seated variant with no seat-map reference: unprovisionable at any version.
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","capacity":400}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "term" {
+		t.Fatalf("actions = %v, want term — corrupt data must not be retried for ever", msg.actions)
+	}
+}
+
+// Rule OFF takes the schema-4 outcome and makes NO geometry call. An unconditional
+// fetch would put a catalog round trip on every seated publication.
+func TestSchema5RuleOffProvisionsWithoutFetchingGeometry(t *testing.T) {
+	st := &fakeCatalogStore{}
+	// The resolver errors if it is ever called, so a fetch would fail the test loudly.
+	c := offeringConsumer(st, fakeResolver{adjacencyErr: errors.New("must not be called")})
+
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+		`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(st.seatProvisioned) != 1 {
+		t.Fatalf("rule-off schema 5 must provision a seated pool, actions=%v", msg.actions)
+	}
+	if len(st.orphanPrevention) != 1 || st.orphanPrevention[0] {
+		t.Fatalf("orphanPrevention = %v want [false]", st.orphanPrevention)
+	}
+	if len(st.adjacency) != 1 || len(st.adjacency[0]) != 0 {
+		t.Fatalf("rule-off must carry no adjacency, got %v", st.adjacency)
+	}
+}

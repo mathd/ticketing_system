@@ -152,10 +152,45 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 	if n, _ := res.RowsAffected(); n == 0 {
 		return tx.Commit()
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id,inventory_kind,seat_map_id,orphan_prevention_enabled)
-		VALUES($1,$2,$3,$4,'seated',$5,$6) ON CONFLICT(slot_id) DO NOTHING`, slotID, organizerID, capacity, eventID, seatMapID, orphanPrevention)
-	if err != nil {
+	// ON CONFLICT DO NOTHING is right for a REPLAY and wrong for an UPGRADE, and the
+	// difference is invisible from here — both arrive as "the pool already exists".
+	//
+	// ADR-041's correction wave re-emits, under a FRESH event id, performances that were
+	// published against a rule-enabled map before the transport existed. Those pools were
+	// provisioned at schema 4 and are rule-off. DO NOTHING would leave them rule-off,
+	// insert the adjacency beside them, and mark the fresh event consumed — the organizer's
+	// rule silently disabled for ever, which is precisely the failure the correction wave
+	// exists to repair (ai-review).
+	//
+	// So: lock the row, verify it is the same seated pool, and turn the flag ON. Identity
+	// is checked rather than assumed — adopting a pool that names a different organizer or
+	// a different seat map would attach one map's adjacency to another map's seats.
+	var existingKind string
+	var existingOrg uuid.UUID
+	var existingMap uuid.NullUUID
+	err = tx.QueryRowContext(ctx, `SELECT inventory_kind, organizer_id, seat_map_id
+		FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slotID).
+		Scan(&existingKind, &existingOrg, &existingMap)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err = tx.ExecContext(ctx, `INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id,inventory_kind,seat_map_id,orphan_prevention_enabled)
+			VALUES($1,$2,$3,$4,'seated',$5,$6)`, slotID, organizerID, capacity, eventID, seatMapID, orphanPrevention); err != nil {
+			return err
+		}
+	case err != nil:
 		return err
+	default:
+		if existingKind != "seated" || existingOrg != organizerID || !existingMap.Valid || existingMap.UUID != seatMapID {
+			return fmt.Errorf("%w: pool %s is not the seated pool this publication describes", ErrPoolKindMismatch, slotID)
+		}
+		// Monotonic: a correction wave turns the rule on, and a stale schema-4 replay
+		// must never turn it back off.
+		if orphanPrevention {
+			if _, err = tx.ExecContext(ctx,
+				`UPDATE inventory_pools SET orphan_prevention_enabled=true WHERE slot_id=$1`, slotID); err != nil {
+				return err
+			}
+		}
 	}
 	for _, a := range adjacency {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO seat_claim_adjacency(pool_id,seat_identity,left_identity,right_identity)

@@ -716,3 +716,84 @@ func TestProvisionSeatedRuleOffWritesNoProjection(t *testing.T) {
 		t.Fatalf("rule-off pool: enabled=%v adjacency rows=%d, want false/0", enabled, rows)
 	}
 }
+
+// TestProvisionSeatedUpgradesAnExistingPool is ADR-041's correction wave, which is the
+// only reason performances published before the transport existed are not permanently
+// rule-less.
+//
+// Those pools were provisioned at schema 4 and are rule-off. The wave re-emits them
+// under a FRESH event id, so consumed_events accepts it — and an `ON CONFLICT(slot_id)
+// DO NOTHING` insert would then leave the pool rule-off, insert the adjacency beside
+// it, and mark the event consumed. The organizer's rule silently disabled for ever,
+// by the very mechanism meant to repair it (ai-review).
+func TestProvisionSeatedUpgradesAnExistingPool(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+
+	// As it was before the transport existed: seated, rule off, no projection.
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 100, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	left, mid := "A/1/1", "A/1/2"
+	adjacency := []SeatAdjacencyRow{{SeatIdentity: left, Right: &mid}, {SeatIdentity: mid, Left: &left}}
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 100, true, adjacency); err != nil {
+		t.Fatalf("correction wave: %v", err)
+	}
+
+	var enabled bool
+	var rows int
+	if err := db.QueryRowContext(ctx,
+		`SELECT orphan_prevention_enabled FROM inventory_pools WHERE slot_id=$1`, slot).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_claim_adjacency WHERE pool_id=$1`, slot).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if !enabled || rows != 2 {
+		t.Fatalf("upgrade left enabled=%v adjacency=%d, want true/2 — the wave must turn the rule ON, "+
+			"not insert a projection beside a pool that still says it is off", enabled, rows)
+	}
+}
+
+// A stale schema-4 replay must never turn the rule back OFF: the flag is monotonic.
+func TestProvisionSeatedRuleFlagIsMonotonic(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+	seat := "A/1/1"
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 100, true,
+		[]SeatAdjacencyRow{{SeatIdentity: seat}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 100, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	var enabled bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT orphan_prevention_enabled FROM inventory_pools WHERE slot_id=$1`, slot).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("a stale schema-4 replay must not disable a rule the correction wave turned on")
+	}
+}
+
+// Adopting a pool that names a different organizer or a different seat map would
+// attach one map's adjacency to another map's seats. Refuse instead.
+func TestProvisionSeatedRefusesToAdoptAMismatchedPool(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 100, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	seat := "A/1/1"
+	adj := []SeatAdjacencyRow{{SeatIdentity: seat}}
+
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, uuid.New(), 100, true, adj); !errors.Is(err, ErrPoolKindMismatch) {
+		t.Fatalf("different seat map: err = %v want ErrPoolKindMismatch", err)
+	}
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, uuid.New(), seatMap, 100, true, adj); !errors.Is(err, ErrPoolKindMismatch) {
+		t.Fatalf("different organizer: err = %v want ErrPoolKindMismatch", err)
+	}
+}
