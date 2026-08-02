@@ -4,9 +4,11 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-021: A buyer reserves the exact seats they named",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -104,5 +106,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-173\n\n**Selection reason.** Its only blocker, TKT-172, closed minutes ago; it is now the sole claimable child of TKT-35 and it blocks the remaining two (174 → 175). Nothing else is in flight.\n\n**Blocker check.** `blocked-by TKT-172` — Done, merged as `8b009bf4`. Zero open blockers.\n\n**Branch.** `TKT-173-seated-reservation`, cut from `origin/main` at `8b009bf4`.\n\n**⚠️ Gate waiver.** This ticket runs **gateless** under the same owner waiver recorded on TKT-172: all four human gates waived for epic TKT-35 as a process experiment. Gate 1 given by instruction; Gate 2 resolved by the agent from the cross-model critique (most-reversible option absent a recommendation); Gate 3 self-merged after the adversarial review converges, review-guide posted first as the audit record; Gate 4 self-validated against test evidence on merged code. `config.models` routing, cross-model review, TDD red-first, `make check` before every push and after the merge, and every marker comment all stand unchanged.\n\n**Model routing** (unchanged, from `.claude/sdlc.config.json`): plan `gpt-5.6-sol` · planReview `main-agent` · implement `main-agent` · aiReview `gpt-5.6-sol`. Both cross-model pairs differ. ✅\n\n---\n\n### Stop-condition pre-check — this ticket trips two of them on purpose\n\nThe standing waiver says to stop if the work would touch **money paths** or **data migrations** *in a way the ticket and plan did not anticipate*. This ticket touches both, and both are anticipated. Recording that judgement here rather than discovering it mid-implementation:\n\n1. **Money path.** The reservation is what prices a purchase. This ticket does **not** introduce a pricing rule, a new PSP interaction, or a new amount computation — it multiplies the catalog-resolved unit price by a seat count instead of by a quantity. ADR-036 is unchanged: catalog stays the single price authority and commerce keeps consuming `resolved_price` without recomputing. The ticket's own description says so, and its AC pins it. **Proceeding.**\n2. **Data migration.** Very likely required, and the reason is structural rather than incidental. `reservations` (commerce migration `0001_checkout.sql`) stores `quantity` and no seat set. The replay path (`server.go` `reserve`) deliberately answers a retried reservation **from the persisted row**, replaying inventory with the *pinned* terms — because inventory fingerprints its idempotency on the exact request, and for a seat hold that fingerprint covers the **canonical seat set** (`seatFingerprint`). So a seated reservation that does not persist its seats cannot be replayed at all: the retry would either send a different request or send nothing. A column to hold them is inherent to the feature, not scope creep. **Proceeding** — but the plan must name the migration explicitly, and if it concludes anything *beyond* an additive column on `reservations` is needed, that is unanticipated and the run stops.\n\nAnything else the plan surfaces that touches auth or CI/deploy config stops the run.\n\n### What the drafter is being pointed at\n\nThe gap is narrow and specific: inventory has had `POST /holds/seats` since TKT-80 and catalog has pinned seat identities since TKT-104, but `ReservationCreate` carries `{organizer_id, ticket_type_id, quantity}` and nothing else — so the only reservation door a buyer has cannot express \"A/12/7\". Seated inventory is reachable today only by a service-to-service caller, which no buyer is.\n\nTKT-172 closed the *read* half of that (a buyer can now see which seats are taken, and which map to render). This is the write half.\n"
+    }
+  ]
 }
