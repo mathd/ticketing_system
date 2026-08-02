@@ -228,3 +228,168 @@ func TestListSeatPinsGuardsTheSizeLimitBoundary(t *testing.T) {
 		}
 	})
 }
+
+// --- TKT-181 / ADR-041: the adjacency projection's boundary validation ---
+//
+// These go through a real httptest server rather than a double, because the whole risk
+// is in DECODING geometry the projection then treats as authoritative. A double would
+// hand back a Go slice that is already well-formed and prove nothing (ai-review noted
+// the test doubles never exercised this path at all).
+
+func geometryServer(t *testing.T, status int, body string) *CatalogResolver {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return NewCatalogResolver(srv.URL, "tok", srv.Client())
+}
+
+func TestSeatMapAdjacencyDerivesNeighboursFromPosition(t *testing.T) {
+	id := uuid.New()
+	// Deliberately out of order, and with position GAPS: gaps are spacing, not missing
+	// seats, so 10/20/40 is still three adjacent seats.
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[{"rows":[{"seats":[
+		{"seat_identity":"A/1/3","position":40},
+		{"seat_identity":"A/1/1","position":10},
+		{"seat_identity":"A/1/2","position":20}]}]}]}`
+
+	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d seats want 3", len(got))
+	}
+	if got[0].SeatIdentity != "A/1/1" || got[0].Left != nil || got[0].Right == nil || *got[0].Right != "A/1/2" {
+		t.Fatalf("first seat: %+v — a row end has NO left neighbour, which is an answer, not missing data", got[0])
+	}
+	if got[2].SeatIdentity != "A/1/3" || got[2].Right != nil || *got[2].Left != "A/1/2" {
+		t.Fatalf("last seat: %+v", got[2])
+	}
+}
+
+func TestSeatMapAdjacencyNeverConnectsRowsOrSections(t *testing.T) {
+	id := uuid.New()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
+		{"rows":[{"seats":[{"seat_identity":"A/1/1","position":1}]}]},
+		{"rows":[{"seats":[{"seat_identity":"B/1/1","position":1}]}]}]}`
+
+	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range got {
+		if a.Left != nil || a.Right != nil {
+			t.Fatalf("%+v — a one-seat row has no neighbours, and seats never adjoin across rows or sections", a)
+		}
+	}
+}
+
+// Every one of these produces a plausible-looking partial projection if it is not
+// refused — and a partial projection is worse than none, because the rule then
+// silently permits orphans exactly where the data was missing, or invents neighbours
+// and refuses legal selections.
+func TestSeatMapAdjacencyFailsClosedOnMalformedGeometry(t *testing.T) {
+	id, other := uuid.New(), uuid.New()
+	pub := `"status":"published"`
+	for name, body := range map[string]string{
+		"wrong map version": `{"map":{"id":"` + other.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
+		"draft geometry":    `{"map":{"id":"` + id.String() + `","status":"draft"},"sections":[{"rows":[{"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
+		"no seats at all":   `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[]}`,
+		// A zero position is what an OMITTED position decodes to, so this also covers
+		// a seat whose position the producer forgot to send.
+		"zero position": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+			{"seat_identity":"A/1/1","position":0},{"seat_identity":"A/1/2","position":1}]}]}]}`,
+		// Equal positions make sort order arbitrary — the derived neighbours would
+		// differ run to run.
+		"duplicate position in a row": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+			{"seat_identity":"A/1/1","position":1},{"seat_identity":"A/1/2","position":1}]}]}]}`,
+		"duplicate identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+			{"seat_identity":"A/1/1","position":1}]},{"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
+		// "A/1/1" and " A/1/1" are the same seat to catalog and to a human; two rows
+		// on one seat would make the claim-path lookup depend on which one it matched.
+		"whitespace-variant identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+			{"seat_identity":"A/1/1","position":1},{"seat_identity":" A/1/1","position":2}]}]}]}`,
+		"blank identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+			{"seat_identity":"   ","position":1}]}]}]}`,
+		// A valid prefix followed by garbage: one Decode would accept the prefix and
+		// commit it as authoritative, permanently, since the same transaction consumes
+		// the event.
+		"trailing bytes after a valid document": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+			{"seat_identity":"A/1/1","position":1}]}]}]} {"map":{"id":"junk"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+			if err == nil {
+				t.Fatal("malformed geometry must be refused, never projected as authoritative")
+			}
+			// And refused DETERMINISTICALLY. Classifying these as transient would park
+			// them for ever — the mirror of terminating a catalog blip.
+			if !errors.Is(err, ErrGeometryInvalid) {
+				t.Fatalf("err = %v, want ErrGeometryInvalid: retrying corrupt geometry changes nothing", err)
+			}
+		})
+	}
+}
+
+func TestSeatMapAdjacencyFailsOnUpstreamError(t *testing.T) {
+	id := uuid.New()
+	for _, status := range []int{404, 500, 503} {
+		if _, err := geometryServer(t, status, `{}`).SeatMapAdjacency(context.Background(), id); err == nil {
+			t.Fatalf("status %d must be an error", status)
+		}
+	}
+}
+
+// Only catalog's SETTLED answer about this map is deterministic. A blanket 4xx sweep
+// is wrong: 408, 425 and 429 are explicitly retryable, 401 can be transient during a
+// credential or proxy change, and an unknown status must never terminate. A needless
+// retry costs a delay; a wrong terminate costs the publication (ai-review).
+func TestSeatMapAdjacencyStatusClassification(t *testing.T) {
+	id := uuid.New()
+	for _, tc := range []struct {
+		status        int
+		deterministic bool
+	}{
+		{404, true}, {410, true},
+		{401, false}, {408, false}, {425, false}, {429, false},
+		{500, false}, {502, false}, {503, false}, {418, false},
+	} {
+		_, err := geometryServer(t, tc.status, `{}`).SeatMapAdjacency(context.Background(), id)
+		if err == nil {
+			t.Fatalf("status %d must be an error", tc.status)
+		}
+		if got := errors.Is(err, ErrGeometryInvalid); got != tc.deterministic {
+			t.Fatalf("status %d: ErrGeometryInvalid=%v want %v", tc.status, got, tc.deterministic)
+		}
+	}
+}
+
+// A transport that succeeds through the headers and then fails mid-body must be
+// RETRIED, not terminated: the content was never seen, so calling it invalid geometry
+// deletes a publication because a connection dropped (ai-review).
+func TestSeatMapAdjacencyTreatsAnInterruptedBodyAsTransient(t *testing.T) {
+	id := uuid.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "4096") // promise more than we send
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"map":{"id":"` + id.String() + `"`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Return without completing the body: the client sees an unexpected EOF.
+	}))
+	defer srv.Close()
+
+	_, err := NewCatalogResolver(srv.URL, "tok", srv.Client()).SeatMapAdjacency(context.Background(), id)
+	if err == nil {
+		t.Fatal("an interrupted body must be an error")
+	}
+	if errors.Is(err, ErrGeometryInvalid) {
+		t.Fatalf("err = %v — a dropped connection is transient; terminating on it loses the publication", err)
+	}
+}

@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -68,6 +69,12 @@ type fakeResolver struct {
 	capacityGroupID *uuid.UUID
 	sharedCapacity  *int32
 	err             error
+	adjacency       []SeatAdjacency
+	adjacencyErr    error
+}
+
+func (r fakeResolver) SeatMapAdjacency(context.Context, uuid.UUID) ([]SeatAdjacency, error) {
+	return r.adjacency, r.adjacencyErr
 }
 
 func (r fakeResolver) PoolOfferState(context.Context, uuid.UUID) (PoolOfferState, error) {
@@ -220,11 +227,11 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 	}{
 		// schema 4 is now the KNOWN seated variant (TKT-103); the unknown-future
 		// fixtures move to schema 5, which remains beyond maxKnownPublicationSchema.
-		{"reshaped data", `{` + id + `,"schema":5,"data":{"slot_ref":"a","org_ref":"b"}}`, 5},
-		{"changed field type", `{` + id + `,"schema":5,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`, 5},
+		{"reshaped data", `{` + id + `,"schema":6,"data":{"slot_ref":"a","org_ref":"b"}}`, 6},
+		{"changed field type", `{` + id + `,"schema":6,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`, 6},
 		{"empty data", `{` + id + `,"schema":6,"data":{}}`, 6},
 		{"data is not an object", `{` + id + `,"schema":9,"data":[1,2,3]}`, 9},
-		{"shaped like today", `{` + id + `,"schema":5,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`, 5},
+		{"shaped like today", `{` + id + `,"schema":6,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`, 6},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
@@ -264,7 +271,7 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 // them would still show an ack.
 func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
-	body := `{` + id + `,"schema":5,"data":{"slot_ref":"a"}}` // schema 5 = unknown future (4 is now seated)
+	body := `{` + id + `,"schema":6,"data":{"slot_ref":"a"}}` // schema 6 = unknown future (5 is the orphan-flag seated fork, TKT-181)
 	for _, tt := range []struct {
 		name string
 		err  error
@@ -299,7 +306,7 @@ func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 func TestQuarantineCollisionIsPoison(t *testing.T) {
 	c, st := testConsumerWithStore()
 	st.quarantineErr = store.ErrCatalogQuarantineCollision
-	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{"x":1}}`))} // schema 5 = unknown future
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":6,"data":{"x":1}}`))} // schema 6 = unknown future
 
 	c.handle(context.Background(), msg)
 
@@ -317,7 +324,7 @@ func TestKnownEventFlowsWhileUnknownIsHeld(t *testing.T) {
 	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	c, st := testConsumerWithStore()
 
-	future := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":5,"data":{"slot_ref":"a"}}`))} // schema 5 = unknown future
+	future := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":6,"data":{"slot_ref":"a"}}`))} // schema 6 = unknown future
 	c.handle(context.Background(), future)
 	if !slices.Contains(future.actions, "ack") || len(st.quarantined) != 1 {
 		t.Fatalf("future: actions = %v quarantined = %d, want quarantine + ack", future.actions, len(st.quarantined))
@@ -601,11 +608,11 @@ func TestTypeMismatchIsPoisonWhateverItsShape(t *testing.T) {
 	const wrongType = `"type":"platform.catalog.performance.archived"`
 	for _, tc := range []struct{ name, body string }{
 		{"missing type, known schema", `{` + id + `,"schema":2,` + good + `}`},
-		{"missing type, future schema", `{` + id + `,"schema":5,` + good + `}`},
+		{"missing type, future schema", `{` + id + `,"schema":6,` + good + `}`},
 		{"wrong type, known schema", `{` + id + `,` + wrongType + `,"schema":2,` + good + `}`},
-		{"wrong type, future schema", `{` + id + `,` + wrongType + `,"schema":5,` + good + `}`},
+		{"wrong type, future schema", `{` + id + `,` + wrongType + `,"schema":6,` + good + `}`},
 		{"non-string type, known schema", `{` + id + `,"type":42,"schema":2,` + good + `}`},
-		{"non-string type, future schema", `{` + id + `,"type":42,"schema":5,` + good + `}`},
+		{"non-string type, future schema", `{` + id + `,"type":42,"schema":6,` + good + `}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
@@ -648,4 +655,101 @@ func withSubjectType(subject, body string) string {
 		return body
 	}
 	return `{"type":"` + subject + `",` + body[1:]
+}
+
+// TestSchema5ResolverOutageIsRetriedNotTerminated is the critical ai-review finding.
+//
+// SeatMapAdjacency is an HTTP call, so timeouts and 5xx are dependency outages, not
+// corrupt data. The disposition branch retried only schema 1, so a brief catalog
+// outage classified every schema-5 publication as poison and TERMINATED it: the event
+// gone for ever and the slot left with no inventory at all. The code even claimed the
+// opposite in a comment.
+func TestSchema5ResolverOutageIsRetriedNotTerminated(t *testing.T) {
+	st := &fakeCatalogStore{}
+	c := offeringConsumer(st, fakeResolver{adjacencyErr: errors.New("connection refused")})
+
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+		`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400,` +
+		`"orphan_prevention_enabled":true}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "nak-delay" {
+		t.Fatalf("actions = %v, want nak-delay — a catalog outage is retryable; terminating "+
+			"loses the publication permanently", msg.actions)
+	}
+	if len(st.seatProvisioned) != 0 || len(st.provisioned) != 0 {
+		t.Fatal("nothing may be provisioned when the projection could not be fetched")
+	}
+}
+
+// A MALFORMED schema-5 payload is still poison: no binary can provision it, so
+// retrying for ever is the wrong answer. The two failures must not be conflated.
+func TestSchema5MalformedPayloadIsStillTerminated(t *testing.T) {
+	st := &fakeCatalogStore{}
+	c := offeringConsumer(st, fakeResolver{})
+
+	// Seated variant with no seat-map reference: unprovisionable at any version.
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","capacity":400}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "term" {
+		t.Fatalf("actions = %v, want term — corrupt data must not be retried for ever", msg.actions)
+	}
+}
+
+// Rule OFF takes the schema-4 outcome and makes NO geometry call. An unconditional
+// fetch would put a catalog round trip on every seated publication.
+func TestSchema5RuleOffProvisionsWithoutFetchingGeometry(t *testing.T) {
+	st := &fakeCatalogStore{}
+	// The resolver errors if it is ever called, so a fetch would fail the test loudly.
+	c := offeringConsumer(st, fakeResolver{adjacencyErr: errors.New("must not be called")})
+
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+		`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(st.seatProvisioned) != 1 {
+		t.Fatalf("rule-off schema 5 must provision a seated pool, actions=%v", msg.actions)
+	}
+	if len(st.orphanPrevention) != 1 || st.orphanPrevention[0] {
+		t.Fatalf("orphanPrevention = %v want [false]", st.orphanPrevention)
+	}
+	if len(st.adjacency) != 1 || len(st.adjacency[0]) != 0 {
+		t.Fatalf("rule-off must carry no adjacency, got %v", st.adjacency)
+	}
+}
+
+// TestSchema5InvalidGeometryIsTerminated is the other half of the retry fix. A blip
+// must be retried; corrupt geometry must not be, or the consumer parks it for ever.
+// The first attempt at this pair terminated both; the second retried both.
+func TestSchema5InvalidGeometryIsTerminated(t *testing.T) {
+	st := &fakeCatalogStore{}
+	c := offeringConsumer(st, fakeResolver{
+		adjacencyErr: fmt.Errorf("%w: seat map is draft", ErrGeometryInvalid),
+	})
+
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+		`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400,` +
+		`"orphan_prevention_enabled":true}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "term" {
+		t.Fatalf("actions = %v, want term — retrying deterministically-invalid geometry "+
+			"parks it for ever", msg.actions)
+	}
+	if len(st.seatProvisioned) != 0 {
+		t.Fatal("nothing may be provisioned from invalid geometry")
+	}
 }

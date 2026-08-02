@@ -42,20 +42,22 @@ type quarantineCall struct {
 // quarantineErr is separate: quarantining a future variant must be testable
 // independently of the known-variant apply paths.
 type fakeCatalogStore struct {
-	archived        []uuid.UUID
-	archiveEventIDs []uuid.UUID
-	closures        []closureCall
-	closureEventIDs []uuid.UUID
-	provisioned     []uuid.UUID
-	seatProvisioned []uuid.UUID
-	seatMapIDs      []uuid.UUID
-	quarantined     []quarantineCall
-	pools           []store.PoolOffering
-	err             error
-	listErr         error
-	quarantineErr   error
-	pending         bool
-	pendingErr      error
+	archived         []uuid.UUID
+	archiveEventIDs  []uuid.UUID
+	closures         []closureCall
+	closureEventIDs  []uuid.UUID
+	provisioned      []uuid.UUID
+	seatProvisioned  []uuid.UUID
+	seatMapIDs       []uuid.UUID
+	orphanPrevention []bool
+	adjacency        [][]store.SeatAdjacencyRow
+	quarantined      []quarantineCall
+	pools            []store.PoolOffering
+	err              error
+	listErr          error
+	quarantineErr    error
+	pending          bool
+	pendingErr       error
 }
 
 func (s *fakeCatalogStore) ListPublishedPoolOfferings(context.Context) ([]store.PoolOffering, error) {
@@ -70,12 +72,14 @@ func (s *fakeCatalogStore) Provision(_ context.Context, eventID, _, _ uuid.UUID,
 	return nil
 }
 
-func (s *fakeCatalogStore) ProvisionSeated(_ context.Context, eventID, _, _, seatMapID uuid.UUID, _ int32) error {
+func (s *fakeCatalogStore) ProvisionSeated(_ context.Context, eventID, _, _, seatMapID uuid.UUID, _ int32, orphanPrevention bool, adjacency []store.SeatAdjacencyRow) error {
 	if s.err != nil {
 		return s.err
 	}
 	s.seatProvisioned = append(s.seatProvisioned, eventID)
 	s.seatMapIDs = append(s.seatMapIDs, seatMapID)
+	s.orphanPrevention = append(s.orphanPrevention, orphanPrevention)
+	s.adjacency = append(s.adjacency, adjacency)
 	return nil
 }
 

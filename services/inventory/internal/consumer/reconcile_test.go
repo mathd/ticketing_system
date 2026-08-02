@@ -17,6 +17,12 @@ import (
 // Reconciliation tests (TKT-90): the startup pass acts only on positive catalog
 // assertions and reuses the event path's apply functions — never a second write path.
 
+// SeatMapAdjacency is never called on this double: it resolves offer state, and
+// adjacency is only fetched at seated provisioning (ADR-041).
+func (r fakeOfferStateResolver) SeatMapAdjacency(context.Context, uuid.UUID) ([]SeatAdjacency, error) {
+	return nil, nil
+}
+
 type fakeOfferStateResolver struct {
 	fakeResolver
 	states map[uuid.UUID]PoolOfferState

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,10 @@ var ErrPoolStateNotFound = errors.New("pool unknown to catalog")
 type PerformanceResolver interface {
 	PublishedPerformance(ctx context.Context, id uuid.UUID) (PublishedPerformance, error)
 	PoolOfferState(ctx context.Context, id uuid.UUID) (PoolOfferState, error)
+	// SeatMapAdjacency projects the exact published version's geometry into per-seat
+	// neighbours, for a rule-enabled schema-5 publication (ADR-041). Called at
+	// provisioning time only — never from the claim path.
+	SeatMapAdjacency(ctx context.Context, seatMapID uuid.UUID) ([]SeatAdjacency, error)
 }
 
 // PoolOfferState is catalog's answer for a pool id, whatever the id turns out
@@ -52,6 +57,36 @@ type PublishedPerformance struct {
 	Capacity        int32
 	CapacityGroupID *uuid.UUID
 	SharedCapacity  *int32
+}
+
+// ErrGeometryInvalid marks geometry that is DETERMINISTICALLY unusable — a draft map,
+// the wrong version, duplicate identities, bad positions, trailing bytes. Retrying it
+// changes nothing, so the caller must terminate rather than park it for ever.
+//
+// Its opposite, errResolveUnavailable, means catalog could not be reached. The first fix
+// for this pair terminated both (a blip deleted the publication); the second wrapped
+// both as transient (corrupt geometry retried for ever). Only the distinction is right.
+var ErrGeometryInvalid = errors.New("seat-map geometry is invalid")
+
+// maxGeometryBytes bounds the buffered geometry read. A seat map is at most a few
+// thousand seats; anything larger is not a map this consumer should be projecting, and
+// an unbounded read from a dependency is an availability risk of its own.
+const maxGeometryBytes = 8 << 20
+
+// geometrySeat is the boundary decode of one seat. Named rather than inlined so the
+// validation below can copy and sort a row without restating the shape.
+type geometrySeat struct {
+	SeatIdentity string `json:"seat_identity"`
+	Position     int32  `json:"position"`
+}
+
+// SeatAdjacency is one seat and its immediate neighbours in its row, derived from the
+// published geometry's `position` order. A nil neighbour is a row end — a real answer,
+// not missing data.
+type SeatAdjacency struct {
+	SeatIdentity string
+	Left         *string
+	Right        *string
 }
 
 type CatalogResolver struct {
@@ -147,6 +182,141 @@ var ErrSeatPinPageTooLarge = errors.New("catalog seat pin page exceeds the respo
 // needs to be because the caller uses the result to decide what to DELETE: a page accepted on
 // partial data is a reclaim decision made on partial data. Rejecting a row at or before the
 // cursor also makes a server that ignores `after` a loud failure rather than an infinite drain.
+// SeatMapAdjacency fetches the EXACT published seat-map version and flattens it into
+// per-seat left/right neighbours (ADR-041).
+//
+// It reads the version by id, never the family's current version: a pool is seated
+// against one specific version and a published version is immutable (ADR-029), which is
+// the whole reason a one-time projection is safe. Resolving the family would describe a
+// map the pool is not seated against.
+//
+// Neighbours come from each row's `position` order, not from label arithmetic: labels
+// are free text (`A`, `AA`, `12b`) and positions may have gaps, so arithmetic would
+// invent adjacencies that do not exist. Sections and rows never connect.
+//
+// It fails closed on anything it cannot fully understand. A partial projection is worse
+// than none: the rule would silently permit orphans exactly where the data was missing.
+func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.UUID) ([]SeatAdjacency, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		r.baseURL+"/public/seat-maps/"+seatMapID.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		// Only statuses that are catalog's SETTLED answer about this map are
+		// deterministic. A blanket 4xx sweep is wrong: 408, 425 and 429 are explicitly
+		// retryable, and a 401 can be transient during a credential or proxy change —
+		// terminating on any of them would leave the performance with no inventory at
+		// all (ai-review). Everything not on this list, including unknown statuses,
+		// stays retryable: a needless retry costs a delay, a wrong terminate costs the
+		// publication.
+		switch resp.StatusCode {
+		case http.StatusNotFound, http.StatusGone:
+			return nil, fmt.Errorf("%w: seat map %s: status %d", ErrGeometryInvalid, seatMapID, resp.StatusCode)
+		}
+		return nil, fmt.Errorf("catalog seat-map geometry %s: status %d", seatMapID, resp.StatusCode)
+	}
+	var body struct {
+		Map struct {
+			ID     uuid.UUID `json:"id"`
+			Status string    `json:"status"`
+		} `json:"map"`
+		Sections []struct {
+			Rows []struct {
+				Seats []geometrySeat `json:"seats"`
+			} `json:"rows"`
+		} `json:"sections"`
+	}
+	// The body is buffered BEFORE decoding so a transport failure mid-stream is
+	// distinguishable from malformed content. Decoding straight from resp.Body makes an
+	// interrupted read look like a syntax error, and a syntax error terminates the
+	// publication permanently (ai-review). A connection that drops halfway is exactly
+	// the case retrying exists for.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxGeometryBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read catalog seat-map geometry %s: %w", seatMapID, err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(&body); err != nil {
+		return nil, fmt.Errorf("%w: decode: %v", ErrGeometryInvalid, err)
+	}
+	// Exactly one value. A valid geometry object followed by garbage would otherwise
+	// decode its prefix and commit that prefix as the authoritative projection —
+	// permanently, since the same transaction consumes the event (ai-review).
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: trailing bytes after the geometry document", ErrGeometryInvalid)
+	}
+	// The response must describe the version we asked for, and it must be published —
+	// a draft's geometry is still mutable, so projecting it would bake in something
+	// that can change underneath the pool.
+	if body.Map.ID != seatMapID {
+		return nil, fmt.Errorf("%w: catalog returned seat map %s, asked for %s", ErrGeometryInvalid, body.Map.ID, seatMapID)
+	}
+	if body.Map.Status != "published" {
+		return nil, fmt.Errorf("%w: seat map %s is %q, not published", ErrGeometryInvalid, seatMapID, body.Map.Status)
+	}
+
+	var out []SeatAdjacency
+	// Identities are compared AFTER trimming, and stored trimmed: "A" and " A" are the
+	// same seat to any human and to catalog's own identity composition, so letting both
+	// survive would put two adjacency rows on one seat and make the claim-path lookup
+	// depend on which one it happened to match (ai-review).
+	seen := map[string]struct{}{}
+	for _, section := range body.Sections {
+		for _, row := range section.Rows {
+			seats := append([]geometrySeat(nil), row.Seats...)
+			// Positions must be present, positive and unique within the row. A missing
+			// position decodes as zero and a duplicate makes sort order arbitrary — either
+			// one invents neighbours that do not exist, and an invented neighbour is worse
+			// than no rule at all because it refuses legal selections.
+			positions := map[int32]struct{}{}
+			for _, seat := range seats {
+				if seat.Position <= 0 {
+					return nil, fmt.Errorf("%w: seat map %s has a seat with position %d", ErrGeometryInvalid, seatMapID, seat.Position)
+				}
+				if _, dup := positions[seat.Position]; dup {
+					return nil, fmt.Errorf("%w: seat map %s repeats position %d within a row", ErrGeometryInvalid, seatMapID, seat.Position)
+				}
+				positions[seat.Position] = struct{}{}
+			}
+			sort.Slice(seats, func(i, j int) bool { return seats[i].Position < seats[j].Position })
+			identities := make([]string, 0, len(seats))
+			for _, seat := range seats {
+				id := strings.TrimSpace(seat.SeatIdentity)
+				if id == "" {
+					return nil, fmt.Errorf("%w: seat map %s has a seat with no identity", ErrGeometryInvalid, seatMapID)
+				}
+				if _, dup := seen[id]; dup {
+					return nil, fmt.Errorf("%w: seat map %s repeats identity %q", ErrGeometryInvalid, seatMapID, id)
+				}
+				seen[id] = struct{}{}
+				identities = append(identities, id)
+			}
+			for i, id := range identities {
+				adj := SeatAdjacency{SeatIdentity: id}
+				if i > 0 {
+					left := identities[i-1]
+					adj.Left = &left
+				}
+				if i < len(identities)-1 {
+					right := identities[i+1]
+					adj.Right = &right
+				}
+				out = append(out, adj)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: seat map %s has no seats", ErrGeometryInvalid, seatMapID)
+	}
+	return out, nil
+}
+
 func (r *CatalogResolver) ListSeatPins(ctx context.Context, after uuid.UUID, limit int) ([]SeatPin, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("seat pin page limit must be positive, got %d", limit)
