@@ -50,6 +50,7 @@ func (e CapacityAdjustmentStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
+	OrphanedSeats   ErrorCode = "orphaned_seats"
 	PinUnavailable  ErrorCode = "pin_unavailable"
 	SeatTaken       ErrorCode = "seat_taken"
 	SeatUnavailable ErrorCode = "seat_unavailable"
@@ -60,6 +61,8 @@ const (
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case OrphanedSeats:
+		return true
 	case PinUnavailable:
 		return true
 	case SeatTaken:
@@ -226,7 +229,7 @@ type Error struct {
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
-	// SeatIdentities The requested seats another live claim already holds, sorted. Present only with code `seat_taken` (TKT-173). Seats the request could have had are NOT listed — a caller re-renders exactly what it must give up. Knowable only inside the claim transaction that arbitrated: an answer computed afterwards, by re-reading occupancy say, describes a different moment and can name seats this request never lost.
+	// SeatIdentities With `seat_taken`: the requested seats another live claim already holds, sorted (TKT-173). With `orphaned_seats`: the FREE seats this selection would strand with no free neighbour in their row (ADR-041, TKT-182) — seats the buyer did NOT request, so a caller must not assume these are a subset of what it asked for. Seats the request could have had are NOT listed — a caller re-renders exactly what it must give up. Knowable only inside the claim transaction that arbitrated: an answer computed afterwards, by re-reading occupancy say, describes a different moment and can name seats this request never lost.
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 

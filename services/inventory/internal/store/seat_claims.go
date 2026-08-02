@@ -46,6 +46,214 @@ func (e *SeatTakenError) Error() string {
 // the handler's 409 mapping, and the contention suite, both predate this type.
 func (e *SeatTakenError) Unwrap() error { return ErrSeatTaken }
 
+// ErrSeatOrphaned reports a selection that would strand a lone free seat (ADR-041).
+var ErrSeatOrphaned = errors.New("selection would strand a seat with no free neighbour")
+
+// SeatOrphanedError names the seats that WOULD be stranded — free seats the buyer did
+// not ask for, which is why this cannot share `seat_taken`'s code on the wire: a caller
+// validating that the identities are a subset of the request (TKT-173) would reject
+// every valid orphan refusal as malformed. The two carry opposite relationships to the
+// request.
+type SeatOrphanedError struct {
+	// Seats are the free seats this selection would isolate, sorted. They stay
+	// SELECTABLE in a picker: adding one is the buyer's repair.
+	Seats []string
+}
+
+func (e *SeatOrphanedError) Error() string {
+	return ErrSeatOrphaned.Error() + ": " + strings.Join(e.Seats, ", ")
+}
+
+func (e *SeatOrphanedError) Unwrap() error { return ErrSeatOrphaned }
+
+// orphanedSeatsQuery finds the seats a selection would strand, entirely in SQL and
+// entirely within the caller's transaction and pool lock.
+//
+// The candidate set is the NEIGHBOURS OF THE REQUESTED SEATS, and that single choice
+// carries two properties an earlier version got wrong (ai-review):
+//
+//   - **Only newly orphaned seats.** A seat can only become isolated by this claim if
+//     one of its own neighbours is being taken now, so restricting candidates to
+//     N(requested) makes "newly" structural rather than a filter. The earlier version
+//     scanned every seat and tried to exclude pre-existing orphans with a predicate
+//     that was tautological — it re-reported the same stranded seat on every later
+//     claim in that row, for ever.
+//   - **Bounded work under the lock.** At most two candidates per requested seat, each
+//     reached through seat_claim_adjacency's (pool_id, seat_identity) primary key. The
+//     earlier version scanned the whole pool while holding the row lock that serialises
+//     every claimant on the performance — the worst place in the system to do O(map).
+//
+// `occupied(x)` is what will be taken once this claim commits: the requested set, plus
+// anything already live under the same predicate the claim path enforces (see
+// seatOccupancySeatsQuery). A seat is stranded when it is not occupied and every
+// neighbour it HAS is — where "every neighbour it has" is load-bearing: NULL means no
+// neighbour rather than unknown, so a row end has one and a one-seat row has none and
+// is never strandable.
+const orphanedSeatsQuery = `
+WITH requested AS (SELECT DISTINCT unnest($2::text[]) AS id),
+candidate AS (
+	SELECT DISTINCT v.n AS id
+	  FROM seat_claim_adjacency a
+	  JOIN requested r ON r.id = a.seat_identity
+	  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS v(n)
+	 WHERE a.pool_id = $1
+	   AND v.n IS NOT NULL
+	   AND NOT EXISTS (SELECT 1 FROM requested r2 WHERE r2.id = v.n)
+),
+-- Everything whose occupancy the answer can depend on: the candidates and their own
+-- neighbours. Bounding this is what keeps the whole statement proportional to the
+-- REQUEST rather than to the map.
+scope AS (
+	SELECT c.id FROM candidate c
+	UNION
+	SELECT n.v FROM candidate c
+	  JOIN seat_claim_adjacency a ON a.pool_id = $1 AND a.seat_identity = c.id
+	  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS n(v)
+	 WHERE n.v IS NOT NULL
+),
+occupied AS (
+	SELECT id FROM requested
+	UNION
+	SELECT cs.seat_identity
+	  FROM claim_seats cs JOIN claims cl ON cl.id = cs.claim_id
+	 WHERE cs.pool_id = $1 AND cs.released_at IS NULL AND ` + consumingClaims + `
+	   AND cs.seat_identity IN (SELECT id FROM scope)
+)
+SELECT c.id
+  FROM candidate c
+  JOIN seat_claim_adjacency a ON a.pool_id = $1 AND a.seat_identity = c.id
+ WHERE NOT (a.left_identity IS NULL AND a.right_identity IS NULL)
+   AND c.id NOT IN (SELECT id FROM occupied)
+   AND (a.left_identity  IS NULL OR a.left_identity  IN (SELECT id FROM occupied))
+   AND (a.right_identity IS NULL OR a.right_identity IN (SELECT id FROM occupied))
+ ORDER BY c.id`
+
+// projectionGapsQuery audits the slice of the projection this claim's answer rests on:
+// the requested seats' rows, the rows of every seat they name as a neighbour, and
+// whether those edges point back. It returns one identity per defect, or nothing.
+//
+// Bounded on purpose, and the bound is the honest limit. An edge pointing IN from a row
+// the request never reaches — B names A while A does not name B — is invisible here,
+// and finding it means scanning the pool, which is exactly the cost the bounded rewrite
+// removed. That case is closed at provisioning instead (validateAdjacency), where the
+// projection is built and the only place it legitimately changes.
+const projectionGapsQuery = `
+WITH requested AS (SELECT DISTINCT unnest($2::text[]) AS id),
+needed AS (
+	SELECT id FROM requested
+	UNION
+	SELECT v.n
+	  FROM seat_claim_adjacency a
+	  JOIN requested r ON r.id = a.seat_identity
+	  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS v(n)
+	 WHERE a.pool_id = $1 AND v.n IS NOT NULL
+)
+SELECT n.id FROM needed n
+ WHERE NOT EXISTS (SELECT 1 FROM seat_claim_adjacency a
+                    WHERE a.pool_id = $1 AND a.seat_identity = n.id)
+UNION
+SELECT a.seat_identity
+  FROM seat_claim_adjacency a
+  JOIN needed n ON n.id = a.seat_identity
+  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS v(x)
+  JOIN seat_claim_adjacency b ON b.pool_id = $1 AND b.seat_identity = v.x
+ WHERE a.pool_id = $1 AND v.x IS NOT NULL
+   AND a.seat_identity IS DISTINCT FROM b.left_identity
+   AND a.seat_identity IS DISTINCT FROM b.right_identity
+ LIMIT 5`
+
+// ErrSeatProjectionIncomplete reports a rule-enabled pool whose adjacency projection
+// cannot support a sound answer for this request.
+//
+// It is fail-CLOSED on purpose. The rule discovers candidates by reading adjacency rows,
+// so a missing row yields no candidates, finds no orphans, and lets the claim commit —
+// silently stranding a neighbour. A non-reciprocal edge is worse than incomplete: it can
+// blame an unrelated claim for a seat that was already isolated. The bounded query
+// assumes a complete, reciprocal projection, and the honest way to depend on that is to
+// check it rather than hope (ai-review).
+var ErrSeatProjectionIncomplete = errors.New("seat adjacency projection cannot answer this claim")
+
+// validateAdjacency rejects a projection that is not internally consistent, at the one
+// place it is written. Claim time can only audit what the request reaches; this sees the
+// whole set, once, off the hot path.
+//
+// It proves INTERNAL CONSISTENCY, not fidelity to the seat map. A projection whose seats
+// all name no neighbours is perfectly reciprocal, and nothing in this package can tell it
+// apart from a map of genuine one-seat rows — the geometry that would settle it is not
+// here. Fidelity is established where the adjacency is derived from that geometry
+// (consumer.SeatMapAdjacency) and pinned by its tests; re-checking it here would mean
+// re-deriving it from data the store does not have (ai-review).
+func validateAdjacency(rows []SeatAdjacencyRow) error {
+	byID := make(map[string]SeatAdjacencyRow, len(rows))
+	for _, r := range rows {
+		byID[r.SeatIdentity] = r
+	}
+	names := func(r SeatAdjacencyRow, id string) bool {
+		return (r.Left != nil && *r.Left == id) || (r.Right != nil && *r.Right == id)
+	}
+	for _, r := range rows {
+		for _, n := range []*string{r.Left, r.Right} {
+			if n == nil {
+				continue
+			}
+			other, ok := byID[*n]
+			if !ok {
+				return fmt.Errorf("%w: seat %q names neighbour %q, which has no row",
+					ErrSeatProjectionIncomplete, r.SeatIdentity, *n)
+			}
+			if !names(other, r.SeatIdentity) {
+				return fmt.Errorf("%w: seat %q names %q but %q does not name it back",
+					ErrSeatProjectionIncomplete, r.SeatIdentity, *n, *n)
+			}
+		}
+	}
+	return nil
+}
+
+// orphanedSeats runs the rule under the caller's pool lock. Empty means the selection
+// strands nothing.
+func orphanedSeats(ctx context.Context, tx *sql.Tx, pool uuid.UUID, canon []string) ([]string, error) {
+	// The answer below is unsound, not merely incomplete, if the rows it reads are
+	// missing or point the wrong way.
+	gaps, err := tx.QueryContext(ctx, projectionGapsQuery, pool, canon)
+	if err != nil {
+		return nil, err
+	}
+	var bad []string
+	for gaps.Next() {
+		var id string
+		if err = gaps.Scan(&id); err != nil {
+			_ = gaps.Close()
+			return nil, err
+		}
+		bad = append(bad, id)
+	}
+	if err = gaps.Err(); err != nil {
+		_ = gaps.Close()
+		return nil, err
+	}
+	if err = gaps.Close(); err != nil {
+		return nil, err
+	}
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("%w: %v", ErrSeatProjectionIncomplete, bad)
+	}
+	rows, err := tx.QueryContext(ctx, orphanedSeatsQuery, pool, canon)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var seat string
+		if err = rows.Scan(&seat); err != nil {
+			return nil, err
+		}
+		out = append(out, seat)
+	}
+	return out, rows.Err()
+}
+
 // MaxSeatsPerHold bounds a single seat-set claim (mirrors the GA 1..50 quantity band).
 const MaxSeatsPerHold = 50
 
@@ -130,6 +338,9 @@ type SeatAdjacencyRow struct {
 // silently enforces nothing, and the consumed-event row would stop any later binary
 // fixing it (ADR-041's rollout section).
 func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organizerID, seatMapID uuid.UUID, capacity int32, orphanPrevention bool, adjacency []SeatAdjacencyRow) error {
+	if err := validateAdjacency(adjacency); err != nil {
+		return err
+	}
 	if capacity <= 0 {
 		return fmt.Errorf("capacity must be positive")
 	}
@@ -222,10 +433,11 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	var target sql.NullInt32
 	var lifecycle, closure, kind string
 	var seatMapID uuid.NullUUID
+	var orphanPrevention bool
 	// closure_status stays last before FROM (lock-handshake pattern; see CreateHold).
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,seat_map_id,closure_status
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,seat_map_id,orphan_prevention_enabled,closure_status
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).
-		Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &seatMapID, &closure)
+		Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &seatMapID, &orphanPrevention, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SeatHold{}, ErrNotFound
 	}
@@ -316,6 +528,25 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	}
 	if len(contended) > 0 {
 		return SeatHold{}, &SeatTakenError{Seats: contended}
+	}
+
+	// The orphan rule, and ONLY when the pool carries it: a rule-off pool must run no
+	// extra statement at all (ADR-041's AC4), which is why this is inside the branch
+	// rather than a query that returns nothing.
+	//
+	// It runs here — after the expiry sweep, after contention, under the pool lock,
+	// before any write. All four matter. Before the sweep it would count seats whose
+	// holds have already lapsed; before contention it would compute against a selection
+	// that is about to be refused anyway; outside the lock it would be advisory, and
+	// two claimants could each take a legal seat and jointly strand a third.
+	if orphanPrevention {
+		stranded, oerr := orphanedSeats(ctx, tx, slot, canon)
+		if oerr != nil {
+			return SeatHold{}, oerr
+		}
+		if len(stranded) > 0 {
+			return SeatHold{}, &SeatOrphanedError{Seats: stranded}
+		}
 	}
 
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}

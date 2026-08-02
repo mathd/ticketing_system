@@ -305,12 +305,15 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
+        code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable, orphaned_seats], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
         seat_identities:
           type: array
           description: >
-            The requested seats another live claim already holds, sorted. Present
-            only with code `seat_taken` (TKT-173). Seats the request could have had
+            With `seat_taken`: the requested seats another live claim already
+            holds, sorted (TKT-173). With `orphaned_seats`: the FREE seats this
+            selection would strand with no free neighbour in their row (ADR-041,
+            TKT-182) — seats the buyer did NOT request, so a caller must not
+            assume these are a subset of what it asked for. Seats the request could have had
             are NOT listed — a caller re-renders exactly what it must give up.
             Knowable only inside the claim transaction that arbitrated: an answer
             computed afterwards, by re-reading occupancy say, describes a different

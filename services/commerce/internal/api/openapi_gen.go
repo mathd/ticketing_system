@@ -88,12 +88,15 @@ func (e CancellationRefundRunStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	SeatTaken ErrorCode = "seat_taken"
+	OrphanedSeats ErrorCode = "orphaned_seats"
+	SeatTaken     ErrorCode = "seat_taken"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case OrphanedSeats:
+		return true
 	case SeatTaken:
 		return true
 	default:
@@ -239,15 +242,15 @@ type DeliveryEmail struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable refusal reason. Present only when a seated reservation lost seats to a competing claimant (TKT-173).
+	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
-	// SeatIdentities With code `seat_taken`: the requested seats another buyer already holds, sorted — forwarded verbatim from the inventory transaction that arbitrated. Only the seats actually lost are listed, so a picker re-renders exactly what must be given up. Never synthesised by commerce: an inventory `seat_taken` response without a usable identity list is a 502, not a guess.
+	// SeatIdentities With `seat_taken`: the requested seats another buyer already holds, sorted — a SUBSET of the request, forwarded verbatim from the inventory transaction that arbitrated. With `orphaned_seats`: the FREE seats the selection would strand — seats the buyer did NOT request, so the subset rule deliberately does not apply to them and a picker must keep them selectable, since adding one is the repair. Never synthesised by commerce: a refusal without a usable identity list is a 502, not a guess.
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable refusal reason. Present only when a seated reservation lost seats to a competing claimant (TKT-173).
+// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
 type ErrorCode string
 
 // Exchange defines model for Exchange.

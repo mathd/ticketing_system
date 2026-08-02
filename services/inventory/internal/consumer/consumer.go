@@ -417,6 +417,13 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 	if input.seatMapID != uuid.Nil {
 		if err := c.st.ProvisionSeated(ctx, e.ID, input.poolID, input.organizerID, input.seatMapID, input.capacity, input.orphanPrevention, input.adjacency); err != nil {
 			c.log.Error("provision seated inventory", "err", err)
+			if errors.Is(err, store.ErrSeatProjectionIncomplete) {
+				// Same disposition as ErrGeometryInvalid, for the same reason: a
+				// projection the store refuses as incomplete or non-reciprocal is a
+				// property of these bytes, and no retry changes them.
+				_ = msg.Term()
+				return
+			}
 			_ = msg.Nak()
 			return
 		}

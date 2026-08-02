@@ -194,16 +194,17 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken], description: 'Machine-readable refusal reason. Present only when a seated reservation lost seats to a competing claimant (TKT-173).'}
+        code: {type: string, enum: [seat_taken, orphaned_seats], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).'}
         seat_identities:
           type: array
           description: >
-            With code `seat_taken`: the requested seats another buyer already
-            holds, sorted — forwarded verbatim from the inventory transaction that
-            arbitrated. Only the seats actually lost are listed, so a picker
-            re-renders exactly what must be given up. Never synthesised by
-            commerce: an inventory `seat_taken` response without a usable identity
-            list is a 502, not a guess.
+            With `seat_taken`: the requested seats another buyer already holds,
+            sorted — a SUBSET of the request, forwarded verbatim from the inventory
+            transaction that arbitrated. With `orphaned_seats`: the FREE seats the
+            selection would strand — seats the buyer did NOT request, so the subset
+            rule deliberately does not apply to them and a picker must keep them
+            selectable, since adding one is the repair. Never synthesised by
+            commerce: a refusal without a usable identity list is a 502, not a guess.
           items: {type: string, minLength: 1, maxLength: 200}
     ReservationCreate:
       type: object

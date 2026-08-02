@@ -85,6 +85,13 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
             setStatus(strings.seatsNoLongerAvailable.replace('{seats}', refusal.seat_identities.join(', ')));
             return;
           }
+          // An orphan refusal names seats that are FREE and that the buyer did not
+          // request. They must NOT go through the conflict channel: marking them
+          // unavailable would remove the buyer's only repair, which is to add one.
+          if (refusal?.code === 'orphaned_seats' && refusal.seat_identities?.length) {
+            setStatus(strings.seatsWouldStrand.replace('{seats}', refusal.seat_identities.join(', ')));
+            return;
+          }
         }
         setStatus(t.unavailable); return;
       }

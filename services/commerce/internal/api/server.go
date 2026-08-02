@@ -209,6 +209,37 @@ func (in reserveRequest) units() int32 {
 	return int32(len(in.canonicalSeatSet()))
 }
 
+// uniqueSeats reports whether a forwarded identity list has no repeats. Weaker than
+// subsetOf on purpose: an orphaned-seat list is NOT drawn from the request.
+func uniqueSeats(seats []string) bool {
+	seen := make(map[string]struct{}, len(seats))
+	for _, s := range seats {
+		if strings.TrimSpace(s) == "" || len(s) > 200 {
+			return false
+		}
+		if _, dup := seen[s]; dup {
+			return false
+		}
+		seen[s] = struct{}{}
+	}
+	return true
+}
+
+// disjointFrom reports that none of got appears in want. An orphaned seat is by
+// definition one the buyer did NOT request.
+func disjointFrom(got, want []string) bool {
+	asked := make(map[string]struct{}, len(want))
+	for _, s := range want {
+		asked[s] = struct{}{}
+	}
+	for _, s := range got {
+		if _, ok := asked[s]; ok {
+			return false
+		}
+	}
+	return true
+}
+
 // subsetOf reports whether every identity in got appears in want, with no duplicates.
 // want is canonical (sorted, de-duplicated); got is whatever the far service sent.
 func subsetOf(got, want []string) bool {
@@ -513,6 +544,27 @@ func seatedInventoryRefusal(w http.ResponseWriter, code int, body []byte, reques
 		Error string   `json:"error"`
 		Code  string   `json:"code"`
 		Seats []string `json:"seat_identities"`
+	}
+	if code == 409 && json.Unmarshal(body, &refusal) == nil && refusal.Code == "orphaned_seats" {
+		// The identities here are seats the buyer did NOT ask for — the ones the
+		// selection would strand. The subset rule below is therefore exactly wrong for
+		// them: applying it would turn every valid orphan refusal into a 502 (ADR-041).
+		// They still must be non-empty and unique; commerce never invents identities.
+		// Non-empty, unique, contract-shaped, bounded, and DISJOINT from the request.
+		// The last one is the real check: a requested seat cannot be a free unrequested
+		// orphan, so accepting one would have the picker propose an impossible repair —
+		// "add the seat you already asked for" (ai-review). The subset rule that guards
+		// seat_taken is exactly inverted here, which is why both exist.
+		if len(refusal.Seats) == 0 || len(refusal.Seats) > 200 || !uniqueSeats(refusal.Seats) ||
+			!disjointFrom(refusal.Seats, requested) {
+			write(w, 502, map[string]string{"error": "invalid inventory response"})
+			return
+		}
+		write(w, 409, map[string]any{
+			"error": "the selection would leave a seat with no neighbour",
+			"code":  "orphaned_seats", "seat_identities": refusal.Seats,
+		})
+		return
 	}
 	if code == 409 && json.Unmarshal(body, &refusal) == nil && refusal.Code == "seat_taken" {
 		// Non-empty, and a SUBSET of what this buyer asked for. Forwarding verbatim

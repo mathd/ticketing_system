@@ -3,10 +3,12 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -795,5 +797,369 @@ func TestProvisionSeatedRefusesToAdoptAMismatchedPool(t *testing.T) {
 	}
 	if err := st.ProvisionSeated(ctx, uuid.New(), slot, uuid.New(), seatMap, 100, true, adj); !errors.Is(err, ErrPoolKindMismatch) {
 		t.Fatalf("different organizer: err = %v want ErrPoolKindMismatch", err)
+	}
+}
+
+// seededOrphanPool provisions a rule-enabled pool with one row of `n` seats named
+// A/1/1..A/1/n, and returns (org, slot, seat namer).
+func seededOrphanPool(t *testing.T, ctx context.Context, st *Postgres, n int) (uuid.UUID, uuid.UUID, func(int) string) {
+	t.Helper()
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+	seat := func(i int) string { return "A/1/" + strconv.Itoa(i) }
+	adjacency := make([]SeatAdjacencyRow, 0, n)
+	for i := 1; i <= n; i++ {
+		row := SeatAdjacencyRow{SeatIdentity: seat(i)}
+		if i > 1 {
+			left := seat(i - 1)
+			row.Left = &left
+		}
+		if i < n {
+			right := seat(i + 1)
+			row.Right = &right
+		}
+		adjacency = append(adjacency, row)
+	}
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, adjacency); err != nil {
+		t.Fatal(err)
+	}
+	return org, slot, seat
+}
+
+// TestSeatHoldRejectsNewlyOrphanedSeats is TKT-182: a selection that would strand a
+// lone free seat is refused inside the deciding transaction.
+func TestSeatHoldRejectsNewlyOrphanedSeats(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+
+	t.Run("stranding the middle of three", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+		// Taking 1 and 3 leaves 2 with no free neighbour.
+		_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(3)}, 0, "EUR", "k1")
+		var orphan *SeatOrphanedError
+		if !errors.As(err, &orphan) {
+			t.Fatalf("err = %v (%T), want *SeatOrphanedError", err, err)
+		}
+		if len(orphan.Seats) != 1 || orphan.Seats[0] != seat(2) {
+			t.Fatalf("stranded = %v want [%s]", orphan.Seats, seat(2))
+		}
+	})
+
+	t.Run("a run of two is fine", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 4)
+		// Taking 1 leaves 2,3,4 — every one still has a free neighbour.
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1)}, 0, "EUR", "k2"); err != nil {
+			t.Fatalf("a selection that strands nothing must succeed: %v", err)
+		}
+	})
+
+	t.Run("row ends have one neighbour", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+		// Taking 1 and 2 leaves 3, whose only neighbour (2) is now gone.
+		_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(2)}, 0, "EUR", "k3")
+		var orphan *SeatOrphanedError
+		if !errors.As(err, &orphan) || len(orphan.Seats) != 1 || orphan.Seats[0] != seat(3) {
+			t.Fatalf("err = %v — an END seat has ONE neighbour, so losing it strands the end", err)
+		}
+	})
+
+	t.Run("a one-seat row is always selectable", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 1)
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1)}, 0, "EUR", "k4"); err != nil {
+			t.Fatalf("a seat with no neighbours strands nobody: %v", err)
+		}
+	})
+
+	t.Run("only NEWLY orphaned seats are reported", func(t *testing.T) {
+		// Ten seats, so a claim can be genuinely unrelated to the stranded one. In a
+		// six-seat row nothing is far enough away: every remaining choice strands
+		// something of its own, which is a fact about small rows, not about the rule.
+		org, slot, seat := seededOrphanPool(t, ctx, st, 10)
+		// Strand seat 2 the way reality does — a refund, an admin action, a claim made
+		// before the rule was enabled — by writing the rows directly rather than going
+		// through the rule that would now refuse them. The earlier version of this test
+		// tried to seed through CreateSeatHold and SKIPPED when that was refused, so it
+		// asserted nothing at all on the path it existed to protect (ai-review).
+		db := dbOf(t, st)
+		for _, s := range []string{seat(1), seat(3)} {
+			claimID := uuid.New()
+			if _, err := db.ExecContext(ctx,
+				`INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint)
+				 VALUES($1,$2,$3,1,'confirmed',now()+interval '1 hour',$4,'seed')`,
+				claimID, org, slot, "seed-"+s); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx,
+				`INSERT INTO claim_seats(claim_id,pool_id,seat_identity) VALUES($1,$2,$3)`,
+				claimID, slot, s); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Seat 2 is isolated and nothing this claim does causes it: 7 and 8 leave 6
+		// beside 5 and 9 beside 10.
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(7), seat(8)}, 0, "EUR", "k5"); err != nil {
+			t.Fatalf("a pre-existing orphan must not poison an unrelated claim: %v", err)
+		}
+		// And the rule still fires where THIS claim does the stranding: taking 5 leaves
+		// 4 between an already-taken 3 and a now-taken 5.
+		_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(5)}, 0, "EUR", "k6")
+		var orphan *SeatOrphanedError
+		if !errors.As(err, &orphan) {
+			t.Fatalf("err = %v — the rule must still fire for seats THIS claim strands", err)
+		}
+		// It may legitimately name several seats — taking 5 isolates 4 (3 is gone) and
+		// 6 (7 is gone). What it must NEVER name is seat 2: that one was stranded long
+		// before this claim existed, and blaming this buyer for it is the bug.
+		for _, s := range orphan.Seats {
+			if s == seat(2) {
+				t.Fatalf("stranded = %v — seat 2 was already isolated; a pre-existing orphan "+
+					"must never be re-reported against a later claim", orphan.Seats)
+			}
+		}
+		if len(orphan.Seats) == 0 {
+			t.Fatal("taking seat 5 does strand seats; the rule must say so")
+		}
+	})
+}
+
+// TestSeatHoldRuleOffIgnoresOrphans is AC4 proven by construction: with the rule off,
+// the identical selection succeeds and the projection is never consulted.
+func TestSeatHoldRuleOffIgnoresOrphans(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 1000)
+
+	// Drop the table entirely: a rule-off claim must not read it at all.
+	if _, err := db.ExecContext(ctx, `DROP TABLE seat_claim_adjacency`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1", "A/1/3"}, 0, "EUR", "k1"); err != nil {
+		t.Fatalf("rule-off claim must not touch the projection: %v", err)
+	}
+}
+
+// TestOrphanRuleHoldsUnderContention is AC7, and it is the reason the check lives
+// inside the deciding transaction rather than anywhere more convenient.
+//
+// Row of five. A takes seat 1; B takes seat 3. Each selection is legal ALONE — 1
+// leaves 2,3,4,5 and 3 leaves 1,2,4,5, both fully paired. Together they isolate seat 2.
+// A check that ran before the transaction — in the browser, in commerce, in a
+// pre-flight read — passes both, and the row ends up with a hole nobody can sell.
+//
+// Under the pool lock exactly one commits and the loser is told which seat it would
+// have stranded.
+func TestOrphanRuleHoldsUnderContention(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 5)
+
+	// The barrier is a real transaction holding the pool row, not a goroutine start
+	// signal. Closing a channel only makes both goroutines RUNNABLE; normal scheduling
+	// could let one finish before the other begins, and the test would pass even with
+	// the lock removed (ai-review). Holding the row makes the overlap certain: B cannot
+	// reach its orphan check until A commits.
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = blocker.ExecContext(ctx,
+		`SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slot); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	picks := [][]string{{seat(1)}, {seat(3)}}
+	started := make(chan struct{}, 2)
+	for i := range picks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			started <- struct{}{}
+			_, results[i] = st.CreateSeatHold(ctx, org, slot, uuid.New(), picks[i], 0, "EUR",
+				"race-"+strconv.Itoa(i))
+		}(i)
+	}
+	// Wait until BOTH claimants are observably blocked BY THIS BLOCKER, not merely
+	// until their goroutines have been scheduled. Sending on a channel just before
+	// calling CreateSeatHold proves the call site was reached, and a fixed sleep is a
+	// guess: if one goroutine were delayed past the rollback, the two claims would run
+	// sequentially and the test would still see one success and one refusal — passing
+	// with the pool lock removed entirely. Counting ungranted locks database-wide is
+	// not enough either, since anything else sharing this database can satisfy it;
+	// pg_blocking_pids ties the wait to the session actually holding the pool row
+	// (ai-review, twice). It has to be followed TRANSITIVELY: PostgreSQL queues row-lock
+	// waiters, so the second claimant reports the FIRST claimant as its blocker, not the
+	// session holding the row. A direct-blocker count sees one waiter for ever.
+	<-started
+	<-started
+	var blockerPID int
+	if err = blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var waiting int
+		if qerr := db.QueryRowContext(ctx, `
+			WITH RECURSIVE chain(pid) AS (
+				SELECT $1::int
+				UNION
+				SELECT a.pid FROM pg_stat_activity a JOIN chain c ON c.pid = ANY(pg_blocking_pids(a.pid))
+				 WHERE a.datname = current_database()
+			)
+			SELECT count(*) - 1 FROM chain`,
+			blockerPID).Scan(&waiting); qerr != nil {
+			t.Fatal(qerr)
+		}
+		if waiting >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d claimant(s) ever blocked on the pool row held by pid %d; the "+
+				"barrier never established the overlap this test exists to prove",
+				waiting, blockerPID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err = blocker.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+
+	var ok, orphaned int
+	for i, err := range results {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrSeatOrphaned):
+			orphaned++
+			var o *SeatOrphanedError
+			if errors.As(err, &o) && (len(o.Seats) != 1 || o.Seats[0] != seat(2)) {
+				t.Fatalf("claim %d: stranded = %v want [%s]", i, o.Seats, seat(2))
+			}
+		default:
+			t.Fatalf("claim %d: unexpected %v", i, err)
+		}
+	}
+	if ok != 1 || orphaned != 1 {
+		t.Fatalf("succeeded=%d orphan-refused=%d, want 1/1 — two individually legal claims "+
+			"must not be able to jointly strand a seat", ok, orphaned)
+	}
+
+	// And the loser wrote nothing.
+	var live int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM claim_seats WHERE pool_id=$1 AND released_at IS NULL`, slot).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 1 {
+		t.Fatalf("live seat rows = %d want 1 — the refused claim must roll back entirely", live)
+	}
+}
+
+// TestOrphanRuleFailsClosedOnIncompleteProjection: the bounded query discovers
+// candidates through each requested seat's own adjacency row, so a missing row would
+// yield no candidates, find no orphans, and let the claim commit — silently stranding
+// a neighbour. The query assumes a complete projection; this is the check that makes
+// depending on it honest rather than hopeful (ai-review).
+func TestOrphanRuleFailsClosedOnIncompleteProjection(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`, slot, seat(3)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the coverage check this commits and strands seat 2.
+	_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(3)}, 0, "EUR", "k1")
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v, want ErrSeatProjectionIncomplete — an unsound rule must refuse, "+
+			"not quietly permit", err)
+	}
+	var live int
+	if qerr := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM claim_seats WHERE pool_id=$1 AND released_at IS NULL`, slot).Scan(&live); qerr != nil {
+		t.Fatal(qerr)
+	}
+	if live != 0 {
+		t.Fatalf("live seats = %d want 0 — the refused claim must write nothing", live)
+	}
+}
+
+// TestOrphanRuleFailsClosedOnMissingCandidateRow: the first version of the coverage
+// check validated only the REQUESTED seats, which is the wrong side of the dependency.
+// The query also reads each candidate's own row, so deleting the row of a seat that is
+// merely a neighbour left the fix in place and the hole open (ai-review).
+func TestOrphanRuleFailsClosedOnMissingCandidateRow(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+
+	// Seat 2 is a candidate, never requested. Requested-seat coverage is still 2 of 2.
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`, slot, seat(2)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(3)}, 0, "EUR", "k1")
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v, want ErrSeatProjectionIncomplete — seat 2 would be stranded by a "+
+			"claim the rule never even considered it for", err)
+	}
+}
+
+// TestOrphanRuleFailsClosedOnAsymmetricAdjacency: a one-way edge is worse than a missing
+// one. It can make the rule blame an unrelated claim for a seat that was ALREADY
+// isolated, which is the one thing ADR-041 says the rule must never do.
+func TestOrphanRuleFailsClosedOnAsymmetricAdjacency(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+
+	// Seat 2 still names 1; seat 1 no longer names 2. Requesting 2 reaches both rows, so
+	// the bounded audit can see the disagreement. The mirror case — an edge pointing in
+	// from a row this request never reaches — is out of a bounded query's reach by
+	// construction, and is closed at provisioning instead
+	// (TestProvisioningRejectsBrokenProjection).
+	if _, err := db.ExecContext(ctx,
+		`UPDATE seat_claim_adjacency SET right_identity=NULL WHERE pool_id=$1 AND seat_identity=$2`,
+		slot, seat(1)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(2)}, 0, "EUR", "k1")
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v, want ErrSeatProjectionIncomplete — a projection that disagrees "+
+			"with itself cannot answer the question", err)
+	}
+}
+
+// TestProvisioningRejectsBrokenProjection: claim time can only audit what the request
+// reaches. Provisioning sees the whole projection, so that is where completeness and
+// reciprocity are actually established (ADR-041).
+func TestProvisioningRejectsBrokenProjection(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	one, two := "A/1/1", "A/1/2"
+
+	for _, tc := range []struct {
+		name string
+		rows []SeatAdjacencyRow
+	}{
+		{"neighbour with no row", []SeatAdjacencyRow{{SeatIdentity: one, Right: &two}}},
+		{"one-way edge", []SeatAdjacencyRow{
+			{SeatIdentity: one, Right: &two},
+			{SeatIdentity: two},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slot := uuid.New()
+			err := st.ProvisionSeated(ctx, uuid.New(), slot, uuid.New(), uuid.New(), 100, true, tc.rows)
+			if !errors.Is(err, ErrSeatProjectionIncomplete) {
+				t.Fatalf("err = %v, want ErrSeatProjectionIncomplete", err)
+			}
+			var pools int
+			if qerr := db.QueryRowContext(ctx,
+				`SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, slot).Scan(&pools); qerr != nil {
+				t.Fatal(qerr)
+			}
+			if pools != 0 {
+				t.Fatal("a rejected projection must not leave a pool behind")
+			}
+		})
 	}
 }
