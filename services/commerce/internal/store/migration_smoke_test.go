@@ -253,6 +253,14 @@ func TestMigration0012DownRefusesToDestroyCancellationHistory(t *testing.T) {
 		org, run, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
+	// Unwind everything above 0012 first. provider.Down() rolls back exactly ONE
+	// migration, so this assertion silently stopped testing 0012 the moment 0013
+	// landed on top of it (TKT-173) — it rolled back the new migration, saw that
+	// succeed, and reported a missing guard. DownTo pins the target explicitly so the
+	// next migration cannot move this test's aim again.
+	if _, err := provider.DownTo(ctx, 12); err != nil {
+		t.Fatalf("unwind to 0012: %v", err)
+	}
 	if _, err := provider.Down(ctx); err == nil {
 		t.Fatal("0012 rolled back over an existing cancellation refund run — the guard is missing")
 	}

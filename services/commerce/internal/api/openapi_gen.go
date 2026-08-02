@@ -86,6 +86,21 @@ func (e CancellationRefundRunStatus) Valid() bool {
 	}
 }
 
+// Defines values for ErrorCode.
+const (
+	SeatTaken ErrorCode = "seat_taken"
+)
+
+// Valid indicates whether the value is a known member of the ErrorCode enum.
+func (e ErrorCode) Valid() bool {
+	switch e {
+	case SeatTaken:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ExchangeStatus.
 const (
 	ExchangeStatusCapacityPending ExchangeStatus = "capacity_pending"
@@ -224,8 +239,16 @@ type DeliveryEmail struct {
 
 // Error defines model for Error.
 type Error struct {
-	Error string `json:"error"`
+	// Code Machine-readable refusal reason. Present only when a seated reservation lost seats to a competing claimant (TKT-173).
+	Code  *ErrorCode `json:"code,omitempty"`
+	Error string     `json:"error"`
+
+	// SeatIdentities With code `seat_taken`: the requested seats another buyer already holds, sorted — forwarded verbatim from the inventory transaction that arbitrated. Only the seats actually lost are listed, so a picker re-renders exactly what must be given up. Never synthesised by commerce: an inventory `seat_taken` response without a usable identity list is a 502, not a guess.
+	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
+
+// ErrorCode Machine-readable refusal reason. Present only when a seated reservation lost seats to a competing claimant (TKT-173).
+type ErrorCode string
 
 // Exchange defines model for Exchange.
 type Exchange struct {
@@ -358,14 +381,22 @@ type Reservation struct {
 	ExpiresAt     time.Time          `json:"expires_at"`
 	HoldId        openapi_types.UUID `json:"hold_id"`
 	ReservationId openapi_types.UUID `json:"reservation_id"`
-	ServerTime    time.Time          `json:"server_time"`
+
+	// Seats The seats actually claimed, sorted and de-duplicated — inventory's canonical set, never the request's array (TKT-173). Present on a seated reservation and OMITTED on a general-admission one: absence is the reservation-kind signal, and an empty array would read as a seated claim that holds nothing. It cannot be required, because every existing GA and staff-created reservation response lacks it and the response validator fails closed (ADR-028) — requiring it would turn those valid responses into runtime 500s.
+	Seats      *[]string `json:"seats,omitempty"`
+	ServerTime time.Time `json:"server_time"`
 }
 
-// ReservationCreate defines model for ReservationCreate.
+// ReservationCreate Exactly one of `quantity` (general admission) or `seat_identities` (reserved seating, TKT-173) — never both, never neither. That XOR is expressed by the property counts rather than a top-level `oneOf`: with two required properties, two optional ones and no additional properties allowed, `minProperties: 3` / `maxProperties: 3` admits exactly one of the alternatives. `oneOf` would be the obvious spelling and is avoided deliberately — the generator turns a top-level union into a json.RawMessage with As…/From… accessors instead of a usable request struct, which is a worse contract bought with a worse API. The handler enforces the same XOR independently; a caller invoking it directly must not be able to slip past the schema.
 type ReservationCreate struct {
-	OrganizerId  openapi_types.UUID `json:"organizer_id"`
-	Quantity     int                `json:"quantity"`
-	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// Quantity General admission: how many. Mutually exclusive with seat_identities.
+	Quantity *int `json:"quantity,omitempty"`
+
+	// SeatIdentities Reserved seating: exactly which seats, as stable "section/row/seat" identities read from the seat map. Mutually exclusive with quantity. The set is canonicalised (sorted, de-duplicated) by inventory, so [A,B] and [B,A] are the same request under one idempotency key — and the reservation's money follows the CLAIMED seat count, not the length of this array.
+	SeatIdentities *[]string          `json:"seat_identities,omitempty"`
+	TicketTypeId   openapi_types.UUID `json:"ticket_type_id"`
 }
 
 // AfterOrderId defines model for AfterOrderId.

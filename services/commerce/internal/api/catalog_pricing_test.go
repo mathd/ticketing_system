@@ -310,3 +310,196 @@ func TestStorableSnapshot(t *testing.T) {
 		}
 	})
 }
+
+// seatedStack is pricingStack's seated twin: it records which inventory path the
+// reservation took and what it sent, and answers with whatever the test wants
+// inventory to say. Separate from pricingStack because that helper asserts the
+// hold amount by hard-failing at inventory, and the seated cases need to inspect
+// the route and the seat set as well.
+func seatedStack(t *testing.T, invStatus int, invBody string) (*Server, *string, *[]string, func()) {
+	t.Helper()
+	var path string
+	var seats []string
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(resolutionBody(900, true)))
+	}))
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		var in struct {
+			SeatIdentities []string `json:"seat_identities"`
+			UnitAmount     int64    `json:"unit_amount"`
+			Quantity       int32    `json:"quantity"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		seats = in.SeatIdentities
+		if in.UnitAmount != 900 {
+			t.Errorf("inventory got unit_amount=%d, want the catalog-RESOLVED 900 (ADR-036)", in.UnitAmount)
+		}
+		if in.Quantity != 0 {
+			t.Errorf("a seated claim must not carry a quantity, got %d", in.Quantity)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(invStatus)
+		_, _ = w.Write([]byte(invBody))
+	}))
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	return s, &path, &seats, func() { catalog.Close(); inventory.Close() }
+}
+
+func reserveSeats(t *testing.T, s *Server, key string, seats string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"organizer_id":"` + pricingOrg + `","ticket_type_id":"` + pricingTT + `","seat_identities":` + seats + `}`
+	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	res := httptest.NewRecorder()
+	s.Router(nil, true).ServeHTTP(res, req)
+	return res
+}
+
+// TestReserveRoutesSeatedClaimsToTheSeatHold is TKT-173 AC2 + AC3: a seated
+// reservation reaches inventory's SEAT claim, not the quantity hold, and carries
+// catalog's resolved unit price. Routing it to /holds would be the quiet disaster —
+// it would succeed, hold N units of a seated pool's capacity, and hold nobody's seat.
+// (It would in fact be refused by ErrPoolKindMismatch today, but relying on the far
+// service to catch a routing bug is not a design.)
+func TestReserveRoutesSeatedClaimsToTheSeatHold(t *testing.T) {
+	s, path, seats, done := seatedStack(t, 409, `{"error":"stop here — the route and the price are what this test is about"}`)
+	defer done()
+
+	reserveSeats(t, s, "seated-route", `["B/2/2","A/1/1"]`)
+
+	if *path != "/holds/seats" {
+		t.Fatalf("seated reservation hit %q, want /holds/seats", *path)
+	}
+	if len(*seats) != 2 || (*seats)[0] != "B/2/2" {
+		t.Fatalf("inventory got seats %v — commerce forwards the request set verbatim and lets "+
+			"inventory canonicalise it", *seats)
+	}
+}
+
+// TestReserveForwardsContendedSeats is AC4. A bare 409 tells a picker that something
+// went wrong; it cannot tell it which seats to re-render. The identities come from
+// the inventory transaction that arbitrated — commerce forwards them and never
+// invents them.
+func TestReserveForwardsContendedSeats(t *testing.T) {
+	s, _, _, done := seatedStack(t, 409,
+		`{"error":"seat already held by another live claim: A/1/1","code":"seat_taken","seat_identities":["A/1/1"]}`)
+	defer done()
+
+	res := reserveSeats(t, s, "seated-conflict", `["A/1/1","A/1/2"]`)
+
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status = %d want 409: %s", res.Code, res.Body.String())
+	}
+	var out struct {
+		Code  string   `json:"code"`
+		Seats []string `json:"seat_identities"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Code != "seat_taken" {
+		t.Fatalf("code = %q want seat_taken — a picker branches on this: %s", out.Code, res.Body.String())
+	}
+	// Only the contended seat. A/1/2 was free and must not be named: telling a buyer
+	// to give up a seat they could have had is its own defect.
+	if len(out.Seats) != 1 || out.Seats[0] != "A/1/1" {
+		t.Fatalf("seat_identities = %v want [A/1/1] only", out.Seats)
+	}
+}
+
+// TestReserveRefusesToInventContendedSeats: an inventory `seat_taken` with no usable
+// identity list is a broken upstream, not a licence to guess. Echoing the request
+// would name seats that were never contended, which is exactly the lie AC4 exists to
+// prevent — and it would look completely plausible to the buyer.
+func TestReserveRefusesToInventContendedSeats(t *testing.T) {
+	for name, body := range map[string]string{
+		"no identities":    `{"error":"seat taken","code":"seat_taken"}`,
+		"empty identities": `{"error":"seat taken","code":"seat_taken","seat_identities":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, done := seatedStack(t, 409, body)
+			defer done()
+
+			res := reserveSeats(t, s, "seated-broken-"+name, `["A/1/1","A/1/2"]`)
+
+			if res.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d want 502: %s", res.Code, res.Body.String())
+			}
+			if strings.Contains(res.Body.String(), "A/1/1") {
+				t.Fatalf("commerce must not name seats inventory did not name: %s", res.Body.String())
+			}
+		})
+	}
+}
+
+// TestReserveFailsClosedOnInconsistentSeatClaim is the ai-review finding: a
+// schema-valid but inconsistent inventory response must not be persisted, billed
+// from, or later refunded against.
+//
+// Each case needs an inventory defect or a version skew to occur, which is exactly
+// when a cross-service check earns its keep — the failure mode is a wrong-seat sale,
+// and no response validator can see it, because every one of these bodies is
+// perfectly well-shaped.
+//
+// The handler is built with a nil database on purpose: every assertion here must be
+// refused BEFORE anything is persisted, so reaching the insert would panic rather
+// than pass.
+func TestReserveFailsClosedOnInconsistentSeatClaim(t *testing.T) {
+	const holdID = `"hold_id":"11111111-1111-1111-1111-111111111111"`
+	const times = `"expires_at":"2026-11-05T20:00:00Z","server_time":"2026-11-05T19:00:00Z"`
+	for name, body := range map[string]string{
+		// Same count, different seats: the buyer would be charged the right amount
+		// for the wrong seats, and would be issued tickets for them.
+		"seat substitution": `{` + holdID + `,` + times + `,"quantity":2,"seats":["Z/9/1","Z/9/2"]}`,
+		// The claim's own quantity disagrees with its own seat list. Whichever is
+		// right, commerce cannot know, and it drives money from one and inventory
+		// reconciliation from the other.
+		"quantity disagrees with the seat list": `{` + holdID + `,` + times + `,"quantity":3,"seats":["A/1/1","A/1/2"]}`,
+		"no seats at all":                       `{` + holdID + `,` + times + `,"quantity":2,"seats":[]}`,
+		"a seat the buyer never asked for":      `{` + holdID + `,` + times + `,"quantity":2,"seats":["A/1/1","Z/9/9"]}`,
+		"fewer seats than requested":            `{` + holdID + `,` + times + `,"quantity":1,"seats":["A/1/1"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, done := seatedStack(t, 201, body)
+			defer done()
+
+			res := reserveSeats(t, s, "inconsistent-"+name, `["A/1/1","A/1/2"]`)
+
+			if res.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d want 502 — an inconsistent claim must never be "+
+					"persisted or billed: %s", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
+// TestReserveRefusesUnrequestedContendedSeats: a refusal may only name seats this
+// buyer actually asked for. Forwarding verbatim would let a defect or a skew grey
+// out somebody else's seats in the picker, and the response schema cannot catch it —
+// it is a semantic mismatch, not a shape one.
+func TestReserveRefusesUnrequestedContendedSeats(t *testing.T) {
+	for name, seats := range map[string]string{
+		"an unrelated seat":         `["Z/9/9"]`,
+		"one requested one not":     `["A/1/1","Z/9/9"]`,
+		"a repeat of one requested": `["A/1/1","A/1/1"]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, done := seatedStack(t, 409,
+				`{"error":"seat taken","code":"seat_taken","seat_identities":`+seats+`}`)
+			defer done()
+
+			res := reserveSeats(t, s, "unrequested-"+name, `["A/1/1","A/1/2"]`)
+
+			if res.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d want 502: %s", res.Code, res.Body.String())
+			}
+			if strings.Contains(res.Body.String(), "Z/9/9") {
+				t.Fatalf("commerce leaked an unrequested identity: %s", res.Body.String())
+			}
+		})
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -155,6 +156,115 @@ type reserveRequest struct {
 	OrganizerID  uuid.UUID `json:"organizer_id"`
 	TicketTypeID uuid.UUID `json:"ticket_type_id"`
 	Quantity     int32     `json:"quantity"`
+	// SeatIdentities makes this a SEATED reservation (TKT-173) and is mutually
+	// exclusive with Quantity. Forwarded to inventory verbatim: canonicalisation
+	// (sort + de-duplicate) is inventory's, because its idempotency fingerprint is
+	// computed over the canonical form and a second canonicaliser here would be a
+	// second definition of "the same request".
+	SeatIdentities []string `json:"seat_identities,omitempty"`
+}
+
+// seated reports whether this request is for named seats. The XOR itself is checked
+// separately — this only answers which branch a valid request took.
+func (in reserveRequest) seated() bool { return len(in.SeatIdentities) > 0 }
+
+// canonicalSeatSet mirrors inventory's canonicalSeats — trim, de-duplicate, sort —
+// for two local purposes, neither of which is rewriting the request. Commerce
+// forwards the caller's array verbatim; inventory owns canonicalisation because its
+// idempotency fingerprint is computed over its own canonical form, and a second
+// authority for "the same request" is how two services quietly disagree.
+//
+// The two purposes:
+//
+//   - PRICING. Rules can be quantity-tiered (ADR-036), so resolving "3 seats" for a
+//     request of [A,A,B] would quote a tier the buyer never reaches.
+//   - IDEMPOTENT TERMS. Same key, different seats must be refused, and comparing
+//     counts alone does not do it: [1,2] and [2,3] are both two seats, and the replay
+//     would answer with the ORIGINAL claim's seats while the caller asked for
+//     different ones. Caught end to end by TestSeatedReservationAndCheckout.
+//
+// Because this mirrors rather than delegates, the claimed set is verified against it
+// after the call — so the two canonicalisations agreeing is an assertion, not an
+// assumption.
+func (in reserveRequest) canonicalSeatSet() []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in.SeatIdentities))
+	for _, seat := range in.SeatIdentities {
+		seat = strings.TrimSpace(seat)
+		if _, dup := seen[seat]; dup {
+			continue
+		}
+		seen[seat] = struct{}{}
+		out = append(out, seat)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// units is how many tickets this request is FOR — the number priced against.
+func (in reserveRequest) units() int32 {
+	if !in.seated() {
+		return in.Quantity
+	}
+	return int32(len(in.canonicalSeatSet()))
+}
+
+// subsetOf reports whether every identity in got appears in want, with no duplicates.
+// want is canonical (sorted, de-duplicated); got is whatever the far service sent.
+func subsetOf(got, want []string) bool {
+	allowed := make(map[string]struct{}, len(want))
+	for _, seat := range want {
+		allowed[seat] = struct{}{}
+	}
+	for _, seat := range got {
+		if _, ok := allowed[seat]; !ok {
+			return false
+		}
+		delete(allowed, seat) // a repeat is not a subset either
+	}
+	return true
+}
+
+// sameSeats reports whether a persisted (already canonical) set is the set this
+// request names.
+func sameSeats(persisted, requested []string) bool {
+	if len(persisted) != len(requested) {
+		return false
+	}
+	for i := range persisted {
+		if persisted[i] != requested[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// validReservationShape enforces the exactly-one-of rule in Go, independently of the
+// contract's minProperties/maxProperties expression of it. Two enforcers on purpose:
+// the schema is what a client reads, and this is what protects a handler invoked
+// directly (every commerce handler test does exactly that). "Both" is the dangerous
+// input — a handler that silently preferred one would charge for a quantity while
+// claiming seats, or the reverse.
+func validReservationShape(in reserveRequest) bool {
+	if in.OrganizerID == uuid.Nil || in.TicketTypeID == uuid.Nil {
+		return false
+	}
+	hasQty, hasSeats := in.Quantity != 0, len(in.SeatIdentities) > 0
+	if hasQty == hasSeats {
+		return false // both, or neither
+	}
+	if hasSeats {
+		if len(in.SeatIdentities) > 50 {
+			return false
+		}
+		for _, seat := range in.SeatIdentities {
+			if strings.TrimSpace(seat) == "" || len(seat) > 200 {
+				return false
+			}
+		}
+		return true
+	}
+	return in.Quantity >= 1 && in.Quantity <= 50
 }
 
 func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +277,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.OrganizerID == uuid.Nil || in.TicketTypeID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 {
+	if !validReservationShape(in) {
 		write(w, 400, map[string]string{"error": "invalid reservation"})
 		return
 	}
@@ -188,16 +298,33 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			qty                       int32
 			unit, total               int64
 			currency                  string
+			seats                     []byte // jsonb: NULL for a GA reservation
 		}
 		err := s.db.QueryRowContext(r.Context(),
-			`SELECT hold_id,buyer_id,slot_id,ticket_type_id,quantity,unit_amount,total_amount,currency
+			`SELECT hold_id,buyer_id,slot_id,ticket_type_id,quantity,unit_amount,total_amount,currency,seat_identities
 			 FROM reservations WHERE id=$1 AND organizer_id=$2`, id, in.OrganizerID).
-			Scan(&pin.hold, &pin.buyer, &pin.slot, &pin.ticket, &pin.qty, &pin.unit, &pin.total, &pin.currency)
+			Scan(&pin.hold, &pin.buyer, &pin.slot, &pin.ticket, &pin.qty, &pin.unit, &pin.total, &pin.currency, &pin.seats)
 		switch {
 		case err == nil:
+			var pinnedSeats []string
+			if pin.seats != nil {
+				if json.Unmarshal(pin.seats, &pinnedSeats) != nil {
+					write(w, 500, map[string]string{"error": "persist reservation"})
+					return
+				}
+			}
 			// Same key, different terms: the caller reused an idempotency key for
-			// something else. Refuse rather than answer with the old quote.
-			if pin.qty != in.Quantity || pin.ticket != in.TicketTypeID {
+			// something else. Refuse rather than answer with the old quote. A
+			// GA↔seated switch under one key is the same reuse and is caught here —
+			// the counts would often match, so the KIND has to be compared too.
+			// The SET, not just the count. [1,2] and [2,3] are both two seats, and
+			// comparing counts would replay the original claim's seats back to a
+			// caller who asked for different ones — a 201 that looks like success and
+			// hands over seats nobody requested. The kind is compared too: a GA↔seated
+			// switch under one key is the same reuse and the counts would often match.
+			if pin.qty != in.units() || pin.ticket != in.TicketTypeID ||
+				(len(pinnedSeats) > 0) != in.seated() ||
+				(in.seated() && !sameSeats(pinnedSeats, in.canonicalSeatSet())) {
 				write(w, 409, map[string]string{"error": "idempotency key reused with different terms"})
 				return
 			}
@@ -207,10 +334,27 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			// would be rejected as a conflicting request. Replaying with the
 			// pinned amount returns the same hold, and its expiry is what the
 			// caller actually needs on a retry.
-			code, body, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds", key,
-				map[string]any{"organizer_id": in.OrganizerID, "slot_id": pin.slot, "ticket_type_id": pin.ticket,
-					"quantity": pin.qty, "unit_amount": pin.unit, "currency": pin.currency}, false)
+			replayURL, replayBody := s.inventoryURL+"/holds", map[string]any{
+				"organizer_id": in.OrganizerID, "slot_id": pin.slot, "ticket_type_id": pin.ticket,
+				"quantity": pin.qty, "unit_amount": pin.unit, "currency": pin.currency}
+			if len(pinnedSeats) > 0 {
+				// Replay with the PERSISTED seat set, not the incoming one. Inventory
+				// fingerprints seat-hold idempotency over the canonical set, and the
+				// persisted array IS that canonical set — replaying it is what makes a
+				// retry land on the original claim instead of being refused as a
+				// conflicting request. This is the only reader of the column, which is
+				// why a write-only text[] would have looked fine until it mattered.
+				replayURL = s.inventoryURL + "/holds/seats"
+				replayBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": pin.slot,
+					"ticket_type_id": pin.ticket, "seat_identities": pinnedSeats,
+					"unit_amount": pin.unit, "currency": pin.currency}
+			}
+			code, body, err := s.call(r.Context(), http.MethodPost, replayURL, key, replayBody, false)
 			if err != nil || (code != 200 && code != 201) {
+				if len(pinnedSeats) > 0 {
+					seatedInventoryRefusal(w, code, body, pinnedSeats)
+					return
+				}
 				write(w, 409, map[string]string{"error": "inventory unavailable"})
 				return
 			}
@@ -236,9 +380,13 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			// fail-closed validator turns into a 500 (ADR-028) — widening the
 			// contract to legalise it would be changing an API to fit an
 			// implementation detail.
-			write(w, 201, map[string]any{"reservation_id": id, "hold_id": pin.hold, "buyer_id": pin.buyer,
+			out := map[string]any{"reservation_id": id, "hold_id": pin.hold, "buyer_id": pin.buyer,
 				"amount": pin.total, "currency": pin.currency,
-				"expires_at": replayed.ExpiresAt, "server_time": replayed.ServerTime})
+				"expires_at": replayed.ExpiresAt, "server_time": replayed.ServerTime}
+			if len(pinnedSeats) > 0 {
+				out["seats"] = pinnedSeats
+			}
+			write(w, 201, out)
 			return
 		case !errors.Is(err, sql.ErrNoRows):
 			// 500, not 503: createReservation does not declare 503, and an
@@ -257,7 +405,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	// that distinction is the whole point of the fail-closed rule (ADR-028): a
 	// silent fall back to the base price would sell at the wrong price and look
 	// like nothing happened.
-	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TicketTypeID, in.OrganizerID, in.Quantity)
+	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TicketTypeID, in.OrganizerID, in.units())
 	if err != nil {
 		if errors.Is(err, errResolveUnavailable) {
 			write(w, 502, map[string]string{"error": "catalog unavailable"})
@@ -268,10 +416,21 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	}
 	o := offer{OrganizerID: resolution.OrganizerID, PerformanceID: resolution.PerformanceID,
 		Price: price{Amount: resolution.ResolvedPrice.Amount, Currency: resolution.ResolvedPrice.Currency}}
-	total := resolution.total(in.Quantity)
-	holdBody := map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity, "unit_amount": o.Price.Amount, "currency": o.Price.Currency}
-	code, body, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds", key, holdBody, false)
+	holdURL, holdBody := s.inventoryURL+"/holds", map[string]any{"organizer_id": in.OrganizerID,
+		"slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity,
+		"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
+	if in.seated() {
+		holdURL = s.inventoryURL + "/holds/seats"
+		holdBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID,
+			"ticket_type_id": in.TicketTypeID, "seat_identities": in.SeatIdentities,
+			"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
+	}
+	code, body, err := s.call(r.Context(), http.MethodPost, holdURL, key, holdBody, false)
 	if err != nil || (code != 200 && code != 201) {
+		if in.seated() {
+			seatedInventoryRefusal(w, code, body, in.canonicalSeatSet())
+			return
+		}
 		write(w, 409, map[string]string{"error": "inventory unavailable"})
 		return
 	}
@@ -279,24 +438,102 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		ID         uuid.UUID `json:"hold_id"`
 		ExpiresAt  time.Time `json:"expires_at"`
 		ServerTime time.Time `json:"server_time"`
+		Seats      []string  `json:"seats"`
+		Quantity   int32     `json:"quantity"`
 	}
 	if json.Unmarshal(body, &hold) != nil {
 		write(w, 502, map[string]string{"error": "invalid inventory response"})
 		return
 	}
+	// The CLAIM is authoritative for what was reserved, not the request. Inventory
+	// canonicalises (sorts, de-duplicates), so a request naming the same seat twice
+	// claims one seat — and the money must follow the claim or the buyer is charged
+	// for a seat nobody holds.
+	quantity := in.Quantity
+	if in.seated() {
+		// Fail closed on the whole invariant, not just the count (ai-review). A
+		// response that is schema-valid but inconsistent — different seats of the same
+		// count, or a quantity that disagrees with its own seat list — would otherwise
+		// be persisted, billed from, and later refunded against. That needs an
+		// inventory defect or version skew to happen, which is precisely when a
+		// cross-service check earns its keep: the failure mode is a wrong-seat sale.
+		//
+		// The set must be EQUAL, not merely the same size, and it is compared against
+		// the locally canonicalised request — the same function the idempotent-terms
+		// check uses, so "what we asked for" has one definition here.
+		if len(hold.Seats) == 0 ||
+			hold.Quantity != int32(len(hold.Seats)) ||
+			!sameSeats(hold.Seats, in.canonicalSeatSet()) {
+			write(w, 502, map[string]string{"error": "invalid inventory response"})
+			return
+		}
+		quantity = int32(len(hold.Seats))
+	}
+	total := resolution.total(quantity)
 	buyer := uuid.NewSHA1(uuid.NameSpaceOID, []byte("buyer:"+id.String()))
 	// The provenance snapshot is stored as a document, not as a rule reference: a
 	// rule can later be closed or superseded, and a foreign key would let that
 	// rewrite what a buyer was charged. Copying the document keeps the record
 	// true. Honest-writer consistency, not tamper-evidence (ADR-021) — anyone
 	// with commerce DB access can still replace it.
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status,price_resolution_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held',$11) ON CONFLICT(id) DO NOTHING`,
-		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, in.Quantity, o.Price.Amount, total, o.Price.Currency, []byte(resolution.raw))
+	// jsonb, not text[]: the pgx/v5 stdlib driver behind database/sql writes a text[]
+	// and cannot scan one back, and the only reader is the replay path — so the
+	// failure would surface exactly where it hurts. NULL for a GA reservation.
+	var seatsColumn any
+	if in.seated() {
+		encoded, marshalErr := json.Marshal(hold.Seats)
+		if marshalErr != nil {
+			write(w, 500, map[string]string{"error": "persist reservation"})
+			return
+		}
+		seatsColumn = encoded
+	}
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status,price_resolution_snapshot,seat_identities) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held',$11,$12) ON CONFLICT(id) DO NOTHING`,
+		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, quantity, o.Price.Amount, total, o.Price.Currency, []byte(resolution.raw), seatsColumn)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist reservation"})
 		return
 	}
-	write(w, 201, map[string]any{"reservation_id": id, "hold_id": hold.ID, "buyer_id": buyer, "amount": total, "currency": o.Price.Currency, "expires_at": hold.ExpiresAt, "server_time": hold.ServerTime})
+	out := map[string]any{"reservation_id": id, "hold_id": hold.ID, "buyer_id": buyer, "amount": total, "currency": o.Price.Currency, "expires_at": hold.ExpiresAt, "server_time": hold.ServerTime}
+	if in.seated() {
+		out["seats"] = hold.Seats
+	}
+	write(w, 201, out)
+}
+
+// seatedInventoryRefusal translates a refused seat claim. A bare 409 tells a picker
+// that something went wrong and not which seats to re-render, so a `seat_taken`
+// carrying identities is forwarded with them intact.
+//
+// It never SYNTHESISES identities. Echoing the request would name seats that were
+// never contended — plausible-looking and false, and precisely the lie AC4 exists to
+// prevent. An inventory `seat_taken` with no usable list is a broken upstream: 502.
+func seatedInventoryRefusal(w http.ResponseWriter, code int, body []byte, requested []string) {
+	var refusal struct {
+		Error string   `json:"error"`
+		Code  string   `json:"code"`
+		Seats []string `json:"seat_identities"`
+	}
+	if code == 409 && json.Unmarshal(body, &refusal) == nil && refusal.Code == "seat_taken" {
+		// Non-empty, and a SUBSET of what this buyer asked for. Forwarding verbatim
+		// would let an inventory defect or a version skew name seats this request
+		// never mentioned, which the response schema cannot catch — it is a semantic
+		// mismatch, not a shape one — and a picker would then grey out somebody
+		// else's seats. Commerce's contract promises only requested, actually
+		// contended identities; this is what makes that true rather than hopeful.
+		if len(refusal.Seats) == 0 || !subsetOf(refusal.Seats, requested) {
+			write(w, 502, map[string]string{"error": "invalid inventory response"})
+			return
+		}
+		write(w, 409, map[string]any{
+			"error": "one or more of the requested seats are no longer available",
+			"code":  "seat_taken", "seat_identities": refusal.Seats,
+		})
+		return
+	}
+	// Everything else keeps the GA path's existing collapsed shape. Widening that is
+	// a public error-contract change with its own consumers and is not this ticket's.
+	write(w, 409, map[string]string{"error": "inventory unavailable"})
 }
 
 type checkoutRequest struct {

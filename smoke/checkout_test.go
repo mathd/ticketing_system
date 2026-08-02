@@ -651,3 +651,179 @@ func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
 			replay["amount"])
 	}
 }
+
+// TestSeatedReservationAndCheckout is TKT-173 end to end through the gateway: a
+// buyer names seats, pays for exactly the seats they got, and a competitor naming
+// one of them is refused by name.
+//
+// It gets its own fixture and its own test rather than joining
+// TestSeatedPublicationCoexistsWithGA, which already carries publication, the
+// schema-4 fork, occupancy (TKT-172), direct seat holding and pinning. The buyer
+// WRITE path deserves its own failure boundary — when this breaks, the message
+// should say "seated checkout", not "seated publication".
+func TestSeatedReservationAndCheckout(t *testing.T) {
+	catalog := gatewayURL + "/api/catalog"
+	suffix := uuid.NewString()[:8]
+
+	venue := created(t, catalog+"/venues", map[string]any{
+		"organizer_id": organizerID, "name": "Seated Checkout " + suffix, "ga_capacity": 50})
+	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID,
+		"name": map[string]string{"fr": "Concert " + suffix, "en": "Concert " + suffix}})
+
+	// Three seats in one row, so a partial collision is expressible.
+	seatMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
+		"organizer_id": organizerID, "name": "Stalls " + suffix})
+	section := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
+		"organizer_id": organizerID, "name": "Stalls", "position": 1})
+	row := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/rows", map[string]any{
+		"organizer_id": organizerID, "section_id": section["id"], "label": "A", "position": 1})
+	for i := 1; i <= 3; i++ {
+		created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/seats", map[string]any{
+			"organizer_id": organizerID, "row_id": row["id"], "label": fmt.Sprint(i), "position": i})
+	}
+	if code, body := postJSON(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/publish", nil); code != http.StatusOK {
+		t.Fatalf("publish seat map: %d %s", code, body)
+	}
+
+	perf := created(t, catalog+"/performances", map[string]any{
+		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"starts_at": "2026-11-05T20:00:00Z", "timezone": "UTC", "seat_map_id": seatMap["id"]})
+	tt := created(t, catalog+"/ticket-types", map[string]any{
+		"organizer_id": organizerID, "performance_id": perf["id"],
+		"name": map[string]string{"fr": "Place", "en": "Seat"},
+		"price": map[string]any{"amount": 3000, "currency": "EUR"}})
+	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != http.StatusOK {
+		t.Fatalf("publish performance: %d %s", code, body)
+	}
+
+	// Inventory provisions the seated pool asynchronously off the publication event.
+	reservations := gatewayURL + "/api/commerce/reservations"
+	seatOf := func(n int) string { return "Stalls/A/" + fmt.Sprint(n) }
+	var code int
+	var body []byte
+	for i := 0; i < 40; i++ {
+		code, body = postWithKey(t, reservations, "seated-probe-"+suffix, map[string]any{
+			"organizer_id": organizerID, "ticket_type_id": tt["id"],
+			"seat_identities": []string{seatOf(1)}})
+		if code == http.StatusCreated {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if code != http.StatusCreated {
+		t.Fatalf("seated reservation never became possible: %d %s", code, body)
+	}
+
+	// -- the money follows the CLAIM, not the request --
+	// [2,3,3] is three identities and two seats. Charging for three would be charging
+	// for a seat nobody holds; inventory canonicalises and commerce must follow it.
+	code, body = postWithKey(t, reservations, "seated-buy-"+suffix, map[string]any{
+		"organizer_id": organizerID, "ticket_type_id": tt["id"],
+		"seat_identities": []string{seatOf(3), seatOf(2), seatOf(3)}})
+	if code != http.StatusCreated {
+		t.Fatalf("seated reservation = %d %s", code, body)
+	}
+	var res struct {
+		ReservationID string   `json:"reservation_id"`
+		HoldID        string   `json:"hold_id"`
+		Amount        int64    `json:"amount"`
+		Currency      string   `json:"currency"`
+		Seats         []string `json:"seats"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		t.Fatalf("reservation decode: %v (%s)", err, body)
+	}
+	if len(res.Seats) != 2 || res.Seats[0] != seatOf(2) || res.Seats[1] != seatOf(3) {
+		t.Fatalf("seats = %v want [%s %s] — sorted and de-duplicated by inventory",
+			res.Seats, seatOf(2), seatOf(3))
+	}
+	if res.Amount != 6000 || res.Currency != "EUR" {
+		t.Fatalf("amount = %d %s want 6000 EUR (2 claimed seats x 3000), not 9000 for three identities",
+			res.Amount, res.Currency)
+	}
+
+	// -- replay: same key, reordered set, one reservation --
+	replayCode, replayBody := postWithKey(t, reservations, "seated-buy-"+suffix, map[string]any{
+		"organizer_id": organizerID, "ticket_type_id": tt["id"],
+		"seat_identities": []string{seatOf(2), seatOf(3)}})
+	if replayCode != http.StatusCreated {
+		t.Fatalf("replay = %d %s", replayCode, replayBody)
+	}
+	var replay struct {
+		ReservationID string   `json:"reservation_id"`
+		HoldID        string   `json:"hold_id"`
+		Amount        int64    `json:"amount"`
+		Seats         []string `json:"seats"`
+	}
+	if err := json.Unmarshal(replayBody, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.ReservationID != res.ReservationID || replay.HoldID != res.HoldID || replay.Amount != res.Amount {
+		t.Fatalf("replay produced a different reservation: %+v vs %+v — the persisted seat set is "+
+			"what makes a retry land on the original claim", replay, res)
+	}
+	if len(replay.Seats) != 2 {
+		t.Fatalf("replay seats = %v want the persisted pair", replay.Seats)
+	}
+
+	// -- same key, a genuinely different set: refused, not a second claim --
+	if c, b := postWithKey(t, reservations, "seated-buy-"+suffix, map[string]any{
+		"organizer_id": organizerID, "ticket_type_id": tt["id"],
+		"seat_identities": []string{seatOf(1), seatOf(2)}}); c != http.StatusConflict {
+		t.Fatalf("key reuse with different terms = %d %s want 409", c, b)
+	}
+
+	// -- a competitor is refused BY NAME, and only for the seat actually contended --
+	c, b := postWithKey(t, reservations, "seated-rival-"+suffix, map[string]any{
+		"organizer_id": organizerID, "ticket_type_id": tt["id"],
+		"seat_identities": []string{seatOf(2)}})
+	if c != http.StatusConflict {
+		t.Fatalf("contended reservation = %d %s want 409", c, b)
+	}
+	var conflict struct {
+		Code  string   `json:"code"`
+		Seats []string `json:"seat_identities"`
+	}
+	if err := json.Unmarshal(b, &conflict); err != nil {
+		t.Fatal(err)
+	}
+	if conflict.Code != "seat_taken" || len(conflict.Seats) != 1 || conflict.Seats[0] != seatOf(2) {
+		t.Fatalf("conflict = %s — a picker re-renders from seat_identities, so it must name "+
+			"exactly the seats lost", b)
+	}
+
+	// -- the occupancy read (TKT-172) agrees with what commerce just claimed --
+	occCode, occBody, _ := getWithHeaders(t, fmt.Sprintf(
+		"%s/api/inventory/slots/%v/seat-occupancy?organizer_id=%s", gatewayURL, perf["id"], organizerID))
+	if occCode != http.StatusOK {
+		t.Fatalf("occupancy = %d %s", occCode, occBody)
+	}
+	var occ struct {
+		Unavailable []string `json:"unavailable_seat_identities"`
+	}
+	if err := json.Unmarshal(occBody, &occ); err != nil {
+		t.Fatal(err)
+	}
+	if len(occ.Unavailable) != 3 {
+		t.Fatalf("occupancy = %v want all three seats held (1 by the probe, 2 and 3 by the buyer) — "+
+			"the read and the claim path must agree", occ.Unavailable)
+	}
+
+	// -- checkout completes and issues one ticket per claimed seat --
+	orderCode, orderBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "seated-order-"+suffix, map[string]any{
+		"reservation_id": res.ReservationID, "name": "Seated Buyer",
+		"email": "seated-" + suffix + "@example.test", "payment_token": "fake-ok"})
+	if orderCode != http.StatusOK {
+		t.Fatalf("seated checkout = %d %s", orderCode, orderBody)
+	}
+	var order struct {
+		Status        string `json:"status"`
+		GuestOrderRef string `json:"guest_order_ref"`
+	}
+	if err := json.Unmarshal(orderBody, &order); err != nil {
+		t.Fatal(err)
+	}
+	if order.Status != "completed" || order.GuestOrderRef == "" {
+		t.Fatalf("seated order = %s", orderBody)
+	}
+}

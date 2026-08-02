@@ -188,15 +188,57 @@ components:
   responses:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
-    Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: {type: string}
+        code: {type: string, enum: [seat_taken], description: 'Machine-readable refusal reason. Present only when a seated reservation lost seats to a competing claimant (TKT-173).'}
+        seat_identities:
+          type: array
+          description: >
+            With code `seat_taken`: the requested seats another buyer already
+            holds, sorted — forwarded verbatim from the inventory transaction that
+            arbitrated. Only the seats actually lost are listed, so a picker
+            re-renders exactly what must be given up. Never synthesised by
+            commerce: an inventory `seat_taken` response without a usable identity
+            list is a 502, not a guess.
+          items: {type: string, minLength: 1, maxLength: 200}
     ReservationCreate:
       type: object
       additionalProperties: false
-      required: [organizer_id, ticket_type_id, quantity]
+      description: >
+        Exactly one of `quantity` (general admission) or `seat_identities`
+        (reserved seating, TKT-173) — never both, never neither. That XOR is
+        expressed by the property counts rather than a top-level `oneOf`: with
+        two required properties, two optional ones and no additional properties
+        allowed, `minProperties: 3` / `maxProperties: 3` admits exactly one of
+        the alternatives. `oneOf` would be the obvious spelling and is avoided
+        deliberately — the generator turns a top-level union into a
+        json.RawMessage with As…/From… accessors instead of a usable request
+        struct, which is a worse contract bought with a worse API. The handler
+        enforces the same XOR independently; a caller invoking it directly must
+        not be able to slip past the schema.
+      required: [organizer_id, ticket_type_id]
+      minProperties: 3
+      maxProperties: 3
       properties:
         organizer_id: {type: string, format: uuid}
         ticket_type_id: {type: string, format: uuid}
-        quantity: {type: integer, minimum: 1, maximum: 50}
+        quantity: {type: integer, minimum: 1, maximum: 50, description: 'General admission: how many. Mutually exclusive with seat_identities.'}
+        seat_identities:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: >
+            Reserved seating: exactly which seats, as stable "section/row/seat"
+            identities read from the seat map. Mutually exclusive with quantity.
+            The set is canonicalised (sorted, de-duplicated) by inventory, so
+            [A,B] and [B,A] are the same request under one idempotency key — and
+            the reservation's money follows the CLAIMED seat count, not the
+            length of this array.
+          items: {type: string, minLength: 1, maxLength: 200}
     Reservation:
       type: object
       additionalProperties: false
@@ -209,6 +251,18 @@ components:
         currency: {type: string}
         expires_at: {type: string, format: date-time}
         server_time: {type: string, format: date-time}
+        seats:
+          type: array
+          description: >
+            The seats actually claimed, sorted and de-duplicated — inventory's
+            canonical set, never the request's array (TKT-173). Present on a
+            seated reservation and OMITTED on a general-admission one: absence is
+            the reservation-kind signal, and an empty array would read as a seated
+            claim that holds nothing. It cannot be required, because every
+            existing GA and staff-created reservation response lacks it and the
+            response validator fails closed (ADR-028) — requiring it would turn
+            those valid responses into runtime 500s.
+          items: {type: string, minLength: 1, maxLength: 200}
     OperationalConversionCreate:
       type: object
       additionalProperties: false

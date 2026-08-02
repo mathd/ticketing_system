@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync"
 	"testing"
@@ -71,10 +72,58 @@ func TestSeatHoldRejectsDoubleLiveSeat(t *testing.T) {
 	if !errors.Is(err, ErrSeatTaken) {
 		t.Fatalf("overlapping hold err = %v want ErrSeatTaken", err)
 	}
+
+	// TKT-173: the error must name WHICH seats lost, not merely that one did.
+	// A buyer whose selection partly collided needs to re-render the seats they
+	// actually have to give up; "a seat was taken" is not enough to do that, and
+	// the losing set is knowable only here, inside the transaction that arbitrated.
+	//
+	// Two overlaps, deliberately: the per-seat insert loop this replaces returned
+	// on the FIRST unique violation, so a per-seat error would have reported one
+	// seat where two were contended and looked correct while being wrong.
+	if _, err = st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/9"}, 0, "EUR", "k-extra"); err != nil {
+		t.Fatalf("seed A/1/9: %v", err)
+	}
+	_, err = st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1", "A/1/5", "A/1/9"}, 0, "EUR", "k4")
+	var taken *SeatTakenError
+	if !errors.As(err, &taken) {
+		t.Fatalf("err = %v (%T) want a *SeatTakenError carrying the contended identities", err, err)
+	}
+	if !errors.Is(err, ErrSeatTaken) {
+		t.Fatalf("the typed error must still unwrap to ErrSeatTaken, got %v", err)
+	}
+	// Sorted, exact: A/1/1 and A/1/9 are held by other claims; A/1/5 is free and
+	// must NOT be named — telling a buyer to give up a seat they could have had is
+	// its own defect.
+	if len(taken.Seats) != 2 || taken.Seats[0] != "A/1/1" || taken.Seats[1] != "A/1/9" {
+		t.Fatalf("contended seats = %v want [A/1/1 A/1/9]", taken.Seats)
+	}
+	// The losing claim leaves nothing behind: no claims row, no partial seat rows.
+	var orphanSeats, orphanClaims int
+	if err = dbOf(t, st).QueryRowContext(ctx,
+		`SELECT count(*) FROM claim_seats WHERE seat_identity='A/1/5'`).Scan(&orphanSeats); err != nil {
+		t.Fatal(err)
+	}
+	if err = dbOf(t, st).QueryRowContext(ctx,
+		`SELECT count(*) FROM claims WHERE idempotency_key='k4'`).Scan(&orphanClaims); err != nil {
+		t.Fatal(err)
+	}
+	if orphanSeats != 0 || orphanClaims != 0 {
+		t.Fatalf("a refused seat hold must roll back entirely: %d stray seat rows, %d stray claims",
+			orphanSeats, orphanClaims)
+	}
 	// Disjoint seats succeed.
 	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/3", "A/1/4"}, 0, "EUR", "k3"); err != nil {
 		t.Fatalf("disjoint hold: %v", err)
 	}
+}
+
+// dbOf reaches the store's connection for assertions about rows the API does not
+// return. storeForTest already hands back the *sql.DB; this exists so the
+// double-live-seat test can assert rollback without changing that helper's shape.
+func dbOf(t *testing.T, st *Postgres) *sql.DB {
+	t.Helper()
+	return st.db
 }
 
 // TestFinalizingSeatStaysExclusive pins the finalizing hole: a seat whose claim is
