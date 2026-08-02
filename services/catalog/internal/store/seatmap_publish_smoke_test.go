@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -95,5 +96,78 @@ func TestPublishedSeatMapIsImmutable(t *testing.T) {
 	_, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: "New", Position: 9})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("adding a section to a published map err = %v, want ErrNotFound (write gate)", err)
+	}
+}
+
+// TestPublicEventReadCarriesSeatMapID is TKT-172 AC1 against real Postgres.
+//
+// It exists because the public read scans POSITIONALLY: publicPerformancesSelect
+// lists columns and rows.Scan lists targets, and adding one to either without the
+// other is a runtime failure, not a compile error. The API-level test runs against
+// a fake store and cannot see that class of bug at all — only a real query can.
+//
+// Both slots live under one published event so the assertion is about hydration,
+// not about which rows the predicate returns: the seated one carries the exact
+// published version, the GA one carries nil.
+func TestPublicEventReadCarriesSeatMapID(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+	m := seedPublishedMap(ctx, t, st, "Main floor")
+
+	event, err := st.CreateEvent(ctx, EventInput{
+		OrganizerID: seatMapOrg,
+		Name:        LocalizedText{"en": "Recital", "fr": "Récital"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+
+	seatMaps := map[bool]*uuid.UUID{true: &m.ID, false: nil}
+	perfIDs := map[bool]uuid.UUID{}
+	for _, seated := range []bool{true, false} {
+		at := startsAt
+		if !seated {
+			at = startsAt.Add(24 * time.Hour) // distinct start times keep the ordering stable
+		}
+		perf, err := st.CreatePerformance(ctx, PerformanceInput{
+			OrganizerID: seatMapOrg, EventID: event.ID, VenueID: seatMapVenue,
+			StartsAt: &at, Timezone: "Europe/Paris", SeatMapID: seatMaps[seated],
+		})
+		if err != nil {
+			t.Fatalf("create performance (seated=%v): %v", seated, err)
+		}
+		if _, err = st.CreateTicketType(ctx, TicketTypeInput{
+			OrganizerID: seatMapOrg, PerformanceID: perf.ID,
+			Name: LocalizedText{"en": "Seat", "fr": "Place"}, PriceAmount: 5000, Currency: "EUR",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.PublishPerformance(ctx, perf.ID); err != nil {
+			t.Fatalf("publish (seated=%v): %v", seated, err)
+		}
+		perfIDs[seated] = perf.ID
+	}
+
+	agg, err := st.GetPublishedEvent(ctx, event.ID)
+	if err != nil {
+		t.Fatalf("published event read: %v", err)
+	}
+	if len(agg.Performances) != 2 {
+		t.Fatalf("want both slots in the public read, got %d", len(agg.Performances))
+	}
+	for _, pa := range agg.Performances {
+		switch pa.Performance.ID {
+		case perfIDs[true]:
+			if pa.Performance.SeatMapID == nil || *pa.Performance.SeatMapID != m.ID {
+				t.Fatalf("seated slot hydrated SeatMapID = %v, want %v — the public projection "+
+					"or its positional scan target is missing p.seat_map_id", pa.Performance.SeatMapID, m.ID)
+			}
+		case perfIDs[false]:
+			if pa.Performance.SeatMapID != nil {
+				t.Fatalf("GA slot hydrated SeatMapID = %v, want nil", pa.Performance.SeatMapID)
+			}
+		default:
+			t.Fatalf("unexpected performance %v in the aggregate", pa.Performance.ID)
+		}
 	}
 }

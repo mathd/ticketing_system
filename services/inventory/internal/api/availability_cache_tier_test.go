@@ -60,3 +60,48 @@ func TestAvailabilityCacheTierIsContractEnforced(t *testing.T) {
 		})
 	}
 }
+
+// TestSeatOccupancyCacheTierIsContractEnforced is the same pin for TKT-172's seat
+// occupancy read. It gets its own constant and its own header declaration rather
+// than sharing availability's: ADR-028 fails closed per declaration, so one shared
+// component would let one operation's drift hide behind the other still emitting
+// the tier. The third case is what makes that separation real — it proves the
+// occupancy declaration is enforced on its own path, not merely inherited.
+func TestSeatOccupancyCacheTierIsContractEnforced(t *testing.T) {
+	for _, tc := range []struct {
+		name, emitted string
+		omit          bool
+		want          int
+	}{
+		{name: "handler constant satisfies the contract", emitted: CacheControlPublicSeatOccupancy, want: http.StatusOK},
+		{name: "any other tier fails closed", emitted: "public, max-age=3600, s-maxage=3600", want: http.StatusInternalServerError},
+		{name: "a missing header fails closed", omit: true, want: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := chi.NewRouter()
+			r.Get("/slots/{id}/seat-occupancy", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if !tc.omit {
+					w.Header().Set("Cache-Control", tc.emitted)
+				}
+				w.WriteHeader(http.StatusOK)
+				// Minimal schema-valid SeatOccupancy, so only the header is under test.
+				_, _ = w.Write([]byte(`{"slot_id":"` + uuid.Nil.String() + `","seat_map_id":"` +
+					uuid.Nil.String() + `","offering_status":"open","remaining_capacity":0,` +
+					`"unavailable_seat_identities":[]}`))
+			})
+			h, err := contract.RequestValidator(apispec.Spec, r, nil, true)
+			if err != nil {
+				t.Fatalf("RequestValidator: %v", err)
+			}
+			id, org := uuid.NewString(), uuid.NewString()
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+				"http://inventory.local/slots/"+id+"/seat-occupancy?organizer_id="+org, nil))
+			if rec.Code != tc.want {
+				t.Fatalf("emitted Cache-Control %q (omitted=%v): got %d %s, want %d",
+					tc.emitted, tc.omit, rec.Code, rec.Body.String(), tc.want)
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -570,4 +571,81 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 			t.Fatalf("a draft version must make the whole history no-store, got %q", cc)
 		}
 	})
+}
+
+// TestPublicPerformanceDetailCarriesSeatMapID is TKT-172 AC1: the public event
+// detail says which published seat-map version a performance is seated against,
+// so a storefront can tell a seated performance from a GA one and know which map
+// to render. Before this, `performances.seat_map_id` existed in the database and
+// on the back-office response but was invisible to every public reader.
+//
+// The GA half is asserted on the RAW JSON, not the decoded struct: an optional
+// field decodes to nil whether it was absent or explicitly null, so a struct
+// assertion passes even when the payload grew a `"seat_map_id": null` key. The AC
+// is that a GA performance's bytes are unchanged, and only the bytes show that.
+func TestPublicPerformanceDetailCarriesSeatMapID(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "La Grande Salle")
+	m := seedPublishedMap(t, e, venueID, "Main floor")
+	event := decode[Event](t, e.do("POST", "/events", EventCreate{
+		OrganizerId: orgID, Name: LocalizedString{"fr": "Récital", "en": "Recital"},
+	}))
+	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+
+	for _, seatMap := range []*openapi_types.UUID{&m.Id, nil} {
+		perf := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
+			OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+			StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapId: seatMap,
+		}))
+		e.do("POST", "/ticket-types", TicketTypeCreate{
+			OrganizerId: orgID, PerformanceId: perf.Id,
+			Name:  LocalizedString{"fr": "Place", "en": "Seat"},
+			Price: Money{Amount: 5000, Currency: "EUR"},
+		})
+		if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
+			t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := e.do("GET", "/public/events/"+event.Id.String()+"?locale=fr", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public detail: %d %s", rec.Code, rec.Body.String())
+	}
+	detail := decode[PublicEventDetail](t, rec)
+	if len(detail.Performances) != 2 {
+		t.Fatalf("want both performances listed, got %d", len(detail.Performances))
+	}
+
+	var seated, ga int
+	for _, p := range detail.Performances {
+		if p.SeatMapId != nil {
+			seated++
+			if *p.SeatMapId != m.Id {
+				t.Fatalf("seated performance names map %v, want the published version %v", *p.SeatMapId, m.Id)
+			}
+		} else {
+			ga++
+		}
+	}
+	if seated != 1 || ga != 1 {
+		t.Fatalf("want exactly one seated and one GA performance, got %d seated / %d GA", seated, ga)
+	}
+
+	// The GA object must not have grown a key at all — not even a null one.
+	var raw struct {
+		Performances []map[string]json.RawMessage `json:"performances"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var sawGA bool
+	for _, p := range raw.Performances {
+		if _, ok := p["seat_map_id"]; ok {
+			continue
+		}
+		sawGA = true
+	}
+	if !sawGA {
+		t.Fatalf("a GA performance must OMIT seat_map_id, not carry it as null — payload: %s", rec.Body.String())
+	}
 }

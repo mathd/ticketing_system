@@ -247,6 +247,150 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	return SeatHold{Claim: c, SeatMapID: seatMapID.UUID, Seats: canon, PinnedBy: pinnedBy(c.ID), ExpiredPins: expiredPins}, nil
 }
 
+// SeatOccupancy is the buyer-facing answer to "which seats can I not have" on a
+// seated slot (TKT-172). Unavailable is sorted and never nil — an empty seated pool
+// answers with [], which is a different thing from an unknown slot (ErrNotFound).
+// OfferingStatus mirrors Availability's (TKT-75): the seat list stays factual on a
+// closed or archived slot, and this field is how a caller tells "these seats are
+// free" from "nothing here is claimable at all".
+// Available is how many more seats the pool will actually let anyone claim. It is
+// NOT derivable from the seat list, and that is the point: a seated pool carries a
+// coarse aggregate ceiling as well as its per-seat rows, and CreateSeatHold refuses
+// with ErrUnavailable when confirmed + live held + requested exceeds it. So a seat
+// can be absent from Unavailable — genuinely unheld — and still be unbuyable,
+// because a draining capacity cut (target_capacity, TKT-76) has taken the pool's
+// headroom to zero, or the map was authored with more seats than the venue snapshot
+// the pool was provisioned with. Without this field the response says "free" about
+// a seat every claim will reject, which is the one thing AC2 forbids.
+// RemainingCapacity is a CEILING, not a seat count, and the name says so on
+// purpose. Inventory does not hold the seat universe — that is the seat map, in
+// catalog — so this cannot be "how many seats are free". It is the pool's own
+// aggregate headroom under exactly the test CreateSeatHold applies, and it can be
+// wrong in both directions if read as a seat count: 90 on a ten-seat map backed by
+// a hundred-seat venue snapshot with every seat sold, and 0 on a map with free
+// seats whose pool has been drained by a capacity cut.
+//
+// A picker must gate on BOTH this and Unavailable. Neither is sufficient alone,
+// which is the whole reason both are here.
+type SeatOccupancy struct {
+	SlotID            uuid.UUID `json:"slot_id"`
+	SeatMapID         uuid.UUID `json:"seat_map_id"`
+	OfferingStatus    string    `json:"offering_status"`
+	RemainingCapacity int32     `json:"remaining_capacity"`
+	Unavailable       []string  `json:"unavailable_seat_identities"`
+}
+
+// seatOccupancyPoolQuery reads the pool facts this response needs. The projection
+// deliberately mirrors CreateSeatHold's own lock-handshake SELECT rather than the
+// availability read's: `available` on the public availability endpoint additionally
+// subtracts unsold channel reservations, and the SEATED claim path does not — it
+// admits against target_capacity/capacity alone. Quoting availability here would
+// report 0 while the seat claim succeeds, and would make the comment claiming the
+// two agree a lie (ai-review pass 2).
+const seatOccupancyPoolQuery = `SELECT inventory_kind,seat_map_id,capacity,target_capacity,
+		confirmed_quantity,lifecycle_status,closure_status,
+		(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND ` + liveClaims + `)
+	FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`
+
+// seatOccupancySeatsQuery is the live-seat projection, scoped to one pool. It is a
+// const because the ADR-019 plan proof EXPLAINs this exact statement rather than a
+// retyped copy — a copy is how one of the two drifts away from the other.
+//
+// The predicate is a CONJUNCTION and both halves are load-bearing, for different
+// failure modes. Deleting either ships a wrong answer that no other test would see:
+//
+//   - `released_at IS NULL` alone reports a due-but-unswept held claim as occupying
+//     its seats. Expiry is swept lazily, on the next seat hold against the pool
+//     (sweepExpired), so on a quiet pool those rows can sit live for hours while the
+//     seat is in fact claimable — the next claim sweeps them before its own insert.
+//   - consumingClaims alone reports a FULLY REFUNDED seat as occupied forever. A full
+//     refund sets claim_seats.released_at but leaves claims.status = 'confirmed'
+//     (refund_returns.go — releaseSeatsForTerminal cannot help, it only touches
+//     claims already in ('expired','released')), so a status-only predicate strands
+//     the seat permanently with nothing to notice it.
+//
+// consumingClaims is reused rather than retyped for the same reason: it is the
+// definition the claim path enforces, and it already covers the finalizing window
+// that a naive status='held' check drops.
+const seatOccupancySeatsQuery = `SELECT cs.seat_identity
+	FROM claim_seats cs JOIN claims c ON c.id=cs.claim_id
+	WHERE cs.pool_id=$1 AND cs.released_at IS NULL AND ` + consumingClaims + `
+	ORDER BY cs.seat_identity`
+
+// SeatOccupancy reads which seats a seated slot cannot currently sell, and how much
+// aggregate headroom the pool has left.
+//
+// It takes no row locks and writes nothing — deliberately. It backs a cacheable
+// public GET, and sweeping the expired holds it filters out would turn the read into
+// a mutation contending for the pool row the on-sale path needs (ADR-010). Filtering
+// gives the same answer without it.
+//
+// It does run in a READ ONLY REPEATABLE READ transaction, which is not the same
+// thing as taking a lock. Under READ COMMITTED each statement gets its own snapshot,
+// so a claim committing between the pool read and the seat read yields a payload
+// that contradicts itself — headroom for one more seat, next to a list that already
+// contains the seat that consumed it (ai-review pass 2). The response is allowed to
+// be stale (ADR-004 resolves that at the atomic claim); it is not allowed to be
+// internally inconsistent, because a picker has no way to reconcile the two halves.
+// A read-only snapshot costs no locks and cannot serialization-fail.
+func (p *Postgres) SeatOccupancy(ctx context.Context, org, slot uuid.UUID) (SeatOccupancy, error) {
+	occ := SeatOccupancy{SlotID: slot, Unavailable: []string{}}
+	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return occ, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var kind, lifecycle, closure string
+	var seatMapID uuid.NullUUID
+	var capacity, confirmed int32
+	var target sql.NullInt32
+	var held int64
+	err = tx.QueryRowContext(ctx, seatOccupancyPoolQuery, slot, org).
+		Scan(&kind, &seatMapID, &capacity, &target, &confirmed, &lifecycle, &closure, &held)
+	if errors.Is(err, sql.ErrNoRows) {
+		return occ, ErrNotFound
+	}
+	if err != nil {
+		return occ, err
+	}
+	if kind != "seated" || !seatMapID.Valid {
+		return occ, ErrPoolKindMismatch
+	}
+	occ.SeatMapID = seatMapID.UUID
+	occ.OfferingStatus = offeringStatus(lifecycle, closure)
+
+	// The admission test, verbatim from CreateSeatHold: limit is target_capacity when
+	// a cut is pending, else capacity, and a claim is refused once confirmed + live
+	// held + requested exceeds it. So the headroom is what is left of that limit.
+	limit := capacity
+	if target.Valid {
+		limit = target.Int32
+	}
+	if remaining := int64(limit) - int64(confirmed) - held; remaining > 0 {
+		occ.RemainingCapacity = int32(remaining)
+	}
+	// A dead slot grants nothing whatever the arithmetic says — guardOffering refuses
+	// every claim before the limit is even consulted.
+	if occ.OfferingStatus != "open" {
+		occ.RemainingCapacity = 0
+	}
+
+	rows, err := tx.QueryContext(ctx, seatOccupancySeatsQuery, slot)
+	if err != nil {
+		return occ, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var seat string
+		if err = rows.Scan(&seat); err != nil {
+			return occ, err
+		}
+		occ.Unavailable = append(occ.Unavailable, seat)
+	}
+	return occ, rows.Err()
+}
+
 // seatsAboutToExpire returns the pin refs for held seated claims in this pool whose TTL
 // has elapsed but which the imminent sweep has not yet flipped — one PinRef per claim so
 // each carries its own "hold:<claim_id>" pinned_by.

@@ -99,21 +99,42 @@ func (e OperationalHoldCreatePurpose) Valid() bool {
 	}
 }
 
+// Defines values for SeatOccupancyOfferingStatus.
+const (
+	SeatOccupancyOfferingStatusArchived SeatOccupancyOfferingStatus = "archived"
+	SeatOccupancyOfferingStatusClosed   SeatOccupancyOfferingStatus = "closed"
+	SeatOccupancyOfferingStatusOpen     SeatOccupancyOfferingStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the SeatOccupancyOfferingStatus enum.
+func (e SeatOccupancyOfferingStatus) Valid() bool {
+	switch e {
+	case SeatOccupancyOfferingStatusArchived:
+		return true
+	case SeatOccupancyOfferingStatusClosed:
+		return true
+	case SeatOccupancyOfferingStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StaffAvailabilityOfferingStatus.
 const (
-	StaffAvailabilityOfferingStatusArchived StaffAvailabilityOfferingStatus = "archived"
-	StaffAvailabilityOfferingStatusClosed   StaffAvailabilityOfferingStatus = "closed"
-	StaffAvailabilityOfferingStatusOpen     StaffAvailabilityOfferingStatus = "open"
+	Archived StaffAvailabilityOfferingStatus = "archived"
+	Closed   StaffAvailabilityOfferingStatus = "closed"
+	Open     StaffAvailabilityOfferingStatus = "open"
 )
 
 // Valid indicates whether the value is a known member of the StaffAvailabilityOfferingStatus enum.
 func (e StaffAvailabilityOfferingStatus) Valid() bool {
 	switch e {
-	case StaffAvailabilityOfferingStatusArchived:
+	case Archived:
 		return true
-	case StaffAvailabilityOfferingStatusClosed:
+	case Closed:
 		return true
-	case StaffAvailabilityOfferingStatusOpen:
+	case Open:
 		return true
 	default:
 		return false
@@ -375,6 +396,25 @@ type SeatHoldCreate struct {
 	UnitAmount     int64              `json:"unit_amount"`
 }
 
+// SeatOccupancy defines model for SeatOccupancy.
+type SeatOccupancy struct {
+	// OfferingStatus Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"
+	OfferingStatus SeatOccupancyOfferingStatus `json:"offering_status"`
+
+	// RemainingCapacity The pool's remaining aggregate headroom under exactly the test the seated claim path applies (target_capacity when a cut is pending, else capacity, minus confirmed and live held), and 0 on a slot that is not open. A CEILING, not a seat count — inventory does not hold the seat universe, that is the seat map in catalog, and a seated pool is provisioned from the venue's GA snapshot. So it reads high when a small map sits in a large venue, and 0 when a capacity cut has drained a pool whose seats are free. Deliberately NOT the availability read's `available`, which additionally subtracts unsold channel reservations that the seated claim path never consults. A picker must gate on BOTH this and unavailable_seat_identities; neither is sufficient alone.
+	RemainingCapacity int `json:"remaining_capacity"`
+
+	// SeatMapId The published seat-map version this slot is seated against, as inventory holds it. Catalog publishes its own view on the performance; the two agreeing is what makes projection skew detectable rather than hidden.
+	SeatMapId openapi_types.UUID `json:"seat_map_id"`
+	SlotId    openapi_types.UUID `json:"slot_id"`
+
+	// UnavailableSeatIdentities Sorted, and [] rather than null on an empty seated pool — which is a different answer from 404 on an unknown slot
+	UnavailableSeatIdentities []string `json:"unavailable_seat_identities"`
+}
+
+// SeatOccupancyOfferingStatus Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"
+type SeatOccupancyOfferingStatus string
+
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {
 	Available int `json:"available"`
@@ -496,6 +536,11 @@ type GetAvailabilityParams struct {
 
 	// Channel Scope `available` to this sales channel; omitted means the default/public channel
 	Channel *string `form:"channel,omitempty" json:"channel,omitempty"`
+}
+
+// GetSeatOccupancyParams defines parameters for GetSeatOccupancy.
+type GetSeatOccupancyParams struct {
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 
 // CreateHoldJSONRequestBody defines body for CreateHold for application/json ContentType.
