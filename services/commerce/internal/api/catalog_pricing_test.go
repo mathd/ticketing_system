@@ -503,3 +503,49 @@ func TestReserveRefusesUnrequestedContendedSeats(t *testing.T) {
 		})
 	}
 }
+
+// TestReserveForwardsOrphanedSeats is ADR-041's refusal reaching the buyer. The
+// identities here are seats the buyer did NOT request — the ones their selection would
+// strand — so commerce's `seat_taken` subset rule must NOT be applied to them. It would
+// turn every valid orphan refusal into a 502.
+func TestReserveForwardsOrphanedSeats(t *testing.T) {
+	s, _, _, done := seatedStack(t, 409,
+		`{"error":"would strand","code":"orphaned_seats","seat_identities":["A/1/2"]}`)
+	defer done()
+
+	res := reserveSeats(t, s, "orphan-refusal", `["A/1/1","A/1/3"]`)
+
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status = %d want 409: %s", res.Code, res.Body.String())
+	}
+	var out struct {
+		Code  string   `json:"code"`
+		Seats []string `json:"seat_identities"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Code != "orphaned_seats" {
+		t.Fatalf("code = %q want orphaned_seats — a picker branches on this to keep the "+
+			"named seats SELECTABLE rather than greying them out: %s", out.Code, res.Body.String())
+	}
+	// A/1/2 was never requested. Forwarding it is the point.
+	if len(out.Seats) != 1 || out.Seats[0] != "A/1/2" {
+		t.Fatalf("seat_identities = %v want [A/1/2]", out.Seats)
+	}
+}
+
+func TestReserveRefusesMalformedOrphanRefusal(t *testing.T) {
+	for name, body := range map[string]string{
+		"no identities":        `{"error":"x","code":"orphaned_seats"}`,
+		"duplicate identities": `{"error":"x","code":"orphaned_seats","seat_identities":["A/1/2","A/1/2"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, done := seatedStack(t, 409, body)
+			defer done()
+			if res := reserveSeats(t, s, "bad-orphan-"+name, `["A/1/1"]`); res.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d want 502: %s", res.Code, res.Body.String())
+			}
+		})
+	}
+}

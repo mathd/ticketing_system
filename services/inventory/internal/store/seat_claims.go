@@ -46,6 +46,74 @@ func (e *SeatTakenError) Error() string {
 // the handler's 409 mapping, and the contention suite, both predate this type.
 func (e *SeatTakenError) Unwrap() error { return ErrSeatTaken }
 
+// ErrSeatOrphaned reports a selection that would strand a lone free seat (ADR-041).
+var ErrSeatOrphaned = errors.New("selection would strand a seat with no free neighbour")
+
+// SeatOrphanedError names the seats that WOULD be stranded — free seats the buyer did
+// not ask for, which is why this cannot share `seat_taken`'s code on the wire: a caller
+// validating that the identities are a subset of the request (TKT-173) would reject
+// every valid orphan refusal as malformed. The two carry opposite relationships to the
+// request.
+type SeatOrphanedError struct {
+	// Seats are the free seats this selection would isolate, sorted. They stay
+	// SELECTABLE in a picker: adding one is the buyer's repair.
+	Seats []string
+}
+
+func (e *SeatOrphanedError) Error() string {
+	return ErrSeatOrphaned.Error() + ": " + strings.Join(e.Seats, ", ")
+}
+
+func (e *SeatOrphanedError) Unwrap() error { return ErrSeatOrphaned }
+
+// orphanedSeatsQuery finds the seats a selection would strand, entirely in SQL and
+// entirely within the caller's transaction and pool lock.
+//
+// `occupied` is what will be taken once this claim commits: everything already live
+// (the same predicate the claim path enforces — see seatOccupancySeatsQuery) plus the
+// seats being requested. A seat is stranded when it is NOT occupied and every
+// neighbour it has IS — where "every neighbour it has" is the point: a row end has one,
+// a one-seat row has none, and NULL means no neighbour rather than unknown.
+//
+// `AND NOT (a.seat_identity = ANY($2))` keeps it to NEWLY orphaned seats. A seat
+// stranded earlier — by a refund, by an admin action — must not poison unrelated
+// claims for ever, so a seat that is already isolated before this claim is not this
+// claim's fault. It is excluded by construction: it is not occupied, so it can only
+// appear here if a neighbour of it is being taken now.
+const orphanedSeatsQuery = `
+WITH occupied AS (
+	SELECT cs.seat_identity FROM claim_seats cs JOIN claims c ON c.id=cs.claim_id
+	 WHERE cs.pool_id=$1 AND cs.released_at IS NULL AND ` + consumingClaims + `
+	UNION SELECT unnest($2::text[])
+)
+SELECT a.seat_identity FROM seat_claim_adjacency a
+ WHERE a.pool_id=$1
+   AND a.seat_identity NOT IN (SELECT seat_identity FROM occupied)
+   AND (a.left_identity  IS NULL OR a.left_identity  IN (SELECT seat_identity FROM occupied))
+   AND (a.right_identity IS NULL OR a.right_identity IN (SELECT seat_identity FROM occupied))
+   AND NOT (a.left_identity IS NULL AND a.right_identity IS NULL)
+   AND EXISTS (SELECT 1 FROM occupied o WHERE o.seat_identity IN (a.left_identity, a.right_identity))
+ ORDER BY a.seat_identity`
+
+// orphanedSeats runs the rule under the caller's pool lock. Empty means the selection
+// strands nothing.
+func orphanedSeats(ctx context.Context, tx *sql.Tx, pool uuid.UUID, canon []string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, orphanedSeatsQuery, pool, canon)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var seat string
+		if err = rows.Scan(&seat); err != nil {
+			return nil, err
+		}
+		out = append(out, seat)
+	}
+	return out, rows.Err()
+}
+
 // MaxSeatsPerHold bounds a single seat-set claim (mirrors the GA 1..50 quantity band).
 const MaxSeatsPerHold = 50
 
@@ -222,10 +290,11 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	var target sql.NullInt32
 	var lifecycle, closure, kind string
 	var seatMapID uuid.NullUUID
+	var orphanPrevention bool
 	// closure_status stays last before FROM (lock-handshake pattern; see CreateHold).
-	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,seat_map_id,closure_status
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,seat_map_id,orphan_prevention_enabled,closure_status
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).
-		Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &seatMapID, &closure)
+		Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &seatMapID, &orphanPrevention, &closure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SeatHold{}, ErrNotFound
 	}
@@ -316,6 +385,25 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	}
 	if len(contended) > 0 {
 		return SeatHold{}, &SeatTakenError{Seats: contended}
+	}
+
+	// The orphan rule, and ONLY when the pool carries it: a rule-off pool must run no
+	// extra statement at all (ADR-041's AC4), which is why this is inside the branch
+	// rather than a query that returns nothing.
+	//
+	// It runs here — after the expiry sweep, after contention, under the pool lock,
+	// before any write. All four matter. Before the sweep it would count seats whose
+	// holds have already lapsed; before contention it would compute against a selection
+	// that is about to be refused anyway; outside the lock it would be advisory, and
+	// two claimants could each take a legal seat and jointly strand a third.
+	if orphanPrevention {
+		stranded, oerr := orphanedSeats(ctx, tx, slot, canon)
+		if oerr != nil {
+			return SeatHold{}, oerr
+		}
+		if len(stranded) > 0 {
+			return SeatHold{}, &SeatOrphanedError{Seats: stranded}
+		}
 	}
 
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}

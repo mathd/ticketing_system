@@ -190,6 +190,15 @@ func (s *Server) createSeatHold(w http.ResponseWriter, r *http.Request) {
 		// caller is a buyer's reservation, and re-rendering a picker needs the
 		// identities, not the fact — see SeatTakenError. The typed error still
 		// unwraps to ErrSeatTaken, so this branch is checked first.
+		// A stranded seat is FREE and was never requested — the opposite relationship to
+		// the request from seat_taken, which is why it needs its own code (ADR-041).
+		var orphaned *store.SeatOrphanedError
+		if errors.As(err, &orphaned) {
+			write(w, 409, map[string]any{
+				"error": err.Error(), "code": "orphaned_seats", "seat_identities": orphaned.Seats,
+			})
+			return
+		}
 		var taken *store.SeatTakenError
 		if errors.As(err, &taken) {
 			write(w, 409, map[string]any{

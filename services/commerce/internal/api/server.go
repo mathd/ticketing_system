@@ -209,6 +209,19 @@ func (in reserveRequest) units() int32 {
 	return int32(len(in.canonicalSeatSet()))
 }
 
+// uniqueSeats reports whether a forwarded identity list has no repeats. Weaker than
+// subsetOf on purpose: an orphaned-seat list is NOT drawn from the request.
+func uniqueSeats(seats []string) bool {
+	seen := make(map[string]struct{}, len(seats))
+	for _, s := range seats {
+		if _, dup := seen[s]; dup {
+			return false
+		}
+		seen[s] = struct{}{}
+	}
+	return true
+}
+
 // subsetOf reports whether every identity in got appears in want, with no duplicates.
 // want is canonical (sorted, de-duplicated); got is whatever the far service sent.
 func subsetOf(got, want []string) bool {
@@ -513,6 +526,21 @@ func seatedInventoryRefusal(w http.ResponseWriter, code int, body []byte, reques
 		Error string   `json:"error"`
 		Code  string   `json:"code"`
 		Seats []string `json:"seat_identities"`
+	}
+	if code == 409 && json.Unmarshal(body, &refusal) == nil && refusal.Code == "orphaned_seats" {
+		// The identities here are seats the buyer did NOT ask for — the ones the
+		// selection would strand. The subset rule below is therefore exactly wrong for
+		// them: applying it would turn every valid orphan refusal into a 502 (ADR-041).
+		// They still must be non-empty and unique; commerce never invents identities.
+		if len(refusal.Seats) == 0 || !uniqueSeats(refusal.Seats) {
+			write(w, 502, map[string]string{"error": "invalid inventory response"})
+			return
+		}
+		write(w, 409, map[string]any{
+			"error": "the selection would leave a seat with no neighbour",
+			"code":  "orphaned_seats", "seat_identities": refusal.Seats,
+		})
+		return
 	}
 	if code == 409 && json.Unmarshal(body, &refusal) == nil && refusal.Code == "seat_taken" {
 		// Non-empty, and a SUBSET of what this buyer asked for. Forwarding verbatim

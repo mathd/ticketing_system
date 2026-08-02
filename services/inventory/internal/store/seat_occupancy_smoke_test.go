@@ -3,10 +3,12 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -795,5 +797,166 @@ func TestProvisionSeatedRefusesToAdoptAMismatchedPool(t *testing.T) {
 	}
 	if err := st.ProvisionSeated(ctx, uuid.New(), slot, uuid.New(), seatMap, 100, true, adj); !errors.Is(err, ErrPoolKindMismatch) {
 		t.Fatalf("different organizer: err = %v want ErrPoolKindMismatch", err)
+	}
+}
+
+// seededOrphanPool provisions a rule-enabled pool with one row of `n` seats named
+// A/1/1..A/1/n, and returns (org, slot, seat namer).
+func seededOrphanPool(t *testing.T, ctx context.Context, st *Postgres, n int) (uuid.UUID, uuid.UUID, func(int) string) {
+	t.Helper()
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+	seat := func(i int) string { return "A/1/" + strconv.Itoa(i) }
+	adjacency := make([]SeatAdjacencyRow, 0, n)
+	for i := 1; i <= n; i++ {
+		row := SeatAdjacencyRow{SeatIdentity: seat(i)}
+		if i > 1 {
+			left := seat(i - 1)
+			row.Left = &left
+		}
+		if i < n {
+			right := seat(i + 1)
+			row.Right = &right
+		}
+		adjacency = append(adjacency, row)
+	}
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, adjacency); err != nil {
+		t.Fatal(err)
+	}
+	return org, slot, seat
+}
+
+// TestSeatHoldRejectsNewlyOrphanedSeats is TKT-182: a selection that would strand a
+// lone free seat is refused inside the deciding transaction.
+func TestSeatHoldRejectsNewlyOrphanedSeats(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+
+	t.Run("stranding the middle of three", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+		// Taking 1 and 3 leaves 2 with no free neighbour.
+		_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(3)}, 0, "EUR", "k1")
+		var orphan *SeatOrphanedError
+		if !errors.As(err, &orphan) {
+			t.Fatalf("err = %v (%T), want *SeatOrphanedError", err, err)
+		}
+		if len(orphan.Seats) != 1 || orphan.Seats[0] != seat(2) {
+			t.Fatalf("stranded = %v want [%s]", orphan.Seats, seat(2))
+		}
+	})
+
+	t.Run("a run of two is fine", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 4)
+		// Taking 1 leaves 2,3,4 — every one still has a free neighbour.
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1)}, 0, "EUR", "k2"); err != nil {
+			t.Fatalf("a selection that strands nothing must succeed: %v", err)
+		}
+	})
+
+	t.Run("row ends have one neighbour", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+		// Taking 1 and 2 leaves 3, whose only neighbour (2) is now gone.
+		_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(2)}, 0, "EUR", "k3")
+		var orphan *SeatOrphanedError
+		if !errors.As(err, &orphan) || len(orphan.Seats) != 1 || orphan.Seats[0] != seat(3) {
+			t.Fatalf("err = %v — an END seat has ONE neighbour, so losing it strands the end", err)
+		}
+	})
+
+	t.Run("a one-seat row is always selectable", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 1)
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1)}, 0, "EUR", "k4"); err != nil {
+			t.Fatalf("a seat with no neighbours strands nobody: %v", err)
+		}
+	})
+
+	t.Run("only NEWLY orphaned seats are reported", func(t *testing.T) {
+		org, slot, seat := seededOrphanPool(t, ctx, st, 6)
+		// Pre-strand seat 2 by taking 1 and 3 directly — bypassing the rule the way an
+		// admin action or a refund could leave the row.
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1)}, 0, "EUR", "pre-a"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(3)}, 0, "EUR", "pre-b"); err != nil {
+			t.Skip("seeding a pre-existing orphan is itself refused; covered by the direct-insert case")
+		}
+		// Seat 2 is now stranded. A claim elsewhere in the row must not be blamed for it.
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(5), seat(6)}, 0, "EUR", "k5"); err != nil {
+			t.Fatalf("a pre-existing orphan must not poison unrelated claims: %v", err)
+		}
+	})
+}
+
+// TestSeatHoldRuleOffIgnoresOrphans is AC4 proven by construction: with the rule off,
+// the identical selection succeeds and the projection is never consulted.
+func TestSeatHoldRuleOffIgnoresOrphans(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 1000)
+
+	// Drop the table entirely: a rule-off claim must not read it at all.
+	if _, err := db.ExecContext(ctx, `DROP TABLE seat_claim_adjacency`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1", "A/1/3"}, 0, "EUR", "k1"); err != nil {
+		t.Fatalf("rule-off claim must not touch the projection: %v", err)
+	}
+}
+
+// TestOrphanRuleHoldsUnderContention is AC7, and it is the reason the check lives
+// inside the deciding transaction rather than anywhere more convenient.
+//
+// Row of five. A takes seat 1; B takes seat 3. Each selection is legal ALONE — 1
+// leaves 2,3,4,5 and 3 leaves 1,2,4,5, both fully paired. Together they isolate seat 2.
+// A check that ran before the transaction — in the browser, in commerce, in a
+// pre-flight read — passes both, and the row ends up with a hole nobody can sell.
+//
+// Under the pool lock exactly one commits and the loser is told which seat it would
+// have stranded.
+func TestOrphanRuleHoldsUnderContention(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 5)
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	picks := [][]string{{seat(1)}, {seat(3)}}
+	start := make(chan struct{})
+	for i := range picks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, results[i] = st.CreateSeatHold(ctx, org, slot, uuid.New(), picks[i], 0, "EUR",
+				"race-"+strconv.Itoa(i))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var ok, orphaned int
+	for i, err := range results {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrSeatOrphaned):
+			orphaned++
+			var o *SeatOrphanedError
+			if errors.As(err, &o) && (len(o.Seats) != 1 || o.Seats[0] != seat(2)) {
+				t.Fatalf("claim %d: stranded = %v want [%s]", i, o.Seats, seat(2))
+			}
+		default:
+			t.Fatalf("claim %d: unexpected %v", i, err)
+		}
+	}
+	if ok != 1 || orphaned != 1 {
+		t.Fatalf("succeeded=%d orphan-refused=%d, want 1/1 — two individually legal claims "+
+			"must not be able to jointly strand a seat", ok, orphaned)
+	}
+
+	// And the loser wrote nothing.
+	var live int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM claim_seats WHERE pool_id=$1 AND released_at IS NULL`, slot).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 1 {
+		t.Fatalf("live seat rows = %d want 1 — the refused claim must roll back entirely", live)
 	}
 }

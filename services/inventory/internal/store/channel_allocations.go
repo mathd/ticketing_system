@@ -45,7 +45,7 @@ const consumedQuantity = `(CASE WHEN status='confirmed' THEN quantity-returned_q
 const reservedForChannelsSQL = `SELECT COALESCE(sum(GREATEST(a.cap::bigint - COALESCE(u.used,0), 0)),0)
 	FROM channel_allocations a
 	LEFT JOIN LATERAL (
-		SELECT sum(`+consumedQuantity+`)::bigint AS used FROM claims
+		SELECT sum(` + consumedQuantity + `)::bigint AS used FROM claims
 		WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND ` + consumingClaims + `
 	) u ON true
 	WHERE a.pool_id=$1 AND ` + activeAllocation

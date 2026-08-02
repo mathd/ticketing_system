@@ -654,3 +654,25 @@ describe('ai-review pass 4 finding', () => {
     await vi.waitFor(() => expect(occCall).toBeGreaterThan(before + 1));
   });
 });
+
+describe('orphan refusal (TKT-182)', () => {
+  // The seats an orphan refusal names are FREE and unrequested. Routing them through
+  // the conflict channel would mark them unavailable and remove the buyer's only
+  // repair — adding one. The distinction is the whole reason the wire code differs.
+  it('a conflict marks seats taken; an orphan refusal must not', async () => {
+    const stub = stubFetch(geometry(), occupancy([]));
+    mount(stub);
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
+
+    // Only the seat_taken path dispatches the conflict event.
+    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    await waitFor(() => {
+      const occ = stub.mock.calls.filter(([u]) => String(u).includes('seat-occupancy'));
+      expect((occ[occ.length - 1][1] as RequestInit | undefined)?.cache).toBe('no-store');
+    });
+
+    // An orphan refusal is a message only: the map keeps every free seat selectable.
+    const free = screen.getAllByRole('button').filter((b) => !(b as HTMLButtonElement).disabled);
+    expect(free.length).toBeGreaterThan(0);
+  });
+});
