@@ -435,3 +435,70 @@ func TestUpdateVenueGACapacity(t *testing.T) {
 		t.Fatalf("unknown-venue GA update err = %v, want ErrNotFound", err)
 	}
 }
+
+// TestEditSeatMapInheritsOrphanPrevention is ADR-041's inheritance rule: an edit is a
+// geometry change, so a caller that says nothing about the rule must not silently
+// switch it off — and the version being edited is never altered either way (ADR-029).
+func TestEditSeatMapInheritsOrphanPrevention(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+
+	on := true
+	m, err := st.CreateSeatMap(ctx, SeatMapInput{
+		OrganizerID: seatMapOrg, VenueID: seatMapVenue, Name: "Strict", OrphanPreventionEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: "Orchestra", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.AddSeatMapRow(ctx, SeatMapRowInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, SectionID: sec.ID, Label: "A", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.AddSeatMapSeat(ctx, SeatMapSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.PublishSeatMap(ctx, m.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	geometry := []EditSectionInput{{Name: "Orchestra", Position: 1, Rows: []EditRowInput{
+		{Label: "A", Position: 1, Seats: []EditSeatInput{{Label: "1", Position: 1}}},
+	}}}
+
+	// Saying nothing inherits.
+	inherited, _, err := st.EditSeatMap(ctx, EditSeatMapInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, Sections: geometry,
+	})
+	if err != nil {
+		t.Fatalf("inheriting edit: %v", err)
+	}
+	if !inherited.OrphanPreventionEnabled {
+		t.Fatal("an edit that says nothing about the rule must INHERIT it, not clear it")
+	}
+
+	// Saying something applies to the NEW version only.
+	off := false
+	turnedOff, _, err := st.EditSeatMap(ctx, EditSeatMapInput{
+		OrganizerID: seatMapOrg, SeatMapID: inherited.ID, Sections: geometry,
+		OrphanPreventionEnabled: &off,
+	})
+	if err != nil {
+		t.Fatalf("disabling edit: %v", err)
+	}
+	if turnedOff.OrphanPreventionEnabled {
+		t.Fatal("an explicit false must apply to the new version")
+	}
+	// The predecessor is untouched — a published version is immutable (ADR-029), and
+	// a pool seated against it keeps the rule it was provisioned with.
+	prior, err := st.GetSeatMapGeometry(ctx, inherited.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !prior.Map.OrphanPreventionEnabled {
+		t.Fatal("editing a version must not change the version it was edited from")
+	}
+	_ = on
+}

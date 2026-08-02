@@ -1165,7 +1165,8 @@ func seatMapPayload(m store.SeatMap) SeatMap {
 	return SeatMap{
 		Id: m.ID, OrganizerId: m.OrganizerID, VenueId: m.VenueID, Name: m.Name,
 		Version: m.Version, Status: SeatMapStatus(m.Status), PublishedAt: m.PublishedAt,
-		CreatedAt: m.CreatedAt,
+		OrphanPreventionEnabled: m.OrphanPreventionEnabled,
+		CreatedAt:               m.CreatedAt,
 	}
 }
 
@@ -1254,7 +1255,14 @@ func editInput(seatMapID SeatMapId, in SeatMapEdit) store.EditSeatMapInput {
 		}
 		sections = append(sections, store.EditSectionInput{Name: sec.Name, Position: sec.Position, Rows: rows})
 	}
-	return store.EditSeatMapInput{OrganizerID: in.OrganizerId, SeatMapID: seatMapID, Sections: sections}
+	// nil INHERITS the edited version's setting; a value applies to the new version
+	// only. The pointer survives the mapping deliberately — collapsing it to a bool
+	// here would turn "the staffer said nothing" into "the staffer said off"
+	// (ADR-041).
+	return store.EditSeatMapInput{
+		OrganizerID: in.OrganizerId, SeatMapID: seatMapID, Sections: sections,
+		OrphanPreventionEnabled: in.OrphanPreventionEnabled,
+	}
 }
 
 // ListSeatMapVersions is the TKT-105 version-history read (COS-3): the family's
@@ -1308,6 +1316,9 @@ func (s *Server) CreateSeatMap(w http.ResponseWriter, r *http.Request, venueId V
 	}
 	m, err := s.store.CreateSeatMap(r.Context(), store.SeatMapInput{
 		OrganizerID: in.OrganizerId, VenueID: venueId, Name: in.Name,
+		// Absent means false: a caller that has never heard of the rule creates
+		// exactly the map it created before (ADR-041).
+		OrphanPreventionEnabled: in.OrphanPreventionEnabled != nil && *in.OrphanPreventionEnabled,
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)

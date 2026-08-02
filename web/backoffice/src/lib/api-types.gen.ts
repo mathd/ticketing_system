@@ -789,6 +789,11 @@ export interface components {
             /** Format: uuid */
             organizer_id: string;
             name: string;
+            /**
+             * @description Refuse a seat selection that would strand a lone free seat in a row (ADR-041). Optional and defaulting to false, so a caller that has never heard of the rule creates exactly the map it created before. Nothing enforces it yet — TKT-181 puts it on the wire, TKT-182 acts on it.
+             * @default false
+             */
+            orphan_prevention_enabled: boolean;
         };
         SeatMap: {
             /** Format: uuid */
@@ -807,6 +812,8 @@ export interface components {
              * @description Publication instant (TKT-103); absent while draft
              */
             published_at?: string;
+            /** @description Whether slots seated against THIS version refuse a selection that would strand a lone free seat (ADR-041). Per version, not per family: a published version is immutable and an edit mints a new one (ADR-029), so a seated pool's rule cannot change under it. Required on the response — every map has a value, and an absent field would read as "unknown" when the answer is always known. */
+            orphan_prevention_enabled: boolean;
             /** Format: date-time */
             created_at: string;
         };
@@ -879,6 +886,8 @@ export interface components {
         SeatMapEdit: {
             /** Format: uuid */
             organizer_id: string;
+            /** @description Omit to INHERIT the edited version's setting; set to apply a new value to the newly minted version only (ADR-029: the edited version is immutable and is never altered either way). Inheritance is the default because an edit is a geometry change — a staffer who says nothing about the rule must not silently switch it off. */
+            orphan_prevention_enabled?: boolean;
             sections: components["schemas"]["SeatMapEditSection"][];
         };
         SeatMapEditSection: {

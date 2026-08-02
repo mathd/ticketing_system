@@ -1533,11 +1533,11 @@ func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (Fest
 func (p *Postgres) CreateSeatMap(ctx context.Context, in SeatMapInput) (SeatMap, error) {
 	m := SeatMap{OrganizerID: in.OrganizerID, VenueID: in.VenueID, Name: in.Name}
 	err := p.db.QueryRowContext(ctx,
-		`INSERT INTO seat_maps (organizer_id, venue_id, name)
-		 SELECT $1, v.id, $3 FROM venues v WHERE v.id = $2 AND v.organizer_id = $1
-		 RETURNING id, version, status, created_at`,
-		in.OrganizerID, in.VenueID, in.Name).
-		Scan(&m.ID, &m.Version, &m.Status, &m.CreatedAt)
+		`INSERT INTO seat_maps (organizer_id, venue_id, name, orphan_prevention_enabled)
+		 SELECT $1, v.id, $3, $4 FROM venues v WHERE v.id = $2 AND v.organizer_id = $1
+		 RETURNING id, version, status, created_at, orphan_prevention_enabled`,
+		in.OrganizerID, in.VenueID, in.Name, in.OrphanPreventionEnabled).
+		Scan(&m.ID, &m.Version, &m.Status, &m.CreatedAt, &m.OrphanPreventionEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SeatMap{}, fmt.Errorf("venue: %w", ErrNotFound)
 	}
@@ -1716,13 +1716,15 @@ func (p *Postgres) EditSeatMap(ctx context.Context, in EditSeatMapInput) (SeatMa
 	var newMap SeatMap
 	var publishedAt sql.NullTime
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO seat_maps (organizer_id, venue_id, name, version, status, published_at, map_family_id)
-		 SELECT organizer_id, venue_id, name, $2, 'published', now(), map_family_id
+		`INSERT INTO seat_maps (organizer_id, venue_id, name, version, status, published_at, map_family_id, orphan_prevention_enabled)
+		 SELECT organizer_id, venue_id, name, $2, 'published', now(), map_family_id,
+		        COALESCE($3, orphan_prevention_enabled)
 		 FROM seat_maps WHERE id = $1
-		 RETURNING id, organizer_id, venue_id, name, version, status, published_at, created_at`,
-		curID, curVersion+1).
+		 RETURNING id, organizer_id, venue_id, name, version, status, published_at, created_at, orphan_prevention_enabled`,
+		curID, curVersion+1, in.OrphanPreventionEnabled).
 		Scan(&newMap.ID, &newMap.OrganizerID, &newMap.VenueID, &newMap.Name,
-			&newMap.Version, &newMap.Status, &publishedAt, &newMap.CreatedAt)
+			&newMap.Version, &newMap.Status, &publishedAt, &newMap.CreatedAt,
+			&newMap.OrphanPreventionEnabled)
 	if err != nil {
 		return SeatMap{}, false, fmt.Errorf("create new version: %w", err)
 	}
@@ -2058,7 +2060,7 @@ func (p *Postgres) AddSeatMapSeat(ctx context.Context, in SeatMapSeatInput) (Sea
 
 func (p *Postgres) ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]SeatMap, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT id, organizer_id, venue_id, name, version, status, created_at
+		`SELECT id, organizer_id, venue_id, name, version, status, created_at, orphan_prevention_enabled
 		   FROM seat_maps WHERE venue_id = $1 ORDER BY version, name, id`, venueID)
 	if err != nil {
 		return nil, fmt.Errorf("list seat maps: %w", err)
@@ -2067,7 +2069,7 @@ func (p *Postgres) ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]
 	out := make([]SeatMap, 0)
 	for rows.Next() {
 		var m SeatMap
-		if err := rows.Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &m.CreatedAt, &m.OrphanPreventionEnabled); err != nil {
 			return nil, fmt.Errorf("scan seat map: %w", err)
 		}
 		out = append(out, m)
@@ -2084,7 +2086,7 @@ func (p *Postgres) ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]
 // read is non-sensitive geometry metadata.
 func (p *Postgres) ListSeatMapVersions(ctx context.Context, seatMapID uuid.UUID) ([]SeatMap, error) {
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT id, organizer_id, venue_id, name, version, status, published_at, created_at
+		`SELECT id, organizer_id, venue_id, name, version, status, published_at, created_at, orphan_prevention_enabled
 		   FROM seat_maps
 		  WHERE map_family_id = (SELECT map_family_id FROM seat_maps WHERE id = $1)
 		  ORDER BY version DESC`, seatMapID)
@@ -2095,7 +2097,7 @@ func (p *Postgres) ListSeatMapVersions(ctx context.Context, seatMapID uuid.UUID)
 	out := make([]SeatMap, 0)
 	for rows.Next() {
 		var m SeatMap
-		if err := rows.Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &m.PublishedAt, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &m.PublishedAt, &m.CreatedAt, &m.OrphanPreventionEnabled); err != nil {
 			return nil, fmt.Errorf("scan seat-map version: %w", err)
 		}
 		out = append(out, m)
@@ -2137,10 +2139,10 @@ const seatMapSeatsScopedQuery = `SELECT id, row_id, seat_identity, label, positi
 func (p *Postgres) GetSeatMapGeometry(ctx context.Context, seatMapID uuid.UUID) (SeatMapGeometry, error) {
 	var g SeatMapGeometry
 	err := p.db.QueryRowContext(ctx,
-		`SELECT id, organizer_id, venue_id, name, version, status, created_at
+		`SELECT id, organizer_id, venue_id, name, version, status, created_at, orphan_prevention_enabled
 		   FROM seat_maps WHERE id = $1`, seatMapID).
 		Scan(&g.Map.ID, &g.Map.OrganizerID, &g.Map.VenueID, &g.Map.Name,
-			&g.Map.Version, &g.Map.Status, &g.Map.CreatedAt)
+			&g.Map.Version, &g.Map.Status, &g.Map.CreatedAt, &g.Map.OrphanPreventionEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SeatMapGeometry{}, ErrNotFound
 	}

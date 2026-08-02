@@ -241,3 +241,56 @@ func TestSeatMapMigrationRollbackGuard(t *testing.T) {
 		t.Fatal("refused 0009 down partially dropped the seat-map schema")
 	}
 }
+
+// TestSeatMapOrphanPreventionSetting is TKT-179 / ADR-041: the rule is a per-VERSION
+// setting on the map, defaulting off.
+//
+// Per version rather than per family because a published version is immutable and an
+// edit mints a new one (ADR-029); a seated pool binds to one specific version, and
+// that binding is what stops a republish changing the rule a live pool enforces.
+func TestSeatMapOrphanPreventionSetting(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+
+	// Default off: every map that existed before this column did behaves as it did.
+	plain := seedDraftMap(ctx, t, st, "Plain")
+	if plain.OrphanPreventionEnabled {
+		t.Fatal("a new seat map must default to orphan prevention OFF")
+	}
+	var stored bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT orphan_prevention_enabled FROM seat_maps WHERE id=$1`, plain.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored {
+		t.Fatal("the column must default false")
+	}
+
+	enabled, err := st.CreateSeatMap(ctx, SeatMapInput{
+		OrganizerID: seatMapOrg, VenueID: seatMapVenue, Name: "Strict", OrphanPreventionEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled.OrphanPreventionEnabled {
+		t.Fatal("an explicitly enabled map must come back enabled")
+	}
+	// And the read path carries it, not just the create response. This is the read
+	// inventory will use to project geometry (ADR-041), so the flag has to travel with
+	// the map it belongs to.
+	geo, err := st.GetSeatMapGeometry(ctx, enabled.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !geo.Map.OrphanPreventionEnabled {
+		t.Fatal("the geometry read must carry the setting — a value only the writer can see is not a setting")
+	}
+	if listed, lerr := st.ListVenueSeatMaps(ctx, seatMapVenue); lerr != nil {
+		t.Fatal(lerr)
+	} else {
+		for _, m := range listed {
+			if m.ID == enabled.ID && !m.OrphanPreventionEnabled {
+				t.Fatal("the venue list must carry the setting too")
+			}
+		}
+	}
+}

@@ -1278,9 +1278,17 @@ components:
       properties:
         organizer_id: { type: string, format: uuid }
         name: { type: string, minLength: 1 }
+        orphan_prevention_enabled:
+          type: boolean
+          default: false
+          description: >
+            Refuse a seat selection that would strand a lone free seat in a row
+            (ADR-041). Optional and defaulting to false, so a caller that has never
+            heard of the rule creates exactly the map it created before. Nothing
+            enforces it yet — TKT-181 puts it on the wire, TKT-182 acts on it.
     SeatMap:
       type: object
-      required: [id, organizer_id, venue_id, name, version, status, created_at]
+      required: [id, organizer_id, venue_id, name, version, status, created_at, orphan_prevention_enabled]
       properties:
         id: { type: string, format: uuid }
         organizer_id: { type: string, format: uuid }
@@ -1294,6 +1302,15 @@ components:
           description: Publication instant (TKT-103); absent while draft
           type: string
           format: date-time
+        orphan_prevention_enabled:
+          type: boolean
+          description: >
+            Whether slots seated against THIS version refuse a selection that would
+            strand a lone free seat (ADR-041). Per version, not per family: a
+            published version is immutable and an edit mints a new one (ADR-029), so
+            a seated pool's rule cannot change under it. Required on the response —
+            every map has a value, and an absent field would read as "unknown" when
+            the answer is always known.
         created_at: { type: string, format: date-time }
     SeatMapSectionCreate:
       type: object
@@ -1388,6 +1405,14 @@ components:
       required: [organizer_id, sections]
       properties:
         organizer_id: { type: string, format: uuid }
+        orphan_prevention_enabled:
+          type: boolean
+          description: >
+            Omit to INHERIT the edited version's setting; set to apply a new value to
+            the newly minted version only (ADR-029: the edited version is immutable
+            and is never altered either way). Inheritance is the default because an
+            edit is a geometry change — a staffer who says nothing about the rule
+            must not silently switch it off.
         sections:
           type: array
           items: { $ref: '#/components/schemas/SeatMapEditSection' }

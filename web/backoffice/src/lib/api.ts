@@ -90,11 +90,16 @@ async function postCatalog<T>(path: string, body: unknown): Promise<T> {
 export function createSeatMap(
   venueId: string,
   name: string,
+  // Orphan-seat prevention (ADR-041). Defaults off so an existing caller creates
+  // exactly the map it created before; the flag is per version, and an edit that
+  // omits it inherits rather than clears.
+  orphanPreventionEnabled = false,
   organizerId = DEFAULT_ORGANIZER_ID,
 ): Promise<SeatMap> {
   return postCatalog<SeatMap>(`/venues/${encodeURIComponent(venueId)}/seat-maps`, {
     organizer_id: organizerId,
     name,
+    orphan_prevention_enabled: orphanPreventionEnabled,
   });
 }
 
