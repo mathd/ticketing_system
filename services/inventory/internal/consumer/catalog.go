@@ -68,6 +68,11 @@ type PublishedPerformance struct {
 // both as transient (corrupt geometry retried for ever). Only the distinction is right.
 var ErrGeometryInvalid = errors.New("seat-map geometry is invalid")
 
+// maxGeometryBytes bounds the buffered geometry read. A seat map is at most a few
+// thousand seats; anything larger is not a map this consumer should be projecting, and
+// an unbounded read from a dependency is an availability risk of its own.
+const maxGeometryBytes = 8 << 20
+
 // geometrySeat is the boundary decode of one seat. Named rather than inlined so the
 // validation below can copy and sort a row without restating the shape.
 type geometrySeat struct {
@@ -203,9 +208,15 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		// 4xx is catalog's settled answer about this map; 5xx and the rest are its
-		// health, which may change on retry.
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		// Only statuses that are catalog's SETTLED answer about this map are
+		// deterministic. A blanket 4xx sweep is wrong: 408, 425 and 429 are explicitly
+		// retryable, and a 401 can be transient during a credential or proxy change —
+		// terminating on any of them would leave the performance with no inventory at
+		// all (ai-review). Everything not on this list, including unknown statuses,
+		// stays retryable: a needless retry costs a delay, a wrong terminate costs the
+		// publication.
+		switch resp.StatusCode {
+		case http.StatusNotFound, http.StatusGone:
 			return nil, fmt.Errorf("%w: seat map %s: status %d", ErrGeometryInvalid, seatMapID, resp.StatusCode)
 		}
 		return nil, fmt.Errorf("catalog seat-map geometry %s: status %d", seatMapID, resp.StatusCode)
@@ -221,7 +232,16 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 			} `json:"rows"`
 		} `json:"sections"`
 	}
-	dec := json.NewDecoder(resp.Body)
+	// The body is buffered BEFORE decoding so a transport failure mid-stream is
+	// distinguishable from malformed content. Decoding straight from resp.Body makes an
+	// interrupted read look like a syntax error, and a syntax error terminates the
+	// publication permanently (ai-review). A connection that drops halfway is exactly
+	// the case retrying exists for.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxGeometryBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read catalog seat-map geometry %s: %w", seatMapID, err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&body); err != nil {
 		return nil, fmt.Errorf("%w: decode: %v", ErrGeometryInvalid, err)
 	}

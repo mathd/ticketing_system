@@ -344,14 +344,20 @@ func TestSeatMapAdjacencyFailsOnUpstreamError(t *testing.T) {
 	}
 }
 
-// A 5xx is catalog's health and may change; a 4xx is its settled answer about this map.
-// Only the first is worth retrying, and the disposition depends on telling them apart.
+// Only catalog's SETTLED answer about this map is deterministic. A blanket 4xx sweep
+// is wrong: 408, 425 and 429 are explicitly retryable, 401 can be transient during a
+// credential or proxy change, and an unknown status must never terminate. A needless
+// retry costs a delay; a wrong terminate costs the publication (ai-review).
 func TestSeatMapAdjacencyStatusClassification(t *testing.T) {
 	id := uuid.New()
 	for _, tc := range []struct {
 		status        int
 		deterministic bool
-	}{{404, true}, {401, true}, {409, true}, {500, false}, {502, false}, {503, false}} {
+	}{
+		{404, true}, {410, true},
+		{401, false}, {408, false}, {425, false}, {429, false},
+		{500, false}, {502, false}, {503, false}, {418, false},
+	} {
 		_, err := geometryServer(t, tc.status, `{}`).SeatMapAdjacency(context.Background(), id)
 		if err == nil {
 			t.Fatalf("status %d must be an error", tc.status)
@@ -359,5 +365,31 @@ func TestSeatMapAdjacencyStatusClassification(t *testing.T) {
 		if got := errors.Is(err, ErrGeometryInvalid); got != tc.deterministic {
 			t.Fatalf("status %d: ErrGeometryInvalid=%v want %v", tc.status, got, tc.deterministic)
 		}
+	}
+}
+
+// A transport that succeeds through the headers and then fails mid-body must be
+// RETRIED, not terminated: the content was never seen, so calling it invalid geometry
+// deletes a publication because a connection dropped (ai-review).
+func TestSeatMapAdjacencyTreatsAnInterruptedBodyAsTransient(t *testing.T) {
+	id := uuid.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "4096") // promise more than we send
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"map":{"id":"` + id.String() + `"`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Return without completing the body: the client sees an unexpected EOF.
+	}))
+	defer srv.Close()
+
+	_, err := NewCatalogResolver(srv.URL, "tok", srv.Client()).SeatMapAdjacency(context.Background(), id)
+	if err == nil {
+		t.Fatal("an interrupted body must be an error")
+	}
+	if errors.Is(err, ErrGeometryInvalid) {
+		t.Fatalf("err = %v — a dropped connection is transient; terminating on it loses the publication", err)
 	}
 }
