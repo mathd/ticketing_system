@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -167,24 +168,59 @@ type reserveRequest struct {
 // separately — this only answers which branch a valid request took.
 func (in reserveRequest) seated() bool { return len(in.SeatIdentities) > 0 }
 
-// units is how many tickets this request is FOR — the number priced against.
+// canonicalSeatSet mirrors inventory's canonicalSeats — trim, de-duplicate, sort —
+// for two local purposes, neither of which is rewriting the request. Commerce
+// forwards the caller's array verbatim; inventory owns canonicalisation because its
+// idempotency fingerprint is computed over its own canonical form, and a second
+// authority for "the same request" is how two services quietly disagree.
 //
-// For seats that is the de-duplicated, whitespace-trimmed count, mirroring what
-// inventory's canonicalSeats will do, because pricing rules can be quantity-tiered
-// (ADR-036): resolving "3 seats" for a request of [A,A,B] would quote a tier the
-// buyer never reaches. Commerce does NOT canonicalise the set it forwards — inventory
-// owns that, and its idempotency fingerprint is computed over its own canonical form.
-// This counts, it does not rewrite; and the claim's count is verified against it
-// afterwards, so the two canonicalisations agreeing is an assertion, not an assumption.
+// The two purposes:
+//
+//   - PRICING. Rules can be quantity-tiered (ADR-036), so resolving "3 seats" for a
+//     request of [A,A,B] would quote a tier the buyer never reaches.
+//   - IDEMPOTENT TERMS. Same key, different seats must be refused, and comparing
+//     counts alone does not do it: [1,2] and [2,3] are both two seats, and the replay
+//     would answer with the ORIGINAL claim's seats while the caller asked for
+//     different ones. Caught end to end by TestSeatedReservationAndCheckout.
+//
+// Because this mirrors rather than delegates, the claimed set is verified against it
+// after the call — so the two canonicalisations agreeing is an assertion, not an
+// assumption.
+func (in reserveRequest) canonicalSeatSet() []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in.SeatIdentities))
+	for _, seat := range in.SeatIdentities {
+		seat = strings.TrimSpace(seat)
+		if _, dup := seen[seat]; dup {
+			continue
+		}
+		seen[seat] = struct{}{}
+		out = append(out, seat)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// units is how many tickets this request is FOR — the number priced against.
 func (in reserveRequest) units() int32 {
 	if !in.seated() {
 		return in.Quantity
 	}
-	seen := map[string]struct{}{}
-	for _, seat := range in.SeatIdentities {
-		seen[strings.TrimSpace(seat)] = struct{}{}
+	return int32(len(in.canonicalSeatSet()))
+}
+
+// sameSeats reports whether a persisted (already canonical) set is the set this
+// request names.
+func sameSeats(persisted, requested []string) bool {
+	if len(persisted) != len(requested) {
+		return false
 	}
-	return int32(len(seen))
+	for i := range persisted {
+		if persisted[i] != requested[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // validReservationShape enforces the exactly-one-of rule in Go, independently of the
@@ -265,7 +301,14 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			// something else. Refuse rather than answer with the old quote. A
 			// GA↔seated switch under one key is the same reuse and is caught here —
 			// the counts would often match, so the KIND has to be compared too.
-			if pin.qty != in.units() || pin.ticket != in.TicketTypeID || (len(pinnedSeats) > 0) != in.seated() {
+			// The SET, not just the count. [1,2] and [2,3] are both two seats, and
+			// comparing counts would replay the original claim's seats back to a
+			// caller who asked for different ones — a 201 that looks like success and
+			// hands over seats nobody requested. The kind is compared too: a GA↔seated
+			// switch under one key is the same reuse and the counts would often match.
+			if pin.qty != in.units() || pin.ticket != in.TicketTypeID ||
+				(len(pinnedSeats) > 0) != in.seated() ||
+				(in.seated() && !sameSeats(pinnedSeats, in.canonicalSeatSet())) {
 				write(w, 409, map[string]string{"error": "idempotency key reused with different terms"})
 				return
 			}
