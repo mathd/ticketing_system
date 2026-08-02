@@ -521,3 +521,102 @@ func TestSeatOccupancyCapacityIsACeilingNotASeatCount(t *testing.T) {
 			occ.RemainingCapacity)
 	}
 }
+
+// TestSeatOccupancyCapacityAcrossTheClaimLifecycle is the mutation-sensitive
+// coverage the third review pass asked for: it walks one seated claim through
+// held -> finalizing -> confirmed -> fully refunded and pins the headroom at each
+// step. The aggregate is assembled from TWO sources that must not overlap — the
+// pool's confirmed_quantity column, and a live-claims sum over `liveClaims`, which
+// deliberately EXCLUDES confirmed. Nothing else in the suite would catch either
+// half being wrong:
+//
+//   - if liveClaims were widened to consumingClaims, the confirmed step would
+//     count the claim twice and headroom would read 8 instead of 9;
+//   - if finalizing were dropped from the predicate, that step would read 10 and
+//     the pool would appear to have room it has already promised;
+//   - if the refund did not return confirmed capacity, the last step would stay 9.
+func TestSeatOccupancyCapacityAcrossTheClaimLifecycle(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 10)
+
+	if got := occupancy(t, st, org, slot).RemainingCapacity; got != 10 {
+		t.Fatalf("empty pool: remaining_capacity = %d want 10", got)
+	}
+
+	hold, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1"}, 0, "EUR", "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		to   string
+		want int32
+	}{
+		{"", 9},           // held
+		{"finalizing", 9}, // still owns the seat and the capacity
+		{"confirmed", 9},  // now counted by confirmed_quantity, NOT by liveClaims
+	} {
+		if step.to != "" {
+			if _, err = st.Transition(ctx, org, hold.Claim.ID, step.to); err != nil {
+				t.Fatalf("to %s: %v", step.to, err)
+			}
+		}
+		occ := occupancy(t, st, org, slot)
+		if occ.RemainingCapacity != step.want {
+			t.Fatalf("after %q: remaining_capacity = %d want %d — the claim is counted %s",
+				step.to, occ.RemainingCapacity, step.want,
+				map[bool]string{true: "twice or not at all", false: "wrongly"}[occ.RemainingCapacity != step.want])
+		}
+		if !seatsEqual(occ.Unavailable, []string{"A/1/1"}) {
+			t.Fatalf("after %q: unavailable = %v want [A/1/1]", step.to, occ.Unavailable)
+		}
+	}
+
+	if _, err = st.ReturnRefundedCapacity(ctx, org, hold.Claim.ID, uuid.New(), 1); err != nil {
+		t.Fatalf("refund return: %v", err)
+	}
+	occ := occupancy(t, st, org, slot)
+	if occ.RemainingCapacity != 10 {
+		t.Fatalf("after a full refund: remaining_capacity = %d want 10 — the capacity came back "+
+			"but the aggregate did not notice", occ.RemainingCapacity)
+	}
+	if len(occ.Unavailable) != 0 {
+		t.Fatalf("after a full refund: unavailable = %v want empty", occ.Unavailable)
+	}
+}
+
+// TestSeatOccupancyCapacityIsSlotScoped closes the other mutation the third pass
+// named: the live-claims aggregate is a correlated subquery, and if its predicate
+// were scoped by organizer instead of by slot — or if the two $1 bindings drifted
+// apart — a second seated pool under the SAME organizer would eat this pool's
+// headroom. Every other test in this file uses one pool per organizer and would
+// stay green through that bug.
+func TestSeatOccupancyCapacityIsSlotScoped(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slotA, _ := provisionedSeated(t, ctx, st, 10)
+
+	// A second seated pool for the SAME organizer, holding most of its own capacity.
+	slotB, seatMapB := uuid.New(), uuid.New()
+	if err := st.ProvisionSeated(ctx, uuid.New(), slotB, org, seatMapB, 10); err != nil {
+		t.Fatal(err)
+	}
+	seats := []string{"B/1/1", "B/1/2", "B/1/3", "B/1/4", "B/1/5", "B/1/6", "B/1/7"}
+	if _, err := st.CreateSeatHold(ctx, org, slotB, uuid.New(), seats, 0, "EUR", "kb"); err != nil {
+		t.Fatal(err)
+	}
+	var poolsForOrg int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM inventory_pools WHERE organizer_id=$1`, org).Scan(&poolsForOrg); err != nil {
+		t.Fatal(err)
+	}
+	if poolsForOrg != 2 {
+		t.Fatalf("fixture must give the organizer two seated pools, got %d", poolsForOrg)
+	}
+
+	if occ := occupancy(t, st, org, slotA); occ.RemainingCapacity != 10 || len(occ.Unavailable) != 0 {
+		t.Fatalf("slot A = capacity %d / seats %v; the other pool's 7 held seats leaked into "+
+			"this pool's aggregate", occ.RemainingCapacity, occ.Unavailable)
+	}
+	if occ := occupancy(t, st, org, slotB); occ.RemainingCapacity != 3 {
+		t.Fatalf("slot B: remaining_capacity = %d want 3", occ.RemainingCapacity)
+	}
+}
