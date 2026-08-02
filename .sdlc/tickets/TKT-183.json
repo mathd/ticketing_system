@@ -1,0 +1,53 @@
+{
+  "key": "TKT-183",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-023c2: Catalog emits performance.published schema 5 for rule-enabled maps",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-181"
+    }
+  ],
+  "description": "**Created during TKT-180's second ai-review**, which found ADR-041's rollout section self-contradictory: it argued that consumer-before-producer ordering *\"is only expressible as separate merges\"* and then assigned both inventory's schema-5 arm and catalog's emission to TKT-181.\n\n**A shared merge does not order a deployment.** Catalog and inventory start independently, so one PR carrying both does not guarantee inventory is running first. If catalog emits while an old inventory replica is still up, that replica **quarantines the event, acks it, and latches unready** — and deploying the capable binary does **not** repair it. Quarantined originals were acked, so recovery is `reprocess-quarantine` **plus a restart**, by an operator. Newly published performances would have no inventory pool until someone notices.\n\nSo the producer gets its own revision.\n\n**Acceptance criteria:**\n- [ ] Catalog emits `performance.published` **schema 5** for a seated performance whose bound seat-map version has `orphan_prevention_enabled` true, carrying the exact `seat_map_id` and the flag.\n- [ ] A rule-**off** seated map still emits **schema 4**, byte-identical to today's golden. A GA performance is untouched.\n- [ ] The schema-5 payload has its own golden, and the schema-4 golden is unchanged in the same commit — the pair is what proves the fork rather than a rewrite.\n- [ ] The event carries the version the performance is bound to, never the family's current version (ADR-029) — a test seats a performance against v1, publishes v2 with a different setting, and asserts the emitted event still describes v1.\n- [ ] Smoke proves an enabled map publishes at schema 5 and provisions an inventory pool **with** its adjacency projection (TKT-181's work, exercised end to end here for the first time).\n\n**Deploy note for whoever ships this:** TKT-181's inventory must be fully rolled out first. That is the whole reason this ticket exists.\n\nQuality gates: `make check` green; both goldens; smoke.",
+  "context": {
+    "capturedAt": "2026-08-02",
+    "binding": [],
+    "reference": [
+      {
+        "summary": "Architecture, design and test plan",
+        "link": "board:TKT-175"
+      },
+      {
+        "summary": "The rollout rule this ticket enforces",
+        "link": "docs/adr/ADR-041-orphan-seat-arbitration.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-017",
+        "why": "The producer half of the bump, and the reason it is a separate revision: bump on consumer semantics, and never emit a variant before every consumer accepts it."
+      },
+      {
+        "id": "ADR-029",
+        "why": "The event must name the exact bound version, never the family's current one — resolving the family would describe a map the pool is not seated against."
+      },
+      {
+        "id": "ADR-034",
+        "why": "Quarantine and readiness behaviour is what makes a premature emission expensive: quarantined originals are acked and recovery is manual."
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nCarved out of TKT-181 during TKT-180's ai-review, to make ADR-041's own ordering claim true. Planning inherited from TKT-175."
+    }
+  ]
+}
