@@ -1,0 +1,35 @@
+{
+  "key": "TKT-177",
+  "type": "Task",
+  "classification": "simple",
+  "summary": "Seat-occupancy polling scales with users x seated performances (TKT-174 ai-review)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "Every mounted seat picker polls `GET /slots/{id}/seat-occupancy` every 5s while the tab is visible. On an event page with several seated performances that is one request per performance per 5s per open tab, including maps far outside the viewport — and no shared cache or hot-event tier is deployed, so every one of them reaches the inventory database.\n\nRaised by TKT-174's first ai-review pass and **deliberately not fixed there**. Viewport-gating the poll (IntersectionObserver) is a real improvement, but it is new behaviour with its own failure modes — a picker that stops updating because it scrolled out of view is its own class of bug — and it would have gone into a diff that had already been rewritten three times.\n\nThe actual answer is ADR-004 rule 2's shared cache / request-coalescing tier, which is **TKT-31**'s and undeployed. This ticket is the reminder that the storefront now has a seconds-tier read in production shape without it.\n\nOptions, cheapest first: viewport-gate the poll; deduplicate per slot within a page; back off when the tab has been idle; or land TKT-31. The first three are mitigations, the last is the fix.\n\n**Do not** lengthen the poll interval to compensate: 5s is the contract's own `max-age` and a longer one silently degrades the freshness the tier promises.",
+  "context": {
+    "capturedAt": "2026-08-02",
+    "binding": [],
+    "reference": [
+      {
+        "summary": "Surfaced during TKT-174",
+        "link": "https://github.com/mathd/ticketing_system/pull/148"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "Rule 2's shared cache tier is the real answer to the polling load; rule 1 fixes the 5s interval that must not be lengthened to compensate."
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from TKT-174's ai-review triage as an incidental — recorded rather than folded into that PR. Not shaped."
+    }
+  ]
+}
