@@ -1088,6 +1088,7 @@ func publicEventDetail(agg store.EventAggregate, locale string) PublicEventDetai
 			Id: pa.Performance.ID, StartsAt: publicStartsAt(pa.Performance),
 			Timezone:    pa.Performance.Timezone,
 			Venue:       PublicVenue{Id: pa.Venue.ID, Name: pa.Venue.Name},
+			SeatMapId:   pa.Performance.SeatMapID,
 			TicketTypes: make([]PublicTicketType, 0, len(pa.TicketTypes)),
 		}
 		for _, tt := range pa.TicketTypes {

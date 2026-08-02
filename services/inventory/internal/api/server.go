@@ -35,6 +35,13 @@ type SeatPinner interface {
 // without changing the spec fails the contract, and vice versa.
 const CacheControlPublicAvailability = "public, max-age=5, s-maxage=5"
 
+// CacheControlPublicSeatOccupancy is the same ADR-004 seconds tier for the seat
+// occupancy read (TKT-172). Same value, separate constant and separate header
+// declaration (SeatOccupancyCacheControl): ADR-028 fails closed per declaration,
+// so sharing one would let a handler that stopped emitting the tier on one
+// operation hide behind the other still emitting it.
+const CacheControlPublicSeatOccupancy = "public, max-age=5, s-maxage=5"
+
 type Server struct {
 	st         *store.Postgres
 	credential string
@@ -55,6 +62,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/holds", s.create)
 	r.Post("/holds/seats", s.createSeatHold)
 	r.Get("/slots/{id}/availability", s.availability)
+	r.Get("/slots/{id}/seat-occupancy", s.seatOccupancy)
 	r.Post("/internal/holds/{id}/confirm", s.internalOnly(s.transition("confirmed")))
 	r.Post("/internal/holds/{id}/finalize", s.internalOnly(s.transition("finalizing")))
 	r.Post("/internal/holds/{id}/release", s.internalOnly(s.transition("released")))
@@ -258,4 +266,25 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicAvailability)
 	write(w, 200, a)
+}
+
+// seatOccupancy answers which seats a seated slot cannot sell right now (TKT-172).
+// The two refusals stay distinguishable through the already-shipped problem()
+// branches: an unknown or wrong-organizer slot is ErrNotFound → 404, a GA slot is
+// ErrPoolKindMismatch → 409. Collapsing them would leave a caller unable to tell
+// "no such slot" from "this slot has no seats".
+func (s *Server) seatOccupancy(w http.ResponseWriter, r *http.Request) {
+	slot, e1 := parseUUID(chi.URLParam(r, "id"))
+	org, e2 := parseUUID(r.URL.Query().Get("organizer_id"))
+	if e1 != nil || e2 != nil {
+		write(w, 400, map[string]string{"error": "valid slot and organizer required"})
+		return
+	}
+	occ, err := s.st.SeatOccupancy(r.Context(), org, slot)
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", CacheControlPublicSeatOccupancy)
+	write(w, 200, occ)
 }

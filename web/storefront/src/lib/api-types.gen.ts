@@ -1174,6 +1174,11 @@ export interface components {
             starts_at: string;
             timezone: string;
             venue: components["schemas"]["PublicVenue"];
+            /**
+             * Format: uuid
+             * @description The published seat-map version this performance is seated against (TKT-172). Optional and OMITTED for a GA performance — a storefront reads its presence as "this slot is seated, render this map", so a null would be a third state nobody wants. It names the exact version the performance was bound to at creation, not the family's newest: a published version is immutable and an edit mints a new one (ADR-029), and re-pointing a live slot is not something a read does. A festival day is never seated (the write path refuses it), so a grouped day never carries this.
+             */
+            seat_map_id?: string;
             ticket_types: components["schemas"]["PublicTicketType"][];
         };
         PublicSeriesContext: {

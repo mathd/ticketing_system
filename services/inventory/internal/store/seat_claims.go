@@ -247,6 +247,84 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	return SeatHold{Claim: c, SeatMapID: seatMapID.UUID, Seats: canon, PinnedBy: pinnedBy(c.ID), ExpiredPins: expiredPins}, nil
 }
 
+// SeatOccupancy is the buyer-facing answer to "which seats can I not have" on a
+// seated slot (TKT-172). Unavailable is sorted and never nil — an empty seated pool
+// answers with [], which is a different thing from an unknown slot (ErrNotFound).
+// OfferingStatus mirrors Availability's (TKT-75): the seat list stays factual on a
+// closed or archived slot, and this field is how a caller tells "these seats are
+// free" from "nothing here is claimable at all".
+type SeatOccupancy struct {
+	SlotID         uuid.UUID `json:"slot_id"`
+	SeatMapID      uuid.UUID `json:"seat_map_id"`
+	OfferingStatus string    `json:"offering_status"`
+	Unavailable    []string  `json:"unavailable_seat_identities"`
+}
+
+// seatOccupancySeatsQuery is the live-seat projection, scoped to one pool. It is a
+// const because the ADR-019 plan proof EXPLAINs this exact statement rather than a
+// retyped copy — a copy is how one of the two drifts away from the other.
+//
+// The predicate is a CONJUNCTION and both halves are load-bearing, for different
+// failure modes. Deleting either ships a wrong answer that no other test would see:
+//
+//   - `released_at IS NULL` alone reports a due-but-unswept held claim as occupying
+//     its seats. Expiry is swept lazily, on the next seat hold against the pool
+//     (sweepExpired), so on a quiet pool those rows can sit live for hours while the
+//     seat is in fact claimable — the next claim sweeps them before its own insert.
+//   - consumingClaims alone reports a FULLY REFUNDED seat as occupied forever. A full
+//     refund sets claim_seats.released_at but leaves claims.status = 'confirmed'
+//     (refund_returns.go — releaseSeatsForTerminal cannot help, it only touches
+//     claims already in ('expired','released')), so a status-only predicate strands
+//     the seat permanently with nothing to notice it.
+//
+// consumingClaims is reused rather than retyped for the same reason: it is the
+// definition the claim path enforces, and it already covers the finalizing window
+// that a naive status='held' check drops.
+const seatOccupancySeatsQuery = `SELECT cs.seat_identity
+	FROM claim_seats cs JOIN claims c ON c.id=cs.claim_id
+	WHERE cs.pool_id=$1 AND cs.released_at IS NULL AND ` + consumingClaims + `
+	ORDER BY cs.seat_identity`
+
+// SeatOccupancy reads which seats a seated slot cannot currently sell.
+//
+// It takes no locks and writes nothing — deliberately. It backs a cacheable public
+// GET, and sweeping the expired holds it filters out would turn the read into a
+// mutation contending for the pool row the on-sale path needs (ADR-010). Filtering
+// gives the same answer without it.
+func (p *Postgres) SeatOccupancy(ctx context.Context, org, slot uuid.UUID) (SeatOccupancy, error) {
+	occ := SeatOccupancy{SlotID: slot, Unavailable: []string{}}
+	var kind, lifecycle, closure string
+	var seatMapID uuid.NullUUID
+	err := p.db.QueryRowContext(ctx, `SELECT inventory_kind,seat_map_id,lifecycle_status,closure_status
+		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).
+		Scan(&kind, &seatMapID, &lifecycle, &closure)
+	if errors.Is(err, sql.ErrNoRows) {
+		return occ, ErrNotFound
+	}
+	if err != nil {
+		return occ, err
+	}
+	if kind != "seated" || !seatMapID.Valid {
+		return occ, ErrPoolKindMismatch
+	}
+	occ.SeatMapID = seatMapID.UUID
+	occ.OfferingStatus = offeringStatus(lifecycle, closure)
+
+	rows, err := p.db.QueryContext(ctx, seatOccupancySeatsQuery, slot)
+	if err != nil {
+		return occ, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var seat string
+		if err = rows.Scan(&seat); err != nil {
+			return occ, err
+		}
+		occ.Unavailable = append(occ.Unavailable, seat)
+	}
+	return occ, rows.Err()
+}
+
 // seatsAboutToExpire returns the pin refs for held seated claims in this pool whose TTL
 // has elapsed but which the imminent sweep has not yet flipped — one PinRef per claim so
 // each carries its own "hold:<claim_id>" pinned_by.

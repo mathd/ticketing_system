@@ -481,11 +481,14 @@ type PublicFestivalDetail struct {
 
 // PublicPerformanceDetail defines model for PublicPerformanceDetail.
 type PublicPerformanceDetail struct {
-	Id          openapi_types.UUID `json:"id"`
-	StartsAt    time.Time          `json:"starts_at"`
-	TicketTypes []PublicTicketType `json:"ticket_types"`
-	Timezone    string             `json:"timezone"`
-	Venue       PublicVenue        `json:"venue"`
+	Id openapi_types.UUID `json:"id"`
+
+	// SeatMapId The published seat-map version this performance is seated against (TKT-172). Optional and OMITTED for a GA performance — a storefront reads its presence as "this slot is seated, render this map", so a null would be a third state nobody wants. It names the exact version the performance was bound to at creation, not the family's newest: a published version is immutable and an edit mints a new one (ADR-029), and re-pointing a live slot is not something a read does. A festival day is never seated (the write path refuses it), so a grouped day never carries this.
+	SeatMapId   *openapi_types.UUID `json:"seat_map_id,omitempty"`
+	StartsAt    time.Time           `json:"starts_at"`
+	TicketTypes []PublicTicketType  `json:"ticket_types"`
+	Timezone    string              `json:"timezone"`
+	Venue       PublicVenue         `json:"venue"`
 }
 
 // PublicPerformanceSummary defines model for PublicPerformanceSummary.

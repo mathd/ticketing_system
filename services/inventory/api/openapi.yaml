@@ -45,6 +45,34 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /slots/{id}/seat-occupancy:
+    get:
+      operationId: getSeatOccupancy
+      summary: Which seats a seated slot cannot currently sell (TKT-172)
+      description: >
+        The seat identities a buyer cannot claim on this slot right now — the read a
+        seat picker renders occupancy from (TKT-35). Liveness is the claim path's own
+        notion, not raw claim status: a seat counts as unavailable while it is held
+        (and unexpired), finalizing, or confirmed, and stops counting once its
+        claim_seats row is released. Both halves of that conjunction are load-bearing
+        — status alone strands a fully refunded seat (the claim stays `confirmed`),
+        and the released flag alone reports a due-but-unswept hold as occupied
+        (expiry is swept lazily, ADR-031). Seconds tier, like the availability read
+        it sits beside: a stale "free" is resolved by the atomic claim, a stale
+        "taken" must decay fast. Seated slots only — a GA slot is a 409.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/OrganizerId'}
+      responses:
+        '200':
+          description: Seat occupancy
+          headers:
+            Cache-Control: {$ref: '#/components/headers/SeatOccupancyCacheControl'}
+          content: {application/json: {schema: {$ref: '#/components/schemas/SeatOccupancy'}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   # The hold transitions are service-to-service only: commerce drives them, never a
   # public caller. They sit under /internal/ so the gateway refuses them at the edge by
   # the same explicit prefix registration that covers every other internal route, rather
@@ -249,6 +277,18 @@ components:
       schema:
         type: string
         enum: ['public, max-age=5, s-maxage=5']
+    SeatOccupancyCacheControl:
+      description: >
+        The same ADR-004 seconds tier as AvailabilityCacheControl, declared
+        separately on purpose (TKT-172). ADR-028's validator fails closed per
+        declaration, so one shared header component would couple two operations'
+        drift detection: a handler that stopped emitting the tier on one of them
+        could be masked by the other still emitting it. Its handler constant is
+        CacheControlPublicSeatOccupancy; the two can only move together.
+      required: true
+      schema:
+        type: string
+        enum: ['public, max-age=5, s-maxage=5']
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     OrganizerId: {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
@@ -365,6 +405,18 @@ components:
         confirmed: {type: integer}
         available: {type: integer}
         offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open'}
+    SeatOccupancy:
+      type: object
+      additionalProperties: false
+      required: [slot_id, seat_map_id, offering_status, unavailable_seat_identities]
+      properties:
+        slot_id: {type: string, format: uuid}
+        seat_map_id: {type: string, format: uuid, description: 'The published seat-map version this slot is seated against, as inventory holds it. Catalog publishes its own view on the performance; the two agreeing is what makes projection skew detectable rather than hidden.'}
+        offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"'}
+        unavailable_seat_identities:
+          type: array
+          description: 'Sorted, and [] rather than null on an empty seated pool — which is a different answer from 404 on an unknown slot'
+          items: {type: string, minLength: 1, maxLength: 200}
     OperationalHoldCreate:
       type: object
       additionalProperties: false

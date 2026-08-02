@@ -1215,7 +1215,7 @@ const (
 
 const publicPerformancesSelect = `
 	SELECT e.id, e.organizer_id, e.name, e.description, e.created_at,
-	       p.id, ` + publicPerformancesStartsAt + `, p.timezone, p.kind, p.capacity_group_id, p.status, p.published_at, p.created_at,
+	       p.id, ` + publicPerformancesStartsAt + `, p.timezone, p.kind, p.capacity_group_id, p.seat_map_id, p.status, p.published_at, p.created_at,
 	       v.id, v.name, v.ga_capacity, v.created_at,
 	       t.id, t.name, t.price_amount, t.currency, t.created_at,
 	       s.id, s.name, sp.position, s.created_at
@@ -1290,10 +1290,11 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventIDs []uuid.UUID)
 			seriesPos     sql.NullInt32
 			seriesCreated sql.NullTime
 			capacityGroup uuid.NullUUID
+			seatMap       uuid.NullUUID
 		)
 		if err := rows.Scan(
 			&ev.ID, &ev.OrganizerID, &evName, &evDesc, &ev.CreatedAt,
-			&perf.ID, &startsAt, &perf.Timezone, &perf.Kind, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.CreatedAt,
+			&perf.ID, &startsAt, &perf.Timezone, &perf.Kind, &capacityGroup, &seatMap, &perf.Status, &perf.PublishedAt, &perf.CreatedAt,
 			&venue.ID, &venue.Name, &venue.GACapacity, &venue.CreatedAt,
 			&tt.ID, &ttName, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt,
 			&seriesID, &seriesName, &seriesPos, &seriesCreated,
@@ -1314,6 +1315,13 @@ func (p *Postgres) publicPerformances(ctx context.Context, eventIDs []uuid.UUID)
 		perf.StartsAt = &startsAt
 		if capacityGroup.Valid {
 			perf.CapacityGroupID = &capacityGroup.UUID
+		}
+		// TKT-172: the public detail names the seated slot's map version, so a
+		// storefront can tell seated from GA. Nil for a GA slot, and the two are
+		// mutually exclusive with CapacityGroupID by construction (a festival day
+		// cannot be seated — CreatePerformance refuses it).
+		if seatMap.Valid {
+			perf.SeatMapID = &seatMap.UUID
 		}
 		// Public reads are cross-organizer; each row still carries its
 		// owner so aggregates stay tenancy-complete (ADR-002).

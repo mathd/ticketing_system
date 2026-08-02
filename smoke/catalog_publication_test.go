@@ -600,6 +600,92 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 		t.Fatalf("inventory /readyz = %d after a seated publication; the schema-4 arm must not latch unready", code)
 	}
 
+	// -- TKT-172: the buyer-facing read path, end to end through the gateway --
+	//
+	// Two halves that only mean something together: catalog says WHICH map a slot is
+	// seated against, inventory says which of its seats are gone. Neither alone lets a
+	// storefront render a picker, and before this ticket neither existed publicly.
+	//
+	// Driven through the gateway (not the service port) because that is the only path
+	// a buyer has, and the 200 here is what registers getSeatOccupancy with the smoke
+	// coverage gate — inventory is in smokeCoverageGatedServices, so an undriven
+	// operation fails the suite by itself.
+	detailCode, detailBody, _ := getWithHeaders(t, catalog+"/public/events/"+fmt.Sprint(event["id"])+"?locale=fr")
+	if detailCode != http.StatusOK {
+		t.Fatalf("public event detail = %d %s", detailCode, detailBody)
+	}
+	var detail struct {
+		Performances []map[string]json.RawMessage `json:"performances"`
+	}
+	if err := json.Unmarshal(detailBody, &detail); err != nil {
+		t.Fatalf("public detail decode: %v (%s)", err, detailBody)
+	}
+	var sawSeated, sawGA bool
+	for _, perf := range detail.Performances {
+		var id string
+		_ = json.Unmarshal(perf["id"], &id)
+		raw, present := perf["seat_map_id"]
+		switch id {
+		case fmt.Sprint(seated["id"]):
+			var mapID string
+			if !present {
+				t.Fatalf("the seated performance must publish its seat_map_id — payload: %s", detailBody)
+			}
+			_ = json.Unmarshal(raw, &mapID)
+			if mapID != fmt.Sprint(seatMap["id"]) {
+				t.Fatalf("public seat_map_id = %q want %v", mapID, seatMap["id"])
+			}
+			sawSeated = true
+		case fmt.Sprint(ga["id"]):
+			// Omitted, not null: presence IS the seated signal a storefront reads.
+			if present {
+				t.Fatalf("a GA performance must omit seat_map_id, got %s — payload: %s", raw, detailBody)
+			}
+			sawGA = true
+		}
+	}
+	if !sawSeated || !sawGA {
+		t.Fatalf("public detail must list both slots (seated=%v ga=%v): %s", sawSeated, sawGA, detailBody)
+	}
+
+	occupancyURL := fmt.Sprintf("%s/api/inventory/slots/%v/seat-occupancy?organizer_id=%s",
+		gatewayURL, seated["id"], organizerID)
+	occCode, occBody, occHeaders := getWithHeaders(t, occupancyURL)
+	if occCode != http.StatusOK {
+		t.Fatalf("seat occupancy before any hold = %d %s", occCode, occBody)
+	}
+	if cc := occHeaders.Get("Cache-Control"); cc != "public, max-age=5, s-maxage=5" {
+		t.Fatalf("seat occupancy Cache-Control = %q, want ADR-004's seconds tier", cc)
+	}
+	var occ struct {
+		SlotID         string   `json:"slot_id"`
+		SeatMapID      string   `json:"seat_map_id"`
+		OfferingStatus string   `json:"offering_status"`
+		Unavailable    []string `json:"unavailable_seat_identities"`
+	}
+	if err := json.Unmarshal(occBody, &occ); err != nil {
+		t.Fatalf("seat occupancy decode: %v (%s)", err, occBody)
+	}
+	if occ.SlotID != fmt.Sprint(seated["id"]) || occ.SeatMapID != fmt.Sprint(seatMap["id"]) {
+		t.Fatalf("seat occupancy ids = %+v, want slot %v / map %v", occ, seated["id"], seatMap["id"])
+	}
+	if occ.OfferingStatus != "open" {
+		t.Fatalf("seat occupancy offering_status = %q want open", occ.OfferingStatus)
+	}
+	if len(occ.Unavailable) != 0 {
+		t.Fatalf("a freshly published seated slot has nothing held, got %v", occ.Unavailable)
+	}
+	// The two refusals stay distinguishable: a GA slot has no seats (409), an unknown
+	// slot does not exist (404). Collapsed, a picker cannot tell them apart.
+	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/api/inventory/slots/%v/seat-occupancy?organizer_id=%s",
+		gatewayURL, ga["id"], organizerID)); code != http.StatusConflict {
+		t.Fatalf("seat occupancy on a GA slot = %d %s, want 409", code, body)
+	}
+	if code, body, _ := getWithHeaders(t, fmt.Sprintf("%s/api/inventory/slots/%s/seat-occupancy?organizer_id=%s",
+		gatewayURL, uuid.NewString(), organizerID)); code != http.StatusNotFound {
+		t.Fatalf("seat occupancy on an unknown slot = %d %s, want 404", code, body)
+	}
+
 	// -- TKT-80 end-to-end: a real seat hold pins the seat in catalog over HTTP --
 	// This exercises the wired cross-service path no unit test covers: main.go →
 	// CatalogResolver.PinSeats → catalog's internal batch-pin endpoint → store.PinSeats
@@ -637,6 +723,19 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	}
 	if pins != 1 {
 		t.Fatalf("seat hold must pin Orchestra/A/1 in catalog as hold:%s, got %d pins", held.HoldID, pins)
+	}
+
+	// TKT-172: the held seat is now what the picker must render as taken. This is the
+	// assertion that ties the read to the claim path — the same seat, one call apart.
+	_, occBody2, _ := getWithHeaders(t, occupancyURL)
+	var occ2 struct {
+		Unavailable []string `json:"unavailable_seat_identities"`
+	}
+	if err := json.Unmarshal(occBody2, &occ2); err != nil {
+		t.Fatalf("seat occupancy decode: %v (%s)", err, occBody2)
+	}
+	if len(occ2.Unavailable) != 1 || occ2.Unavailable[0] != "Orchestra/A/1" {
+		t.Fatalf("seat occupancy after the hold = %v, want [Orchestra/A/1]", occ2.Unavailable)
 	}
 	// A second hold on the same seat is DB-rejected (per-seat no-oversell, AC1) end-to-end.
 	if dcode, dbody := postSeatHold(t, "seat-e2e-dup-"+suffix, map[string]any{
