@@ -123,6 +123,31 @@ type GeometryState = 'loading' | 'ok' | 'failed';
 /** A read that has not answered in this long is treated as failed rather than awaited. */
 const READ_TIMEOUT_MS = 8000;
 
+/**
+ * boundedFetch resolves a Response, or throws with `timedOut` set when the deadline
+ * fired rather than the caller aborting.
+ *
+ * The flag is an explicit closure boolean, not an inspection of `signal.reason`: a
+ * plain `abort()` produces an AbortError DOMException, and DOMException IS an Error,
+ * so `reason instanceof Error` cannot tell a deadline from an ordinary supersession
+ * (ai-review pass 3). Getting that backwards means either reporting a healthy
+ * cancellation as a failure, or — worse — swallowing a real timeout and leaving the
+ * last snapshot claimable.
+ */
+async function boundedFetch(url: string, init: RequestInit, controller: AbortController) {
+  let timedOut = false;
+  const deadline = window.setTimeout(() => { timedOut = true; controller.abort(); }, READ_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!response.ok) throw new Error(String(response.status));
+    return response;
+  } catch (err) {
+    throw Object.assign(err as Error, { timedOut });
+  } finally {
+    window.clearTimeout(deadline);
+  }
+}
+
 export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, onSelectionChange }: Props) {
   const t = UI_STRINGS[locale];
   const [sections, setSections] = useState<Section[] | null>(null);
@@ -145,26 +170,26 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
   // its success NOR its failure.
   const generation = useRef(0);
   const inFlight = useRef<AbortController | null>(null);
+  // An authoritative (post-conflict, no-store) read in flight. The routine poll must
+  // not abort it: only a successful authoritative read clears the conflict overlay, so
+  // a poll landing in the 5–8s window would supersede it and strand the overlay for
+  // the life of the picker (ai-review pass 3).
+  const authoritative = useRef<AbortController | null>(null);
   const visible = useRef(true);
 
   const readOccupancy = useCallback(async (options: { bypassCache?: boolean } = {}) => {
     inFlight.current?.abort();
     const controller = new AbortController();
     inFlight.current = controller;
-    // A hung connection must not stall the chain: the next poll is scheduled only once
-    // this settles, so without a deadline one stalled fetch stops polling for the rest
-    // of the session while the last snapshot goes on being reported as claimable
-    // (ai-review pass 2).
-    const deadline = window.setTimeout(() => controller.abort(new Error('timeout')), READ_TIMEOUT_MS);
-    const timedOut = () => controller.signal.reason instanceof Error;
+    if (options.bypassCache) authoritative.current = controller;
     const mine = ++generation.current;
     try {
-      const response = await fetch(
+      const response = await boundedFetch(
         `/api/inventory/slots/${encodeURIComponent(slotId)}/seat-occupancy?organizer_id=${encodeURIComponent(organizerId)}`,
         // After a conflict the cached body is exactly the thing we must not trust.
-        { signal: controller.signal, cache: options.bypassCache ? 'no-store' : 'default' },
+        { cache: options.bypassCache ? 'no-store' : 'default' },
+        controller,
       );
-      if (!response.ok) throw new Error(String(response.status));
       const next = (await response.json()) as Occupancy;
       if (mine !== generation.current) return;
       // Catalog and inventory each publish their own view of which map version a slot
@@ -184,7 +209,8 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
       if (options.bypassCache) setConflicted([]);
     } catch (err) {
       // A timeout aborts too, but it is a real failure and must be reported as one.
-      if ((err as Error)?.name === 'AbortError' && !timedOut()) return;
+      const failure = err as Error & { timedOut?: boolean };
+      if (failure?.name === 'AbortError' && !failure.timedOut) return;
       if (mine !== generation.current) return;
       // A failure AFTER a good first read keeps the last known map and says so:
       // blanking it would read as a sold-out house, which is a lie with a cost.
@@ -193,26 +219,35 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
       // be sticky.
       setOccupancyState((current) => (current === 'ok' || current === 'degraded' ? 'degraded' : 'failed'));
     } finally {
-      window.clearTimeout(deadline);
+      if (authoritative.current === controller) authoritative.current = null;
     }
   }, [organizerId, slotId, seatMapId]);
 
+  // Geometry is read once — and it needs the deadline just as much as occupancy does.
+  // A hung geometry read leaves `sections` null forever, and no amount of successful
+  // polling can move the render past "loading": exactly the permanent-loading failure
+  // the split read states were meant to end (ai-review pass 3).
   useEffect(() => {
+    const controller = new AbortController();
     let live = true;
     void (async () => {
       try {
-        const response = await fetch(`/api/catalog/public/seat-maps/${encodeURIComponent(seatMapId)}`);
-        if (!response.ok) throw new Error(String(response.status));
+        const response = await boundedFetch(
+          `/api/catalog/public/seat-maps/${encodeURIComponent(seatMapId)}`, {}, controller,
+        );
         const geometry = (await response.json()) as SeatMapGeometry;
         if (live) {
           setSections(orderByPosition(geometry.sections ?? []));
           setGeometryState('ok');
         }
-      } catch {
+      } catch (err) {
+        const failure = err as Error & { timedOut?: boolean };
+        // An unmount abort is not a failure; a deadline is.
+        if (failure?.name === 'AbortError' && !failure.timedOut) return;
         if (live) setGeometryState('failed');
       }
     })();
-    return () => { live = false; };
+    return () => { live = false; controller.abort(); };
   }, [seatMapId]);
 
   // Polling is SERIALISED, not on a fixed interval: the next read is scheduled only
@@ -224,7 +259,8 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     let stopped = false;
     let timer: number | undefined;
     const tick = async () => {
-      if (!stopped && visible.current) await readOccupancy();
+      // Skip — do not abort — while an authoritative read is outstanding.
+      if (!stopped && visible.current && authoritative.current === null) await readOccupancy();
       if (!stopped) timer = window.setTimeout(tick, POLL_MS);
     };
     void tick();

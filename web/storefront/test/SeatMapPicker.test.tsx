@@ -479,3 +479,121 @@ describe('ai-review pass 2 findings', () => {
     expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy();
   });
 });
+
+describe('ai-review pass 3 findings', () => {
+  // A hung GEOMETRY read leaves sections null forever, and no amount of successful
+  // polling can move the render past "loading" — the permanent-loading failure the
+  // split read states were meant to end, reachable by the other door.
+  it('a hung geometry read fails rather than loading forever', async () => {
+    vi.useFakeTimers();
+    const stub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        }) as Promise<Response>;
+      }
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    vi.stubGlobal('fetch', stub);
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+
+    await vi.advanceTimersByTimeAsync(8000 + 100);
+    await vi.waitFor(() => expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy());
+  });
+
+  // The routine poll must DEFER to an in-flight authoritative read, not abort it.
+  // Only a successful authoritative read clears the overlay, so a poll landing in the
+  // 5-8s window would supersede it and strand the overlay for the life of the picker.
+  it('a slow authoritative refresh is not preempted by the next poll', async () => {
+    vi.useFakeTimers();
+    let release: (() => void) | null = null;
+    let authoritativeAborted = false;
+    const stub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      if (init?.cache === 'no-store') {
+        init.signal?.addEventListener('abort', () => { authoritativeAborted = true; });
+        await new Promise<void>((resolve) => { release = resolve; });
+      }
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    vi.stubGlobal('fetch', stub);
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
+
+    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    await vi.waitFor(() => expect(release).not.toBe(null));
+
+    // Push past a poll boundary while the authoritative read is still outstanding.
+    await vi.advanceTimersByTimeAsync(POLL + 500);
+    expect(authoritativeAborted).toBe(false);
+
+    release!();
+    // And having survived, it clears the overlay: the seat is buyable again.
+    await vi.waitFor(() =>
+      expect(screen.getByRole('button', { name: /Stalls, row A1, seat 1, Available/ })).toBeTruthy());
+  });
+
+  // An ordinary abort (unmount, supersession) must NOT be reported as a failure.
+  // DOMException is an Error, so inferring "timeout" from the abort reason's type
+  // cannot tell the two apart — the flag has to be set by the deadline itself.
+  it('an unmount abort is not reported as a read failure', async () => {
+    const onChange = vi.fn();
+    const stub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      }) as Promise<Response>;
+    });
+    vi.stubGlobal('fetch', stub);
+    const view = render(
+      <SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />,
+    );
+    await screen.findByText(/Loading the seat map/);
+    view.unmount();
+    // Nothing after the unmount: no state update, no failure reported.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ claimable: true }));
+  });
+
+  it('a timed-out read degrades and makes the selection unclaimable', async () => {
+    vi.useFakeTimers();
+    let occCall = 0;
+    const stub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      occCall += 1;
+      if (occCall === 2) {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        }) as Promise<Response>;
+      }
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    vi.stubGlobal('fetch', stub);
+    const onChange = vi.fn();
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
+    await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
+    fireEvent.click(screen.getByRole("button", { name: /row A1, seat 1, Available/ }));
+    await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith({ seats: ['Stalls/A1/1'], claimable: true }));
+
+    await vi.advanceTimersByTimeAsync(POLL);        // the hung read starts
+    await vi.advanceTimersByTimeAsync(8000 + 100);  // its deadline fires
+    // The stale notice appears AND the selection stops being claimable — the timeout
+    // test previously only proved that polling continued, which the chain does anyway.
+    await vi.waitFor(() => expect(screen.getByText(/last known seat availability/)).toBeTruthy());
+    await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ claimable: false })));
+  });
+});
