@@ -3,7 +3,7 @@
   "type": "Story",
   "parent": "TKT-35",
   "classification": "complex",
-  "summary": "US-023c: A rule-enabled seated pool is provisioned with its adjacency projection",
+  "summary": "US-023c: Inventory implements schema 5 and projects seat adjacency",
   "status": "Backlog",
   "labels": [],
   "assignee": null,
@@ -14,7 +14,7 @@
       "key": "TKT-180"
     }
   ],
-  "description": "**Third slice of TKT-175.** The producer change and the projection — still with **no rule enforced**.\n\n**Acceptance criteria:**\n- [ ] Catalog emits `performance.published` **schema 5** for a seated performance whose map has the rule on, carrying the exact `seat_map_id` and the flag. A rule-off map still emits **schema 4, byte-identical** to today's golden.\n- [ ] Inventory, handling schema 5, fetches `GET /public/seat-maps/{id}` for that **exact immutable version** before opening its transaction, converts position-ordered rows into left/right adjacency (null = row end), and commits the pool, the flag, the projection and `consumed_events` **atomically**.\n- [ ] Resolution failure fails closed: delayed NAK, **no pool provisioned**. A partial or malformed geometry is never stored.\n- [ ] Adjacency is derived from each row's `position` order — not label arithmetic, which breaks on non-numeric labels and position gaps. Sections and rows never connect.\n- [ ] Provisioning is idempotent on the event id, like today's.\n- [ ] **No claim behaviour changes.** Seat claims on an enabled pool behave exactly as they do now.\n\nQuality gates: `make check` green; the schema-4 golden unchanged; provisioning atomicity and idempotency tested against real Postgres.",
+  "description": "**Third slice of TKT-175.** The producer change and the projection — still with **no rule enforced**.\n\n**Scope narrowed during TKT-180's ai-review:** catalog's emission moved to **TKT-183**. A shared merge does not order a deployment — catalog and inventory start independently — so the producer needs its own revision, deployed after this one. This ticket is inventory-only.\n\n**Acceptance criteria:**\n- [ ] Inventory, handling schema 5, fetches `GET /public/seat-maps/{id}` for that **exact immutable version** before opening its transaction, converts position-ordered rows into left/right adjacency (null = row end), and commits the pool, the flag, the projection and `consumed_events` **atomically**.\n- [ ] Resolution failure fails closed: delayed NAK, **no pool provisioned**. A partial or malformed geometry is never stored.\n- [ ] Adjacency is derived from each row's `position` order — not label arithmetic, which breaks on non-numeric labels and position gaps. Sections and rows never connect.\n- [ ] Provisioning is idempotent on the event id, like today's.\n- [ ] **No claim behaviour changes.** Seat claims on an enabled pool behave exactly as they do now.\n\nQuality gates: `make check` green; the schema-4 golden unchanged; provisioning atomicity and idempotency tested against real Postgres.",
   "context": {
     "capturedAt": "2026-08-02",
     "binding": [
