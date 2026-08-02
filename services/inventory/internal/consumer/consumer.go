@@ -29,7 +29,7 @@ const (
 // and the disposition tests substitute a recorder.
 type catalogStore interface {
 	Provision(ctx context.Context, eventID, slotID, organizerID uuid.UUID, capacity int32) error
-	ProvisionSeated(ctx context.Context, eventID, slotID, organizerID, seatMapID uuid.UUID, capacity int32) error
+	ProvisionSeated(ctx context.Context, eventID, slotID, organizerID, seatMapID uuid.UUID, capacity int32, orphanPrevention bool, adjacency []store.SeatAdjacencyRow) error
 	ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) error
 	ApplyClosure(ctx context.Context, eventID, pool, performance uuid.UUID, closed bool, version int32) error
 	QuarantineCatalogEvent(ctx context.Context, subject string, eventID uuid.UUID, schema int, envelope []byte) error
@@ -90,6 +90,10 @@ type publicationData struct {
 	CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
 	SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
 	SeatMapID       *uuid.UUID `json:"seat_map_id,omitempty"`
+	// OrphanPreventionEnabled rides on schema 5 only (ADR-041). Absent on every
+	// earlier variant, where it decodes to false — which is the correct reading:
+	// those maps predate the rule.
+	OrphanPreventionEnabled bool `json:"orphan_prevention_enabled,omitempty"`
 }
 
 type publication = domainevent.Decoded[publicationData]
@@ -98,9 +102,13 @@ type provisionInput struct {
 	organizerID uuid.UUID
 	poolID      uuid.UUID
 	capacity    int32
-	// seatMapID is set (non-nil) only for a seated pool (schema 4); it routes the
+	// seatMapID is set (non-nil) only for a seated pool (schema 4/5); it routes the
 	// apply to ProvisionSeated. Zero for a GA/festival pool.
 	seatMapID uuid.UUID
+	// orphanPrevention and adjacency arrive together on a rule-enabled schema-5
+	// publication, and are committed with the pool in one transaction (ADR-041).
+	orphanPrevention bool
+	adjacency        []store.SeatAdjacencyRow
 }
 
 func (c *Consumer) provisionInput(ctx context.Context, e publication) (provisionInput, error) {
@@ -138,6 +146,49 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 			return provisionInput{}, fmt.Errorf("schema-4 seated publication has invalid capacity")
 		}
 		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID}, nil
+	case 5:
+		// Same seated pool as schema 4, plus the orphan-prevention flag and — when it is
+		// on — the adjacency projection for the EXACT published version this slot is
+		// seated against (ADR-029 makes that version immutable, which is what allows a
+		// one-time projection).
+		//
+		// The fetch happens here, before the caller opens its transaction: a network
+		// round trip inside the claim path's transaction is what ADR-010 exists to
+		// prevent, and provisioning is the one moment where paying for it is free.
+		if e.Data.SeatMapID == nil || *e.Data.SeatMapID == uuid.Nil {
+			return provisionInput{}, fmt.Errorf("schema-5 seated publication has no seat map reference")
+		}
+		if e.Data.CapacityGroupID != nil || e.Data.SharedCapacity != nil {
+			return provisionInput{}, fmt.Errorf("schema-5 seated publication must not carry festival capacity")
+		}
+		if e.Data.Capacity <= 0 {
+			return provisionInput{}, fmt.Errorf("schema-5 seated publication has invalid capacity")
+		}
+		in := provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID,
+			capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID,
+			orphanPrevention: e.Data.OrphanPreventionEnabled}
+		if !in.orphanPrevention {
+			// Rule off: byte-for-byte the schema-4 outcome, and NO geometry fetch. AC4
+			// is "no extra work when off", and an unconditional fetch here would make
+			// that false for every seated publication.
+			return in, nil
+		}
+		if c.resolver == nil {
+			return provisionInput{}, fmt.Errorf("schema-5 rule-enabled publication needs catalog resolver")
+		}
+		adjacency, err := c.resolver.SeatMapAdjacency(ctx, *e.Data.SeatMapID)
+		if err != nil {
+			// Fail closed. The caller NAKs, nothing is provisioned, and the event is
+			// retried — which is recoverable. Provisioning without the projection is
+			// not: the consumed-event row would make it permanent.
+			return provisionInput{}, fmt.Errorf("schema-5 adjacency projection: %w", err)
+		}
+		for _, a := range adjacency {
+			in.adjacency = append(in.adjacency, store.SeatAdjacencyRow{
+				SeatIdentity: a.SeatIdentity, Left: a.Left, Right: a.Right,
+			})
+		}
+		return in, nil
 	case 3:
 		// Deploy this consumer before catalog starts emitting Schema 3 so grouped
 		// festival publications remain safe during a rolling rollout.
@@ -177,15 +228,13 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 // without adding one. Schema 4 is the seated fork (TKT-103): a KNOWN variant that provisions a
 // SEATED pool for seat-level claims (TKT-80) — see provisionInput's case 4.
 //
-// Schema 5 (ADR-041, the orphan-prevention seated fork) is deliberately NOT here yet, and
-// TKT-180 removed an arm that had accepted it. "Accept and ignore the field we cannot use"
-// looks like tolerance and is strictly worse than parking: ProvisionSeated records the event
-// in consumed_events, so a binary that consumes a schema-5 publication without building its
-// adjacency projection makes that pool PERMANENTLY rule-less — a later, capable binary
-// short-circuits on the consumed event and can never repair it. Parking is loud, reversible
-// and resolves itself when the capable binary deploys; consuming is silent and final.
-// The arm lands in TKT-181, together with the projection that makes it honest.
-const maxKnownPublicationSchema = 4
+// Schema 5 (TKT-181 / ADR-041) is the orphan-prevention seated fork. It arrives WITH its
+// adjacency projection, and that pairing is not optional: ProvisionSeated records the event in
+// consumed_events, so a binary that consumed schema 5 without building the projection would
+// make that pool PERMANENTLY rule-less — a later, capable binary short-circuits on the
+// consumed event and can never repair it. TKT-180 removed exactly such an arm for that
+// reason. This one fetches the geometry BEFORE the transaction and fails closed if it cannot.
+const maxKnownPublicationSchema = 5
 
 // knownSchemas is the per-subject registry of variants this binary can read (ADR-017 §5b′).
 // Above max is the future (park + latch unready); at or below zero is a broken envelope; a gap
@@ -347,7 +396,7 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 	// everything else is a GA/festival quantity pool. Grouped festival days deliberately
 	// converge on the festival id (slot→group resolution is TKT-14, out of scope).
 	if input.seatMapID != uuid.Nil {
-		if err := c.st.ProvisionSeated(ctx, e.ID, input.poolID, input.organizerID, input.seatMapID, input.capacity); err != nil {
+		if err := c.st.ProvisionSeated(ctx, e.ID, input.poolID, input.organizerID, input.seatMapID, input.capacity, input.orphanPrevention, input.adjacency); err != nil {
 			c.log.Error("provision seated inventory", "err", err)
 			_ = msg.Nak()
 			return

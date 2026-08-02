@@ -17,7 +17,7 @@ import (
 func provisionedSeated(t *testing.T, ctx context.Context, st *Postgres, capacity int32) (uuid.UUID, uuid.UUID, uuid.UUID) {
 	t.Helper()
 	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
-	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, capacity); err != nil {
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, capacity, false, nil); err != nil {
 		t.Fatalf("provision seated: %v", err)
 	}
 	return org, slot, seatMap

@@ -61,6 +61,12 @@ func (f *fakeConsumeContext) Closed() <-chan struct{} { return f.closed }
 // context is cancelled. It is what makes the startup window observable: without a
 // resolver that actually waits, startupConverge finishes before the test can close
 // the consume context and the race under test never happens.
+// SeatMapAdjacency is never exercised here: this double blocks the offer-state path,
+// and adjacency is fetched only at seated provisioning (ADR-041).
+func (r *blockingResolver) SeatMapAdjacency(context.Context, uuid.UUID) ([]SeatAdjacency, error) {
+	return nil, nil
+}
+
 type blockingResolver struct {
 	entered chan struct{}
 	once    sync.Once

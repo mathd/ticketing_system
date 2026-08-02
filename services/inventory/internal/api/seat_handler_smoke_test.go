@@ -73,7 +73,7 @@ func seatAPIStore(t *testing.T) (*store.Postgres, uuid.UUID, uuid.UUID) {
 	}
 	st := store.New(db, 10*time.Minute)
 	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
-	if err = st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 100); err != nil {
+	if err = st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 100, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	return st, org, slot
