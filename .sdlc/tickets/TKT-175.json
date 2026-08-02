@@ -4,9 +4,11 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-023: A selection that would strand a lone seat is refused, per the map's own rule",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -95,5 +97,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-175\n\n**Selection reason.** The epic's last child. Its only blocker, TKT-174, merged as `762ee6fc`. Nothing else in flight.\n\n**Blocker check.** `blocked-by TKT-174` — Done. Zero open blockers.\n\n**Branch.** `TKT-175-orphan-seat-rules`, cut from `origin/main` at `762ee6fc`.\n\n**⚠️ Gate waiver.** Runs **gateless** under the standing owner waiver for TKT-35. Recorded again here: this is the fourth and last child to run without human gates, and the epic therefore closes with **no control arm** — TKT-173's and TKT-174's retros both asked for one and both were overruled by the standing instruction, correctly.\n\n**Model routing** unchanged: plan `gpt-5.6-sol` · planReview `main-agent` · implement `main-agent` · aiReview `gpt-5.6-sol`. Both cross-model pairs differ. ✅\n\n---\n\n### This ticket carries the epic's only genuine architectural decision\n\nThe other three children had implementation choices. This one has a boundary problem, and it was recorded at decomposition rather than discovered late:\n\n> Inventory decides the claim and knows occupancy, but holds seat identities as **opaque `section/row/seat` strings** — it has no row ordering. Catalog owns the geometry and the rule but does not decide claims.\n\nAn orphan is a free seat with no free neighbour left **in its row** after a selection is taken. Deciding that needs the row's ordered seats *and* live occupancy *and* the deciding transaction — and no single service has all three today.\n\n**One fact checked at claim time that narrows the field:** inventory does **not** consume seat-map events. `services/inventory/internal/consumer/consumer.go` filters exactly four subjects — `performance.published`, `.archived`, `.closed`, `.reopened`. There is no `seat_map.published` subscription and no geometry projection. So the \"inventory keeps a cached row layout\" option is not a small addition to an existing consumer; it is a new subscription, a new projection, and a new thing that can be stale. The decomposition note called it \"no hot-path call, at the cost of a projection to keep correct\" — the cost is larger than that phrasing suggests, and Planning should price it honestly.\n\n### Stop-condition pre-check\n\n- **Auth:** untouched.\n- **Money:** untouched — this refuses a claim, it prices nothing.\n- **Data migrations:** at least one is likely (a per-map setting in catalog). Additive settings on an existing table are anticipated by the ticket's own AC (\"a seat map carries an orphan-prevention setting owned by catalog\"). Anything beyond that — a new table for a geometry projection in inventory, say — is a consequence of the architectural choice and must be **named in the plan before it is written**, not discovered in the diff.\n- **CI/deploy:** none expected.\n- **The hot path:** ADR-010's claim transaction is the platform's most contended. If the plan puts a synchronous cross-service call inside it, that is a decision requiring an explicit argument against ADR-010, and it is the one thing on this ticket I will not accept by default.\n\n### Scope reminder\n\nIN: the per-map setting, server-side enforcement at claim time, row-end semantics, the picker's surfacing of the refusal, the contention proof. OUT: adjacency-aware best-available (TKT-81), price-tier or accessibility-seat rules, multi-row party splitting, retro-fitting the rule to already-sold maps.\n"
+    }
+  ]
 }
