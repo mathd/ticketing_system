@@ -1565,9 +1565,9 @@ func (p *Postgres) PublishSeatMap(ctx context.Context, id uuid.UUID) (SeatMap, b
 	var publishedAt sql.NullTime
 	var emittedAt sql.NullTime
 	err := p.db.QueryRowContext(ctx,
-		`SELECT id, organizer_id, venue_id, name, version, status, published_at, event_emitted_at, created_at
+		`SELECT id, organizer_id, venue_id, name, version, status, published_at, event_emitted_at, created_at, orphan_prevention_enabled
 		 FROM seat_maps WHERE id = $1`, id).
-		Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &publishedAt, &emittedAt, &m.CreatedAt)
+		Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &publishedAt, &emittedAt, &m.CreatedAt, &m.OrphanPreventionEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SeatMap{}, false, fmt.Errorf("seat map: %w", ErrNotFound)
 	}

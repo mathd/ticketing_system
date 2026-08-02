@@ -171,3 +171,55 @@ func TestPublicEventReadCarriesSeatMapID(t *testing.T) {
 		}
 	}
 }
+
+// TestPublishSeatMapCarriesOrphanPrevention closes an ai-review finding on TKT-179.
+//
+// The post-publish read is a POSITIONAL scan, so omitting the new column from its
+// projection left the returned SeatMap with Go's `false` zero value while the stored
+// row said true. That value is not decorative: it is what `SeatMapPublished` is handed
+// and what the API returns, so the map would have published — and, once TKT-181 puts
+// the flag on the wire, EMITTED — as rule-off while the database said otherwise. The
+// required response field would have passed validation the whole time, lying.
+//
+// Re-publish is asserted too: it is idempotent and takes the same read path.
+func TestPublishSeatMapCarriesOrphanPrevention(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+
+	m, err := st.CreateSeatMap(ctx, SeatMapInput{
+		OrganizerID: seatMapOrg, VenueID: seatMapVenue, Name: "Strict", OrphanPreventionEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: "Orchestra", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.AddSeatMapRow(ctx, SeatMapRowInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, SectionID: sec.ID, Label: "A", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.AddSeatMapSeat(ctx, SeatMapSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	published, needsEmit, err := st.PublishSeatMap(ctx, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !needsEmit {
+		t.Fatal("a first publish owes an event")
+	}
+	if !published.OrphanPreventionEnabled {
+		t.Fatal("publish returned a rule-OFF map for a rule-ON version — this value is handed to " +
+			"SeatMapPublished and returned to the caller, so it would publish a lie")
+	}
+
+	republished, _, err := st.PublishSeatMap(ctx, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !republished.OrphanPreventionEnabled {
+		t.Fatal("re-publish is idempotent and takes the same read path; it must not drop the setting")
+	}
+}
