@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
@@ -275,6 +276,16 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 		SELECT $1, $2, s FROM unnest($3::text[]) AS s
 		RETURNING seat_identity`, c.ID, slot, canon)
 	if err != nil {
+		// Unreachable while the pre-check above holds: it runs under the same pool row
+		// lock that serialises every writer for this pool, so nothing can take a seat
+		// between the two. Kept because the index is the correctness boundary and a
+		// boundary that answers 500 is not one — if the pre-check is ever weakened, or
+		// a path appears that writes claim_seats without the pool lock, this keeps the
+		// refusal a 409 instead of an opaque server error. The identities are not
+		// recoverable from the violation, so this is the coarse sentinel.
+		if isUniqueViolation(err, "claim_seats_one_live_per_seat") {
+			return SeatHold{}, ErrSeatTaken
+		}
 		return SeatHold{}, err
 	}
 	for seatRows.Next() {
@@ -446,6 +457,11 @@ func (p *Postgres) SeatOccupancy(ctx context.Context, org, slot uuid.UUID) (Seat
 		occ.Unavailable = append(occ.Unavailable, seat)
 	}
 	return occ, rows.Err()
+}
+
+func isUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
 // contendedSeats returns which of the requested identities another live claim already
