@@ -549,3 +549,23 @@ func TestReserveRefusesMalformedOrphanRefusal(t *testing.T) {
 		})
 	}
 }
+
+// An orphaned seat is by definition one the buyer did NOT request. Accepting a
+// requested identity would have the picker propose an impossible repair — "add the
+// seat you already asked for" — so the subset rule that guards seat_taken is exactly
+// inverted here (ai-review).
+func TestReserveRefusesOrphanIdentitiesThatWereRequested(t *testing.T) {
+	for name, seats := range map[string]string{
+		"a seat the buyer requested": `["A/1/1"]`,
+		"blank identity":             `["   "]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, done := seatedStack(t, 409,
+				`{"error":"x","code":"orphaned_seats","seat_identities":`+seats+`}`)
+			defer done()
+			if res := reserveSeats(t, s, "bad-orphan2-"+name, `["A/1/1","A/1/2"]`); res.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d want 502: %s", res.Code, res.Body.String())
+			}
+		})
+	}
+}

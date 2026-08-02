@@ -69,31 +69,64 @@ func (e *SeatOrphanedError) Unwrap() error { return ErrSeatOrphaned }
 // orphanedSeatsQuery finds the seats a selection would strand, entirely in SQL and
 // entirely within the caller's transaction and pool lock.
 //
-// `occupied` is what will be taken once this claim commits: everything already live
-// (the same predicate the claim path enforces — see seatOccupancySeatsQuery) plus the
-// seats being requested. A seat is stranded when it is NOT occupied and every
-// neighbour it has IS — where "every neighbour it has" is the point: a row end has one,
-// a one-seat row has none, and NULL means no neighbour rather than unknown.
+// The candidate set is the NEIGHBOURS OF THE REQUESTED SEATS, and that single choice
+// carries two properties an earlier version got wrong (ai-review):
 //
-// `AND NOT (a.seat_identity = ANY($2))` keeps it to NEWLY orphaned seats. A seat
-// stranded earlier — by a refund, by an admin action — must not poison unrelated
-// claims for ever, so a seat that is already isolated before this claim is not this
-// claim's fault. It is excluded by construction: it is not occupied, so it can only
-// appear here if a neighbour of it is being taken now.
+//   - **Only newly orphaned seats.** A seat can only become isolated by this claim if
+//     one of its own neighbours is being taken now, so restricting candidates to
+//     N(requested) makes "newly" structural rather than a filter. The earlier version
+//     scanned every seat and tried to exclude pre-existing orphans with a predicate
+//     that was tautological — it re-reported the same stranded seat on every later
+//     claim in that row, for ever.
+//   - **Bounded work under the lock.** At most two candidates per requested seat, each
+//     reached through seat_claim_adjacency's (pool_id, seat_identity) primary key. The
+//     earlier version scanned the whole pool while holding the row lock that serialises
+//     every claimant on the performance — the worst place in the system to do O(map).
+//
+// `occupied(x)` is what will be taken once this claim commits: the requested set, plus
+// anything already live under the same predicate the claim path enforces (see
+// seatOccupancySeatsQuery). A seat is stranded when it is not occupied and every
+// neighbour it HAS is — where "every neighbour it has" is load-bearing: NULL means no
+// neighbour rather than unknown, so a row end has one and a one-seat row has none and
+// is never strandable.
 const orphanedSeatsQuery = `
-WITH occupied AS (
-	SELECT cs.seat_identity FROM claim_seats cs JOIN claims c ON c.id=cs.claim_id
-	 WHERE cs.pool_id=$1 AND cs.released_at IS NULL AND ` + consumingClaims + `
-	UNION SELECT unnest($2::text[])
+WITH requested AS (SELECT DISTINCT unnest($2::text[]) AS id),
+candidate AS (
+	SELECT DISTINCT v.n AS id
+	  FROM seat_claim_adjacency a
+	  JOIN requested r ON r.id = a.seat_identity
+	  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS v(n)
+	 WHERE a.pool_id = $1
+	   AND v.n IS NOT NULL
+	   AND NOT EXISTS (SELECT 1 FROM requested r2 WHERE r2.id = v.n)
+),
+-- Everything whose occupancy the answer can depend on: the candidates and their own
+-- neighbours. Bounding this is what keeps the whole statement proportional to the
+-- REQUEST rather than to the map.
+scope AS (
+	SELECT c.id FROM candidate c
+	UNION
+	SELECT n.v FROM candidate c
+	  JOIN seat_claim_adjacency a ON a.pool_id = $1 AND a.seat_identity = c.id
+	  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS n(v)
+	 WHERE n.v IS NOT NULL
+),
+occupied AS (
+	SELECT id FROM requested
+	UNION
+	SELECT cs.seat_identity
+	  FROM claim_seats cs JOIN claims cl ON cl.id = cs.claim_id
+	 WHERE cs.pool_id = $1 AND cs.released_at IS NULL AND ` + consumingClaims + `
+	   AND cs.seat_identity IN (SELECT id FROM scope)
 )
-SELECT a.seat_identity FROM seat_claim_adjacency a
- WHERE a.pool_id=$1
-   AND a.seat_identity NOT IN (SELECT seat_identity FROM occupied)
-   AND (a.left_identity  IS NULL OR a.left_identity  IN (SELECT seat_identity FROM occupied))
-   AND (a.right_identity IS NULL OR a.right_identity IN (SELECT seat_identity FROM occupied))
-   AND NOT (a.left_identity IS NULL AND a.right_identity IS NULL)
-   AND EXISTS (SELECT 1 FROM occupied o WHERE o.seat_identity IN (a.left_identity, a.right_identity))
- ORDER BY a.seat_identity`
+SELECT c.id
+  FROM candidate c
+  JOIN seat_claim_adjacency a ON a.pool_id = $1 AND a.seat_identity = c.id
+ WHERE NOT (a.left_identity IS NULL AND a.right_identity IS NULL)
+   AND c.id NOT IN (SELECT id FROM occupied)
+   AND (a.left_identity  IS NULL OR a.left_identity  IN (SELECT id FROM occupied))
+   AND (a.right_identity IS NULL OR a.right_identity IN (SELECT id FROM occupied))
+ ORDER BY c.id`
 
 // orphanedSeats runs the rule under the caller's pool lock. Empty means the selection
 // strands nothing.

@@ -869,18 +869,53 @@ func TestSeatHoldRejectsNewlyOrphanedSeats(t *testing.T) {
 	})
 
 	t.Run("only NEWLY orphaned seats are reported", func(t *testing.T) {
-		org, slot, seat := seededOrphanPool(t, ctx, st, 6)
-		// Pre-strand seat 2 by taking 1 and 3 directly — bypassing the rule the way an
-		// admin action or a refund could leave the row.
-		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1)}, 0, "EUR", "pre-a"); err != nil {
-			t.Fatal(err)
+		// Ten seats, so a claim can be genuinely unrelated to the stranded one. In a
+		// six-seat row nothing is far enough away: every remaining choice strands
+		// something of its own, which is a fact about small rows, not about the rule.
+		org, slot, seat := seededOrphanPool(t, ctx, st, 10)
+		// Strand seat 2 the way reality does — a refund, an admin action, a claim made
+		// before the rule was enabled — by writing the rows directly rather than going
+		// through the rule that would now refuse them. The earlier version of this test
+		// tried to seed through CreateSeatHold and SKIPPED when that was refused, so it
+		// asserted nothing at all on the path it existed to protect (ai-review).
+		db := dbOf(t, st)
+		for _, s := range []string{seat(1), seat(3)} {
+			claimID := uuid.New()
+			if _, err := db.ExecContext(ctx,
+				`INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint)
+				 VALUES($1,$2,$3,1,'confirmed',now()+interval '1 hour',$4,'seed')`,
+				claimID, org, slot, "seed-"+s); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx,
+				`INSERT INTO claim_seats(claim_id,pool_id,seat_identity) VALUES($1,$2,$3)`,
+				claimID, slot, s); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(3)}, 0, "EUR", "pre-b"); err != nil {
-			t.Skip("seeding a pre-existing orphan is itself refused; covered by the direct-insert case")
+		// Seat 2 is isolated and nothing this claim does causes it: 7 and 8 leave 6
+		// beside 5 and 9 beside 10.
+		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(7), seat(8)}, 0, "EUR", "k5"); err != nil {
+			t.Fatalf("a pre-existing orphan must not poison an unrelated claim: %v", err)
 		}
-		// Seat 2 is now stranded. A claim elsewhere in the row must not be blamed for it.
-		if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(5), seat(6)}, 0, "EUR", "k5"); err != nil {
-			t.Fatalf("a pre-existing orphan must not poison unrelated claims: %v", err)
+		// And the rule still fires where THIS claim does the stranding: taking 5 leaves
+		// 4 between an already-taken 3 and a now-taken 5.
+		_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(5)}, 0, "EUR", "k6")
+		var orphan *SeatOrphanedError
+		if !errors.As(err, &orphan) {
+			t.Fatalf("err = %v — the rule must still fire for seats THIS claim strands", err)
+		}
+		// It may legitimately name several seats — taking 5 isolates 4 (3 is gone) and
+		// 6 (7 is gone). What it must NEVER name is seat 2: that one was stranded long
+		// before this claim existed, and blaming this buyer for it is the bug.
+		for _, s := range orphan.Seats {
+			if s == seat(2) {
+				t.Fatalf("stranded = %v — seat 2 was already isolated; a pre-existing orphan "+
+					"must never be re-reported against a later claim", orphan.Seats)
+			}
+		}
+		if len(orphan.Seats) == 0 {
+			t.Fatal("taking seat 5 does strand seats; the rule must say so")
 		}
 	})
 }
@@ -914,20 +949,41 @@ func TestOrphanRuleHoldsUnderContention(t *testing.T) {
 	ctx, st, db := storeForTest(t, 10*time.Minute)
 	org, slot, seat := seededOrphanPool(t, ctx, st, 5)
 
+	// The barrier is a real transaction holding the pool row, not a goroutine start
+	// signal. Closing a channel only makes both goroutines RUNNABLE; normal scheduling
+	// could let one finish before the other begins, and the test would pass even with
+	// the lock removed (ai-review). Holding the row makes the overlap certain: B cannot
+	// reach its orphan check until A commits.
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = blocker.ExecContext(ctx,
+		`SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE`, slot); err != nil {
+		t.Fatal(err)
+	}
+
 	var wg sync.WaitGroup
 	results := make([]error, 2)
 	picks := [][]string{{seat(1)}, {seat(3)}}
-	start := make(chan struct{})
+	started := make(chan struct{}, 2)
 	for i := range picks {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			<-start
+			started <- struct{}{}
 			_, results[i] = st.CreateSeatHold(ctx, org, slot, uuid.New(), picks[i], 0, "EUR",
 				"race-"+strconv.Itoa(i))
 		}(i)
 	}
-	close(start)
+	// Both are inside CreateSeatHold and blocked on the pool row before either can
+	// decide anything.
+	<-started
+	<-started
+	time.Sleep(150 * time.Millisecond)
+	if err = blocker.Rollback(); err != nil {
+		t.Fatal(err)
+	}
 	wg.Wait()
 
 	var ok, orphaned int

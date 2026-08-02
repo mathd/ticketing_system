@@ -214,10 +214,28 @@ func (in reserveRequest) units() int32 {
 func uniqueSeats(seats []string) bool {
 	seen := make(map[string]struct{}, len(seats))
 	for _, s := range seats {
+		if strings.TrimSpace(s) == "" || len(s) > 200 {
+			return false
+		}
 		if _, dup := seen[s]; dup {
 			return false
 		}
 		seen[s] = struct{}{}
+	}
+	return true
+}
+
+// disjointFrom reports that none of got appears in want. An orphaned seat is by
+// definition one the buyer did NOT request.
+func disjointFrom(got, want []string) bool {
+	asked := make(map[string]struct{}, len(want))
+	for _, s := range want {
+		asked[s] = struct{}{}
+	}
+	for _, s := range got {
+		if _, ok := asked[s]; ok {
+			return false
+		}
 	}
 	return true
 }
@@ -532,7 +550,13 @@ func seatedInventoryRefusal(w http.ResponseWriter, code int, body []byte, reques
 		// selection would strand. The subset rule below is therefore exactly wrong for
 		// them: applying it would turn every valid orphan refusal into a 502 (ADR-041).
 		// They still must be non-empty and unique; commerce never invents identities.
-		if len(refusal.Seats) == 0 || !uniqueSeats(refusal.Seats) {
+		// Non-empty, unique, contract-shaped, bounded, and DISJOINT from the request.
+		// The last one is the real check: a requested seat cannot be a free unrequested
+		// orphan, so accepting one would have the picker propose an impossible repair —
+		// "add the seat you already asked for" (ai-review). The subset rule that guards
+		// seat_taken is exactly inverted here, which is why both exist.
+		if len(refusal.Seats) == 0 || len(refusal.Seats) > 200 || !uniqueSeats(refusal.Seats) ||
+			!disjointFrom(refusal.Seats, requested) {
 			write(w, 502, map[string]string{"error": "invalid inventory response"})
 			return
 		}
