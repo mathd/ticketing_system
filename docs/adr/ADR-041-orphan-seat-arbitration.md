@@ -118,28 +118,47 @@ readiness fall. The safe order is therefore **consumers first, producer second**
 is only expressible as separate merges:
 
 **TKT-179** setting + this ADR → **TKT-180** access accepts schema 5 → **TKT-181** inventory
-implements schema 5 *and* catalog emits it → **TKT-182** the rule itself.
+implements schema 5 and its projection → **TKT-183** catalog emits schema 5 → **TKT-182** the
+rule itself.
 
-**Amended during TKT-180 (2026-08-02), by its ai-review.** The original ordering said
-"consumers first" and meant *both* consumers. That is right for **access**, which reads only
-`re_entry` and genuinely ignores everything else, and wrong for **inventory** — and the
-difference is worth stating because it is not obvious.
+**Amended twice during TKT-180 (2026-08-02), both times by its ai-review.** The original
+ordering said "consumers first" and meant *both* consumers, and the first amendment gave the
+wrong reason for the distinction. Both corrections are recorded because the wrong versions
+are more intuitive than the right one.
 
-Inventory's schema-5 handler provisions a pool and records the event in `consumed_events`.
-A binary that accepts schema 5 *without* building the adjacency projection therefore creates
-a rule-enabled pool that has no rule, marks the event consumed, and acks it. A later, capable
-binary cannot repair that through redelivery: it short-circuits on the consumed event. The
-pool is permanently rule-less and nothing reports it.
+**Inventory cannot accept schema 5 early; access can — and receipt-recording is not why.**
 
-So for inventory, **"accept and ignore the field we cannot use" is strictly worse than
-parking.** Parking is loud (readiness latches false), reversible, and resolves itself the
-moment a capable binary deploys. Consuming is silent and final. The general rule this ADR
-therefore adds: *a consumer may accept a new schema early only if handling it is idempotent
-with respect to what a later binary would need to do* — which holds when the consumer
-ignores the new field by construction, and fails when the consumer records completion.
+Inventory's schema-5 handler provisions a pool and records the event in `consumed_events`. A
+binary that accepts schema 5 *without* building the adjacency projection creates a
+rule-enabled pool that has no rule, marks the event consumed, and acks it. A later, capable
+binary redelivered that event short-circuits on the consumed row: the pool is permanently
+rule-less and nothing reports it.
 
-Inventory's arm consequently lands in TKT-181, together with the projection that makes it
-honest, and catalog's producer change deploys after it.
+Access records `consumed_events` too (`store/policy.go`). It is nonetheless safe, because
+schema 5 changes nothing access owns: it projects the unchanged identifiers and `re_entry`,
+so **no future access binary will ever need to redo that event**.
+
+So the discriminating property is **semantic completeness, not idempotency and not whether a
+receipt is written**:
+
+> A consumer may accept a new schema variant early only if its current handler performs
+> **every effect this consumer will ever require from that variant** — or if the
+> later-required effects remain replayable despite any completion marker.
+
+Stated as "safe when handling is idempotent", the rule would both condemn access, which is
+correct today, and authorise irreversible partial handling merely for being repeatable. That
+is the wrong test, and it was the first amendment's.
+
+**The producer gets its own revision, because a shared merge does not order a deployment.**
+Catalog and inventory start independently, so a single merge carrying both inventory's arm
+and catalog's emission does not guarantee inventory is running first. If catalog emits while
+an old inventory replica is still up, that replica **quarantines the event, acks it, and
+latches unready** — and deploying the capable binary does **not** repair it: quarantined
+originals were acked, so recovery is `reprocess-quarantine` **plus a restart**, never
+automatic. Newly published performances would have no inventory until an operator acts.
+
+Hence TKT-183: catalog's emission is a separate revision, deployed only once TKT-181's
+inventory is fully rolled out.
 
 ## Consequences
 
