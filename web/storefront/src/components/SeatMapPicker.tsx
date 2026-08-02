@@ -134,14 +134,22 @@ const READ_TIMEOUT_MS = 8000;
  * cancellation as a failure, or — worse — swallowing a real timeout and leaving the
  * last snapshot claimable.
  */
-async function boundedFetch(url: string, init: RequestInit, controller: AbortController) {
+async function boundedJSON<T>(url: string, init: RequestInit, controller: AbortController): Promise<T> {
   let timedOut = false;
   const deadline = window.setTimeout(() => { timedOut = true; controller.abort(); }, READ_TIMEOUT_MS);
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
     if (!response.ok) throw new Error(String(response.status));
-    return response;
+    // The body is read INSIDE the deadline. fetch() resolves when headers arrive, not
+    // when the body has been consumed, so clearing the timer on the response would
+    // leave a stalled body unbounded — and a stalled body is worse than a stalled
+    // connection here: the caller never reaches its `finally`, so the authoritative-read
+    // guard is never released and every later poll is skipped for good (ai-review
+    // pass 4).
+    return (await response.json()) as T;
   } catch (err) {
+    // A DOMException is an Error, so this rides along on the real abort object rather
+    // than replacing it — the caller still sees name === 'AbortError'.
     throw Object.assign(err as Error, { timedOut });
   } finally {
     window.clearTimeout(deadline);
@@ -184,13 +192,12 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     if (options.bypassCache) authoritative.current = controller;
     const mine = ++generation.current;
     try {
-      const response = await boundedFetch(
+      const next = await boundedJSON<Occupancy>(
         `/api/inventory/slots/${encodeURIComponent(slotId)}/seat-occupancy?organizer_id=${encodeURIComponent(organizerId)}`,
         // After a conflict the cached body is exactly the thing we must not trust.
         { cache: options.bypassCache ? 'no-store' : 'default' },
         controller,
       );
-      const next = (await response.json()) as Occupancy;
       if (mine !== generation.current) return;
       // Catalog and inventory each publish their own view of which map version a slot
       // is seated against. Disagreeing means a projection skew, and rendering either
@@ -232,10 +239,9 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     let live = true;
     void (async () => {
       try {
-        const response = await boundedFetch(
+        const geometry = await boundedJSON<SeatMapGeometry>(
           `/api/catalog/public/seat-maps/${encodeURIComponent(seatMapId)}`, {}, controller,
         );
-        const geometry = (await response.json()) as SeatMapGeometry;
         if (live) {
           setSections(orderByPosition(geometry.sections ?? []));
           setGeometryState('ok');

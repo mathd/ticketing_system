@@ -597,3 +597,60 @@ describe('ai-review pass 3 findings', () => {
       expect.objectContaining({ claimable: false })));
   });
 });
+
+describe('ai-review pass 4 finding', () => {
+  // fetch() resolves when HEADERS arrive, not when the body has been read. A deadline
+  // cleared on the response therefore leaves a stalled body unbounded — and a stalled
+  // body is worse than a stalled connection: readOccupancy never reaches its `finally`,
+  // so the authoritative-read guard is never released and every later poll is skipped
+  // for good.
+  // A hand-built Response is not wired to the AbortController the way a real fetch's
+  // is, so the signal has to be connected explicitly — otherwise the test proves
+  // nothing about aborting, only about stalling.
+  function stalledBody(signal?: AbortSignal | null): Response {
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          signal?.addEventListener('abort', () =>
+            controller.error(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  it('a stalled response body fails the geometry read rather than hanging it', async () => {
+    vi.useFakeTimers();
+    const stub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/api/catalog/public/seat-maps/')) return stalledBody(init?.signal);
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    vi.stubGlobal('fetch', stub);
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+
+    await vi.advanceTimersByTimeAsync(8000 + 200);
+    await vi.waitFor(() => expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy());
+  });
+
+  it('a stalled authoritative body does not suppress polling for ever', async () => {
+    vi.useFakeTimers();
+    let occCall = 0;
+    const stub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      occCall += 1;
+      if (init?.cache === 'no-store') return stalledBody(init?.signal);
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    vi.stubGlobal('fetch', stub);
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
+
+    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    const before = occCall;
+    // Past the deadline: the guard must have been released and polling resumed.
+    await vi.advanceTimersByTimeAsync(8000 + POLL * 2);
+    await vi.waitFor(() => expect(occCall).toBeGreaterThan(before + 1));
+  });
+});
