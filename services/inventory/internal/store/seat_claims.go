@@ -128,9 +128,31 @@ SELECT c.id
    AND (a.right_identity IS NULL OR a.right_identity IN (SELECT id FROM occupied))
  ORDER BY c.id`
 
+// ErrSeatProjectionIncomplete reports a rule-enabled pool whose adjacency projection
+// does not cover a requested seat.
+//
+// It is fail-CLOSED on purpose. The rule discovers candidates by looking up each
+// requested seat's own adjacency row, so a missing row yields no candidates, finds no
+// orphans, and lets the claim commit — silently stranding a neighbour. The bounded
+// query assumes a complete projection, and the honest way to depend on that is to
+// check it rather than hope (ai-review). Provisioning only verifies the projection is
+// non-empty, and nothing in the schema enforces reciprocity.
+var ErrSeatProjectionIncomplete = errors.New("seat adjacency projection does not cover the requested seats")
+
 // orphanedSeats runs the rule under the caller's pool lock. Empty means the selection
 // strands nothing.
 func orphanedSeats(ctx context.Context, tx *sql.Tx, pool uuid.UUID, canon []string) ([]string, error) {
+	// Every requested seat must be projected, or the answer below is unsound rather
+	// than merely incomplete.
+	var covered int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity = ANY($2)`,
+		pool, canon).Scan(&covered); err != nil {
+		return nil, err
+	}
+	if covered != len(canon) {
+		return nil, fmt.Errorf("%w: %d of %d seats projected", ErrSeatProjectionIncomplete, covered, len(canon))
+	}
 	rows, err := tx.QueryContext(ctx, orphanedSeatsQuery, pool, canon)
 	if err != nil {
 		return nil, err

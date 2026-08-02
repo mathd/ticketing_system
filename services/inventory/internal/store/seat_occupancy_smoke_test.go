@@ -976,11 +976,30 @@ func TestOrphanRuleHoldsUnderContention(t *testing.T) {
 				"race-"+strconv.Itoa(i))
 		}(i)
 	}
-	// Both are inside CreateSeatHold and blocked on the pool row before either can
-	// decide anything.
+	// Wait until BOTH claimants are observably blocked on a lock, not merely until
+	// their goroutines have been scheduled. Sending on a channel just before calling
+	// CreateSeatHold proves the call site was reached, and a fixed sleep is a guess: if
+	// one goroutine were delayed past the rollback, the two claims would run
+	// sequentially and the test would still see one success and one refusal — passing
+	// with the pool lock removed entirely (ai-review).
 	<-started
 	<-started
-	time.Sleep(150 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if qerr := db.QueryRowContext(ctx,
+			`SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting); qerr != nil {
+			t.Fatal(qerr)
+		}
+		if waiting >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d claimant(s) ever blocked on the pool row; the barrier never "+
+				"established the overlap this test exists to prove", waiting)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err = blocker.Rollback(); err != nil {
 		t.Fatal(err)
 	}
@@ -1014,5 +1033,35 @@ func TestOrphanRuleHoldsUnderContention(t *testing.T) {
 	}
 	if live != 1 {
 		t.Fatalf("live seat rows = %d want 1 — the refused claim must roll back entirely", live)
+	}
+}
+
+// TestOrphanRuleFailsClosedOnIncompleteProjection: the bounded query discovers
+// candidates through each requested seat's own adjacency row, so a missing row would
+// yield no candidates, find no orphans, and let the claim commit — silently stranding
+// a neighbour. The query assumes a complete projection; this is the check that makes
+// depending on it honest rather than hopeful (ai-review).
+func TestOrphanRuleFailsClosedOnIncompleteProjection(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`, slot, seat(3)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the coverage check this commits and strands seat 2.
+	_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(3)}, 0, "EUR", "k1")
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v, want ErrSeatProjectionIncomplete — an unsound rule must refuse, "+
+			"not quietly permit", err)
+	}
+	var live int
+	if qerr := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM claim_seats WHERE pool_id=$1 AND released_at IS NULL`, slot).Scan(&live); qerr != nil {
+		t.Fatal(qerr)
+	}
+	if live != 0 {
+		t.Fatalf("live seats = %d want 0 — the refused claim must write nothing", live)
 	}
 }
