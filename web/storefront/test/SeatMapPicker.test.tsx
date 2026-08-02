@@ -251,23 +251,86 @@ describe('ai-review findings', () => {
     expect((screen.getByRole('button', { name: /row A1, seat 1, Unavailable/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  // Two forces meet here and the resolution is the point.
+  //
   // The occupancy read is cacheable for 5s, so the refresh that follows a 409 can
-  // legitimately answer with a body that still shows the seat free. Treating that as
-  // truth resurrects a seat the server already refused.
-  it('keeps a conflicted seat taken even when the next read still reports it free', async () => {
+  // legitimately answer with a body that still shows the seat free — treating that as
+  // truth resurrects a seat the server has already refused. But an overlay that only
+  // ever grows is equally wrong: a seat that caused one conflict would stay dark for
+  // the life of the tab, even after its hold is released.
+  //
+  // So: the 409 applies immediately, the refresh bypasses the HTTP cache, and THAT
+  // read — being authoritative by construction — is what the overlay defers to.
+  it('marks a conflicted seat taken at once and refreshes past the cache', async () => {
     const stub = stubFetch(geometry(), occupancy([]));
     mount(stub);
     await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
 
     window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
 
-    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Unavailable/ });
-    // And the refresh it triggers must bypass the HTTP cache.
+    // The refresh bypasses the HTTP cache: that is what makes its answer authoritative,
+    // and it is the only part of the sequence a fast stub can observe — the overlay is
+    // applied synchronously but the read here resolves before the DOM can be sampled.
     await waitFor(() => {
       const occ = stub.mock.calls.filter(([u]) => String(u).includes('seat-occupancy'));
       expect(occ.length).toBeGreaterThan(1);
       expect((occ[occ.length - 1][1] as RequestInit | undefined)?.cache).toBe('no-store');
     });
+  });
+
+  it('keeps a conflicted seat taken when the authoritative read agrees', async () => {
+    let occCall = 0;
+    const stub = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      occCall += 1;
+      return new Response(JSON.stringify(occupancy(occCall === 1 ? [] : ['Stalls/A1/1'])), { status: 200 });
+    });
+    mount(stub);
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
+
+    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Unavailable/ });
+    // And it stays taken once the authoritative read lands.
+    await waitFor(() => expect(occCall).toBeGreaterThan(1));
+    expect(screen.getByRole('button', { name: /Stalls, row A1, seat 1, Unavailable/ })).toBeTruthy();
+  });
+
+  // The other half: a released hold must become buyable again. An overlay that
+  // outlived the authoritative read would quietly retire inventory.
+  it('releases a conflicted seat when the authoritative read says it is free', async () => {
+    // The authoritative read is delayed on purpose, so the overlay is observable
+    // BEFORE it is superseded. Without the delay the two states collapse into one
+    // render and the assertion would pass whether or not the overlay ever cleared.
+    let release: (() => void) | null = null;
+    let occCall = 0;
+    const stub = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      occCall += 1;
+      if (occCall > 1) {
+        await new Promise<void>((resolve) => { release = resolve; });
+      }
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    mount(stub);
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
+
+    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    // The 409 is honoured immediately, before any network answer.
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Unavailable/ });
+
+    // Now let the authoritative read land. It reports the seat free — the hold was
+    // released — so the overlay must not outlive it. An overlay that only grew would
+    // quietly retire inventory for the life of the tab.
+    await waitFor(() => expect(release).not.toBe(null));
+    release!();
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
   });
 
   it('reports the selection as unclaimable once the offering closes', async () => {
@@ -339,5 +402,80 @@ describe('ai-review findings', () => {
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
     await vi.advanceTimersByTimeAsync(POLL);        // a good read: the notice clears
     await vi.waitFor(() => expect(screen.queryByText(/last known seat availability/)).toBe(null));
+  });
+});
+
+describe('ai-review pass 2 findings', () => {
+  it('a degraded read makes the selection unclaimable even though the map stays up', async () => {
+    vi.useFakeTimers();
+    let occCall = 0;
+    const stub = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      occCall += 1;
+      if (occCall === 1) return new Response(JSON.stringify(occupancy([])), { status: 200 });
+      return new Response('{}', { status: 503 });
+    });
+    vi.stubGlobal('fetch', stub);
+    const onChange = vi.fn();
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
+    await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
+    fireEvent.click(screen.getByRole("button", { name: /row A1, seat 1, Available/ }));
+    await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith({ seats: ['Stalls/A1/1'], claimable: true }));
+
+    await vi.advanceTimersByTimeAsync(POLL);
+    // The map is still there (blanking it would read as sold out) but nothing may be
+    // claimed against occupancy the component has declared unreadable.
+    await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ claimable: false })));
+    expect(screen.getAllByRole('button').length).toBe(4);
+  });
+
+  it('a hung read times out instead of stopping the poll forever', async () => {
+    vi.useFakeTimers();
+    let occCall = 0;
+    const stub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) {
+        return new Response(JSON.stringify(geometry()), { status: 200 });
+      }
+      occCall += 1;
+      if (occCall === 2) {
+        // Never resolves on its own — only the deadline can end it.
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        }) as Promise<Response>;
+      }
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    vi.stubGlobal('fetch', stub);
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
+
+    await vi.advanceTimersByTimeAsync(POLL);          // the hung read starts
+    await vi.advanceTimersByTimeAsync(8000 + POLL);   // its deadline fires, then the next tick
+    // Polling survived: a third read happened.
+    await vi.waitFor(() => expect(occCall).toBeGreaterThan(2));
+  });
+
+  // Geometry is read once and cannot degrade; occupancy is read forever. Sharing one
+  // field let a successful poll clear a terminal geometry failure, leaving the picker
+  // rendering "loading" for the rest of the session.
+  it('a geometry failure is not cleared by successful occupancy polls', async () => {
+    vi.useFakeTimers();
+    const stub = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/public/seat-maps/')) return new Response('{}', { status: 503 });
+      return new Response(JSON.stringify(occupancy([])), { status: 200 });
+    });
+    vi.stubGlobal('fetch', stub);
+    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+
+    await vi.waitFor(() => expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(POLL * 3);
+    // Still the failure message, never an endless "loading".
+    expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy();
   });
 });

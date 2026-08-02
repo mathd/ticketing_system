@@ -116,14 +116,24 @@ export function reconcileSelection(selected: string[], taken: Set<string>, ceili
   return selected.filter((seat) => !taken.has(seat)).slice(0, ceiling);
 }
 
-type ReadState = 'loading' | 'ok' | 'degraded' | 'failed';
+/** Occupancy is read repeatedly, so it can degrade; geometry is read once, so it cannot. */
+type OccupancyState = 'loading' | 'ok' | 'degraded' | 'failed';
+type GeometryState = 'loading' | 'ok' | 'failed';
+
+/** A read that has not answered in this long is treated as failed rather than awaited. */
+const READ_TIMEOUT_MS = 8000;
 
 export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, onSelectionChange }: Props) {
   const t = UI_STRINGS[locale];
   const [sections, setSections] = useState<Section[] | null>(null);
   const [occupancy, setOccupancy] = useState<Occupancy | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  const [readState, setReadState] = useState<ReadState>('loading');
+  // Tracked SEPARATELY. Sharing one field let a successful occupancy poll clear a
+  // terminal geometry failure, after which `sections` stayed null forever and the
+  // picker rendered "loading" for the rest of the session — neither usable nor
+  // honest (ai-review pass 2).
+  const [occupancyState, setOccupancyState] = useState<OccupancyState>('loading');
+  const [geometryState, setGeometryState] = useState<GeometryState>('loading');
   const [notice, setNotice] = useState('');
   // Seats a 409 proved gone. Kept SEPARATELY and unioned with every server snapshot
   // rather than written into one: the occupancy read is cacheable for five seconds, so
@@ -141,6 +151,12 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     inFlight.current?.abort();
     const controller = new AbortController();
     inFlight.current = controller;
+    // A hung connection must not stall the chain: the next poll is scheduled only once
+    // this settles, so without a deadline one stalled fetch stops polling for the rest
+    // of the session while the last snapshot goes on being reported as claimable
+    // (ai-review pass 2).
+    const deadline = window.setTimeout(() => controller.abort(new Error('timeout')), READ_TIMEOUT_MS);
+    const timedOut = () => controller.signal.reason instanceof Error;
     const mine = ++generation.current;
     try {
       const response = await fetch(
@@ -156,20 +172,28 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
       // one would put the buyer on a map that is not the one being claimed against.
       // This one is NOT retryable: it is a real disagreement, not a blip.
       if (next.slot_id !== slotId || next.seat_map_id !== seatMapId) {
-        setReadState('failed');
+        setOccupancyState('failed');
         return;
       }
       setOccupancy(next);
-      setReadState('ok');
+      setOccupancyState('ok');
+      // A no-store read is authoritative — bypassing the cache is exactly what makes
+      // it so — and therefore supersedes the conflict overlay. Without this the
+      // overlay only ever grows, and a seat that caused one conflict stays dark for
+      // the life of the tab even after its hold is released (ai-review pass 2).
+      if (options.bypassCache) setConflicted([]);
     } catch (err) {
-      if ((err as Error)?.name === 'AbortError') return;
+      // A timeout aborts too, but it is a real failure and must be reported as one.
+      if ((err as Error)?.name === 'AbortError' && !timedOut()) return;
       if (mine !== generation.current) return;
       // A failure AFTER a good first read keeps the last known map and says so:
       // blanking it would read as a sold-out house, which is a lie with a cost.
       // Before any good read there is nothing to degrade to, so it is a hard failure —
       // and either way a later good read clears it, because a transient blip must not
       // be sticky.
-      setReadState((current) => (current === 'ok' || current === 'degraded' ? 'degraded' : 'failed'));
+      setOccupancyState((current) => (current === 'ok' || current === 'degraded' ? 'degraded' : 'failed'));
+    } finally {
+      window.clearTimeout(deadline);
     }
   }, [organizerId, slotId, seatMapId]);
 
@@ -180,9 +204,12 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
         const response = await fetch(`/api/catalog/public/seat-maps/${encodeURIComponent(seatMapId)}`);
         if (!response.ok) throw new Error(String(response.status));
         const geometry = (await response.json()) as SeatMapGeometry;
-        if (live) setSections(orderByPosition(geometry.sections ?? []));
+        if (live) {
+          setSections(orderByPosition(geometry.sections ?? []));
+          setGeometryState('ok');
+        }
       } catch {
-        if (live) setReadState('failed');
+        if (live) setGeometryState('failed');
       }
     })();
     return () => { live = false; };
@@ -235,8 +262,11 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     });
   }, [taken, ceiling]);
 
-  const usable = readState === 'ok' || readState === 'degraded';
-  const claimable = usable && open && selected.length > 0 && selected.length <= ceiling;
+  // Claimable requires a CURRENT read. `degraded` keeps the map on screen — blanking
+  // it would read as a sold-out house — but a selection resting on occupancy the
+  // component has just declared unreadable must not be submittable. Including
+  // degraded here is how the fail-closed boundary silently reopened (ai-review pass 2).
+  const claimable = occupancyState === 'ok' && open && selected.length > 0 && selected.length <= ceiling;
   useEffect(() => {
     onSelectionChange({ seats: selected, claimable });
   }, [selected, claimable, onSelectionChange]);
@@ -254,7 +284,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     return () => window.removeEventListener(`seat-conflict:${slotId}`, onConflict);
   }, [slotId, readOccupancy]);
 
-  if (readState === 'failed') {
+  if (geometryState === 'failed' || occupancyState === 'failed') {
     return <p className="seat-map-unavailable" role="status">{t.seatSelectionUnavailable}</p>;
   }
   if (sections === null || occupancy === null) {
@@ -284,7 +314,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
         <li><span className="seat-swatch taken" aria-hidden="true">×</span>{t.seatTaken}</li>
       </ul>
       {!open && <p className="seat-map-closed">{t.seatsNotOnSale}</p>}
-      {readState === 'degraded' && <p className="seat-map-closed">{t.seatMapStale}</p>}
+      {occupancyState === 'degraded' && <p className="seat-map-closed">{t.seatMapStale}</p>}
       {sections.map((section) => (
         <section key={section.id} className="seat-section">
           <h5>{section.name}</h5>
