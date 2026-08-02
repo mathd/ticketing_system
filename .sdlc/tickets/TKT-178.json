@@ -1,0 +1,35 @@
+{
+  "key": "TKT-178",
+  "type": "Task",
+  "classification": "simple",
+  "summary": "POST /venues with an unknown organizer answers 500, not 404 (ADR-028 fail-closed on an undeclared status)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "Found while seeding a browser fixture for TKT-174.\n\n```\nPOST /api/catalog/venues  {\"organizer_id\":\"<unknown>\", ...}\n-> 500 {\"error\":\"response violates OpenAPI contract\"}\n\ncatalog log: \"response violates OpenAPI contract\" status=404 error=\"status is not supported\"\n```\n\nThe handler correctly answers **404** for an organizer that does not exist. `POST /venues` does not declare a 404, so ADR-028's fail-closed response validator converts it to a 500 — which is the validator working exactly as designed, on a contract that is incomplete.\n\nThis is a small, contained fix (declare `404` on the operation), but it is worth checking whether the same gap exists on the other catalog writes that validate an organizer, rather than patching one operation. A caller currently cannot tell \"you named a tenant that does not exist\" from \"the service is broken\".\n\nPre-existing; unrelated to TKT-174 beyond having been tripped over by it.",
+  "context": {
+    "capturedAt": "2026-08-02",
+    "binding": [],
+    "reference": [
+      {
+        "summary": "Surfaced during TKT-174",
+        "link": "https://github.com/mathd/ticketing_system/pull/148"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-028",
+        "why": "The validator failing an undeclared status closed is correct behaviour; the defect is the contract, not the validator. Fixing it means declaring the status, never relaxing the validator."
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from TKT-174's ai-review triage as an incidental — recorded rather than folded into that PR. Not shaped."
+    }
+  ]
+}
