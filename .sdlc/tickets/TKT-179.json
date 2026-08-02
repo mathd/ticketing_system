@@ -1,0 +1,54 @@
+{
+  "key": "TKT-179",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-023a: A seat map can be marked orphan-preventing (setting only, nothing enforces it yet)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**First of four slices carved out of TKT-175** when its plan showed the ticket to be ~50 files across five services. The architecture is decided — see TKT-175's `kind=plan-final`.\n\nShips the **decision** and the **setting**, and nothing that acts on either.\n\n**Acceptance criteria:**\n- [ ] **ADR-041** records the arbitration decision: geometry fetched once at provisioning for the exact immutable published version (ADR-029), projected into inventory, decided under the pool lock. It states why a claim-path catalog call (ADR-010), a new `seat_map.published` subscription, and a commerce pre-check were each rejected — the last because an advisory check cannot satisfy a contention AC.\n- [ ] `seat_maps` gains `orphan_prevention_enabled boolean NOT NULL DEFAULT false`; a guarded Down refuses while any map has it on.\n- [ ] Catalog's create/read/edit contract carries it. An edit that omits it **inherits the predecessor's value**; an explicit value applies only to the newly minted version (ADR-029: versions are immutable).\n- [ ] The back-office venue page can set it on create and on edit.\n- [ ] **Nothing reads it.** No event payload changes, no inventory change, no claim behaviour changes. Every existing map and every existing test behaves exactly as before.\n- [ ] Spec declared, generated code committed before the gate, browser evidence for the back-office form submission (the repo's rule: an unsubmitted Astro form is unverified).\n\nQuality gates: `make check` green; browser submit evidence.",
+  "context": {
+    "capturedAt": "2026-08-02",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-02",
+        "rule": "Local gate: `make check` ... Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The architecture, every design decision and the full test plan live in TKT-175's kind=plan and kind=plan-final — read those first, they are not repeated here",
+        "link": "board:TKT-175"
+      },
+      {
+        "summary": "Epic lineage",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-029",
+        "why": "A published seat-map version is immutable and an edit mints a new one. That is why the setting is per VERSION and why an edit's omission must inherit rather than reset — and it is the property the whole TKT-175 architecture rests on."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: the catalog spec changes and openapi_gen.go plus api-types.gen.ts are committed before the gate."
+      },
+      {
+        "id": "ADR-022",
+        "why": "The migration runs out-of-band as the service's migrate subcommand; the server path never migrates."
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Readiness — PASS\n\nSmallest possible slice: a decision and a flag nobody reads. Its whole risk surface is the migration default and the edit-inheritance rule, both of which are directly testable.\n\nShaping is inherited: TKT-175's `kind=plan` (gpt-5.6-sol) and `kind=plan-final` (main-agent) decided the architecture, the design, the test plan and the risks before this ticket existed. This child re-scopes delivery, not thinking."
+    }
+  ]
+}
