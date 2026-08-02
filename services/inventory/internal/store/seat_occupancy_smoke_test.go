@@ -390,4 +390,63 @@ func TestSeatOccupancyIsIndexScoped(t *testing.T) {
 	if strings.Contains(plan, "Seq Scan on claim_seats") {
 		t.Fatalf("plan sequentially scans claim_seats even though the index appears in it.\nplan:\n%s", plan)
 	}
+	// The two assertions above are jointly satisfiable by a plan that scans the WHOLE
+	// partial index and filters afterwards: the index name appears, no sequential table
+	// scan appears, and every live seat in the database is still read — which is exactly
+	// the regression this test exists to prevent (ai-review finding). What rules that
+	// out is the access condition: the scoping parameter must bind INSIDE the index
+	// lookup, not in a filter applied to its output.
+	if !strings.Contains(plan, "Index Cond: (pool_id = $1)") {
+		t.Fatalf("the plan reads claim_seats through the index but does not BIND pool_id in the "+
+			"index condition, so it scans every live seat and filters after — an unscoped read "+
+			"wearing an index's name.\nplan:\n%s", plan)
+	}
+}
+
+// TestSeatOccupancyReportsRemainingHeadroom is the ai-review finding: the seat list
+// alone can say "free" about a seat that no claim will ever grant.
+//
+// A seated pool carries a coarse aggregate ceiling as well as its per-seat rows, and
+// CreateSeatHold refuses with ErrUnavailable once confirmed + live held + requested
+// exceeds it. A draining capacity cut (target_capacity, TKT-76) takes that headroom
+// to zero without touching a single claim_seats row — so every unheld seat identity
+// stays absent from Unavailable while every claim on it fails. offering_status does
+// not move either: the slot is still open, it is just full.
+//
+// Available is the signal that closes it, and it is quoted from Availability rather
+// than recomputed here so the two cannot drift.
+func TestSeatOccupancyReportsRemainingHeadroom(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1"}, 0, "EUR", "k1"); err != nil {
+		t.Fatal(err)
+	}
+
+	occ := occupancy(t, st, org, slot)
+	if occ.Available != 99 {
+		t.Fatalf("available = %d want 99 (100 capacity - 1 held)", occ.Available)
+	}
+
+	// Cut the pool to exactly what is already held. Nothing about the seats changes.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE inventory_pools SET target_capacity=1 WHERE slot_id=$1`, slot); err != nil {
+		t.Fatal(err)
+	}
+
+	occ = occupancy(t, st, org, slot)
+	if !seatsEqual(occ.Unavailable, []string{"A/1/1"}) {
+		t.Fatalf("the seat list is unchanged by a capacity cut, got %v", occ.Unavailable)
+	}
+	if occ.OfferingStatus != "open" {
+		t.Fatalf("a capacity cut does not close the slot: offering_status = %q", occ.OfferingStatus)
+	}
+	if occ.Available != 0 {
+		t.Fatalf("available = %d want 0 — without this the response says every other seat is "+
+			"free while CreateSeatHold rejects them all with ErrUnavailable", occ.Available)
+	}
+
+	// The claim path agrees: this is the state the response now describes honestly.
+	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/2"}, 0, "EUR", "k2"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("claim on an unheld seat with no headroom = %v, want ErrUnavailable", err)
+	}
 }

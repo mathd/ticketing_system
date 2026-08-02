@@ -398,6 +398,9 @@ type SeatHoldCreate struct {
 
 // SeatOccupancy defines model for SeatOccupancy.
 type SeatOccupancy struct {
+	// Available How many more seats the pool will actually grant, from the same computation the availability read uses. NOT derivable from the seat list: a seated pool also carries a coarse aggregate ceiling, and a draining capacity cut (target_capacity) can take the headroom to zero without releasing a single seat — every unheld identity then stays absent from unavailable_seat_identities while every claim on it is refused. A picker must gate on this as well as on the seat list.
+	Available int `json:"available"`
+
 	// OfferingStatus Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"
 	OfferingStatus SeatOccupancyOfferingStatus `json:"offering_status"`
 

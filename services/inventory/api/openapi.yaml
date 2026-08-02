@@ -408,11 +408,12 @@ components:
     SeatOccupancy:
       type: object
       additionalProperties: false
-      required: [slot_id, seat_map_id, offering_status, unavailable_seat_identities]
+      required: [slot_id, seat_map_id, offering_status, available, unavailable_seat_identities]
       properties:
         slot_id: {type: string, format: uuid}
         seat_map_id: {type: string, format: uuid, description: 'The published seat-map version this slot is seated against, as inventory holds it. Catalog publishes its own view on the performance; the two agreeing is what makes projection skew detectable rather than hidden.'}
         offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"'}
+        available: {type: integer, description: 'How many more seats the pool will actually grant, from the same computation the availability read uses. NOT derivable from the seat list: a seated pool also carries a coarse aggregate ceiling, and a draining capacity cut (target_capacity) can take the headroom to zero without releasing a single seat — every unheld identity then stays absent from unavailable_seat_identities while every claim on it is refused. A picker must gate on this as well as on the seat list.'}
         unavailable_seat_identities:
           type: array
           description: 'Sorted, and [] rather than null on an empty seated pool — which is a different answer from 404 on an unknown slot'

@@ -253,10 +253,20 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 // OfferingStatus mirrors Availability's (TKT-75): the seat list stays factual on a
 // closed or archived slot, and this field is how a caller tells "these seats are
 // free" from "nothing here is claimable at all".
+// Available is how many more seats the pool will actually let anyone claim. It is
+// NOT derivable from the seat list, and that is the point: a seated pool carries a
+// coarse aggregate ceiling as well as its per-seat rows, and CreateSeatHold refuses
+// with ErrUnavailable when confirmed + live held + requested exceeds it. So a seat
+// can be absent from Unavailable — genuinely unheld — and still be unbuyable,
+// because a draining capacity cut (target_capacity, TKT-76) has taken the pool's
+// headroom to zero, or the map was authored with more seats than the venue snapshot
+// the pool was provisioned with. Without this field the response says "free" about
+// a seat every claim will reject, which is the one thing AC2 forbids.
 type SeatOccupancy struct {
 	SlotID         uuid.UUID `json:"slot_id"`
 	SeatMapID      uuid.UUID `json:"seat_map_id"`
 	OfferingStatus string    `json:"offering_status"`
+	Available      int32     `json:"available"`
 	Unavailable    []string  `json:"unavailable_seat_identities"`
 }
 
@@ -293,11 +303,11 @@ const seatOccupancySeatsQuery = `SELECT cs.seat_identity
 // gives the same answer without it.
 func (p *Postgres) SeatOccupancy(ctx context.Context, org, slot uuid.UUID) (SeatOccupancy, error) {
 	occ := SeatOccupancy{SlotID: slot, Unavailable: []string{}}
-	var kind, lifecycle, closure string
+	var kind string
 	var seatMapID uuid.NullUUID
-	err := p.db.QueryRowContext(ctx, `SELECT inventory_kind,seat_map_id,lifecycle_status,closure_status
+	err := p.db.QueryRowContext(ctx, `SELECT inventory_kind,seat_map_id
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).
-		Scan(&kind, &seatMapID, &lifecycle, &closure)
+		Scan(&kind, &seatMapID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return occ, ErrNotFound
 	}
@@ -308,7 +318,19 @@ func (p *Postgres) SeatOccupancy(ctx context.Context, org, slot uuid.UUID) (Seat
 		return occ, ErrPoolKindMismatch
 	}
 	occ.SeatMapID = seatMapID.UUID
-	occ.OfferingStatus = offeringStatus(lifecycle, closure)
+
+	// Offering state and remaining headroom come from Availability rather than being
+	// re-derived here, deliberately. Both are aggregate facts about the pool that the
+	// claim path already settles against, and a second copy of that arithmetic — the
+	// draining-cut clamp (TKT-76), the archived-beats-closed collapse, the channel
+	// reservation subtraction — is a copy that drifts. The seat list is this read's
+	// own contribution; the aggregate is quoted, not recomputed.
+	a, err := p.Availability(ctx, org, slot, "")
+	if err != nil {
+		return occ, err
+	}
+	occ.OfferingStatus = a.OfferingStatus
+	occ.Available = a.Available
 
 	rows, err := p.db.QueryContext(ctx, seatOccupancySeatsQuery, slot)
 	if err != nil {
