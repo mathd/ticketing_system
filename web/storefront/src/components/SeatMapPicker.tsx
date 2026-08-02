@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SeatMapGeometry, SeatMapRow, SeatMapSeat, SeatMapSection } from '../lib/api';
 import type { Locale } from '../lib/locales';
@@ -6,9 +6,14 @@ import { UI_STRINGS } from '../lib/locales';
 
 // SeatMapPicker is TKT-174's seat concern, end to end: it reads the published
 // geometry and the live occupancy, renders the map, owns the selection, and reports
-// the selected identities upward. It deliberately does NOT own the reservation or
-// the checkout — HoldPicker keeps those, so there is one reservation state and one
-// checkout path (AC3) even though there are two components.
+// both the selection AND whether that selection is currently claimable. It
+// deliberately does NOT own the reservation or the checkout — HoldPicker keeps those,
+// so there is one reservation state and one checkout path (AC3).
+//
+// Reporting claimability rather than just identities is load-bearing: the Reserve
+// button lives in the PARENT, so a child that merely stops rendering its own controls
+// still leaves a purchase control enabled over a selection nothing can vouch for
+// (ai-review). Fail-closed has to cross the component boundary or it is not closed.
 //
 // Both reads happen browser-side, and that is the decided architecture rather than a
 // convenience: ADR-006's accepted option is "page HTML at the minutes tier with
@@ -29,12 +34,19 @@ interface Occupancy {
   unavailable_seat_identities: string[];
 }
 
+/** What the parent needs to decide whether Reserve may be pressed. */
+export interface SeatSelection {
+  seats: string[];
+  /** False whenever the selection cannot be submitted: empty, unreadable, closed, or over the ceiling. */
+  claimable: boolean;
+}
+
 interface Props {
   organizerId: string;
   slotId: string;
   seatMapId: string;
   locale: Locale;
-  onSelectionChange: (seats: string[]) => void;
+  onSelectionChange: (selection: SeatSelection) => void;
 }
 
 /** The 1..50 band the claim path enforces (store.MaxSeatsPerHold). */
@@ -92,42 +104,72 @@ export function applySeatConflict(
   };
 }
 
+/**
+ * reconcileSelection prunes a selection against a freshly-read occupancy: seats that
+ * became taken drop out, and the rest is trimmed to the new ceiling (oldest kept).
+ *
+ * Without this the UI can render a seat as unavailable while still counting it and
+ * submitting it, or show five selected against a ceiling of three — and inventory then
+ * refuses a request the buyer was invited to make (ai-review).
+ */
+export function reconcileSelection(selected: string[], taken: Set<string>, ceiling: number): string[] {
+  return selected.filter((seat) => !taken.has(seat)).slice(0, ceiling);
+}
+
+type ReadState = 'loading' | 'ok' | 'degraded' | 'failed';
+
 export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, onSelectionChange }: Props) {
   const t = UI_STRINGS[locale];
   const [sections, setSections] = useState<Section[] | null>(null);
   const [occupancy, setOccupancy] = useState<Occupancy | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  const [failed, setFailed] = useState(false);
+  const [readState, setReadState] = useState<ReadState>('loading');
   const [notice, setNotice] = useState('');
-  // Monotonic generation: an older poll must never overwrite a newer answer, and in
-  // particular must never restore a seat that a 409 has just proven gone.
+  // Seats a 409 proved gone. Kept SEPARATELY and unioned with every server snapshot
+  // rather than written into one: the occupancy read is cacheable for five seconds, so
+  // the refresh that follows a conflict can legitimately return a body that still shows
+  // the seat free. Replacing state with that body resurrects a seat the server has
+  // already refused, and the buyer reselects it and fails again (ai-review).
+  const [conflicted, setConflicted] = useState<string[]>([]);
+  // Monotonic generation: an older read must never commit over a newer one — neither
+  // its success NOR its failure.
   const generation = useRef(0);
+  const inFlight = useRef<AbortController | null>(null);
+  const visible = useRef(true);
 
-  const readOccupancy = useCallback(async () => {
+  const readOccupancy = useCallback(async (options: { bypassCache?: boolean } = {}) => {
+    inFlight.current?.abort();
+    const controller = new AbortController();
+    inFlight.current = controller;
     const mine = ++generation.current;
     try {
       const response = await fetch(
         `/api/inventory/slots/${encodeURIComponent(slotId)}/seat-occupancy?organizer_id=${encodeURIComponent(organizerId)}`,
+        // After a conflict the cached body is exactly the thing we must not trust.
+        { signal: controller.signal, cache: options.bypassCache ? 'no-store' : 'default' },
       );
       if (!response.ok) throw new Error(String(response.status));
       const next = (await response.json()) as Occupancy;
+      if (mine !== generation.current) return;
       // Catalog and inventory each publish their own view of which map version a slot
       // is seated against. Disagreeing means a projection skew, and rendering either
       // one would put the buyer on a map that is not the one being claimed against.
+      // This one is NOT retryable: it is a real disagreement, not a blip.
       if (next.slot_id !== slotId || next.seat_map_id !== seatMapId) {
-        setFailed(true);
-        return null;
+        setReadState('failed');
+        return;
       }
-      if (mine === generation.current) setOccupancy(next);
-      return next;
-    } catch {
-      // A failure AFTER a good first read keeps the last known map: blanking it would
-      // read as a sold-out house, which is a lie with a cost.
-      setOccupancy((current) => {
-        if (current === null) setFailed(true);
-        return current;
-      });
-      return null;
+      setOccupancy(next);
+      setReadState('ok');
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      if (mine !== generation.current) return;
+      // A failure AFTER a good first read keeps the last known map and says so:
+      // blanking it would read as a sold-out house, which is a lie with a cost.
+      // Before any good read there is nothing to degrade to, so it is a hard failure —
+      // and either way a later good read clears it, because a transient blip must not
+      // be sticky.
+      setReadState((current) => (current === 'ok' || current === 'degraded' ? 'degraded' : 'failed'));
     }
   }, [organizerId, slotId, seatMapId]);
 
@@ -140,56 +182,84 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
         const geometry = (await response.json()) as SeatMapGeometry;
         if (live) setSections(orderByPosition(geometry.sections ?? []));
       } catch {
-        if (live) setFailed(true);
+        if (live) setReadState('failed');
       }
     })();
     return () => { live = false; };
   }, [seatMapId]);
 
+  // Polling is SERIALISED, not on a fixed interval: the next read is scheduled only
+  // once the current one settles. A fixed interval against responses slower than the
+  // period accumulates overlapping requests that each supersede the last, so the map
+  // can never finish loading while the load keeps growing — the worst possible
+  // behaviour during the on-sale this read exists to serve (ai-review).
   useEffect(() => {
-    void readOccupancy();
-    const timer = window.setInterval(() => {
-      // Don't poll a tab nobody is looking at. This is politeness toward a hot
-      // on-sale, not a fix for it — ADR-004's shared cache tier is TKT-31's and is
-      // not deployed, so every open tab still reaches inventory.
-      if (document.visibilityState === 'visible') void readOccupancy();
-    }, POLL_MS);
-    return () => window.clearInterval(timer);
+    let stopped = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      if (!stopped && visible.current) await readOccupancy();
+      if (!stopped) timer = window.setTimeout(tick, POLL_MS);
+    };
+    void tick();
+    const onVisibility = () => { visible.current = document.visibilityState === 'visible'; };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      // Abandon the outstanding read: an unmounted picker must not keep a socket open
+      // or land a state update.
+      inFlight.current?.abort();
+    };
   }, [readOccupancy]);
 
-  useEffect(() => { onSelectionChange(selected); }, [selected, onSelectionChange]);
+  const taken = useMemo(
+    () => new Set([...(occupancy?.unavailable_seat_identities ?? []), ...conflicted]),
+    [occupancy, conflicted],
+  );
+  const open = occupancy?.offering_status === 'open';
+  const allSeats: SeatMapSeat[] = useMemo(
+    () => (sections ?? []).flatMap((s) => (s.rows ?? []).flatMap((r: SeatMapRow) => r.seats ?? [])),
+    [sections],
+  );
+  const ceiling = occupancy
+    ? selectionCeiling(occupancy.remaining_capacity, allSeats.filter((s) => !taken.has(s.seat_identity)).length)
+    : 0;
 
-  // Exposed so HoldPicker can fold a 409's identities back in without owning any of
-  // this state.
+  // Every accepted snapshot reconciles the selection. A seat that became taken drops
+  // out, and the rest is trimmed to the new ceiling.
+  useEffect(() => {
+    setSelected((current) => {
+      const next = reconcileSelection(current, taken, ceiling);
+      return next.length === current.length && next.every((s, i) => s === current[i]) ? current : next;
+    });
+  }, [taken, ceiling]);
+
+  const usable = readState === 'ok' || readState === 'degraded';
+  const claimable = usable && open && selected.length > 0 && selected.length <= ceiling;
+  useEffect(() => {
+    onSelectionChange({ seats: selected, claimable });
+  }, [selected, claimable, onSelectionChange]);
+
+  // The conflict channel from HoldPicker: a 409's identities are authoritative and are
+  // held here until a no-store read confirms them, rather than being written into a
+  // snapshot the next cached response would overwrite.
   useEffect(() => {
     const onConflict = (event: Event) => {
       const lost = (event as CustomEvent<string[]>).detail;
-      setOccupancy((current) => (current === null ? current : {
-        ...current,
-        unavailable_seat_identities: applySeatConflict(
-          { selected, unavailable: current.unavailable_seat_identities }, lost,
-        ).unavailable,
-      }));
-      setSelected((current) => applySeatConflict({ selected: current, unavailable: [] }, lost).selected);
-      // Force a fresh read, and bump the generation first so any poll already in
-      // flight cannot land after it and undo the conflict.
-      void readOccupancy();
+      setConflicted((current) => [...new Set([...current, ...lost])].sort());
+      void readOccupancy({ bypassCache: true });
     };
     window.addEventListener(`seat-conflict:${slotId}`, onConflict);
     return () => window.removeEventListener(`seat-conflict:${slotId}`, onConflict);
-  }, [slotId, selected, readOccupancy]);
+  }, [slotId, readOccupancy]);
 
-  if (failed || (sections === null && occupancy === null && failed)) {
+  if (readState === 'failed') {
     return <p className="seat-map-unavailable" role="status">{t.seatSelectionUnavailable}</p>;
   }
   if (sections === null || occupancy === null) {
     return <p className="seat-map-loading" role="status">{t.seatMapLoading}</p>;
   }
-
-  const taken = new Set(occupancy.unavailable_seat_identities);
-  const open = occupancy.offering_status === 'open';
-  const allSeats: SeatMapSeat[] = sections.flatMap((s) => (s.rows ?? []).flatMap((r: SeatMapRow) => r.seats ?? []));
-  const ceiling = selectionCeiling(occupancy.remaining_capacity, allSeats.filter((s) => !taken.has(s.seat_identity)).length);
 
   function toggle(identity: string) {
     setSelected((current) => {
@@ -214,6 +284,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
         <li><span className="seat-swatch taken" aria-hidden="true">×</span>{t.seatTaken}</li>
       </ul>
       {!open && <p className="seat-map-closed">{t.seatsNotOnSale}</p>}
+      {readState === 'degraded' && <p className="seat-map-closed">{t.seatMapStale}</p>}
       {sections.map((section) => (
         <section key={section.id} className="seat-section">
           <h5>{section.name}</h5>

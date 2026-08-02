@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatMoney } from '../lib/format';
 import { UI_STRINGS } from '../lib/locales';
-import SeatMapPicker from './SeatMapPicker';
+import SeatMapPicker, { type SeatSelection } from './SeatMapPicker';
 
 // slotId + seatMapId together mean "this performance is seated" (TKT-174). Their
 // presence is the mode switch: absence is the GA path, byte-for-byte as before.
@@ -24,7 +24,10 @@ export function remainingMilliseconds(hold: Pick<Hold, 'expires_at' | 'server_ti
 
 export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, seatMapId }: Props) {
   const seated = Boolean(slotId && seatMapId);
-  const [seats, setSeats] = useState<string[]>([]);
+  // Both halves matter: the identities, and whether the child can currently vouch
+  // for them. Gating Reserve on seats.length alone leaves the button live over a
+  // selection made before a read failed, closed or shrank (ai-review).
+  const [selection, setSelection] = useState<SeatSelection>({ seats: [], claimable: false });
   const [quantity, setQuantity] = useState(1);
   const [remaining, setRemaining] = useState<number | null>(null);
   const [holdId, setHoldId] = useState<string | null>(null);
@@ -38,7 +41,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   const deadline = useRef(0);
   const strings = UI_STRINGS[locale];
   // Stable identity so SeatMapPicker's effect does not re-run on every render.
-  const onSelectionChange = useCallback((next: string[]) => setSeats(next), []);
+  const onSelectionChange = useCallback((next: SeatSelection) => setSelection(next), []);
   const t = locale === 'fr'
     ? { reserve: 'Réserver', pay: 'Payer', quantity: 'Quantité', held: 'Réservé pendant', expired: 'Réservation expirée', unavailable: 'Quantité indisponible', completed: 'Commande confirmée', tickets: 'Voir mes billets', declined: 'Paiement refusé — réessayez' }
     : { reserve: 'Reserve', pay: 'Pay', quantity: 'Quantity', held: 'Held for', expired: 'Hold expired', unavailable: 'Quantity unavailable', completed: 'Order confirmed', tickets: 'View my tickets', declined: 'Payment declined — try again' };
@@ -62,7 +65,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       // Exactly one of quantity or seat_identities — the contract rejects both and
       // neither, and so does the handler.
       const claim = seated
-        ? { organizer_id: organizerId, ticket_type_id: ticketTypeId, seat_identities: seats }
+        ? { organizer_id: organizerId, ticket_type_id: ticketTypeId, seat_identities: selection.seats }
         : { organizer_id: organizerId, ticket_type_id: ticketTypeId, quantity };
       const response = await fetch('/api/commerce/reservations', {
         method: 'POST',
@@ -116,7 +119,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
     {seated
       ? <SeatMapPicker organizerId={organizerId} slotId={slotId!} seatMapId={seatMapId!} locale={locale} onSelectionChange={onSelectionChange} />
       : <label>{t.quantity} <input aria-label={t.quantity} type="number" min="1" max="50" value={quantity} onChange={(e) => setQuantity(Math.max(1, Math.min(50, Number(e.target.value))))} /></label>}
-    <button type="button" disabled={busy || holding || (seated && seats.length === 0)} onClick={reserve}>{seated ? strings.reserveSeats : t.reserve}</button>
+    <button type="button" disabled={busy || holding || (seated && !selection.claimable)} onClick={reserve}>{seated ? strings.reserveSeats : t.reserve}</button>
     <span aria-live="polite">{status}{remaining !== null && remaining > 0 ? ` ${seconds}s` : ''}</span>
     {ticketLink && <a href={ticketLink}>{t.tickets}</a>}
     {reservation && remaining !== null && remaining > 0 && <div className="checkout-form">

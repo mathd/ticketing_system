@@ -42,6 +42,7 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatMapLoading: 'Loading the seat map…',
     seatSelectionUnavailable: 'Seat selection is temporarily unavailable. Please try again shortly.',
     seatsNoLongerAvailable: 'No longer available: {seats}',
+    seatMapStale: 'Showing the last known seat availability — reconnecting.',
     reserveSeats: 'Reserve seats',
   },
   fr: {
@@ -72,6 +73,7 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatMapLoading: 'Chargement du plan de salle…',
     seatSelectionUnavailable: 'La sélection des places est momentanément indisponible. Merci de réessayer sous peu.',
     seatsNoLongerAvailable: 'Plus disponible(s) : {seats}',
+    seatMapStale: 'Affichage de la dernière disponibilité connue — reconnexion en cours.',
     reserveSeats: 'Réserver les places',
   },
 };
