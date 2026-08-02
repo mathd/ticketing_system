@@ -176,6 +176,15 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 // tripwire if you add an arm and forget, and TestMaxKnownSchemaIsNotBehindTheArms if you bump it
 // without adding one. Schema 4 is the seated fork (TKT-103): a KNOWN variant that provisions a
 // SEATED pool for seat-level claims (TKT-80) — see provisionInput's case 4.
+//
+// Schema 5 (ADR-041, the orphan-prevention seated fork) is deliberately NOT here yet, and
+// TKT-180 removed an arm that had accepted it. "Accept and ignore the field we cannot use"
+// looks like tolerance and is strictly worse than parking: ProvisionSeated records the event
+// in consumed_events, so a binary that consumes a schema-5 publication without building its
+// adjacency projection makes that pool PERMANENTLY rule-less — a later, capable binary
+// short-circuits on the consumed event and can never repair it. Parking is loud, reversible
+// and resolves itself when the capable binary deploys; consuming is silent and final.
+// The arm lands in TKT-181, together with the projection that makes it honest.
 const maxKnownPublicationSchema = 4
 
 // knownSchemas is the per-subject registry of variants this binary can read (ADR-017 §5b′).

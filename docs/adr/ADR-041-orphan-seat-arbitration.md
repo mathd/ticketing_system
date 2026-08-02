@@ -117,8 +117,82 @@ producer emitting schema 5 before its consumers accept it makes them park the me
 readiness fall. The safe order is therefore **consumers first, producer second**, and that
 is only expressible as separate merges:
 
-**TKT-179** setting + this ADR → **TKT-180** consumers accept schema 5 → **TKT-181**
-producer emits it and inventory projects → **TKT-182** the rule itself.
+**TKT-179** setting + this ADR → **TKT-180** access accepts schema 5 → **TKT-181** inventory
+implements schema 5 and its projection → **TKT-182** the rule itself → **TKT-183** catalog
+emits schema 5, and re-emits for performances already published against an enabled map.
+
+**Amended twice during TKT-180 (2026-08-02), both times by its ai-review.** The original
+ordering said "consumers first" and meant *both* consumers, and the first amendment gave the
+wrong reason for the distinction. Both corrections are recorded because the wrong versions
+are more intuitive than the right one.
+
+**Inventory cannot accept schema 5 early; access can — and receipt-recording is not why.**
+
+Inventory's schema-5 handler provisions a pool and records the event in `consumed_events`. A
+binary that accepts schema 5 *without* building the adjacency projection creates a
+rule-enabled pool that has no rule, marks the event consumed, and acks it. A later, capable
+binary redelivered that event short-circuits on the consumed row: the pool is permanently
+rule-less and nothing reports it.
+
+Access records `consumed_events` too (`store/policy.go`). It is nonetheless safe, because
+schema 5 changes nothing access owns: it projects the unchanged identifiers and `re_entry`,
+so **no future access binary will ever need to redo that event**.
+
+So the discriminating property is **semantic completeness, not idempotency and not whether a
+receipt is written**:
+
+> A consumer may accept a new schema variant early only if its current handler performs
+> **every effect this consumer will ever require from that variant** — or if the
+> later-required effects remain replayable despite any completion marker.
+
+Stated as "safe when handling is idempotent", the rule would both condemn access, which is
+correct today, and authorise irreversible partial handling merely for being repeatable. That
+is the wrong test, and it was the first amendment's.
+
+**The producer gets its own revision, because a shared merge does not order a deployment.**
+Catalog and inventory start independently, so a single merge carrying both inventory's arm
+and catalog's emission does not guarantee inventory is running first. If catalog emits while
+an old inventory replica is still up, that replica **quarantines the event, acks it, and
+latches unready** — and deploying the capable binary does **not** repair it: quarantined
+originals were acked, so recovery is `reprocess-quarantine` **plus a restart**, never
+automatic. Newly published performances would have no inventory until an operator acts.
+
+Hence TKT-183: catalog's emission is a separate revision, deployed only once TKT-181's
+inventory *and* TKT-182's rule are fully rolled out.
+
+**The enforcer ships before the producer, not after.** An earlier draft of this section
+ordered TKT-183 before TKT-182, which opens a window where organizers have enabled the rule,
+inventory has recorded the flag and the projection, and buyers can still strand seats —
+silently, for the length of a deployment, on a revenue rule someone deliberately turned on.
+TKT-182 has no reason to wait: it is dormant until a schema-5 pool exists, so shipping it
+first costs nothing and closes the window by construction.
+
+**Performances already published against an enabled map must be re-emitted.** This is the
+non-obvious consequence of shipping the setting (TKT-179) before the transport (TKT-183): a
+performance can be published against a rule-enabled map *today*, and catalog emits it at
+schema 4, sets `event_emitted_at`, and never emits it again — re-POSTing publish is
+idempotent and will not re-fire. Inventory provisions an ordinary seated pool with no flag
+and no adjacency, and **nothing later in this sequence repairs it**. Those pools would be
+permanently rule-less while the back office insists the rule is on.
+
+So TKT-183 owns a correction wave as well as the forward path, and it needs a **fresh event
+identity** rather than the existing re-emit machinery: the `reemit-policies` path uses fixed
+correction ids that may already sit in `consumed_events`, so replaying under them is a no-op.
+Inventory's schema-5 handler must therefore also **upgrade an existing seated pool** —
+attaching the flag and projection to a pool that already exists — rather than assuming it
+only ever provisions new ones. Prove it is replay-safe.
+
+**And the wave must not race catalog's own rollout.** "Run it after TKT-181 and TKT-182 are
+deployed" is not sufficient: during TKT-183's *own* rolling deployment an old catalog replica
+can still publish a rule-enabled performance at schema 4 **after** the scan has already passed
+it. That publication sets `event_emitted_at`, so it can never be re-emitted, and the pool is
+permanently rule-less — the same deployment-order hazard this section identifies for
+inventory, occurring one layer in, inside the producer's own rollout.
+
+So the wave starts only once **every schema-4-producing catalog replica has drained**, or it
+is designed to converge without that assumption: a watermark, or a reconciliation repeated
+until it finds nothing, rather than a single pass. Its correction identity must be
+**deterministic per performance** so repeats converge instead of multiplying events.
 
 ## Consequences
 

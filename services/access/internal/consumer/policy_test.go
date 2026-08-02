@@ -110,13 +110,17 @@ func TestPolicyConsumerDefaultsAbsentPolicyToSingle(t *testing.T) {
 }
 
 func TestPolicyConsumerFutureSchemaParksAndLatchesUnready(t *testing.T) {
-	// Schema 4 is now the KNOWN seated variant (TKT-103); schema 5 does not exist
-	// yet. When it does, its data may be reshaped arbitrarily — this fixture is
-	// deliberately incompatible so decoding it with today's struct would fail
-	// loudly if dispatch ordering ever broke.
+	// Schema 5 is now the KNOWN orphan-flag seated variant (TKT-180); schema 6 does
+	// not exist yet. When it does, its data may be reshaped arbitrarily — this
+	// fixture is deliberately incompatible so decoding it with today's struct would
+	// fail loudly if dispatch ordering ever broke.
+	//
+	// Moving this fixture UP with the ceiling is the whole point of the tripwire: a
+	// bump that left it at the old number would keep passing while proving nothing,
+	// because the variant it names would no longer be in the future.
 	st := &fakePolicyStore{}
 	c := newPolicyConsumerForTest(st)
-	msg := policyMsg(`{"id":"20000000-0000-0000-0000-000000000021","type":"platform.catalog.performance.published","schema":5,"data":{"admission":{"policy_ref":"opaque-v5-shape"}}}`)
+	msg := policyMsg(`{"id":"20000000-0000-0000-0000-000000000021","type":"platform.catalog.performance.published","schema":6,"data":{"admission":{"policy_ref":"opaque-v6-shape"}}}`)
 	c.handle(context.Background(), msg)
 
 	if len(msg.actions) != 1 || msg.actions[0] != "nak-delay" {
