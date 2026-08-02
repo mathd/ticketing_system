@@ -180,8 +180,19 @@ identity** rather than the existing re-emit machinery: the `reemit-policies` pat
 correction ids that may already sit in `consumed_events`, so replaying under them is a no-op.
 Inventory's schema-5 handler must therefore also **upgrade an existing seated pool** —
 attaching the flag and projection to a pool that already exists — rather than assuming it
-only ever provisions new ones. Run it after TKT-181 and TKT-182 are deployed, and prove it is
-replay-safe.
+only ever provisions new ones. Prove it is replay-safe.
+
+**And the wave must not race catalog's own rollout.** "Run it after TKT-181 and TKT-182 are
+deployed" is not sufficient: during TKT-183's *own* rolling deployment an old catalog replica
+can still publish a rule-enabled performance at schema 4 **after** the scan has already passed
+it. That publication sets `event_emitted_at`, so it can never be re-emitted, and the pool is
+permanently rule-less — the same deployment-order hazard this section identifies for
+inventory, occurring one layer in, inside the producer's own rollout.
+
+So the wave starts only once **every schema-4-producing catalog replica has drained**, or it
+is designed to converge without that assumption: a watermark, or a reconciliation repeated
+until it finds nothing, rather than a single pass. Its correction identity must be
+**deterministic per performance** so repeats converge instead of multiplying events.
 
 ## Consequences
 
