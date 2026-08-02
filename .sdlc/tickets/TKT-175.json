@@ -4,7 +4,7 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-023: A selection that would strand a lone seat is refused, per the map's own rule",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
