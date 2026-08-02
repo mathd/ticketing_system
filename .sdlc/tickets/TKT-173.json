@@ -4,7 +4,7 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-021: A buyer reserves the exact seats they named",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
