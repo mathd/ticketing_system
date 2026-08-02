@@ -423,8 +423,8 @@ func TestSeatOccupancyReportsRemainingHeadroom(t *testing.T) {
 	}
 
 	occ := occupancy(t, st, org, slot)
-	if occ.Available != 99 {
-		t.Fatalf("available = %d want 99 (100 capacity - 1 held)", occ.Available)
+	if occ.RemainingCapacity != 99 {
+		t.Fatalf("remaining_capacity = %d want 99 (100 capacity - 1 held)", occ.RemainingCapacity)
 	}
 
 	// Cut the pool to exactly what is already held. Nothing about the seats changes.
@@ -440,13 +440,84 @@ func TestSeatOccupancyReportsRemainingHeadroom(t *testing.T) {
 	if occ.OfferingStatus != "open" {
 		t.Fatalf("a capacity cut does not close the slot: offering_status = %q", occ.OfferingStatus)
 	}
-	if occ.Available != 0 {
-		t.Fatalf("available = %d want 0 — without this the response says every other seat is "+
-			"free while CreateSeatHold rejects them all with ErrUnavailable", occ.Available)
+	if occ.RemainingCapacity != 0 {
+		t.Fatalf("remaining_capacity = %d want 0 — without this the response says every other seat "+
+			"is free while CreateSeatHold rejects them all with ErrUnavailable", occ.RemainingCapacity)
 	}
 
 	// The claim path agrees: this is the state the response now describes honestly.
 	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/2"}, 0, "EUR", "k2"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("claim on an unheld seat with no headroom = %v, want ErrUnavailable", err)
+	}
+}
+
+// TestSeatOccupancyCapacityMirrorsTheSeatedAdmissionRule pins WHICH rule
+// remaining_capacity quotes, because there are two plausible ones and they disagree.
+//
+// The public availability read subtracts unsold channel reservations from its
+// `available`. The seated claim path does NOT: CreateSeatHold admits against
+// target_capacity/capacity alone and never consults channel_allocations. Sourcing
+// this field from Availability therefore reported 0 while the very seat claim a
+// picker would issue succeeded — suppressing genuinely claimable inventory, and
+// making the comment that claimed the two agree false (ai-review pass 2).
+//
+// If this test fails because someone routed the field back through Availability,
+// the fix is not to relax it.
+func TestSeatOccupancyCapacityMirrorsTheSeatedAdmissionRule(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 10)
+
+	// Reserve the pool's whole capacity for a non-public channel. The public
+	// availability read would now answer 0.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channel_allocations(pool_id, channel_code, cap)
+		VALUES ($1, 'reseller', 10)`, slot); err != nil {
+		t.Fatal(err)
+	}
+	a, err := st.Availability(ctx, org, slot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	occ := occupancy(t, st, org, slot)
+	if occ.RemainingCapacity != 10 {
+		t.Fatalf("remaining_capacity = %d want 10: it quotes the SEATED admission rule "+
+			"(target_capacity/capacity), not availability's channel-adjusted %d",
+			occ.RemainingCapacity, a.Available)
+	}
+	// And the claim path agrees — which is the whole point of quoting its rule.
+	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1"}, 0, "EUR", "k1"); err != nil {
+		t.Fatalf("seat claim under a full channel reservation = %v; if this now fails, the "+
+			"seated channel semantics changed and this field must follow them", err)
+	}
+}
+
+// TestSeatOccupancyCapacityIsACeilingNotASeatCount pins the honest reading of the
+// field, so nobody mistakes it for "seats you can still pick" (ai-review pass 2).
+//
+// Inventory does not hold the seat universe — that is the seat map, in catalog —
+// and a seated pool is provisioned from the venue's GA snapshot, which can exceed
+// the map's seat count. So with every mapped seat occupied the pool still reports
+// headroom. That is not a bug to clamp away here (inventory cannot see the map
+// without a cross-service call the claim path deliberately avoids); it is why a
+// picker must gate on the seat list AS WELL, and why the field is not called
+// "available".
+func TestSeatOccupancyCapacityIsACeilingNotASeatCount(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 100)
+
+	// The "map" here is two seats; the pool's ceiling is a hundred.
+	if _, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{"A/1/1", "A/1/2"}, 0, "EUR", "k1"); err != nil {
+		t.Fatal(err)
+	}
+
+	occ := occupancy(t, st, org, slot)
+	if !seatsEqual(occ.Unavailable, []string{"A/1/1", "A/1/2"}) {
+		t.Fatalf("unavailable = %v want both mapped seats", occ.Unavailable)
+	}
+	if occ.RemainingCapacity != 98 {
+		t.Fatalf("remaining_capacity = %d want 98 — the field is the POOL's ceiling, not a "+
+			"count of free seats, and this test exists to keep that distinction visible",
+			occ.RemainingCapacity)
 	}
 }

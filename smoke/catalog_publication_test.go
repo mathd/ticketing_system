@@ -661,7 +661,7 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 		SlotID         string   `json:"slot_id"`
 		SeatMapID      string   `json:"seat_map_id"`
 		OfferingStatus string   `json:"offering_status"`
-		Available      int      `json:"available"`
+		Remaining      int      `json:"remaining_capacity"`
 		Unavailable    []string `json:"unavailable_seat_identities"`
 	}
 	if err := json.Unmarshal(occBody, &occ); err != nil {
@@ -678,8 +678,8 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	}
 	// An empty seat list is not the same claim as "you can buy here": the pool's
 	// aggregate headroom is a separate gate the claim path enforces (ai-review).
-	if occ.Available <= 0 {
-		t.Fatalf("a freshly published seated slot must report headroom, got available=%d", occ.Available)
+	if occ.Remaining <= 0 {
+		t.Fatalf("a freshly published seated slot must report headroom, got remaining_capacity=%d", occ.Remaining)
 	}
 	// The two refusals stay distinguishable: a GA slot has no seats (409), an unknown
 	// slot does not exist (404). Collapsed, a picker cannot tell them apart.

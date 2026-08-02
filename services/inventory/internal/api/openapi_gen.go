@@ -398,11 +398,11 @@ type SeatHoldCreate struct {
 
 // SeatOccupancy defines model for SeatOccupancy.
 type SeatOccupancy struct {
-	// Available How many more seats the pool will actually grant, from the same computation the availability read uses. NOT derivable from the seat list: a seated pool also carries a coarse aggregate ceiling, and a draining capacity cut (target_capacity) can take the headroom to zero without releasing a single seat — every unheld identity then stays absent from unavailable_seat_identities while every claim on it is refused. A picker must gate on this as well as on the seat list.
-	Available int `json:"available"`
-
 	// OfferingStatus Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"
 	OfferingStatus SeatOccupancyOfferingStatus `json:"offering_status"`
+
+	// RemainingCapacity The pool's remaining aggregate headroom under exactly the test the seated claim path applies (target_capacity when a cut is pending, else capacity, minus confirmed and live held), and 0 on a slot that is not open. A CEILING, not a seat count — inventory does not hold the seat universe, that is the seat map in catalog, and a seated pool is provisioned from the venue's GA snapshot. So it reads high when a small map sits in a large venue, and 0 when a capacity cut has drained a pool whose seats are free. Deliberately NOT the availability read's `available`, which additionally subtracts unsold channel reservations that the seated claim path never consults. A picker must gate on BOTH this and unavailable_seat_identities; neither is sufficient alone.
+	RemainingCapacity int `json:"remaining_capacity"`
 
 	// SeatMapId The published seat-map version this slot is seated against, as inventory holds it. Catalog publishes its own view on the performance; the two agreeing is what makes projection skew detectable rather than hidden.
 	SeatMapId openapi_types.UUID `json:"seat_map_id"`

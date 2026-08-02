@@ -87,7 +87,7 @@ func TestSeatOccupancyCacheTierIsContractEnforced(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				// Minimal schema-valid SeatOccupancy, so only the header is under test.
 				_, _ = w.Write([]byte(`{"slot_id":"` + uuid.Nil.String() + `","seat_map_id":"` +
-					uuid.Nil.String() + `","offering_status":"open","available":0,` +
+					uuid.Nil.String() + `","offering_status":"open","remaining_capacity":0,` +
 					`"unavailable_seat_identities":[]}`))
 			})
 			h, err := contract.RequestValidator(apispec.Spec, r, nil, true)
