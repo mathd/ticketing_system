@@ -173,9 +173,16 @@ SELECT a.seat_identity
 // check it rather than hope (ai-review).
 var ErrSeatProjectionIncomplete = errors.New("seat adjacency projection cannot answer this claim")
 
-// validateAdjacency rejects a projection that is not complete and reciprocal, at the one
-// place it is built. Claim time can only audit what the request reaches; this sees the
-// whole thing, once, off the hot path.
+// validateAdjacency rejects a projection that is not internally consistent, at the one
+// place it is written. Claim time can only audit what the request reaches; this sees the
+// whole set, once, off the hot path.
+//
+// It proves INTERNAL CONSISTENCY, not fidelity to the seat map. A projection whose seats
+// all name no neighbours is perfectly reciprocal, and nothing in this package can tell it
+// apart from a map of genuine one-seat rows — the geometry that would settle it is not
+// here. Fidelity is established where the adjacency is derived from that geometry
+// (consumer.SeatMapAdjacency) and pinned by its tests; re-checking it here would mean
+// re-deriving it from data the store does not have (ai-review).
 func validateAdjacency(rows []SeatAdjacencyRow) error {
 	byID := make(map[string]SeatAdjacencyRow, len(rows))
 	for _, r := range rows {

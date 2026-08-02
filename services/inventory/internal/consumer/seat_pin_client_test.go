@@ -266,6 +266,13 @@ func TestSeatMapAdjacencyDerivesNeighboursFromPosition(t *testing.T) {
 	if got[0].SeatIdentity != "A/1/1" || got[0].Left != nil || got[0].Right == nil || *got[0].Right != "A/1/2" {
 		t.Fatalf("first seat: %+v — a row end has NO left neighbour, which is an answer, not missing data", got[0])
 	}
+	// The middle seat is the one that matters for the orphan rule: a derivation that
+	// emitted every seat with NO neighbours would still be internally reciprocal, so
+	// nothing downstream in inventory could tell it apart from a row of one-seat rows.
+	// Fidelity to the geometry is established HERE and nowhere else (ADR-041).
+	if got[1].Left == nil || *got[1].Left != "A/1/1" || got[1].Right == nil || *got[1].Right != "A/1/3" {
+		t.Fatalf("middle seat: %+v — both neighbours must be named", got[1])
+	}
 	if got[2].SeatIdentity != "A/1/3" || got[2].Right != nil || *got[2].Left != "A/1/2" {
 		t.Fatalf("last seat: %+v", got[2])
 	}
