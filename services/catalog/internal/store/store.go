@@ -232,7 +232,13 @@ type SeatMap struct {
 	Status      string // draft | published | archived
 	// PublishedAt is set when the map is published (TKT-103); nil while draft.
 	PublishedAt *time.Time
-	CreatedAt   time.Time
+	// OrphanPreventionEnabled turns on the single-seat orphan rule for slots seated
+	// against THIS version (ADR-041 / TKT-179). Per version, not per family: a
+	// published version is immutable and an edit mints a new one (ADR-029), and a
+	// seated pool binds to one specific version — which is what stops a republish
+	// changing the rule a live pool enforces. Defaults false; nothing reads it yet.
+	OrphanPreventionEnabled bool
+	CreatedAt               time.Time
 }
 
 // SeatMapSection / SeatMapRow / SeatMapSeat are the geometry tree. The nested
@@ -292,6 +298,9 @@ type SeatMapInput struct {
 	OrganizerID uuid.UUID
 	VenueID     uuid.UUID
 	Name        string
+	// OrphanPreventionEnabled defaults false, so a caller that does not know about
+	// the setting creates exactly the map it created before (ADR-041).
+	OrphanPreventionEnabled bool
 }
 
 type SeatMapSectionInput struct {
@@ -329,6 +338,12 @@ type EditSeatMapInput struct {
 	OrganizerID uuid.UUID
 	SeatMapID   uuid.UUID
 	Sections    []EditSectionInput
+	// OrphanPreventionEnabled is nil to INHERIT the version being edited, or set to
+	// apply a new value to the newly minted version only. Inheritance is the default
+	// because an edit is a geometry change: a caller who says nothing about the rule
+	// must not silently turn it off, and a published version can never be altered
+	// either way (ADR-029).
+	OrphanPreventionEnabled *bool
 }
 
 type EditSectionInput struct {

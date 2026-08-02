@@ -42,7 +42,13 @@ if (Astro.request.method === 'POST') {
   if (mapId) selectedId = mapId;
   try {
     if (action === 'create-map') {
-      const m = await createSeatMap(venueId, String(form.get('name') ?? ''));
+      const m = await createSeatMap(
+        venueId,
+        String(form.get('name') ?? ''),
+        // An unchecked checkbox is absent from the form data, which is exactly the
+        // default this rule wants (ADR-041).
+        form.get('orphan_prevention') === 'on',
+      );
       return Astro.redirect(`${here}?map=${m.id}`);
     } else if (action === 'add-section') {
       await addSeatMapSection(mapId, {
@@ -143,6 +149,10 @@ const rowOptions =
     <form method="POST" class="row-form">
       <input type="hidden" name="_action" value="create-map" />
       <input type="text" name="name" placeholder="New draft map name" required />
+      <label class="checkbox">
+        <input type="checkbox" name="orphan_prevention" />
+        Refuse selections that strand a lone seat
+      </label>
       <button type="submit">Create draft map</button>
     </form>
   </section>

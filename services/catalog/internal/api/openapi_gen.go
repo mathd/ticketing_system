@@ -590,6 +590,9 @@ type SeatMap struct {
 	Name        string             `json:"name"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 
+	// OrphanPreventionEnabled Whether slots seated against THIS version refuse a selection that would strand a lone free seat (ADR-041). Per version, not per family: a published version is immutable and an edit mints a new one (ADR-029), so a seated pool's rule cannot change under it. Required on the response — every map has a value, and an absent field would read as "unknown" when the answer is always known.
+	OrphanPreventionEnabled bool `json:"orphan_prevention_enabled"`
+
 	// PublishedAt Publication instant (TKT-103); absent while draft
 	PublishedAt *time.Time         `json:"published_at,omitempty"`
 	Status      SeatMapStatus      `json:"status"`
@@ -604,12 +607,18 @@ type SeatMapStatus string
 type SeatMapCreate struct {
 	Name        string             `json:"name"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// OrphanPreventionEnabled Refuse a seat selection that would strand a lone free seat in a row (ADR-041). Optional and defaulting to false, so a caller that has never heard of the rule creates exactly the map it created before. Nothing enforces it yet — TKT-181 puts it on the wire, TKT-182 acts on it.
+	OrphanPreventionEnabled *bool `json:"orphan_prevention_enabled,omitempty"`
 }
 
 // SeatMapEdit Full replacement geometry for a published seat map (TKT-105). Mirrors the store's EditSeatMapInput; seat identity is composed server-side from the section/row/seat labels, so no component may contain the '/' delimiter.
 type SeatMapEdit struct {
-	OrganizerId openapi_types.UUID   `json:"organizer_id"`
-	Sections    []SeatMapEditSection `json:"sections"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// OrphanPreventionEnabled Omit to INHERIT the edited version's setting; set to apply a new value to the newly minted version only (ADR-029: the edited version is immutable and is never altered either way). Inheritance is the default because an edit is a geometry change — a staffer who says nothing about the rule must not silently switch it off.
+	OrphanPreventionEnabled *bool                `json:"orphan_prevention_enabled,omitempty"`
+	Sections                []SeatMapEditSection `json:"sections"`
 }
 
 // SeatMapEditRow defines model for SeatMapEditRow.

@@ -8,7 +8,9 @@ import type { SeatMapGeometry } from '../src/lib/api';
 const ORG = '00000000-0000-0000-0000-000000000001';
 
 const geometry: SeatMapGeometry = {
-  map: { id: 'm1', organizer_id: ORG, venue_id: 'v1', name: 'Floor', version: 2, status: 'published', created_at: '2026-07-20T00:00:00Z' },
+  // orphan_prevention_enabled is required on the response since TKT-179: every map
+  // has a value, so an absent field would read as "unknown" when it never is (ADR-041).
+  map: { id: 'm1', organizer_id: ORG, venue_id: 'v1', name: 'Floor', version: 2, status: 'published', orphan_prevention_enabled: false, created_at: '2026-07-20T00:00:00Z' },
   sections: [
     {
       id: 's1',
