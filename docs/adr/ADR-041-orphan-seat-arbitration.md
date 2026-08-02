@@ -105,6 +105,20 @@ Concretely:
   requires the identities to be a subset of the request (TKT-173) — would reject every
   valid orphan refusal as malformed. The two codes carry opposite relationships to the
   request and must not share a path.
+- **The projection must be complete and reciprocal, and that is established at
+  provisioning — not re-audited per claim.** The bounded claim-time query reads adjacency
+  rows to find candidates, so a missing row finds no orphans and lets a stranding claim
+  commit, and a one-way edge can blame an unrelated claim for a seat that was already
+  isolated. Both are *unsound*, not merely incomplete, so the claim path fails closed
+  (`ErrSeatProjectionIncomplete`) on any defect it can reach: the requested seats' rows,
+  their neighbours' rows, and whether those edges point back.
+  **What it cannot reach is stated rather than implied.** An edge pointing *in* from a row
+  the request never touches is invisible to any query bounded by the request, and finding
+  it means scanning the pool — the cost the bounded form exists to avoid. That case is
+  closed where the projection is built and where it is the only thing that changes:
+  `ProvisionSeated` validates the whole set before it writes anything. Per ADR-021, name
+  the adversary: this is corruption-detection for an honest writer, and a writer with
+  inventory DB access can still make the rule say whatever they like.
 - **Rule off means no work, and it is proven by absence:** dropping the projection table
   and observing a rule-off claim still succeed. "No extra latency" is read as *no
   additional network call, SQL statement, lock or projection access*; literal timing

@@ -128,30 +128,108 @@ SELECT c.id
    AND (a.right_identity IS NULL OR a.right_identity IN (SELECT id FROM occupied))
  ORDER BY c.id`
 
-// ErrSeatProjectionIncomplete reports a rule-enabled pool whose adjacency projection
-// does not cover a requested seat.
+// projectionGapsQuery audits the slice of the projection this claim's answer rests on:
+// the requested seats' rows, the rows of every seat they name as a neighbour, and
+// whether those edges point back. It returns one identity per defect, or nothing.
 //
-// It is fail-CLOSED on purpose. The rule discovers candidates by looking up each
-// requested seat's own adjacency row, so a missing row yields no candidates, finds no
-// orphans, and lets the claim commit — silently stranding a neighbour. The bounded
-// query assumes a complete projection, and the honest way to depend on that is to
-// check it rather than hope (ai-review). Provisioning only verifies the projection is
-// non-empty, and nothing in the schema enforces reciprocity.
-var ErrSeatProjectionIncomplete = errors.New("seat adjacency projection does not cover the requested seats")
+// Bounded on purpose, and the bound is the honest limit. An edge pointing IN from a row
+// the request never reaches — B names A while A does not name B — is invisible here,
+// and finding it means scanning the pool, which is exactly the cost the bounded rewrite
+// removed. That case is closed at provisioning instead (validateAdjacency), where the
+// projection is built and the only place it legitimately changes.
+const projectionGapsQuery = `
+WITH requested AS (SELECT DISTINCT unnest($2::text[]) AS id),
+needed AS (
+	SELECT id FROM requested
+	UNION
+	SELECT v.n
+	  FROM seat_claim_adjacency a
+	  JOIN requested r ON r.id = a.seat_identity
+	  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS v(n)
+	 WHERE a.pool_id = $1 AND v.n IS NOT NULL
+)
+SELECT n.id FROM needed n
+ WHERE NOT EXISTS (SELECT 1 FROM seat_claim_adjacency a
+                    WHERE a.pool_id = $1 AND a.seat_identity = n.id)
+UNION
+SELECT a.seat_identity
+  FROM seat_claim_adjacency a
+  JOIN needed n ON n.id = a.seat_identity
+  CROSS JOIN LATERAL (VALUES (a.left_identity), (a.right_identity)) AS v(x)
+  JOIN seat_claim_adjacency b ON b.pool_id = $1 AND b.seat_identity = v.x
+ WHERE a.pool_id = $1 AND v.x IS NOT NULL
+   AND a.seat_identity IS DISTINCT FROM b.left_identity
+   AND a.seat_identity IS DISTINCT FROM b.right_identity
+ LIMIT 5`
+
+// ErrSeatProjectionIncomplete reports a rule-enabled pool whose adjacency projection
+// cannot support a sound answer for this request.
+//
+// It is fail-CLOSED on purpose. The rule discovers candidates by reading adjacency rows,
+// so a missing row yields no candidates, finds no orphans, and lets the claim commit —
+// silently stranding a neighbour. A non-reciprocal edge is worse than incomplete: it can
+// blame an unrelated claim for a seat that was already isolated. The bounded query
+// assumes a complete, reciprocal projection, and the honest way to depend on that is to
+// check it rather than hope (ai-review).
+var ErrSeatProjectionIncomplete = errors.New("seat adjacency projection cannot answer this claim")
+
+// validateAdjacency rejects a projection that is not complete and reciprocal, at the one
+// place it is built. Claim time can only audit what the request reaches; this sees the
+// whole thing, once, off the hot path.
+func validateAdjacency(rows []SeatAdjacencyRow) error {
+	byID := make(map[string]SeatAdjacencyRow, len(rows))
+	for _, r := range rows {
+		byID[r.SeatIdentity] = r
+	}
+	names := func(r SeatAdjacencyRow, id string) bool {
+		return (r.Left != nil && *r.Left == id) || (r.Right != nil && *r.Right == id)
+	}
+	for _, r := range rows {
+		for _, n := range []*string{r.Left, r.Right} {
+			if n == nil {
+				continue
+			}
+			other, ok := byID[*n]
+			if !ok {
+				return fmt.Errorf("%w: seat %q names neighbour %q, which has no row",
+					ErrSeatProjectionIncomplete, r.SeatIdentity, *n)
+			}
+			if !names(other, r.SeatIdentity) {
+				return fmt.Errorf("%w: seat %q names %q but %q does not name it back",
+					ErrSeatProjectionIncomplete, r.SeatIdentity, *n, *n)
+			}
+		}
+	}
+	return nil
+}
 
 // orphanedSeats runs the rule under the caller's pool lock. Empty means the selection
 // strands nothing.
 func orphanedSeats(ctx context.Context, tx *sql.Tx, pool uuid.UUID, canon []string) ([]string, error) {
-	// Every requested seat must be projected, or the answer below is unsound rather
-	// than merely incomplete.
-	var covered int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity = ANY($2)`,
-		pool, canon).Scan(&covered); err != nil {
+	// The answer below is unsound, not merely incomplete, if the rows it reads are
+	// missing or point the wrong way.
+	gaps, err := tx.QueryContext(ctx, projectionGapsQuery, pool, canon)
+	if err != nil {
 		return nil, err
 	}
-	if covered != len(canon) {
-		return nil, fmt.Errorf("%w: %d of %d seats projected", ErrSeatProjectionIncomplete, covered, len(canon))
+	var bad []string
+	for gaps.Next() {
+		var id string
+		if err = gaps.Scan(&id); err != nil {
+			_ = gaps.Close()
+			return nil, err
+		}
+		bad = append(bad, id)
+	}
+	if err = gaps.Err(); err != nil {
+		_ = gaps.Close()
+		return nil, err
+	}
+	if err = gaps.Close(); err != nil {
+		return nil, err
+	}
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("%w: %v", ErrSeatProjectionIncomplete, bad)
 	}
 	rows, err := tx.QueryContext(ctx, orphanedSeatsQuery, pool, canon)
 	if err != nil {
@@ -253,6 +331,9 @@ type SeatAdjacencyRow struct {
 // silently enforces nothing, and the consumed-event row would stop any later binary
 // fixing it (ADR-041's rollout section).
 func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organizerID, seatMapID uuid.UUID, capacity int32, orphanPrevention bool, adjacency []SeatAdjacencyRow) error {
+	if err := validateAdjacency(adjacency); err != nil {
+		return err
+	}
 	if capacity <= 0 {
 		return fmt.Errorf("capacity must be positive")
 	}

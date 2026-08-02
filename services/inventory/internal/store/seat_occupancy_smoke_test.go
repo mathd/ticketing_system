@@ -976,27 +976,44 @@ func TestOrphanRuleHoldsUnderContention(t *testing.T) {
 				"race-"+strconv.Itoa(i))
 		}(i)
 	}
-	// Wait until BOTH claimants are observably blocked on a lock, not merely until
-	// their goroutines have been scheduled. Sending on a channel just before calling
-	// CreateSeatHold proves the call site was reached, and a fixed sleep is a guess: if
-	// one goroutine were delayed past the rollback, the two claims would run
+	// Wait until BOTH claimants are observably blocked BY THIS BLOCKER, not merely
+	// until their goroutines have been scheduled. Sending on a channel just before
+	// calling CreateSeatHold proves the call site was reached, and a fixed sleep is a
+	// guess: if one goroutine were delayed past the rollback, the two claims would run
 	// sequentially and the test would still see one success and one refusal — passing
-	// with the pool lock removed entirely (ai-review).
+	// with the pool lock removed entirely. Counting ungranted locks database-wide is
+	// not enough either, since anything else sharing this database can satisfy it;
+	// pg_blocking_pids ties the wait to the session actually holding the pool row
+	// (ai-review, twice). It has to be followed TRANSITIVELY: PostgreSQL queues row-lock
+	// waiters, so the second claimant reports the FIRST claimant as its blocker, not the
+	// session holding the row. A direct-blocker count sees one waiter for ever.
 	<-started
 	<-started
-	deadline := time.Now().Add(10 * time.Second)
+	var blockerPID int
+	if err = blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		var waiting int
-		if qerr := db.QueryRowContext(ctx,
-			`SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting); qerr != nil {
+		if qerr := db.QueryRowContext(ctx, `
+			WITH RECURSIVE chain(pid) AS (
+				SELECT $1::int
+				UNION
+				SELECT a.pid FROM pg_stat_activity a JOIN chain c ON c.pid = ANY(pg_blocking_pids(a.pid))
+				 WHERE a.datname = current_database()
+			)
+			SELECT count(*) - 1 FROM chain`,
+			blockerPID).Scan(&waiting); qerr != nil {
 			t.Fatal(qerr)
 		}
 		if waiting >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("only %d claimant(s) ever blocked on the pool row; the barrier never "+
-				"established the overlap this test exists to prove", waiting)
+			t.Fatalf("only %d claimant(s) ever blocked on the pool row held by pid %d; the "+
+				"barrier never established the overlap this test exists to prove",
+				waiting, blockerPID)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -1063,5 +1080,86 @@ func TestOrphanRuleFailsClosedOnIncompleteProjection(t *testing.T) {
 	}
 	if live != 0 {
 		t.Fatalf("live seats = %d want 0 — the refused claim must write nothing", live)
+	}
+}
+
+// TestOrphanRuleFailsClosedOnMissingCandidateRow: the first version of the coverage
+// check validated only the REQUESTED seats, which is the wrong side of the dependency.
+// The query also reads each candidate's own row, so deleting the row of a seat that is
+// merely a neighbour left the fix in place and the hole open (ai-review).
+func TestOrphanRuleFailsClosedOnMissingCandidateRow(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+
+	// Seat 2 is a candidate, never requested. Requested-seat coverage is still 2 of 2.
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`, slot, seat(2)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(1), seat(3)}, 0, "EUR", "k1")
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v, want ErrSeatProjectionIncomplete — seat 2 would be stranded by a "+
+			"claim the rule never even considered it for", err)
+	}
+}
+
+// TestOrphanRuleFailsClosedOnAsymmetricAdjacency: a one-way edge is worse than a missing
+// one. It can make the rule blame an unrelated claim for a seat that was ALREADY
+// isolated, which is the one thing ADR-041 says the rule must never do.
+func TestOrphanRuleFailsClosedOnAsymmetricAdjacency(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seat := seededOrphanPool(t, ctx, st, 3)
+
+	// Seat 2 still names 1; seat 1 no longer names 2. Requesting 2 reaches both rows, so
+	// the bounded audit can see the disagreement. The mirror case — an edge pointing in
+	// from a row this request never reaches — is out of a bounded query's reach by
+	// construction, and is closed at provisioning instead
+	// (TestProvisioningRejectsBrokenProjection).
+	if _, err := db.ExecContext(ctx,
+		`UPDATE seat_claim_adjacency SET right_identity=NULL WHERE pool_id=$1 AND seat_identity=$2`,
+		slot, seat(1)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := st.CreateSeatHold(ctx, org, slot, uuid.New(), []string{seat(2)}, 0, "EUR", "k1")
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v, want ErrSeatProjectionIncomplete — a projection that disagrees "+
+			"with itself cannot answer the question", err)
+	}
+}
+
+// TestProvisioningRejectsBrokenProjection: claim time can only audit what the request
+// reaches. Provisioning sees the whole projection, so that is where completeness and
+// reciprocity are actually established (ADR-041).
+func TestProvisioningRejectsBrokenProjection(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	one, two := "A/1/1", "A/1/2"
+
+	for _, tc := range []struct {
+		name string
+		rows []SeatAdjacencyRow
+	}{
+		{"neighbour with no row", []SeatAdjacencyRow{{SeatIdentity: one, Right: &two}}},
+		{"one-way edge", []SeatAdjacencyRow{
+			{SeatIdentity: one, Right: &two},
+			{SeatIdentity: two},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slot := uuid.New()
+			err := st.ProvisionSeated(ctx, uuid.New(), slot, uuid.New(), uuid.New(), 100, true, tc.rows)
+			if !errors.Is(err, ErrSeatProjectionIncomplete) {
+				t.Fatalf("err = %v, want ErrSeatProjectionIncomplete", err)
+			}
+			var pools int
+			if qerr := db.QueryRowContext(ctx,
+				`SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, slot).Scan(&pools); qerr != nil {
+				t.Fatal(qerr)
+			}
+			if pools != 0 {
+				t.Fatal("a rejected projection must not leave a pool behind")
+			}
+		})
 	}
 }
