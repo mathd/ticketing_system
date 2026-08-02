@@ -118,8 +118,8 @@ readiness fall. The safe order is therefore **consumers first, producer second**
 is only expressible as separate merges:
 
 **TKT-179** setting + this ADR → **TKT-180** access accepts schema 5 → **TKT-181** inventory
-implements schema 5 and its projection → **TKT-183** catalog emits schema 5 → **TKT-182** the
-rule itself.
+implements schema 5 and its projection → **TKT-182** the rule itself → **TKT-183** catalog
+emits schema 5, and re-emits for performances already published against an enabled map.
 
 **Amended twice during TKT-180 (2026-08-02), both times by its ai-review.** The original
 ordering said "consumers first" and meant *both* consumers, and the first amendment gave the
@@ -158,7 +158,30 @@ originals were acked, so recovery is `reprocess-quarantine` **plus a restart**, 
 automatic. Newly published performances would have no inventory until an operator acts.
 
 Hence TKT-183: catalog's emission is a separate revision, deployed only once TKT-181's
-inventory is fully rolled out.
+inventory *and* TKT-182's rule are fully rolled out.
+
+**The enforcer ships before the producer, not after.** An earlier draft of this section
+ordered TKT-183 before TKT-182, which opens a window where organizers have enabled the rule,
+inventory has recorded the flag and the projection, and buyers can still strand seats —
+silently, for the length of a deployment, on a revenue rule someone deliberately turned on.
+TKT-182 has no reason to wait: it is dormant until a schema-5 pool exists, so shipping it
+first costs nothing and closes the window by construction.
+
+**Performances already published against an enabled map must be re-emitted.** This is the
+non-obvious consequence of shipping the setting (TKT-179) before the transport (TKT-183): a
+performance can be published against a rule-enabled map *today*, and catalog emits it at
+schema 4, sets `event_emitted_at`, and never emits it again — re-POSTing publish is
+idempotent and will not re-fire. Inventory provisions an ordinary seated pool with no flag
+and no adjacency, and **nothing later in this sequence repairs it**. Those pools would be
+permanently rule-less while the back office insists the rule is on.
+
+So TKT-183 owns a correction wave as well as the forward path, and it needs a **fresh event
+identity** rather than the existing re-emit machinery: the `reemit-policies` path uses fixed
+correction ids that may already sit in `consumed_events`, so replaying under them is a no-op.
+Inventory's schema-5 handler must therefore also **upgrade an existing seated pool** —
+attaching the flag and projection to a pool that already exists — rather than assuming it
+only ever provisions new ones. Run it after TKT-181 and TKT-182 are deployed, and prove it is
+replay-safe.
 
 ## Consequences
 
