@@ -1,0 +1,55 @@
+{
+  "key": "TKT-180",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-023b: Consumers accept performance.published schema 5 before anything emits it",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-179"
+    }
+  ],
+  "description": "**Second slice of TKT-175.** Pure consumer-side tolerance, shipped **before** any producer change — that ordering is the point of the slice, not an accident of scheduling.\n\nADR-017 §5b′ requires a consumer to dispatch on `schema` **before** decoding `data`. If catalog began emitting schema 5 while inventory and access still capped at 4, both would park the message and readiness would fall. Shipping the consumers first makes that unreachable, and it is only expressible as a separate merge.\n\n**Acceptance criteria:**\n- [ ] Inventory's and access's `performance.published` consumers accept **schema 5**, dispatching on `schema` before decoding `data`, and ignore the field they do not yet use.\n- [ ] The future-schema tripwire fixtures move to **schema 6**, so the \"park an unknown future variant\" behaviour is still proven rather than accidentally satisfied by the new ceiling.\n- [ ] The `schema <= 0` broken-envelope rule still terminates and still does not touch readiness (ADR-017's bottom end).\n- [ ] Fixtures are **hand-written envelopes**, not built from the type under test — a fixture built from that type encodes the compatibility it claims to prove (ADR-017; TKT-61 shipped this bug twice).\n- [ ] Nothing emits schema 5 yet. Catalog is untouched; the schema-4 golden is byte-identical.\n\nQuality gates: `make check` green; consumer tests; readiness unaffected.",
+  "context": {
+    "capturedAt": "2026-08-02",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-02",
+        "rule": "Local gate: `make check` ... Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The architecture, every design decision and the full test plan live in TKT-175's kind=plan and kind=plan-final — read those first, they are not repeated here",
+        "link": "board:TKT-175"
+      },
+      {
+        "summary": "Epic lineage",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-017",
+        "why": "The whole ticket. Dispatch on schema before decoding data (§5b′); the schema<=0 bottom end is a broken envelope, not the future; a fixture built from the type under test cannot fail. TKT-61 shipped the ordering bug twice past a mutation-checked suite."
+      },
+      {
+        "id": "ADR-034",
+        "why": "Shared durable consumer lifecycle: a parked or terminated message must not silently affect readiness in a way this change alters."
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Readiness — PASS\n\nDeliberately the narrowest slice in the chain, and the one whose ORDER matters more than its content. Its value is that it makes the next ticket's producer change safe to deploy.\n\nShaping is inherited: TKT-175's `kind=plan` (gpt-5.6-sol) and `kind=plan-final` (main-agent) decided the architecture, the design, the test plan and the risks before this ticket existed. This child re-scopes delivery, not thinking."
+    }
+  ]
+}
