@@ -11,6 +11,12 @@ export type PublicEventList = components['schemas']['PublicEventList'];
 export type PublicEventSummary = components['schemas']['PublicEventSummary'];
 export type PublicEventDetail = components['schemas']['PublicEventDetail'];
 export type PublicFestivalDetail = components['schemas']['PublicFestivalDetail'];
+// The seat picker (TKT-174) reads geometry browser-side, not through pageRead —
+// it is the hours tier, and the SSR cache owns the minutes tier (ADR-004/ADR-006).
+export type SeatMapGeometry = components['schemas']['SeatMapGeometry'];
+export type SeatMapSection = NonNullable<SeatMapGeometry['sections']>[number];
+export type SeatMapRow = NonNullable<SeatMapSection['rows']>[number];
+export type SeatMapSeat = NonNullable<SeatMapRow['seats']>[number];
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 

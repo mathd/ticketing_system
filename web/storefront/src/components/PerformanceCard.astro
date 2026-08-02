@@ -39,7 +39,7 @@ const {
   </ul>
   {
     purchasable
-      ? perf.ticket_types[0] && <HoldPicker client:load organizerId={organizerId} ticketTypeId={perf.ticket_types[0].id} locale={locale} />
+      ? perf.ticket_types[0] && <HoldPicker client:load organizerId={organizerId} ticketTypeId={perf.ticket_types[0].id} locale={locale} slotId={perf.seat_map_id ? perf.id : undefined} seatMapId={perf.seat_map_id} />
       : soldSeparatelyLabel && <p class="sold-separately">{soldSeparatelyLabel}</p>
   }
 </section>
