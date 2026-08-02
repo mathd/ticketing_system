@@ -1,0 +1,63 @@
+{
+  "key": "TKT-181",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-023c: A rule-enabled seated pool is provisioned with its adjacency projection",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-180"
+    }
+  ],
+  "description": "**Third slice of TKT-175.** The producer change and the projection — still with **no rule enforced**.\n\n**Acceptance criteria:**\n- [ ] Catalog emits `performance.published` **schema 5** for a seated performance whose map has the rule on, carrying the exact `seat_map_id` and the flag. A rule-off map still emits **schema 4, byte-identical** to today's golden.\n- [ ] Inventory, handling schema 5, fetches `GET /public/seat-maps/{id}` for that **exact immutable version** before opening its transaction, converts position-ordered rows into left/right adjacency (null = row end), and commits the pool, the flag, the projection and `consumed_events` **atomically**.\n- [ ] Resolution failure fails closed: delayed NAK, **no pool provisioned**. A partial or malformed geometry is never stored.\n- [ ] Adjacency is derived from each row's `position` order — not label arithmetic, which breaks on non-numeric labels and position gaps. Sections and rows never connect.\n- [ ] Provisioning is idempotent on the event id, like today's.\n- [ ] **No claim behaviour changes.** Seat claims on an enabled pool behave exactly as they do now.\n\nQuality gates: `make check` green; the schema-4 golden unchanged; provisioning atomicity and idempotency tested against real Postgres.",
+  "context": {
+    "capturedAt": "2026-08-02",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-02",
+        "rule": "Local gate: `make check` ... Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The architecture, every design decision and the full test plan live in TKT-175's kind=plan and kind=plan-final — read those first, they are not repeated here",
+        "link": "board:TKT-175"
+      },
+      {
+        "summary": "Epic lineage",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-029",
+        "why": "The fetch targets the EXACT published version the pool is seated against, never the family's current one — resolving the family would silently re-point a live pool's topology. This immutability is what makes a one-time projection safe."
+      },
+      {
+        "id": "ADR-017",
+        "why": "The producer half: bump on consumer semantics, and only now that TKT-180 has landed the consumers. The schema-4 golden must stay byte-identical for rule-off maps."
+      },
+      {
+        "id": "ADR-010",
+        "why": "The geometry fetch happens BEFORE the inventory transaction opens. A network call inside the claim transaction is what this architecture exists to avoid."
+      },
+      {
+        "id": "ADR-019",
+        "why": "The projection is queried per pool at claim time in the next slice; index it now and prove the scan, not just the result."
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Readiness — PASS\n\nThe largest of the four and still one slice: one producer change, one consumer path, one projection, no behaviour change to defend. Its correctness is provable by 'the pool now has a projection' plus 'nothing else moved'.\n\nShaping is inherited: TKT-175's `kind=plan` (gpt-5.6-sol) and `kind=plan-final` (main-agent) decided the architecture, the design, the test plan and the risks before this ticket existed. This child re-scopes delivery, not thinking."
+    }
+  ]
+}
