@@ -54,7 +54,9 @@ function occupancy(unavailable: string[], extra: Record<string, unknown> = {}) {
 
 // stubFetch answers the two reads the picker makes, by URL.
 function stubFetch(geo: unknown, occ: unknown, opts: { geoStatus?: number; occStatus?: number } = {}) {
-  return vi.fn(async (input: RequestInfo | URL) => {
+  // The init parameter is declared even though only some cases read it: without it the
+  // mock's call tuple is typed as length 1 and indexing [1] is a compile error.
+  return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
     if (url.includes('/api/catalog/public/seat-maps/')) {
       return new Response(JSON.stringify(geo), { status: opts.geoStatus ?? 200 });
