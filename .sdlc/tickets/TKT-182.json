@@ -1,0 +1,63 @@
+{
+  "key": "TKT-182",
+  "type": "Story",
+  "parent": "TKT-35",
+  "classification": "complex",
+  "summary": "US-023d: A selection that would strand a lone seat is refused at claim time",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-181"
+    }
+  ],
+  "description": "**Fourth and last slice of TKT-175** — the rule itself, and the only one that changes what a buyer can do.\n\n**Acceptance criteria:**\n- [ ] With the rule on, a seat selection whose commitment would leave a free seat with **no free neighbour in its row** is refused **inside the deciding transaction** — after `sweepExpired` and after `contendedSeats`, under the pool lock — and nothing is written.\n- [ ] Only **newly** orphaned seats are reported. A seat stranded earlier (a refund, an admin action) must not poison unrelated claims for ever.\n- [ ] **Row ends are explicit**: an end seat has one neighbour. A one-seat row has none and is always selectable.\n- [ ] The refusal is `409` with code `orphaned_seats` and the sorted stranded identities, through inventory **and** commerce. Commerce must **not** apply its `seat_taken` subset validation — these are free seats the buyer never requested, so that rule would reject every valid refusal as malformed (TKT-173).\n- [ ] The storefront names the stranded seats and **leaves them selectable** — they are free, and adding one is the buyer's repair. The selection survives; no reload.\n- [ ] **AC7 — the contention proof**: two individually legal claims that would jointly strand a seat. One commits; the other is refused naming that seat. In a real-Postgres test, not a mock.\n- [ ] **Rule off is unchanged and proven so**: drop the projection table and a rule-off claim still succeeds — an absence proven by construction rather than asserted.\n- [ ] Browser evidence: select seats 1 and 3 of a five-seat row, see the refusal naming seat 2, adjust, reserve successfully without reloading.\n\nQuality gates: `make check` green; contention test; browser evidence.",
+  "context": {
+    "capturedAt": "2026-08-02",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-02",
+        "rule": "Local gate: `make check` ... Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate — `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The architecture, every design decision and the full test plan live in TKT-175's kind=plan and kind=plan-final — read those first, they are not repeated here",
+        "link": "board:TKT-175"
+      },
+      {
+        "summary": "Epic lineage",
+        "link": "docs/product/prd-v1.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "why": "The check runs inside the claim transaction under the pool lock — that is the only place a contention AC can be satisfied — and must add no work when the rule is off."
+      },
+      {
+        "id": "ADR-031",
+        "why": "released_at IS NULL is liveness, not claim status, and expired holds are swept lazily. Running the check BEFORE sweepExpired would refuse legal selections against seats nobody holds."
+      },
+      {
+        "id": "ADR-028",
+        "why": "The 409 body gains fields on inventory and commerce; the validator fails closed, so both contracts must declare them."
+      },
+      {
+        "id": "ADR-019",
+        "why": "The claim-path adjacency query must be index-backed and proven so — two tests, result and scan."
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Readiness — PASS\n\nThe behavioural slice, and the one where the contention proof lives. Everything it needs — the setting, the consumers, the projection — is delivered by the three tickets before it.\n\nShaping is inherited: TKT-175's `kind=plan` (gpt-5.6-sol) and `kind=plan-final` (main-agent) decided the architecture, the design, the test plan and the risks before this ticket existed. This child re-scopes delivery, not thinking."
+    }
+  ]
+}
