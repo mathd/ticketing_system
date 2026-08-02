@@ -138,29 +138,6 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 			return provisionInput{}, fmt.Errorf("schema-4 seated publication has invalid capacity")
 		}
 		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID}, nil
-	case 5:
-		// Seated fork carrying the orphan-prevention flag (ADR-041). This arm exists
-		// BEFORE anything emits schema 5, on purpose: ADR-017 §5b′ makes a consumer
-		// dispatch on `schema` before decoding `data`, so a producer that runs ahead
-		// of its consumers gets its messages parked and drops readiness. Shipping the
-		// arm first makes that unreachable, and it is only expressible as its own
-		// merge (TKT-180).
-		//
-		// It provisions EXACTLY as schema 4 does and ignores the flag. Acting on it
-		// needs an adjacency projection that does not exist yet — that is TKT-181, and
-		// building half of it here would be a projection nothing could populate.
-		// Ignoring a field you can see is a legitimate arm; ADR-017 asks for a
-		// deliberate decision per variant, not for every variant to do something new.
-		if e.Data.SeatMapID == nil || *e.Data.SeatMapID == uuid.Nil {
-			return provisionInput{}, fmt.Errorf("schema-5 seated publication has no seat map reference")
-		}
-		if e.Data.CapacityGroupID != nil || e.Data.SharedCapacity != nil {
-			return provisionInput{}, fmt.Errorf("schema-5 seated publication must not carry festival capacity")
-		}
-		if e.Data.Capacity <= 0 {
-			return provisionInput{}, fmt.Errorf("schema-5 seated publication has invalid capacity")
-		}
-		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID}, nil
 	case 3:
 		// Deploy this consumer before catalog starts emitting Schema 3 so grouped
 		// festival publications remain safe during a rolling rollout.
@@ -198,10 +175,17 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 // Keep it in step with provisionInput's case arms above — TestEveryKnownSchemaHasAnArm is the
 // tripwire if you add an arm and forget, and TestMaxKnownSchemaIsNotBehindTheArms if you bump it
 // without adding one. Schema 4 is the seated fork (TKT-103): a KNOWN variant that provisions a
-// SEATED pool for seat-level claims (TKT-80) — see provisionInput's case 4. Schema 5 (TKT-180)
-// is that same seated fork carrying the orphan-prevention flag (ADR-041); this binary reads it
-// and ignores the flag, which is a deliberate arm rather than an omission.
-const maxKnownPublicationSchema = 5
+// SEATED pool for seat-level claims (TKT-80) — see provisionInput's case 4.
+//
+// Schema 5 (ADR-041, the orphan-prevention seated fork) is deliberately NOT here yet, and
+// TKT-180 removed an arm that had accepted it. "Accept and ignore the field we cannot use"
+// looks like tolerance and is strictly worse than parking: ProvisionSeated records the event
+// in consumed_events, so a binary that consumes a schema-5 publication without building its
+// adjacency projection makes that pool PERMANENTLY rule-less — a later, capable binary
+// short-circuits on the consumed event and can never repair it. Parking is loud, reversible
+// and resolves itself when the capable binary deploys; consuming is silent and final.
+// The arm lands in TKT-181, together with the projection that makes it honest.
+const maxKnownPublicationSchema = 4
 
 // knownSchemas is the per-subject registry of variants this binary can read (ADR-017 §5b′).
 // Above max is the future (park + latch unready); at or below zero is a broken envelope; a gap

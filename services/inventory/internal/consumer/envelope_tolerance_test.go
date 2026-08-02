@@ -31,8 +31,8 @@ func TestFutureVariantSurvivesUnparseableEnvelopeMetadata(t *testing.T) {
 	for _, tt := range []struct {
 		name, body string
 	}{
-		{"malformed occurred_at", `{` + id + `,` + publishedType + `,"occurred_at":"invalid","schema":6,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"}}`},
-		{"occurred_at is a number", `{` + id + `,` + publishedType + `,"occurred_at":1750000000,"schema":6,"data":{}}`},
+		{"malformed occurred_at", `{` + id + `,` + publishedType + `,"occurred_at":"invalid","schema":5,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"}}`},
+		{"occurred_at is a number", `{` + id + `,` + publishedType + `,"occurred_at":1750000000,"schema":5,"data":{}}`},
 		{"occurred_at is an object", `{` + id + `,` + publishedType + `,"occurred_at":{"secs":1},"schema":6,"data":{}}`},
 		{"occurred_at null", `{` + id + `,` + publishedType + `,"occurred_at":null,"schema":7,"data":{}}`},
 		{"occurred_at absent", `{` + id + `,` + publishedType + `,"schema":8,"data":{}}`},

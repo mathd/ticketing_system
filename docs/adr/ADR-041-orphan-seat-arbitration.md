@@ -117,8 +117,29 @@ producer emitting schema 5 before its consumers accept it makes them park the me
 readiness fall. The safe order is therefore **consumers first, producer second**, and that
 is only expressible as separate merges:
 
-**TKT-179** setting + this ADR → **TKT-180** consumers accept schema 5 → **TKT-181**
-producer emits it and inventory projects → **TKT-182** the rule itself.
+**TKT-179** setting + this ADR → **TKT-180** access accepts schema 5 → **TKT-181** inventory
+implements schema 5 *and* catalog emits it → **TKT-182** the rule itself.
+
+**Amended during TKT-180 (2026-08-02), by its ai-review.** The original ordering said
+"consumers first" and meant *both* consumers. That is right for **access**, which reads only
+`re_entry` and genuinely ignores everything else, and wrong for **inventory** — and the
+difference is worth stating because it is not obvious.
+
+Inventory's schema-5 handler provisions a pool and records the event in `consumed_events`.
+A binary that accepts schema 5 *without* building the adjacency projection therefore creates
+a rule-enabled pool that has no rule, marks the event consumed, and acks it. A later, capable
+binary cannot repair that through redelivery: it short-circuits on the consumed event. The
+pool is permanently rule-less and nothing reports it.
+
+So for inventory, **"accept and ignore the field we cannot use" is strictly worse than
+parking.** Parking is loud (readiness latches false), reversible, and resolves itself the
+moment a capable binary deploys. Consuming is silent and final. The general rule this ADR
+therefore adds: *a consumer may accept a new schema early only if handling it is idempotent
+with respect to what a later binary would need to do* — which holds when the consumer
+ignores the new field by construction, and fails when the consumer records completion.
+
+Inventory's arm consequently lands in TKT-181, together with the projection that makes it
+honest, and catalog's producer change deploys after it.
 
 ## Consequences
 
