@@ -186,6 +186,17 @@ func (s *Server) createSeatHold(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sh, err := s.st.CreateSeatHold(ctx, in.OrganizerID, in.SlotID, in.TicketTypeID, in.SeatIdentities, in.UnitAmount, in.Currency, key)
 	if err != nil {
+		// A contended seat set names the seats that actually lost (TKT-173). The
+		// caller is a buyer's reservation, and re-rendering a picker needs the
+		// identities, not the fact — see SeatTakenError. The typed error still
+		// unwraps to ErrSeatTaken, so this branch is checked first.
+		var taken *store.SeatTakenError
+		if errors.As(err, &taken) {
+			write(w, 409, map[string]any{
+				"error": err.Error(), "code": "seat_taken", "seat_identities": taken.Seats,
+			})
+			return
+		}
 		if errors.Is(err, store.ErrSeatTaken) {
 			write(w, 409, map[string]string{"error": err.Error(), "code": "seat_taken"})
 			return

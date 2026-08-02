@@ -225,6 +225,9 @@ type Error struct {
 	// Code Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
+
+	// SeatIdentities The requested seats another live claim already holds, sorted. Present only with code `seat_taken` (TKT-173). Seats the request could have had are NOT listed — a caller re-renders exactly what it must give up. Knowable only inside the claim transaction that arbitrated: an answer computed afterwards, by re-reading occupancy say, describes a different moment and can name seats this request never lost.
+	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
 // ErrorCode Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request

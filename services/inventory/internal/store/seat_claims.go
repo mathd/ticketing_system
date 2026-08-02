@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
@@ -24,6 +23,27 @@ var (
 	// ErrSeatSetInvalid reports an empty, oversized, or malformed seat set.
 	ErrSeatSetInvalid = errors.New("invalid seat set")
 )
+
+// SeatTakenError is ErrSeatTaken plus the identities that actually lost (TKT-173).
+// A buyer whose selection partly collided has to re-render the seats they must give
+// up, and "a seat was taken" cannot tell them which — so the losing set travels with
+// the error. It is knowable ONLY here: the arbiter is the partial unique index inside
+// the claim transaction, and any answer computed afterwards (by re-reading occupancy,
+// say) describes a different moment and can name seats this transaction never lost.
+type SeatTakenError struct {
+	// Seats are the requested identities another live claim already holds, sorted.
+	// Seats the request could have had are NOT listed: telling a buyer to release a
+	// seat that was free is its own defect.
+	Seats []string
+}
+
+func (e *SeatTakenError) Error() string {
+	return ErrSeatTaken.Error() + ": " + strings.Join(e.Seats, ", ")
+}
+
+// Unwrap keeps every existing `errors.Is(err, ErrSeatTaken)` call site working —
+// the handler's 409 mapping, and the contention suite, both predate this type.
+func (e *SeatTakenError) Unwrap() error { return ErrSeatTaken }
 
 // MaxSeatsPerHold bounds a single seat-set claim (mirrors the GA 1..50 quantity band).
 const MaxSeatsPerHold = 50
@@ -87,11 +107,6 @@ func seatFingerprint(org, slot, ticketType uuid.UUID, seats []string, unitAmount
 	enc, _ := json.Marshal(seats)
 	s := fmt.Sprintf("seat:%s:%s:%s:%s:%d:%s", org, slot, ticketType, enc, unitAmount, currency)
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
-}
-
-func isUniqueViolation(err error, constraint string) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
 // ProvisionSeated records a seated pool for a slot (catalog schema-4 seated
@@ -230,13 +245,52 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	if err != nil {
 		return SeatHold{}, err
 	}
-	for _, seat := range canon {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO claim_seats(claim_id,pool_id,seat_identity) VALUES($1,$2,$3)`, c.ID, slot, seat); err != nil {
-			if isUniqueViolation(err, "claim_seats_one_live_per_seat") {
-				return SeatHold{}, ErrSeatTaken
-			}
+	// One statement, not a per-seat loop, so the FULL losing set is knowable (TKT-173).
+	// The loop this replaces returned on the first unique violation, which meant a
+	// partly-colliding selection could only ever report one contended seat however
+	// many actually collided — correct-looking and wrong.
+	//
+	// ON CONFLICT DO NOTHING carries no conflict target, so it swallows a conflict on
+	// ANY constraint, and claim_seats has two: the PK (claim_id, seat_identity) and
+	// the partial live-seat index. A PK conflict is impossible here — the claim id is
+	// freshly generated and canonicalSeats has already de-duplicated — so every seat
+	// missing from RETURNING lost to the live-seat index and nothing else. **That
+	// reasoning depends on the de-duplication**: drop it and a request naming the same
+	// seat twice would report a phantom conflict against itself.
+	inserted := map[string]struct{}{}
+	seatRows, err := tx.QueryContext(ctx, `INSERT INTO claim_seats(claim_id,pool_id,seat_identity)
+		SELECT $1, $2, s FROM unnest($3::text[]) AS s
+		ON CONFLICT DO NOTHING
+		RETURNING seat_identity`, c.ID, slot, canon)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	for seatRows.Next() {
+		var seat string
+		if err = seatRows.Scan(&seat); err != nil {
+			_ = seatRows.Close()
 			return SeatHold{}, err
 		}
+		inserted[seat] = struct{}{}
+	}
+	if err = seatRows.Err(); err != nil {
+		_ = seatRows.Close()
+		return SeatHold{}, err
+	}
+	if err = seatRows.Close(); err != nil {
+		return SeatHold{}, err
+	}
+	if len(inserted) != len(canon) {
+		// canon is already sorted, so the difference comes out sorted too.
+		contended := make([]string, 0, len(canon)-len(inserted))
+		for _, seat := range canon {
+			if _, ok := inserted[seat]; !ok {
+				contended = append(contended, seat)
+			}
+		}
+		// The deferred Rollback discards the claims row and every seat row that DID
+		// insert — a partly-materialised losing claim would hold seats nobody owns.
+		return SeatHold{}, &SeatTakenError{Seats: contended}
 	}
 	if err = appendHistory(ctx, tx, org, c.ID, nil, "create", "buyer", "seat_hold", qty, qty, "held", nil, nil); err != nil {
 		return SeatHold{}, err

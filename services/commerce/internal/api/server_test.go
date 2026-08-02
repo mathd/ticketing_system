@@ -671,3 +671,37 @@ func TestCancellationRefundRequestRejectionsAreDeclaredStatuses(t *testing.T) {
 		})
 	}
 }
+
+// TestReserveRequiresExactlyOneOfQuantityOrSeats is TKT-173 AC1. A reservation is
+// either a quantity or a seat set and never both — "both" is the dangerous one,
+// because a handler that silently prefers one would charge for a quantity while
+// claiming seats, or claim seats while charging for a quantity.
+//
+// Driven through the real router, not the schema, deliberately: the contract
+// expresses the XOR through property counts, and if the request validator does not
+// enforce minProperties/maxProperties on this path then the Go check is the only
+// thing standing. Either way the caller must see a 400, and that is what this pins.
+func TestReserveRequiresExactlyOneOfQuantityOrSeats(t *testing.T) {
+	s := New(nil, http.DefaultClient, "", "", "", "")
+	const org = `"organizer_id":"00000000-0000-0000-0000-000000000001"`
+	const tt = `"ticket_type_id":"00000000-0000-0000-0000-000000000002"`
+	for name, body := range map[string]string{
+		"neither":                  `{` + org + `,` + tt + `}`,
+		"both":                     `{` + org + `,` + tt + `,"quantity":1,"seat_identities":["A/1/1"]}`,
+		"empty seat set":           `{` + org + `,` + tt + `,"seat_identities":[]}`,
+		"blank seat identity":      `{` + org + `,` + tt + `,"seat_identities":["  "]}`,
+		"quantity below the band":  `{` + org + `,` + tt + `,"quantity":0}`,
+		"seat set above the band":  `{` + org + `,` + tt + `,"seat_identities":[` + strings.Repeat(`"x",`, 50) + `"y"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "xor-"+name)
+			res := httptest.NewRecorder()
+			s.Router(nil, true).ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want 400 — body %s got %s", res.Code, body, res.Body.String())
+			}
+		})
+	}
+}
