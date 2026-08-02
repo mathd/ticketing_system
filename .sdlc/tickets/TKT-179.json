@@ -4,7 +4,7 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-023a: A seat map can be marked orphan-preventing (setting only, nothing enforces it yet)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
