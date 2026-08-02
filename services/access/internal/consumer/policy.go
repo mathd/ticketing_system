@@ -39,7 +39,15 @@ type PolicyStore interface {
 // nothing but to STOP treating schema 4 as the future — no new arm, no decode
 // change. Without this bump, every seated publication would park access and
 // latch it unready (ADR-017 §5b′ binds both consumers; TKT-74).
-const maxKnownPublicationSchema = 4
+//
+// Schema 5 (TKT-180 / ADR-041) is the same seated fork carrying an
+// orphan-prevention flag. Access reads only re_entry, and that field is
+// unchanged, so this is the same shape of bump for the same reason: the flag is
+// ignored by construction, and the ONLY thing that would go wrong without this
+// line is access parking every rule-enabled publication and latching unready.
+// That is why this ticket ships before anything emits schema 5 rather than
+// alongside it.
+const maxKnownPublicationSchema = 5
 
 // publicationSchemaMin is the bottom of the known range: performance.published
 // started at 1 (the capacity-resolver era). At or below zero is a broken

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"encoding/json"
 	"log/slog"
 	"slices"
 	"strings"
@@ -220,11 +221,11 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 	}{
 		// schema 4 is now the KNOWN seated variant (TKT-103); the unknown-future
 		// fixtures move to schema 5, which remains beyond maxKnownPublicationSchema.
-		{"reshaped data", `{` + id + `,"schema":5,"data":{"slot_ref":"a","org_ref":"b"}}`, 5},
-		{"changed field type", `{` + id + `,"schema":5,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`, 5},
+		{"reshaped data", `{` + id + `,"schema":6,"data":{"slot_ref":"a","org_ref":"b"}}`, 6},
+		{"changed field type", `{` + id + `,"schema":6,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":"500"}}`, 6},
 		{"empty data", `{` + id + `,"schema":6,"data":{}}`, 6},
 		{"data is not an object", `{` + id + `,"schema":9,"data":[1,2,3]}`, 9},
-		{"shaped like today", `{` + id + `,"schema":5,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`, 5},
+		{"shaped like today", `{` + id + `,"schema":6,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":500}}`, 6},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
@@ -264,7 +265,7 @@ func TestUnknownSchemaVersionSkewIsQuarantinedAndAcked(t *testing.T) {
 // them would still show an ack.
 func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 	id := `"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
-	body := `{` + id + `,"schema":5,"data":{"slot_ref":"a"}}` // schema 5 = unknown future (4 is now seated)
+	body := `{` + id + `,"schema":6,"data":{"slot_ref":"a"}}` // schema 6 = unknown future (5 is the orphan-flag seated fork, TKT-180)
 	for _, tt := range []struct {
 		name string
 		err  error
@@ -299,7 +300,7 @@ func TestQuarantineFailureKeepsTheEventOutstanding(t *testing.T) {
 func TestQuarantineCollisionIsPoison(t *testing.T) {
 	c, st := testConsumerWithStore()
 	st.quarantineErr = store.ErrCatalogQuarantineCollision
-	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{"x":1}}`))} // schema 5 = unknown future
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","schema":6,"data":{"x":1}}`))} // schema 6 = unknown future
 
 	c.handle(context.Background(), msg)
 
@@ -317,7 +318,7 @@ func TestKnownEventFlowsWhileUnknownIsHeld(t *testing.T) {
 	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	c, st := testConsumerWithStore()
 
-	future := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":5,"data":{"slot_ref":"a"}}`))} // schema 5 = unknown future
+	future := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":6,"data":{"slot_ref":"a"}}`))} // schema 6 = unknown future
 	c.handle(context.Background(), future)
 	if !slices.Contains(future.actions, "ack") || len(st.quarantined) != 1 {
 		t.Fatalf("future: actions = %v quarantined = %d, want quarantine + ack", future.actions, len(st.quarantined))
@@ -601,11 +602,11 @@ func TestTypeMismatchIsPoisonWhateverItsShape(t *testing.T) {
 	const wrongType = `"type":"platform.catalog.performance.archived"`
 	for _, tc := range []struct{ name, body string }{
 		{"missing type, known schema", `{` + id + `,"schema":2,` + good + `}`},
-		{"missing type, future schema", `{` + id + `,"schema":5,` + good + `}`},
+		{"missing type, future schema", `{` + id + `,"schema":6,` + good + `}`},
 		{"wrong type, known schema", `{` + id + `,` + wrongType + `,"schema":2,` + good + `}`},
-		{"wrong type, future schema", `{` + id + `,` + wrongType + `,"schema":5,` + good + `}`},
+		{"wrong type, future schema", `{` + id + `,` + wrongType + `,"schema":6,` + good + `}`},
 		{"non-string type, known schema", `{` + id + `,"type":42,"schema":2,` + good + `}`},
-		{"non-string type, future schema", `{` + id + `,"type":42,"schema":5,` + good + `}`},
+		{"non-string type, future schema", `{` + id + `,"type":42,"schema":6,` + good + `}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, st := testConsumerWithStore()
@@ -648,4 +649,54 @@ func withSubjectType(subject, body string) string {
 		return body
 	}
 	return `{"type":"` + subject + `",` + body[1:]
+}
+
+// TestSchema5SeatedPublicationProvisionsLikeSchema4 is TKT-180: the consumer accepts
+// the orphan-flag seated variant BEFORE anything emits it, and provisions exactly as
+// schema 4 does while ignoring the flag it cannot yet act on.
+//
+// The envelope is hand-written rather than marshalled from the publication struct.
+// A fixture built from the type under test encodes the compatibility it claims to
+// prove (ADR-017) — and the whole risk here is that a future `data` shape reaches a
+// decoder that assumes today's. TKT-61 shipped that bug twice.
+func TestSchema5SeatedPublicationProvisionsLikeSchema4(t *testing.T) {
+	const (
+		perf    = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+		org     = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+		seatMap = "6ba7b812-9dad-11d1-80b4-00c04fd430c8"
+	)
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"` + perf + `","organizer_id":"` + org + `",` +
+		`"seat_map_id":"` + seatMap + `","capacity":400,` +
+		// The field this binary deliberately ignores. Its presence must not change
+		// provisioning, and its absence must not either.
+		`"orphan_prevention_enabled":true}}`
+
+	var pub publication
+	if err := json.Unmarshal([]byte(body), &pub); err != nil {
+		t.Fatal(err)
+	}
+	if pub.Schema != 5 {
+		t.Fatalf("fixture schema = %d, want 5", pub.Schema)
+	}
+
+	c := &Consumer{}
+	in, err := c.provisionInput(context.Background(), pub)
+	if err != nil {
+		t.Fatalf("schema 5 must be a known arm, got %v", err)
+	}
+	if in.seatMapID.String() != seatMap {
+		t.Fatalf("seat map = %v want %v — schema 5 provisions a SEATED pool", in.seatMapID, seatMap)
+	}
+	if in.poolID.String() != perf || in.organizerID.String() != org || in.capacity != 400 {
+		t.Fatalf("schema 5 must provision exactly as schema 4 does, got %+v", in)
+	}
+
+	// And it validates like schema 4 rather than trusting the producer: a seated
+	// variant with no map reference is not provisionable.
+	bad := pub
+	bad.Data.SeatMapID = nil
+	if _, err = c.provisionInput(context.Background(), bad); err == nil {
+		t.Fatal("a schema-5 publication with no seat map must be refused, not provisioned as GA")
+	}
 }
