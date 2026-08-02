@@ -59,6 +59,15 @@ type PublishedPerformance struct {
 	SharedCapacity  *int32
 }
 
+// ErrGeometryInvalid marks geometry that is DETERMINISTICALLY unusable — a draft map,
+// the wrong version, duplicate identities, bad positions, trailing bytes. Retrying it
+// changes nothing, so the caller must terminate rather than park it for ever.
+//
+// Its opposite, errResolveUnavailable, means catalog could not be reached. The first fix
+// for this pair terminated both (a blip deleted the publication); the second wrapped
+// both as transient (corrupt geometry retried for ever). Only the distinction is right.
+var ErrGeometryInvalid = errors.New("seat-map geometry is invalid")
+
 // geometrySeat is the boundary decode of one seat. Named rather than inlined so the
 // validation below can copy and sort a row without restating the shape.
 type geometrySeat struct {
@@ -194,6 +203,11 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		// 4xx is catalog's settled answer about this map; 5xx and the rest are its
+		// health, which may change on retry.
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return nil, fmt.Errorf("%w: seat map %s: status %d", ErrGeometryInvalid, seatMapID, resp.StatusCode)
+		}
 		return nil, fmt.Errorf("catalog seat-map geometry %s: status %d", seatMapID, resp.StatusCode)
 	}
 	var body struct {
@@ -207,17 +221,24 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 			} `json:"rows"`
 		} `json:"sections"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("decode catalog seat-map geometry: %w", err)
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&body); err != nil {
+		return nil, fmt.Errorf("%w: decode: %v", ErrGeometryInvalid, err)
+	}
+	// Exactly one value. A valid geometry object followed by garbage would otherwise
+	// decode its prefix and commit that prefix as the authoritative projection —
+	// permanently, since the same transaction consumes the event (ai-review).
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: trailing bytes after the geometry document", ErrGeometryInvalid)
 	}
 	// The response must describe the version we asked for, and it must be published —
 	// a draft's geometry is still mutable, so projecting it would bake in something
 	// that can change underneath the pool.
 	if body.Map.ID != seatMapID {
-		return nil, fmt.Errorf("catalog returned seat map %s, asked for %s", body.Map.ID, seatMapID)
+		return nil, fmt.Errorf("%w: catalog returned seat map %s, asked for %s", ErrGeometryInvalid, body.Map.ID, seatMapID)
 	}
 	if body.Map.Status != "published" {
-		return nil, fmt.Errorf("seat map %s is %q, not published", seatMapID, body.Map.Status)
+		return nil, fmt.Errorf("%w: seat map %s is %q, not published", ErrGeometryInvalid, seatMapID, body.Map.Status)
 	}
 
 	var out []SeatAdjacency
@@ -236,10 +257,10 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 			positions := map[int32]struct{}{}
 			for _, seat := range seats {
 				if seat.Position <= 0 {
-					return nil, fmt.Errorf("seat map %s has a seat with position %d", seatMapID, seat.Position)
+					return nil, fmt.Errorf("%w: seat map %s has a seat with position %d", ErrGeometryInvalid, seatMapID, seat.Position)
 				}
 				if _, dup := positions[seat.Position]; dup {
-					return nil, fmt.Errorf("seat map %s repeats position %d within a row", seatMapID, seat.Position)
+					return nil, fmt.Errorf("%w: seat map %s repeats position %d within a row", ErrGeometryInvalid, seatMapID, seat.Position)
 				}
 				positions[seat.Position] = struct{}{}
 			}
@@ -248,10 +269,10 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 			for _, seat := range seats {
 				id := strings.TrimSpace(seat.SeatIdentity)
 				if id == "" {
-					return nil, fmt.Errorf("seat map %s has a seat with no identity", seatMapID)
+					return nil, fmt.Errorf("%w: seat map %s has a seat with no identity", ErrGeometryInvalid, seatMapID)
 				}
 				if _, dup := seen[id]; dup {
-					return nil, fmt.Errorf("seat map %s repeats identity %q", seatMapID, id)
+					return nil, fmt.Errorf("%w: seat map %s repeats identity %q", ErrGeometryInvalid, seatMapID, id)
 				}
 				seen[id] = struct{}{}
 				identities = append(identities, id)
@@ -271,7 +292,7 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("seat map %s has no seats", seatMapID)
+		return nil, fmt.Errorf("%w: seat map %s has no seats", ErrGeometryInvalid, seatMapID)
 	}
 	return out, nil
 }

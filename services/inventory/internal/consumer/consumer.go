@@ -177,6 +177,13 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 			return provisionInput{}, fmt.Errorf("schema-5 rule-enabled publication needs catalog resolver")
 		}
 		adjacency, err := c.resolver.SeatMapAdjacency(ctx, *e.Data.SeatMapID)
+		if errors.Is(err, ErrGeometryInvalid) {
+			// Deterministic: a draft map, the wrong version, duplicate identities, bad
+			// positions. No binary and no retry can provision it, so it terminates —
+			// parking it would be an infinite loop over corrupt data, which is the
+			// mirror image of the bug the retry branch fixed.
+			return provisionInput{}, fmt.Errorf("schema-5 adjacency projection: %w", err)
+		}
 		if err != nil {
 			// Fail closed, and mark it RETRYABLE. Nothing is provisioned and the event
 			// comes back — which is recoverable. Provisioning without the projection is

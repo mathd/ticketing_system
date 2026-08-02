@@ -315,10 +315,21 @@ func TestSeatMapAdjacencyFailsClosedOnMalformedGeometry(t *testing.T) {
 			{"seat_identity":"A/1/1","position":1},{"seat_identity":" A/1/1","position":2}]}]}]}`,
 		"blank identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
 			{"seat_identity":"   ","position":1}]}]}]}`,
+		// A valid prefix followed by garbage: one Decode would accept the prefix and
+		// commit it as authoritative, permanently, since the same transaction consumes
+		// the event.
+		"trailing bytes after a valid document": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+			{"seat_identity":"A/1/1","position":1}]}]}]} {"map":{"id":"junk"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id); err == nil {
+			_, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+			if err == nil {
 				t.Fatal("malformed geometry must be refused, never projected as authoritative")
+			}
+			// And refused DETERMINISTICALLY. Classifying these as transient would park
+			// them for ever — the mirror of terminating a catalog blip.
+			if !errors.Is(err, ErrGeometryInvalid) {
+				t.Fatalf("err = %v, want ErrGeometryInvalid: retrying corrupt geometry changes nothing", err)
 			}
 		})
 	}
@@ -329,6 +340,24 @@ func TestSeatMapAdjacencyFailsOnUpstreamError(t *testing.T) {
 	for _, status := range []int{404, 500, 503} {
 		if _, err := geometryServer(t, status, `{}`).SeatMapAdjacency(context.Background(), id); err == nil {
 			t.Fatalf("status %d must be an error", status)
+		}
+	}
+}
+
+// A 5xx is catalog's health and may change; a 4xx is its settled answer about this map.
+// Only the first is worth retrying, and the disposition depends on telling them apart.
+func TestSeatMapAdjacencyStatusClassification(t *testing.T) {
+	id := uuid.New()
+	for _, tc := range []struct {
+		status        int
+		deterministic bool
+	}{{404, true}, {401, true}, {409, true}, {500, false}, {502, false}, {503, false}} {
+		_, err := geometryServer(t, tc.status, `{}`).SeatMapAdjacency(context.Background(), id)
+		if err == nil {
+			t.Fatalf("status %d must be an error", tc.status)
+		}
+		if got := errors.Is(err, ErrGeometryInvalid); got != tc.deterministic {
+			t.Fatalf("status %d: ErrGeometryInvalid=%v want %v", tc.status, got, tc.deterministic)
 		}
 	}
 }

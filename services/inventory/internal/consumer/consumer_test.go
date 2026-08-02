@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -724,5 +725,31 @@ func TestSchema5RuleOffProvisionsWithoutFetchingGeometry(t *testing.T) {
 	}
 	if len(st.adjacency) != 1 || len(st.adjacency[0]) != 0 {
 		t.Fatalf("rule-off must carry no adjacency, got %v", st.adjacency)
+	}
+}
+
+// TestSchema5InvalidGeometryIsTerminated is the other half of the retry fix. A blip
+// must be retried; corrupt geometry must not be, or the consumer parks it for ever.
+// The first attempt at this pair terminated both; the second retried both.
+func TestSchema5InvalidGeometryIsTerminated(t *testing.T) {
+	st := &fakeCatalogStore{}
+	c := offeringConsumer(st, fakeResolver{
+		adjacencyErr: fmt.Errorf("%w: seat map is draft", ErrGeometryInvalid),
+	})
+
+	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
+		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+		`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400,` +
+		`"orphan_prevention_enabled":true}}`
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+
+	if len(msg.actions) != 1 || msg.actions[0] != "term" {
+		t.Fatalf("actions = %v, want term — retrying deterministically-invalid geometry "+
+			"parks it for ever", msg.actions)
+	}
+	if len(st.seatProvisioned) != 0 {
+		t.Fatal("nothing may be provisioned from invalid geometry")
 	}
 }
