@@ -4,7 +4,7 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-023b: Consumers accept performance.published schema 5 before anything emits it",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
