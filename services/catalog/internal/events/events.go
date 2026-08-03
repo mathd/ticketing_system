@@ -44,6 +44,13 @@ type PerformancePublishedData struct {
 	// claim is TKT-80); access still projects re_entry. A GA/festival event
 	// (schema 2/3) omits it.
 	SeatMapID *uuid.UUID `json:"seat_map_id,omitempty"`
+	// OrphanPrevention is the schema-5 fork's payload half (TKT-183): the rule
+	// setting of the exact bound seat-map version. `omitempty` is load-bearing — it
+	// is what keeps the schema-4 bytes byte-identical to what shipped, since a
+	// rule-off seated slot serializes false and false is omitted. A consequence
+	// worth stating: a schema-5 event can never carry `false`, because schema 5 is
+	// only chosen when the flag is true.
+	OrphanPrevention bool `json:"orphan_prevention_enabled,omitempty"`
 	// ReEntry rides additively at the current schemas (ADR-017 §2, the `kind`
 	// precedent): no deployed consumer forks on it, so no bump. Access projects
 	// it for gate-side policy enforcement (ADR-005: catalog owns the policy,
@@ -202,6 +209,38 @@ func backfillEventUUID(perf store.Performance) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key))
 }
 
+// orphanPreventionEpoch namespaces the TKT-183 correction wave's identity. Fixed, like
+// backfillEpoch, so re-running converges instead of multiplying events (ADR-041).
+//
+// backfillEpoch is deliberately NOT bumped for this: that would change reemit-policies'
+// identity for every ungrouped slot — a different wave, a different candidate set — and
+// the id it produced might already sit in a consumer's consumed_events from an earlier
+// re_entry backfill, where a replay is a silent no-op. A new wave gets a new namespace.
+const orphanPreventionEpoch = "orphan-prevention-schema5-1"
+
+// OrphanPreventionCorrectionEventID derives the correction wave's envelope id for an
+// already-published slot (TKT-183). It MUST differ from both EventID (inventory consumed
+// that one as schema 4) and BackfillEventID (access consumed that one, and
+// reemit-policies may reuse it) — a correction under a consumed id is dropped by
+// ON CONFLICT DO NOTHING and repairs nothing, silently.
+//
+// published_at is in the key so an unpublish/republish is a distinct publication and
+// stays correctable.
+func OrphanPreventionCorrectionEventID(perf store.Performance) string {
+	key := SubjectPerformancePublished + ":orphan-prevention:" + orphanPreventionEpoch + ":" + perf.ID.String()
+	if perf.PublishedAt != nil {
+		key += ":" + perf.PublishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+}
+
+// PerformancePublishedOrphanCorrection re-emits a published slot's publication under the
+// correction identity (TKT-183). The payload is whatever the live builder produces for
+// the slot today — which, for a slot bound to a rule-enabled version, is schema 5.
+func (p *JetStream) PerformancePublishedOrphanCorrection(ctx context.Context, perf store.Performance) error {
+	return p.publishPerformancePublished(ctx, perf, OrphanPreventionCorrectionEventID(perf))
+}
+
 func ArchivedEventID(perf store.Performance) string { return archivedEventUUID(perf).String() }
 
 func archivedEventUUID(perf store.Performance) uuid.UUID {
@@ -303,6 +342,18 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 	switch {
 	case seated && capacityGroupID != nil:
 		return nil, fmt.Errorf("seated slot must not carry festival capacity")
+	case !seated && perf.OrphanPreventionEnabled:
+		// The flag comes from the bound seat-map version, so a GA slot carrying it is
+		// a corrupt row. Fail closed rather than emit schema 5 with no map for the
+		// consumer to project, or schema 2 silently dropping a rule someone enabled.
+		return nil, fmt.Errorf("orphan prevention requires a seat map")
+	case seated && perf.OrphanPreventionEnabled:
+		// TKT-183. Schema and flag are ONE fact: 5 is emitted exactly when the flag is
+		// true, and the flag is serialized exactly when the schema is 5. Neither may
+		// appear without the other — a schema-5 event with the flag absent would
+		// provision a rule-enabled pool that says nothing is enabled, and a schema-4
+		// event for an enabled version is the TKT-179 gap this ticket exists to close.
+		schema = 5
 	case seated:
 		schema = 4
 	case capacityGroupID != nil:
@@ -314,15 +365,16 @@ func performancePublishedEnvelopeWithID(perf store.Performance, occurred time.Ti
 		OccurredAt: occurred,
 		Schema:     schema,
 		Data: PerformancePublishedData{
-			PerformanceID:   perf.ID,
-			EventID:         perf.EventID,
-			OrganizerID:     perf.OrganizerID,
-			Kind:            perf.Kind,
-			Capacity:        perf.Capacity,
-			CapacityGroupID: capacityGroupID,
-			SharedCapacity:  sharedCapacity,
-			SeatMapID:       perf.SeatMapID,
-			ReEntry:         reEntryData(perf),
+			PerformanceID:    perf.ID,
+			EventID:          perf.EventID,
+			OrganizerID:      perf.OrganizerID,
+			Kind:             perf.Kind,
+			Capacity:         perf.Capacity,
+			CapacityGroupID:  capacityGroupID,
+			SharedCapacity:   sharedCapacity,
+			SeatMapID:        perf.SeatMapID,
+			OrphanPrevention: perf.OrphanPreventionEnabled,
+			ReEntry:          reEntryData(perf),
 		},
 	})
 	if err != nil {

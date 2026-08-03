@@ -53,9 +53,10 @@ func main() {
 // idempotent and safe to re-run.
 func subcommands() map[string]func([]string) error {
 	return map[string]func([]string) error{
-		"migrate":         func([]string) error { return migrate() },
-		"healthcheck":     func([]string) error { os.Exit(healthcheck()); return nil },
-		"reemit-policies": reemitPolicies,
+		"migrate":                  func([]string) error { return migrate() },
+		"healthcheck":              func([]string) error { os.Exit(healthcheck()); return nil },
+		"reemit-policies":          reemitPolicies,
+		"reemit-orphan-prevention": reemitOrphanPrevention,
 	}
 }
 

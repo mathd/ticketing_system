@@ -802,6 +802,10 @@ type publishedEnvelope struct {
 	Data   struct {
 		PerformanceID string `json:"performance_id"`
 		SeatMapID     string `json:"seat_map_id"`
+		// TKT-183's fork half. Read as a POINTER so the test can tell "absent" from
+		// "false": `omitempty` means a schema-4 payload omits it entirely, and that
+		// distinction is the whole contract — schema and flag are one fact.
+		OrphanPrevention *bool `json:"orphan_prevention_enabled"`
 	} `json:"data"`
 }
 

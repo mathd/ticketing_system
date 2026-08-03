@@ -463,6 +463,48 @@ history. It does not produce a verifier that lacks signing power, and `verify-jo
 described to an auditor as if it did. Modification and insertion by a database writer who holds no
 key are evident; targeted rollback and current-key compromise are not, and remain TKT-11's.
 
+## Orphan-prevention correction wave (TKT-183)
+
+Catalog emits `performance.published` **schema 5** for a seated slot bound to a seat-map
+version with `orphan_prevention_enabled` on. TKT-179 shipped that setting *before* this
+transport existed, so slots published in between were emitted at **schema 4**, had
+`event_emitted_at` set, and will never be emitted again — re-POSTing publish is idempotent.
+Inventory holds an ordinary seated pool for them, with no flag and no adjacency, while the
+back office insists the rule is on. The wave repairs exactly those.
+
+```
+docker compose exec catalog /app reemit-orphan-prevention
+```
+
+**Rollout order is the reason this is a separate revision — do not reorder it:**
+
+1. TKT-181's inventory (schema-5 arm + projection) and TKT-182's rule are fully deployed.
+2. Roll out this catalog binary.
+3. Run the command.
+4. Once every pre-TKT-183 catalog replica has drained, **run it again**.
+
+Step 4 is a stopping condition, not a correctness precondition. The wave keeps no
+correction state, so each run reconciles every published slot currently bound to an enabled
+version — a slot published at schema 4 by an undrained old replica is picked up by the next
+run. Re-running is safe and expected: the correction identity is deterministic per
+publication, so repeats converge instead of multiplying events (inventory's
+`consumed_events` and JetStream's dedup window absorb them).
+
+It prints `corrected=<n>`, the number of publications re-emitted. Any publish failure aborts
+the run and surfaces the error — the count never claims a repair it cannot prove. A second
+run reporting the same count is normal and means nothing is wrong; it does **not** mean the
+first run failed.
+
+**What it does not tell you.** `corrected=` counts *emissions*, not repaired pools. Inventory
+applies them asynchronously. To confirm the repair, check the pool: `orphan_prevention_enabled`
+true and a populated `seat_claim_adjacency` for that pool. And per ADR-021: this is
+honest-writer consistency — anyone who can write to catalog can change bindings or forge
+candidates, and anyone who can write to inventory can undo the repair.
+
+**Do not run it against an inventory that predates TKT-181.** Schema 5 reaching such a replica
+is quarantined and acked, latches the consumer unready, and needs `reprocess-quarantine`
+**plus a restart** by an operator (see *Inventory catalog-event quarantine operations*).
+
 ## Conventions
 
 - Money: integer minor units + ISO currency code; floats banned on money paths (ADR-001).

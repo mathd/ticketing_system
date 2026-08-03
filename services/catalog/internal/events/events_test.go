@@ -211,12 +211,12 @@ func TestPerformancePublishedEnvelopeCarriesReEntryPolicy(t *testing.T) {
 	shared := int32(1000)
 	maxEntries := int32(3)
 	tests := []struct {
-		name        string
-		perf        store.Performance
-		wantSchema  int
-		wantMode    string
-		wantMax     *int32
-		wantExit    bool
+		name       string
+		perf       store.Performance
+		wantSchema int
+		wantMode   string
+		wantMax    *int32
+		wantExit   bool
 	}{
 		{
 			name: "single performance carries explicit single policy at schema 2",
@@ -503,5 +503,92 @@ func TestPerformanceArchivedGroupedEnvelopeTargetsSharedPool(t *testing.T) {
 	}
 	if got.ID != ArchivedEventID(plain) || got.Schema != 2 || got.Data.CapacityGroupID != nil {
 		t.Fatalf("plain archive envelope = %+v, want schema 2 without shared pool", got)
+	}
+}
+
+// TestSchemaAndFlagAreOneFact is the negative half of the TKT-183 fork, and the half
+// that is easy to leave untested: `omitempty` means a schema-5 payload can never carry
+// `false`, so a fork that drifted would fail silently in both directions — a schema-5
+// event with the flag absent provisions a rule-enabled pool that says nothing is
+// enabled, and a schema-4 event for an enabled version is exactly the TKT-179 gap
+// TKT-183 exists to close.
+func TestSchemaAndFlagAreOneFact(t *testing.T) {
+	decode := func(t *testing.T, body []byte) (int, bool, bool) {
+		t.Helper()
+		var env struct {
+			Schema int `json:"schema"`
+			Data   map[string]any
+		}
+		if err := json.Unmarshal(body, &env); err != nil {
+			t.Fatal(err)
+		}
+		v, present := env.Data["orphan_prevention_enabled"]
+		flag, _ := v.(bool)
+		return env.Schema, flag, present
+	}
+
+	t.Run("enabled bound version emits 5 AND the flag", func(t *testing.T) {
+		perf := goldPerformance()
+		perf.SeatMapID = &goldSeatMapID
+		perf.OrphanPreventionEnabled = true
+		body, err := performancePublishedEnvelope(perf, goldOccurred)
+		if err != nil {
+			t.Fatal(err)
+		}
+		schema, flag, present := decode(t, body)
+		if schema != 5 || !present || !flag {
+			t.Fatalf("schema=%d flag=%v present=%v — schema 5 without the flag would provision a rule-enabled pool that says nothing is enabled", schema, flag, present)
+		}
+	})
+
+	t.Run("rule-off bound version emits 4 AND omits the flag", func(t *testing.T) {
+		perf := goldPerformance()
+		perf.SeatMapID = &goldSeatMapID
+		body, err := performancePublishedEnvelope(perf, goldOccurred)
+		if err != nil {
+			t.Fatal(err)
+		}
+		schema, _, present := decode(t, body)
+		if schema != 4 || present {
+			t.Fatalf("schema=%d flagPresent=%v — a rule-off seated slot must stay byte-identical to the shipped schema-4 contract", schema, present)
+		}
+	})
+
+	t.Run("the flag without a seat map fails closed", func(t *testing.T) {
+		perf := goldPerformance()
+		perf.OrphanPreventionEnabled = true
+		if _, err := performancePublishedEnvelope(perf, goldOccurred); err == nil {
+			t.Fatal("a GA slot carrying the rule flag is a corrupt row: emitting either variant hides it")
+		}
+	})
+}
+
+// TestOrphanPreventionCorrectionIDIsItsOwnNamespace: the wave re-emits publications
+// that catalog ALREADY emitted at schema 4 and will never emit again. Reusing either
+// existing id makes it a silent no-op — inventory's consumed_events swallows the live
+// id, and access's swallows the backfill id. The whole ticket turns on this.
+func TestOrphanPreventionCorrectionIDIsItsOwnNamespace(t *testing.T) {
+	perf := goldPerformance()
+	perf.SeatMapID = &goldSeatMapID
+	perf.OrphanPreventionEnabled = true
+
+	correction := OrphanPreventionCorrectionEventID(perf)
+	if correction == EventID(perf) {
+		t.Fatal("correction id equals the live id — inventory consumed it as schema 4 and would drop this")
+	}
+	if correction == BackfillEventID(perf) {
+		t.Fatal("correction id equals the re_entry backfill id — access consumed it and reemit-policies may reuse it")
+	}
+	if correction != OrphanPreventionCorrectionEventID(perf) {
+		t.Fatal("not deterministic — repeats would multiply events instead of converging (ADR-041)")
+	}
+
+	// Bound to the publication, not just the slot: an unpublish/republish is a
+	// different publication and must not be swallowed by the earlier correction.
+	republished := perf
+	later := goldOccurred.Add(time.Hour)
+	republished.PublishedAt = &later
+	if OrphanPreventionCorrectionEventID(republished) == correction {
+		t.Fatal("id ignores published_at — a republished slot could never be corrected again")
 	}
 }

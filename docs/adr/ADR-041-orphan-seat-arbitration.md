@@ -215,6 +215,20 @@ is designed to converge without that assumption: a watermark, or a reconciliatio
 until it finds nothing, rather than a single pass. Its correction identity must be
 **deterministic per performance** so repeats converge instead of multiplying events.
 
+**Resolved in TKT-183: the wave is a re-runnable reconciliation, and drain is the operator's
+stopping condition rather than a correctness precondition.** It keeps **no correction state**
+— no "already corrected" column — so every run reconciles the full current candidate set, and
+a slot published at schema 4 by an undrained old replica is simply picked up by the next run.
+Convergence comes from the identity: a re-run re-emits the *same* deterministic id, which
+inventory's `consumed_events` and JetStream's dedup window absorb as no-ops.
+
+Carrying correction state would have been worse than useless here. It is a second source of
+truth about something only **inventory** can confirm, and a catalog row reading "corrected"
+while inventory's pool has no projection is more dangerous than no row at all — it tells an
+operator to stop looking. Per ADR-021, name the adversary even for a non-security invariant:
+this is honest-writer/deployment consistency, and a catalog writer can change bindings or
+forge candidates at will.
+
 ## Consequences
 
 - **Positive.** No cross-service call on the claim path. No stale projection, by

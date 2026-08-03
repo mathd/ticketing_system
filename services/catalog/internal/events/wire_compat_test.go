@@ -91,6 +91,24 @@ func TestWireGoldenPerformancePublishedSchema4Seated(t *testing.T) {
 	assertGolden(t, want, body)
 }
 
+// The schema-5 fork (TKT-183). It sits directly beside the schema-4 golden on
+// purpose: the PAIR is what proves a fork rather than a rewrite. If a change ever
+// makes both goldens move together, it was a rewrite and the rule-off wire
+// contract broke — which is invisible when a golden is read on its own.
+func TestWireGoldenPerformancePublishedSchema5OrphanPrevention(t *testing.T) {
+	perf := goldPerformance()
+	perf.SeatMapID = &goldSeatMapID
+	perf.OrphanPreventionEnabled = true
+	maxEntries := int32(3)
+	perf.ReEntry = store.ReEntryPolicy{Mode: "count_limited", MaxEntries: &maxEntries, RequiresExit: true}
+	body, err := performancePublishedEnvelope(perf, goldOccurred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"id":"76722551-ed68-5a5b-933b-60b4fa0abfba","type":"platform.catalog.performance.published","occurred_at":"2026-07-20T12:34:56.123456789Z","schema":5,"data":{"performance_id":"11111111-1111-4111-8111-111111111111","event_id":"22222222-2222-4222-8222-222222222222","organizer_id":"33333333-3333-4333-8333-333333333333","kind":"performance","capacity":250,"seat_map_id":"55555555-5555-4555-8555-555555555555","orphan_prevention_enabled":true,"re_entry":{"mode":"count_limited","max_entries":3,"requires_exit":true}}}`
+	assertGolden(t, want, body)
+}
+
 // The backfill re-emission is byte-identical to the live publish EXCEPT for the
 // envelope id — that difference is load-bearing (TKT-96: sharing the live id
 // would let access's dedup swallow the re-emission), so it gets its own golden.
