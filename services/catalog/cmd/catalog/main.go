@@ -57,6 +57,7 @@ func subcommands() map[string]func([]string) error {
 		"healthcheck":              func([]string) error { os.Exit(healthcheck()); return nil },
 		"reemit-policies":          reemitPolicies,
 		"reemit-orphan-prevention": reemitOrphanPrevention,
+		"provision-staff":          provisionStaffCommand,
 	}
 }
 

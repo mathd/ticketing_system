@@ -738,6 +738,63 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /staff/authenticate:
+    post:
+      operationId: authenticateStaff
+      summary: Verify back-office staff credentials and return the principal (TKT-190)
+      description: >
+        Verifies an identifier/password pair against the staff accounts catalog
+        owns (ADR-002 assigns organizers and tenant-scoped configuration here;
+        ADR-042 records why staff live here rather than in a sixth service).
+        Returns the principal only — never the role, which TKT-191 introduces,
+        and never any password material.
+
+        This operation is deliberately PUBLIC rather than internal-token guarded.
+        The back-office login form in front of it must be anonymous by
+        construction (a staff member cannot sign in through a page that requires
+        a session), so an unauthenticated caller already has an unlimited
+        credential-submission channel; making this endpoint internal would move
+        the front door without locking it, at the price of handing the
+        public-facing back-office process the shared credential that also opens
+        commerce's refunds and inventory's operational holds. Rate limiting and
+        abuse telemetry are TKT-195 and cover this endpoint AND the form.
+
+        Unknown identifier and wrong password are the same 401 with the same
+        body, and the store performs the same number of key-derivation
+        comparisons on both paths — status parity alone would still leak account
+        existence through timing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StaffCredentials'
+      responses:
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '200':
+          description: Credentials verified
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NeverCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaffPrincipal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: >-
+            Invalid credentials. Identical for an unknown identifier and a wrong
+            password — the body never says which, and never echoes the submitted
+            identifier.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NeverCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /public/events:
     get:
       operationId: listPublicEvents
@@ -1040,6 +1097,17 @@ components:
         type: string
         enum:
           - 'no-store'
+    NeverCacheControl:
+      description: >
+        Always no-store — ADR-004's "never" tier. An authentication response is
+        never shared-cacheable: it is computed from a submitted credential and
+        says whether that credential is good. Single-valued and required so the
+        ADR-028 response validator turns any other value into a 500.
+      required: true
+      schema:
+        type: string
+        enum:
+          - 'no-store'
   responses:
     BadRequest:
       description: Validation failed
@@ -1069,6 +1137,38 @@ components:
       properties:
         error:
           type: string
+    StaffCredentials:
+      description: >
+        A back-office sign-in attempt (TKT-190). maxLength on both fields bounds
+        the work an unauthenticated caller can ask for: 72 bytes is bcrypt's hard
+        input limit, past which it silently ignores the tail, so a longer password
+        and its 72-byte prefix would authenticate each other.
+      type: object
+      required: [identifier, password]
+      additionalProperties: false
+      properties:
+        identifier:
+          type: string
+          minLength: 1
+          maxLength: 320
+        password:
+          type: string
+          minLength: 1
+          maxLength: 72
+    StaffPrincipal:
+      description: >
+        Who signed in. Carries no role — TKT-191 owns role semantics and adds it
+        then — and no password material of any kind.
+      type: object
+      required: [staff_id, organizer_id]
+      additionalProperties: false
+      properties:
+        staff_id:
+          type: string
+          format: uuid
+        organizer_id:
+          type: string
+          format: uuid
     LocalizedString:
       description: Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
       type: object

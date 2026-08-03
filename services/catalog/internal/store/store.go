@@ -591,6 +591,12 @@ type Store interface {
 	// A rule whose currency differs from the ticket type's fails the resolution
 	// with ErrPriceRuleCurrencyMismatch rather than being skipped (§2).
 	ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, at time.Time) (RuleSelection, error)
+	// AuthenticateStaff verifies a back-office sign-in (TKT-190, staff.go).
+	// Every credential failure is ErrStaffCredentialsInvalid — an unknown
+	// identifier and a wrong password are indistinguishable *by construction*,
+	// not by convention, so no caller can branch them apart and leak which
+	// accounts exist. Any other error is a lookup failure, not a verdict.
+	AuthenticateStaff(ctx context.Context, identifier, password string) (StaffAccount, error)
 	GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error)
 	// GetPoolOfferState answers for an inventory pool id whatever it is — a
 	// performance in ANY lifecycle or a festival capacity group — so the

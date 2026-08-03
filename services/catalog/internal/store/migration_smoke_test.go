@@ -28,7 +28,8 @@ const (
 	versionBeforeFestivals          = 5 // roll 0006_festivals down
 	versionBeforeArchived           = 2 // roll 0003_archived_performance_lifecycle down
 	versionBeforeSeatMaps           = 8 // roll 0009_seat_maps down
-	versionBeforeSeatedPerformances = 9 // roll 0010_publish_seat_maps down
+	versionBeforeSeatedPerformances = 9  // roll 0010_publish_seat_maps down
+	versionBeforeStaffAccounts      = 14 // roll 0015_staff_accounts down (TKT-190)
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {

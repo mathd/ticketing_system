@@ -752,6 +752,18 @@ type SlotCloseRequest struct {
 // SlotKind The dated-slot kind (ADR-005 amendment / US-009). 'performance' carries starts_at; 'festival_day'/'operating_day' carry the operating window.
 type SlotKind string
 
+// StaffCredentials A back-office sign-in attempt (TKT-190). maxLength on both fields bounds the work an unauthenticated caller can ask for: 72 bytes is bcrypt's hard input limit, past which it silently ignores the tail, so a longer password and its 72-byte prefix would authenticate each other.
+type StaffCredentials struct {
+	Identifier string `json:"identifier"`
+	Password   string `json:"password"`
+}
+
+// StaffPrincipal Who signed in. Carries no role — TKT-191 owns role semantics and adds it then — and no password material of any kind.
+type StaffPrincipal struct {
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	StaffId     openapi_types.UUID `json:"staff_id"`
+}
+
 // TicketType defines model for TicketType.
 type TicketType struct {
 	CreatedAt time.Time          `json:"created_at"`
@@ -907,6 +919,9 @@ type CreateSeriesJSONRequestBody = SeriesCreate
 // AttachPerformanceToSeriesJSONRequestBody defines body for AttachPerformanceToSeries for application/json ContentType.
 type AttachPerformanceToSeriesJSONRequestBody = SeriesPerformanceAttach
 
+// AuthenticateStaffJSONRequestBody defines body for AuthenticateStaff for application/json ContentType.
+type AuthenticateStaffJSONRequestBody = StaffCredentials
+
 // CreateTicketTypeJSONRequestBody defines body for CreateTicketType for application/json ContentType.
 type CreateTicketTypeJSONRequestBody = TicketTypeCreate
 
@@ -1014,6 +1029,9 @@ type ServerInterface interface {
 	// Atomically publish every slot in the series
 	// (POST /series/{seriesId}/publish)
 	PublishSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId)
+	// Verify back-office staff credentials and return the principal (TKT-190)
+	// (POST /staff/authenticate)
+	AuthenticateStaff(w http.ResponseWriter, r *http.Request)
 	// Create a ticket type with a price
 	// (POST /ticket-types)
 	CreateTicketType(w http.ResponseWriter, r *http.Request)
@@ -1218,6 +1236,12 @@ func (_ Unimplemented) AttachPerformanceToSeries(w http.ResponseWriter, r *http.
 // Atomically publish every slot in the series
 // (POST /series/{seriesId}/publish)
 func (_ Unimplemented) PublishSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Verify back-office staff credentials and return the principal (TKT-190)
+// (POST /staff/authenticate)
+func (_ Unimplemented) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2056,6 +2080,20 @@ func (siw *ServerInterfaceWrapper) PublishSeries(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// AuthenticateStaff operation middleware
+func (siw *ServerInterfaceWrapper) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AuthenticateStaff(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateTicketType operation middleware
 func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *http.Request) {
 
@@ -2367,6 +2405,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/series/{seriesId}/publish", wrapper.PublishSeries)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/staff/authenticate", wrapper.AuthenticateStaff)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/ticket-types", wrapper.CreateTicketType)

@@ -500,6 +500,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/staff/authenticate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify back-office staff credentials and return the principal (TKT-190)
+         * @description Verifies an identifier/password pair against the staff accounts catalog owns (ADR-002 assigns organizers and tenant-scoped configuration here; ADR-042 records why staff live here rather than in a sixth service). Returns the principal only — never the role, which TKT-191 introduces, and never any password material.
+         *     This operation is deliberately PUBLIC rather than internal-token guarded. The back-office login form in front of it must be anonymous by construction (a staff member cannot sign in through a page that requires a session), so an unauthenticated caller already has an unlimited credential-submission channel; making this endpoint internal would move the front door without locking it, at the price of handing the public-facing back-office process the shared credential that also opens commerce's refunds and inventory's operational holds. Rate limiting and abuse telemetry are TKT-195 and cover this endpoint AND the form.
+         *     Unknown identifier and wrong password are the same 401 with the same body, and the store performs the same number of key-derivation comparisons on both paths — status parity alone would still leak account existence through timing.
+         */
+        post: operations["authenticateStaff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/public/events": {
         parameters: {
             query?: never;
@@ -683,6 +705,18 @@ export interface components {
     schemas: {
         Error: {
             error: string;
+        };
+        /** @description A back-office sign-in attempt (TKT-190). maxLength on both fields bounds the work an unauthenticated caller can ask for: 72 bytes is bcrypt's hard input limit, past which it silently ignores the tail, so a longer password and its 72-byte prefix would authenticate each other. */
+        StaffCredentials: {
+            identifier: string;
+            password: string;
+        };
+        /** @description Who signed in. Carries no role — TKT-191 owns role semantics and adds it then — and no password material of any kind. */
+        StaffPrincipal: {
+            /** Format: uuid */
+            staff_id: string;
+            /** Format: uuid */
+            organizer_id: string;
         };
         /** @description Locale-keyed text; adding a locale is data, not a schema change (TKT-36) */
         LocalizedString: {
@@ -1274,6 +1308,8 @@ export interface components {
         SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
         /** @description Always no-store. A resolved price feeds a money decision (ADR-004's "never" tier), and once TKT-152 adds effective windows the response's correctness expires at a known instant — caching it past that instant would sell at a stale price. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
         PriceResolutionCacheControl: "no-store";
+        /** @description Always no-store — ADR-004's "never" tier. An authentication response is never shared-cacheable: it is computed from a submitted credential and says whether that credential is good. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
+        NeverCacheControl: "no-store";
     };
     pathItems: never;
 }
@@ -2170,6 +2206,43 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    authenticateStaff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StaffCredentials"];
+            };
+        };
+        responses: {
+            /** @description Credentials verified */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NeverCacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StaffPrincipal"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description Invalid credentials. Identical for an unknown identifier and a wrong password — the body never says which, and never echoes the submitted identifier. */
+            401: {
+                headers: {
+                    "Cache-Control": components["headers"]["NeverCacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             500: components["responses"]["InternalError"];
         };
     };
