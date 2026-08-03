@@ -1,0 +1,104 @@
+{
+  "key": "TKT-188",
+  "type": "Story",
+  "summary": "US-B5: Order console actions — refund and resend from the console",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-22",
+  "description": "**As** box-office staff, **I want** to refund an order and resend its tickets from the console, **so that** the full staff-side order lifecycle is available without curl.\n\nThe write half of the epic's third COS. It drives **existing** money and delivery protocols (ADR-037 refunds, ADR-038 voiding) from a staff-authenticated surface — it must not invent new money semantics.\n\n**In scope:** a full-order refund action, a resend-delivery action, idempotency on both, a staff-attributed record of who acted, and the role gate on each action.\n\n**Out of scope:** partial/line-level refunds, exchanges (ADR-039 — its own later slice), cancelling an event's order book (TKT-159 owns it), holds management, any new refund semantics.\n\n**Conditions of Success:**\n- [ ] From an order page, an authorized staff member issues a full refund; the money returns through the existing ADR-037 protocol and the order's tickets stop working at the gate per ADR-038 — proven against the real stack, not mocked.\n- [ ] A resend re-issues delivery to the order's current delivery address and is visible in the ticket's lifecycle.\n- [ ] Both actions are idempotent under a double submit: a repeated action with the same idempotency key produces one effect, and the second attempt is not reported as a new success.\n- [ ] A role the matrix does not allow is refused **server-side** with 403 even when the form is forged with the right fields — hiding the button is not the enforcement.\n- [ ] Each action records the acting staff principal in an append-only record, pseudonymously (ADR-003) — the record names a staff id, never an email.\n- [ ] A refund the downstream refuses (already refunded, gone claim) renders a readable outcome; the console never reports success for a refusal.\n- [ ] No new money arithmetic is introduced: amounts stay integer minor units + ISO currency end to end.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered — API smoke cannot see the SSR layer (TKT-105 learning).\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-187"
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "The gateway is the single public entry point and its route table IS the security boundary; /api/<svc>/internal/ is unreachable from the edge by construction. Anything this ticket adds to the edge must keep that construction true."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new HTTP surface is authored in the service's openapi.yaml and the generated code committed BEFORE the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: every status code the handler can emit must be declared, or the validator rejects the response at runtime."
+      },
+      {
+        "id": "ADR-006",
+        "why": "The back-office is Astro SSR behind the gateway. `security.checkOrigin` is already false in web/backoffice/astro.config.mjs and form actions must be RELATIVE — an absolute action trips the check even same-origin."
+      },
+      {
+        "id": "ADR-037",
+        "why": "The refund money protocol already exists. This ticket calls it; it does not restate, re-derive or re-implement any part of it."
+      },
+      {
+        "id": "ADR-038",
+        "why": "A refund voids the tickets — refund and revocation are one protocol, not two independent calls the console sequences itself."
+      },
+      {
+        "id": "ADR-003",
+        "why": "Every money mutation flows through the append-only journal and every ticket transition appends a lifecycle event. The staff attribution rides those existing records pseudonymously; it never adds an email to them."
+      },
+      {
+        "id": "ADR-021",
+        "why": "State inside the database cannot constrain an adversary who writes to the database. The staff-attribution record is honest-writer provenance, not tamper-evidence — word the claim that way."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Refund/exchange internal endpoints: POST /internal/orders/{id}/refunds. Edge-unreachable by construction (ADR-002) — how a staff-authenticated console reaches them is the core design question of this ticket.",
+        "link": "services/commerce/api/openapi.yaml"
+      },
+      {
+        "summary": "TKT-116 left a failed compensation refund with no automated path forward (TKT-144) and no operator unpark path (TKT-146) — the console must not pretend those cases resolve.",
+        "link": "TKT-144"
+      },
+      {
+        "summary": "Refunded tickets still admit at an OFFLINE gate (TKT-162, open) — the console must not claim revocation is immediate everywhere.",
+        "link": "TKT-162"
+      }
+    ],
+    "capturedAt": "2026-08-03"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Problem and why stated in the description; lineage to TKT-22's COS."
+    },
+    "scope": {
+      "state": "met",
+      "note": "In-scope and out-of-scope both enumerated on the ticket."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Named in the description's out-of-scope list; the remaining design choices are safely settleable in Planning without a mid-sprint redesign."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by links wired; catalog/commerce/access endpoints this depends on are shipped and stable."
+    },
+    "approach": {
+      "state": "deferred",
+      "note": "Where staff identity lives (gateway-owned store vs a sixth service) is settled by US-B1's plan and recorded as an ADR to be authored; later stories inherit that decision."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The ticket IS one vertical slice — schema/backend/UI/tests — demoable on its own."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS are verifiable criteria plus the project quality gates."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition with governingAdrs resolved against docs/adr/ at HEAD 2026-08-03; every cited ADR file verified to exist."
+    }
+  },
+  "comments": []
+}
