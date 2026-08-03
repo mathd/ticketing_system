@@ -2,8 +2,10 @@
   "key": "TKT-190",
   "type": "Story",
   "summary": "US-B1: Staff sign-in — a session gates the back office",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "parent": "TKT-22",
