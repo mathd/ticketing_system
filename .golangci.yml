@@ -1,0 +1,39 @@
+version: "2"
+
+# The gate runs golangci-lint per Go module (`cd $m && golangci-lint run`, see the
+# Makefile). golangci-lint walks up from the module directory to the git root to find
+# this file, so one config covers every module — do not copy it per service.
+#
+# Until TKT-184 there was no config at all, which meant the default five linters
+# (errcheck, govet, ineffassign, staticcheck, unused). That is thin for a codebase
+# whose store layer is hand-written SQL: `rowserrcheck` alone found three production
+# sites where a truncated result set read as a clean short read.
+linters:
+  default: standard
+  enable:
+    # A `for rows.Next()` loop that never calls rows.Err() cannot tell "the result set
+    # ended" from "the connection died mid-iteration" — sql.Rows.Close() returns the
+    # DRIVER's close error, never the iteration error, so closing is not checking.
+    # Silent truncation on a store read is the worst shape of wrong: it commits.
+    - rowserrcheck
+    # `if err != ErrSentinel` silently stops matching the moment anything upstream
+    # wraps, and every one of these is in a test — a comparison that quietly goes
+    # false is a test that quietly stops asserting.
+    - errorlint
+
+  settings:
+    errorlint:
+      # errorf is OFF, deliberately. Its hits are all the house pattern
+      # `fmt.Errorf("%w: ...: %v", errSentinel, cause)`: the sentinel callers dispatch
+      # on is ALREADY wrapped, and the cause is rendered on purpose. Promoting the
+      # cause to %w adds matchable errors to chains that the inventory consumer
+      # branches on to choose park-vs-nak, so the "fix" would change routing decisions
+      # nobody asked to change (AGENTS.md: two correct fixes can compose into a defect).
+      errorf: false
+      asserts: true
+      comparison: true
+
+# NOT enabled: sqlclosecheck. It demands `defer rows.Close()` and flags the deliberate
+# close-then-return inside a scan-error branch that this store layer uses in ~20 places.
+# The pattern is correct — the rows are closed on every path — so adopting the linter
+# would mean rewriting correct code to satisfy it.

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import type { Ref } from 'react';
 
 import { parseMaxAge } from '../lib/cache';
 import type { SeatMapGeometry, SeatMapRow, SeatMapSeat, SeatMapSection } from '../lib/api';
@@ -42,12 +43,23 @@ export interface SeatSelection {
   claimable: boolean;
 }
 
+/**
+ * What the parent may ask the map to do. HoldPicker owns the reservation, so it is the
+ * only thing that ever sees a 409 — but the seats are the MAP's state, so the parent
+ * has to hand them over rather than act on them.
+ */
+export interface SeatMapHandle {
+  /** Fold a refused reservation's contended identities in, and re-read authoritatively. */
+  applyConflict: (lost: string[]) => void;
+}
+
 interface Props {
   organizerId: string;
   slotId: string;
   seatMapId: string;
   locale: Locale;
   onSelectionChange: (selection: SeatSelection) => void;
+  ref?: Ref<SeatMapHandle>;
 }
 
 /** The 1..50 band the claim path enforces (store.MaxSeatsPerHold). */
@@ -212,7 +224,7 @@ async function boundedJSON<T>(url: string, init: RequestInit, controller: AbortC
   }
 }
 
-export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, onSelectionChange }: Props) {
+export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, onSelectionChange, ref }: Props) {
   const t = UI_STRINGS[locale];
   const [sections, setSections] = useState<Section[] | null>(null);
   const [occupancy, setOccupancy] = useState<Occupancy | null>(null);
@@ -380,15 +392,18 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
   // The conflict channel from HoldPicker: a 409's identities are authoritative and are
   // held here until a no-store read confirms them, rather than being written into a
   // snapshot the next cached response would overwrite.
-  useEffect(() => {
-    const onConflict = (event: Event) => {
-      const lost = (event as CustomEvent<string[]>).detail;
+  //
+  // An imperative handle, not a `window` CustomEvent keyed by slot id (TKT-184). The two
+  // components are directly composed — HoldPicker renders this one — so the DOM was
+  // being used as a message bus between a parent and its own child. That indirection
+  // bought nothing and cost the type checker: a mistyped detail, a stale slot id in the
+  // event name, or two pickers mounted for one slot all failed silently at runtime.
+  useImperativeHandle(ref, () => ({
+    applyConflict(lost: string[]) {
       setConflicted((current) => [...new Set([...current, ...lost])].sort());
       void readOccupancy({ bypassCache: true });
-    };
-    window.addEventListener(`seat-conflict:${slotId}`, onConflict);
-    return () => window.removeEventListener(`seat-conflict:${slotId}`, onConflict);
-  }, [slotId, readOccupancy]);
+    },
+  }), [readOccupancy]);
 
   if (geometryState === 'failed' || occupancyState === 'failed') {
     return <p className="seat-map-unavailable" role="status">{t.seatSelectionUnavailable}</p>;

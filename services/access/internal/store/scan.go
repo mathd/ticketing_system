@@ -375,6 +375,13 @@ func (p *Postgres) evaluatePolicyAlarms(ctx context.Context, tx *sql.Tx, ticketI
 	if err := rows.Close(); err != nil {
 		return err
 	}
+	// Close reports the driver's close error, never the iteration error (that is Err's
+	// job). A truncated read here is not a smaller answer, it is a WRONG one: the diff
+	// below treats every conflict it did not see as absent, so an already-raised
+	// conflict is re-raised at a stale version and lands in the alarm outbox (TKT-184).
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
 	raises, withdraws := DiffPolicyConflicts(current, derived)
 	transition := func(c PolicyConflict, status string) error {
