@@ -42,6 +42,13 @@ experiment stays valid.
   For any back-office/storefront/scanner ticket that adds or changes a write form, drive the real
   stack (`make up`) in a browser and submit the write path, not just the render. There is no
   Playwright/e2e harness in-repo yet. (Why: [browser-submit is the only checkOrigin catch](docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md), TKT-105.)
+- **A round of review fixes needs a review of the fixes' *interaction*, not each in isolation.**
+  Four tickets in TKT-35 had a pass find a defect created by the previous pass's fix, every fix
+  correct on its own; a bounded or optimized replacement is a new implementation, so ask what the
+  version it replaced would have caught. And before debugging a red test, ask what its **fixture
+  can distinguish** — a rule-refuses test whose fixture admits no allowed input, or a planner proof
+  with too few distinct values, fails while the code is correct. ([fixes compose](docs/learnings/2026-08-03-two-correct-fixes-can-compose-into-a-new-defect.md),
+  [fixture too small](docs/learnings/2026-08-03-a-fixture-too-small-cannot-show-the-negative.md))
 - **Specs before code.** Prefer writing/refining a spec or PRD before implementing. Ground work in
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`
