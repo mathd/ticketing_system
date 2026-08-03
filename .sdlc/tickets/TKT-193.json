@@ -1,0 +1,96 @@
+{
+  "key": "TKT-193",
+  "type": "Story",
+  "summary": "US-B4: Order console — staff find an order and read its lifecycle",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-22",
+  "description": "**As** box-office staff, **I want** to look up an order and see its full state, **so that** I can answer a customer without a database console.\n\nThe read half of the epic's third COS. Actions (refund, resend) are US-B5 — this story is deliberately read-only so the lookup, the role gate and the rendering are settled before anything mutates.\n\n**In scope:** an order lookup screen, an order detail view showing status, buyer contact, line items, money totals in minor units + currency, and the ticket lifecycle states for that order.\n\n**Out of scope:** every mutation (US-B5), search by buyer email/name, pagination over an order list, exports.\n\n**Conditions of Success:**\n- [ ] A signed-in staff member enters an order id and sees: order status, buyer delivery contact, line items, money totals, and each ticket's current lifecycle state.\n- [ ] An unknown order id renders a readable not-found page — not a 500 and not a blank render.\n- [ ] Money renders from integer minor units + the order's ISO currency code; no float parsing anywhere on the path.\n- [ ] The console read is `no-store` (ADR-004's 'never' tier for order state) and is not served from any cache.\n- [ ] An unauthenticated caller cannot reach the console; the roles that may reach it are the ones US-B2's matrix declares.\n- [ ] The rendered page exposes no data the acting role has no business seeing — state the rule explicitly and pin it with a test.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered — API smoke cannot see the SSR layer (TKT-105 learning).\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-191"
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "The gateway is the single public entry point and its route table IS the security boundary; /api/<svc>/internal/ is unreachable from the edge by construction. Anything this ticket adds to the edge must keep that construction true."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new HTTP surface is authored in the service's openapi.yaml and the generated code committed BEFORE the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: every status code the handler can emit must be declared, or the validator rejects the response at runtime."
+      },
+      {
+        "id": "ADR-006",
+        "why": "The back-office is Astro SSR behind the gateway. `security.checkOrigin` is already false in web/backoffice/astro.config.mjs and form actions must be RELATIVE — an absolute action trips the check even same-origin."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Order/hold/scan state is the 'never' tier: no cache, no TTL. The console read must set no-store and must not be added to any hot-event structure."
+      },
+      {
+        "id": "ADR-003",
+        "why": "Buyer contact is PII. It may render in the console, but it must not be copied into any append-only record the console touches."
+      },
+      {
+        "id": "ADR-021",
+        "why": "The lifecycle states the console renders come from the access trail. Rendering them is not a tamper-evidence claim — do not word the UI as if it verifies anything."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Commerce read surface: GET /orders/{id}. Internal mutations live under /internal/ and are edge-unreachable by construction.",
+        "link": "services/commerce/api/openapi.yaml"
+      },
+      {
+        "summary": "Access lifecycle trail operator surface and the exact wording to reuse for any claim about it.",
+        "link": "docs/development.md"
+      }
+    ],
+    "capturedAt": "2026-08-03"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Problem and why stated in the description; lineage to TKT-22's COS."
+    },
+    "scope": {
+      "state": "met",
+      "note": "In-scope and out-of-scope both enumerated on the ticket."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Named in the description's out-of-scope list; the remaining design choices are safely settleable in Planning without a mid-sprint redesign."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by links wired; catalog/commerce/access endpoints this depends on are shipped and stable."
+    },
+    "approach": {
+      "state": "deferred",
+      "note": "Where staff identity lives (gateway-owned store vs a sixth service) is settled by US-B1's plan and recorded as an ADR to be authored; later stories inherit that decision."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The ticket IS one vertical slice — schema/backend/UI/tests — demoable on its own."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS are verifiable criteria plus the project quality gates."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition with governingAdrs resolved against docs/adr/ at HEAD 2026-08-03; every cited ADR file verified to exist."
+    }
+  },
+  "comments": []
+}
