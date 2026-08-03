@@ -1,0 +1,104 @@
+{
+  "key": "TKT-186",
+  "type": "Story",
+  "summary": "US-B3: Event builder — an organizer publishes a sellable event without curl",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-22",
+  "description": "**As** an organizer, **I want** to author and publish an event and its performance from the back office, **so that** I never touch the catalog API by hand.\n\nThis is the tracer bullet for the epic's second COS. It covers the **single-event → performance → ticket type → publish** path end to end in the browser. Series/season/festival authoring is deliberately a later slice — this one proves the shape.\n\n**In scope:** back-office screens to create an event, attach a typed dated slot (performance) to it, define a ticket type with a price, and publish the performance; readable validation and refusal handling; the published performance is visible on the storefront.\n\n**Out of scope:** series, seasons, festivals, operating-day slots, seat-map assignment (TKT-105 already owns map authoring), pricing rules beyond a flat price, archive/close/reopen from the UI.\n\n**Conditions of Success:**\n- [ ] From `/admin/`, a signed-in `admin` creates an event, adds a performance to it, adds a ticket type with a price, and publishes the performance — with no HTTP call issued outside the browser.\n- [ ] The published performance is then visible on the storefront and can be put in a cart.\n- [ ] A publish that the catalog refuses (ADR-018: a grouped member refusing its own publish, an archived slot) renders a readable message on the form — never a 500 and never a silent no-op.\n- [ ] Invalid input re-renders the form with a field-level error and the operator's entered values intact.\n- [ ] Money is entered and submitted as integer minor units + an ISO currency code; no float appears on the price path.\n- [ ] Every new form posts a **relative** action and is verified by an actual submit against `make up`.\n- [ ] The screens are reachable only by the roles US-B2's matrix allows.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered — API smoke cannot see the SSR layer (TKT-105 learning).\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-185"
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "The gateway is the single public entry point and its route table IS the security boundary; /api/<svc>/internal/ is unreachable from the edge by construction. Anything this ticket adds to the edge must keep that construction true."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new HTTP surface is authored in the service's openapi.yaml and the generated code committed BEFORE the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: every status code the handler can emit must be declared, or the validator rejects the response at runtime."
+      },
+      {
+        "id": "ADR-006",
+        "why": "The back-office is Astro SSR behind the gateway. `security.checkOrigin` is already false in web/backoffice/astro.config.mjs and form actions must be RELATIVE — an absolute action trips the check even same-origin."
+      },
+      {
+        "id": "ADR-018",
+        "why": "Publish/archive are state-deriving transitions: they decide under a row lock and emit after commit, and a grouped member (festival day) refuses its own publish. The UI must surface that refusal as a readable error, not translate it into a 500."
+      },
+      {
+        "id": "ADR-014",
+        "why": "A performance is a typed dated slot with attributes, not a bare date — the builder authors the typed shape the catalog already models."
+      },
+      {
+        "id": "ADR-017",
+        "why": "Publishing emits performance.published, currently at schema 5 (TKT-183). The builder must not change the payload; if it would, that is a consumer-semantics bump, not a field addition."
+      },
+      {
+        "id": "ADR-019",
+        "why": "Any list read the builder needs must be backed by an index to be genuinely scoped — copying a query shape that scales ships a no-op."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Catalog write surface the builder drives: /events, /performances, /performances/{id}/publish, /ticket-types.",
+        "link": "services/catalog/api/openapi.yaml"
+      },
+      {
+        "summary": "Existing back-office page + api client shape to extend (venue list, seat-map editor).",
+        "link": "web/backoffice/src/"
+      },
+      {
+        "summary": "Money is integer minor units + ISO currency code; floats are banned on money paths.",
+        "link": "AGENTS.md"
+      }
+    ],
+    "capturedAt": "2026-08-03"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Problem and why stated in the description; lineage to TKT-22's COS."
+    },
+    "scope": {
+      "state": "met",
+      "note": "In-scope and out-of-scope both enumerated on the ticket."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Named in the description's out-of-scope list; the remaining design choices are safely settleable in Planning without a mid-sprint redesign."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by links wired; catalog/commerce/access endpoints this depends on are shipped and stable."
+    },
+    "approach": {
+      "state": "deferred",
+      "note": "Where staff identity lives (gateway-owned store vs a sixth service) is settled by US-B1's plan and recorded as an ADR to be authored; later stories inherit that decision."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The ticket IS one vertical slice — schema/backend/UI/tests — demoable on its own."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS are verifiable criteria plus the project quality gates."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at decomposition with governingAdrs resolved against docs/adr/ at HEAD 2026-08-03; every cited ADR file verified to exist."
+    }
+  },
+  "comments": []
+}
