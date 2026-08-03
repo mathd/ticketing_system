@@ -654,10 +654,15 @@ const performanceColumns = `p.id, p.organizer_id, p.event_id, p.venue_id, p.kind
 	        p.closure_status, p.closed_at, p.closure_reason, p.closure_version,
 	        p.closure_changed_at, p.capacity_group_id, p.status, p.published_at, p.archived_at,
 	        p.event_emitted_at, p.archive_emitted_at, p.created_at, v.ga_capacity,
-	        f.shared_capacity, p.seat_map_id`
+	        f.shared_capacity, p.seat_map_id, COALESCE(sm.orphan_prevention_enabled, false)`
 
+// The seat-map join is on p.seat_map_id — the EXACT bound version (TKT-183). Joining
+// the map FAMILY and taking its current version would look identical until someone
+// edits the map, and then every emission would silently describe a version the slot is
+// not bound to (ADR-029). LEFT, because a GA slot has no map and must stay a GA slot.
 const performanceFrom = `FROM performances p JOIN venues v ON v.id = p.venue_id
-	 LEFT JOIN festivals f ON f.id = p.capacity_group_id`
+	 LEFT JOIN festivals f ON f.id = p.capacity_group_id
+	 LEFT JOIN seat_maps sm ON sm.id = p.seat_map_id`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows.
 type rowScanner interface {
@@ -682,7 +687,8 @@ func scanPerformance(s rowScanner) (Performance, *sql.NullTime, *sql.NullTime, e
 		&perf.ReEntry.Mode, &maxEntries, &perf.ReEntry.RequiresExit,
 		&perf.Closure.Status, &perf.Closure.ClosedAt, &closeReason, &perf.Closure.Version,
 		&perf.Closure.ChangedAt, &capacityGroup, &perf.Status, &perf.PublishedAt, &perf.ArchivedAt, &emitted,
-		&archiveEmitted, &perf.CreatedAt, &perf.Capacity, &sharedCapacity, &seatMap)
+		&archiveEmitted, &perf.CreatedAt, &perf.Capacity, &sharedCapacity, &seatMap,
+		&perf.OrphanPreventionEnabled)
 	if err != nil {
 		return Performance{}, nil, nil, err
 	}
@@ -727,6 +733,55 @@ func (p *Postgres) getPerformanceFrom(ctx context.Context, q rowQueryer, id uuid
 		return Performance{}, nil, nil, fmt.Errorf("get performance: %w", err)
 	}
 	return perf, emittedPtr, archiveEmittedPtr, nil
+}
+
+// ListOrphanPreventionCandidates returns fully-hydrated published performances bound to
+// a seat-map version with the rule ON (TKT-183), keyset-paginated by id.
+//
+// The predicate has no "already corrected" column, deliberately. Correction state would
+// be a second source of truth about something only inventory can actually confirm, and a
+// catalog row reading "corrected" while inventory's pool has no projection is worse than
+// no row at all. Convergence comes from the identity instead: a re-run re-emits the SAME
+// deterministic id, which inventory's consumed_events and JetStream's dedup window
+// absorb as no-ops. So this stays a full reconciliation that is safe to re-run — and
+// that is what closes ADR-041's rolling-deployment race, since a slot published at
+// schema 4 by an undrained old replica is simply picked up by the next run.
+//
+// Archived slots are excluded: the wave repairs the rule setting of live inventory, and
+// an archived pool has none to repair.
+//
+// One-shot operator read, not a hot path (ADR-019): no index is added for it.
+func (p *Postgres) ListOrphanPreventionCandidates(ctx context.Context, after *uuid.UUID, limit int) ([]Performance, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	args := []any{limit}
+	cursor := ""
+	if after != nil {
+		cursor = "AND p.id > $2"
+		args = append(args, *after)
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT `+performanceColumns+` `+performanceFrom+`
+		 WHERE p.status = 'published' AND p.seat_map_id IS NOT NULL
+		   AND sm.orphan_prevention_enabled `+cursor+`
+		 ORDER BY p.id LIMIT $1`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list orphan prevention candidates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Performance
+	for rows.Next() {
+		perf, _, _, scanErr := scanPerformance(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan performance: %w", scanErr)
+		}
+		out = append(out, perf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate performances: %w", err)
+	}
+	return out, nil
 }
 
 // ListPublishedUngroupedPerformances returns fully-hydrated published, ungrouped

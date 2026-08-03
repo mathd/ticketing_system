@@ -196,11 +196,17 @@ type Performance struct {
 	// seated against (TKT-103); nil is a GA slot. A version is a seat_maps row
 	// (TKT-102), so the id IS the version. Seated and CapacityGroupID are
 	// mutually exclusive — a festival day is GA-shared-capacity by definition.
-	SeatMapID   *uuid.UUID
-	Status      string // draft | published | archived
-	PublishedAt *time.Time
-	ArchivedAt  *time.Time
-	CreatedAt   time.Time
+	SeatMapID *uuid.UUID
+	// OrphanPreventionEnabled is the rule setting of the EXACT bound seat-map
+	// version, not of the map family (ADR-029: a published version is immutable and
+	// a slot is bound to one of them). Hydrated by a join in the shared read, so an
+	// emitter cannot accidentally reach for the family's current version — the
+	// difference is invisible until someone edits the map, and then it is silent.
+	OrphanPreventionEnabled bool
+	Status                  string // draft | published | archived
+	PublishedAt             *time.Time
+	ArchivedAt              *time.Time
+	CreatedAt               time.Time
 	// Capacity is the publication-time snapshot used to provision the
 	// inventory-owned dated-slot pool. It is not persisted on performances.
 	Capacity int32
