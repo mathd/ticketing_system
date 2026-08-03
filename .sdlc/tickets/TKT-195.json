@@ -1,0 +1,56 @@
+{
+  "key": "TKT-195",
+  "type": "Story",
+  "summary": "Back-office login rate limiting and abuse telemetry (TKT-190 follow-up)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-22",
+  "description": "Carved out of **TKT-190** at plan time and named in **ADR-042 § Decision (1)** as\nthe control that actually addresses login submission volume. TKT-190 deliberately built none of it.\n\n**The gap.** Two anonymous surfaces accept unlimited credential submissions:\n- `POST /admin/login` — the back-office form, which must be anonymous by construction (a staff\n  member cannot sign in through a page that requires a session);\n- `POST /api/catalog/staff/authenticate` — catalog's public authenticate operation.\n\nTKT-190's argument for making the catalog endpoint public rests on these two being *equivalent* in\nexposure — so a control that covers only one of them does not discharge this ticket. **Both, or\nneither.**\n\nEach attempt costs a bcrypt comparison at cost 10 on the unknown-account path as well as the known\none (deliberately — it is what removes the timing oracle, see `staff.go`). So unbounded attempts are\na CPU-exhaustion vector against catalog, not only a credential-guessing one.\n\n**Conditions of Success:**\n- [ ] Sustained failed attempts against a single identifier are throttled, and the throttle is\n      observable — a test drives it over the threshold and asserts the refusal.\n- [ ] Sustained failed attempts from a single source are throttled independently of the identifier,\n      so rotating identifiers does not reset the budget.\n- [ ] The throttle covers **both** entry points; a test proves the catalog endpoint is not reachable\n      at an unthrottled rate while the form is throttled.\n- [ ] A throttled response is indistinguishable from an ordinary refusal in what it discloses about\n      account existence (TKT-190 COS-4 must not regress — a 429 that appears only for real accounts\n      is an enumeration oracle).\n- [ ] A legitimate operator who mistypes a password twice is not locked out of their own account by\n      an attacker deliberately burning the budget on their identifier — say which of lockout vs.\n      backoff was chosen and why.\n- [ ] Failed-attempt volume is visible in telemetry with no raw identifier in the emitted labels\n      (ADR-003: pseudonymous only).\n- [ ] `make check` green.\n\n**Explicitly open questions for the plan:** where the counter lives (in-process is per-replica and\nresets on restart, exactly like TKT-190's sessions — that may or may not be acceptable here); whether\nthe gateway is the right enforcement point given it currently holds no state at all (ADR-002).",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-190"
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-042",
+        "why": "Names this ticket as the control for login submission volume and records why the authenticate endpoint is public — the reasoning this ticket must not invalidate."
+      },
+      {
+        "id": "ADR-002",
+        "why": "The gateway is the single public entry point but holds no state today; putting a rate-limit counter there is a deviation that needs saying out loud."
+      },
+      {
+        "id": "ADR-003",
+        "why": "No raw PII in emitted records — abuse telemetry carries pseudonymous staff ids, never identifiers."
+      },
+      {
+        "id": "ADR-028",
+        "why": "A 429 must be declared in catalog's contract or the response validator turns it into a 500."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The KDF cost that makes unbounded attempts a CPU vector, and the equal-cost unknown-account path a throttle must not undo.",
+        "link": "services/catalog/internal/store/staff.go"
+      },
+      {
+        "summary": "The anonymous path list the form lives on.",
+        "link": "web/backoffice/src/lib/gate.ts"
+      }
+    ],
+    "capturedAt": "2026-08-03"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated during **TKT-190**'s implementation, as an explicit deliverable of that ticket's plan rather\nthan as a discovered defect. ADR-042 cites it by key, so this ticket existing is what makes that\ncitation honest.\n\nNot shaped yet: it needs the 8-item DoR before Gate 1, and the two open questions in the description\nare real decisions, not details."
+    }
+  ]
+}
