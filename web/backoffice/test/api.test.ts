@@ -4,6 +4,7 @@ import {
   addSeatMapRow,
   addSeatMapSeat,
   addSeatMapSection,
+  authenticateStaff,
   CatalogApiError,
   createSeatMap,
   DEFAULT_ORGANIZER_ID,
@@ -222,5 +223,36 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
     expect(calls[0].url).toContain('/api/catalog/venues/v1/ga-capacity');
     expect(calls[0].body).toMatchObject({ organizer_id: DEFAULT_ORGANIZER_ID, ga_capacity: 250 });
     expect(v.ga_capacity).toBe(250);
+  });
+});
+
+describe('staff authentication client (TKT-190)', () => {
+  it('posts the credential to the catalog through the gateway, like every other call', async () => {
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
+    const principal = await authenticateStaff('ada@example.test', 'correct horse');
+    expect(calls[0].method).toBe('POST');
+    // Through the gateway, not straight at the catalog container: one network
+    // path means the back office never needs the shared internal credential.
+    expect(calls[0].url).toContain('/api/catalog/staff/authenticate');
+    expect(calls[0].body).toEqual({ identifier: 'ada@example.test', password: 'correct horse' });
+    expect(principal).toEqual({ staffId: 's1', organizerId: 'o1' });
+  });
+
+  it('reports invalid credentials as null, not as an exception', async () => {
+    // A 401 is an expected answer to a sign-in attempt. Throwing would push the
+    // page into its error path and tempt it into rendering the upstream message.
+    spyFetch({ error: 'invalid credentials' }, 401);
+    await expect(authenticateStaff('ada@example.test', 'wrong')).resolves.toBeNull();
+  });
+
+  it('does not translate an outage into a credential verdict', async () => {
+    spyFetch({ error: 'authentication unavailable' }, 500);
+    await expect(authenticateStaff('ada@example.test', 'correct horse')).rejects.toThrow();
+  });
+
+  it('never puts the password in the URL', async () => {
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
+    await authenticateStaff('ada@example.test', 'correct horse');
+    expect(calls[0].url).not.toContain('correct horse');
   });
 });

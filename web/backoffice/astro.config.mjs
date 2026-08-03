@@ -19,9 +19,18 @@ export default defineConfig({
   // forms (found in TKT-105 browser verification; TKT-102's authoring forms were
   // latently broken the same way, undetected because smoke tests hit the catalog
   // API directly, not the Astro SSR layer). The gateway is the trust boundary for
-  // this internal, single-organizer staff tool (no auth yet); disable the check
-  // here. Revisit if the back-office is ever exposed off the gateway or gains
-  // per-user auth — then origin/host must be reconciled at the proxy instead.
+  // this internal, single-organizer staff tool; disable the check here.
+  //
+  // TKT-190 is the "gains per-user auth" revisit this comment used to defer to.
+  // The check STAYS off, because re-enabling it does not work: Astro's Node
+  // adapter builds its request URL from the container's own Host, so the
+  // comparison is wrong through the proxy no matter which side you adjust, and
+  // it would still be wrong behind TLS termination. What replaces it is a
+  // proxy-aware origin check in src/lib/gate.ts, run by src/middleware.ts on
+  // every unsafe method: it compares Origin against the PUBLIC origin the
+  // gateway reports via X-Forwarded-Proto/Host (which Go's SetXForwarded
+  // overwrites, so a client cannot forge them through the gateway). Session
+  // cookies are additionally SameSite=Lax. See ADR-042.
   security: { checkOrigin: false },
   adapter: node({ mode: 'standalone' }),
   vite: {

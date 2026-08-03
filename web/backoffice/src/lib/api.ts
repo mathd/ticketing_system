@@ -203,3 +203,43 @@ export function updateVenueGaCapacity(
     ga_capacity: gaCapacity,
   });
 }
+
+// --- Staff sign-in (TKT-190 / US-B1) ---
+
+/** Who is signed in. Carries no role: TKT-191 owns role semantics. */
+export interface StaffPrincipalDto {
+  staffId: string;
+  organizerId: string;
+}
+
+/**
+ * Verify a staff credential. Returns null for "those credentials are wrong" —
+ * an expected answer to a sign-in attempt, not an exceptional one — and throws
+ * for anything else, so an outage can never be rendered as a bad password.
+ *
+ * Goes through the gateway like every other call in this file. The catalog's
+ * authenticate operation is public precisely so this stays true: reaching an
+ * internal-token endpoint would mean shipping the shared service credential into
+ * the back-office container, and that one token also opens commerce's refunds
+ * and inventory's operational holds (ADR-042).
+ */
+export async function authenticateStaff(
+  identifier: string,
+  password: string,
+): Promise<StaffPrincipalDto | null> {
+  const res = await fetch(catalog('/staff/authenticate'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    // In the body, never the URL: a query string lands in access logs, proxy
+    // logs and browser history.
+    body: JSON.stringify({ identifier, password }),
+  });
+  if (res.status === 401) {
+    return null;
+  }
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  const body = (await res.json()) as { staff_id: string; organizer_id: string };
+  return { staffId: body.staff_id, organizerId: body.organizer_id };
+}

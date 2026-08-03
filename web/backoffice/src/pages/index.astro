@@ -5,7 +5,14 @@
 import Layout from '../layouts/Layout.astro';
 import { getVenues } from '../lib/api';
 
-const venues = await getVenues();
+// The organizer comes from the session now (TKT-190), not from a constant. The
+// middleware guarantees a principal on every gated path, so an absent one here
+// would mean the gate was bypassed — fail rather than fall back to a default
+// tenant and quietly show one organizer's venues to another's staff.
+const staff = Astro.locals.staff;
+if (!staff) throw new Error('unauthenticated request reached the venue list');
+
+const venues = await getVenues(staff.organizerId);
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
 
@@ -42,4 +49,11 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
       }
     </tbody>
   </table>
+
+  <!-- A form, not a link: sign-out changes state, so it is a POST — and the
+       middleware's origin check only guards unsafe methods. Relative action
+       (TKT-105: an absolute one trips the origin handling even same-origin). -->
+  <form method="post" action="logout" class="signout">
+    <button type="submit">Sign out</button>
+  </form>
 </Layout>

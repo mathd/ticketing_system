@@ -14,7 +14,6 @@ import {
   addSeatMapSeat,
   addSeatMapSection,
   createSeatMap,
-  DEFAULT_ORGANIZER_ID,
   editSeatMap,
   getSeatMapGeometry,
   getVenue,
@@ -26,6 +25,12 @@ import {
   type SeatMapGeometry,
   type SeatMapVersionHistory,
 } from '../../lib/api';
+
+// The organizer comes from the session (TKT-190). The middleware guarantees a
+// principal on every gated path; an absent one means the gate was bypassed, so
+// fail rather than fall back to a default tenant.
+const staff = Astro.locals.staff;
+if (!staff) throw new Error('unauthenticated request reached the venue page');
 
 const venueId = Astro.params.id!;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -88,7 +93,7 @@ if (Astro.request.method === 'POST') {
   }
 }
 
-const venue = await getVenue(venueId);
+const venue = await getVenue(venueId, staff.organizerId);
 const maps = await listVenueSeatMaps(venueId);
 let geometry: SeatMapGeometry | null = null;
 let versions: SeatMapVersionHistory | null = null;
@@ -183,7 +188,7 @@ const rowOptions =
             This version is published and immutable. Editing creates a <strong>new published version</strong>;
             seats currently sold or held cannot be removed.
           </p>
-          <SeatMapEditor client:load geometry={geometry} organizerId={DEFAULT_ORGANIZER_ID} action="edit-map" />
+          <SeatMapEditor client:load geometry={geometry} organizerId={staff.organizerId} action="edit-map" />
         </div>
       ) : (
         <div class="forms">

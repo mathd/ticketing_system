@@ -1,0 +1,87 @@
+---
+// Staff sign-in (TKT-190 / US-B1). One of the three anonymous paths — a staff
+// member cannot sign in through a page that requires a session.
+//
+// The form action is RELATIVE (`action=""` posts to this same URL). An absolute
+// action trips Astro's origin handling even same-origin, which is the second
+// trap TKT-105 paid for; and the middleware's own origin check runs on this POST
+// too, so a cross-site sign-in attempt is refused before any credential is read.
+import Layout from '../layouts/Layout.astro';
+import { authenticateStaff } from '../lib/api';
+import { SESSION_COOKIE, createSession, sessionCookieOptions } from '../lib/session';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// One message for every failure mode a caller can provoke. Distinguishing
+// "no such account" from "wrong password" here would undo, in the UI, exactly
+// what the store and the handler go to some trouble to prevent.
+const INVALID = 'Those credentials are not valid.';
+// An outage is NOT a credential verdict: telling an operator their correct
+// password is wrong sends them to reset it while the real fault goes unreported.
+const UNAVAILABLE = 'Sign-in is temporarily unavailable. Try again shortly.';
+
+let error: string | null = null;
+// Deliberately NOT preserved across a failed attempt. Echoing the submitted
+// identifier back into the HTML makes the page a reflection surface and puts the
+// identifiers someone is probing into any log that captures rendered output.
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const identifier = String(form.get('identifier') ?? '');
+  const password = String(form.get('password') ?? '');
+
+  if (!identifier || !password) {
+    error = INVALID;
+  } else {
+    try {
+      const principal = await authenticateStaff(identifier, password);
+      if (!principal) {
+        error = INVALID;
+      } else {
+        const token = createSession(principal);
+        Astro.cookies.set(
+          SESSION_COOKIE,
+          token,
+          // Secure iff the public origin is https. The gateway reports the real
+          // scheme; on the local plain-HTTP stack an unconditional Secure would
+          // make the cookie undeliverable and break sign-in outright.
+          sessionCookieOptions({
+            secure: (Astro.request.headers.get('x-forwarded-proto') ?? '').split(',')[0]?.trim() === 'https',
+          }),
+        );
+        return Astro.redirect(`${base}/`, 303);
+      }
+    } catch {
+      error = UNAVAILABLE;
+    }
+  }
+}
+---
+
+<Layout title="Sign in — Back-office">
+  <form method="post" action="">
+    <h1>Sign in</h1>
+    {error && <p class="error" role="alert">{error}</p>}
+    <label for="identifier">Identifier</label>
+    <input id="identifier" name="identifier" type="email" autocomplete="username" required />
+    <label for="password">Password</label>
+    <input
+      id="password"
+      name="password"
+      type="password"
+      autocomplete="current-password"
+      required
+    />
+    <button type="submit">Sign in</button>
+  </form>
+</Layout>
+
+<style>
+  form {
+    max-width: 24rem;
+    display: grid;
+    gap: 0.5rem;
+  }
+  .error {
+    color: #a8322d;
+  }
+</style>

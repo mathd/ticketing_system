@@ -207,7 +207,22 @@ case "$retired_out" in
      exit 1 ;;
 esac
 
+# TKT-190: provision the back-office staff account the sign-in smoke tests use,
+# through the REAL CLI against the REAL migrated schema — the same path an
+# operator follows. The password is generated per run and never written to the
+# log or to a file; it reaches the CLI on stdin (never argv, which would put it
+# in the container's process table) and the test process through the environment.
+SMOKE_STAFF_IDENTIFIER="smoke-staff@example.test"
+SMOKE_STAFF_PASSWORD=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+export SMOKE_STAFF_IDENTIFIER SMOKE_STAFF_PASSWORD
+printf '%s' "$SMOKE_STAFF_PASSWORD" | compose exec -T catalog /app provision-staff \
+    --organizer-id 00000000-0000-0000-0000-000000000001 \
+    --identifier "$SMOKE_STAFF_IDENTIFIER" \
+    --role admin >/dev/null
+
 cd "$ROOT/smoke"
+SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
+SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \
 SMOKE_PG=localhost:${POSTGRES_PORT} \
