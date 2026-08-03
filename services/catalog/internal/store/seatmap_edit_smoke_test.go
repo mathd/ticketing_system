@@ -316,6 +316,12 @@ func assertNoOrphanPins(ctx context.Context, t *testing.T, st *Postgres, anyVers
 		}
 		orphans = append(orphans, id)
 	}
+	// An assertion that reads zero rows because the read DIED passes for the wrong
+	// reason — this is the "cannot show the negative" shape, and it is exactly the
+	// assertion the concurrency tests lean on (TKT-184).
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iter %d: orphan-pin iteration: %v", iter, err)
+	}
 	if len(orphans) > 0 {
 		t.Fatalf("iter %d: orphaned pins (identity absent from current published version): %v", iter, orphans)
 	}

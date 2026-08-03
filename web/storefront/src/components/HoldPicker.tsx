@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatMoney } from '../lib/format';
 import { UI_STRINGS } from '../lib/locales';
-import SeatMapPicker, { type SeatSelection } from './SeatMapPicker';
+import SeatMapPicker, { type SeatMapHandle, type SeatSelection } from './SeatMapPicker';
 
 // slotId + seatMapId together mean "this performance is seated" (TKT-174). Their
 // presence is the mode switch: absence is the GA path, byte-for-byte as before.
@@ -22,6 +22,18 @@ export function remainingMilliseconds(hold: Pick<Hold, 'expires_at' | 'server_ti
   return Math.max(0, Date.parse(hold.expires_at) - Date.parse(hold.server_time));
 }
 
+/**
+ * reservationTerms fingerprints what a reserve call is ASKING FOR, so the idempotency
+ * key can be bound to the terms rather than to the click.
+ *
+ * The seat list is sorted and copied: commerce compares the SET, so [B,A] and [A,B] are
+ * one request, and mutating the caller's array here would reorder the buyer's selection
+ * as a side effect of naming it.
+ */
+export function reservationTerms(seated: boolean, seats: string[], quantity: number): string {
+  return seated ? `seats:${[...seats].sort().join(',')}` : `qty:${quantity}`;
+}
+
 export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, seatMapId }: Props) {
   const seated = Boolean(slotId && seatMapId);
   // Both halves matter: the identities, and whether the child can currently vouch
@@ -39,12 +51,41 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   const [paymentToken, setPaymentToken] = useState('fake-ok');
   const [ticketLink, setTicketLink] = useState<string | null>(null);
   const deadline = useRef(0);
-  const strings = UI_STRINGS[locale];
+  const map = useRef<SeatMapHandle>(null);
+  // One string table. There used to be a second, inline one here, and the two had
+  // colliding keys with different meanings (`tickets` was "Tickets" in one and "View my
+  // tickets" in the other), so a new string landed in whichever the author happened to
+  // be looking at — and the status messages never got translated at all (TKT-184).
+  const t = UI_STRINGS[locale];
   // Stable identity so SeatMapPicker's effect does not re-run on every render.
   const onSelectionChange = useCallback((next: SeatSelection) => setSelection(next), []);
-  const t = locale === 'fr'
-    ? { reserve: 'Réserver', pay: 'Payer', quantity: 'Quantité', held: 'Réservé pendant', expired: 'Réservation expirée', unavailable: 'Quantité indisponible', completed: 'Commande confirmée', tickets: 'Voir mes billets', declined: 'Paiement refusé — réessayez' }
-    : { reserve: 'Reserve', pay: 'Pay', quantity: 'Quantity', held: 'Held for', expired: 'Hold expired', unavailable: 'Quantity unavailable', completed: 'Order confirmed', tickets: 'View my tickets', declined: 'Payment declined — try again' };
+
+  // Idempotency keys are STATE, not decoration — minting a fresh uuid per attempt is the
+  // same as sending none. Commerce DERIVES the reservation id from the reserve key, so a
+  // retry under a new key takes out a SECOND hold; and it compares the checkout key
+  // against the one stored on the order, so a retry under a new key is refused 409 and
+  // the buyer can never finish paying an order they may already have been charged for.
+  //
+  // So the key is bound to the TERMS, not to the click: the same request replays under
+  // the same key, and changing the selection mints a new one (reusing it there is what
+  // commerce answers with "idempotency key reused with different terms").
+  const reserveKey = useRef<{ terms: string; key: string } | null>(null);
+  const checkoutKeys = useRef(new Map<string, string>());
+
+  function keyForTerms(terms: string): string {
+    if (reserveKey.current?.terms !== terms) {
+      reserveKey.current = { terms, key: crypto.randomUUID() };
+    }
+    return reserveKey.current.key;
+  }
+
+  function keyForReservation(reservationId: string): string {
+    const existing = checkoutKeys.current.get(reservationId);
+    if (existing !== undefined) return existing;
+    const key = crypto.randomUUID();
+    checkoutKeys.current.set(reservationId, key);
+    return key;
+  }
 
   useEffect(() => {
     if (holdId === null) return;
@@ -53,11 +94,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       setRemaining(next);
       if (next === 0) {
         window.clearInterval(timer);
-        setStatus(t.expired);
+        setStatus(t.holdExpired);
       }
     }, 250);
     return () => window.clearInterval(timer);
-  }, [holdId, t.expired]);
+  }, [holdId, t.holdExpired]);
 
   async function reserve() {
     setBusy(true); setStatus('');
@@ -69,7 +110,10 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
         : { organizer_id: organizerId, ticket_type_id: ticketTypeId, quantity };
       const response = await fetch('/api/commerce/reservations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': keyForTerms(reservationTerms(seated, selection.seats, quantity)),
+        },
         body: JSON.stringify(claim),
       });
       if (!response.ok) {
@@ -81,25 +125,25 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
           const refusal = await response.json().catch(() => null) as
             { code?: string; seat_identities?: string[] } | null;
           if (refusal?.code === 'seat_taken' && refusal.seat_identities?.length) {
-            window.dispatchEvent(new CustomEvent(`seat-conflict:${slotId}`, { detail: refusal.seat_identities }));
-            setStatus(strings.seatsNoLongerAvailable.replace('{seats}', refusal.seat_identities.join(', ')));
+            map.current?.applyConflict(refusal.seat_identities);
+            setStatus(t.seatsNoLongerAvailable.replace('{seats}', refusal.seat_identities.join(', ')));
             return;
           }
           // An orphan refusal names seats that are FREE and that the buyer did not
           // request. They must NOT go through the conflict channel: marking them
           // unavailable would remove the buyer's only repair, which is to add one.
           if (refusal?.code === 'orphaned_seats' && refusal.seat_identities?.length) {
-            setStatus(strings.seatsWouldStrand.replace('{seats}', refusal.seat_identities.join(', ')));
+            setStatus(t.seatsWouldStrand.replace('{seats}', refusal.seat_identities.join(', ')));
             return;
           }
         }
-        setStatus(t.unavailable); return;
+        setStatus(t.quantityUnavailable); return;
       }
       const hold = await response.json() as Reservation;
       const duration = remainingMilliseconds(hold);
       deadline.current = performance.now() + duration;
-      setRemaining(duration); setHoldId(hold.hold_id); setReservation(hold); setStatus(t.held);
-    } catch { setStatus('Service unavailable'); }
+      setRemaining(duration); setHoldId(hold.hold_id); setReservation(hold); setStatus(t.heldFor);
+    } catch { setStatus(t.serviceUnavailable); }
     finally { setBusy(false); }
   }
 
@@ -109,14 +153,25 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
     try {
       const response = await fetch('/api/commerce/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': keyForReservation(reservation.reservation_id),
+        },
         body: JSON.stringify({ reservation_id: reservation.reservation_id, name, email, payment_token: paymentToken }),
       });
-      const result = await response.json() as { order_id?: string; guest_order_ref?: string; status?: string };
-      if (response.ok && result.status === 'completed' && result.guest_order_ref) { setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.completed); return; }
-      if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.declined); return; }
-      setStatus('Payment status is being checked');
-    } catch { setStatus('Payment status is being checked'); }
+      // Tolerant parse: the error bodies are JSON but a proxy failure page is not, and
+      // throwing here would report a decided outcome as an unknown one.
+      const result = await response.json().catch(() => ({})) as
+        { order_id?: string; guest_order_ref?: string; status?: string };
+      if (response.ok && result.status === 'completed' && result.guest_order_ref) { setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return; }
+      if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.paymentDeclined); return; }
+      // 409 is commerce holding this order under its recovery lease. It clears on its
+      // own, and because the key above is stable the retry is a REPLAY rather than a
+      // second attempt — so keep the reservation and say "try again" instead of
+      // stranding the buyer on the ambiguous checking message (TKT-184).
+      if (response.status === 409) { setStatus(t.checkoutRetryShortly); return; }
+      setStatus(t.paymentChecking);
+    } catch { setStatus(t.paymentChecking); }
     finally { setBusy(false); }
   }
 
@@ -124,14 +179,14 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   const holding = remaining !== null && remaining > 0;
   return <div className="hold-picker">
     {seated
-      ? <SeatMapPicker organizerId={organizerId} slotId={slotId!} seatMapId={seatMapId!} locale={locale} onSelectionChange={onSelectionChange} />
+      ? <SeatMapPicker ref={map} organizerId={organizerId} slotId={slotId!} seatMapId={seatMapId!} locale={locale} onSelectionChange={onSelectionChange} />
       : <label>{t.quantity} <input aria-label={t.quantity} type="number" min="1" max="50" value={quantity} onChange={(e) => setQuantity(Math.max(1, Math.min(50, Number(e.target.value))))} /></label>}
-    <button type="button" disabled={busy || holding || (seated && !selection.claimable)} onClick={reserve}>{seated ? strings.reserveSeats : t.reserve}</button>
+    <button type="button" disabled={busy || holding || (seated && !selection.claimable)} onClick={reserve}>{seated ? t.reserveSeats : t.reserve}</button>
     <span aria-live="polite">{status}{remaining !== null && remaining > 0 ? ` ${seconds}s` : ''}</span>
-    {ticketLink && <a href={ticketLink}>{t.tickets}</a>}
+    {ticketLink && <a href={ticketLink}>{t.viewMyTickets}</a>}
     {reservation && remaining !== null && remaining > 0 && <div className="checkout-form">
-      <label>Name <input aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} /></label>
-      <label>Email <input aria-label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+      <label>{t.nameLabel} <input aria-label={t.nameLabel} value={name} onChange={(e) => setName(e.target.value)} /></label>
+      <label>{t.emailLabel} <input aria-label={t.emailLabel} type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
       <label>Fake payment <select aria-label="Fake payment" value={paymentToken} onChange={(e) => setPaymentToken(e.target.value)}><option value="fake-ok">Success</option><option value="fake-decline">Decline</option><option value="fake-timeout">Timeout</option></select></label>
       <button type="button" disabled={busy} onClick={checkout}>{t.pay} {formatMoney(reservation.amount, reservation.currency, locale)}</button>
     </div>}
