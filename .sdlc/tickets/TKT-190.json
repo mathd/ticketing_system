@@ -2,9 +2,9 @@
   "key": "TKT-190",
   "type": "Story",
   "summary": "US-B1: Staff sign-in — a session gates the back office",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
