@@ -4,8 +4,10 @@
   "parent": "TKT-35",
   "classification": "complex",
   "summary": "US-023c2: Catalog emits performance.published schema 5 for rule-enabled maps",
-  "status": "Backlog",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": null,
   "pr": null,
   "links": [
@@ -48,6 +50,9 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nCarved out of TKT-181 during TKT-180's ai-review, to make ADR-041's own ordering claim true. Planning inherited from TKT-175."
+    },
+    {
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n## Claimed — TKT-183\n\n**Branch:** `TKT-183-catalog-schema5` off `origin/main` (which now contains TKT-182).\n\n**Selection reason:** its only blocker, TKT-182, is merged. It is the last ticket of the ADR-041 sequence and the one the whole ordering argument exists for — the producer gets its own revision precisely so the enforcer is already deployed when the first schema-5 event is emitted.\n\n**Gate waiver (recorded per the run directive).** The repo owner waived all four human gates for this autonomous run as a process experiment. Gates 1, 2, 3 and 4 are self-performed: priority given, plan decisions resolved by me against the cross-model critique, merge self-performed after the review guide is posted, and COS self-validated against test evidence on merged code. This ticket ran **gateless**, deliberately.\n\n**Board discipline correction.** TKT-182 was merged with no claim, plan, plan-final or ai-review comment on the board — the trail was written only at the end. That gap is recorded in TKT-182's closeout and was **not** backfilled. This ticket posts each marker comment at its stage, as the pipeline requires.\n\n**Governing ADRs, re-resolved against `docs/adr/` at claim time** (not the shaping-time snapshot):\n\n- **ADR-041** — the decision this ticket completes. Fixes the emission rules: schema 5 carries the exact `seat_map_id` + flag; rule-off maps stay byte-identical at schema 4; the correction wave needs a **fresh, deterministic-per-performance** event identity and must not race catalog's own rolling deployment.\n- **ADR-017** — schema evolution. §5b′: consumers dispatch on `schema` before decoding `data`. This ticket is the producer side of that contract, and the bump is justified on consumer semantics: schema 5 means \"this pool needs an adjacency projection\", which is a new required effect, not a new field.\n- **ADR-029** — published seat-map versions are immutable and a performance is bound to **one** version. The event must describe the bound version, never the family's current one.\n- **ADR-018** — catalog slot transitions decide under a row lock and emit **after** commit. The correction wave is not a transition, but it writes emission state and must respect the same ordering.\n- **ADR-022** — migrations out-of-band, via each binary's `migrate` subcommand as a one-shot Compose job.\n- **ADR-028** — response drift fails closed.\n- **ADR-021** — name the adversary before claiming a guarantee. Relevant to any \"every affected performance was corrected\" claim the wave makes.\n\n**Open question to resolve at plan time:** whether inventory's schema-5 handler already upgrades an existing seated pool, or whether TKT-181 only ever provisions new ones. The ticket flags this as possibly needing an amendment to TKT-181's scope — it is the first thing the plan must check against the real code, because the correction wave is worthless if the handler short-circuits on an existing pool.\n"
     }
   ]
 }
