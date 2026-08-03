@@ -3,6 +3,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func TestQuarantineDuplicateAndCollision(t *testing.T) {
 	}
 
 	err := st.QuarantineCatalogEvent(ctx, quarantineSubject, id, 5, []byte(`{"different":true}`))
-	if err != ErrCatalogQuarantineCollision {
+	if !errors.Is(err, ErrCatalogQuarantineCollision) {
 		t.Fatalf("err = %v, want ErrCatalogQuarantineCollision", err)
 	}
 	var kept []byte
@@ -85,7 +86,7 @@ func TestQuarantineCapacityBoundsUnresolvedRows(t *testing.T) {
 	if err := st.QuarantineCatalogEvent(ctx, quarantineSubject, second, 4, envelope(second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.QuarantineCatalogEvent(ctx, quarantineSubject, uuid.New(), 4, envelope(first)); err != ErrCatalogQuarantineFull {
+	if err := st.QuarantineCatalogEvent(ctx, quarantineSubject, uuid.New(), 4, envelope(first)); !errors.Is(err, ErrCatalogQuarantineFull) {
 		t.Fatalf("err = %v, want ErrCatalogQuarantineFull at the cap", err)
 	}
 	// An identical redelivery of a held event is not new demand — it must still succeed.

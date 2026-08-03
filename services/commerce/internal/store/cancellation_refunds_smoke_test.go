@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -122,7 +123,7 @@ func TestBindCancellationRunReplaysAndConflicts(t *testing.T) {
 	}
 
 	different := runRequest(org, uuid.New(), "run-key")
-	if _, err := BindCancellationRun(ctx, db, different); err != ErrCancellationRunConflict {
+	if _, err := BindCancellationRun(ctx, db, different); !errors.Is(err, ErrCancellationRunConflict) {
 		t.Fatalf("reused key with a different slot = %v, want ErrCancellationRunConflict", err)
 	}
 }
@@ -250,7 +251,7 @@ func TestFinalizeCancellationOrderIsClaimFencedAndOnceOnly(t *testing.T) {
 	stale.ClaimID = uuid.New()
 	if err := FinalizeCancellationOrder(ctx, db, stale, CancellationOutcome{
 		Outcome: "failed", FailureCode: "internal", FailureReason: "stale claimant",
-	}); err != ErrCancellationClaimLost {
+	}); !errors.Is(err, ErrCancellationClaimLost) {
 		t.Fatalf("stale claim finalize = %v, want ErrCancellationClaimLost", err)
 	}
 
@@ -268,7 +269,7 @@ func TestFinalizeCancellationOrderIsClaimFencedAndOnceOnly(t *testing.T) {
 	// terminal outcome is not something a retry gets to revise.
 	if err := FinalizeCancellationOrder(ctx, db, w, CancellationOutcome{
 		Outcome: "failed", FailureCode: "internal", FailureReason: "second verdict",
-	}); err != ErrCancellationClaimLost {
+	}); !errors.Is(err, ErrCancellationClaimLost) {
 		t.Fatalf("re-finalize = %v, want ErrCancellationClaimLost", err)
 	}
 
@@ -370,7 +371,7 @@ func TestRunCompletesOnlyWhenEveryRowIsTerminal(t *testing.T) {
 		t.Fatalf("report rows = %d, want 2", len(report.Orders))
 	}
 
-	if _, err := CancellationReport(ctx, db, uuid.New(), run.ID, 100, uuid.Nil); err != sql.ErrNoRows {
+	if _, err := CancellationReport(ctx, db, uuid.New(), run.ID, 100, uuid.Nil); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("the same run id under another organizer must not be readable")
 	}
 }

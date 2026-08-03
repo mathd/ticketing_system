@@ -140,6 +140,9 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 			}
 			out = append(out, e)
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
 		return out
 	}
 	immutables := func(events []LifecycleEvent) []immutable {
@@ -232,6 +235,9 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 			t.Fatalf("backfilled sequence %d out of order", seq)
 		}
 		covered = append(covered, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("integrity coverage iteration: %v", err)
 	}
 	_ = rows.Close()
 	if len(covered) != 2 || covered[0] != issuedID || covered[1] != deliveredID {
@@ -350,6 +356,9 @@ func TestBackfillChainsInHistoryOrderOnTimestampTies(t *testing.T) {
 			t.Fatal(err)
 		}
 		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("chain read: %v", err)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("chained %d events, history has %d", len(got), len(want))
