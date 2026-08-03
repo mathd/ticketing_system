@@ -51,19 +51,48 @@ func TestBackofficeVenueReadHoursTier(t *testing.T) {
 // COS-1. Every path under /admin/ is gated except the three anonymous ones, and
 // an unknown path is gated identically to a real one — otherwise the difference
 // between "redirect" and "404" would map the admin surface for anyone who asked.
+//
+// The assertion is on where the caller ENDS UP, not on a single status code.
+// Astro normalizes a missing trailing slash with its own 307 before any
+// middleware runs, so `/admin` answers 307 -> `/admin/` -> 302 -> login. Demanding
+// an immediate 302 would fail that path while the chain is perfectly safe, and
+// what COS-1 actually promises is that the venue list never renders. So: follow
+// the chain, assert it terminates at the login page, and assert no response along
+// the way carried venue data.
 func TestBackofficeRefusesAnonymousCallers(t *testing.T) {
-	client := noRedirectClient()
 	for _, path := range []string{"/admin/", "/admin", "/admin/venues/whatever", "/admin/definitely-not-a-page"} {
-		resp := doRequest(t, client, http.MethodGet, gatewayURL+path, nil, nil)
-		body := readBody(t, resp)
-		if resp.StatusCode != http.StatusFound {
-			t.Fatalf("GET %s anonymously: status %d, want 302 to login; body=%.300s", path, resp.StatusCode, body)
+		target := gatewayURL + path
+		var landed string
+		for hop := 0; ; hop++ {
+			if hop > 5 {
+				t.Fatalf("GET %s anonymously: redirect loop, last target %s", path, target)
+			}
+			resp := doRequest(t, noRedirectClient(), http.MethodGet, target, nil, nil)
+			body := readBody(t, resp)
+			if strings.Contains(body, seededVenueName) {
+				t.Fatalf("GET %s anonymously leaked venue data at %s: %.300s", path, target, body)
+			}
+			loc := resp.Header.Get("Location")
+			if resp.StatusCode < 300 || resp.StatusCode >= 400 || loc == "" {
+				if resp.StatusCode == http.StatusOK {
+					t.Fatalf("GET %s anonymously terminated with 200 at %s — nothing under /admin/ "+
+						"may render without a session; body=%.300s", path, target, body)
+				}
+				t.Fatalf("GET %s anonymously terminated at %s with status %d, want the login page",
+					path, target, resp.StatusCode)
+			}
+			landed = loc
+			if strings.HasSuffix(loc, "/admin/login") {
+				break
+			}
+			if strings.HasPrefix(loc, "http") {
+				target = loc
+			} else {
+				target = gatewayURL + loc
+			}
 		}
-		if loc := resp.Header.Get("Location"); !strings.HasSuffix(loc, "/admin/login") {
-			t.Fatalf("GET %s anonymously redirected to %q, want /admin/login", path, loc)
-		}
-		if strings.Contains(body, seededVenueName) {
-			t.Fatalf("GET %s anonymously leaked venue data: %.300s", path, body)
+		if !strings.HasSuffix(landed, "/admin/login") {
+			t.Fatalf("GET %s anonymously landed at %q, want /admin/login", path, landed)
 		}
 	}
 }
