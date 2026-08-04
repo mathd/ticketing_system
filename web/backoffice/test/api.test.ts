@@ -237,14 +237,14 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
 
 describe('staff authentication client (TKT-190)', () => {
   it('posts the credential to the catalog through the gateway, like every other call', async () => {
-    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin' }, 200);
     const principal = await authenticateStaff('ada@example.test', 'correct horse');
     expect(calls[0].method).toBe('POST');
     // Through the gateway, not straight at the catalog container: one network
     // path means the back office never needs the shared internal credential.
     expect(calls[0].url).toContain('/api/catalog/staff/authenticate');
     expect(calls[0].body).toEqual({ identifier: 'ada@example.test', password: 'correct horse' });
-    expect(principal).toEqual({ staffId: 's1', organizerId: 'o1' });
+    expect(principal).toEqual({ staffId: 's1', organizerId: 'o1', role: 'admin' });
   });
 
   it('reports invalid credentials as null, not as an exception', async () => {
@@ -260,7 +260,7 @@ describe('staff authentication client (TKT-190)', () => {
   });
 
   it('never puts the password in the URL', async () => {
-    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin' }, 200);
     await authenticateStaff('ada@example.test', 'correct horse');
     expect(calls[0].url).not.toContain('correct horse');
   });
@@ -281,7 +281,7 @@ describe('catalog write credential (TKT-191)', () => {
   // exception list inside a fail-closed scheme.
   it('attaches it to the sign-in call too', async () => {
     process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
-    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin' }, 200);
     await authenticateStaff('ada@example.test', 'pw');
     expect(calls[0].headers[HEADER]).toBe('the-credential');
   });
@@ -301,5 +301,29 @@ describe('catalog write credential (TKT-191)', () => {
     const calls = spyFetch({}, 200);
     await expect(createSeatMap('v1', 'Main')).rejects.toThrow(/CATALOG_STAFF_WRITE_TOKEN/);
     expect(calls).toHaveLength(0);
+  });
+});
+
+
+describe('staff role propagation (TKT-197)', () => {
+  it('carries the role from the catalog response into the principal', async () => {
+    for (const role of ['admin', 'box_office', 'finance']) {
+      spyFetch({ staff_id: 's1', organizer_id: 'o1', role }, 200);
+      await expect(authenticateStaff('ada@example.test', 'pw')).resolves.toMatchObject({ role });
+    }
+  });
+
+  // Catalog validates the stored role too, so reaching this means the contract
+  // and this client disagree about the vocabulary. Refuse rather than mint a
+  // session carrying a role the route matrix cannot classify — an unclassifiable
+  // role in a session is the fail-open this ticket exists to prevent.
+  it('refuses a response whose role is outside the vocabulary', async () => {
+    spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'superuser' }, 200);
+    await expect(authenticateStaff('ada@example.test', 'pw')).rejects.toThrow(/unrecognised staff role/);
+  });
+
+  it('refuses a response with no role at all', async () => {
+    spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
+    await expect(authenticateStaff('ada@example.test', 'pw')).rejects.toThrow(/unrecognised staff role/);
   });
 });

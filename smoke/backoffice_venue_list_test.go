@@ -346,3 +346,106 @@ func sessionCookie(t *testing.T, resp *http.Response) string {
 	t.Fatalf("sign-in set no session cookie: %v", resp.Cookies())
 	return ""
 }
+
+// TKT-197 COS-2/4/5, through the real stack: the role matrix refuses, and
+// hiding a link is not what does it.
+//
+// The seeded venue is deterministic (migration 0008), so the authoring URL is
+// known without an admin first creating one — which matters, because the point
+// is to hand a NON-admin a URL they were never shown.
+const seededVenueID = "00000000-0000-0000-0000-0000000000a1"
+
+func roleCredential(t *testing.T, role string) (identifier, password string) {
+	t.Helper()
+	var idEnv, pwEnv string
+	switch role {
+	case "admin":
+		idEnv, pwEnv = "SMOKE_STAFF_IDENTIFIER", "SMOKE_STAFF_PASSWORD"
+	case "box_office":
+		idEnv, pwEnv = "SMOKE_BOXOFFICE_IDENTIFIER", "SMOKE_BOXOFFICE_PASSWORD"
+	case "finance":
+		idEnv, pwEnv = "SMOKE_FINANCE_IDENTIFIER", "SMOKE_FINANCE_PASSWORD"
+	default:
+		t.Fatalf("no credential wired for role %q", role)
+	}
+	identifier, password = os.Getenv(idEnv), os.Getenv(pwEnv)
+	if identifier == "" || password == "" {
+		t.Skipf("%s/%s not set (scripts/smoke.sh provisions them)", idEnv, pwEnv)
+	}
+	return identifier, password
+}
+
+func signInAs(t *testing.T, role string) *http.Client {
+	t.Helper()
+	identifier, password := roleCredential(t, role)
+	client := jarClient(t)
+	resp := postForm(t, client, gatewayURL+"/admin/login", url.Values{
+		"identifier": {identifier}, "password": {password}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("sign-in as %s: status %d; body=%.300s", role, resp.StatusCode, readBody(t, resp))
+	}
+	return client
+}
+
+func TestBackofficeRoleMatrixRefusesTheAuthoringSurface(t *testing.T) {
+	authoring := gatewayURL + "/admin/venues/" + seededVenueID
+
+	// admin reaches it — without this the refusals below could be a broken URL.
+	adminResp := doRequest(t, signInAs(t, "admin"), http.MethodGet, authoring, nil, nil)
+	if adminResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin must reach the authoring surface: status %d; body=%.300s",
+			adminResp.StatusCode, readBody(t, adminResp))
+	}
+
+	for _, role := range []string{"box_office", "finance"} {
+		t.Run(role, func(t *testing.T) {
+			client := signInAs(t, role)
+
+			// COS-5, first half: the link is not rendered.
+			list := readBody(t, doRequest(t, client, http.MethodGet, gatewayURL+"/admin/", nil, nil))
+			if strings.Contains(list, "/admin/venues/") {
+				t.Fatalf("the venue list offers %s an authoring link it may not use: %.400s", role, list)
+			}
+
+			// COS-5, second half — the one that matters. Paste the URL anyway.
+			// A hidden link is a courtesy; if this returns 200 the whole matrix is
+			// decoration.
+			resp := doRequest(t, client, http.MethodGet, authoring, nil, nil)
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("%s reached the authoring surface by URL: status %d — hiding the link is "+
+					"not the enforcement; body=%.300s", role, resp.StatusCode, readBody(t, resp))
+			}
+
+			// COS-4: the refusal must not distinguish a real route from an
+			// imaginary one, or probing maps the admin surface.
+			imaginary := doRequest(t, client, http.MethodGet, gatewayURL+"/admin/settlement", nil, nil)
+			if imaginary.StatusCode != resp.StatusCode {
+				t.Fatalf("%s: real route %d vs imaginary route %d — the difference tells them what exists",
+					role, resp.StatusCode, imaginary.StatusCode)
+			}
+			body := readBody(t, resp)
+			for _, leak := range []string{"admin", "role", "venues"} {
+				if strings.Contains(strings.ToLower(body), leak) {
+					t.Fatalf("%s: the refusal names %q: %s", role, leak, body)
+				}
+			}
+		})
+	}
+}
+
+// Every role must still be able to reach the venue list and sign out — a matrix
+// that locks staff out of their own session would be a different bug.
+func TestBackofficeRoleMatrixAdmitsSharedRoutes(t *testing.T) {
+	for _, role := range []string{"admin", "box_office", "finance"} {
+		t.Run(role, func(t *testing.T) {
+			client := signInAs(t, role)
+			resp := doRequest(t, client, http.MethodGet, gatewayURL+"/admin/", nil, nil)
+			if resp.StatusCode != http.StatusOK || !strings.Contains(readBody(t, resp), seededVenueName) {
+				t.Fatalf("%s cannot see the venue list: status %d", role, resp.StatusCode)
+			}
+			if out := postForm(t, client, gatewayURL+"/admin/logout", nil); out.StatusCode != http.StatusSeeOther {
+				t.Fatalf("%s cannot sign out: status %d", role, out.StatusCode)
+			}
+		})
+	}
+}

@@ -511,7 +511,7 @@ export interface paths {
         put?: never;
         /**
          * Verify back-office staff credentials and return the principal (TKT-190)
-         * @description Verifies an identifier/password pair against the staff accounts catalog owns (ADR-002 assigns organizers and tenant-scoped configuration here; ADR-042 records why staff live here rather than in a sixth service). Returns the principal only — never the role, which TKT-191 introduces, and never any password material.
+         * @description Verifies an identifier/password pair against the staff accounts catalog owns (ADR-002 assigns organizers and tenant-scoped configuration here; ADR-042 records why staff live here rather than in a sixth service). Returns the principal — staff id, organizer and role (TKT-197) — and never any password material.
          *     This operation is deliberately PUBLIC rather than internal-token guarded. The back-office login form in front of it must be anonymous by construction (a staff member cannot sign in through a page that requires a session), so an unauthenticated caller already has an unlimited credential-submission channel; making this endpoint internal would move the front door without locking it, at the price of handing the public-facing back-office process the shared credential that also opens commerce's refunds and inventory's operational holds. Rate limiting and abuse telemetry are TKT-195 and cover this endpoint AND the form.
          *     Unknown identifier and wrong password are the same 401 with the same body, and the store performs the same number of key-derivation comparisons on both paths — status parity alone would still leak account existence through timing.
          */
@@ -711,12 +711,23 @@ export interface components {
             identifier: string;
             password: string;
         };
-        /** @description Who signed in. Carries no role — TKT-191 owns role semantics and adds it then — and no password material of any kind. */
+        /**
+         * @description The staff role vocabulary (TKT-197). This enum is the SINGLE source: it generates the Go constants catalog validates against and the TypeScript union the back office's route matrix is typed on, so adding a role here without deciding its permissions fails the back-office build rather than silently defaulting to something permissive.
+         *     Deliberately NOT also a CHECK constraint on staff_accounts.role. That would be a second hand-written vocabulary to keep in step, and per ADR-021 it constrains nobody who can write the database — they can drop the constraint or grant themselves admin. The fail-closed boundary is the application: an unrecognised stored role does not authenticate.
+         *     admin reaches everything the back office exposes. box_office is for order lookup and post-purchase actions (TKT-193/TKT-194); finance is for settlement and reporting (TKT-23). Both reach almost nothing today, and that is correct — the surfaces they exist for are not built yet.
+         * @enum {string}
+         */
+        StaffRole: "admin" | "box_office" | "finance";
+        /**
+         * @description Who signed in, and in what role. Carries no password material of any kind.
+         *     The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
+         */
         StaffPrincipal: {
             /** Format: uuid */
             staff_id: string;
             /** Format: uuid */
             organizer_id: string;
+            role: components["schemas"]["StaffRole"];
         };
         /** @description Locale-keyed text; adding a locale is data, not a schema change (TKT-36) */
         LocalizedString: {

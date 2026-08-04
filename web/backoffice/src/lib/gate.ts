@@ -4,6 +4,8 @@
 // Kept separate from middleware.ts and free of Astro imports so both rules are
 // unit-testable as plain functions — the middleware is only the wiring.
 
+import { canAccessRoute, isAnonymousRoute, type StaffRole } from './authorization';
+
 /** Astro's `base`. Every path this app serves is under it, healthz included. */
 export const BASE = '/admin';
 
@@ -12,28 +14,19 @@ export const LOGOUT_PATH = `${BASE}/logout`;
 export const HEALTHZ_PATH = `${BASE}/healthz`;
 
 /**
- * The exemption list IS the anonymous attack surface, so it is enumerated
- * exactly rather than matched by prefix — `/admin/healthz/../venues` and
- * `/admin/healthzz` must not ride it.
+ * Is this path reachable without a session?
  *
- * `healthz` is exempt because Compose probes it **directly on the container**,
- * before the gateway. Gating it makes the container unhealthy, which makes the
- * gateway's `depends_on: { backoffice: service_healthy }` never satisfy, and the
- * entire stack fails to start — a failure that looks nothing like an auth bug.
+ * Delegates to the route matrix, which is the single declaration of the
+ * unauthenticated attack surface (ai-review F2). This used to be a separate
+ * hand-written predicate, and the two had already drifted apart on bare
+ * `/admin/_astro`. Kept as a named export because it reads better at the call
+ * site and because TKT-190's tests exercise it as a second view of the same
+ * rule — not as a second rule.
  *
- * `_astro/` is the build's hashed static assets, needed to render the login page
- * itself. It is a prefix by necessity (the filenames are content-hashed), and it
- * serves only files the build emitted.
+ * Which routes are anonymous, and why, is documented on ROUTE_MATRIX itself.
  */
 export function isAnonymousPath(pathname: string): boolean {
-  const path = normalize(pathname);
-  return path === LOGIN_PATH || path === HEALTHZ_PATH || path.startsWith(`${BASE}/_astro/`);
-}
-
-/** Trailing slashes are cosmetic; `/admin/` and `/admin` are the same page. */
-function normalize(pathname: string): string {
-  if (pathname.length > 1 && pathname.endsWith('/')) return pathname.slice(0, -1);
-  return pathname;
+  return isAnonymousRoute(pathname);
 }
 
 /**
@@ -91,7 +84,7 @@ export function forbiddenResponse(): Response {
 }
 
 /** What the gate needs from its host. Astro supplies these; a test supplies fakes. */
-export interface GateDeps<P> {
+export interface GateDeps<P extends { role: string }> {
   request: Request;
   pathname: string;
   /** The raw session cookie value, or '' when absent. */
@@ -131,14 +124,27 @@ export interface GateDeps<P> {
  *      unknown ones, so an anonymous caller cannot tell a real admin page from a
  *      path that does not exist.
  */
-export async function gateRequest<P>(deps: GateDeps<P>): Promise<Response> {
+export async function gateRequest<P extends { role: string }>(deps: GateDeps<P>): Promise<Response> {
   if (isUnsafeMethod(deps.request.method) && !originIsTrusted(deps.request)) {
     return forbiddenResponse();
   }
   if (!isAnonymousPath(deps.pathname)) {
     const principal = deps.lookup(deps.sessionToken);
     if (!principal) {
+      // Authentication BEFORE authorization, and the order is observable: an
+      // anonymous caller gets 302-to-login, never 403. Reversing these would
+      // tell an anonymous caller which routes exist and which roles they need
+      // (COS-7; TKT-190's redirect test pins it).
       return deps.redirectToLogin();
+    }
+    // TKT-197. Fail closed on everything: an unclassified route, an
+    // unrecognised role, and a role not on the route's list all refuse. A route
+    // nobody classified must not be a route everybody can reach.
+    if (!canAccessRoute(deps.pathname, principal.role as StaffRole)) {
+      // The SAME generic refusal as an untrusted origin — it names neither the
+      // required role nor whether the route exists, so a signed-in box-office
+      // member cannot map the admin surface by probing it.
+      return forbiddenResponse();
     }
     deps.onAuthenticated(principal);
   }

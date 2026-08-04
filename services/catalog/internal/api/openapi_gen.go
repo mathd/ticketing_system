@@ -235,6 +235,27 @@ func (e SlotKind) Valid() bool {
 	}
 }
 
+// Defines values for StaffRole.
+const (
+	Admin     StaffRole = "admin"
+	BoxOffice StaffRole = "box_office"
+	Finance   StaffRole = "finance"
+)
+
+// Valid indicates whether the value is a known member of the StaffRole enum.
+func (e StaffRole) Valid() bool {
+	switch e {
+	case Admin:
+		return true
+	case BoxOffice:
+		return true
+	case Finance:
+		return true
+	default:
+		return false
+	}
+}
+
 // Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.
 type Closure struct {
 	ClosedAt *time.Time    `json:"closed_at,omitempty"`
@@ -763,11 +784,22 @@ type StaffCredentials struct {
 	Password   string `json:"password"`
 }
 
-// StaffPrincipal Who signed in. Carries no role — TKT-191 owns role semantics and adds it then — and no password material of any kind.
+// StaffPrincipal Who signed in, and in what role. Carries no password material of any kind.
+// The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
 type StaffPrincipal struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	StaffId     openapi_types.UUID `json:"staff_id"`
+
+	// Role The staff role vocabulary (TKT-197). This enum is the SINGLE source: it generates the Go constants catalog validates against and the TypeScript union the back office's route matrix is typed on, so adding a role here without deciding its permissions fails the back-office build rather than silently defaulting to something permissive.
+	// Deliberately NOT also a CHECK constraint on staff_accounts.role. That would be a second hand-written vocabulary to keep in step, and per ADR-021 it constrains nobody who can write the database — they can drop the constraint or grant themselves admin. The fail-closed boundary is the application: an unrecognised stored role does not authenticate.
+	// admin reaches everything the back office exposes. box_office is for order lookup and post-purchase actions (TKT-193/TKT-194); finance is for settlement and reporting (TKT-23). Both reach almost nothing today, and that is correct — the surfaces they exist for are not built yet.
+	Role    StaffRole          `json:"role"`
+	StaffId openapi_types.UUID `json:"staff_id"`
 }
+
+// StaffRole The staff role vocabulary (TKT-197). This enum is the SINGLE source: it generates the Go constants catalog validates against and the TypeScript union the back office's route matrix is typed on, so adding a role here without deciding its permissions fails the back-office build rather than silently defaulting to something permissive.
+// Deliberately NOT also a CHECK constraint on staff_accounts.role. That would be a second hand-written vocabulary to keep in step, and per ADR-021 it constrains nobody who can write the database — they can drop the constraint or grant themselves admin. The fail-closed boundary is the application: an unrecognised stored role does not authenticate.
+// admin reaches everything the back office exposes. box_office is for order lookup and post-purchase actions (TKT-193/TKT-194); finance is for settlement and reporting (TKT-23). Both reach almost nothing today, and that is correct — the surfaces they exist for are not built yet.
+type StaffRole string
 
 // TicketType defines model for TicketType.
 type TicketType struct {

@@ -2,6 +2,7 @@
 // contract, ADR-002/ADR-009). Types are generated from the catalog's OpenAPI
 // document — regenerate with `make generate`.
 import type { components } from './api-types.gen';
+import { isRecognisedRole, type StaffRole } from './authorization';
 
 export type Venue = components['schemas']['Venue'];
 export type PublicVenueList = components['schemas']['PublicVenueList'];
@@ -241,6 +242,7 @@ export function updateVenueGaCapacity(
 export interface StaffPrincipalDto {
   staffId: string;
   organizerId: string;
+  role: StaffRole;
 }
 
 /**
@@ -276,6 +278,13 @@ export async function authenticateStaff(
   if (!res.ok) {
     throw await parseError(res);
   }
-  const body = (await res.json()) as { staff_id: string; organizer_id: string };
-  return { staffId: body.staff_id, organizerId: body.organizer_id };
+  const body = (await res.json()) as { staff_id: string; organizer_id: string; role: string };
+  if (!isRecognisedRole(body.role)) {
+    // Catalog validates the stored role too, so reaching this means the contract
+    // and this client disagree about the vocabulary — a deployment skew. Refuse
+    // rather than mint a session carrying a role the matrix cannot classify:
+    // fail-closed at every layer that handles a role is the whole design.
+    throw new Error(`catalog returned an unrecognised staff role`);
+  }
+  return { staffId: body.staff_id, organizerId: body.organizer_id, role: body.role };
 }

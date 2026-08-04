@@ -128,3 +128,51 @@ func (f *fakeProvisioner) create(_ context.Context, in store.StaffAccountInput) 
 	}
 	return f.created, nil
 }
+
+// TKT-197. The role is validated here, against the same generated constants the
+// service validates against — not a second vocabulary.
+//
+// Without this the store still fails closed: an account with `adminn` cannot
+// sign in, because catalog refuses an unrecognised stored role. But it refuses
+// with a deliberately generic 500 that points at nothing, later, probably to a
+// different person. A typo is only cheap to fix while the operator is still
+// looking at it.
+func TestProvisionStaffRefusesARoleOutsideTheVocabulary(t *testing.T) {
+	for _, role := range []string{"adminn", "Admin", "superuser", "box-office", "ADMIN"} {
+		t.Run(role, func(t *testing.T) {
+			p := newFakeProvisioner()
+			err := provisionStaff(provisionStaffDeps{
+				create: p.create, stdin: strings.NewReader("hunter2\n"), stdout: &bytes.Buffer{},
+			}, []string{"--organizer-id", orgIDForTest, "--identifier", "ada@example.test", "--role", role})
+			if err == nil {
+				t.Fatalf("accepted %q as a staff role", role)
+			}
+			// The message must list the real vocabulary, or the operator is left
+			// guessing at what they should have typed.
+			for _, want := range []string{"admin", "box_office", "finance"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error does not name %q as an option: %v", want, err)
+				}
+			}
+			if p.calls != 0 {
+				t.Fatal("a rejected role must not reach the store")
+			}
+		})
+	}
+}
+
+func TestProvisionStaffAcceptsEveryContractRole(t *testing.T) {
+	for _, role := range []string{"admin", "box_office", "finance"} {
+		t.Run(role, func(t *testing.T) {
+			p := newFakeProvisioner()
+			if err := provisionStaff(provisionStaffDeps{
+				create: p.create, stdin: strings.NewReader("hunter2\n"), stdout: &bytes.Buffer{},
+			}, []string{"--organizer-id", orgIDForTest, "--identifier", "ada@example.test", "--role", role}); err != nil {
+				t.Fatalf("rejected the contract role %q: %v", role, err)
+			}
+			if p.last.Role != role {
+				t.Fatalf("stored role = %q, want %q", p.last.Role, role)
+			}
+		})
+	}
+}

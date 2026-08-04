@@ -809,8 +809,8 @@ paths:
         Verifies an identifier/password pair against the staff accounts catalog
         owns (ADR-002 assigns organizers and tenant-scoped configuration here;
         ADR-042 records why staff live here rather than in a sixth service).
-        Returns the principal only — never the role, which TKT-191 introduces,
-        and never any password material.
+        Returns the principal — staff id, organizer and role (TKT-197) — and
+        never any password material.
 
         This operation is deliberately PUBLIC rather than internal-token guarded.
         The back-office login form in front of it must be anonymous by
@@ -1267,12 +1267,35 @@ components:
           type: string
           minLength: 1
           maxLength: 72
+    StaffRole:
+      description: >
+        The staff role vocabulary (TKT-197). This enum is the SINGLE source: it
+        generates the Go constants catalog validates against and the TypeScript
+        union the back office's route matrix is typed on, so adding a role here
+        without deciding its permissions fails the back-office build rather than
+        silently defaulting to something permissive.
+
+        Deliberately NOT also a CHECK constraint on staff_accounts.role. That
+        would be a second hand-written vocabulary to keep in step, and per
+        ADR-021 it constrains nobody who can write the database — they can drop
+        the constraint or grant themselves admin. The fail-closed boundary is the
+        application: an unrecognised stored role does not authenticate.
+
+        admin reaches everything the back office exposes. box_office is for order
+        lookup and post-purchase actions (TKT-193/TKT-194); finance is for
+        settlement and reporting (TKT-23). Both reach almost nothing today, and
+        that is correct — the surfaces they exist for are not built yet.
+      type: string
+      enum: [admin, box_office, finance]
     StaffPrincipal:
       description: >
-        Who signed in. Carries no role — TKT-191 owns role semantics and adds it
-        then — and no password material of any kind.
+        Who signed in, and in what role. Carries no password material of any kind.
+
+        The role is here because the back office gates on it (TKT-197). TKT-190
+        deliberately withheld it while the vocabulary was undecided; TKT-197 is
+        the ticket that decided it.
       type: object
-      required: [staff_id, organizer_id]
+      required: [staff_id, organizer_id, role]
       additionalProperties: false
       properties:
         staff_id:
@@ -1281,6 +1304,8 @@ components:
         organizer_id:
           type: string
           format: uuid
+        role:
+          $ref: '#/components/schemas/StaffRole'
     LocalizedString:
       description: Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
       type: object

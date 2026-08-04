@@ -218,17 +218,34 @@ esac
 # operator follows. The password is generated per run and never written to the
 # log or to a file; it reaches the CLI on stdin (never argv, which would put it
 # in the container's process table) and the test process through the environment.
+# TKT-197: one account per role, so the smoke suite can prove the matrix REFUSES
+# rather than only that it admits. A single admin account can only ever show the
+# allow path, which is the half that fails safe.
 SMOKE_STAFF_IDENTIFIER="smoke-staff@example.test"
 SMOKE_STAFF_PASSWORD=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
-export SMOKE_STAFF_IDENTIFIER SMOKE_STAFF_PASSWORD
-printf '%s' "$SMOKE_STAFF_PASSWORD" | compose exec -T catalog /app provision-staff \
+SMOKE_BOXOFFICE_IDENTIFIER="smoke-boxoffice@example.test"
+SMOKE_BOXOFFICE_PASSWORD=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+SMOKE_FINANCE_IDENTIFIER="smoke-finance@example.test"
+SMOKE_FINANCE_PASSWORD=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+export SMOKE_STAFF_IDENTIFIER SMOKE_STAFF_PASSWORD \
+       SMOKE_BOXOFFICE_IDENTIFIER SMOKE_BOXOFFICE_PASSWORD \
+       SMOKE_FINANCE_IDENTIFIER SMOKE_FINANCE_PASSWORD
+provision_staff() { # identifier password role
+  printf '%s' "$2" | compose exec -T catalog /app provision-staff \
     --organizer-id 00000000-0000-0000-0000-000000000001 \
-    --identifier "$SMOKE_STAFF_IDENTIFIER" \
-    --role admin >/dev/null
+    --identifier "$1" --role "$3" >/dev/null
+}
+provision_staff "$SMOKE_STAFF_IDENTIFIER"     "$SMOKE_STAFF_PASSWORD"     admin
+provision_staff "$SMOKE_BOXOFFICE_IDENTIFIER" "$SMOKE_BOXOFFICE_PASSWORD" box_office
+provision_staff "$SMOKE_FINANCE_IDENTIFIER"   "$SMOKE_FINANCE_PASSWORD"   finance
 
 cd "$ROOT/smoke"
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
+SMOKE_BOXOFFICE_IDENTIFIER="$SMOKE_BOXOFFICE_IDENTIFIER" \
+SMOKE_BOXOFFICE_PASSWORD="$SMOKE_BOXOFFICE_PASSWORD" \
+SMOKE_FINANCE_IDENTIFIER="$SMOKE_FINANCE_IDENTIFIER" \
+SMOKE_FINANCE_PASSWORD="$SMOKE_FINANCE_PASSWORD" \
 SMOKE_CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN" \
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \

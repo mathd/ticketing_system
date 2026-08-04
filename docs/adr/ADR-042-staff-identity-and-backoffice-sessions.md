@@ -6,6 +6,8 @@ Date: 2026-08-03
 
 Accepted
 
+**Amended by TKT-197 (2026-08-03)** — the deputy now has a rule. See § *TKT-197 amendment*.
+
 **Amended by TKT-191 (2026-08-03)** — *Decision 1 only*. Everything else stands.
 
 `POST /staff/authenticate` is **no longer public**: it is guarded like every other unsafe catalog
@@ -225,3 +227,58 @@ publish, archive or edit anything in catalog.
 catalog directly; anyone holding either credential; anyone who can write to catalog's database
 (ADR-021 — state inside the database cannot constrain an adversary who writes to it). This is
 authentication, not tamper-evidence, and none of it is claimed to be.
+
+
+## TKT-197 amendment — the deputy's rule is the role matrix
+
+TKT-191's amendment said catalog authenticates the **deputy**, not the staff member, and that the
+deputy's rule was *"any signed-in staff member"*. **That is no longer true.**
+
+The principal now carries a **role** (`StaffRole`: `admin`, `box_office`, `finance`), and the back
+office holds one declared **route→role matrix** (`web/backoffice/src/lib/authorization.ts`) read by
+both the gate and the navigation. Two readers, one source — because the failure mode this closes is
+a hidden link over a URL that still works, and that can only happen if the two disagree.
+
+**Why the matrix lives here and not in catalog.** Since TKT-191 the browser holds no catalog
+credential, so a staff member cannot reach a catalog write except through this app. That makes the
+back office the only place a role can gate one. Putting role claims in catalog remains the rejected
+option it was in TKT-191: it needs a signing key, a token format, and the vocabulary duplicated into
+a second service.
+
+**Fail-closed, at every layer that handles a role.** An unrecognised stored role does not
+authenticate (catalog answers 500 — a data problem, not a credential one, so an operator is not sent
+to reset a password that was never wrong). A response carrying an unknown role does not mint a
+session. An unclassified route refuses. A role not on a route's list refuses. `provision-staff`
+rejects a role outside the vocabulary at the point an operator can still fix the typo.
+
+**The vocabulary has one home**: the `StaffRole` enum in catalog's contract, generating the Go
+constants catalog validates against and the TypeScript union the matrix is typed on. Deliberately
+**not** also a SQL `CHECK` — that would be a second hand-written vocabulary, and per ADR-021 it
+constrains nobody who can write the database, who can equally drop the constraint or grant
+themselves `admin`.
+
+**Route selection follows Astro's own precedence — static, then dynamic, then rest.** Not
+declaration order. A matcher that disagrees with the router about which route a URL *is* cannot be
+trusted to say who may reach it: with first-match, adding a static finance-only
+`/admin/venues/settlement` beside the admin-only `/admin/venues/[id]` would have handed the new page
+the `[id]` rule, admitting admin and refusing finance — exactly inverted, and invisible to the
+enumeration test because both templates exist in both sets.
+
+**Anonymous access has one declaration.** The gate derives it from the matrix rather than from a
+separate predicate. Two lists of what is public is one list too many, and the two had already
+drifted apart on a bare `/admin/_astro` before anyone noticed.
+
+**Role is snapshotted at sign-in.** There is no role-change surface today, so nothing can go stale.
+When one is added it **must invalidate or refresh live sessions**; otherwise a demoted staff member
+keeps their old role until sign-out, eviction, restart, or the eight-hour expiry.
+
+**Adversary, precisely.** This constrains a **signed-in staff member driving a browser** — they
+cannot reach a surface their role does not list, whether or not it was linked. It constrains nobody
+holding `CATALOG_STAFF_WRITE_TOKEN`, nobody who controls the back-office process, and nobody who can
+write catalog's database (who can simply set their own role). Authentication and authorization, not
+tamper-evidence.
+
+**What is not yet proven end to end.** "Box office cannot touch settlement" is half-proven: the
+matrix can express and enforce a role-exclusive route, demonstrated on the catalog authoring surface.
+The settlement surface itself does not exist — **TKT-23** owns it, and must add its page to this
+matrix as `admin` + `finance` and drive the box-office refusal for real.
