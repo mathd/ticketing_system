@@ -22,7 +22,7 @@ import (
 // split this ticket exists to handle only shows up on the real path: checkout is
 // the one place both the order id and the guest reference are produced, and it
 // produces them as deliberately different values (ADR-012).
-func consoleFixture(t *testing.T, suffix string) (orderID, guestRef string, qrSecrets []string) {
+func consoleFixture(t *testing.T, suffix string) (orderID, guestRef string, ticketIDs, qrSecrets []string) {
 	t.Helper()
 	_, ticketType := setupCheckoutOffer(t, suffix)
 	reservation := reserveCheckout(t, ticketType, "reserve-console-"+suffix)
@@ -72,8 +72,9 @@ func consoleFixture(t *testing.T, suffix string) (orderID, guestRef string, qrSe
 			t.Fatalf("fixture cannot prove credential absence: access returned an empty qr field for %s", tk.TicketID)
 		}
 		qrSecrets = append(qrSecrets, tk.QRPayload, tk.QRURL)
+		ticketIDs = append(ticketIDs, tk.TicketID)
 	}
-	return orderID, guestRef, qrSecrets
+	return orderID, guestRef, ticketIDs, qrSecrets
 }
 
 func lookUpOrder(t *testing.T, c *http.Client, orderID, ref string) *http.Response {
@@ -87,7 +88,7 @@ func lookUpOrder(t *testing.T, c *http.Client, orderID, ref string) *http.Respon
 // exercises Astro's origin handling, the base-path rewrite and the response
 // headers together (AGENTS.md, TKT-105).
 func TestBackofficeOrderConsoleShowsStatusAndLifecycle(t *testing.T) {
-	orderID, guestRef, qrSecrets := consoleFixture(t, "console")
+	orderID, guestRef, ticketIDs, qrSecrets := consoleFixture(t, "console")
 	client := signInAs(t, "box_office")
 
 	resp := lookUpOrder(t, client, orderID, guestRef)
@@ -100,8 +101,22 @@ func TestBackofficeOrderConsoleShowsStatusAndLifecycle(t *testing.T) {
 	if !strings.Contains(page, "completed") {
 		t.Errorf("page does not report the order's status; body=%.600s", page)
 	}
-	if !strings.Contains(page, "issued") {
-		t.Errorf("page does not report any lifecycle event; body=%.600s", page)
+	// NOT `strings.Contains(page, "issued")`: the ticket-not-found copy says "may
+	// not have been issued yet", so that assertion passes on a page whose ticket
+	// lookup returned nothing — it survives mutating the access read to receive
+	// the order id instead of the reference (ai-review pass 1). What
+	// distinguishes is the fixture's own ticket id, the event rendered as
+	// markup, and the ABSENCE of the not-found copy.
+	for _, id := range ticketIDs {
+		if !strings.Contains(page, id) {
+			t.Errorf("page does not render ticket %s; body=%.600s", id, page)
+		}
+	}
+	if !strings.Contains(page, "<strong>issued</strong>") {
+		t.Errorf("page does not render an issued lifecycle event; body=%.600s", page)
+	}
+	if strings.Contains(page, "No tickets matched that reference") {
+		t.Errorf("page reports no tickets for an order that has them; body=%.600s", page)
 	}
 
 	// COS-3: ADR-004's "never" tier.
@@ -149,7 +164,7 @@ func TestBackofficeOrderConsoleShowsStatusAndLifecycle(t *testing.T) {
 // keyed by different identifiers, so each of these is a real state a support
 // agent hits — not a contrived one.
 func TestBackofficeOrderConsoleHalvesFailIndependently(t *testing.T) {
-	orderID, guestRef, _ := consoleFixture(t, "halves")
+	orderID, guestRef, _, _ := consoleFixture(t, "halves")
 	client := signInAs(t, "box_office")
 	unknown := uuid.NewString()
 
@@ -185,6 +200,34 @@ func TestBackofficeOrderConsoleHalvesFailIndependently(t *testing.T) {
 				t.Errorf("the form did not survive; body=%.600s", page)
 			}
 		})
+	}
+}
+
+// TestBackofficeOrderConsoleDoesNotCorrelateTwoOrders is COS-7, found by
+// ai-review pass 1.
+//
+// Nothing links an order id to a ticket reference — that is why the page takes
+// both — so submitting one order's id beside ANOTHER order's reference returns
+// two unrelated successful reads. Rendering them under one heading would let a
+// support agent read order A's status above order B's ticket history and act on
+// it. Two real orders, deliberately crossed: the page must name the identifier
+// each half came from and say it cannot vouch for the pairing.
+func TestBackofficeOrderConsoleDoesNotCorrelateTwoOrders(t *testing.T) {
+	orderA, _, _, _ := consoleFixture(t, "crossed-a")
+	_, refB, ticketsB, _ := consoleFixture(t, "crossed-b")
+
+	page := readBody(t, lookUpOrder(t, signInAs(t, "box_office"), orderA, refB))
+
+	// Both reads succeeded — without this the assertions below would pass on a
+	// page that simply found nothing, which is not the state being tested.
+	if !strings.Contains(page, "completed") || !strings.Contains(page, ticketsB[0]) {
+		t.Fatalf("the crossed lookup did not return two successful reads; body=%.800s", page)
+	}
+	if !strings.Contains(page, "cannot confirm that the two below belong to the same order") {
+		t.Errorf("the page presented two unrelated lookups without saying so; body=%.800s", page)
+	}
+	if !strings.Contains(page, orderA) || !strings.Contains(page, refB) {
+		t.Errorf("each half must name the identifier it came from; body=%.800s", page)
 	}
 }
 

@@ -13,7 +13,7 @@
 // nothing public maps one to the other (see lib/order-console.ts). Both fields
 // are optional; the page renders whichever half it can answer.
 import Layout from '../layouts/Layout.astro';
-import { loadOrderConsole, parseLookup, type ConsoleView } from '../lib/order-console';
+import { loadOrderConsole, parseLookup, type ConsoleView, type Lookup } from '../lib/order-console';
 
 const staff = Astro.locals.staff;
 if (!staff) throw new Error('unauthenticated request reached the order console');
@@ -25,6 +25,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
 
 let error: string | null = null;
 let view: ConsoleView | null = null;
+let lookedUp: Lookup = {};
 let submitted = { order_id: '', ticket_ref: '' };
 
 if (Astro.request.method === 'POST') {
@@ -37,6 +38,7 @@ if (Astro.request.method === 'POST') {
   if (!lookup.ok) {
     error = lookup.message;
   } else {
+    lookedUp = lookup.value;
     view = await loadOrderConsole(lookup.value);
     Astro.response.status = view.status;
   }
@@ -74,7 +76,20 @@ if (Astro.request.method === 'POST') {
 
   {view && (
     <section class="result">
-      <h2>Order status</h2>
+      {/* Two lookups, never one order. Nothing correlates an order id with a
+          ticket reference — that is the whole reason this page takes both — so
+          rendering them under one heading would let an operator read one
+          order's status above another order's ticket history and act on it.
+          Each half names the identifier it came from, and when both are present
+          the page says plainly that it cannot vouch for the pairing. */}
+      {view.order && view.tickets && (
+        <p class="caveat">
+          These are two independent lookups. Nothing links an order id to a ticket reference, so
+          this page cannot confirm that the two below belong to the same order.
+        </p>
+      )}
+
+      <h2>Order status{view.order && <span class="muted"> — {lookedUp.orderId}</span>}</h2>
       {view.order === undefined && <p class="muted">No order id was supplied.</p>}
       {view.order?.ok && (
         /* Commerce's own word for it. Not translated into "paid" or "valid" —
@@ -90,7 +105,7 @@ if (Astro.request.method === 'POST') {
         <p class="error">Commerce could not answer just now, so the status is unknown. Try again shortly.</p>
       )}
 
-      <h2>Tickets</h2>
+      <h2>Tickets{view.tickets && <span class="muted"> — reference {lookedUp.ref}</span>}</h2>
       {view.tickets === undefined && <p class="muted">No ticket reference was supplied.</p>}
       {view.tickets?.ok === false && view.tickets.kind === 'not-found' && (
         /* Issuance is asynchronous, so a very recent order legitimately has no
@@ -128,5 +143,6 @@ if (Astro.request.method === 'POST') {
   .error { color: #a8322d; }
   .muted { color: var(--muted); }
   .scope { border-left: 3px solid var(--muted); padding-left: 0.8rem; margin-bottom: 1.5rem; }
+  .caveat { border-left: 3px solid #a8322d; padding-left: 0.8rem; }
   .ticket { border-top: 1px solid var(--muted); padding-top: 0.5rem; margin-top: 1rem; }
 </style>

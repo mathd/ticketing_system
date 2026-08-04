@@ -403,11 +403,25 @@ async function readJson<T>(url: string, project: (body: unknown) => T): Promise<
   }
 }
 
+/**
+ * A required string, or a thrown projection failure that `readJson` turns into
+ * `unavailable`.
+ *
+ * A `200` whose body is missing the field is NOT a successful read: without
+ * this, commerce answering `{}` would render "Commerce reports this order as
+ * **undefined**" — a claim about an order, sourced from nothing. An upstream
+ * that answers 200 with the wrong shape has failed to answer.
+ */
+function required(v: unknown, field: string): string {
+  if (typeof v !== 'string' || v === '') throw new Error(`response is missing ${field}`);
+  return v;
+}
+
 /** Commerce's order state: `{order_id, status}` and, by contract, nothing else. */
 export function getOrderState(orderId: string): Promise<Read<OrderState>> {
   return readJson(commerce(`/orders/${encodeURIComponent(orderId)}`), (body) => {
-    const b = body as { order_id: string; status: string };
-    return { orderId: b.order_id, status: b.status };
+    const b = body as { order_id?: unknown; status?: unknown };
+    return { orderId: required(b.order_id, 'order_id'), status: required(b.status, 'status') };
   });
 }
 
@@ -423,16 +437,32 @@ export function getOrderState(orderId: string): Promise<Read<OrderState>> {
  */
 export function getOrderTickets(ref: string): Promise<Read<SafeTicket[]>> {
   return readJson(access(`/orders/${encodeURIComponent(ref)}/tickets`), (body) => {
-    const b = body as { tickets: Array<Record<string, unknown>> };
-    return b.tickets.map((t) => ({
-      ticketId: String(t.ticket_id),
-      issuedAt: String(t.issued_at),
-      history: ((t.history ?? []) as Array<Record<string, unknown>>).map((e) => ({
-        id: String(e.id),
-        type: String(e.type),
-        sequence: e.sequence === undefined ? undefined : Number(e.sequence),
-        occurredAt: String(e.occurred_at),
-      })),
-    }));
+    const b = body as { tickets?: unknown };
+    if (!Array.isArray(b.tickets)) throw new Error('response is missing tickets');
+    return b.tickets.map((raw) => {
+      const t = raw as Record<string, unknown>;
+      const history = t.history ?? [];
+      if (!Array.isArray(history)) throw new Error('ticket history is not a list');
+      return {
+        ticketId: required(t.ticket_id, 'ticket_id'),
+        issuedAt: required(t.issued_at, 'issued_at'),
+        history: history.map((rawEvent) => {
+          const e = rawEvent as Record<string, unknown>;
+          // A sequence that is present but not a number is a contract the client
+          // does not understand — rendering NaN beside a lifecycle event would
+          // read as a gap in the integrity chain (ADR-025 §D5) rather than as
+          // this client's confusion.
+          if (e.sequence !== undefined && typeof e.sequence !== 'number') {
+            throw new Error('lifecycle sequence is not a number');
+          }
+          return {
+            id: required(e.id, 'event id'),
+            type: required(e.type, 'event type'),
+            sequence: e.sequence as number | undefined,
+            occurredAt: required(e.occurred_at, 'occurred_at'),
+          };
+        }),
+      };
+    });
   });
 }

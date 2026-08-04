@@ -371,6 +371,29 @@ describe('the order console reads (TKT-193)', () => {
     await expect(getOrderTickets(REF)).resolves.toEqual({ ok: false, kind });
   });
 
+  // ai-review pass 1. A 200 carrying the wrong shape is a failure to answer, not
+  // a successful read: without runtime validation, commerce answering `{}` would
+  // render "Commerce reports this order as **undefined**" — a claim about an
+  // order, sourced from nothing, at HTTP 200.
+  it.each([
+    ['an empty commerce body', {}],
+    ['a commerce body missing status', { order_id: 'o1' }],
+    ['a commerce status that is not a string', { order_id: 'o1', status: 7 }],
+  ])('treats %s as unavailable, not as a status', async (_name, body) => {
+    spyFetch(body, 200);
+    await expect(getOrderState(ORDER)).resolves.toEqual({ ok: false, kind: 'unavailable' });
+  });
+
+  it.each([
+    ['no tickets key', {}],
+    ['a ticket with no id', { tickets: [{ issued_at: 'x', history: [] }] }],
+    ['a history entry with no type', { tickets: [{ ticket_id: 't', issued_at: 'x', history: [{ id: 'e', occurred_at: 'x' }] }] }],
+    ['a non-numeric sequence', { tickets: [{ ticket_id: 't', issued_at: 'x', history: [{ id: 'e', type: 'issued', sequence: 'two', occurred_at: 'x' }] }] }],
+  ])('treats %s as unavailable, not as tickets', async (_name, body) => {
+    spyFetch(body, 200);
+    await expect(getOrderTickets(REF)).resolves.toEqual({ ok: false, kind: 'unavailable' });
+  });
+
   // COS-7. qr_payload is the credential that admits at the gate, and qr_url
   // points at an UNAUTHENTICATED endpoint that renders it as an image. Either
   // one on a staff console is a working ticket for someone else's order, in
