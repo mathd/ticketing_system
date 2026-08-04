@@ -4,7 +4,7 @@
   "summary": "US-B4: Order console — staff find an order and read its ticket lifecycle",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": null,
