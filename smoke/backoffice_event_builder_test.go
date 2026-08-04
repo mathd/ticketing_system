@@ -104,11 +104,25 @@ func TestBackofficeEventBuilderPublishesASellableEvent(t *testing.T) {
 	ticketTypeID := idFrom(t, loc, "ticket_type")
 
 	// 4. Publish.
-	loc = followStep(t, client, url.Values{"_action": {"publish-performance"}},
+	followStep(t, client, url.Values{"_action": {"publish-performance"}},
 		eventID, performanceID, ticketTypeID)
-	if !strings.Contains(loc, "published=1") {
-		t.Fatalf("publish did not report success: %q", loc)
-	}
+
+	// The page reports "on sale" only if catalog says so — that is the point of
+	// deriving it rather than trusting a query parameter (ai-review F2). So the
+	// assertion follows the redirect and reads the rendered claim, and asserting
+	// a `published=1` marker would be asserting the very thing that was removed.
+	//
+	// Retried: publication is committed before the page is fetched, but the
+	// public list is an aggregated read and the slot must be listable on it.
+	retry(t, 30*time.Second, func() error {
+		page := readBody(t, doRequest(t, client, http.MethodGet,
+			gatewayURL+"/admin/events/new?event="+eventID+"&performance="+performanceID+
+				"&ticket_type="+ticketTypeID, nil, nil))
+		if !strings.Contains(page, "on sale") {
+			return fmt.Errorf("the builder does not yet report the slot as on sale")
+		}
+		return nil
+	})
 
 	// COS-2: a buyer can now see it. Asserted from the STOREFRONT render, not
 	// the catalog API — the API proves the write, the storefront proves the sale.
