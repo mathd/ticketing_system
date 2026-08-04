@@ -38,6 +38,8 @@ Every finding — from the Codex adversarial review or the human reviewer — ge
 
 Invariant: **no finding is silently dropped.** Each one changes the diff, produces a ticket, or gets a stated rejection. Fixing incidental findings in the PR is scope creep — it bloats the diff, slows review, and the SHA churn invalidates earlier review effort.
 
+**Why the second pass is load-bearing, in numbers.** Across TKT-22's five stories: 6 of 9 findings (TKT-190), 3 of 4 (TKT-191), 4 of 5 (TKT-197) and ~17 of 24 (TKT-192) were defects **in code written to fix an earlier finding** — **30 of 42 overall.** Fix diffs are written fast, under momentum, against one example, and by construction nobody has reviewed them. Treat "I only changed six lines to fix a finding" as the *highest*-risk diff on the branch, not the lowest.
+
 ### 2.b Running the local gate honestly (`agent:coding`)
 
 The local gate is the source of truth for "green" — but only when run against a **committed** tree. Two failure modes seen in practice (TKT-49):

@@ -42,6 +42,16 @@ SPIDR slicing (first sprint-sized slice).
 **Gate 1 is hard-blocked** (board-enforced in local mode; discipline in Jira mode) while any item
 is `open` or an open blocker exists. `deferred` passes.
 
+**Exception: `approach: deferred` does *not* pass when the ticket touches auth, money paths, data
+migrations, or CI/deploy config.** In that combination the escape hatch is doing the opposite of its
+job: the decision rule behind `deferred` is "no major redesign mid-sprint", and on those four
+surfaces the approach *is* the redesign — it decides a trust boundary, who may spend, or what runs
+against production data. Deferring it moves that call from shaping, where there is time to read and
+a human to ask, into Planning under a drafting deadline. Set `owner: "human"` and hold at Gate 1.
+TKT-22 hit this twice in one epic: TKT-193's approach assumed an order read that returns fields the
+contract forbids, and TKT-194's refund action turned out to be unreachable from the back office at
+all — both discovered at claim time, both money- or auth-adjacent, both costing a rescope.
+
 ## The shaping pass (agent, in Backlog)
 
 1. **Read the real code first** — most items resolve by reading, not asking (integration point,
