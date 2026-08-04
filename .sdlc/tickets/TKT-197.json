@@ -2,9 +2,9 @@
   "key": "TKT-197",
   "type": "Story",
   "summary": "US-B2b: The role matrix — box office cannot touch settlement",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
