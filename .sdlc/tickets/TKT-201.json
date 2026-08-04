@@ -1,0 +1,51 @@
+{
+  "key": "TKT-201",
+  "type": "Story",
+  "summary": "Commerce exposes an order detail read — buyer contact, line items, money totals",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-22",
+  "description": "Carved out of **TKT-193** when its scope survey found the data does not exist to read.\n\n`GET /orders/{id}` returns `OrderState` — **`{order_id, status}`**, with `additionalProperties: false`\n(`services/commerce/api/openapi.yaml:330`). ADR-028's response validator fails closed, so the handler\ncannot return more than those two fields even if it wanted to. There is no read anywhere for an\norder's line items or money totals, and buyer contact exists only at\n`/internal/buyers/{id}/delivery-email` — edge-denied by the gateway, and the back office deliberately\nholds no internal credential (ADR-042).\n\nSo TKT-193's console can show an order's **status** and, from access, each ticket's **lifecycle\nhistory** — and nothing else. That ticket was rescoped to exactly that; this one is the rest.\n\n**Why it is its own ticket rather than part of the console.** It exposes **money** on a read that\ncarries none today, and **buyer PII** on a surface that has none. That is commerce's contract, ADR-003's\nno-PII-in-trails boundary, and an ADR-004 tier decision — three concerns that deserve their own\nreview rather than riding along in a UI story.\n\n**Conditions of Success:**\n- [ ] An order detail read returns line items and money totals as **integer minor units + ISO\n      currency** (ADR-001); no float appears on the path.\n- [ ] The read declares its ADR-004 tier. Order state is the **\"never\"** tier — `no-store` — and the\n      reasoning is written down rather than copied.\n- [ ] Buyer contact is exposed deliberately or not at all: name **which** caller may see it and why,\n      and keep it out of any append-only record the read touches (ADR-003).\n- [ ] Every status the handler can emit is declared, and generated code is committed before the gate\n      (ADR-009, ADR-028).\n- [ ] A caller that should not see an order gets a refusal indistinguishable from \"no such order\".\n- [ ] `make check` green.\n\n**Open question for shaping:** whether this is one read or two (a staff detail read and the existing\nminimal state read). A single read that serves both the storefront and the back office would leak\nmoney and contact to the storefront; two reads means two contracts to keep honest.",
+  "links": [],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-001",
+        "why": "Money is integer minor units + ISO currency; floats are banned on money paths — and this read is a money path the moment it carries totals."
+      },
+      {
+        "id": "ADR-003",
+        "why": "No raw PII in append-only records. Buyer contact is PII; exposing it on a read is a decision, and writing it anywhere durable is a different one."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Order state is the 'never' tier: no-store. A money-bearing read must not be cached."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed — every new field and status must be declared or the validator turns the response into a 500."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The read as it stands: {order_id, status}, additionalProperties false.",
+        "link": "services/commerce/api/openapi.yaml:330"
+      },
+      {
+        "summary": "Buyer contact exists only here, and it is edge-denied.",
+        "link": "services/commerce/api/openapi.yaml:172"
+      }
+    ],
+    "capturedAt": "2026-08-04"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-193's scope survey (owner decision, 2026-08-04): ship the console over what is readable, ticket the rest. Not shaped — needs the 8-item DoR before Gate 1.\n\nThe open question in the description is a real one and should be answered at shaping, not discovered at implementation."
+    }
+  ]
+}
