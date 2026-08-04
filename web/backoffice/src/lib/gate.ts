@@ -78,3 +78,39 @@ function firstHop(value: string | null): string | undefined {
 export function isUnsafeMethod(method: string): boolean {
   return !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
 }
+
+/**
+ * The refusal for an untrusted origin. Generic and terse: naming the expected
+ * origin would hand an attacker the one string they need.
+ */
+export function forbiddenResponse(): Response {
+  return new Response('forbidden\n', {
+    status: 403,
+    headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+  });
+}
+
+/**
+ * The ordering guarantee, in one testable place (ai-review pass 2, S2).
+ *
+ * The claim TKT-190 makes is not "a cross-origin submission gets a 403" — it is
+ * "a cross-origin submission is refused **before any credential is read**". Those
+ * differ: a middleware that ran the handler first, let it verify the password and
+ * create a session, and only then replaced the response with a 403 would satisfy
+ * the first and violate the second, leaving an orphaned server-side session
+ * behind. No wire-level assertion can tell the two apart, because the difference
+ * is invisible from outside — the discarded response takes the Set-Cookie with it.
+ *
+ * So the guarantee lives here instead: `next` is a callback, and this function is
+ * the ONLY thing that calls it. A test passes an instrumented `next` and asserts
+ * it is never invoked for an unsafe request with a missing or untrusted Origin.
+ */
+export async function guardUnsafeRequest(
+  request: Request,
+  next: () => Promise<Response>,
+): Promise<Response> {
+  if (isUnsafeMethod(request.method) && !originIsTrusted(request)) {
+    return forbiddenResponse();
+  }
+  return next();
+}

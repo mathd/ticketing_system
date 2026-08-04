@@ -85,6 +85,13 @@ Expired entries are swept **on sign-in**, not only when their own token is prese
 is not enough on its own: the sessions that are never presented again — the tab someone closed — are
 the common case, so expiry-on-read alone would let the map grow for the life of the process.
 
+Sweeping is still not a bound, and the second review pass caught the claim that it was. Every
+sign-in mints a new token while the old ones live out their full eight hours, so **one** valid
+credential can inflate the map without limit — and the sweep is what degrades with it. The bound is
+a **cap of five concurrent sessions per staff member**, oldest evicted: signing in on a sixth device
+ends the first. The cap is per principal and never global, because a global one would let one busy
+account evict a colleague's live session, turning a safety limit into a denial of service.
+
 **3. CSRF is answered by two controls, and they do different things.**
 - `SameSite=Lax` on the session cookie means the cookie is **not transmitted** on a cross-site POST,
   so a forged request arrives with no session. This depends on the browser honouring it.

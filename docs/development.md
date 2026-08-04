@@ -530,7 +530,9 @@ interpreted nowhere until TKT-191.
 **Sessions are in-process and are not persisted.** A back-office restart signs everyone out,
 and a second replica would not share them — accepted for a single-replica Compose staff tool,
 and reversible without moving the enforcement point (ADR-042). The absolute lifetime is eight
-hours; it does not slide, so a stolen cookie cannot be kept alive by using it.
+hours; it does not slide, so a stolen cookie cannot be kept alive by using it. One staff member
+holds at most **five** concurrent sessions: signing in on a sixth device ends the oldest. That
+cap is what bounds the session map, not the expiry sweep.
 
 **Signing out invalidates server-side.** Replaying the captured cookie afterwards fails —
 that, not the browser being told to drop it, is what the smoke suite asserts.

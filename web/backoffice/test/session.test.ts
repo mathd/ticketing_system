@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   SESSION_COOKIE,
+  MAX_SESSIONS_PER_STAFF,
   SESSION_COOKIE_PATH,
   SESSION_TTL_MS,
   createSession,
@@ -116,5 +117,34 @@ describe('session cookie attributes (COS-6)', () => {
 
   it('names a cookie that does not disclose what it is worth', () => {
     expect(SESSION_COOKIE).not.toMatch(/token|auth|admin/i);
+  });
+});
+
+describe('the session map is bounded (ai-review pass 2, S1)', () => {
+  // Without a per-principal cap the map has no ceiling: every sign-in mints a new
+  // token and the old ones live out their full TTL, so ONE valid credential can
+  // inflate it without limit — and the sweep inside createSession is what degrades
+  // with it. The cap is what makes "bounded by headcount" a true statement instead
+  // of a comment.
+  it('keeps at most MAX_SESSIONS_PER_STAFF live sessions for one staff member', () => {
+    const tokens = Array.from({ length: MAX_SESSIONS_PER_STAFF + 7 }, () =>
+      createSession(principal),
+    );
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_STAFF);
+
+    // The survivors are the newest; the oldest were evicted to make room.
+    const live = tokens.filter((t) => lookupSession(t) !== undefined);
+    expect(live).toEqual(tokens.slice(-MAX_SESSIONS_PER_STAFF));
+  });
+
+  it('caps per principal, so one busy account cannot evict a colleague', () => {
+    const colleague = { staffId: 'staff-2', organizerId: 'org-1' };
+    const theirs = createSession(colleague);
+
+    for (let i = 0; i < MAX_SESSIONS_PER_STAFF * 3; i++) createSession(principal);
+
+    // A global cap would have thrown this away; a per-principal one must not.
+    expect(lookupSession(theirs)).toEqual(colleague);
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_STAFF + 1);
   });
 });

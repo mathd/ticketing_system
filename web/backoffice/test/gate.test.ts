@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { LOGIN_PATH, isAnonymousPath, originIsTrusted } from '../src/lib/gate';
+import { LOGIN_PATH, guardUnsafeRequest, isAnonymousPath, originIsTrusted } from '../src/lib/gate';
 
 describe('anonymous paths (COS-1)', () => {
   // The exemption list is the whole attack surface of the gate: anything on it is
@@ -125,5 +125,82 @@ describe('proxy-aware origin check (COS-7)', () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe('ordering: an untrusted origin is refused before anything downstream runs', () => {
+  // ai-review pass 2, S2. The wire cannot distinguish "refused before the handler"
+  // from "handler ran, made a session, then the response was replaced with a 403" —
+  // the discarded response takes its Set-Cookie with it, so the outside sees the
+  // same thing either way while an orphaned server-side session survives.
+  //
+  // guardUnsafeRequest owns the only call to `next`, so instrumenting `next` is a
+  // direct test of the claim rather than a proxy for it.
+  const unsafe = (headers: Record<string, string>) =>
+    new Request('http://backoffice:8080/admin/login', { method: 'POST', headers });
+
+  const trusted = {
+    origin: 'http://localhost:8080',
+    'x-forwarded-proto': 'http',
+    'x-forwarded-host': 'localhost:8080',
+  };
+
+  it('never invokes the downstream handler for a cross-site submission', async () => {
+    let invoked = 0;
+    const res = await guardUnsafeRequest(
+      unsafe({ ...trusted, origin: 'http://evil.example' }),
+      async () => {
+        invoked++;
+        return new Response('should never run', { status: 200 });
+      },
+    );
+    expect(invoked).toBe(0);
+    expect(res.status).toBe(403);
+  });
+
+  it('never invokes the downstream handler when Origin is absent', async () => {
+    let invoked = 0;
+    const res = await guardUnsafeRequest(
+      unsafe({ 'x-forwarded-proto': 'http', 'x-forwarded-host': 'localhost:8080' }),
+      async () => {
+        invoked++;
+        return new Response('should never run', { status: 200 });
+      },
+    );
+    expect(invoked).toBe(0);
+    expect(res.status).toBe(403);
+  });
+
+  it('does invoke it for a same-origin submission', async () => {
+    let invoked = 0;
+    const res = await guardUnsafeRequest(unsafe(trusted), async () => {
+      invoked++;
+      return new Response('ok', { status: 200 });
+    });
+    expect(invoked).toBe(1);
+    expect(res.status).toBe(200);
+  });
+
+  it('does invoke it for a safe method, whatever the origin', async () => {
+    let invoked = 0;
+    const get = new Request('http://backoffice:8080/admin/healthz', {
+      method: 'GET',
+      headers: { origin: 'http://evil.example' },
+    });
+    await guardUnsafeRequest(get, async () => {
+      invoked++;
+      return new Response('ok', { status: 200 });
+    });
+    // Reads are not state changes, and the health probe arrives with no
+    // forwarded headers at all — refusing safe methods would take the container
+    // unhealthy and the whole stack down with it.
+    expect(invoked).toBe(1);
+  });
+
+  it('refuses without a Cache-Control that would let the 403 be cached', async () => {
+    const res = await guardUnsafeRequest(unsafe({ origin: 'http://evil.example' }), async () =>
+      new Response('x'),
+    );
+    expect(res.headers.get('cache-control')).toBe('no-store');
   });
 });

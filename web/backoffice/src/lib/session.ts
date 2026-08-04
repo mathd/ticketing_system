@@ -28,6 +28,19 @@ export const SESSION_COOKIE = 'bo_sid';
  */
 export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
+/**
+ * How many concurrent sessions one staff member may hold. Signing in on a
+ * fourth device ends the oldest — normal for a shift-based staff tool, and it
+ * is what actually BOUNDS the session map.
+ *
+ * Without it the map is bounded by nothing (ai-review pass 2, S1): every
+ * sign-in mints a new token and the old ones stay live for the full eight
+ * hours, so one valid credential can accumulate entries without limit, and the
+ * sweep below degrades with them. With it, `sessions.size` is at most
+ * `staff headcount x MAX_SESSIONS_PER_STAFF`.
+ */
+export const MAX_SESSIONS_PER_STAFF = 5;
+
 interface Entry {
   principal: StaffPrincipal;
   expiresAt: number;
@@ -46,16 +59,40 @@ export function sessionCountForTest(): number {
 }
 
 export function createSession(principal: StaffPrincipal, now = Date.now()): string {
-  // Reclaim on create (ai-review F4). Expiry-on-read alone only collects a token
-  // that is presented again — and the entries that never come back are precisely
-  // the ones whose owner closed the tab, i.e. the common case. Left alone the map
-  // grows monotonically for the process's whole life. Sweeping here bounds it by
-  // the number of LIVE sessions instead, and the cost is trivial: it runs once
-  // per sign-in, behind a bcrypt comparison that costs far more, over a map whose
-  // size is the staff headcount.
+  // One pass over the map does both jobs, because both need the same walk.
+  //
+  //  - Reclaim expired entries (ai-review pass 1, F4). Expiry-on-read alone only
+  //    collects a token that is presented again, and the ones that never come
+  //    back — the tab someone closed — are the common case, so the map would
+  //    otherwise grow for the life of the process.
+  //  - Collect this principal's live tokens for the cap below (ai-review pass 2,
+  //    S1). The cap is what makes this walk's cost bounded. An earlier version of
+  //    this comment claimed the map was "the staff headcount" and that was simply
+  //    wrong: every sign-in mints a new token and old ones live out their full
+  //    eight hours, so one credential could inflate `sessions.size` without
+  //    limit — and this very loop is what degraded with it.
+  //
+  // Deleting from a Map while iterating it is well-defined in JS: entries already
+  // visited are gone, and no entry is skipped.
+  const mine: { token: string; expiresAt: number }[] = [];
   for (const [token, entry] of sessions) {
-    if (now >= entry.expiresAt) sessions.delete(token);
+    if (now >= entry.expiresAt) {
+      sessions.delete(token);
+    } else if (entry.principal.staffId === principal.staffId) {
+      mine.push({ token, expiresAt: entry.expiresAt });
+    }
   }
+
+  // Make room for the new one: drop this principal's oldest sessions until it is
+  // under the cap. Oldest by expiry, which under a fixed TTL is oldest by issue
+  // time. Per principal, never global — a global cap would let one busy account
+  // evict another staff member's live session, turning a cap into a denial of
+  // service against colleagues.
+  mine.sort((a, b) => a.expiresAt - b.expiresAt);
+  for (let i = 0; i <= mine.length - MAX_SESSIONS_PER_STAFF; i++) {
+    sessions.delete(mine[i]!.token);
+  }
+
   // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
   const token = randomBytes(32).toString('base64url');
   sessions.set(token, { principal, expiresAt: now + SESSION_TTL_MS });
