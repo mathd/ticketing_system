@@ -288,3 +288,68 @@ export async function authenticateStaff(
   }
   return { staffId: body.staff_id, organizerId: body.organizer_id, role: body.role };
 }
+
+// --- Event authoring (TKT-192 / US-B3) ---
+//
+// Four thin wrappers over postCatalog, which already attaches the staff-write
+// credential (TKT-191) and turns a non-2xx into a CatalogApiError carrying
+// catalog's own {error} message. The builder page surfaces that message
+// verbatim, so a refusal catalog decides (ADR-018) reads as a sentence rather
+// than a status code.
+//
+// The organizer is a parameter on every one of these, never a default: it comes
+// from the session (TKT-190), and a default here is how one organizer's staff
+// would author into another's tenant.
+
+export type Event = components['schemas']['Event'];
+export type Performance = components['schemas']['Performance'];
+export type TicketType = components['schemas']['TicketType'];
+export type LocalizedStringDto = components['schemas']['LocalizedString'];
+
+export function createEvent(organizerId: string, name: LocalizedStringDto): Promise<Event> {
+  return postCatalog<Event>('/events', { organizer_id: organizerId, name });
+}
+
+export function createPerformance(
+  organizerId: string,
+  input: { eventId: string; venueId: string; startsAt: string; timezone: string },
+): Promise<Performance> {
+  return postCatalog<Performance>('/performances', {
+    organizer_id: organizerId,
+    event_id: input.eventId,
+    venue_id: input.venueId,
+    // RFC 3339 with an explicit offset, and the IANA zone alongside it. A
+    // `datetime-local` value carries no zone, and converting one in the SERVER's
+    // zone would shift every slot for any organizer who is not sitting next to
+    // the server — silently, and only for them.
+    starts_at: input.startsAt,
+    timezone: input.timezone,
+  });
+}
+
+export function createTicketType(
+  organizerId: string,
+  input: { performanceId: string; name: LocalizedStringDto; amount: number; currency: string },
+): Promise<TicketType> {
+  return postCatalog<TicketType>('/ticket-types', {
+    organizer_id: organizerId,
+    performance_id: input.performanceId,
+    name: input.name,
+    // Integer minor units + ISO code, parsed as such (ADR-001). Nothing on this
+    // path has ever been a float.
+    price: { amount: input.amount, currency: input.currency },
+  });
+}
+
+/**
+ * Publish a draft slot. Catalog owns the decision (ADR-018): a grouped festival
+ * day refuses its own publish, an archived slot refuses the transition, and a
+ * slot with no ticket type is refused as not sellable. Each arrives here as a
+ * CatalogApiError whose message is catalog's own.
+ */
+export function publishPerformance(performanceId: string): Promise<Performance> {
+  return postCatalog<Performance>(
+    `/performances/${encodeURIComponent(performanceId)}/publish`,
+    null,
+  );
+}

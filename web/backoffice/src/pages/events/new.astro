@@ -1,0 +1,276 @@
+---
+// The event builder (TKT-192 / US-B3): create an event, give it a dated slot, a
+// price, and publish it — without touching the catalog API by hand.
+//
+// One page, four actions, state in the query string. That is the idiom
+// venues/[id].astro already proves for four writes plus a publish: `_action`
+// dispatch, post/redirect/get on success, re-render with the error on failure,
+// relative form actions (an absolute one trips the origin handling even
+// same-origin — TKT-105). Each extra page would be another ROUTE_MATRIX row,
+// another role test and another browser check, for no domain benefit.
+//
+// The query string carries IDENTITY only — which event, which slot — never
+// editable domain data and never the organizer. The organizer comes from the
+// session on every write; a query param would be an authorization decision made
+// by the URL bar. Catalog stays authoritative for existence and lifecycle.
+import Layout from '../../layouts/Layout.astro';
+import {
+  CatalogApiError,
+  createEvent,
+  createPerformance,
+  createTicketType,
+  getVenues,
+  publishPerformance,
+} from '../../lib/api';
+import { parseCurrency, parseLocalizedName, parseMinorUnits } from '../../lib/event-builder';
+
+const staff = Astro.locals.staff;
+if (!staff) throw new Error('unauthenticated request reached the event builder');
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const here = `${base}/events/new`;
+
+// Progress, carried across requests. Present ids mean that step succeeded.
+let eventId = Astro.url.searchParams.get('event');
+let performanceId = Astro.url.searchParams.get('performance');
+let ticketTypeId = Astro.url.searchParams.get('ticket_type');
+
+// On a failed submit we re-render rather than redirect, so the operator keeps
+// what they typed (COS-4). `errorField` drives which input is flagged.
+let error: string | null = null;
+let errorField: string | null = null;
+let submitted: Record<string, string> = {};
+let venues: Awaited<ReturnType<typeof getVenues>> = [];
+// Set ONLY by a publish this request performed, from catalog's own response.
+// Never from the URL: an earlier version took it from a `published=1` query
+// parameter any admin could type (ai-review pass 1). Nor from a public-list
+// lookup: that proved "published and priced", which is not the same as sellable,
+// and searched every organizer's events (pass 2). The honest claim is the one
+// catalog just made to us, about the slot we just published.
+let publishedStatus: string | null = null;
+
+// The read is inside the error path: a catalog failure must render this page's
+// readable message, not abort SSR into a 500 that says nothing (pass 1).
+let readFailed = false;
+try {
+  venues = await getVenues(staff.organizerId);
+} catch (e) {
+  readFailed = true;
+  error =
+    e instanceof CatalogApiError
+      ? e.message
+      : 'Something went wrong talking to the catalog. Try again.';
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const action = String(form.get('_action') ?? '');
+  const field = (name: string) => String(form.get(name) ?? '');
+  submitted = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
+
+  try {
+    // There is deliberately NO replay guard here.
+    //
+    // An earlier version refused a step whose id was already in the query
+    // string. It could never fire (ai-review pass 2): a resubmitted POST carries
+    // the ORIGINAL url, which by construction lacks the id that POST produced —
+    // so every legitimate create ran again and every duplicate got through. A
+    // guard that reads as protection and provides none is worse than none.
+    //
+    // Post/redirect/get is what actually reduces accidental replays; closing the
+    // double-submit race needs an idempotency key catalog's creates do not
+    // accept, which is TKT-200. Duplicates here are unpublished drafts.
+    if (action === 'create-event') {
+      const name = parseLocalizedName({ en: field('name_en'), fr: field('name_fr') });
+      if (!name.ok) {
+        error = name.message;
+        errorField = `name_${name.field}`;
+      } else {
+        const created = await createEvent(staff.organizerId, name.value);
+        return Astro.redirect(`${here}?event=${encodeURIComponent(created.id)}`, 303);
+      }
+    } else if (action === 'create-performance') {
+      // Only THIS step needs the venue list, so only this step is blocked when
+      // that read failed (pass 3 — gating every write also stopped writes whose
+      // endpoints were healthy).
+      //
+      // Not by throwing: a plain Error lands in the catch below, which only
+      // recognises CatalogApiError, and would replace the real venue-read reason
+      // with the generic fallback (pass 4). The error is already set; leave it.
+      if (readFailed) {
+        // error already describes the venue read failure
+      } else {
+      const perf = await createPerformance(staff.organizerId, {
+        eventId: String(eventId),
+        venueId: field('venue_id'),
+        startsAt: field('starts_at'),
+        timezone: field('timezone'),
+      });
+      return Astro.redirect(
+        `${here}?event=${encodeURIComponent(String(eventId))}&performance=${encodeURIComponent(perf.id)}`,
+        303,
+      );
+      }
+    } else if (action === 'create-ticket-type') {
+      const name = parseLocalizedName({ en: field('tt_name_en'), fr: field('tt_name_fr') });
+      const amount = parseMinorUnits(field('amount'));
+      const currency = parseCurrency(field('currency'));
+      const bad = [name, amount, currency].find((r) => !r.ok);
+      if (bad && !bad.ok) {
+        error = bad.message;
+        errorField = bad.field === 'en' || bad.field === 'fr' ? `tt_name_${bad.field}` : bad.field;
+      } else if (name.ok && amount.ok && currency.ok) {
+        const tt = await createTicketType(staff.organizerId, {
+          performanceId: String(performanceId),
+          name: name.value,
+          amount: amount.value,
+          currency: currency.value,
+        });
+        return Astro.redirect(
+          `${here}?event=${encodeURIComponent(String(eventId))}` +
+            `&performance=${encodeURIComponent(String(performanceId))}` +
+            `&ticket_type=${encodeURIComponent(tt.id)}`,
+          303,
+        );
+      }
+    } else if (action === 'publish-performance') {
+      // No redirect on the terminal step: the confirmation renders from
+      // catalog's OWN response, so the page can only claim what catalog just
+      // told it. Publishing is idempotent server-side (ADR-018), so a refresh
+      // that re-posts is harmless — which is what makes forgoing PRG safe here,
+      // and nowhere else on this page.
+      const slot = await publishPerformance(String(performanceId));
+      // `published`, not merely truthy. Catalog's publish updates and rereads in
+      // separate statements, so a concurrent archive can return `archived` here
+      // — and rendering that under "Publication accepted" would report a slot
+      // that is not on sale as though it were (ai-review pass 3).
+      if (slot.status === 'published') {
+        publishedStatus = slot.status;
+        // Supersede an earlier venue-read failure: it is about a list this step
+        // never needed, and rendering it beside "Publication accepted" would
+        // show an error and a success for the same request (pass 4).
+        error = null;
+      } else {
+        error = `Catalog reports this date as ${slot.status ?? 'unknown'}, not published.`;
+      }
+    }
+  } catch (e) {
+    // Catalog's own message, verbatim — it is the one that says WHY, and the
+    // refusals that matter here are catalog's to make (ADR-018): a grouped
+    // festival day publishes through its festival, an archived slot cannot
+    // transition, a slot with no ticket type is not sellable. Surfacing our own
+    // paraphrase would be a second lifecycle opinion.
+    error =
+      e instanceof CatalogApiError
+        ? e.message
+        : 'Something went wrong talking to the catalog. Try again.';
+  }
+}
+
+const step = publishedStatus ? 5 : ticketTypeId ? 4 : performanceId ? 3 : eventId ? 2 : 1;
+const val = (name: string) => submitted[name] ?? '';
+---
+
+<Layout title="Create an event — Back-office">
+  <h1>Create an event</h1>
+  <p class="muted">Step {Math.min(step, 4)} of 4</p>
+
+  {error && <p class="error" role="alert">{error}</p>}
+
+  {step === 1 && (
+    <form method="post" action="">
+      <input type="hidden" name="_action" value="create-event" />
+      <h2>1. The event</h2>
+      <label for="name_en">Name (English)</label>
+      <input id="name_en" name="name_en" required value={val('name_en')}
+             aria-invalid={errorField === 'name_en' ? 'true' : undefined} />
+      <label for="name_fr">Nom (français)</label>
+      <input id="name_fr" name="name_fr" required value={val('name_fr')}
+             aria-invalid={errorField === 'name_fr' ? 'true' : undefined} />
+      <button type="submit">Create event</button>
+    </form>
+  )}
+
+  {step === 2 && readFailed && (
+    <section>
+      <h2>2. When and where</h2>
+      {/* The venue list could not be read, so this step cannot be completed —
+          and an enabled <select> over an empty list would invite an operator to
+          submit something that cannot succeed (ai-review pass 4). The error
+          above says why. */}
+      <p>The venue list is unavailable, so this step cannot be completed yet.</p>
+    </section>
+  )}
+
+  {step === 2 && !readFailed && (
+    <form method="post" action="">
+      <input type="hidden" name="_action" value="create-performance" />
+      <h2>2. When and where</h2>
+      <label for="venue_id">Venue</label>
+      <select id="venue_id" name="venue_id" required>
+        {venues.map((v) => <option value={v.id}>{v.name}</option>)}
+      </select>
+      <label for="starts_at">Starts at</label>
+      {/* RFC 3339 WITH an offset, not a datetime-local value. A local value
+          carries no zone, and resolving one in the server's zone would shift
+          the slot for every organizer who is not next to the server. */}
+      <input id="starts_at" name="starts_at" required placeholder="2026-09-18T19:30:00+02:00"
+             value={val('starts_at')} aria-invalid={errorField === 'starts_at' ? 'true' : undefined} />
+      <label for="timezone">Timezone (IANA)</label>
+      <input id="timezone" name="timezone" required placeholder="Europe/Paris"
+             value={val('timezone')} aria-invalid={errorField === 'timezone' ? 'true' : undefined} />
+      <button type="submit">Add the date</button>
+    </form>
+  )}
+
+  {step === 3 && (
+    <form method="post" action="">
+      <input type="hidden" name="_action" value="create-ticket-type" />
+      <h2>3. The price</h2>
+      <label for="tt_name_en">Ticket name (English)</label>
+      <input id="tt_name_en" name="tt_name_en" required value={val('tt_name_en')}
+             aria-invalid={errorField === 'tt_name_en' ? 'true' : undefined} />
+      <label for="tt_name_fr">Nom du billet (français)</label>
+      <input id="tt_name_fr" name="tt_name_fr" required value={val('tt_name_fr')}
+             aria-invalid={errorField === 'tt_name_fr' ? 'true' : undefined} />
+      <label for="amount">Amount in minor units</label>
+      {/* Minor units, not a decimal: €45.50 is 4550. The alternative is
+          parseFloat times a hundred, which is inexact in binary and assumes
+          every currency has two decimals — JPY has none (ADR-001). */}
+      <input id="amount" name="amount" required inputmode="numeric" pattern="[0-9]+"
+             placeholder="4550 (= €45.50)" value={val('amount')}
+             aria-invalid={errorField === 'amount' ? 'true' : undefined} />
+      <label for="currency">Currency</label>
+      <input id="currency" name="currency" required placeholder="EUR" value={val('currency')}
+             aria-invalid={errorField === 'currency' ? 'true' : undefined} />
+      <button type="submit">Set the price</button>
+    </form>
+  )}
+
+  {step === 4 && (
+    <form method="post" action="">
+      <input type="hidden" name="_action" value="publish-performance" />
+      <h2>4. Publish</h2>
+      <p>This makes the date available to buyers.</p>
+      <button type="submit">Publish</button>
+    </form>
+  )}
+
+  {publishedStatus && (
+    <section class="done">
+      <h2>Publication accepted</h2>
+      {/* Catalog's own status for the slot it just published — NOT a claim about
+          sellability, which also waits on inventory provisioning this slot
+          asynchronously. "On sale" would be a promise this page cannot keep. */}
+      <p>Catalog reports this date as <strong>{publishedStatus}</strong>.</p>
+      <p><a href={base}>Back to venues</a></p>
+    </section>
+  )}
+</Layout>
+
+<style>
+  form { max-width: 30rem; display: grid; gap: 0.4rem; margin-bottom: 1.5rem; }
+  .error { color: #a8322d; }
+  .muted { color: var(--muted); }
+  [aria-invalid='true'] { outline: 2px solid #a8322d; }
+</style>
