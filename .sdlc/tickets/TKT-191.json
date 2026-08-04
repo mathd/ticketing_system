@@ -2,8 +2,10 @@
   "key": "TKT-191",
   "type": "Story",
   "summary": "US-B2a: Catalog refuses writes it cannot attribute — the back office becomes the only writer",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "parent": "TKT-22",
