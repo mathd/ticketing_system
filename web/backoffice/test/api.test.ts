@@ -9,6 +9,8 @@ import {
   createSeatMap,
   DEFAULT_ORGANIZER_ID,
   editSeatMap,
+  getOrderState,
+  getOrderTickets,
   getSeatMapGeometry,
   getVenues,
   listSeatMapVersions,
@@ -325,5 +327,95 @@ describe('staff role propagation (TKT-197)', () => {
   it('refuses a response with no role at all', async () => {
     spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
     await expect(authenticateStaff('ada@example.test', 'pw')).rejects.toThrow(/unrecognised staff role/);
+  });
+});
+
+
+describe('the order console reads (TKT-193)', () => {
+  const ORDER = '11111111-1111-4111-8111-111111111111';
+  const REF = '22222222-2222-4222-8222-222222222222';
+
+  it('reads order status from commerce through the gateway', async () => {
+    const calls = spyFetch({ order_id: ORDER, status: 'completed' }, 200);
+    await expect(getOrderState(ORDER)).resolves.toEqual({
+      ok: true,
+      value: { orderId: ORDER, status: 'completed' },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].url).toBe(`http://localhost:8080/api/commerce/orders/${ORDER}`);
+  });
+
+  it('reads the ticket bundle from access through the gateway', async () => {
+    const calls = spyFetch({ order_ref: REF, tickets: [] }, 200);
+    await getOrderTickets(REF);
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].url).toBe(`http://localhost:8080/api/access/orders/${REF}/tickets`);
+  });
+
+  // The two reads fail INDEPENDENTLY and the page renders each half on its own,
+  // so the client must distinguish "this reference is unknown" from "the service
+  // could not answer". Collapsing an outage into not-found tells a support agent
+  // the customer's order does not exist.
+  it.each([
+    [404, 'not-found'],
+    [500, 'unavailable'],
+    [503, 'unavailable'],
+    // We validate the shape before calling, so a 400 means our understanding of
+    // the contract is wrong — which is a failure to answer, not an absence.
+    [400, 'unavailable'],
+  ])('turns %i into %s', async (status, kind) => {
+    spyFetch({ error: 'nope' }, status);
+    await expect(getOrderState(ORDER)).resolves.toEqual({ ok: false, kind });
+    spyFetch({ error: 'nope' }, status);
+    await expect(getOrderTickets(REF)).resolves.toEqual({ ok: false, kind });
+  });
+
+  // COS-7. qr_payload is the credential that admits at the gate, and qr_url
+  // points at an UNAUTHENTICATED endpoint that renders it as an image. Either
+  // one on a staff console is a working ticket for someone else's order, in
+  // every screenshot and support transcript thereafter. Dropped here, at the
+  // client boundary, so no page can render what it never receives.
+  it('drops the QR credential before the page can see it', async () => {
+    const raw = {
+      order_ref: REF,
+      tickets: [
+        {
+          ticket_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          qr_payload: 'SENTINEL-QR-PAYLOAD-VALUE',
+          qr_url: '/SENTINEL-QR-URL-VALUE.png',
+          issued_at: '2026-08-01T10:00:00Z',
+          history: [
+            { id: 'e1', type: 'issued', sequence: 1, occurred_at: '2026-08-01T10:00:00Z' },
+            { id: 'e2', type: 'delivered', occurred_at: '2026-08-01T10:05:00Z' },
+          ],
+        },
+      ],
+    };
+    spyFetch(raw, 200);
+    const got = await getOrderTickets(REF);
+
+    expect(got).toEqual({
+      ok: true,
+      value: [
+        {
+          ticketId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          issuedAt: '2026-08-01T10:00:00Z',
+          history: [
+            { id: 'e1', type: 'issued', sequence: 1, occurredAt: '2026-08-01T10:00:00Z' },
+            { id: 'e2', type: 'delivered', sequence: undefined, occurredAt: '2026-08-01T10:05:00Z' },
+          ],
+        },
+      ],
+    });
+
+    // Deep equality above already pins the shape; these pin the VALUES, which is
+    // what actually leaks. A future field carrying the payload under another
+    // name passes the shape check and fails this one.
+    const serialized = JSON.stringify(got);
+    expect(serialized).not.toContain('SENTINEL-QR-PAYLOAD-VALUE');
+    expect(serialized).not.toContain('SENTINEL-QR-URL-VALUE');
+    expect(serialized).not.toContain('qr_payload');
+    expect(serialized).not.toContain('qr_url');
   });
 });

@@ -353,3 +353,86 @@ export function publishPerformance(performanceId: string): Promise<Performance> 
     null,
   );
 }
+
+// ---------------------------------------------------------------------------
+// The order console (TKT-193).
+//
+// Two reads, two services, ONE console — and the two are keyed by DIFFERENT
+// identifiers. Commerce looks up `orders.id`; access looks up `guest_order_ref`,
+// which ADR-012 makes a CSPRNG UUIDv4 deliberately distinct from it. Nothing
+// public maps one to the other, so the page takes both and renders whichever
+// half it can answer. That is not a shortcut around a missing join — TKT-201
+// owns the commerce-side read that would supply one.
+
+/** A read that can be absent or broken, and must never confuse the two. */
+export type Read<T> = { ok: true; value: T } | { ok: false; kind: 'not-found' | 'unavailable' };
+
+export type OrderState = { orderId: string; status: string };
+export type LifecycleEvent = {
+  id: string;
+  type: string;
+  /** Absent on legacy rows the chain backfill has not adopted (ADR-025 §D5). */
+  sequence?: number;
+  occurredAt: string;
+};
+export type SafeTicket = { ticketId: string; issuedAt: string; history: LifecycleEvent[] };
+
+const commerce = (path: string) => `${GATEWAY_URL}/api/commerce${path}`;
+const access = (path: string) => `${GATEWAY_URL}/api/access${path}`;
+
+/**
+ * A read result, or WHY there isn't one. The distinction is the whole point: a
+ * support agent told "no such order" when commerce is merely down will tell the
+ * customer their order does not exist. 404 is the only absence; everything else
+ * — including a 400, which means this client and the contract disagree — is a
+ * failure to answer.
+ */
+async function readJson<T>(url: string, project: (body: unknown) => T): Promise<Read<T>> {
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    return { ok: false, kind: 'unavailable' };
+  }
+  if (res.status === 404) return { ok: false, kind: 'not-found' };
+  if (!res.ok) return { ok: false, kind: 'unavailable' };
+  try {
+    return { ok: true, value: project(await res.json()) };
+  } catch {
+    return { ok: false, kind: 'unavailable' };
+  }
+}
+
+/** Commerce's order state: `{order_id, status}` and, by contract, nothing else. */
+export function getOrderState(orderId: string): Promise<Read<OrderState>> {
+  return readJson(commerce(`/orders/${encodeURIComponent(orderId)}`), (body) => {
+    const b = body as { order_id: string; status: string };
+    return { orderId: b.order_id, status: b.status };
+  });
+}
+
+/**
+ * The ticket bundle, with the QR credential removed.
+ *
+ * Access returns `qr_payload` — the value a scanner admits on — and `qr_url`,
+ * which points at an endpoint the gateway serves WITHOUT authentication. Either
+ * one rendered on a staff console is a working ticket for someone else's order,
+ * and it survives in screenshots and support transcripts long after the visit.
+ * The allow-list is here rather than in the page so that no page, present or
+ * future, can render what it was never handed.
+ */
+export function getOrderTickets(ref: string): Promise<Read<SafeTicket[]>> {
+  return readJson(access(`/orders/${encodeURIComponent(ref)}/tickets`), (body) => {
+    const b = body as { tickets: Array<Record<string, unknown>> };
+    return b.tickets.map((t) => ({
+      ticketId: String(t.ticket_id),
+      issuedAt: String(t.issued_at),
+      history: ((t.history ?? []) as Array<Record<string, unknown>>).map((e) => ({
+        id: String(e.id),
+        type: String(e.type),
+        sequence: e.sequence === undefined ? undefined : Number(e.sequence),
+        occurredAt: String(e.occurred_at),
+      })),
+    }));
+  });
+}

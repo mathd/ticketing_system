@@ -87,10 +87,20 @@ describe('route enumeration is fail-closed (COS-1)', () => {
     expect(onDisk).toContain('/admin/healthz');
     expect(onDisk).toContain('/admin/venues/[id]');
     expect(onDisk).toContain('/admin/events/new');
+    expect(onDisk).toContain('/admin/orders');
   });
 });
 
 describe('what the matrix says (COS-2, COS-3)', () => {
+  it('opens the order console to admin and box office, not finance (TKT-193)', () => {
+    // Support work, not settlement work: the console shows ticket identities and
+    // lifecycle history and carries no money at all, so finance has nothing to do
+    // here and the least-privilege answer is no.
+    expect(canAccessRoute('/admin/orders', 'admin')).toBe(true);
+    expect(canAccessRoute('/admin/orders', 'box_office')).toBe(true);
+    expect(canAccessRoute('/admin/orders', 'finance')).toBe(false);
+  });
+
   it('gates the event builder to admin alone (TKT-192)', () => {
     expect(canAccessRoute('/admin/events/new', 'admin')).toBe(true);
     expect(canAccessRoute('/admin/events/new', 'finance')).toBe(false);

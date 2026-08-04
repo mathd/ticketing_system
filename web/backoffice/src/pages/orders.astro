@@ -1,0 +1,132 @@
+---
+// The order console (TKT-193 / US-B4): look up an order and see what happened
+// to its tickets, without a database console.
+//
+// POST for a READ, which is unusual and deliberate. The ticket reference is a
+// `guest_order_ref` — ADR-012 makes it a CSPRNG UUIDv4 that is "a no-store guest
+// retrieval capability", redeemable by anyone who holds it and authenticated by
+// nothing. A query string puts a capability in browser history, in the Referer
+// header, and in every proxy log between here and the screen. So it travels in
+// the request body, and there is no bookmarkable result URL. That is the cost.
+//
+// Two identifiers, because commerce and access key orders differently and
+// nothing public maps one to the other (see lib/order-console.ts). Both fields
+// are optional; the page renders whichever half it can answer.
+import Layout from '../layouts/Layout.astro';
+import { loadOrderConsole, parseLookup, type ConsoleView } from '../lib/order-console';
+
+const staff = Astro.locals.staff;
+if (!staff) throw new Error('unauthenticated request reached the order console');
+
+// ADR-004's "never" tier. Order state and ticket lifecycle change underneath a
+// cached copy, and a stale answer to "what happened to this ticket" is worse
+// than no answer — a support agent would act on it.
+Astro.response.headers.set('Cache-Control', 'no-store');
+
+let error: string | null = null;
+let view: ConsoleView | null = null;
+let submitted = { order_id: '', ticket_ref: '' };
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  submitted = {
+    order_id: String(form.get('order_id') ?? ''),
+    ticket_ref: String(form.get('ticket_ref') ?? ''),
+  };
+  const lookup = parseLookup(submitted.order_id, submitted.ticket_ref);
+  if (!lookup.ok) {
+    error = lookup.message;
+  } else {
+    view = await loadOrderConsole(lookup.value);
+    Astro.response.status = view.status;
+  }
+}
+---
+
+<Layout title="Look up an order — Back-office">
+  <h1>Look up an order</h1>
+
+  <!-- COS-6: say what this view leaves out, rather than rendering empty Buyer
+       and Total sections. Blank fields read as broken data; this reads as a
+       scoped tool. The missing reads are TKT-201's. -->
+  <section class="scope">
+    <h2>What this view shows</h2>
+    <p>
+      An order's status, and each ticket's lifecycle history. It does not show buyer contact,
+      line items, or any money — the back office has no read for those, so they are absent by
+      design rather than missing.
+    </p>
+  </section>
+
+  {error && <p class="error" role="alert">{error}</p>}
+
+  <form method="post" action="">
+    <p class="muted">
+      Enter either identifier. The order id appears in internal reports; the ticket reference is
+      the one in the customer's ticket link.
+    </p>
+    <label for="order_id">Order id</label>
+    <input id="order_id" name="order_id" value={submitted.order_id} autocomplete="off" />
+    <label for="ticket_ref">Ticket reference</label>
+    <input id="ticket_ref" name="ticket_ref" value={submitted.ticket_ref} autocomplete="off" />
+    <button type="submit">Look it up</button>
+  </form>
+
+  {view && (
+    <section class="result">
+      <h2>Order status</h2>
+      {view.order === undefined && <p class="muted">No order id was supplied.</p>}
+      {view.order?.ok && (
+        /* Commerce's own word for it. Not translated into "paid" or "valid" —
+           those are claims this page has no read to support. */
+        <p>Commerce reports this order as <strong>{view.order.value.status}</strong>.</p>
+      )}
+      {view.order?.ok === false && view.order.kind === 'not-found' && (
+        <p>No order matched that order id.</p>
+      )}
+      {view.order?.ok === false && view.order.kind === 'unavailable' && (
+        /* Never "not found": commerce has not established that the order is
+           absent, only that it could not answer. */
+        <p class="error">Commerce could not answer just now, so the status is unknown. Try again shortly.</p>
+      )}
+
+      <h2>Tickets</h2>
+      {view.tickets === undefined && <p class="muted">No ticket reference was supplied.</p>}
+      {view.tickets?.ok === false && view.tickets.kind === 'not-found' && (
+        /* Issuance is asynchronous, so a very recent order legitimately has no
+           tickets yet — which is not the same as the reference being wrong. */
+        <p>No tickets matched that reference. A very recent order may not have been issued yet.</p>
+      )}
+      {view.tickets?.ok === false && view.tickets.kind === 'unavailable' && (
+        <p class="error">Access could not answer just now, so the ticket history is unknown.</p>
+      )}
+      {view.tickets?.ok && view.tickets.value.map((t) => (
+        <article class="ticket">
+          <h3>Ticket {t.ticketId}</h3>
+          <p class="muted">Issued {t.issuedAt}</p>
+          <ol>
+            {t.history.map((e) => (
+              <li>
+                <strong>{e.type}</strong> — {e.occurredAt}
+                {e.sequence === undefined
+                  ? <span class="muted"> (legacy event — no chain sequence)</span>
+                  : <span class="muted"> (#{e.sequence})</span>}
+              </li>
+            ))}
+          </ol>
+          {t.history.length === 0 && <p class="muted">No lifecycle events recorded yet.</p>}
+        </article>
+      ))}
+    </section>
+  )}
+
+  <p><a href={import.meta.env.BASE_URL.replace(/\/$/, '')}>Back to venues</a></p>
+</Layout>
+
+<style>
+  form { max-width: 30rem; display: grid; gap: 0.4rem; margin-bottom: 1.5rem; }
+  .error { color: #a8322d; }
+  .muted { color: var(--muted); }
+  .scope { border-left: 3px solid var(--muted); padding-left: 0.8rem; margin-bottom: 1.5rem; }
+  .ticket { border-top: 1px solid var(--muted); padding-top: 0.5rem; margin-top: 1rem; }
+</style>
