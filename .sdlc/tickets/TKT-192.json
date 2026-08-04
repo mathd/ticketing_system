@@ -2,7 +2,7 @@
   "key": "TKT-192",
   "type": "Story",
   "summary": "US-B3: Event builder — an organizer publishes a sellable event without curl",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
