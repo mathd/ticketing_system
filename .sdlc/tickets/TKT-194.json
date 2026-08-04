@@ -4,7 +4,7 @@
   "summary": "US-B5: Refund from the order console, with the credential that makes it possible",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent",
   "pr": null,
