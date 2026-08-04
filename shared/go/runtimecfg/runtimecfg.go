@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -103,6 +104,21 @@ func RequiredCredential(envVar, retiredDefault string) (string, error) {
 		return "", fmt.Errorf("%s required: no default is shipped, run `make up` once to generate a local credential", envVar)
 	case retiredDefault != "" && token == retiredDefault:
 		return "", fmt.Errorf("%s is the retired checked-in default: generate a real credential (`make up`)", envVar)
+	case strings.TrimSpace(token) != token:
+		// Credentials travel in HTTP headers, and header parsing strips leading
+		// and trailing optional whitespace (RFC 7230 §3.2.4) — verified: a client
+		// that sets " secret " is received as "secret". So a padded value is not
+		// the value it looks like, with two consequences. It never matches what
+		// the peer configured, so authentication fails in a way that reads like a
+		// wrong secret rather than a quoting mistake; and two credentials that
+		// differ ONLY by padding are the same credential on the wire, which
+		// silently defeats any comparison made on the raw strings.
+		//
+		// Refusing here is what lets callers compare raw values and be right.
+		return "", fmt.Errorf("%s has leading or trailing whitespace: HTTP strips it in transit, so the value on the wire is not the value configured (check the quoting in .env)", envVar)
+	case strings.ContainsAny(token, "\r\n\x00"):
+		// A newline would let a credential inject a second header.
+		return "", fmt.Errorf("%s contains a control character and cannot be sent as a header value", envVar)
 	}
 	return token, nil
 }

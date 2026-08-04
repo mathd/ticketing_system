@@ -131,3 +131,61 @@ func TestInternalTokenReturnsAValidValueUnchanged(t *testing.T) {
 		t.Fatalf("token altered: %q", token)
 	}
 }
+
+// TKT-191 ai-review pass 2. Credentials travel in HTTP headers, and header
+// parsing strips leading/trailing optional whitespace (RFC 7230 §3.2.4) —
+// confirmed against net/http: a client that sets " secret " is received as
+// "secret".
+//
+// Two things follow, and the second is the security-relevant one:
+//   - a padded credential never matches what the peer configured, and fails in a
+//     way that reads like a wrong secret rather than a quoting mistake;
+//   - two credentials differing ONLY by padding are the SAME credential on the
+//     wire, so any caller comparing the raw strings to prove they differ is
+//     comparing the wrong thing. Catalog does exactly that comparison to keep
+//     its staff-write credential distinct from the shared internal token.
+//
+// Refusing padded values here is what makes those raw comparisons sound.
+func TestRequiredCredentialRejectsValuesHTTPWouldChange(t *testing.T) {
+	for _, tc := range []struct{ name, value, wantMsg string }{
+		{"leading space", " secret", "whitespace"},
+		{"trailing space", "secret ", "whitespace"},
+		{"surrounded", " secret ", "whitespace"},
+		{"tab", "\tsecret", "whitespace"},
+		// A trailing \r IS trimmed by TrimSpace, so it is caught as whitespace;
+		// an EMBEDDED newline is not, and is caught as a control character. Both
+		// matter: the embedded one is what would let a credential inject a second
+		// header.
+		{"trailing carriage return", "secret\r", "whitespace"},
+		{"embedded newline", "sec\nret", "control character"},
+		{"header injection attempt", "secret\nX-Injected: 1", "control character"},
+		// No NUL case: os.Setenv refuses a value containing one ("invalid
+		// argument"), so it is not a reachable input for an env-var credential.
+		// ContainsAny still lists it, cheaply, for callers that are not env vars.
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TEST_CREDENTIAL", tc.value)
+			got, err := RequiredCredential("TEST_CREDENTIAL", "")
+			if err == nil {
+				t.Fatalf("accepted %q, which HTTP would not transmit unchanged", tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantMsg)
+			}
+			if got != "" {
+				t.Fatalf("returned a value alongside the error: %q", got)
+			}
+		})
+	}
+}
+
+func TestRequiredCredentialAcceptsAHeaderSafeValue(t *testing.T) {
+	t.Setenv("TEST_CREDENTIAL", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
+	got, err := RequiredCredential("TEST_CREDENTIAL", "")
+	if err != nil {
+		t.Fatalf("rejected a header-safe credential: %v", err)
+	}
+	if got != "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5" {
+		t.Fatalf("value was altered: %q", got)
+	}
+}

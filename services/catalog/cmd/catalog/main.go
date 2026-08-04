@@ -123,6 +123,13 @@ func run() error {
 	// name, the credential that unlocks commerce's refunds and inventory's
 	// operational holds. Nothing else in the system would notice, so refuse here.
 	// Neither value is echoed.
+	//
+	// Comparing the RAW strings is sound only because RequiredCredential has
+	// already refused any value HTTP would alter in transit (ai-review pass 2):
+	// header parsing strips leading/trailing whitespace, so " secret " and
+	// "secret" are one credential on the wire while differing here. Without that
+	// refusal upstream, this comparison would pass while the boundary it protects
+	// was already gone.
 	if staffWriteToken == internalToken {
 		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
 			"so the back office cannot reach other services' internal surfaces, and identical values "+
