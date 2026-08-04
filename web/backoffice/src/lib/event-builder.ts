@@ -40,7 +40,12 @@ export function parseMinorUnits(raw: string): Parsed<number> {
   // megabyte (ai-review pass 1). Bound the SIGNIFICANT digits, not the character
   // count — "00000000000000001" is 1 and 17 characters, and rejecting it for its
   // length would refuse a value that is perfectly in range (pass 2).
-  if (raw.replace(/^0+/, '').length > 16) {
+  // Two bounds, and the order matters. The raw length caps the WORK — an
+  // all-zero megabyte has no significant digits, so a significant-digit check
+  // alone would wave it through to BigInt and defeat its own purpose (ai-review
+  // pass 3). The significant-digit check then caps the VALUE without rejecting
+  // "00000000000000001", which is 1 wearing seventeen characters (pass 2).
+  if (raw.length > 64 || raw.replace(/^0+/, '').length > 16) {
     return { ok: false, field: 'amount', message: 'That amount is too large to represent exactly.' };
   }
   // BigInt only after the bound: parsing to a Number first and checking after

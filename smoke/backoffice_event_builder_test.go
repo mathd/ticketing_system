@@ -193,6 +193,15 @@ func TestBackofficeEventBuilderSurfacesAPublishRefusal(t *testing.T) {
 	if !strings.Contains(body, "performance has no ticket type") {
 		t.Fatalf("the refusal message from catalog is not on the page; body=%.600s", body)
 	}
+	// The distinguishing half (ai-review pass 3). "Publication accepted" renders
+	// ONLY from a publish response whose status is `published`, so its absence
+	// here is what separates a refusal from a silent success. Without it, a first
+	// publish that quietly succeeded would still pass every later assertion —
+	// adding a ticket type is allowed on a published slot, and re-publishing is
+	// idempotent, so the second publish returns 200 in both histories.
+	if strings.Contains(body, "Publication accepted") {
+		t.Fatalf("the refused publish reported success; body=%.600s", body)
+	}
 
 	// Proving the refusal was REAL needs more than a string, and more than the
 	// slot's absence from the public list: that list excludes every slot without

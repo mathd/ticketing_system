@@ -62,10 +62,7 @@ try {
       : 'Something went wrong talking to the catalog. Try again.';
 }
 
-// A failed read gates writes (pass 2): otherwise a venue-read failure sets
-// `error`, the POST proceeds anyway, redirects, and discards it — and step 2
-// would offer a venue <select> backed by an empty list as though that were fine.
-if (Astro.request.method === 'POST' && !readFailed) {
+if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
   const action = String(form.get('_action') ?? '');
   const field = (name: string) => String(form.get(name) ?? '');
@@ -93,6 +90,14 @@ if (Astro.request.method === 'POST' && !readFailed) {
         return Astro.redirect(`${here}?event=${encodeURIComponent(created.id)}`, 303);
       }
     } else if (action === 'create-performance') {
+      // Only THIS step needs the venue list, so only this step is blocked when
+      // that read failed. Gating every write on it (pass 2's fix) meant a venue
+      // outage also stopped event creation, pricing and publication whose
+      // endpoints were perfectly healthy — and discarded the operator's input on
+      // the way (pass 3).
+      if (readFailed) {
+        throw new Error('venues unavailable');
+      }
       const perf = await createPerformance(staff.organizerId, {
         eventId: String(eventId),
         venueId: field('venue_id'),
@@ -132,7 +137,15 @@ if (Astro.request.method === 'POST' && !readFailed) {
       // that re-posts is harmless — which is what makes forgoing PRG safe here,
       // and nowhere else on this page.
       const slot = await publishPerformance(String(performanceId));
-      publishedStatus = slot.status ?? null;
+      // `published`, not merely truthy. Catalog's publish updates and rereads in
+      // separate statements, so a concurrent archive can return `archived` here
+      // — and rendering that under "Publication accepted" would report a slot
+      // that is not on sale as though it were (ai-review pass 3).
+      if (slot.status === 'published') {
+        publishedStatus = slot.status;
+      } else {
+        error = `Catalog reports this date as ${slot.status ?? 'unknown'}, not published.`;
+      }
     }
   } catch (e) {
     // Catalog's own message, verbatim — it is the one that says WHY, and the

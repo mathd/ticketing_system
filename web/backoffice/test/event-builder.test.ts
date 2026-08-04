@@ -26,6 +26,23 @@ describe('minor units (COS-5)', () => {
     }
   });
 
+  it('accepts a value padded with leading zeros', () => {
+    // 1 wearing seventeen characters. Bounding the character count alone would
+    // reject it (ai-review pass 2).
+    expect(parseMinorUnits('00000000000000001')).toEqual({ ok: true, value: 1 });
+    expect(parseMinorUnits('0000')).toEqual({ ok: true, value: 0 });
+  });
+
+  it('refuses an input long enough to make parsing itself the attack', () => {
+    // ...and bounding only the SIGNIFICANT digits would wave this through,
+    // because it has none (ai-review pass 3). Both bounds, in that order.
+    expect(parseMinorUnits('0'.repeat(100000)).ok).toBe(false);
+    expect(parseMinorUnits('0'.repeat(100) + '1').ok).toBe(false);
+    // ...while a merely-generously-padded value still parses: the raw bound is
+    // about work, not about tidiness.
+    expect(parseMinorUnits('0'.repeat(60) + '1')).toEqual({ ok: true, value: 1 });
+  });
+
   it('refuses a value beyond exact integer representation', () => {
     // Above MAX_SAFE_INTEGER a JS number silently stops being the integer that
     // was typed, which on a money path is the whole problem.
