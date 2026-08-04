@@ -1,0 +1,38 @@
+{
+  "key": "TKT-199",
+  "type": "Story",
+  "summary": "Catalog publish/archive accept a slot id with no organizer — cross-tenant by construction",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Found by **TKT-192**'s adversarial review, rated **critical**. Pre-existing: not introduced by that\nticket, which merely made the path reachable through a UI.\n\n`POST /performances/{id}/publish` and `/archive` take **only the slot id**\n(`services/catalog/internal/api/server.go:703`). Nothing verifies the slot belongs to the caller's\norganizer, because the contract has nowhere to say which organizer is calling. Every sibling write —\ncreate performance, create ticket type — scopes by `(id, organizer_id)`; these two do not.\n\n**Exposure today is theoretical and tomorrow is not.** v1 seeds a single organizer, so there is no\nsecond tenant to cross into. ADR-002 requires every entity to carry a tenant id from day one\nprecisely so this is not retrofitted under pressure, and TKT-22's back office is the first surface\nwhere a *human* rather than a service drives publish.\n\n**Why TKT-192 did not fix it:** carrying an organizer is a contract change affecting every caller,\nand that plan explicitly declined to \"add tenant enforcement the existing contract cannot express\".\nRight call for that ticket; wrong place to leave it.\n\n**Conditions of Success:**\n- [ ] Publish and archive refuse a slot belonging to another organizer, proven with two real\n      organizers rather than one and a fabricated id.\n- [ ] The refusal is **indistinguishable from \"no such slot\"** — a distinct error would confirm the\n      slot exists in another tenant.\n- [ ] Existing callers still work; the contract change is declared and generated code committed\n      (ADR-009).\n- [ ] ADR-042's adversary section names this, since it currently names it nowhere.\n- [ ] `make check` green.",
+  "links": [],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "Every entity carries a tenant/organizer id from day one — the rule this gap breaks."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: changing these operations means editing openapi.yaml and committing generated output before the gate."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The operation as it stands, beside sibling writes that DO scope by organizer.",
+        "link": "services/catalog/internal/api/server.go:703"
+      }
+    ],
+    "capturedAt": "2026-08-04"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-192's ai-review triage as **incidental**: real, but pre-existing and outside that ticket's scope. Not shaped — needs the 8-item DoR before Gate 1."
+    }
+  ]
+}
