@@ -7,7 +7,7 @@
   "assignee": null,
   "pr": null,
   "parent": "TKT-22",
-  "description": "**As** an organizer, **I want** to author and publish an event and its performance from the back office, **so that** I never touch the catalog API by hand.\n\nThis is the tracer bullet for the epic's second COS. It covers the **single-event → performance → ticket type → publish** path end to end in the browser. Series/season/festival authoring is deliberately a later slice — this one proves the shape.\n\n**In scope:** back-office screens to create an event, attach a typed dated slot (performance) to it, define a ticket type with a price, and publish the performance; readable validation and refusal handling; the published performance is visible on the storefront.\n\n**Out of scope:** series, seasons, festivals, operating-day slots, seat-map assignment (TKT-105 already owns map authoring), pricing rules beyond a flat price, archive/close/reopen from the UI.\n\n**Conditions of Success:**\n- [ ] From `/admin/`, a signed-in `admin` creates an event, adds a performance to it, adds a ticket type with a price, and publishes the performance — with no HTTP call issued outside the browser.\n- [ ] The published performance is then visible on the storefront and can be put in a cart.\n- [ ] A publish that the catalog refuses (ADR-018: a grouped member refusing its own publish, an archived slot) renders a readable message on the form — never a 500 and never a silent no-op.\n- [ ] Invalid input re-renders the form with a field-level error and the operator's entered values intact.\n- [ ] Money is entered and submitted as integer minor units + an ISO currency code; no float appears on the price path.\n- [ ] Every new form posts a **relative** action and is verified by an actual submit against `make up`.\n- [ ] The screens are reachable only by the roles US-B2's matrix allows.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered — API smoke cannot see the SSR layer (TKT-105 learning).\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "description": "**As** an organizer, **I want** to author and publish an event and its performance from the back office, **so that** I never touch the catalog API by hand.\n\nThis is the tracer bullet for the epic's second COS. It covers the **single-event → performance → ticket type → publish** path end to end in the browser. Series/season/festival authoring is deliberately a later slice — this one proves the shape.\n\n**In scope:** back-office screens to create an event, attach a typed dated slot (performance) to it, define a ticket type with a price, and publish the performance; readable validation and refusal handling; the published performance is visible on the storefront.\n\n**What the three tickets before this one already did for you** (do not rebuild any of it):\n- **TKT-190** — the session. `Astro.locals.staff` carries the principal; the organizer comes from\n  there, never from `DEFAULT_ORGANIZER_ID`.\n- **TKT-191** — `postCatalog()` already attaches the staff-write credential, so a write from a new\n  page needs no credential plumbing. Catalog will refuse it if the plumbing is bypassed.\n- **TKT-197** — every new page **must** be classified in `ROUTE_MATRIX`\n  (`web/backoffice/src/lib/authorization.ts`) or the build fails. Authoring is `admin`-only; the nav\n  link must come from `canAccessRoute`, the same source the gate reads.\n\n**Out of scope:** series, seasons, festivals, operating-day slots, seat-map assignment (TKT-105 already owns map authoring), pricing rules beyond a flat price, archive/close/reopen from the UI.\n\n**Conditions of Success:**\n- [ ] From `/admin/`, a signed-in `admin` creates an event, adds a performance to it, adds a ticket type with a price, and publishes the performance — with no HTTP call issued outside the browser.\n- [ ] The published performance is then visible on the storefront and can be put in a cart.\n- [ ] A publish that the catalog refuses (ADR-018: a grouped member refusing its own publish, an archived slot) renders a readable message on the form — never a 500 and never a silent no-op.\n- [ ] Invalid input re-renders the form with a field-level error and the operator's entered values intact.\n- [ ] Money is entered and submitted as integer minor units + an ISO currency code; no float appears on the price path.\n- [ ] Every new form posts a **relative** action and is verified by an actual submit against `make up`.\n- [ ] Every new page is classified in `ROUTE_MATRIX` as `admin`-only, and a `box_office` or\n      `finance` session pasting the URL is refused — proven by driving it, not by the link being\n      absent (TKT-197 COS-5's rule: hiding a link is never the enforcement).\n- [ ] The nav entry point to the builder is rendered from `canAccessRoute`, so the nav and the gate\n      cannot disagree.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered — API smoke cannot see the SSR layer (TKT-105 learning).\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
   "links": [
     {
       "type": "blocked-by",
@@ -48,6 +48,10 @@
       {
         "id": "ADR-019",
         "why": "Any list read the builder needs must be backed by an index to be genuinely scoped — copying a query shape that scales ships a no-op."
+      },
+      {
+        "id": "ADR-042",
+        "why": "As amended twice: the back office holds a write-capable catalog credential (TKT-191) and the route matrix decides which staff member may drive it (TKT-197). A new authoring page inherits both — it needs no credential work, and it MUST be classified or the build fails."
       }
     ],
     "reference": [
@@ -62,6 +66,10 @@
       {
         "summary": "Money is integer minor units + ISO currency code; floats are banned on money paths.",
         "link": "AGENTS.md"
+      },
+      {
+        "summary": "The route matrix a new page must join, and canAccessRoute for the nav. A page under src/pages/ with no rule fails the enumeration test in both directions.",
+        "link": "web/backoffice/src/lib/authorization.ts"
       }
     ],
     "capturedAt": "2026-08-03"
@@ -84,8 +92,8 @@
       "note": "blocked-by links wired; catalog/commerce/access endpoints this depends on are shipped and stable."
     },
     "approach": {
-      "state": "deferred",
-      "note": "Where staff identity lives (gateway-owned store vs a sixth service) is settled by US-B1's plan and recorded as an ADR to be authored; later stories inherit that decision."
+      "state": "met",
+      "note": "Settled by TKT-190/191/197: session for the organizer, postCatalog for writes (credential already attached), ROUTE_MATRIX for the role gate. Planning wires an existing stack rather than choosing one."
     },
     "first_slice": {
       "state": "met",
@@ -105,6 +113,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Blocker re-pointed (2026-08-03).** The former TKT-191 was split; the *role matrix* this ticket\nactually needs is now **TKT-197**, so `blocked-by` moves from TKT-191 to TKT-197. TKT-191 (catalog\nrefuses unattributed writes) still lands first — TKT-197 is blocked by it — so nothing runs earlier\nthan before."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Re-synced after TKT-190/191/197 — ✅ PASS\n\nWritten at decomposition, before any of its blockers existed. Nothing in it was *wrong*, but three\nthings it would have had to decide are now decided, and two ACs were missing as a result.\n\n**Added:** every new page must be classified in `ROUTE_MATRIX` as `admin`-only and proven refused for\nother roles by driving the URL — TKT-197's rule that hiding a link is never the enforcement. And the\nnav entry must render from `canAccessRoute`, so nav and gate cannot disagree.\n\n**Made explicit:** the organizer comes from `Astro.locals.staff`; `postCatalog()` already carries the\nstaff-write credential, so a new authoring page needs **no** credential plumbing. A plan that adds\nsome has misread the stack.\n\n`approach` moves `deferred` → **met**: Planning wires an existing stack rather than choosing one.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Sizing | ⚠️ | The largest remaining story: four writes plus a publish, each a form. See below |\n| Dependencies | ✅ | TKT-197 Done; nothing else blocks |\n| AC verifiable | ✅ | Every COS names something drivable, incl. the new role ACs |\n| Context-mémo | ✅ | Re-baked against ADR-042 **as amended twice** |\n\n**Sizing note, eyes open.** TKT-190 ran unsplit to ~3,000 lines; TKT-191 and TKT-197 — the two halves\nof one ticket — came in at ~1,100 and ~1,300 with tighter review. That is a controlled comparison, and\nit argues for splitting this one. It is **not** split now, because the split line is not obvious\nbefore the plan: \"create event + performance\" and \"ticket type + publish\" are not independently\ndemoable (an unpublished event with no price sells nothing). **The plan must state its expected size,\nand plan-review will split if it exceeds ~800 lines** — the decision belongs where the shape is known.\n\n**Verdict: PASS.**"
     }
   ]
 }
