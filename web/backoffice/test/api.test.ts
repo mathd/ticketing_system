@@ -502,10 +502,15 @@ describe('the order console reads (TKT-193)', () => {
     ['an empty body', {}],
     ['a refund for a different order', { refund_id: 'r1', order_id: OTHER, quantity: 1, amount: 1, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
     ['a fractional amount', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 12.5, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
-    // Commerce declares these int64. JSON.parse rounds past 2^53, so this
-    // arrives as ...992 and an isInteger check would pass it — presenting a
-    // number that is not the one commerce sent as the exact refund amount.
-    ['an amount past what JSON can represent exactly', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 9007199254740993, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
+    // Commerce declares these int64. Past 2^53 a JSON number no longer maps
+    // one-to-one onto a JS number, so a larger int64 arrives already rounded and
+    // an isInteger check passes it — presenting a figure that is not the one
+    // commerce sent as the exact refund amount.
+    //
+    // MAX_SAFE_INTEGER + 1 rather than a literal: the literal that demonstrates
+    // this is itself unrepresentable, so writing it out is a lint error (and
+    // would silently become a different number than the one intended).
+    ['an amount past what JS can represent exactly', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: Number.MAX_SAFE_INTEGER + 1, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
     ['a refund_status outside the enum', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 1, currency: 'EUR', refund_status: 'reversed', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
     ['a non-boolean tickets_voided', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 1, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: 'yes', capacity_returned: true }],
   ])('treats %s as ambiguous rather than a refund', async (_name, body) => {
