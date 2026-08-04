@@ -116,6 +116,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The whole point of a second credential is that it opens LESS than the first
+	// (ADR-042: this one opens catalog writes, INTERNAL_SERVICE_TOKEN opens every
+	// service's internal surface). Set them to the same value and that separation
+	// silently evaporates — the back office would be holding, under a different
+	// name, the credential that unlocks commerce's refunds and inventory's
+	// operational holds. Nothing else in the system would notice, so refuse here.
+	// Neither value is echoed.
+	if staffWriteToken == internalToken {
+		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
+			"so the back office cannot reach other services' internal surfaces, and identical values "+
+			"remove that boundary while looking configured", staffWriteTokenEnv)
+	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)

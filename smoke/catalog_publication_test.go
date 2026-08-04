@@ -1624,26 +1624,50 @@ func TestCatalogRefusesUnauthenticatedWriteThroughTheGateway(t *testing.T) {
 	}
 }
 
-// The credential must not have leaked into the services that share the compose
-// network but have no business holding it.
-func TestCatalogWriteCredentialIsNotAcceptedElsewhere(t *testing.T) {
-	if staffWriteToken() == "" {
-		t.Skip("SMOKE_CATALOG_STAFF_WRITE_TOKEN not set")
+// The two credentials must be DIFFERENT values, and the catalog one must not
+// open another service's internal surface (TKT-191, ADR-042's blast-radius claim).
+//
+// ai-review F2: the first version of this test sent the catalog credential to
+// `gatewayURL + "/api/inventory/internal/..."` — a path the gateway refuses
+// unconditionally before proxying anything (edgeDenied, ADR-002). It therefore
+// answered 404 whatever the credential was, and would have passed with the two
+// values identical. It tested the gateway's deny list, not the separation.
+//
+// So: address inventory DIRECTLY, past the gateway, and require exactly 401.
+// "not 2xx" is not enough either — the gateway's 404 is not 2xx, and neither is
+// a 400 from a handler that accepted the credential and rejected the body.
+func TestCatalogWriteCredentialDoesNotOpenAnotherService(t *testing.T) {
+	catalogToken := staffWriteToken()
+	internalToken := os.Getenv("SMOKE_INTERNAL_TOKEN")
+	if catalogToken == "" || internalToken == "" {
+		t.Skip("SMOKE_CATALOG_STAFF_WRITE_TOKEN / SMOKE_INTERNAL_TOKEN not set")
 	}
-	// A catalog credential presented to another service's internal surface must
-	// not open it. This is the blast-radius claim, tested rather than asserted.
-	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/api/inventory/internal/operational-holds", strings.NewReader("{}"))
+	// The separation is only meaningful if the values differ. Assert it here as
+	// well as at catalog startup: a run where they collapsed to one value would
+	// otherwise satisfy every other assertion in this file.
+	if catalogToken == internalToken {
+		t.Fatal("the catalog staff-write credential and the shared internal token are the SAME value; " +
+			"the blast-radius separation TKT-191 exists for does not hold")
+	}
+
+	req, err := http.NewRequest(http.MethodPost,
+		inventoryURL+"/internal/operational-holds", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", staffWriteToken())
+	req.Header.Set("X-Internal-Token", catalogToken)
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-		t.Fatalf("the catalog write credential opened inventory's internal surface (status %d)", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+
+	// Exactly 401. Anything else means inventory looked at the request at all:
+	// a 400 would mean the credential was ACCEPTED and only the body rejected.
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("presenting the catalog credential to inventory returned %d, want 401 — "+
+			"it must not be accepted anywhere but catalog; body=%.200s", resp.StatusCode, body)
 	}
 }
