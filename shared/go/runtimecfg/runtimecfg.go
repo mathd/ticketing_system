@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 type HTTP struct {
@@ -87,19 +90,58 @@ func (c Database) Apply(db *sql.DB) {
 // refuses it forever so stale automation cannot keep authenticating with it.
 const retiredInternalToken = "local-service-token"
 
-// InternalTokenFromEnv validates the internal service credential at startup.
-// Server entrypoints call it before touching any dependency so a
-// misconfigured deployment fails fast instead of timing out. Errors never
-// echo the supplied value.
-func InternalTokenFromEnv() (string, error) {
-	token := os.Getenv("INTERNAL_SERVICE_TOKEN")
-	switch token {
-	case "":
-		return "", fmt.Errorf("INTERNAL_SERVICE_TOKEN required: no default is shipped, run `make up` once to generate a local credential")
-	case retiredInternalToken:
-		return "", fmt.Errorf("INTERNAL_SERVICE_TOKEN is the retired checked-in default: generate a real credential (`make up`)")
+// RequiredCredential validates one startup credential: present, and not the
+// retired checked-in literal it replaced. Entrypoints call it before touching
+// any dependency so a misconfigured deployment fails fast instead of timing
+// out, and **errors never echo the supplied value**.
+//
+// Generic because a second credential arrived (TKT-191) and a per-credential
+// function in a package imported by all five services and the gateway would
+// make every caller carry someone else's private concern. Pass "" for
+// retiredDefault when a credential has no retired literal to refuse.
+func RequiredCredential(envVar, retiredDefault string) (string, error) {
+	token := os.Getenv(envVar)
+	switch {
+	case token == "":
+		return "", fmt.Errorf("%s required: no default is shipped, run `make up` once to generate a local credential", envVar)
+	case retiredDefault != "" && token == retiredDefault:
+		return "", fmt.Errorf("%s is the retired checked-in default: generate a real credential (`make up`)", envVar)
+	// ORDER MATTERS: this whitespace case must stay AHEAD of the httpguts check
+	// below. httpguts.ValidHeaderFieldValue PERMITS edge SP and HTAB — they are
+	// legal field-value bytes — while net/http trims them in transit. So the
+	// transport's own predicate cannot catch the normalization collision that
+	// makes " secret " and "secret" one credential on the wire; only this case
+	// does. Reordering these two silently reopens that hole (confirmed by the
+	// TKT-191 ai-review's final pass).
+	case strings.TrimSpace(token) != token:
+		// Credentials travel in HTTP headers, and header parsing strips leading
+		// and trailing optional whitespace (RFC 7230 §3.2.4) — verified: a client
+		// that sets " secret " is received as "secret". So a padded value is not
+		// the value it looks like, with two consequences. It never matches what
+		// the peer configured, so authentication fails in a way that reads like a
+		// wrong secret rather than a quoting mistake; and two credentials that
+		// differ ONLY by padding are the same credential on the wire, which
+		// silently defeats any comparison made on the raw strings.
+		//
+		// Refusing here is what lets callers compare raw values and be right.
+		return "", fmt.Errorf("%s has leading or trailing whitespace: HTTP strips it in transit, so the value on the wire is not the value configured (check the quoting in .env)", envVar)
+	case !httpguts.ValidHeaderFieldValue(token):
+		// Anything net/http will not put on the wire. This is the transport's OWN
+		// predicate rather than a hand-rolled grammar, so it cannot disagree with
+		// what the client actually accepts — a check that merely rejected CR, LF
+		// and NUL let \x01 and \x7f through, and those start cleanly and then fail
+		// every outbound authenticated request at runtime, which is precisely the
+		// fail-fast contract this function exists to keep (ai-review pass 3).
+		return "", fmt.Errorf("%s contains a character that cannot appear in an HTTP header value", envVar)
 	}
 	return token, nil
+}
+
+// InternalTokenFromEnv validates the shared service-to-service credential.
+// One value across all five services (compose.yaml, the &go-env anchor), so
+// whatever holds it can reach every service's internal surface.
+func InternalTokenFromEnv() (string, error) {
+	return RequiredCredential("INTERNAL_SERVICE_TOKEN", retiredInternalToken)
 }
 
 // ResponseValidationFromEnv reports whether a service enforces ADR-028

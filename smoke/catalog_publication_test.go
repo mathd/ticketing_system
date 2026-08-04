@@ -30,13 +30,32 @@ import (
 
 const organizerID = "00000000-0000-0000-0000-000000000001" // seeded (ADR-008)
 
+// staffWriteHeader / staffWriteToken: catalog refuses unsafe operations without
+// the back office's credential (TKT-191). postJSON attaches it ONLY for catalog
+// URLs — sending it to inventory, commerce, payments or access would quietly
+// spread a catalog-scoped secret across services that have no business holding
+// it, which is the failure the dedicated credential exists to prevent.
+const staffWriteHeader = "X-Catalog-Staff-Write-Token"
+
+func staffWriteToken() string { return os.Getenv("SMOKE_CATALOG_STAFF_WRITE_TOKEN") }
+
+func isCatalogURL(url string) bool { return strings.Contains(url, "/api/catalog/") }
+
 func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	t.Helper()
 	b, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post(url, "application/json", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if isCatalogURL(url) {
+		req.Header.Set(staffWriteHeader, staffWriteToken())
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
@@ -1550,5 +1569,118 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 	}
 	if updated.ID != venueID || updated.GaCapacity != 450 {
 		t.Fatalf("ga capacity update = %+v, want id %s capacity 450", updated, venueID)
+	}
+}
+
+// TKT-191 COS-1, the whole point of the ticket: before it, this request created
+// an event. It deliberately bypasses postJSON — that helper now attaches the
+// credential, so using it here would test nothing.
+//
+// Through the real gateway, because "reachable from outside" is the claim. A
+// direct-to-container call would prove something weaker and more comfortable.
+func TestCatalogRefusesUnauthenticatedWriteThroughTheGateway(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"organizer_id": organizerID,
+		"name":         map[string]string{"en": "Unauthenticated Event", "fr": "Événement non authentifié"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, token string }{
+		{"no credential", ""},
+		{"wrong credential", "not-the-real-credential"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/api/catalog/events", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.token != "" {
+				req.Header.Set(staffWriteHeader, tc.token)
+			}
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			out, _ := io.ReadAll(resp.Body)
+			// Runs the contract check too: the 401 must be a DECLARED response,
+			// or ADR-028's validator turns it into a 500 in production.
+			validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, out)
+
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("status %d, want 401 — an unauthenticated caller must not be able to "+
+					"create an event through the gateway; body=%s", resp.StatusCode, out)
+			}
+			if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+				t.Fatalf("refusal must be no-store, got %q", cc)
+			}
+			if strings.Contains(string(out), staffWriteHeader) {
+				t.Fatalf("the refusal names the credential header: %s", out)
+			}
+		})
+	}
+}
+
+// The two credentials must be DIFFERENT values, and the catalog one must not
+// open another service's internal surface (TKT-191, ADR-042's blast-radius claim).
+//
+// ai-review F2: the first version of this test sent the catalog credential to
+// `gatewayURL + "/api/inventory/internal/..."` — a path the gateway refuses
+// unconditionally before proxying anything (edgeDenied, ADR-002). It therefore
+// answered 404 whatever the credential was, and would have passed with the two
+// values identical. It tested the gateway's deny list, not the separation.
+//
+// So: address inventory DIRECTLY, past the gateway, and require exactly 401.
+// "not 2xx" is not enough either — the gateway's 404 is not 2xx, and neither is
+// a 400 from a handler that accepted the credential and rejected the body.
+func TestCatalogWriteCredentialDoesNotOpenAnotherService(t *testing.T) {
+	catalogToken := staffWriteToken()
+	internalToken := os.Getenv("SMOKE_INTERNAL_TOKEN")
+	if catalogToken == "" || internalToken == "" {
+		t.Skip("SMOKE_CATALOG_STAFF_WRITE_TOKEN / SMOKE_INTERNAL_TOKEN not set")
+	}
+	// The separation is only meaningful if the values differ. Assert it here as
+	// well as at catalog startup: a run where they collapsed to one value would
+	// otherwise satisfy every other assertion in this file.
+	if catalogToken == internalToken {
+		t.Fatal("the catalog staff-write credential and the shared internal token are the SAME value; " +
+			"the blast-radius separation TKT-191 exists for does not hold")
+	}
+
+	// A GET with a well-formed path, so the request survives inventory's OpenAPI
+	// validator and the credential is the ONLY remaining reason to refuse.
+	//
+	// The first attempt POSTed to /internal/operational-holds with `{}` and got
+	// 400 — inventory's request validation runs BEFORE its credential check, so a
+	// malformed request never reaches the guard, and a test asserting on the
+	// guard would have been reporting on the validator instead.
+	// Both parameters the operation declares (Id, OrganizerId) — read from
+	// services/inventory/api/openapi.yaml rather than guessed. Two earlier
+	// attempts failed on a missing one and reported the validator's 400 as if it
+	// were the guard's verdict.
+	req, err := http.NewRequest(http.MethodGet,
+		fmt.Sprintf("%s/internal/slots/%s/availability?organizer_id=%s",
+			inventoryURL, uuid.NewString(), organizerID), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Internal-Token", catalogToken)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	// Exactly 401. Anything else means inventory got past the guard: a 404 for
+	// the unknown slot id would mean the credential was ACCEPTED and only the
+	// slot was missing — which is precisely the failure this test exists to
+	// catch, and is what an equal-credentials deployment would produce.
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("presenting the catalog credential to inventory returned %d, want 401 — "+
+			"it must not be accepted anywhere but catalog; body=%.200s", resp.StatusCode, body)
 	}
 }

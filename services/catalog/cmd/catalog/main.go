@@ -100,10 +100,47 @@ func port() string {
 	return "8080"
 }
 
+// staffWriteTokenEnv names the catalog-only staff-write credential (TKT-191).
+const staffWriteTokenEnv = "CATALOG_STAFF_WRITE_TOKEN"
+
 func run() error {
 	internalToken, err := runtimecfg.InternalTokenFromEnv()
 	if err != nil {
 		return err
+	}
+	// The back office's credential for catalog writes (TKT-191). Read before any
+	// dependency so a misconfigured deployment fails fast rather than starting up
+	// and refusing every write at runtime. Separate from INTERNAL_SERVICE_TOKEN
+	// on purpose: that one opens every service, this one opens catalog writes.
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "")
+	if err != nil {
+		return err
+	}
+	// The whole point of a second credential is that it opens LESS than the first
+	// (ADR-042: this one opens catalog writes, INTERNAL_SERVICE_TOKEN opens every
+	// service's internal surface). Set them to the same value and that separation
+	// silently evaporates — the back office would be holding, under a different
+	// name, the credential that unlocks commerce's refunds and inventory's
+	// operational holds. Nothing else in the system would notice, so refuse here.
+	// Neither value is echoed.
+	//
+	// Comparing the RAW strings is sound because RequiredCredential has already
+	// refused every value HTTP would NORMALIZE — specifically edge whitespace,
+	// which header parsing strips, so " secret " and "secret" would be one
+	// credential on the wire while differing here (ai-review pass 2). Without
+	// that refusal upstream, this comparison would report success while the
+	// boundary it protects was already gone.
+	//
+	// The narrow claim is the true one: no two DISTINCT accepted values arrive
+	// identical at a server, so `!=` here means "different on the wire". It is
+	// NOT the broader claim that every accepted value is unproblematic — that is
+	// a statement about transmissibility, which is RequiredCredential's job and
+	// is tested there by an actual round-trip. An earlier version of this comment
+	// overstated exactly that (ai-review pass 3).
+	if staffWriteToken == internalToken {
+		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
+			"so the back office cannot reach other services' internal surfaces, and identical values "+
+			"remove that boundary while looking configured", staffWriteTokenEnv)
 	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
@@ -152,7 +189,7 @@ func run() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
-	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken), validateResponses)
+	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken, staffWriteToken), validateResponses)
 	if err != nil {
 		return fmt.Errorf("api router: %w", err)
 	}

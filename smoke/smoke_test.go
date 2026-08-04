@@ -393,6 +393,10 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 		"-e", "NATS_URL=nats://nats:4222",
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		// TKT-191: catalog refuses to start without its staff-write credential.
+		// Supplied here so this probe still tests what it is about (that the
+		// server path does not migrate) rather than failing at configuration.
+		"-e", "CATALOG_STAFF_WRITE_TOKEN="+os.Getenv("SMOKE_CATALOG_STAFF_WRITE_TOKEN"),
 		project+"-catalog").CombinedOutput()
 	if err != nil {
 		t.Fatalf("start probe: %v: %s", err, out)

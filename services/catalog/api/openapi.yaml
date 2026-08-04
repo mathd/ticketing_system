@@ -11,6 +11,15 @@ info:
     volatility-tiered Cache-Control headers. Money is integer minor units +
     ISO-4217 currency (ADR-001); floats never appear on money paths.
   version: 1.0.0
+# Every operation requires the staff-write credential unless it explicitly opts
+# out with `security: []` (TKT-191). Stated as a DOCUMENT-LEVEL default so a new
+# operation is closed by construction: going public is a visible, deliberate
+# edit rather than an omission. `security` is enforced at runtime by the request
+# validator's AuthenticationFunc, and the same declaration is what
+# write_credential_test.go reads — one source of truth for the contract, the
+# server and the test.
+security:
+  - CatalogStaffWriteCredential: []
 paths:
   /venues:
     post:
@@ -23,6 +32,8 @@ paths:
             schema:
               $ref: '#/components/schemas/VenueCreate'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -50,6 +61,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeatMapCreate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -71,6 +84,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeatMapSectionCreate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -97,6 +112,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeatMapRowCreate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -127,6 +144,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeatMapSeatCreate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -155,6 +174,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/SeatMapId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -192,6 +213,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeatMapEdit' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -225,6 +248,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/VenueGaCapacityUpdate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -245,6 +270,8 @@ paths:
             schema:
               $ref: '#/components/schemas/EventCreate'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -271,6 +298,8 @@ paths:
             schema:
               $ref: '#/components/schemas/PerformanceCreate'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -304,6 +333,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/PerformanceId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -335,6 +366,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/PerformanceId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -371,6 +404,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SlotCloseRequest'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -399,6 +434,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/PerformanceId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -426,6 +463,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeriesCreate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -447,6 +486,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeriesPerformanceAttach' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -468,6 +509,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/SeriesId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -489,6 +532,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/SeriesId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -513,6 +558,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeasonCreate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -534,6 +581,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeasonSeriesAttach' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -560,6 +609,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SeasonEventAttach' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -584,6 +635,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/FestivalCreate' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -605,6 +658,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/FestivalDayAttach' }
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -626,6 +681,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/FestivalId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -647,6 +704,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/FestivalId'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '200':
@@ -672,6 +731,8 @@ paths:
             schema:
               $ref: '#/components/schemas/TicketTypeCreate'
       responses:
+        '401':
+          $ref: '#/components/responses/StaffWriteUnauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
         '201':
@@ -687,6 +748,8 @@ paths:
   /ticket-types/{ticketTypeId}/price-resolution:
     get:
       operationId: resolveTicketTypePrice
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: Resolve a ticket type's unit price through the rule hierarchy, with provenance
       description: >
         Answers "what does this ticket type cost right now, and why" (TKT-151,
@@ -788,6 +851,12 @@ paths:
             Invalid credentials. Identical for an unknown identifier and a wrong
             password — the body never says which, and never echoes the submitted
             identifier.
+
+            Since TKT-191 this status also carries the staff-write credential
+            refusal, because this operation is guarded like every other unsafe
+            one. The two are indistinguishable to a caller by design; the back
+            office tells them apart by failing at startup when its own credential
+            is missing, never by reading this response.
           headers:
             Cache-Control:
               $ref: '#/components/headers/NeverCacheControl'
@@ -798,6 +867,8 @@ paths:
   /public/events:
     get:
       operationId: listPublicEvents
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: Aggregated storefront list read (minutes tier)
       description: >
         Everything the storefront list page needs in one call (ADR-004 rule 3).
@@ -825,6 +896,8 @@ paths:
   /public/events/{eventId}:
     get:
       operationId: getPublicEvent
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: Aggregated storefront detail read (minutes tier)
       description: >
         Everything the storefront detail page needs in one call, including
@@ -853,6 +926,8 @@ paths:
   /public/seasons/{seasonId}:
     get:
       operationId: getPublicSeason
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: Aggregated public season detail (minutes tier)
       description: >
         One call returns the localized season and its deduplicated public event
@@ -877,6 +952,8 @@ paths:
   /public/festivals/{festivalId}:
     get:
       operationId: getPublicFestival
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: Aggregated public festival detail (minutes tier)
       description: >
         One call returns the localized festival and all publicly listable
@@ -901,6 +978,8 @@ paths:
   /public/venues:
     get:
       operationId: listPublicVenues
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: Organizer-scoped venue list (hours tier)
       description: >
         The venues owned by an organizer, for the back-office venue list
@@ -924,6 +1003,8 @@ paths:
   /public/venues/{venueId}/seat-maps:
     get:
       operationId: listVenueSeatMaps
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: A venue's seat-map summaries (status-driven cache tier)
       description: >
         The seat maps authored under a venue — summaries only, no geometry —
@@ -948,6 +1029,8 @@ paths:
   /public/seat-maps/{seatMapId}:
     get:
       operationId: getPublicSeatMapGeometry
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: A seat map's full geometry (status-driven cache tier)
       description: >
         The full nested geometry (sections -> rows -> seats, each ordered by
@@ -972,6 +1055,8 @@ paths:
   /public/seat-maps/{seatMapId}/versions:
     get:
       operationId: listSeatMapVersions
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: A seat map family's version history (status-driven cache tier, TKT-105)
       description: >
         Every version of the seat-map family that seatMapId belongs to (any
@@ -999,6 +1084,8 @@ paths:
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
       summary: This contract, as committed (ADR-009)
       responses:
         '200':
@@ -1008,6 +1095,19 @@ paths:
               schema:
                 type: string
 components:
+  securitySchemes:
+    CatalogStaffWriteCredential:
+      description: >
+        The back office's credential for catalog writes (TKT-191, ADR-042). It
+        authenticates the DEPUTY, not the individual staff member: catalog knows
+        the caller is the back office, and the back office is what decides which
+        staff member may drive which write. Roles are TKT-197.
+
+        Deliberately NOT the shared INTERNAL_SERVICE_TOKEN — that one value opens
+        every service's internal surface, and this one opens catalog writes only.
+      type: apiKey
+      in: header
+      name: X-Catalog-Staff-Write-Token
   parameters:
     Locale:
       name: locale
@@ -1109,6 +1209,18 @@ components:
         enum:
           - 'no-store'
   responses:
+    StaffWriteUnauthorized:
+      description: >-
+        The staff-write credential was absent or wrong. Deliberately says which
+        of those it was NOT: distinguishing them tells a caller whether a
+        credential is configured at all. Identical bytes either way.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NeverCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     BadRequest:
       description: Validation failed
       content:

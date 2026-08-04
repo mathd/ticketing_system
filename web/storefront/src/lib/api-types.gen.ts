@@ -1259,6 +1259,16 @@ export interface components {
         };
     };
     responses: {
+        /** @description The staff-write credential was absent or wrong. Deliberately says which of those it was NOT: distinguishing them tells a caller whether a credential is configured at all. Identical bytes either way. */
+        StaffWriteUnauthorized: {
+            headers: {
+                "Cache-Control": components["headers"]["NeverCacheControl"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Validation failed */
         BadRequest: {
             headers: {
@@ -1338,6 +1348,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -1366,6 +1377,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
@@ -1395,6 +1407,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Duplicate section name or position within the map */
             409: {
@@ -1433,6 +1446,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Duplicate row label or position within the section */
             409: {
@@ -1471,6 +1485,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Duplicate seat identity or position within the row */
             409: {
@@ -1505,6 +1520,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description An archived seat map cannot be published */
             409: {
@@ -1543,6 +1559,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description The edit would orphan a pinned seat identity, or the new geometry has a duplicate seat identity. */
             409: {
@@ -1581,6 +1598,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
@@ -1608,6 +1626,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -1634,6 +1653,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Seated reference to a seat map that is not published (TKT-103). */
             409: {
@@ -1668,6 +1688,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description No sellable offer, or archived performances cannot be re-published */
             409: {
@@ -1702,6 +1723,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Draft performances cannot be archived */
             409: {
@@ -1740,6 +1762,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Only published slots can be closed, or a prior closure event is still owed */
             409: {
@@ -1774,6 +1797,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Only published slots can be reopened, or a prior closure event is still owed */
             409: {
@@ -1810,6 +1834,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
@@ -1839,6 +1864,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Slot already belongs to a series, position is occupied, or membership is frozen */
             409: {
@@ -1873,6 +1899,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Empty series or a member cannot publish */
             409: {
@@ -1907,6 +1934,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Empty series, draft member, or member with an owed closure event */
             409: {
@@ -1943,6 +1971,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
@@ -1972,6 +2001,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Duplicate membership */
             409: {
@@ -2010,6 +2040,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Duplicate membership */
             409: {
@@ -2046,6 +2077,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
@@ -2075,6 +2107,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Wrong slot kind, existing group, frozen day, or launched festival */
             409: {
@@ -2109,6 +2142,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Empty festival or a member cannot publish */
             409: {
@@ -2143,6 +2177,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             /** @description Empty festival, draft member, or member with an owed closure event */
             409: {
@@ -2179,6 +2214,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
@@ -2233,7 +2269,10 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            /** @description Invalid credentials. Identical for an unknown identifier and a wrong password — the body never says which, and never echoes the submitted identifier. */
+            /**
+             * @description Invalid credentials. Identical for an unknown identifier and a wrong password — the body never says which, and never echoes the submitted identifier.
+             *     Since TKT-191 this status also carries the staff-write credential refusal, because this operation is guarded like every other unsafe one. The two are indistinguishable to a caller by design; the back office tells them apart by failing at startup when its own credential is missing, never by reading this response.
+             */
             401: {
                 headers: {
                     "Cache-Control": components["headers"]["NeverCacheControl"];

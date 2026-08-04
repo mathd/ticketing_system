@@ -10,8 +10,9 @@ built spec-first with AI-assisted development. See `docs/product/` for the brief
 make up      # first run generates a local credential (.env), then compose up --build --wait
 ```
 
-`make up` is needed once per clone: no service credential is checked in, so it generates a
-random `INTERNAL_SERVICE_TOKEN` into a gitignored `.env`. After that, plain
+`make up` is needed once per clone: no service credential is checked in, so it generates two
+independent random credentials into a gitignored `.env` — `INTERNAL_SERVICE_TOKEN`
+(service-to-service) and `CATALOG_STAFF_WRITE_TOKEN` (catalog writes, TKT-191). After that, plain
 `docker compose up` works as usual.
 
 Then:

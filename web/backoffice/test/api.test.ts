@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addSeatMapRow,
@@ -24,8 +24,16 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+// Every catalog write carries the staff-write credential since TKT-191, so the
+// client refuses to fetch without one. Supplied here for the whole suite; the
+// one test that asserts the refusal deletes it deliberately.
+beforeEach(() => {
+  process.env.CATALOG_STAFF_WRITE_TOKEN = 'test-credential';
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env.CATALOG_STAFF_WRITE_TOKEN;
 });
 
 describe('getVenues', () => {
@@ -70,12 +78,13 @@ describe('getVenues', () => {
 
 // Captures method, url, and parsed body of the last fetch call.
 function spyFetch(responseBody: unknown, status = 201) {
-  const calls: { url: string; method: string; body: unknown }[] = [];
+  const calls: { url: string; method: string; body: unknown; headers: Record<string, string> }[] = [];
   const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({
       url: String(input),
       method: init?.method ?? 'GET',
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      headers: (init?.headers ?? {}) as Record<string, string>,
     });
     return new Response(JSON.stringify(responseBody), {
       status,
@@ -254,5 +263,43 @@ describe('staff authentication client (TKT-190)', () => {
     const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
     await authenticateStaff('ada@example.test', 'correct horse');
     expect(calls[0].url).not.toContain('correct horse');
+  });
+});
+
+
+describe('catalog write credential (TKT-191)', () => {
+  const HEADER = 'X-Catalog-Staff-Write-Token';
+
+  it('attaches the credential to every catalog write', async () => {
+    process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
+    const calls = spyFetch({ id: 'm1', organizer_id: 'o', venue_id: 'v', name: 'M', version: 1, status: 'draft', created_at: 'x' });
+    await createSeatMap('v1', 'Main');
+    expect(calls[0].headers[HEADER]).toBe('the-credential');
+  });
+
+  // Guarded like every other unsafe operation: leaving it out would mean an
+  // exception list inside a fail-closed scheme.
+  it('attaches it to the sign-in call too', async () => {
+    process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
+    await authenticateStaff('ada@example.test', 'pw');
+    expect(calls[0].headers[HEADER]).toBe('the-credential');
+  });
+
+  it('does NOT attach it to reads — they are public and must stay so', async () => {
+    process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
+    const calls = spyFetch({ venues: [] }, 200);
+    await getVenues();
+    expect(calls[0].headers[HEADER]).toBeUndefined();
+  });
+
+  // Fail locally with a message naming the variable, rather than sending
+  // `undefined` and receiving catalog's deliberately uninformative 401 — which
+  // on the sign-in path is indistinguishable from a wrong password.
+  it('throws before fetching when the credential is not configured', async () => {
+    delete process.env.CATALOG_STAFF_WRITE_TOKEN;
+    const calls = spyFetch({}, 200);
+    await expect(createSeatMap('v1', 'Main')).rejects.toThrow(/CATALOG_STAFF_WRITE_TOKEN/);
+    expect(calls).toHaveLength(0);
   });
 });

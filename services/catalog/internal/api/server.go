@@ -21,6 +21,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/getkin/kin-openapi/openapi3filter"
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
@@ -74,14 +75,30 @@ func cacheControlForSeatMaps(maps ...store.SeatMap) string {
 }
 
 type Server struct {
-	store              store.Store
-	pub                events.Publisher
-	log                *slog.Logger
+	store store.Store
+	pub   events.Publisher
+	log   *slog.Logger
+	// internalCredential guards the hand-mounted /internal/* routes. It is the
+	// SHARED service token: whatever holds it reaches every service.
 	internalCredential string
+	// staffWriteCredential guards every unsafe operation in the contract
+	// (TKT-191). Deliberately a different, catalog-only value — see the
+	// CatalogStaffWriteCredential security scheme and ADR-042.
+	staffWriteCredential string
 }
 
-func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential string) *Server {
-	return &Server{store: st, pub: pub, log: log, internalCredential: internalCredential}
+// staffWriteSecurityScheme is the name in the contract; staffWriteHeader is the
+// header it declares. Both are read by write_credential_test.go, which asserts
+// the contract and this server agree — a scheme naming a header nobody reads is
+// documentation, not a guard.
+const (
+	staffWriteSecurityScheme = "CatalogStaffWriteCredential"
+	staffWriteHeader         = "X-Catalog-Staff-Write-Token"
+)
+
+func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string) *Server {
+	return &Server{store: st, pub: pub, log: log,
+		internalCredential: internalCredential, staffWriteCredential: staffWriteCredential}
 }
 
 // NewRouter mounts the generated routes wrapped in spec request validation
@@ -97,8 +114,24 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	}
 	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, &oapimiddleware.Options{
 		ErrorHandler: func(w http.ResponseWriter, message string, statusCode int) {
+			// A 401 is the staff-write guard refusing (TKT-191). Answer with a
+			// fixed body rather than the validator's own phrasing ("security
+			// requirements failed: …"), which is internal wording that would
+			// reach an unauthenticated caller and vary with the library version.
+			// Validation messages on other statuses stay: a 400 is telling a
+			// legitimate caller what it got wrong.
+			if statusCode == http.StatusUnauthorized {
+				writeJSON(w, statusCode, Error{Error: "unauthorized"})
+				return
+			}
 			writeJSON(w, statusCode, Error{Error: message})
 		},
+		// The contract's security requirement is enforced HERE rather than in 26
+		// handlers (TKT-191). The document declares the requirement at the top
+		// level and public reads opt out with `security: []`, so a newly added
+		// operation is closed by construction — the failure mode this replaces is
+		// an endpoint that ships unguarded because someone forgot a line.
+		Options: openapi3filter.Options{AuthenticationFunc: s.authenticateStaffWrite},
 	})
 	r := chi.NewRouter()
 	r.Get("/internal/ticket-types/{id}", s.getTicketType)
