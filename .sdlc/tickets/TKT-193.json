@@ -2,9 +2,9 @@
   "key": "TKT-193",
   "type": "Story",
   "summary": "US-B4: Order console — staff find an order and read its ticket lifecycle",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
