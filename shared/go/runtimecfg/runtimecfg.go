@@ -106,6 +106,13 @@ func RequiredCredential(envVar, retiredDefault string) (string, error) {
 		return "", fmt.Errorf("%s required: no default is shipped, run `make up` once to generate a local credential", envVar)
 	case retiredDefault != "" && token == retiredDefault:
 		return "", fmt.Errorf("%s is the retired checked-in default: generate a real credential (`make up`)", envVar)
+	// ORDER MATTERS: this whitespace case must stay AHEAD of the httpguts check
+	// below. httpguts.ValidHeaderFieldValue PERMITS edge SP and HTAB — they are
+	// legal field-value bytes — while net/http trims them in transit. So the
+	// transport's own predicate cannot catch the normalization collision that
+	// makes " secret " and "secret" one credential on the wire; only this case
+	// does. Reordering these two silently reopens that hole (confirmed by the
+	// TKT-191 ai-review's final pass).
 	case strings.TrimSpace(token) != token:
 		// Credentials travel in HTTP headers, and header parsing strips leading
 		// and trailing optional whitespace (RFC 7230 §3.2.4) — verified: a client
