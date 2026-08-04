@@ -13,7 +13,7 @@ import {
   sessionCountForTest,
 } from '../src/lib/session';
 
-const principal = { staffId: 'staff-1', organizerId: 'org-1' };
+const principal = { staffId: 'staff-1', organizerId: 'org-1', role: 'admin' } as const;
 
 beforeEach(() => {
   resetSessionsForTest();
@@ -138,7 +138,7 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
   });
 
   it('caps per principal, so one busy account cannot evict a colleague', () => {
-    const colleague = { staffId: 'staff-2', organizerId: 'org-1' };
+    const colleague = { staffId: 'staff-2', organizerId: 'org-1', role: 'box_office' } as const;
     const theirs = createSession(colleague);
 
     for (let i = 0; i < MAX_SESSIONS_PER_STAFF * 3; i++) createSession(principal);
