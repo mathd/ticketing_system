@@ -1,0 +1,47 @@
+{
+  "key": "TKT-203",
+  "type": "Story",
+  "parent": "TKT-22",
+  "summary": "Re-deliver an order's tickets — the write that does not exist yet",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Carved out of **TKT-194** when its scope survey found there is nothing to call.\n\n**No resend exists anywhere.** Delivery is a side effect of consuming the issuance event\n(`services/access/internal/consumer/consumer.go:410-423`): access reads the buyer's address from\ncommerce's `/internal/buyers/{id}/delivery-email`, sends the guest link, and calls `MarkDelivered`.\nThere is no endpoint, in any service, that re-triggers it — and the ticket query filters on\n`NOT EXISTS (… event_type='delivered')`, so simply replaying the event would deliver nothing.\n\nSo a resend is a **new write**, not a UI for an existing one, and it is the more interesting half to\ndesign:\n\n- It sends **PII-bearing mail** on staff command, which is a different act from sending it as the\n  automatic consequence of a purchase. Who may trigger it, how often, and to which address are all\n  decisions the issuance path never had to make.\n- **The address is the whole question.** Sending to the address on file is safe and often useless —\n  the customer is calling *because* they cannot receive it. Sending to an address the staff member\n  types turns the back office into a mail relay that emits ticket capabilities to arbitrary\n  recipients, which is a fraud surface, not a feature.\n- A resend re-emits a **guest retrieval capability** (ADR-012). Every send widens the set of people\n  holding it, and nothing revokes the old one.\n- It needs its own lifecycle event, or the trail says the ticket was delivered once when it was\n  delivered four times (ADR-021: the trail's claim must match what happened).\n\n**Conditions of Success:**\n- [ ] A staff member can re-deliver a completed order's tickets, and the trail records **each**\n      delivery, not just the first.\n- [ ] The destination address is decided explicitly: on-file only, or operator-supplied with a\n      stated control. **Name the fraud case you are refusing** — an operator-supplied address is how\n      tickets get mailed to someone who did not buy them.\n- [ ] Rate-limited or bounded per order, with the bound written down rather than implied.\n- [ ] The back office does not gain the ability to *read* the buyer's address as a side effect\n      (ADR-042 keeps it credential-less for commerce's internal surface; TKT-201 owns that read).\n- [ ] Idempotency: a double-click sends one mail.\n- [ ] `make check` green.\n\n**Worth settling at shaping:** whether resend belongs to the back office at all, or to a\nself-service \"resend my tickets\" flow on the storefront keyed by something the buyer knows. The\nsecond needs no staff credential and no fraud surface, and answers the same customer problem.",
+  "links": [],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-012",
+        "why": "A resend re-emits the guest retrieval capability. Every send widens who holds it, and nothing revokes the previous one."
+      },
+      {
+        "id": "ADR-003",
+        "why": "The buyer's address is PII. Where it is read, and whether it is ever written to a trail, is this ticket's decision to make explicitly."
+      },
+      {
+        "id": "ADR-021",
+        "why": "If the trail says 'delivered' once for four deliveries, the trail is making a claim that is not true. Each send is its own event."
+      },
+      {
+        "id": "ADR-042",
+        "why": "The back office holds no commerce credential by design — a resend must not become the back door to the buyer-contact read."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Delivery as it exists: a side effect of the issuance consumer, with no way to re-trigger it.",
+        "link": "services/access/internal/consumer/consumer.go:410"
+      }
+    ],
+    "capturedAt": "2026-08-04"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-194's scope survey (2026-08-04). Same shape as TKT-201: the ticket assumed a write that does not exist. Not shaped — needs the 8-item DoR before Gate 1.\n\nThe open question in the description is the real one: a storefront self-service resend may answer the same customer problem with no staff credential and no fraud surface."
+    }
+  ]
+}
