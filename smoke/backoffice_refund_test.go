@@ -124,19 +124,17 @@ func TestBackofficeRefundIsIdempotentUnderAConcurrentDoubleSubmit(t *testing.T) 
 		t.Errorf("two concurrent submits of one form produced %d refunds: %v", len(refundIDs), refundIDs)
 	}
 
-	// The durable check: commerce's own view must show exactly one ticket
-	// refunded, not two. A page rendering one id while two refunds landed would
-	// otherwise pass the assertion above.
+	// The durable check, and the one that matters: commerce's own arithmetic.
+	//
+	// The fixture buys TWO tickets. If the concurrent pair replayed, exactly one
+	// is refunded and one remains — so refunding one more must succeed and take
+	// the order to `full`. If it had refunded twice, nothing remains and this
+	// would be refused. Asserting on the page's rendered refund id alone would
+	// not distinguish those: it could render one id while two refunds landed.
 	page := lookupOrder(t, client, orderID, guestRef)
-	after := submitRefund(t, client, orderID, refundFormKey(t, page), "2", "confirm remaining")
-	body := readBody(t, after)
-	if !strings.Contains(body, "Commerce refused") && !strings.Contains(body, "refuse") {
-		// Two of two tickets remain refundable only if the concurrent pair
-		// refunded once. If it refunded twice, only one remains and this is
-		// refused — so a SUCCESS here is the proof.
-		if !strings.Contains(body, "full") {
-			t.Errorf("after the double submit the remaining quantity is wrong; body=%.800s", body)
-		}
+	body := readBody(t, submitRefund(t, client, orderID, refundFormKey(t, page), "1", "refund the remainder"))
+	if !strings.Contains(body, "full") {
+		t.Errorf("one ticket did not remain refundable, so the concurrent pair did not replay; body=%.900s", body)
 	}
 }
 
