@@ -1650,22 +1650,30 @@ func TestCatalogWriteCredentialDoesNotOpenAnotherService(t *testing.T) {
 			"the blast-radius separation TKT-191 exists for does not hold")
 	}
 
-	req, err := http.NewRequest(http.MethodPost,
-		inventoryURL+"/internal/operational-holds", strings.NewReader("{}"))
+	// A GET with a well-formed path, so the request survives inventory's OpenAPI
+	// validator and the credential is the ONLY remaining reason to refuse.
+	//
+	// The first attempt POSTed to /internal/operational-holds with `{}` and got
+	// 400 — inventory's request validation runs BEFORE its credential check, so a
+	// malformed request never reaches the guard, and a test asserting on the
+	// guard would have been reporting on the validator instead.
+	req, err := http.NewRequest(http.MethodGet,
+		fmt.Sprintf("%s/internal/slots/%s/availability", inventoryURL, uuid.NewString()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Token", catalogToken)
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
-		t.Fatalf("POST: %v", err)
+		t.Fatalf("GET: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
-	// Exactly 401. Anything else means inventory looked at the request at all:
-	// a 400 would mean the credential was ACCEPTED and only the body rejected.
+	// Exactly 401. Anything else means inventory got past the guard: a 404 for
+	// the unknown slot id would mean the credential was ACCEPTED and only the
+	// slot was missing — which is precisely the failure this test exists to
+	// catch, and is what an equal-credentials deployment would produce.
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("presenting the catalog credential to inventory returned %d, want 401 — "+
 			"it must not be accepted anywhere but catalog; body=%.200s", resp.StatusCode, body)
