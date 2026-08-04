@@ -7,7 +7,7 @@
   "assignee": null,
   "pr": null,
   "parent": "TKT-22",
-  "description": "**As** the platform owner, **I want** every staff-reachable route classified by role and enforced server-side, **so that** box-office staff cannot reach settlement or finance surfaces even if they guess the URL.\n\nUS-B1 proved *who*. This story proves *what they may do*: three roles (`admin`, `box_office`, `finance`), one **declared matrix** mapping each staff-reachable route to the roles allowed on it, enforced at the edge where it cannot be bypassed.\n\n**In scope:** the role enum, the route→role matrix as a single declared table, edge enforcement, a test that fails when a staff-reachable route exists with no classification, and role-aware nav in the back-office shell (defense in depth — never the enforcement).\n\n**Out of scope:** per-object permissions, per-organizer scoping, role administration UI (roles are set at provisioning), delegation/impersonation.\n\n**Conditions of Success:**\n- [ ] Every staff-reachable route is classified in one declared matrix; a test enumerates the real route table and **fails** if a route is reachable with no classification (fail-closed, not fail-open).\n- [ ] A `box_office` session receives 403 on the finance/settlement surface and on catalog write endpoints.\n- [ ] A `finance` session receives 403 on catalog write endpoints.\n- [ ] An `admin` session reaches every staff-reachable route.\n- [ ] A refusal is indistinguishable from a non-existent route to the caller — the response names neither the required role nor the route's existence.\n- [ ] The back-office nav renders only the links the session's role may use; hiding a link is proven *not* to be what enforces the rule (a direct request to the hidden URL is still 403).\n- [ ] Anonymous callers are still refused before the role check runs — US-B1's behavior is unchanged.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered — API smoke cannot see the SSR layer (TKT-105 learning).\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "description": "**As** the platform owner, **I want** every staff-reachable route classified by role and enforced server-side, **so that** box-office staff cannot reach finance or settlement surfaces even if they guess the URL.\n\nUS-B1 (TKT-190) proved *who*. This story proves *what they may do*: three roles (`admin`, `box_office`, `finance`) and one **declared matrix** mapping each staff-reachable route to the roles allowed on it.\n\n---\n\n### ⚠️ Scope re-synced after TKT-190 shipped — read this before planning\n\nThese ACs were written at decomposition, **before** TKT-190 chose where sessions live. Two of them were not implementable as written, and are rewritten below rather than left to be re-litigated in Planning (`references/decomposition.md` § Spike-amended scope).\n\n**What changed.** TKT-190 put the session **in the back-office process** and enforces it in Astro middleware (ADR-042). That has a consequence this ticket must confront:\n\n- A staff session exists **only** for requests that pass through the back-office app (`/admin/*`).\n- `POST /api/catalog/events` and every other catalog write goes browser → gateway → catalog **without touching the back office**, carries no session, and is **currently accepted unauthenticated by anyone who can reach the gateway**.\n- The gateway cannot check a session either: it holds no state, and the session map lives in the back-office process.\n\nSo the original AC *\"a `box_office` session receives 403 on catalog write endpoints\"* describes something that cannot happen — there is no session on that path to have a role. Enforcing it needs an **authentication boundary for the catalog write API**, which is a different problem from a role matrix.\n\n**The central decision for the plan** (state the options, recommend one, record it as an ADR amendment):\n\n1. **Edge-deny catalog writes**, like `/api/<svc>/internal/` already is (ADR-002's route table is the security boundary), making the back office the only write client — which then needs its own way to reach catalog.\n2. **Move sessions to shared storage** so the gateway can validate them, and enforce the matrix at the edge for both `/admin/*` and `/api/catalog/*` writes. Reverses ADR-042's decision 2.\n3. **Authenticate catalog writes in catalog**, with the role travelling as a verified claim rather than a trusted header.\n\nReversibility and diff size differ sharply between these; prefer the reversible one absent a strong reason.\n\n---\n\n**In scope:** the role enum; the route→role matrix as a single declared table; enforcement composed into TKT-190's `gateRequest` (`web/backoffice/src/lib/gate.ts`) — the one place a session and a route are both in hand; a test that fails when a staff-reachable route has no classification; role-aware nav (defense in depth, never the enforcement); and **the decision above, implemented for the catalog write surface**.\n\n**Out of scope:** per-object permissions, per-organizer scoping, a role administration UI (roles are set at provisioning), delegation/impersonation, and login rate limiting (TKT-195).\n\n**Conditions of Success:**\n- [ ] Every staff-reachable route is classified in **one** declared matrix, and a test enumerates the real route table and **fails** if any route is reachable with no classification — fail-closed, so adding a route without classifying it breaks the build rather than shipping it open.\n- [ ] A `box_office` session is refused on the finance surface; a `finance` session is refused on the catalog authoring surface; an `admin` session reaches every staff-reachable route. Each proven by driving the real route, not by asserting on the matrix table.\n- [ ] **Catalog write endpoints are no longer reachable unauthenticated through the gateway.** A test drives `POST /api/catalog/events` with no credential and asserts it is refused — this is the AC that replaces the two that assumed a session existed on that path.\n- [ ] Whichever option above is chosen, a staff member with the right role can still complete an authoring write end-to-end through the back office — proven by a browser-submitted form, not only by an API call.\n- [ ] A refusal discloses neither the required role nor whether the route exists.\n- [ ] The back-office nav renders only in-role links, **and** a direct request to a hidden URL is still refused — proving the nav is not what enforces the rule.\n- [ ] Anonymous callers are still refused before any role check runs; TKT-190's behaviour is unchanged, and its tests still pass untouched.\n- [ ] ADR-042 is amended (or a new ADR supersedes its § Decision 2) to record what changed and which adversary the result constrains.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered.\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
   "links": [
     {
       "type": "blocked-by",
@@ -36,6 +36,10 @@
       {
         "id": "ADR-021",
         "why": "Name the adversary before claiming a guarantee. This matrix constrains a staff caller arriving through the gateway; it constrains nobody with direct network access to a service container or the database. Say that in the ADR/COS wording rather than writing 'enforced server-side' unqualified."
+      },
+      {
+        "id": "ADR-042",
+        "why": "TKT-190 put staff sessions in the back-office process and enforcement in Astro middleware. That is WHY a role cannot travel on a direct /api/catalog/* request, and Decision 2 (process-local sessions) is what one of this ticket's options would reverse. Read it before choosing an enforcement layer."
       }
     ],
     "reference": [
@@ -46,6 +50,10 @@
       {
         "summary": "US-B1's session/principal plumbing is the input to this matrix.",
         "link": "TKT-190"
+      },
+      {
+        "summary": "TKT-190's composed gate — the one place a session and a route are both in hand, and where the matrix attaches.",
+        "link": "web/backoffice/src/lib/gate.ts"
       }
     ],
     "capturedAt": "2026-08-03"
@@ -57,11 +65,11 @@
     },
     "scope": {
       "state": "met",
-      "note": "In-scope and out-of-scope both enumerated on the ticket."
+      "note": "Re-synced after TKT-190; two ACs replaced, two added. See the kind=readiness comment."
     },
     "uncertainties": {
       "state": "deferred",
-      "note": "Named in the description's out-of-scope list; the remaining design choices are safely settleable in Planning without a mid-sprint redesign."
+      "note": "Option 2 would reverse ADR-042 Decision 2 (process-local sessions). Sizing risk noted in the re-verdict."
     },
     "dependencies": {
       "state": "met",
@@ -69,7 +77,7 @@
     },
     "approach": {
       "state": "deferred",
-      "note": "Where staff identity lives (gateway-owned store vs a sixth service) is settled by US-B1's plan and recorded as an ADR to be authored; later stories inherit that decision."
+      "note": "Enforcement layer for catalog writes is the ticket's central decision; three options stated on the ticket, settled by the plan and recorded as an ADR amendment."
     },
     "first_slice": {
       "state": "met",
@@ -84,5 +92,11 @@
       "note": "Baked at decomposition with governingAdrs resolved against docs/adr/ at HEAD 2026-08-03; every cited ADR file verified to exist."
     }
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Scope re-synced after TKT-190 — ACs rewritten before Gate 1\n\n`references/decomposition.md` requires a dependent ticket's ACs to be rewritten when its blocker\nlands a decision that narrows or contradicts them, **before** it reaches Ready — otherwise Planning\nre-litigates the contradiction and a review pass flags it, burning a cycle.\n\n**Two ACs were not implementable as written.** Both assumed a `box_office` / `finance` *session*\nwould be present on a request to a catalog write endpoint. After TKT-190 (ADR-042) that is false:\nsessions live in the back-office process, and `POST /api/catalog/*` reaches catalog through the\ngateway without passing through the back office at all. There is no session on that path to carry a\nrole — and those endpoints are, today, open to anyone who can reach the gateway.\n\n| Original AC | Disposition |\n|---|---|\n| \"A `box_office` session receives 403 … on catalog write endpoints\" | **Replaced.** No session exists on that path. Now: *catalog writes are not reachable unauthenticated through the gateway*, proven by an unauthenticated request. |\n| \"A `finance` session receives 403 on catalog write endpoints\" | **Replaced**, same reason; the role half is kept but re-pointed at the back-office authoring surface, where a session does exist. |\n| \"enforced at the edge where it cannot be bypassed\" (description) | **Amended.** TKT-190 put enforcement in the back-office app, not the gateway. Which layer enforces what is now this ticket's central decision, stated with three options in the description. |\n\n**Two ACs added:** the unauthenticated-catalog-write proof, and an ADR amendment — because whichever\noption the plan picks, it changes something ADR-042 currently records as decided.\n\n**Readiness re-verdict: CONCERNS → proceedable.** The scope is coherent and every AC is verifiable.\nThe named risk is that the central decision is genuinely architectural (one option reverses ADR-042\n§ Decision 2), so this ticket is **larger than its siblings** and may want splitting once the plan\npicks an option. That is a decision for plan-review, with the split criteria already in\n`decomposition.md`: split into narrower end-to-end slices, never into horizontal layers."
+    }
+  ]
 }
