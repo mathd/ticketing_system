@@ -12,9 +12,18 @@
 
 import { randomBytes } from 'node:crypto';
 
+import type { StaffRole } from './authorization';
+
 export interface StaffPrincipal {
   staffId: string;
   organizerId: string;
+  /**
+   * Snapshotted at sign-in (TKT-197). There is no role-change surface today, so
+   * nothing can go stale; when one is added it MUST invalidate or refresh live
+   * sessions, or a demoted staff member keeps their old role until logout,
+   * eviction, restart, or the eight-hour expiry. ADR-042 records this.
+   */
+  role: StaffRole;
 }
 
 /** Deliberately unremarkable: a cookie named `admin_token` advertises its worth. */

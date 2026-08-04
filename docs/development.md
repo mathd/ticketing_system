@@ -513,6 +513,21 @@ it would make the back office unhealthy and the whole stack would fail to start)
 `/admin/_astro/*` (the hashed assets the login page itself needs). An unknown admin path is
 gated exactly like a real one, so an anonymous caller cannot map the surface.
 
+**Roles (TKT-197).** `admin`, `box_office`, `finance` — the vocabulary is the `StaffRole` enum in
+catalog's contract and nowhere else. `admin` reaches everything the back office exposes; the other
+two reach the venue list and sign-out and little else today, because the surfaces they exist for
+(order console TKT-193/194, settlement TKT-23) are not built. That is expected, not a misconfiguration
+— widening a route's roles to give someone something to do is the wrong fix.
+
+The route→role table is `web/backoffice/src/lib/authorization.ts`, read by both the gate and the
+navigation. A page added under `src/pages/` without a row there **fails the build**; so does a row
+naming a page that no longer exists.
+
+**If one account suddenly gets a 500 at sign-in while everyone else works**, its stored `role` is
+outside the vocabulary. That is deliberate: an unrecognised role must not authenticate, and it is
+reported as a server-side problem rather than "wrong password" so nobody resets a password that was
+never wrong. Check `staff_accounts.role` against the enum.
+
 **Provision an account** — there is no seeded default credential, deliberately (TKT-83 removed
 the last checked-in default). The password is read from stdin only; a `--password` flag would
 put it in shell history, the process table and any log that captures argv:
@@ -522,6 +537,9 @@ printf '%s' "$PASSWORD" | docker compose exec -T catalog /app provision-staff \
   --organizer-id 00000000-0000-0000-0000-000000000001 \
   --identifier ada@example.test --role admin
 ```
+
+`--role` is validated against the contract vocabulary, so a typo fails here rather than at that
+person's first sign-in days later.
 
 It prints the new staff id and nothing else. Provisioning is **create-only**: a colliding
 identifier fails rather than resetting a live account's password. `--role` is stored but

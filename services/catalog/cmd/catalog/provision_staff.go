@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ticketing/services/catalog/internal/api"
 	"ticketing/services/catalog/internal/store"
 )
 
@@ -41,7 +42,7 @@ func provisionStaff(deps provisionStaffDeps, args []string) error {
 	var (
 		organizer  = fs.String("organizer-id", "", "organizer uuid the account administers")
 		identifier = fs.String("identifier", "", "sign-in identifier (an email address)")
-		role       = fs.String("role", "", "role name; stored but not yet enforced (TKT-191)")
+		role       = fs.String("role", "", "role: "+strings.Join(api.StaffRoleNames(), ", ")+" (TKT-197)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("provision-staff: %w", err)
@@ -57,7 +58,18 @@ func provisionStaff(deps provisionStaffDeps, args []string) error {
 		return fmt.Errorf("provision-staff: --identifier is required")
 	}
 	if strings.TrimSpace(*role) == "" {
-		return fmt.Errorf("provision-staff: --role is required")
+		return fmt.Errorf("provision-staff: --role is required (one of: %s)", strings.Join(api.StaffRoleNames(), ", "))
+	}
+	// Validate here, against the SAME generated constants the service validates
+	// against — not a second vocabulary (TKT-197).
+	//
+	// Without this, `--role adminn` provisions successfully and the account then
+	// fails at first sign-in with a deliberately generic 500 pointing at nothing.
+	// The store still fails closed either way; an operator can only fix a typo
+	// cheaply while they are still looking at it.
+	if _, ok := api.RecognisedStaffRole(strings.TrimSpace(*role)); !ok {
+		return fmt.Errorf("provision-staff: --role %q is not a staff role (one of: %s)",
+			*role, strings.Join(api.StaffRoleNames(), ", "))
 	}
 
 	password, err := readPasswordLine(deps.stdin)

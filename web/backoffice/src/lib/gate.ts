@@ -4,6 +4,8 @@
 // Kept separate from middleware.ts and free of Astro imports so both rules are
 // unit-testable as plain functions — the middleware is only the wiring.
 
+import { canAccessRoute, type StaffRole } from './authorization';
+
 /** Astro's `base`. Every path this app serves is under it, healthz included. */
 export const BASE = '/admin';
 
@@ -91,7 +93,7 @@ export function forbiddenResponse(): Response {
 }
 
 /** What the gate needs from its host. Astro supplies these; a test supplies fakes. */
-export interface GateDeps<P> {
+export interface GateDeps<P extends { role: string }> {
   request: Request;
   pathname: string;
   /** The raw session cookie value, or '' when absent. */
@@ -131,14 +133,27 @@ export interface GateDeps<P> {
  *      unknown ones, so an anonymous caller cannot tell a real admin page from a
  *      path that does not exist.
  */
-export async function gateRequest<P>(deps: GateDeps<P>): Promise<Response> {
+export async function gateRequest<P extends { role: string }>(deps: GateDeps<P>): Promise<Response> {
   if (isUnsafeMethod(deps.request.method) && !originIsTrusted(deps.request)) {
     return forbiddenResponse();
   }
   if (!isAnonymousPath(deps.pathname)) {
     const principal = deps.lookup(deps.sessionToken);
     if (!principal) {
+      // Authentication BEFORE authorization, and the order is observable: an
+      // anonymous caller gets 302-to-login, never 403. Reversing these would
+      // tell an anonymous caller which routes exist and which roles they need
+      // (COS-7; TKT-190's redirect test pins it).
       return deps.redirectToLogin();
+    }
+    // TKT-197. Fail closed on everything: an unclassified route, an
+    // unrecognised role, and a role not on the route's list all refuse. A route
+    // nobody classified must not be a route everybody can reach.
+    if (!canAccessRoute(deps.pathname, principal.role as StaffRole)) {
+      // The SAME generic refusal as an untrusted origin — it names neither the
+      // required role nor whether the route exists, so a signed-in box-office
+      // member cannot map the admin surface by probing it.
+      return forbiddenResponse();
     }
     deps.onAuthenticated(principal);
   }

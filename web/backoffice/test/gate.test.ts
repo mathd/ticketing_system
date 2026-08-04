@@ -153,7 +153,7 @@ describe('ordering: refused before any credential is read (ai-review S2, T2)', (
         sessionToken: 'a-valid-looking-token',
         lookup: (t) => {
           calls.lookup++;
-          return t ? ({ staffId: 's1', organizerId: 'o1' } as const) : undefined;
+          return t ? ({ staffId: 's1', organizerId: 'o1', role: 'admin' } as const) : undefined;
         },
         onAuthenticated: () => {
           calls.authenticated++;
@@ -227,7 +227,7 @@ describe('ordering: refused before any credential is read (ai-review S2, T2)', (
       request: req,
       pathname: '/admin/',
       sessionToken: '',
-      lookup: () => undefined, // no session
+      lookup: () => undefined as { staffId: string; organizerId: string; role: string } | undefined,
       onAuthenticated: () => {},
       redirectToLogin: () => {
         calls.redirect++;
@@ -245,5 +245,100 @@ describe('ordering: refused before any credential is read (ai-review S2, T2)', (
   it('refuses without a cacheable header', async () => {
     const { run } = harness(unsafe({ origin: 'http://evil.example' }));
     expect((await run()).headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+
+describe('role enforcement (COS-2, COS-4, COS-6)', () => {
+  // The gate is where a role becomes a refusal. These drive gateRequest directly
+  // so `next` can be instrumented: a refused request must not reach the page,
+  // and "the page rendered but the link was hidden" is not a refusal.
+  const trusted = {
+    origin: 'http://localhost:8080',
+    'x-forwarded-proto': 'http',
+    'x-forwarded-host': 'localhost:8080',
+  };
+
+  function run(pathname: string, role: string) {
+    const calls = { next: 0, authenticated: 0 };
+    const res = gateRequest({
+      request: new Request(`http://backoffice:8080${pathname}`, { method: 'GET', headers: trusted }),
+      pathname,
+      sessionToken: 'tok',
+      lookup: () => ({ staffId: 's1', organizerId: 'o1', role }),
+      onAuthenticated: () => {
+        calls.authenticated++;
+      },
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        calls.next++;
+        return new Response('the page', { status: 200 });
+      },
+    });
+    return { calls, res };
+  }
+
+  it('refuses the authoring surface to finance and box_office, and never renders it', async () => {
+    for (const role of ['finance', 'box_office']) {
+      const { calls, res } = run('/admin/venues/abc', role);
+      expect((await res).status, role).toBe(403);
+      // The page must not have run. A 403 wrapped around a rendered page would
+      // still have executed its data fetches.
+      expect(calls.next, `${role} reached the page`).toBe(0);
+      expect(calls.authenticated).toBe(0);
+    }
+  });
+
+  it('lets admin through to the authoring surface', async () => {
+    const { calls, res } = run('/admin/venues/abc', 'admin');
+    expect((await res).status).toBe(200);
+    expect(calls.next).toBe(1);
+  });
+
+  it('lets every role reach the venue list and sign out', async () => {
+    for (const role of ['admin', 'box_office', 'finance']) {
+      expect((await run('/admin/', role).res).status, role).toBe(200);
+      expect((await run('/admin/logout', role).res).status, role).toBe(200);
+    }
+  });
+
+  it('refuses an unrecognised role everywhere, including routes all roles share', async () => {
+    for (const path of ['/admin/', '/admin/venues/abc', '/admin/logout']) {
+      const { calls, res } = run(path, 'superuser');
+      expect((await res).status, path).toBe(403);
+      expect(calls.next).toBe(0);
+    }
+  });
+
+  it('refuses a route no rule classifies, even for admin', async () => {
+    // Fail-closed: an unclassified route is not an open route. This is the half
+    // the enumeration test cannot enforce at runtime.
+    const { calls, res } = run('/admin/not-a-real-page', 'admin');
+    expect((await res).status).toBe(403);
+    expect(calls.next).toBe(0);
+  });
+
+  // COS-4: a refusal must not tell a signed-in staff member which routes exist
+  // or what role they would need — otherwise probing maps the admin surface.
+  it('refuses a real route and an imaginary one identically', async () => {
+    const real = await run('/admin/venues/abc', 'box_office').res;
+    const imaginary = await run('/admin/nope', 'box_office').res;
+    expect(real.status).toBe(imaginary.status);
+    expect(await real.text()).toBe(await imaginary.text());
+  });
+
+  // COS-7: authentication still precedes authorization, and the difference is
+  // observable — anonymous gets a redirect, wrong-role gets a refusal.
+  it('redirects an anonymous caller rather than refusing them', async () => {
+    const res = await gateRequest({
+      request: new Request('http://backoffice:8080/admin/venues/abc', { method: 'GET', headers: trusted }),
+      pathname: '/admin/venues/abc',
+      sessionToken: '',
+      lookup: () => undefined as { staffId: string; organizerId: string; role: string } | undefined,
+      onAuthenticated: () => {},
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => new Response('the page', { status: 200 }),
+    });
+    expect(res.status).toBe(302);
   });
 });

@@ -33,10 +33,41 @@ func TestAuthenticateStaffReturnsThePrincipal(t *testing.T) {
 	if got.StaffId != staffID || got.OrganizerId != org {
 		t.Fatalf("principal = %+v, want staff %s organizer %s", got, staffID, org)
 	}
-	// The role is TKT-191's; shipping it early would let a consumer bind to a
-	// vocabulary that ticket has not chosen yet.
-	if body := rec.Body.String(); strings.Contains(body, "role") || strings.Contains(body, "admin") {
-		t.Fatalf("the principal must not carry a role yet: %s", body)
+	// TKT-197 reverses TKT-190's assertion here. That one required the principal
+	// to carry NO role, on the reasoning that shipping one early would let a
+	// consumer bind to a vocabulary the owning ticket had not chosen. The owning
+	// ticket is this one, the vocabulary is now StaffRole in the contract, and
+	// the role is what the back-office matrix gates on — so withholding it is
+	// what would now be wrong.
+	if got.Role != Admin {
+		t.Fatalf("principal role = %q, want %q", got.Role, Admin)
+	}
+}
+
+// A stored role outside the contract's vocabulary is a DATA problem, not a
+// credential problem, and the difference decides where the operator looks.
+//
+// Answering 401 would say "your password is wrong" about a password that is
+// right, and send them to reset it. Answering 200 with the unknown value would
+// hand the back office a role its matrix cannot classify — and an unclassifiable
+// role that reaches a session is precisely the fail-open this ticket exists to
+// prevent. So: refuse, generically, and log for the operator.
+func TestAuthenticateStaffRefusesAnUnrecognisedStoredRole(t *testing.T) {
+	e := newEnv(t)
+	e.store.staffAccounts["ada@example.test"] = staffAuthResult{
+		account: store.StaffAccount{ID: uuid.New(), OrganizerID: uuid.New(),
+			Identifier: "ada@example.test", Role: "superuser"},
+		password: "correct horse",
+	}
+
+	rec := e.do("POST", "/staff/authenticate", StaffCredentials{
+		Identifier: "ada@example.test", Password: "correct horse"})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500 — an unrecognised stored role must not authenticate: %s",
+			rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); strings.Contains(body, "superuser") {
+		t.Fatalf("the refusal echoes the stored role: %s", body)
 	}
 }
 

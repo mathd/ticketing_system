@@ -47,8 +47,61 @@ func (s *Server) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	role, ok := recognisedStaffRole(principal.Role)
+	if !ok {
+		// A stored role outside the contract's vocabulary is a DATA problem, not
+		// a credential one, and the distinction decides where an operator looks.
+		// Answering 401 would say "your password is wrong" about a password that
+		// is right. Answering 200 with the unknown value would hand the back
+		// office a role its matrix cannot classify — and an unclassifiable role
+		// reaching a session is the fail-open TKT-197 exists to prevent.
+		//
+		// So it is a 500: something is wrong on this side, not the caller's. The
+		// operator symptom is distinctive — one account 500s at sign-in while
+		// everyone else works — and docs/development.md names it.
+		s.log.ErrorContext(r.Context(), "staff account has a role outside the contract vocabulary",
+			"staff_id", principal.ID, "role", principal.Role)
+		writeJSON(w, http.StatusInternalServerError, Error{Error: "authentication unavailable"})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, StaffPrincipal{
 		StaffId:     principal.ID,
 		OrganizerId: principal.OrganizerID,
+		Role:        role,
 	})
+}
+
+// recognisedStaffRole maps a stored string onto the contract's vocabulary.
+//
+// Enumerated against the GENERATED constants rather than string literals, so the
+// contract enum stays the single source: adding a role to openapi.yaml without
+// adding it here fails to compile, which is the point.
+func recognisedStaffRole(stored string) (StaffRole, bool) { return RecognisedStaffRole(stored) }
+
+// RecognisedStaffRole is the exported form, so `provision-staff` validates an
+// operator's --role against the same generated constants the service does.
+// One vocabulary, two callers — not two vocabularies.
+func RecognisedStaffRole(stored string) (StaffRole, bool) {
+	switch StaffRole(stored) {
+	case Admin:
+		return Admin, true
+	case BoxOffice:
+		return BoxOffice, true
+	case Finance:
+		return Finance, true
+	}
+	return "", false
+}
+
+// StaffRoleNames lists the vocabulary for operator-facing messages. Derived from
+// the generated constants, so a role added to the contract shows up in the CLI's
+// help without anyone remembering to update a string.
+func StaffRoleNames() []string {
+	roles := []StaffRole{Admin, BoxOffice, Finance}
+	out := make([]string, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, string(r))
+	}
+	return out
 }
