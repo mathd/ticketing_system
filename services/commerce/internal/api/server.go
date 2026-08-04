@@ -40,6 +40,8 @@ type Server struct {
 	db                                           *sql.DB
 	client                                       *http.Client
 	catalogURL, inventoryURL, paymentsURL, token string
+	// The back office's commerce credential (TKT-194); see staff_credential.go.
+	staffWriteToken string
 	// accessURL drives the ticket-voiding half of a refund reversal (TKT-157). Empty
 	// leaves the obligation outstanding rather than failing the refund — the money has
 	// already moved by then.

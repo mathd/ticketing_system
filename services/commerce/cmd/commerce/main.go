@@ -93,10 +93,40 @@ func port() string {
 	return "8080"
 }
 
+// staffWriteTokenEnv names the back office's commerce credential (TKT-194).
+// It opens exactly one operation — the staff refund — where
+// INTERNAL_SERVICE_TOKEN opens every service's internal surface.
+const staffWriteTokenEnv = "COMMERCE_STAFF_WRITE_TOKEN"
+
 func run() error {
 	token, err := runtimecfg.InternalTokenFromEnv()
 	if err != nil {
 		return err
+	}
+	// Read before any dependency so a misconfigured deployment fails fast. It
+	// matters more here than it did for catalog: a commerce started without this
+	// answers every refund with 404, which is indistinguishable from "no such
+	// order" — so the misconfiguration would arrive as a support ticket about a
+	// missing order, not as a deployment failure.
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "")
+	if err != nil {
+		return err
+	}
+	// Two credentials with different blast radii are only two credentials if
+	// they hold different values. Nothing else compares them, so a deployment
+	// setting both to one string would run normally while the back office — an
+	// internet-facing SSR process — quietly held the key to every service's
+	// internal surface. Neither value is echoed.
+	//
+	// Comparing raw strings is sound because RequiredCredential has already
+	// refused every value HTTP would normalize, notably edge whitespace: without
+	// that, " secret " and "secret" would be one credential on the wire while
+	// differing here (TKT-191 ai-review pass 2). The narrow claim is the true
+	// one — no two DISTINCT accepted values arrive identical at a server.
+	if staffWriteToken == token {
+		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
+			"so the back office cannot reach other services' internal surfaces, and identical values "+
+			"remove that boundary while looking configured", staffWriteTokenEnv)
 	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
@@ -168,6 +198,7 @@ func run() error {
 	// Bound to a variable rather than inlined: the cancellation refund runner (TKT-159)
 	// refunds through this server's own refund unit, so both callers share one money path.
 	srvHandler := commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
+		WithStaffWriteCredential(staffWriteToken).
 		WithAccess(os.Getenv("ACCESS_URL"))
 	r.Mount("/", srvHandler.Router(log, validateResponses))
 
