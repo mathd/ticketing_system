@@ -104,6 +104,30 @@ const enum SegmentKind {
   Spread = 2,
 }
 
+/**
+ * Segments this matcher models: fully static, a whole `[param]`, or a whole
+ * `[...rest]`. Nothing else.
+ *
+ * Astro also allows MIXED segments — `order-[id]`, `[id]-edit` — and this
+ * matcher would get them wrong in both directions: `segmentKind` reads
+ * `[id]-edit` as a plain dynamic segment (it starts with `[`), and `matches`
+ * then admits any single segment where Astro would require the `-edit` suffix.
+ * Pair that with a `[...rest]` sibling and the mirrored priority hands the
+ * supposed-dynamic rule a path Astro would route to the spread — one rule's
+ * permissions applied to another rule's route.
+ *
+ * So they are refused rather than mis-ranked. An earlier version of this guard
+ * lived only in the test and checked that a `[` was at index 0, which rejected
+ * `order-[id]` and waved `[id]-edit` straight through (ai-review pass 3).
+ */
+export function isSupportedTemplate(template: string): boolean {
+  return normalize(template)
+    .split('/')
+    .every((seg) => !seg.includes('[') && !seg.includes(']')
+      ? true
+      : /^\[[^[\]./]+\]$/.test(seg) || /^\[\.\.\.[^[\]./]+\]$/.test(seg));
+}
+
 function segmentKind(segment: string): SegmentKind {
   if (segment.startsWith('[...')) return SegmentKind.Spread;
   if (segment.startsWith('[')) return SegmentKind.Dynamic;

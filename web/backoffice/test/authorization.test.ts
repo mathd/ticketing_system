@@ -9,6 +9,7 @@ import {
   classifyRoute,
   isAnonymousRoute,
   isRecognisedRole,
+  isSupportedTemplate,
   selectRule,
   type RouteRule,
 } from '../src/lib/authorization';
@@ -223,15 +224,27 @@ describe('overlapping templates resolve by specificity, not declaration order', 
     }
   });
 
-  it('has no mixed segments, which the comparator does not model', () => {
-    // `order-[id]` is a legal Astro segment and would be classified static here,
-    // disagreeing with the router. Refuse it rather than mis-rank it.
+  it('uses only segment shapes the matcher models', () => {
+    // ai-review pass 3. The previous version of this guard asked whether a `[`
+    // was at index 0 — which rejects `order-[id]` and waves `[id]-edit` straight
+    // through, because its bracket IS at index 0. Astro allows both; this
+    // matcher models neither, and would read `[id]-edit` as an ordinary dynamic
+    // segment matching ANY single segment. Paired with a `[...rest]` sibling
+    // that gives one rule's permissions to another rule's route.
     for (const rule of ROUTE_MATRIX) {
-      for (const seg of rule.template.split('/')) {
-        const bracket = seg.indexOf('[');
-        expect(bracket === -1 || bracket === 0, `mixed segment ${seg} in ${rule.template}`).toBe(true);
-      }
+      expect(isSupportedTemplate(rule.template), `unsupported segment shape in ${rule.template}`).toBe(true);
     }
+  });
+
+  it('refuses mixed segments in both spellings', () => {
+    expect(isSupportedTemplate('/admin/orders/order-[id]')).toBe(false);
+    expect(isSupportedTemplate('/admin/orders/[id]-edit')).toBe(false);
+    expect(isSupportedTemplate('/admin/[a][b]')).toBe(false);
+    expect(isSupportedTemplate('/admin/[...a]-x')).toBe(false);
+    // ...while accepting the shapes it does model.
+    expect(isSupportedTemplate('/admin/venues/[id]')).toBe(true);
+    expect(isSupportedTemplate('/admin/_astro/[...asset]')).toBe(true);
+    expect(isSupportedTemplate('/admin/logout')).toBe(true);
   });
 
   // The positional case my first comparator got wrong: same dynamic count, so it
