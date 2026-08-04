@@ -11,7 +11,7 @@
   "links": [
     {
       "type": "blocked-by",
-      "key": "TKT-191"
+      "key": "TKT-197"
     }
   ],
   "context": {
@@ -100,5 +100,11 @@
       "note": "Baked at decomposition with governingAdrs resolved against docs/adr/ at HEAD 2026-08-03; every cited ADR file verified to exist."
     }
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Blocker re-pointed (2026-08-03).** The former TKT-191 was split; the *role matrix* this ticket\nactually needs is now **TKT-197**, so `blocked-by` moves from TKT-191 to TKT-197. TKT-191 (catalog\nrefuses unattributed writes) still lands first — TKT-197 is blocked by it — so nothing runs earlier\nthan before."
+    }
+  ]
 }
