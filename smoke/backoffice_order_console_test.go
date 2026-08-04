@@ -112,7 +112,12 @@ func TestBackofficeOrderConsoleShowsStatusAndLifecycle(t *testing.T) {
 			t.Errorf("page does not render ticket %s; body=%.600s", id, page)
 		}
 	}
-	if !strings.Contains(page, "<strong>issued</strong>") {
+	// `>issued</strong>`, not `<strong>issued</strong>`: Astro stamps a scoped
+	// style attribute onto every element, so the opening tag is
+	// `<strong data-astro-cid-…>` and its hash changes whenever the page's
+	// <style> block does. Matching on the close is stable and still cannot be
+	// produced by the not-found prose.
+	if !strings.Contains(page, ">issued</strong>") {
 		t.Errorf("page does not render an issued lifecycle event; body=%.600s", page)
 	}
 	if strings.Contains(page, "No tickets matched that reference") {
