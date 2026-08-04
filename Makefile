@@ -27,8 +27,9 @@ generate:
 	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../commerce/internal/api/openapi_gen.go ../commerce/api/openapi.yaml
 	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../payments/internal/api/openapi_gen.go ../payments/api/openapi.yaml
 	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../access/internal/api/openapi_gen.go ../access/api/openapi.yaml
-	pnpm --filter storefront generate:api
-	pnpm --filter backoffice generate:api
+	# Runs from the workspace root: openapi-typescript drives the TS compiler API, which
+	# TypeScript 7 does not ship, so it keeps its own TS 6 there instead of in the web apps.
+	pnpm run generate:api
 
 # The gate fails when committed generated code drifts from the spec.
 check-generate: generate

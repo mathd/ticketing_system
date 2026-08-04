@@ -100,6 +100,10 @@ exists are in *Historical* at the bottom; their files are kept.
   the header cannot distinguish a served page from a refused one. (TKT-104)
 - [**A decoded page is not an answered one**](./learnings/2026-07-30-a-decoded-page-is-not-an-answered-one.md) (TKT-67)
 - [**Name what a control reaches, not what it is for**](./learnings/2026-07-15-name-what-a-control-reaches.md) (TKT-64)
+- [**TypeScript 7 blocks on tooling, not on our code**](./learnings/2026-08-03-typescript-7-has-no-js-compiler-api.md) —
+  the Go port exports no JS compiler API, so `astro check`/Volar and `openapi-typescript` die on
+  import. Source needed no changes; `.astro` frontmatter is now unchecked. pnpm `overrides` cannot
+  pin a peer.
 
 ## Security
 
