@@ -113,7 +113,7 @@ func TestRuntimeResponseDriftFailsClosed(t *testing.T) {
 // against the enabled router (newEnv passes true); this test builds its own.
 func TestRuntimeResponseDriftPassesThroughWhenValidationDisabled(t *testing.T) {
 	e := newEnv(t)
-	handler, err := NewRouter(NewServer(e.store, e.pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token"), false)
+	handler, err := NewRouter(NewServer(e.store, e.pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", testStaffWriteToken), false)
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}

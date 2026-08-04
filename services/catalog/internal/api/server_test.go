@@ -1140,7 +1140,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	st := newFakeStore()
 	pub := &fakePublisher{}
-	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token"), true)
+	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", testStaffWriteToken), true)
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
@@ -1159,7 +1159,7 @@ func newEnv(t *testing.T) *env {
 func TestInternalTicketTypeRequiresCredential(t *testing.T) {
 	st := newFakeStore()
 	pub := &fakePublisher{}
-	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret"), true)
+	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret", testStaffWriteToken), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1260,6 +1260,41 @@ func TestInternalPoolOfferState(t *testing.T) {
 
 // do performs a request and validates the response against the spec
 // (ADR-009 §3: conformance is tested in both directions).
+// doWithHeaders is do() with explicit headers and NO automatic staff-write
+// credential — the seam TKT-191's guard tests drive, since their whole subject
+// is what happens when the credential is absent or wrong.
+func (e *env) doWithHeaders(method, path string, body any, hdr map[string]string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	var buf io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			e.t.Fatalf("marshal body: %v", err)
+		}
+		buf = bytes.NewReader(b)
+	}
+	req := httptest.NewRequest(method, "http://catalog.local"+path, buf)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	e.validateResponse(req, rec)
+	return rec
+}
+
+// validEventCreate is a body that passes schema validation, so a test asserting
+// on the guard is never accidentally satisfied by a 400 from the validator.
+func validEventCreate() EventCreate {
+	return EventCreate{
+		OrganizerId: orgID,
+		Name:        LocalizedString{"fr": "Nuit Électrique", "en": "Electric Night"},
+	}
+}
+
 func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 	e.t.Helper()
 	var buf io.Reader
@@ -1274,11 +1309,23 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// TKT-191: unsafe operations require the staff-write credential. Supplied
+	// here so every existing happy path (and the 2xx coverage gate) keeps
+	// reaching its handler, and deliberately NOT on reads — a read that only
+	// passes because a credential was attached would hide a public surface
+	// silently acquiring a guard.
+	if !isSafeMethod(method) {
+		req.Header.Set(staffWriteHeader, testStaffWriteToken)
+	}
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, req)
 	e.validateResponse(req, rec)
 	return rec
 }
+
+// testStaffWriteToken is the credential newEnv configures; do() presents it on
+// unsafe requests. Guard tests use doWithHeaders to present something else.
+const testStaffWriteToken = "test-staff-write-token"
 
 func (e *env) validateResponse(req *http.Request, rec *httptest.ResponseRecorder) {
 	e.t.Helper()
@@ -2383,7 +2430,7 @@ func TestInternalSeatMapPinsRead(t *testing.T) {
 	pinID, org, seatMap := uuid.New(), uuid.New(), uuid.New()
 	st.pinPage = []store.SeatMapPin{{ID: pinID, OrganizerID: org, SeatMapID: seatMap,
 		SeatIdentity: "Orchestra/A/1", PinnedBy: "hold:" + uuid.New().String()}}
-	h, err := NewRouter(NewServer(st, &fakePublisher{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret"), true)
+	h, err := NewRouter(NewServer(st, &fakePublisher{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret", testStaffWriteToken), true)
 	if err != nil {
 		t.Fatal(err)
 	}

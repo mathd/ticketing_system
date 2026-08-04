@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
+)
+
+const (
+	CatalogStaffWriteCredentialScopes catalogStaffWriteCredentialContextKey = "CatalogStaffWriteCredential.Scopes"
 )
 
 // Defines values for ClosureStatus.
@@ -847,6 +852,12 @@ type InternalError = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// StaffWriteUnauthorized defines model for StaffWriteUnauthorized.
+type StaffWriteUnauthorized = Error
+
+// catalogStaffWriteCredentialContextKey is the context key for CatalogStaffWriteCredential security scheme
+type catalogStaffWriteCredentialContextKey string
+
 // ListPublicEventsParams defines parameters for ListPublicEvents.
 type ListPublicEventsParams struct {
 	// Locale BCP-47 primary subtag; supported set is data, not schema (TKT-36)
@@ -1287,6 +1298,12 @@ type MiddlewareFunc func(http.Handler) http.Handler
 // CreateEvent operation middleware
 func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Request) {
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateEvent(w, r)
 	}))
@@ -1300,6 +1317,12 @@ func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Re
 
 // CreateFestival operation middleware
 func (siw *ServerInterfaceWrapper) CreateFestival(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateFestival(w, r)
@@ -1327,6 +1350,12 @@ func (siw *ServerInterfaceWrapper) ArchiveFestival(w http.ResponseWriter, r *htt
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ArchiveFestival(w, r, festivalId)
 	}))
@@ -1353,6 +1382,12 @@ func (siw *ServerInterfaceWrapper) AttachDayToFestival(w http.ResponseWriter, r 
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AttachDayToFestival(w, r, festivalId)
 	}))
@@ -1378,6 +1413,12 @@ func (siw *ServerInterfaceWrapper) PublishFestival(w http.ResponseWriter, r *htt
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "festivalId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PublishFestival(w, r, festivalId)
@@ -1407,6 +1448,12 @@ func (siw *ServerInterfaceWrapper) GetOpenAPISpec(w http.ResponseWriter, r *http
 // CreatePerformance operation middleware
 func (siw *ServerInterfaceWrapper) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreatePerformance(w, r)
 	}))
@@ -1432,6 +1479,12 @@ func (siw *ServerInterfaceWrapper) ArchivePerformance(w http.ResponseWriter, r *
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "performanceId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ArchivePerformance(w, r, performanceId)
@@ -1459,6 +1512,12 @@ func (siw *ServerInterfaceWrapper) CloseSlot(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CloseSlot(w, r, performanceId)
 	}))
@@ -1485,6 +1544,12 @@ func (siw *ServerInterfaceWrapper) PublishPerformance(w http.ResponseWriter, r *
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PublishPerformance(w, r, performanceId)
 	}))
@@ -1510,6 +1575,12 @@ func (siw *ServerInterfaceWrapper) ReopenSlot(w http.ResponseWriter, r *http.Req
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "performanceId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ReopenSlot(w, r, performanceId)
@@ -1795,6 +1866,12 @@ func (siw *ServerInterfaceWrapper) ListVenueSeatMaps(w http.ResponseWriter, r *h
 // CreateSeason operation middleware
 func (siw *ServerInterfaceWrapper) CreateSeason(w http.ResponseWriter, r *http.Request) {
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateSeason(w, r)
 	}))
@@ -1820,6 +1897,12 @@ func (siw *ServerInterfaceWrapper) AttachEventToSeason(w http.ResponseWriter, r 
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seasonId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AttachEventToSeason(w, r, seasonId)
@@ -1847,6 +1930,12 @@ func (siw *ServerInterfaceWrapper) AttachSeriesToSeason(w http.ResponseWriter, r
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AttachSeriesToSeason(w, r, seasonId)
 	}))
@@ -1872,6 +1961,12 @@ func (siw *ServerInterfaceWrapper) EditSeatMap(w http.ResponseWriter, r *http.Re
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seatMapId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.EditSeatMap(w, r, seatMapId)
@@ -1899,6 +1994,12 @@ func (siw *ServerInterfaceWrapper) PublishSeatMap(w http.ResponseWriter, r *http
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PublishSeatMap(w, r, seatMapId)
 	}))
@@ -1924,6 +2025,12 @@ func (siw *ServerInterfaceWrapper) AddSeatMapRow(w http.ResponseWriter, r *http.
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seatMapId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AddSeatMapRow(w, r, seatMapId)
@@ -1951,6 +2058,12 @@ func (siw *ServerInterfaceWrapper) AddSeatMapSeat(w http.ResponseWriter, r *http
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AddSeatMapSeat(w, r, seatMapId)
 	}))
@@ -1977,6 +2090,12 @@ func (siw *ServerInterfaceWrapper) AddSeatMapSection(w http.ResponseWriter, r *h
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AddSeatMapSection(w, r, seatMapId)
 	}))
@@ -1990,6 +2109,12 @@ func (siw *ServerInterfaceWrapper) AddSeatMapSection(w http.ResponseWriter, r *h
 
 // CreateSeries operation middleware
 func (siw *ServerInterfaceWrapper) CreateSeries(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateSeries(w, r)
@@ -2017,6 +2142,12 @@ func (siw *ServerInterfaceWrapper) ArchiveSeries(w http.ResponseWriter, r *http.
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ArchiveSeries(w, r, seriesId)
 	}))
@@ -2042,6 +2173,12 @@ func (siw *ServerInterfaceWrapper) AttachPerformanceToSeries(w http.ResponseWrit
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seriesId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AttachPerformanceToSeries(w, r, seriesId)
@@ -2069,6 +2206,12 @@ func (siw *ServerInterfaceWrapper) PublishSeries(w http.ResponseWriter, r *http.
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PublishSeries(w, r, seriesId)
 	}))
@@ -2083,6 +2226,12 @@ func (siw *ServerInterfaceWrapper) PublishSeries(w http.ResponseWriter, r *http.
 // AuthenticateStaff operation middleware
 func (siw *ServerInterfaceWrapper) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AuthenticateStaff(w, r)
 	}))
@@ -2096,6 +2245,12 @@ func (siw *ServerInterfaceWrapper) AuthenticateStaff(w http.ResponseWriter, r *h
 
 // CreateTicketType operation middleware
 func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateTicketType(w, r)
@@ -2137,6 +2292,12 @@ func (siw *ServerInterfaceWrapper) ResolveTicketTypePrice(w http.ResponseWriter,
 // CreateVenue operation middleware
 func (siw *ServerInterfaceWrapper) CreateVenue(w http.ResponseWriter, r *http.Request) {
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateVenue(w, r)
 	}))
@@ -2163,6 +2324,12 @@ func (siw *ServerInterfaceWrapper) UpdateVenueGaCapacity(w http.ResponseWriter, 
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateVenueGaCapacity(w, r, venueId)
 	}))
@@ -2188,6 +2355,12 @@ func (siw *ServerInterfaceWrapper) CreateSeatMap(w http.ResponseWriter, r *http.
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "venueId", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateSeatMap(w, r, venueId)

@@ -123,18 +123,24 @@ onsale-load-full: build-gate-linux build-ts
 # Preserves unrelated .env entries, replaces only a missing/retired token,
 # never prints the value. Compose reads .env natively, so bare
 # `docker compose up` keeps working after the first `make up`.
+# TKT-191 added a second, independent credential. Each is generated separately
+# so they never share a value: CATALOG_STAFF_WRITE_TOKEN opens catalog writes,
+# INTERNAL_SERVICE_TOKEN opens every service's internal surface, and one leaking
+# must not imply the other.
 env-bootstrap:
 	@set -e; umask 077; \
-	token=$$(grep -E '^INTERNAL_SERVICE_TOKEN[[:space:]]*=' .env 2>/dev/null | tail -n1 \
-		| sed -e 's/^[^=]*=[[:space:]]*//' | tr -d '\r' \
-		| sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//"); \
-	if [ -z "$$token" ] || [ "$$token" = "local-service-token" ]; then \
-		new=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n'); \
-		rm -f .env.tmp; \
-		{ grep -vE '^INTERNAL_SERVICE_TOKEN[[:space:]]*=' .env 2>/dev/null || true; printf 'INTERNAL_SERVICE_TOKEN=%s\n' "$$new"; } > .env.tmp; \
-		mv .env.tmp .env; \
-		echo "generated INTERNAL_SERVICE_TOKEN in .env"; \
-	fi; \
+	for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN; do \
+		token=$$(grep -E "^$$var[[:space:]]*=" .env 2>/dev/null | tail -n1 \
+			| sed -e 's/^[^=]*=[[:space:]]*//' | tr -d '\r' \
+			| sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//"); \
+		if [ -z "$$token" ] || [ "$$token" = "local-service-token" ]; then \
+			new=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n'); \
+			rm -f .env.tmp; \
+			{ grep -vE "^$$var[[:space:]]*=" .env 2>/dev/null || true; printf '%s=%s\n' "$$var" "$$new"; } > .env.tmp; \
+			mv .env.tmp .env; \
+			echo "generated $$var in .env"; \
+		fi; \
+	done; \
 	[ ! -f .env ] || chmod 600 .env
 
 up: env-bootstrap

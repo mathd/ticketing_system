@@ -155,6 +155,10 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
+      # TKT-191: the credential catalog checks on every unsafe contract operation.
+      # Held by catalog and the back office and nothing else — deliberately NOT in
+      # the shared &go-env anchor, which every service inherits.
+      CATALOG_STAFF_WRITE_TOKEN: ${CATALOG_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
 
   inventory-migrate:
     <<: *migrate-job
@@ -352,6 +356,10 @@ services:
     restart: unless-stopped
     environment:
       GATEWAY_URL: http://gateway:8080
+      # Catalog writes (TKT-191). Catalog-only, and deliberately NOT the shared
+      # INTERNAL_SERVICE_TOKEN in the &go-env anchor: that one value opens every
+      # service's internal surface, and this is a public-facing SSR process.
+      CATALOG_STAFF_WRITE_TOKEN: ${CATALOG_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
     healthcheck:
       # base:'/admin' means Astro serves healthz at /admin/healthz; the probe
       # hits the container directly (pre-gateway), so it targets the base path.

@@ -30,13 +30,32 @@ import (
 
 const organizerID = "00000000-0000-0000-0000-000000000001" // seeded (ADR-008)
 
+// staffWriteHeader / staffWriteToken: catalog refuses unsafe operations without
+// the back office's credential (TKT-191). postJSON attaches it ONLY for catalog
+// URLs — sending it to inventory, commerce, payments or access would quietly
+// spread a catalog-scoped secret across services that have no business holding
+// it, which is the failure the dedicated credential exists to prevent.
+const staffWriteHeader = "X-Catalog-Staff-Write-Token"
+
+func staffWriteToken() string { return os.Getenv("SMOKE_CATALOG_STAFF_WRITE_TOKEN") }
+
+func isCatalogURL(url string) bool { return strings.Contains(url, "/api/catalog/") }
+
 func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	t.Helper()
 	b, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post(url, "application/json", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if isCatalogURL(url) {
+		req.Header.Set(staffWriteHeader, staffWriteToken())
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
@@ -1550,5 +1569,81 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 	}
 	if updated.ID != venueID || updated.GaCapacity != 450 {
 		t.Fatalf("ga capacity update = %+v, want id %s capacity 450", updated, venueID)
+	}
+}
+
+// TKT-191 COS-1, the whole point of the ticket: before it, this request created
+// an event. It deliberately bypasses postJSON — that helper now attaches the
+// credential, so using it here would test nothing.
+//
+// Through the real gateway, because "reachable from outside" is the claim. A
+// direct-to-container call would prove something weaker and more comfortable.
+func TestCatalogRefusesUnauthenticatedWriteThroughTheGateway(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"organizer_id": organizerID,
+		"name":         map[string]string{"en": "Unauthenticated Event", "fr": "Événement non authentifié"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, token string }{
+		{"no credential", ""},
+		{"wrong credential", "not-the-real-credential"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/api/catalog/events", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.token != "" {
+				req.Header.Set(staffWriteHeader, tc.token)
+			}
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			out, _ := io.ReadAll(resp.Body)
+			// Runs the contract check too: the 401 must be a DECLARED response,
+			// or ADR-028's validator turns it into a 500 in production.
+			validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, out)
+
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("status %d, want 401 — an unauthenticated caller must not be able to "+
+					"create an event through the gateway; body=%s", resp.StatusCode, out)
+			}
+			if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+				t.Fatalf("refusal must be no-store, got %q", cc)
+			}
+			if strings.Contains(string(out), staffWriteHeader) {
+				t.Fatalf("the refusal names the credential header: %s", out)
+			}
+		})
+	}
+}
+
+// The credential must not have leaked into the services that share the compose
+// network but have no business holding it.
+func TestCatalogWriteCredentialIsNotAcceptedElsewhere(t *testing.T) {
+	if staffWriteToken() == "" {
+		t.Skip("SMOKE_CATALOG_STAFF_WRITE_TOKEN not set")
+	}
+	// A catalog credential presented to another service's internal surface must
+	// not open it. This is the blast-radius claim, tested rather than asserted.
+	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/api/inventory/internal/operational-holds", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", staffWriteToken())
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+		t.Fatalf("the catalog write credential opened inventory's internal surface (status %d)", resp.StatusCode)
 	}
 }

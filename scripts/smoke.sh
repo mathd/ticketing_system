@@ -52,6 +52,12 @@ fi
 SMOKE_INTERNAL_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_INTERNAL_TOKEN
 export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
+# TKT-191: catalog's staff-write credential. Generated INDEPENDENTLY of the
+# internal token — they authorize different things, and a run where one value
+# served both would pass while proving nothing about the separation.
+SMOKE_CATALOG_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_CATALOG_STAFF_WRITE_TOKEN
+export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
 
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
@@ -223,6 +229,7 @@ printf '%s' "$SMOKE_STAFF_PASSWORD" | compose exec -T catalog /app provision-sta
 cd "$ROOT/smoke"
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
+SMOKE_CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN" \
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \
 SMOKE_PG=localhost:${POSTGRES_PORT} \

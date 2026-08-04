@@ -87,19 +87,31 @@ func (c Database) Apply(db *sql.DB) {
 // refuses it forever so stale automation cannot keep authenticating with it.
 const retiredInternalToken = "local-service-token"
 
-// InternalTokenFromEnv validates the internal service credential at startup.
-// Server entrypoints call it before touching any dependency so a
-// misconfigured deployment fails fast instead of timing out. Errors never
-// echo the supplied value.
-func InternalTokenFromEnv() (string, error) {
-	token := os.Getenv("INTERNAL_SERVICE_TOKEN")
-	switch token {
-	case "":
-		return "", fmt.Errorf("INTERNAL_SERVICE_TOKEN required: no default is shipped, run `make up` once to generate a local credential")
-	case retiredInternalToken:
-		return "", fmt.Errorf("INTERNAL_SERVICE_TOKEN is the retired checked-in default: generate a real credential (`make up`)")
+// RequiredCredential validates one startup credential: present, and not the
+// retired checked-in literal it replaced. Entrypoints call it before touching
+// any dependency so a misconfigured deployment fails fast instead of timing
+// out, and **errors never echo the supplied value**.
+//
+// Generic because a second credential arrived (TKT-191) and a per-credential
+// function in a package imported by all five services and the gateway would
+// make every caller carry someone else's private concern. Pass "" for
+// retiredDefault when a credential has no retired literal to refuse.
+func RequiredCredential(envVar, retiredDefault string) (string, error) {
+	token := os.Getenv(envVar)
+	switch {
+	case token == "":
+		return "", fmt.Errorf("%s required: no default is shipped, run `make up` once to generate a local credential", envVar)
+	case retiredDefault != "" && token == retiredDefault:
+		return "", fmt.Errorf("%s is the retired checked-in default: generate a real credential (`make up`)", envVar)
 	}
 	return token, nil
+}
+
+// InternalTokenFromEnv validates the shared service-to-service credential.
+// One value across all five services (compose.yaml, the &go-env anchor), so
+// whatever holds it can reach every service's internal surface.
+func InternalTokenFromEnv() (string, error) {
+	return RequiredCredential("INTERNAL_SERVICE_TOKEN", retiredInternalToken)
 }
 
 // ResponseValidationFromEnv reports whether a service enforces ADR-028

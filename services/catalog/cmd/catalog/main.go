@@ -100,8 +100,19 @@ func port() string {
 	return "8080"
 }
 
+// staffWriteTokenEnv names the catalog-only staff-write credential (TKT-191).
+const staffWriteTokenEnv = "CATALOG_STAFF_WRITE_TOKEN"
+
 func run() error {
 	internalToken, err := runtimecfg.InternalTokenFromEnv()
+	if err != nil {
+		return err
+	}
+	// The back office's credential for catalog writes (TKT-191). Read before any
+	// dependency so a misconfigured deployment fails fast rather than starting up
+	// and refusing every write at runtime. Separate from INTERNAL_SERVICE_TOKEN
+	// on purpose: that one opens every service, this one opens catalog writes.
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "")
 	if err != nil {
 		return err
 	}
@@ -152,7 +163,7 @@ func run() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
-	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken), validateResponses)
+	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken, staffWriteToken), validateResponses)
 	if err != nil {
 		return fmt.Errorf("api router: %w", err)
 	}
