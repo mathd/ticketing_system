@@ -90,27 +90,57 @@ export function forbiddenResponse(): Response {
   });
 }
 
+/** What the gate needs from its host. Astro supplies these; a test supplies fakes. */
+export interface GateDeps<P> {
+  request: Request;
+  pathname: string;
+  /** The raw session cookie value, or '' when absent. */
+  sessionToken: string;
+  /** Resolves a token to a principal. MUST NOT be reached by a refused request. */
+  lookup: (token: string) => P | undefined;
+  /** Called with the principal once the request is allowed through. */
+  onAuthenticated: (principal: P) => void;
+  redirectToLogin: () => Response;
+  /** Everything downstream: routing, page rendering, the login handler. */
+  next: () => Promise<Response>;
+}
+
 /**
- * The ordering guarantee, in one testable place (ai-review pass 2, S2).
+ * The whole gate, composed — and composed HERE rather than in middleware.ts,
+ * because the security property IS the composition (ai-review pass 2 S2, pass 3
+ * T2).
  *
- * The claim TKT-190 makes is not "a cross-origin submission gets a 403" — it is
+ * The claim TKT-190 makes is not "a cross-origin submission gets a 403", it is
  * "a cross-origin submission is refused **before any credential is read**". Those
- * differ: a middleware that ran the handler first, let it verify the password and
- * create a session, and only then replaced the response with a 403 would satisfy
- * the first and violate the second, leaving an orphaned server-side session
- * behind. No wire-level assertion can tell the two apart, because the difference
- * is invisible from outside — the discarded response takes the Set-Cookie with it.
+ * differ, and nothing observable from outside distinguishes them: a middleware
+ * that ran the handler first, let it verify the password and create a session,
+ * and only then replaced the response with a 403 emits the identical bytes —
+ * the discarded response takes its Set-Cookie with it — while an orphaned
+ * server-side session survives.
  *
- * So the guarantee lives here instead: `next` is a callback, and this function is
- * the ONLY thing that calls it. A test passes an instrumented `next` and asserts
- * it is never invoked for an unsafe request with a missing or untrusted Origin.
+ * Testing the origin check alone does not pin that either; it proves one helper
+ * behaves, not that the caller invokes it first. So the ordering lives in one
+ * Astro-free function that owns the ONLY calls to `next` and `lookup`, and the
+ * tests instrument both: a refused request must reach neither.
+ *
+ * Order:
+ *   1. origin, for every unsafe method — including login and logout. Exempting
+ *      login leaves login-CSRF open; exempting logout lets any site sign a staff
+ *      member out.
+ *   2. session, for every path that is not explicitly anonymous, including
+ *      unknown ones, so an anonymous caller cannot tell a real admin page from a
+ *      path that does not exist.
  */
-export async function guardUnsafeRequest(
-  request: Request,
-  next: () => Promise<Response>,
-): Promise<Response> {
-  if (isUnsafeMethod(request.method) && !originIsTrusted(request)) {
+export async function gateRequest<P>(deps: GateDeps<P>): Promise<Response> {
+  if (isUnsafeMethod(deps.request.method) && !originIsTrusted(deps.request)) {
     return forbiddenResponse();
   }
-  return next();
+  if (!isAnonymousPath(deps.pathname)) {
+    const principal = deps.lookup(deps.sessionToken);
+    if (!principal) {
+      return deps.redirectToLogin();
+    }
+    deps.onAuthenticated(principal);
+  }
+  return deps.next();
 }

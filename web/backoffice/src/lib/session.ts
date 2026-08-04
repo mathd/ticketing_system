@@ -74,23 +74,30 @@ export function createSession(principal: StaffPrincipal, now = Date.now()): stri
   //
   // Deleting from a Map while iterating it is well-defined in JS: entries already
   // visited are gone, and no entry is skipped.
-  const mine: { token: string; expiresAt: number }[] = [];
+  //
+  // `mine` comes out in Map INSERTION order, which is issuance order, and that is
+  // the ordering the cap uses. An earlier version sorted by `expiresAt` on the
+  // reasoning that a fixed TTL makes expiry a proxy for issue time — it is not
+  // (ai-review pass 3, T1). `Date.now()` is wall-clock and not monotonic: let the
+  // host clock step backwards between two sign-ins and the NEWER session carries
+  // the SMALLER expiry, so the next sign-in evicts the session just issued while
+  // older ones survive. Insertion order cannot be moved by a clock at all, and no
+  // token is ever re-inserted (each is fresh), so it stays true.
+  const mine: string[] = [];
   for (const [token, entry] of sessions) {
     if (now >= entry.expiresAt) {
       sessions.delete(token);
     } else if (entry.principal.staffId === principal.staffId) {
-      mine.push({ token, expiresAt: entry.expiresAt });
+      mine.push(token);
     }
   }
 
   // Make room for the new one: drop this principal's oldest sessions until it is
-  // under the cap. Oldest by expiry, which under a fixed TTL is oldest by issue
-  // time. Per principal, never global — a global cap would let one busy account
-  // evict another staff member's live session, turning a cap into a denial of
-  // service against colleagues.
-  mine.sort((a, b) => a.expiresAt - b.expiresAt);
+  // under the cap. Per principal, never global — a global cap would let one busy
+  // account evict another staff member's live session, turning a safety limit
+  // into a denial of service against colleagues.
   for (let i = 0; i <= mine.length - MAX_SESSIONS_PER_STAFF; i++) {
-    sessions.delete(mine[i]!.token);
+    sessions.delete(mine[i]!);
   }
 
   // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.

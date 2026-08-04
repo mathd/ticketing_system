@@ -147,4 +147,35 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
     expect(lookupSession(theirs)).toEqual(colleague);
     expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_STAFF + 1);
   });
+
+  // ai-review pass 3, T1. The previous implementation evicted the smallest
+  // `expiresAt`, on the reasoning that a fixed TTL makes expiry a proxy for issue
+  // time. It is not: Date.now() is wall-clock and not monotonic, so if the host
+  // clock steps backwards (NTP correction, a manual change) the NEWER session
+  // carries the SMALLER expiry and the next sign-in evicts the session just
+  // issued, while genuinely older ones survive.
+  //
+  // The earlier cap test could not catch this — with an implicit clock its
+  // timestamps and the Map's insertion order agreed, so both orderings gave the
+  // same answer. This one drives `now` backwards explicitly, which is the only
+  // input shape that can tell them apart.
+  it('evicts the earliest-ISSUED session even when the clock runs backwards', () => {
+    const t0 = 5_000_000;
+    const oldest = createSession(principal, t0);
+    const older = createSession(principal, t0 + 1000);
+    const mid = createSession(principal, t0 + 2000);
+    const newer = createSession(principal, t0 + 3000);
+
+    // The clock jumps back. This session is issued LAST but expires FIRST.
+    const newestButExpiringSoonest = createSession(principal, t0 - 60_000);
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_STAFF);
+
+    // A sixth sign-in must retire `oldest` — not the one just issued.
+    const sixth = createSession(principal, t0 + 4000);
+
+    expect(lookupSession(oldest, t0 + 4000)).toBeUndefined();
+    for (const [name, token] of Object.entries({ older, mid, newer, newestButExpiringSoonest, sixth })) {
+      expect(lookupSession(token, t0 + 4000), `${name} must have survived`).toBeDefined();
+    }
+  });
 });

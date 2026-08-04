@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { LOGIN_PATH, guardUnsafeRequest, isAnonymousPath, originIsTrusted } from '../src/lib/gate';
+import { LOGIN_PATH, gateRequest, isAnonymousPath, originIsTrusted } from '../src/lib/gate';
 
 describe('anonymous paths (COS-1)', () => {
   // The exemption list is the whole attack surface of the gate: anything on it is
@@ -128,79 +128,122 @@ describe('proxy-aware origin check (COS-7)', () => {
   });
 });
 
-describe('ordering: an untrusted origin is refused before anything downstream runs', () => {
-  // ai-review pass 2, S2. The wire cannot distinguish "refused before the handler"
-  // from "handler ran, made a session, then the response was replaced with a 403" —
-  // the discarded response takes its Set-Cookie with it, so the outside sees the
-  // same thing either way while an orphaned server-side session survives.
+describe('ordering: refused before any credential is read (ai-review S2, T2)', () => {
+  // Pass 2 established that no wire-level test can see this ordering: a
+  // middleware that ran the handler first, created a session, then replaced the
+  // response with a 403 emits identical bytes, because the discarded response
+  // takes its Set-Cookie with it — while an orphaned server-side session lives on.
   //
-  // guardUnsafeRequest owns the only call to `next`, so instrumenting `next` is a
-  // direct test of the claim rather than a proxy for it.
-  const unsafe = (headers: Record<string, string>) =>
-    new Request('http://backoffice:8080/admin/login', { method: 'POST', headers });
-
+  // Pass 3 (T2) then pointed out that testing the origin CHECK alone does not pin
+  // it either: that proves one helper behaves, not that the caller invokes it
+  // first. So these drive `gateRequest`, which owns the only calls to `next` and
+  // `lookup`, and instrument BOTH — a refused request must reach neither.
   const trusted = {
     origin: 'http://localhost:8080',
     'x-forwarded-proto': 'http',
     'x-forwarded-host': 'localhost:8080',
   };
 
-  it('never invokes the downstream handler for a cross-site submission', async () => {
-    let invoked = 0;
-    const res = await guardUnsafeRequest(
-      unsafe({ ...trusted, origin: 'http://evil.example' }),
-      async () => {
-        invoked++;
-        return new Response('should never run', { status: 200 });
-      },
-    );
-    expect(invoked).toBe(0);
+  function harness(request: Request, pathname: string) {
+    const calls = { next: 0, lookup: 0, authenticated: 0, redirect: 0 };
+    const run = () =>
+      gateRequest({
+        request,
+        pathname,
+        sessionToken: 'a-valid-looking-token',
+        lookup: (t) => {
+          calls.lookup++;
+          return t ? ({ staffId: 's1', organizerId: 'o1' } as const) : undefined;
+        },
+        onAuthenticated: () => {
+          calls.authenticated++;
+        },
+        redirectToLogin: () => {
+          calls.redirect++;
+          return new Response(null, { status: 302 });
+        },
+        next: async () => {
+          calls.next++;
+          return new Response('downstream ran', { status: 200 });
+        },
+      });
+    return { calls, run };
+  }
+
+  const unsafe = (headers: Record<string, string>, path = '/admin/login') =>
+    new Request(`http://backoffice:8080${path}`, { method: 'POST', headers });
+
+  it('reaches neither the session lookup nor anything downstream, cross-site', async () => {
+    const { calls, run } = harness(unsafe({ ...trusted, origin: 'http://evil.example' }), '/admin/login');
+    const res = await run();
     expect(res.status).toBe(403);
+    expect(calls).toEqual({ next: 0, lookup: 0, authenticated: 0, redirect: 0 });
   });
 
-  it('never invokes the downstream handler when Origin is absent', async () => {
-    let invoked = 0;
-    const res = await guardUnsafeRequest(
+  it('reaches neither, when Origin is absent entirely', async () => {
+    const { calls, run } = harness(
       unsafe({ 'x-forwarded-proto': 'http', 'x-forwarded-host': 'localhost:8080' }),
-      async () => {
-        invoked++;
-        return new Response('should never run', { status: 200 });
-      },
     );
-    expect(invoked).toBe(0);
+    const res = await run();
     expect(res.status).toBe(403);
+    expect(calls).toEqual({ next: 0, lookup: 0, authenticated: 0, redirect: 0 });
   });
 
-  it('does invoke it for a same-origin submission', async () => {
-    let invoked = 0;
-    const res = await guardUnsafeRequest(unsafe(trusted), async () => {
-      invoked++;
-      return new Response('ok', { status: 200 });
-    });
-    expect(invoked).toBe(1);
+  // The login page is anonymous, so nothing else would stop this one — the
+  // origin check is the ONLY thing standing between a forged cross-site POST and
+  // the credential handler.
+  it('refuses an unsafe request to an ANONYMOUS path too', async () => {
+    for (const path of ['/admin/login', '/admin/healthz']) {
+      const { calls, run } = harness(unsafe({ origin: 'http://evil.example' }, path), path);
+      expect((await run()).status).toBe(403);
+      expect(calls.next).toBe(0);
+    }
+  });
+
+  it('lets a same-origin submission through to the handler', async () => {
+    const { calls, run } = harness(unsafe(trusted), '/admin/login');
+    const res = await run();
     expect(res.status).toBe(200);
+    expect(calls.next).toBe(1);
   });
 
-  it('does invoke it for a safe method, whatever the origin', async () => {
-    let invoked = 0;
-    const get = new Request('http://backoffice:8080/admin/healthz', {
+  // Reads are not state changes, and the Compose health probe arrives with no
+  // forwarded headers at all — refusing safe methods would take the container
+  // unhealthy and the whole stack down with it.
+  it('lets a safe method through whatever its origin', async () => {
+    const req = new Request('http://backoffice:8080/admin/healthz', {
       method: 'GET',
       headers: { origin: 'http://evil.example' },
     });
-    await guardUnsafeRequest(get, async () => {
-      invoked++;
-      return new Response('ok', { status: 200 });
-    });
-    // Reads are not state changes, and the health probe arrives with no
-    // forwarded headers at all — refusing safe methods would take the container
-    // unhealthy and the whole stack down with it.
-    expect(invoked).toBe(1);
+    const { calls, run } = harness(req, '/admin/healthz');
+    await run();
+    expect(calls.next).toBe(1);
   });
 
-  it('refuses without a Cache-Control that would let the 403 be cached', async () => {
-    const res = await guardUnsafeRequest(unsafe({ origin: 'http://evil.example' }), async () =>
-      new Response('x'),
-    );
-    expect(res.headers.get('cache-control')).toBe('no-store');
+  it('redirects an unauthenticated caller instead of running the page', async () => {
+    const req = new Request('http://backoffice:8080/admin/', { method: 'GET' });
+    const calls = { next: 0, redirect: 0 };
+    const res = await gateRequest({
+      request: req,
+      pathname: '/admin/',
+      sessionToken: '',
+      lookup: () => undefined, // no session
+      onAuthenticated: () => {},
+      redirectToLogin: () => {
+        calls.redirect++;
+        return new Response(null, { status: 302 });
+      },
+      next: async () => {
+        calls.next++;
+        return new Response('the venue list', { status: 200 });
+      },
+    });
+    expect(res.status).toBe(302);
+    expect(calls).toEqual({ next: 0, redirect: 1 });
+  });
+
+  it('refuses without a cacheable header', async () => {
+    const { run } = harness(unsafe({ origin: 'http://evil.example' }));
+    expect((await run()).headers.get('cache-control')).toBe('no-store');
   });
 });
