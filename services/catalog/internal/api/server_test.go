@@ -55,6 +55,10 @@ type fakeStore struct {
 	// re-implementation of ADR-036 §4 that could agree with a wrong resolver.
 	priceRules map[uuid.UUID][]store.PriceRule
 	priceScope map[uuid.UUID]store.PricingScopes
+	// TKT-190 staff sign-in, keyed by normalized identifier.
+	staffAccounts  map[string]staffAuthResult
+	staffAuthErr   error
+	staffAuthCalls int
 }
 
 // fakeSection/fakeRow/fakeSeat carry the parent linkage the SQL enforces via
@@ -75,8 +79,36 @@ type fakeSeat struct {
 	rowID     uuid.UUID
 }
 
+// staffAuthResult is one seeded staff credential for the handler tests: the
+// principal to hand back, and the single password that resolves to it.
+type staffAuthResult struct {
+	account  store.StaffAccount
+	password string
+}
+
+// errStaffStoreBroken stands for "the lookup itself failed" — a dead database,
+// not a bad password. The handler must never report it as a credential verdict.
+var errStaffStoreBroken = errors.New("staff store unreachable")
+
+// AuthenticateStaff mirrors the real store's contract: one error value for every
+// credential failure, whatever the cause. The KDF-timing property it rests on is
+// proven in the store package (staff_test.go counts comparisons); here the point
+// is only the handler's mapping onto declared responses.
+func (f *fakeStore) AuthenticateStaff(_ context.Context, identifier, password string) (store.StaffAccount, error) {
+	f.staffAuthCalls++
+	if f.staffAuthErr != nil {
+		return store.StaffAccount{}, f.staffAuthErr
+	}
+	got, ok := f.staffAccounts[strings.ToLower(strings.TrimSpace(identifier))]
+	if !ok || got.password != password {
+		return store.StaffAccount{}, store.ErrStaffCredentialsInvalid
+	}
+	return got.account, nil
+}
+
 func newFakeStore() *fakeStore {
 	return &fakeStore{
+		staffAccounts: map[string]staffAuthResult{},
 		venues:         map[uuid.UUID]store.Venue{},
 		events:         map[uuid.UUID]store.Event{},
 		performances:   map[uuid.UUID]store.Performance{},

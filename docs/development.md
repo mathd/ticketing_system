@@ -505,6 +505,49 @@ candidates, and anyone who can write to inventory can undo the repair.
 is quarantined and acked, latches the consumer unready, and needs `reprocess-quarantine`
 **plus a restart** by an operator (see *Inventory catalog-event quarantine operations*).
 
+## Back-office sign-in (TKT-190)
+
+`/admin/` is behind a staff session. Three paths stay anonymous and nothing else does:
+`/admin/login`, `/admin/healthz` (Compose probes it **directly on the container**, so gating
+it would make the back office unhealthy and the whole stack would fail to start) and
+`/admin/_astro/*` (the hashed assets the login page itself needs). An unknown admin path is
+gated exactly like a real one, so an anonymous caller cannot map the surface.
+
+**Provision an account** — there is no seeded default credential, deliberately (TKT-83 removed
+the last checked-in default). The password is read from stdin only; a `--password` flag would
+put it in shell history, the process table and any log that captures argv:
+
+```bash
+printf '%s' "$PASSWORD" | docker compose exec -T catalog /app provision-staff \
+  --organizer-id 00000000-0000-0000-0000-000000000001 \
+  --identifier ada@example.test --role admin
+```
+
+It prints the new staff id and nothing else. Provisioning is **create-only**: a colliding
+identifier fails rather than resetting a live account's password. `--role` is stored but
+interpreted nowhere until TKT-191.
+
+**Sessions are in-process and are not persisted.** A back-office restart signs everyone out,
+and a second replica would not share them — accepted for a single-replica Compose staff tool,
+and reversible without moving the enforcement point (ADR-042). The absolute lifetime is eight
+hours; it does not slide, so a stolen cookie cannot be kept alive by using it. One staff member
+holds at most **five** concurrent sessions: signing in on a sixth device ends the oldest. That
+cap is what bounds the session map, not the expiry sweep.
+
+**Signing out invalidates server-side.** Replaying the captured cookie afterwards fails —
+that, not the browser being told to drop it, is what the smoke suite asserts.
+
+**What this does and does not gate.** It gates the back-office UI. It does **not** authenticate
+`/api/catalog/*`: anyone who can reach the gateway can still create and publish events by
+calling the API directly. TKT-191 closes that. Until then, do not read "the back office is
+authenticated" as "the catalog is" (ADR-042 § The adversary this constrains).
+
+**Verifying a change here needs a real browser.** The smoke suite submits the login and logout
+forms through the real gateway and Astro SSR layer, but it sets `Origin` itself — it cannot
+prove a browser sends it on a same-origin POST, nor that a browser honours `SameSite`. Drive
+`make up` and submit the forms (see the ticket DoD and
+`learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md`).
+
 ## Conventions
 
 - Money: integer minor units + ISO currency code; floats banned on money paths (ADR-001).
