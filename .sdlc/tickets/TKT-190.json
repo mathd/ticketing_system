@@ -4,7 +4,7 @@
   "summary": "US-B1: Staff sign-in — a session gates the back office",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
