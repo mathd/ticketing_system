@@ -7,7 +7,7 @@
   "assignee": null,
   "pr": null,
   "parent": "TKT-22",
-  "description": "**As** the platform owner, **I want** every staff-reachable route classified by role and enforced server-side, **so that** box-office staff cannot reach finance or settlement surfaces even if they guess the URL.\n\nSlice (b) of the former TKT-191, split on the owner's decision (2026-08-03). Slice (a) — closing the unauthenticated catalog write surface — is **TKT-191**, which this is blocked by. TKT-190 proved *who*; TKT-191 shut the back door; this proves *what they may do*.\n\n**Where enforcement goes.** Into TKT-190's composed gate (`gateRequest`, `web/backoffice/src/lib/gate.ts`) — the one place a session and a route are both in hand, and the function that already owns the only calls to `next` and `lookup` so the ordering is testable. Do not add a second enforcement point.\n\n**In scope:** the role enum (`admin`, `box_office`, `finance`); the route→role matrix as a single declared table; enforcement in the composed gate; a fail-closed test over the real route table; role-aware nav (defense in depth, never the enforcement); the role travelling from the staff account into the session (TKT-190 stores the column and returns nothing).\n\n**Out of scope:** per-object permissions, per-organizer scoping, a role administration UI, delegation/impersonation, and re-opening where the catalog write credential lives (TKT-191 settled it).\n\n**Conditions of Success:**\n- [ ] Every staff-reachable route is classified in **one** declared matrix, and a test enumerates the real route table and **fails** if any route is reachable with no classification.\n- [ ] A `box_office` session is refused on the finance surface; a `finance` session is refused on the catalog authoring surface; an `admin` session reaches every staff-reachable route. Each proven by driving the real route, not by asserting on the matrix table.\n- [ ] The refusal discloses neither the required role nor whether the route exists.\n- [ ] The nav renders only in-role links, **and** a direct request to a hidden URL is still refused — proving the nav is not the enforcement.\n- [ ] The role reaches the session from the staff account, and a role that is not in the enum fails closed rather than being treated as permissive.\n- [ ] Anonymous callers are still refused before any role check runs; TKT-190's tests pass untouched.\n- [ ] Verified by a browser: sign in as each role and confirm what renders and what is refused.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered.\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "description": "**As** the platform owner, **I want** every staff-reachable route classified by role and enforced server-side, **so that** box-office staff cannot reach finance or settlement surfaces even if they guess the URL.\n\nSlice (b) of the former TKT-191, split on the owner's decision (2026-08-03). Slice (a) — closing the unauthenticated catalog write surface — is **TKT-191**, which this is blocked by. TKT-190 proved *who*; TKT-191 shut the back door; this proves *what they may do*.\n\n**Where enforcement goes.** Into TKT-190's composed gate (`gateRequest`, `web/backoffice/src/lib/gate.ts`) — the one place a session and a route are both in hand, and the function that already owns the only calls to `next` and `lookup` so the ordering is testable. Do not add a second enforcement point.\n\n**In scope:** the role enum (`admin`, `box_office`, `finance`); the route→role matrix as a single declared table; enforcement in the composed gate; a fail-closed test over the real route table; role-aware nav (defense in depth, never the enforcement); the role travelling from the staff account into the session (TKT-190 stores the column and returns nothing).\n\n**Out of scope:** per-object permissions, per-organizer scoping, a role administration UI, delegation/impersonation, and re-opening where the catalog write credential lives (TKT-191 settled it).\n\n**Conditions of Success:**\n- [ ] Every staff-reachable route is classified in **one** declared matrix, and a test enumerates the real route table and **fails** if any route is reachable with no classification.\n- [ ] A `finance` session is refused on the **catalog authoring surface** (`/admin/venues/*` — the\n      seat-map authoring pages that exist today); an `admin` session reaches every staff-reachable\n      route. Each proven by driving the real route, not by asserting on the matrix table.\n- [ ] **The finance/settlement surface does not exist yet** (TKT-23 owns it), so \"box office cannot\n      touch settlement\" cannot be driven end to end here. Instead: the matrix must be able to\n      express a route no role but `finance` may reach, and a test must prove that classification is\n      enforced — using a route that exists. Do **not** invent a settlement page to test against, and\n      do **not** quietly drop the requirement; state in the ticket which half is proven now and\n      which lands with TKT-23.\n- [ ] The refusal discloses neither the required role nor whether the route exists.\n- [ ] The nav renders only in-role links, **and** a direct request to a hidden URL is still refused — proving the nav is not the enforcement.\n- [ ] The role reaches the session from the staff account, and a role that is not in the enum fails closed rather than being treated as permissive.\n- [ ] Anonymous callers are still refused before any role check runs; TKT-190's tests pass untouched.\n- [ ] Verified by a browser: sign in as each role and confirm what renders and what is refused.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered.\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
   "links": [
     {
       "type": "blocked-by",
@@ -40,6 +40,10 @@
       {
         "id": "ADR-021",
         "why": "Name the adversary before claiming a guarantee. Neither ticket produces tamper-evidence; both constrain a caller arriving through the gateway and neither constrains anyone with network access to a container or write access to the database."
+      },
+      {
+        "id": "ADR-042",
+        "why": "Amended by TKT-191. Catalog now authenticates the back office as a DEPUTY holding a write-capable credential — which is exactly why this ticket matters: the deputy's rule for who may drive which write is currently 'any signed-in staff member', and the role matrix is what replaces it."
       }
     ],
     "reference": [
@@ -54,6 +58,10 @@
       {
         "summary": "The staff_accounts.role column: stored by TKT-190, returned by nothing, enforced nowhere.",
         "link": "services/catalog/internal/store/migrations/0015_staff_accounts.sql"
+      },
+      {
+        "summary": "TKT-191's credential means the browser never holds a catalog credential, so the back-office route matrix IS the enforcement point for catalog writes — there is no second path to guard.",
+        "link": "web/backoffice/src/lib/api.ts"
       }
     ],
     "capturedAt": "2026-08-03"
@@ -68,8 +76,8 @@
       "note": "In/out enumerated; the enforcement point is settled (TKT-190's composed gate)."
     },
     "uncertainties": {
-      "state": "deferred",
-      "note": "The finance/settlement surface does not exist yet (TKT-23), so 'box office cannot touch settlement' is proven against the surfaces that do exist plus a declared classification for the ones that will."
+      "state": "met",
+      "note": "The absent finance surface is now an explicit AC rather than a background risk: prove the matrix can express and enforce a finance-only route today, and say plainly what waits for TKT-23."
     },
     "dependencies": {
       "state": "met",
@@ -97,6 +105,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated by splitting the re-synced TKT-191 (owner decision, 2026-08-03). See TKT-191's\n`kind=readiness` comment for the split rationale and the decided approach.\n\nNote for planning: TKT-190 ships `staff_accounts.role` **stored and read by nothing**. This ticket\nis what gives it meaning — including deciding what an unrecognised role value does, which must be\nfail-closed rather than permissive."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Re-synced after TKT-191 — ✅ PASS\n\nTKT-191 merged (`f29d7e02`), so this ticket's blocker is clear and its landscape is settled:\n\n- **The enforcement point is unambiguous now.** Catalog writes require a credential the *back office*\n  holds and the browser never sees, so the back-office route matrix is the only place a staff\n  member's role can gate a catalog write. There is no second path to guard, and no reason to put\n  role logic in catalog (that was the rejected \"full role claims\" option — see TKT-191).\n- **The deputy's rule is what this ticket replaces.** ADR-042 now says catalog authenticates the\n  back office, not the staff member, and that its rule is \"any signed-in staff member\". This ticket\n  is what makes that sentence false.\n\n**One AC amended.** \"A `box_office` session is refused on the finance surface\" was not drivable: the\nfinance/settlement surface **does not exist** (TKT-23). Rewritten so the requirement is verifiable\ntoday — prove the matrix can express and enforce a role-exclusive route using a route that exists —\nand so the untestable half is stated rather than silently dropped. Inventing a fake settlement page\nto satisfy the original wording would have been a test that proves the test.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Sizing | ✅ | One slice; TKT-191 already carved off the authentication boundary |\n| Dependencies | ✅ | TKT-191 Done; nothing else blocks |\n| AC verifiable | ✅ | After the amendment above — every COS now names something drivable |\n| Context-mémo | ✅ | Re-baked; carries ADR-042 *as amended*, not as originally written |\n\n**Verdict: PASS.**"
     }
   ]
 }
