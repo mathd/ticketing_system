@@ -2,8 +2,10 @@
   "key": "TKT-193",
   "type": "Story",
   "summary": "US-B4: Order console — staff find an order and read its ticket lifecycle",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "parent": "TKT-22",
