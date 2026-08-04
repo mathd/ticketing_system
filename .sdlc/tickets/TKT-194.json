@@ -84,8 +84,9 @@
       "note": "blocked-by links wired; catalog/commerce/access endpoints this depends on are shipped and stable."
     },
     "approach": {
-      "state": "deferred",
-      "note": "Where staff identity lives (gateway-owned store vs a sixth service) is settled by US-B1's plan and recorded as an ADR to be authored; later stories inherit that decision."
+      "state": "open",
+      "owner": "human",
+      "note": "The back office cannot reach commerce's internal refund surface. Which mechanism grants it — a commerce staff-write credential, moving the operation, or another surface — is a money-path decision for the owner."
     },
     "first_slice": {
       "state": "met",
@@ -100,5 +101,11 @@
       "note": "Baked at decomposition with governingAdrs resolved against docs/adr/ at HEAD 2026-08-03; every cited ADR file verified to exist."
     }
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### ⚠️ Same structural gap as TKT-193, found early (2026-08-04)\n\nFlagged now rather than discovered mid-implementation.\n\nThis ticket's refund action is `POST /internal/orders/{id}/refunds`\n(`services/commerce/api/openapi.yaml:66`). The gateway **edge-denies every `/api/<svc>/internal/`\nroute** by construction (ADR-002), and the back office holds **no commerce credential** — TKT-191\ngave it a deliberately catalog-only one, precisely so a public-facing SSR process would not hold the\nshared token that opens commerce's refunds.\n\n**So the back office cannot reach commerce's staff actions at all today.** This is the same shape as\nTKT-193's read gap, on the write side, and it is a bigger decision: it is money.\n\nThe options, none of which this ticket should pick unilaterally:\n- a **commerce staff-write credential**, mirroring TKT-191's catalog one — smallest, and repeats a\n  pattern already reviewed;\n- moving the refund operation off `/internal/` behind that credential;\n- routing staff refunds through a different surface entirely.\n\n**Shaping must settle this before Gate 1**, with the owner, because every option touches a money path\nand ADR-042's deputy boundary. `approach` stays `open` with `owner: human` until then."
+    }
+  ]
 }
