@@ -1,0 +1,38 @@
+{
+  "key": "TKT-202",
+  "type": "Story",
+  "summary": "The gateway logs guest_order_ref, which ADR-012 says is never logged",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Found while reviewing **TKT-193**'s plan. Pre-existing, and not caused by that ticket.\n\n`shared/go/obs/requestlog.go:20` logs `r.URL.Path` on every request. Guest ticket retrieval is\n`GET /api/access/orders/{guest_order_ref}/tickets`, so **the reference lands in the gateway's\nstructured logs on every guest visit** — and again on the QR route,\n`/orders/{ref}/tickets/{ticket}/qr.png`.\n\n**ADR-012 says the opposite, in as many words:** the `guest_order_ref` is \"a CSPRNG UUIDv4 …\n**a no-store guest retrieval capability** … **not logged** or written to the money journal/lifecycle\npayload.\" A capability in a log is a capability held by everyone who can read logs, for as long as\nthe logs are retained — and this one needs no authentication to redeem.\n\n**Not TKT-193's to fix.** That console reads the same endpoint, so it adds a caller, not an exposure\nclass; the storefront has been logging this since guest retrieval shipped. Fixing it means deciding\nwhat the gateway does with capability-bearing path segments in general, which is a logging-contract\ndecision, not a back-office one.\n\n**Conditions of Success:**\n- [ ] A guest retrieval request logs enough to debug — method, status, duration, the route *shape* —\n      without the capability itself.\n- [ ] The rule is expressed as **which segments are capabilities**, not as a path regex bolted onto\n      one route: the next capability URL must inherit it rather than re-discover this ticket.\n- [ ] Whatever replaces the raw path is still enough to correlate a report with a trace.\n- [ ] Existing log consumers and any dashboard/alert keyed on `path` are checked before the shape\n      changes.\n- [ ] ADR-012's claim is either true afterwards, or the ADR is amended to say what is actually done.\n- [ ] `make check` green.\n\n**Worth asking during shaping:** whether anything else already redeemed reaches a log the same way —\nQR payloads, session cookies, the catalog write credential on a query string. One capability in a log\nis a bug; a logger that cannot express \"do not log this\" is the actual finding.",
+  "links": [],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-012",
+        "why": "It is the clause being broken: guest_order_ref is a no-store retrieval capability, not logged."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a fix. 'Anyone who can read logs' is a different adversary from 'anyone on the network', and the retention window is part of the exposure."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The logger, and the field in question.",
+        "link": "shared/go/obs/requestlog.go:20"
+      }
+    ],
+    "capturedAt": "2026-08-04"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-193's plan-review as **incidental**: real, pre-existing, and a logging-contract decision rather than a back-office one. Not shaped — needs the 8-item DoR before Gate 1."
+    }
+  ]
+}
