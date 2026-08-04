@@ -124,12 +124,19 @@ func run() error {
 	// operational holds. Nothing else in the system would notice, so refuse here.
 	// Neither value is echoed.
 	//
-	// Comparing the RAW strings is sound only because RequiredCredential has
-	// already refused any value HTTP would alter in transit (ai-review pass 2):
-	// header parsing strips leading/trailing whitespace, so " secret " and
-	// "secret" are one credential on the wire while differing here. Without that
-	// refusal upstream, this comparison would pass while the boundary it protects
-	// was already gone.
+	// Comparing the RAW strings is sound because RequiredCredential has already
+	// refused every value HTTP would NORMALIZE — specifically edge whitespace,
+	// which header parsing strips, so " secret " and "secret" would be one
+	// credential on the wire while differing here (ai-review pass 2). Without
+	// that refusal upstream, this comparison would report success while the
+	// boundary it protects was already gone.
+	//
+	// The narrow claim is the true one: no two DISTINCT accepted values arrive
+	// identical at a server, so `!=` here means "different on the wire". It is
+	// NOT the broader claim that every accepted value is unproblematic — that is
+	// a statement about transmissibility, which is RequiredCredential's job and
+	// is tested there by an actual round-trip. An earlier version of this comment
+	// overstated exactly that (ai-review pass 3).
 	if staffWriteToken == internalToken {
 		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
 			"so the back office cannot reach other services' internal surfaces, and identical values "+

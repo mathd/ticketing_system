@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 type HTTP struct {
@@ -116,9 +118,14 @@ func RequiredCredential(envVar, retiredDefault string) (string, error) {
 		//
 		// Refusing here is what lets callers compare raw values and be right.
 		return "", fmt.Errorf("%s has leading or trailing whitespace: HTTP strips it in transit, so the value on the wire is not the value configured (check the quoting in .env)", envVar)
-	case strings.ContainsAny(token, "\r\n\x00"):
-		// A newline would let a credential inject a second header.
-		return "", fmt.Errorf("%s contains a control character and cannot be sent as a header value", envVar)
+	case !httpguts.ValidHeaderFieldValue(token):
+		// Anything net/http will not put on the wire. This is the transport's OWN
+		// predicate rather than a hand-rolled grammar, so it cannot disagree with
+		// what the client actually accepts — a check that merely rejected CR, LF
+		// and NUL let \x01 and \x7f through, and those start cleanly and then fail
+		// every outbound authenticated request at runtime, which is precisely the
+		// fail-fast contract this function exists to keep (ai-review pass 3).
+		return "", fmt.Errorf("%s contains a character that cannot appear in an HTTP header value", envVar)
 	}
 	return token, nil
 }

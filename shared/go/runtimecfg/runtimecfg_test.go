@@ -3,6 +3,7 @@ package runtimecfg
 import (
 	"database/sql"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -157,8 +158,15 @@ func TestRequiredCredentialRejectsValuesHTTPWouldChange(t *testing.T) {
 		// matter: the embedded one is what would let a credential inject a second
 		// header.
 		{"trailing carriage return", "secret\r", "whitespace"},
-		{"embedded newline", "sec\nret", "control character"},
-		{"header injection attempt", "secret\nX-Injected: 1", "control character"},
+		{"embedded newline", "sec\nret", "cannot appear in an HTTP header value"},
+		{"header injection attempt", "secret\nX-Injected: 1", "cannot appear in an HTTP header value"},
+		// ai-review pass 3: rejecting only CR/LF/NUL let these through. They are
+		// refused by Go's transport at request time, so a credential containing
+		// one starts cleanly and then fails every outbound authenticated call —
+		// the opposite of the fail-fast contract.
+		{"SOH", "sec\x01ret", "cannot appear in an HTTP header value"},
+		{"DEL", "sec\x7fret", "cannot appear in an HTTP header value"},
+		{"escape", "sec\x1bret", "cannot appear in an HTTP header value"},
 		// No NUL case: os.Setenv refuses a value containing one ("invalid
 		// argument"), so it is not a reachable input for an env-var credential.
 		// ContainsAny still lists it, cheaply, for callers that are not env vars.
@@ -179,13 +187,54 @@ func TestRequiredCredentialRejectsValuesHTTPWouldChange(t *testing.T) {
 	}
 }
 
-func TestRequiredCredentialAcceptsAHeaderSafeValue(t *testing.T) {
-	t.Setenv("TEST_CREDENTIAL", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
-	got, err := RequiredCredential("TEST_CREDENTIAL", "")
-	if err != nil {
-		t.Fatalf("rejected a header-safe credential: %v", err)
-	}
-	if got != "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5" {
-		t.Fatalf("value was altered: %q", got)
+// The positive case, as a REAL round-trip rather than an assertion about one.
+//
+// The claim that matters is not "RequiredCredential returned the string" — that
+// is trivially true and would pass against the unfixed code (ai-review pass 3
+// called the earlier version non-discriminating). It is that an ACCEPTED
+// credential arrives at a server byte-identical, because catalog compares two
+// accepted credentials with == to prove they are different on the wire.
+//
+// So: accept it, send it, and read back what the server actually received.
+func TestAcceptedCredentialSurvivesAnHTTPRoundTripUnchanged(t *testing.T) {
+	for _, value := range []string{
+		"0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5", // what make up generates
+		"a-b_c.d~e",                        // punctuation a base64url/hex value might carry
+		"tok en",                           // an INTERIOR space is legal and must survive
+		"Zm9vYmFy==",                       // base64 padding
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TEST_CREDENTIAL", value)
+			got, err := RequiredCredential("TEST_CREDENTIAL", "")
+			if err != nil {
+				t.Fatalf("rejected a header-safe credential %q: %v", value, err)
+			}
+			if got != value {
+				t.Fatalf("value altered at load: %q -> %q", value, got)
+			}
+
+			var received string
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				received = r.Header.Get("X-Credential")
+			}))
+			defer srv.Close()
+
+			req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("X-Credential", got)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("an accepted credential was refused by the transport: %v", err)
+			}
+			_ = resp.Body.Close()
+
+			if received != value {
+				t.Fatalf("the credential changed in transit: sent %q, server received %q — "+
+					"any == comparison of two accepted credentials is then comparing the wrong thing",
+					value, received)
+			}
+		})
 	}
 }
