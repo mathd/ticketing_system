@@ -1,0 +1,102 @@
+{
+  "key": "TKT-197",
+  "type": "Story",
+  "summary": "US-B2b: The role matrix — box office cannot touch settlement",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-22",
+  "description": "**As** the platform owner, **I want** every staff-reachable route classified by role and enforced server-side, **so that** box-office staff cannot reach finance or settlement surfaces even if they guess the URL.\n\nSlice (b) of the former TKT-191, split on the owner's decision (2026-08-03). Slice (a) — closing the unauthenticated catalog write surface — is **TKT-191**, which this is blocked by. TKT-190 proved *who*; TKT-191 shut the back door; this proves *what they may do*.\n\n**Where enforcement goes.** Into TKT-190's composed gate (`gateRequest`, `web/backoffice/src/lib/gate.ts`) — the one place a session and a route are both in hand, and the function that already owns the only calls to `next` and `lookup` so the ordering is testable. Do not add a second enforcement point.\n\n**In scope:** the role enum (`admin`, `box_office`, `finance`); the route→role matrix as a single declared table; enforcement in the composed gate; a fail-closed test over the real route table; role-aware nav (defense in depth, never the enforcement); the role travelling from the staff account into the session (TKT-190 stores the column and returns nothing).\n\n**Out of scope:** per-object permissions, per-organizer scoping, a role administration UI, delegation/impersonation, and re-opening where the catalog write credential lives (TKT-191 settled it).\n\n**Conditions of Success:**\n- [ ] Every staff-reachable route is classified in **one** declared matrix, and a test enumerates the real route table and **fails** if any route is reachable with no classification.\n- [ ] A `box_office` session is refused on the finance surface; a `finance` session is refused on the catalog authoring surface; an `admin` session reaches every staff-reachable route. Each proven by driving the real route, not by asserting on the matrix table.\n- [ ] The refusal discloses neither the required role nor whether the route exists.\n- [ ] The nav renders only in-role links, **and** a direct request to a hidden URL is still refused — proving the nav is not the enforcement.\n- [ ] The role reaches the session from the staff account, and a role that is not in the enum fails closed rather than being treated as permissive.\n- [ ] Anonymous callers are still refused before any role check runs; TKT-190's tests pass untouched.\n- [ ] Verified by a browser: sign in as each role and confirm what renders and what is refused.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered.\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-191"
+    }
+  ],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "The gateway is the single public entry point and its route table IS the security boundary. Anything added to the edge must keep that construction true."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new HTTP surface is authored in openapi.yaml and the generated code committed BEFORE the gate — check-generate diffs against HEAD."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: a 401/403 the handler can emit must be declared, or the validator turns it into a 500."
+      },
+      {
+        "id": "ADR-006",
+        "why": "The back office is Astro SSR behind the gateway; checkOrigin is off and form actions must be RELATIVE."
+      },
+      {
+        "id": "ADR-042",
+        "why": "Records where staff identity and sessions live, why the back office does not hold INTERNAL_SERVICE_TOKEN, and — in its adversary section — names the unauthenticated catalog write surface as the gap these two tickets close."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a guarantee. Neither ticket produces tamper-evidence; both constrain a caller arriving through the gateway and neither constrains anyone with network access to a container or write access to the database."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "SHARED CREDENTIAL BLAST RADIUS (decomposition.md § context-mémo): INTERNAL_SERVICE_TOKEN is ONE value across all five services (compose.yaml, the &go-env anchor). It opens commerce /internal/orders/{id}/refunds, inventory /internal/operational-holds and /internal/slots/{id}/capacity-adjustments, and access's refund surface. It must NOT be the credential these tickets give the back office.",
+        "link": "compose.yaml"
+      },
+      {
+        "summary": "TKT-190's composed gate — where the matrix attaches, and the function that owns the only calls to next/lookup so ordering stays testable.",
+        "link": "web/backoffice/src/lib/gate.ts"
+      },
+      {
+        "summary": "The staff_accounts.role column: stored by TKT-190, returned by nothing, enforced nowhere.",
+        "link": "services/catalog/internal/store/migrations/0015_staff_accounts.sql"
+      }
+    ],
+    "capturedAt": "2026-08-03"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Slice (b) of the former TKT-191."
+    },
+    "scope": {
+      "state": "met",
+      "note": "In/out enumerated; the enforcement point is settled (TKT-190's composed gate)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "The finance/settlement surface does not exist yet (TKT-23), so 'box office cannot touch settlement' is proven against the surfaces that do exist plus a declared classification for the ones that will."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "blocked-by TKT-191."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Matrix in TKT-190's gateRequest; no second enforcement point."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One vertical slice, demoable alone."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS are verifiable; the fail-closed route enumeration is the load-bearing one."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-03, incl. shared-credential blast radius."
+    }
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated by splitting the re-synced TKT-191 (owner decision, 2026-08-03). See TKT-191's\n`kind=readiness` comment for the split rationale and the decided approach.\n\nNote for planning: TKT-190 ships `staff_accounts.role` **stored and read by nothing**. This ticket\nis what gives it meaning — including deciding what an unrecognised role value does, which must be\nfail-closed rather than permissive."
+    }
+  ]
+}
