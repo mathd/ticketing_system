@@ -2,8 +2,10 @@
   "key": "TKT-192",
   "type": "Story",
   "summary": "US-B3: Event builder — an organizer publishes a sellable event without curl",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "parent": "TKT-22",
