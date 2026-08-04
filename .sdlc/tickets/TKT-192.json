@@ -4,7 +4,7 @@
   "summary": "US-B3: Event builder — an organizer publishes a sellable event without curl",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": null,
