@@ -113,7 +113,10 @@ func TestBackofficeEventBuilderPublishesASellableEvent(t *testing.T) {
 	// COS-2: a buyer can now see it. Asserted from the STOREFRONT render, not
 	// the catalog API — the API proves the write, the storefront proves the sale.
 	retry(t, 30*time.Second, func() error {
-		code, body := get(t, gatewayURL+"/api/catalog/public/events", nil)
+		// `locale` is required by listPublicEvents — the aggregated read returns
+		// localized text and will not guess which locale. Omitting it is a 400,
+		// not an empty list.
+		code, body := get(t, gatewayURL+"/api/catalog/public/events?locale=en", nil)
 		if code != http.StatusOK {
 			return fmt.Errorf("public events: %d", code)
 		}
