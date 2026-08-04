@@ -270,7 +270,17 @@ func heading(t *testing.T, page, label string) string {
 		if end < 0 {
 			t.Fatalf("unclosed <h2> in the page")
 		}
-		if inner := page[start : start+end]; strings.HasPrefix(inner, label) {
+		inner := page[start : start+end]
+		// The heading's leading TEXT NODE must equal the label — not merely
+		// start with it. `Order status<span> — <id></span>` matches "Order
+		// status"; a future `<h2>Tickets and order status</h2>` does not match
+		// "Tickets", where a prefix test would have matched both and failed the
+		// gate on an unrelated copy change (ai-review pass 4).
+		lead := inner
+		if nested := strings.Index(lead, "<"); nested >= 0 {
+			lead = lead[:nested]
+		}
+		if lead == label {
 			found = append(found, inner)
 		}
 		i = start + end
