@@ -91,9 +91,48 @@ function matches(template: string, pathname: string): boolean {
   return t.length === p.length;
 }
 
+/**
+ * How specific a template is, for choosing between overlapping matches.
+ * Lower sorts first: static beats dynamic beats rest, exactly as Astro resolves
+ * its own routes.
+ */
+function specificity(template: string): [number, number] {
+  const segs = normalize(template).split('/');
+  return [
+    segs.some((s) => s.startsWith('[...')) ? 1 : 0,
+    segs.filter((s) => s.startsWith('[')).length,
+  ];
+}
+
+/**
+ * The rule covering a path, chosen by SPECIFICITY rather than declaration order.
+ *
+ * First-match would be a role-boundary bug waiting for a routine route addition
+ * (ai-review F1). `/admin/venues/[id]` is admin-only; add a static, finance-only
+ * `/admin/venues/settlement` page and first-match hands it the `[id]` rule —
+ * admin reaches the finance page and finance is refused, exactly inverted. The
+ * enumeration test would not notice, because both templates exist in both sets.
+ *
+ * Astro resolves static before dynamic before rest, so this must too: a matcher
+ * that disagrees with the router about which route a URL IS cannot be trusted to
+ * say who may reach it.
+ */
+export function selectRule(
+  rules: readonly RouteRule[],
+  pathname: string,
+): RouteRule | undefined {
+  const candidates = rules.filter((rule) => matches(rule.template, pathname));
+  if (candidates.length <= 1) return candidates[0];
+  return candidates.sort((a, b) => {
+    const [aRest, aDyn] = specificity(a.template);
+    const [bRest, bDyn] = specificity(b.template);
+    return aRest - bRest || aDyn - bDyn;
+  })[0];
+}
+
 /** The rule covering a path, or undefined when nothing covers it. */
 export function classifyRoute(pathname: string): RouteRule | undefined {
-  return ROUTE_MATRIX.find((rule) => matches(rule.template, pathname));
+  return selectRule(ROUTE_MATRIX, pathname);
 }
 
 /**
@@ -109,4 +148,18 @@ export function canAccessRoute(pathname: string, role: StaffRole): boolean {
   if (rule.anonymous) return true;
   if (!isRecognisedRole(role)) return false;
   return rule.roles?.includes(role) ?? false;
+}
+
+/**
+ * Is this path reachable without a session?
+ *
+ * Derived from the matrix, so there is ONE declaration of the unauthenticated
+ * attack surface (ai-review F2). TKT-190 answered this with a separate
+ * hand-written predicate, and the two had already drifted: bare `/admin/_astro`
+ * was anonymous to the matrix's rest rule and gated by the predicate, which
+ * required the trailing slash. Two lists of what is public is one list too many,
+ * and this ticket's own brief got that list wrong once already.
+ */
+export function isAnonymousRoute(pathname: string): boolean {
+  return classifyRoute(pathname)?.anonymous === true;
 }

@@ -4,7 +4,7 @@
 // Kept separate from middleware.ts and free of Astro imports so both rules are
 // unit-testable as plain functions — the middleware is only the wiring.
 
-import { canAccessRoute, type StaffRole } from './authorization';
+import { canAccessRoute, isAnonymousRoute, type StaffRole } from './authorization';
 
 /** Astro's `base`. Every path this app serves is under it, healthz included. */
 export const BASE = '/admin';
@@ -14,28 +14,19 @@ export const LOGOUT_PATH = `${BASE}/logout`;
 export const HEALTHZ_PATH = `${BASE}/healthz`;
 
 /**
- * The exemption list IS the anonymous attack surface, so it is enumerated
- * exactly rather than matched by prefix — `/admin/healthz/../venues` and
- * `/admin/healthzz` must not ride it.
+ * Is this path reachable without a session?
  *
- * `healthz` is exempt because Compose probes it **directly on the container**,
- * before the gateway. Gating it makes the container unhealthy, which makes the
- * gateway's `depends_on: { backoffice: service_healthy }` never satisfy, and the
- * entire stack fails to start — a failure that looks nothing like an auth bug.
+ * Delegates to the route matrix, which is the single declaration of the
+ * unauthenticated attack surface (ai-review F2). This used to be a separate
+ * hand-written predicate, and the two had already drifted apart on bare
+ * `/admin/_astro`. Kept as a named export because it reads better at the call
+ * site and because TKT-190's tests exercise it as a second view of the same
+ * rule — not as a second rule.
  *
- * `_astro/` is the build's hashed static assets, needed to render the login page
- * itself. It is a prefix by necessity (the filenames are content-hashed), and it
- * serves only files the build emitted.
+ * Which routes are anonymous, and why, is documented on ROUTE_MATRIX itself.
  */
 export function isAnonymousPath(pathname: string): boolean {
-  const path = normalize(pathname);
-  return path === LOGIN_PATH || path === HEALTHZ_PATH || path.startsWith(`${BASE}/_astro/`);
-}
-
-/** Trailing slashes are cosmetic; `/admin/` and `/admin` are the same page. */
-function normalize(pathname: string): string {
-  if (pathname.length > 1 && pathname.endsWith('/')) return pathname.slice(0, -1);
-  return pathname;
+  return isAnonymousRoute(pathname);
 }
 
 /**

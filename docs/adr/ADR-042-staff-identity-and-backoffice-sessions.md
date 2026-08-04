@@ -257,6 +257,17 @@ constants catalog validates against and the TypeScript union the matrix is typed
 constrains nobody who can write the database, who can equally drop the constraint or grant
 themselves `admin`.
 
+**Route selection follows Astro's own precedence — static, then dynamic, then rest.** Not
+declaration order. A matcher that disagrees with the router about which route a URL *is* cannot be
+trusted to say who may reach it: with first-match, adding a static finance-only
+`/admin/venues/settlement` beside the admin-only `/admin/venues/[id]` would have handed the new page
+the `[id]` rule, admitting admin and refusing finance — exactly inverted, and invisible to the
+enumeration test because both templates exist in both sets.
+
+**Anonymous access has one declaration.** The gate derives it from the matrix rather than from a
+separate predicate. Two lists of what is public is one list too many, and the two had already
+drifted apart on a bare `/admin/_astro` before anyone noticed.
+
 **Role is snapshotted at sign-in.** There is no role-change surface today, so nothing can go stale.
 When one is added it **must invalidate or refresh live sessions**; otherwise a demoted staff member
 keeps their old role until sign-out, eviction, restart, or the eight-hour expiry.

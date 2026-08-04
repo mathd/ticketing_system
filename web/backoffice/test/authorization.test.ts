@@ -7,7 +7,10 @@ import {
   STAFF_ROLES,
   canAccessRoute,
   classifyRoute,
+  isAnonymousRoute,
   isRecognisedRole,
+  selectRule,
+  type RouteRule,
 } from '../src/lib/authorization';
 
 /**
@@ -155,5 +158,87 @@ describe('template matching', () => {
   it('does not let a lookalike ride a classification', () => {
     expect(classifyRoute('/admin/venuess/abc')).toBeUndefined();
     expect(classifyRoute('/admin/venues')).toBeUndefined();
+  });
+});
+
+
+describe('overlapping templates resolve by specificity, not declaration order', () => {
+  // ai-review F1, and the sharpest finding on this ticket.
+  //
+  // First-match classification was a role-boundary bug waiting for a routine
+  // route addition. `/admin/venues/[id]` is admin-only; add a static,
+  // finance-only `/admin/venues/settlement` page and first-match hands it the
+  // `[id]` rule — admin reaches the finance page and finance is refused, exactly
+  // inverted. Astro resolves static before dynamic, so a matcher that disagrees
+  // with the router about which route a URL IS cannot be trusted to say who may
+  // reach it.
+  //
+  // The enumeration test would NOT have caught this: both templates exist in
+  // both sets, so it passes while the roles are wrong. Hence a direct test.
+  //
+  // Driven through `selectRule` with a synthetic matrix rather than by adding a
+  // real page — the property is about rule selection, and inventing a settlement
+  // page to test against would be the "test that proves the test" this ticket
+  // already refused once.
+  const overlapping: readonly RouteRule[] = [
+    { template: '/admin/venues/[id]', source: 'page', roles: ['admin'] },
+    { template: '/admin/venues/settlement', source: 'page', roles: ['finance'] },
+    { template: '/admin/[...rest]', source: 'page', roles: ['admin'] },
+  ];
+
+  it('prefers a static segment over a dynamic one, whatever the order', () => {
+    expect(selectRule(overlapping, '/admin/venues/settlement')?.roles).toEqual(['finance']);
+    // ...and the reversed declaration order must give the same answer.
+    expect(selectRule([...overlapping].reverse(), '/admin/venues/settlement')?.roles).toEqual([
+      'finance',
+    ]);
+  });
+
+  it('still routes a genuine dynamic value to the dynamic rule', () => {
+    expect(selectRule(overlapping, '/admin/venues/abc-123')?.roles).toEqual(['admin']);
+  });
+
+  it('prefers any exact-arity rule over a rest rule', () => {
+    // A rest template matches almost everything; if it won, one catch-all row
+    // would silently take over the whole surface.
+    expect(selectRule(overlapping, '/admin/venues/abc')?.template).toBe('/admin/venues/[id]');
+  });
+
+  it('the shipped matrix has no ambiguous overlap today', () => {
+    // Not a substitute for the above — a guard so the shipped table cannot grow
+    // one accidentally. Two rules matching the same concrete path is a decision
+    // someone must make deliberately.
+    const probes = ['/admin', '/admin/login', '/admin/logout', '/admin/healthz', '/admin/venues/x'];
+    for (const path of probes) {
+      const hits = ROUTE_MATRIX.filter((r) => selectRule([r], path));
+      expect(hits.length, `${path} is matched by ${hits.length} rules`).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe('anonymous access has ONE source of truth', () => {
+  // ai-review F2. The gate used to consult a hand-written predicate while the
+  // matrix carried `anonymous` rows, so there were two declarations of the
+  // unauthenticated attack surface — and they had already drifted on bare
+  // `/admin/_astro`. This ticket's own brief got that list wrong once, which is
+  // the argument for there being exactly one.
+  it('agrees with the matrix on every anonymous rule', () => {
+    for (const rule of ROUTE_MATRIX.filter((r) => r.anonymous)) {
+      const concrete = rule.template.replace('[...asset]', 'index.abc123.css');
+      expect(isAnonymousRoute(concrete), concrete).toBe(true);
+    }
+  });
+
+  it('treats every authenticated rule as NOT anonymous', () => {
+    for (const rule of ROUTE_MATRIX.filter((r) => !r.anonymous)) {
+      const concrete = rule.template.replace('[id]', 'x');
+      expect(isAnonymousRoute(concrete), concrete).toBe(false);
+    }
+  });
+
+  it('does not make an unclassified path anonymous', () => {
+    // Fail-closed: "no rule" must not read as "no session needed".
+    expect(isAnonymousRoute('/admin/nope')).toBe(false);
+    expect(isAnonymousRoute('/admin/healthz/../venues/x')).toBe(false);
   });
 });
