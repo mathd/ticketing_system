@@ -129,9 +129,13 @@ func TestBackofficeEventBuilderPublishesASellableEvent(t *testing.T) {
 	// ...and it is sellable: inventory is provisioned asynchronously from the
 	// publication event, so this retries rather than assuming.
 	retry(t, 30*time.Second, func() error {
+		// ReservationCreate is a strict XOR: exactly three properties, and
+		// `performance_id` is not one of them — the ticket type identifies the
+		// slot. additionalProperties:false means guessing is a 400, not a
+		// tolerated extra field.
 		code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "builder-"+suffix,
 			map[string]any{
-				"performance_id": performanceID,
+				"organizer_id":   organizerID,
 				"ticket_type_id": ticketTypeID,
 				"quantity":       1,
 			})
