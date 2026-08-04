@@ -2,8 +2,10 @@
   "key": "TKT-194",
   "type": "Story",
   "summary": "US-B5: Refund from the order console, with the credential that makes it possible",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "parent": "TKT-22",
