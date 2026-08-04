@@ -195,7 +195,7 @@ func TestBackofficeOrderConsoleIsRefusedToFinance(t *testing.T) {
 	console := gatewayURL + "/admin/orders"
 
 	finance := signInAs(t, "finance")
-	if body := readBody(t, doRequest(t, finance, http.MethodGet, gatewayURL+"/admin", nil, nil)); strings.Contains(body, "Look up an order") {
+	if body := readBody(t, doRequest(t, finance, http.MethodGet, gatewayURL+"/admin/", nil, nil)); strings.Contains(body, "Look up an order") {
 		t.Error("finance is offered the order console in the nav")
 	}
 	for _, r := range []*http.Response{
@@ -209,13 +209,22 @@ func TestBackofficeOrderConsoleIsRefusedToFinance(t *testing.T) {
 
 	// box_office IS offered it — without this the assertion above passes on a
 	// page that offers the link to nobody.
-	if body := readBody(t, doRequest(t, signInAs(t, "box_office"), http.MethodGet, gatewayURL+"/admin", nil, nil)); !strings.Contains(body, "Look up an order") {
+	//
+	// `/admin/`, with the slash: `/admin` is Astro's own 307 to the canonical
+	// path, and these clients do not follow redirects, so the bare path returns
+	// an empty body that contains no link for anybody (TKT-190 hit this too).
+	if body := readBody(t, doRequest(t, signInAs(t, "box_office"), http.MethodGet, gatewayURL+"/admin/", nil, nil)); !strings.Contains(body, "Look up an order") {
 		t.Error("box_office is not offered the order console")
 	}
 
-	// COS-4: signed out, the console is unreachable and lands at login.
+	// COS-4: signed out, the console is unreachable. Authentication is checked
+	// before authorization, so this is a redirect to login and never the 403 the
+	// wrong role gets — the difference is deliberate and observable (TKT-190).
 	anon := doRequest(t, jarClient(t), http.MethodGet, console, nil, nil)
-	if body := readBody(t, anon); !strings.Contains(body, "password") {
-		t.Errorf("an anonymous caller did not land at login: status %d body=%.300s", anon.StatusCode, body)
+	if anon.StatusCode == http.StatusOK {
+		t.Errorf("an anonymous caller reached the console; body=%.300s", readBody(t, anon))
+	}
+	if loc := anon.Header.Get("Location"); !strings.Contains(loc, "/admin/login") {
+		t.Errorf("an anonymous caller was sent to %q, want the login page (status %d)", loc, anon.StatusCode)
 	}
 }
