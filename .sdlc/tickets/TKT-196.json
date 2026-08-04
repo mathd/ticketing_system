@@ -1,0 +1,81 @@
+{
+  "key": "TKT-196",
+  "type": "Story",
+  "summary": "Browser-submit harness: make the manual web-UI gate runnable (TKT-105 / TKT-190 follow-up)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "**As** a developer, **I want** the browser-submit check to be a command anyone can run, **so that** the one quality gate this repo cannot automate stops depending on whoever remembers to do it by hand.\n\n### Why now\n\n`AGENTS.md` has said *\"There is no Playwright/e2e harness in-repo yet\"* since **TKT-105**, and treats browser-submit as a permanently manual step. TKT-105 is also the ticket that proved the gap is not theoretical: Astro's CSRF guard 403'd **every** back-office write form, and TKT-102's forms had been silently broken the same way since they shipped — invisible to API smoke, which bypasses the SSR layer entirely.\n\n**TKT-190 turned three browser-only behaviours into load-bearing security controls**, none of which any in-repo test can verify:\n- that a browser sends `Origin` on a same-origin POST (the whole premise of the proxy-aware origin check that replaced `checkOrigin`);\n- that a browser honours `SameSite=Lax` (one of the two CSRF controls);\n- that a browser honours the cookie's `Path=/admin` scope (the fix for a review finding — the gateway serves four apps on one origin, so `Path=/` handed a live staff credential to all of them).\n\nDuring TKT-190 a ~90-line Playwright script driving the already-installed system Chrome checked all three, plus the full sign-in / reload / sign-out / replay flow — **13/13**. It ran from a scratch directory and was deliberately not committed: a new dev dependency and a gate change is its own decision, not something to slip into an authentication ticket. This is that decision.\n\n**Every remaining TKT-22 child is a UI ticket** (TKT-192 event builder, TKT-193 order console, TKT-197 role-aware nav), and TKT-194 adds refund actions. They will each carry the manual cost, and each will be verified by whatever the agent of the day improvises.\n\n### In scope\n\n- `playwright` as a dev dependency of the `web/` workspace, using the **system Chrome** (`channel: 'chrome'`) rather than downloading a bundled browser — the bundled build is what this repo's cached versions kept drifting from, and the browser people actually use is the better oracle.\n- One `make browser-check` target that assumes a running `make up`.\n- A first spec covering TKT-190's flow, ported from the script in that ticket's run.\n- `AGENTS.md`: replace *\"There is no Playwright/e2e harness in-repo yet\"* with how to run it, and say plainly what it does and does not cover.\n\n### Out of scope\n\n- **Adding it to `make check` / CI.** That is the expensive half — it needs a running stack, a browser in CI, and an answer on flake tolerance. Decide it here explicitly and defer it to its own ticket if the answer is \"not yet\"; do not let it happen by accident.\n- Porting the existing storefront or scanner flows. One spec, one ticket.\n- Visual regression, accessibility audits, performance.\n\n### Conditions of Success\n\n- [ ] `make browser-check` runs against `make up` and exits non-zero when a check fails — proven by deliberately breaking one (e.g. flipping the cookie `Path` back to `/`) and observing the failure, not just by watching it pass.\n- [ ] It covers, at minimum, TKT-190's three browser-only properties: a browser-composed same-origin form POST is accepted, the session cookie's stored attributes, and a genuine cross-site form POST from another origin minting no session.\n- [ ] A staff account is provisioned by the harness or documented as a prerequisite; no credential is committed.\n- [ ] It is **not** wired into `make check` unless this ticket explicitly decides to, and the decision is recorded either way.\n- [ ] `AGENTS.md`'s quality-gates section names the command, and no longer claims no harness exists.\n- [ ] `make check` still green, and no slower — the harness must not become an implicit dependency of the normal gate.\n\n**Quality gates:** `make check` green; the change is dev-tooling only and touches no service code.",
+  "links": [],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-006",
+        "why": "The Astro SSR shell whose framework-level behaviour (checkOrigin, base-path rewrites, redirects) is exactly what API-level smoke cannot see — the reason this harness exists."
+      },
+      {
+        "id": "ADR-042",
+        "why": "Records the three browser-dependent controls TKT-190 shipped: SameSite, the cookie Path scope, and the proxy-aware Origin check. This harness is what verifies them."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The incident that created the rule: an SSR CSRF guard 403'd every back-office write form, undetected for two tickets because API smoke bypasses the SSR layer.",
+        "link": "docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md"
+      },
+      {
+        "summary": "AGENTS.md's quality-gates section — the 'no harness exists' claim this ticket retires.",
+        "link": "AGENTS.md"
+      },
+      {
+        "summary": "The flow to port: gate, sign in, reload, sign out, replay, cross-site POST. TKT-190's smoke tests cover the HTTP half; this covers what only a browser decides.",
+        "link": "smoke/backoffice_venue_list_test.go"
+      }
+    ],
+    "capturedAt": "2026-08-03"
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Named gap since TKT-105; TKT-190 made three browser-only behaviours load-bearing."
+    },
+    "scope": {
+      "state": "met",
+      "note": "In/out enumerated; the CI question is explicitly carved out as a decision to record, not to assume."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "Should the harness eventually gate CI? Needs a browser in CI and a flake-tolerance answer. Not required to start — the ticket ships a runnable command either way."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None; TKT-190 is merged and supplies the first spec's subject."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Playwright against system Chrome, one make target, one spec."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The TKT-190 flow, already written and proven 13/13 during that run."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS require proving the harness FAILS when the thing it checks is broken."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-03."
+    }
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from **TKT-190**'s retro (owner approved 2026-08-03). The working script from that run is the\nstarting point — it drove real Google Chrome against `make up` and passed 13/13, including the\ncookie-scope check that confirmed a review finding's fix from the browser's own behaviour rather\nthan from an assertion about it.\n\nOne `uncertainties` item is deliberately **open** with `owner: human`: whether this should ever gate\nCI. The ticket is useful without answering it, and Gate 1 is hard-blocked while the item is open, so\nthe question gets asked rather than assumed."
+    }
+  ]
+}
