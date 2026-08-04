@@ -243,20 +243,42 @@ func TestBackofficeOrderConsoleDoesNotCorrelateTwoOrders(t *testing.T) {
 	}
 }
 
-// heading returns the rendered <h2>…</h2> that starts with label, so an
-// assertion about a result's provenance cannot be satisfied by the same value
-// appearing somewhere else on the page.
+// heading returns the contents of the one <h2> whose text starts with label.
+//
+// Anchored on a real <h2> opening tag and requiring EXACTLY ONE match, because
+// the point of this helper is to keep a provenance assertion from being
+// satisfied by the same identifier appearing elsewhere — and both identifiers
+// are echoed in the preserved form inputs a few hundred bytes away. A looser
+// search that only anchored on ">"+label could span those inputs and stay green
+// after the provenance span was deleted from the real heading, which is the
+// regression it exists to catch (ai-review pass 3).
 func heading(t *testing.T, page, label string) string {
 	t.Helper()
-	i := strings.Index(page, ">"+label)
-	if i < 0 {
-		t.Fatalf("no %q heading in the page", label)
+	var found []string
+	for i := 0; ; {
+		tag := strings.Index(page[i:], "<h2")
+		if tag < 0 {
+			break
+		}
+		tag += i
+		gt := strings.Index(page[tag:], ">")
+		if gt < 0 {
+			t.Fatalf("unterminated <h2> in the page")
+		}
+		start := tag + gt + 1
+		end := strings.Index(page[start:], "</h2>")
+		if end < 0 {
+			t.Fatalf("unclosed <h2> in the page")
+		}
+		if inner := page[start : start+end]; strings.HasPrefix(inner, label) {
+			found = append(found, inner)
+		}
+		i = start + end
 	}
-	end := strings.Index(page[i:], "</h2>")
-	if end < 0 {
-		t.Fatalf("%q heading is not closed", label)
+	if len(found) != 1 {
+		t.Fatalf("want exactly one <h2> starting with %q, found %d: %q", label, len(found), found)
 	}
-	return page[i : i+end]
+	return found[0]
 }
 
 // TestBackofficeOrderConsoleIsRefusedToFinance is COS-4 and COS-5: refusal is

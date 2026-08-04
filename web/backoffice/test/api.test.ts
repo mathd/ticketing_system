@@ -382,8 +382,13 @@ describe('the order console reads (TKT-193)', () => {
   // order, sourced from nothing, at HTTP 200.
   it.each([
     ['an empty commerce body', {}],
-    ['a commerce body missing status', { order_id: 'o1' }],
-    ['a commerce status that is not a string', { order_id: 'o1', status: 7 }],
+    // order_id: ORDER, not a placeholder. sameIdentity runs FIRST, so a fixture
+    // naming a different order is rejected before the status check is ever
+    // reached — and the test would stay green with that check deleted
+    // (ai-review pass 3).
+    ['a commerce body missing status', { order_id: ORDER }],
+    ['a commerce status that is not a string', { order_id: ORDER, status: 7 }],
+    ['a commerce status that is empty', { order_id: ORDER, status: '' }],
   ])('treats %s as unavailable, not as a status', async (_name, body) => {
     spyFetch(body, 200);
     await expect(getOrderState(ORDER)).resolves.toEqual({ ok: false, kind: 'unavailable' });
