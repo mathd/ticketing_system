@@ -50,7 +50,7 @@ function derivedRouteTemplates(dir = PAGES_DIR, prefix = ''): string[] {
       );
     }
     const base = entry.name.slice(0, -ext.length);
-    out.push(base === 'index' ? `/admin${prefix}` || '/admin' : `/admin${prefix}/${base}`);
+    out.push(base === 'index' ? `/admin${prefix}` : `/admin${prefix}/${base}`);
   }
   return out;
 }
