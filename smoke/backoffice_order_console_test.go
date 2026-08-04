@@ -231,9 +231,32 @@ func TestBackofficeOrderConsoleDoesNotCorrelateTwoOrders(t *testing.T) {
 	if !strings.Contains(page, "cannot confirm that the two below belong to the same order") {
 		t.Errorf("the page presented two unrelated lookups without saying so; body=%.800s", page)
 	}
-	if !strings.Contains(page, orderA) || !strings.Contains(page, refB) {
-		t.Errorf("each half must name the identifier it came from; body=%.800s", page)
+	// Scoped to the headings, NOT page-wide: both identifiers are already echoed
+	// in the preserved form inputs, so a page-wide search stays green after
+	// deleting the provenance spans from both headings — the exact regression
+	// this test exists to catch (ai-review pass 2).
+	if h := heading(t, page, "Order status"); !strings.Contains(h, orderA) {
+		t.Errorf("the Order status heading does not name the id it came from: %q", h)
 	}
+	if h := heading(t, page, "Tickets"); !strings.Contains(h, refB) {
+		t.Errorf("the Tickets heading does not name the reference it came from: %q", h)
+	}
+}
+
+// heading returns the rendered <h2>…</h2> that starts with label, so an
+// assertion about a result's provenance cannot be satisfied by the same value
+// appearing somewhere else on the page.
+func heading(t *testing.T, page, label string) string {
+	t.Helper()
+	i := strings.Index(page, ">"+label)
+	if i < 0 {
+		t.Fatalf("no %q heading in the page", label)
+	}
+	end := strings.Index(page[i:], "</h2>")
+	if end < 0 {
+		t.Fatalf("%q heading is not closed", label)
+	}
+	return page[i : i+end]
 }
 
 // TestBackofficeOrderConsoleIsRefusedToFinance is COS-4 and COS-5: refusal is
