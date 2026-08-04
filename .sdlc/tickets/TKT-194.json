@@ -2,9 +2,9 @@
   "key": "TKT-194",
   "type": "Story",
   "summary": "US-B5: Refund from the order console, with the credential that makes it possible",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
