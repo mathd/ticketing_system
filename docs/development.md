@@ -537,10 +537,18 @@ cap is what bounds the session map, not the expiry sweep.
 **Signing out invalidates server-side.** Replaying the captured cookie afterwards fails —
 that, not the browser being told to drop it, is what the smoke suite asserts.
 
-**What this does and does not gate.** It gates the back-office UI. It does **not** authenticate
-`/api/catalog/*`: anyone who can reach the gateway can still create and publish events by
-calling the API directly. TKT-191 closes that. Until then, do not read "the back office is
-authenticated" as "the catalog is" (ADR-042 § The adversary this constrains).
+**What this does and does not gate.** It gates the back-office UI. Since **TKT-191** catalog also
+refuses any write without `CATALOG_STAFF_WRITE_TOKEN`, so the API is no longer open either — but
+catalog authenticates the **back office**, not the individual staff member. Which staff member may
+drive which write is decided in the back office, and today the answer is "any signed-in one".
+Per-role authorization is TKT-197. Do not read "catalog writes are authenticated" as "catalog
+enforces who may write what" (ADR-042 § TKT-191 amendment).
+
+**Two credentials now exist and are generated separately by `make up`:**
+`INTERNAL_SERVICE_TOKEN` (shared; opens every service's internal surface) and
+`CATALOG_STAFF_WRITE_TOKEN` (catalog writes only; held by catalog and the back office). One leaking
+does not imply the other, which is the entire reason there are two. Catalog fails startup without
+either.
 
 **Verifying a change here needs a real browser.** The smoke suite submits the login and logout
 forms through the real gateway and Astro SSR layer, but it sets `Origin` itself — it cannot

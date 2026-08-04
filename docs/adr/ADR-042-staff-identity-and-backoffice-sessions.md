@@ -6,6 +6,19 @@ Date: 2026-08-03
 
 Accepted
 
+**Amended by TKT-191 (2026-08-03)** — *Decision 1 only*. Everything else stands.
+
+`POST /staff/authenticate` is **no longer public**: it is guarded like every other unsafe catalog
+operation, by a dedicated `CatalogStaffWriteCredential`. The **conclusion** changed; the
+**reasoning** did not. Decision 1's objection was to placing the *shared*
+`INTERNAL_SERVICE_TOKEN` — one value opening commerce's refunds and inventory's operational holds —
+inside a public-facing SSR process. A catalog-only credential removes that objection entirely, and
+leaving one operation public would have meant an exception list inside a fail-closed scheme. The
+earlier decision was not wrong; its constraint was lifted.
+
+What this does **not** change: the anonymous login form is still the public deputy, so credential
+**guessing volume is unaffected** and TKT-195 is still required. See § *TKT-191 amendment* below.
+
 ## Context
 
 Until TKT-190 the back office had no authentication at all. `/admin/` was served to any caller who
@@ -61,6 +74,10 @@ owns the session** and enforces it in Astro middleware.
 Four sub-decisions follow, each of which is the part most likely to be misread later:
 
 **1. The authenticate operation is PUBLIC, not internal-token guarded.**
+> ⚠️ **Superseded by TKT-191** — the operation is now guarded by a dedicated catalog-only
+> credential. The reasoning below still holds and is why the *shared* token was refused; read it as
+> the record of that argument, not as current behaviour. See § *TKT-191 amendment*.
+
 `POST /staff/authenticate` is declared in catalog's public contract and requires no
 `X-Internal-Token`. Its only credential is the staff password.
 
@@ -134,10 +151,10 @@ back-office request; and an account enumerator learns nothing from either the re
 number of KDF comparisons, which are equal for an unknown identifier and a wrong password.
 
 **Open, and deliberately so:**
-- **`/api/catalog/*` write endpoints remain unauthenticated.** This ticket gates the back-office UI,
-  not the catalog API. Anyone who can reach the gateway can still create and publish events by
-  calling the API directly. TKT-191 is what closes that, and until it lands the phrase "the back
-  office is authenticated" must not be read as "the catalog is".
+- ~~**`/api/catalog/*` write endpoints remain unauthenticated.**~~ **Closed by TKT-191.** Every
+  unsafe catalog operation now requires the staff-write credential; an unauthenticated caller
+  reaching the gateway is refused. What replaces this gap is a narrower one, stated below: catalog
+  authenticates the **deputy**, not the staff member.
 - **Anything already inside the Compose network** can address the back-office container directly and
   forge `X-Forwarded-*`, or address catalog directly and skip the gateway entirely.
 - **Anyone holding `INTERNAL_SERVICE_TOKEN`** already has every service's internal surface; nothing
@@ -172,3 +189,39 @@ number of KDF comparisons, which are equal for an unknown identifier and a wrong
 - [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) — name the adversary before claiming a guarantee
 - [ADR-022](./ADR-022-out-of-band-service-migrations.md) — migration `0015` runs in the existing `catalog-migrate` job
 - [browser-submit is the only checkOrigin catch](../learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md) — TKT-105
+
+
+## TKT-191 amendment — catalog authenticates the deputy
+
+Catalog requires `X-Catalog-Staff-Write-Token` on **every unsafe operation in its contract**. Public
+reads opt out explicitly with `security: []`, so a newly added operation is closed by construction.
+
+**The credential is catalog-only.** It is generated independently of `INTERNAL_SERVICE_TOKEN`, held
+by catalog and the back office and nothing else, and deliberately absent from the shared `&go-env`
+Compose anchor. A smoke test presents it to inventory's internal surface and asserts it does not
+open, so the separation is tested rather than asserted.
+
+**What this authenticates, precisely.** Catalog learns that a write came from **the back office**.
+It learns nothing about *which staff member*, and enforces nothing about what that person may do.
+The back office is therefore a **deputy** holding a credential that can perform every catalog
+write, and today its rule is "any signed-in staff member". Per-role authorization is **TKT-197**.
+
+Say it that way. "Catalog writes are authenticated" is true; "catalog enforces who may write what"
+is not, and will not be until TKT-197.
+
+**Consequences, honestly:**
+- Compromise of the back-office SSR process now has **catalog-write** impact — it did not before,
+  because it held no credential at all. It still has no access to any other service's internal
+  surface, which is the trade the dedicated credential buys.
+- Two secrets exist where one did. `make up` generates both, separately; one leaking does not imply
+  the other.
+- Catalog refuses to start without it (`runtimecfg.RequiredCredential`), following TKT-83: no
+  working default ships in the repo.
+
+**Adversaries closed:** an unauthenticated caller reaching the gateway can no longer create,
+publish, archive or edit anything in catalog.
+
+**Adversaries still open, unchanged by this ticket:** anyone inside the Compose network addressing
+catalog directly; anyone holding either credential; anyone who can write to catalog's database
+(ADR-021 — state inside the database cannot constrain an adversary who writes to it). This is
+authentication, not tamper-evidence, and none of it is claimed to be.
