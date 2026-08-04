@@ -1,0 +1,42 @@
+{
+  "key": "TKT-198",
+  "type": "Story",
+  "summary": "Flaky: TestRunnerDrainsARealBook reports AlreadyRefunded where it expects Refunded",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "Observed during **TKT-192**'s gate, on a commit that touches nothing in commerce.\n\n```\nrunner_smoke_test.go:114: counts = {Total:3 Refunded:0 AlreadyRefunded:3 Failed:0 Pending:0}, want 3 refunded\nWARN cancellation order left for retry order_id=7c0e9ac2… attempt=1..4 code=unavailable\nWARN cancellation order left for retry order_id=8eec7057… attempt=1 code=ceiling_moved\n```\n\n**Confirmed intermittent:** the identical commit was re-gated with no change and the test passed.\n\n**Why it is worth a ticket rather than a re-run.** The assertion distinguishes *refunded by this run*\nfrom *already refunded*, and the run reported the latter for all three orders while also logging\n`unavailable` and `ceiling_moved` retries. Either the stub refunder and the runner disagree about\nwhat a completed refund looks like under retry, or the runner double-passes a book and the second\npass reclassifies its own work. Both are real behaviours of the code under test, not test noise — and\nthe counts are what an operator would read to decide whether a cancellation run finished.\n\n**Do not fix it by relaxing the assertion.** `AlreadyRefunded` vs `Refunded` is the distinction\nthat makes the report meaningful; collapsing them would make the flake disappear and the report\nuseless.\n\n**Conditions of Success:**\n- [ ] The mechanism is identified and named — retry reclassification, double pass, or stub/runner\n      disagreement — with the evidence that distinguishes them.\n- [ ] The test fails deterministically against the identified cause before the fix, or the ticket\n      says why that could not be arranged.\n- [ ] `Refunded` and `AlreadyRefunded` still mean what they mean; no assertion is widened to pass.\n- [ ] `make check` green across three consecutive runs.\n\n**Quality gates:** `make check`; no contract change expected.",
+  "links": [],
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-037",
+        "why": "The refund money protocol these counts summarise; a miscount is a claim about money movement."
+      },
+      {
+        "id": "ADR-040",
+        "why": "Event-cancellation bulk refund runs — the feature whose report this is."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The failing assertion and the run it inspects.",
+        "link": "services/commerce/internal/bulkrefund/runner_smoke_test.go:114"
+      },
+      {
+        "summary": "Sibling flakes with the same shape — worth reading for the pattern before diagnosing.",
+        "link": "TKT-132 / TKT-134 / TKT-149"
+      }
+    ],
+    "capturedAt": "2026-08-03"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-192'''s gate rather than absorbed as a re-run. An intermittent failure nobody records is\none the next person rediscovers from scratch, and this repo already carries three tickets of the same\nshape (TKT-132, TKT-134, TKT-149).\n\nNot shaped: needs the 8-item DoR before Gate 1."
+    }
+  ]
+}
