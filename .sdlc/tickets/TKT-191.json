@@ -1,13 +1,13 @@
 {
   "key": "TKT-191",
   "type": "Story",
-  "summary": "US-B2: The role matrix — box office cannot touch settlement",
+  "summary": "US-B2a: Catalog refuses writes it cannot attribute — the back office becomes the only writer",
   "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
   "parent": "TKT-22",
-  "description": "**As** the platform owner, **I want** every staff-reachable route classified by role and enforced server-side, **so that** box-office staff cannot reach finance or settlement surfaces even if they guess the URL.\n\nUS-B1 (TKT-190) proved *who*. This story proves *what they may do*: three roles (`admin`, `box_office`, `finance`) and one **declared matrix** mapping each staff-reachable route to the roles allowed on it.\n\n---\n\n### ⚠️ Scope re-synced after TKT-190 shipped — read this before planning\n\nThese ACs were written at decomposition, **before** TKT-190 chose where sessions live. Two of them were not implementable as written, and are rewritten below rather than left to be re-litigated in Planning (`references/decomposition.md` § Spike-amended scope).\n\n**What changed.** TKT-190 put the session **in the back-office process** and enforces it in Astro middleware (ADR-042). That has a consequence this ticket must confront:\n\n- A staff session exists **only** for requests that pass through the back-office app (`/admin/*`).\n- `POST /api/catalog/events` and every other catalog write goes browser → gateway → catalog **without touching the back office**, carries no session, and is **currently accepted unauthenticated by anyone who can reach the gateway**.\n- The gateway cannot check a session either: it holds no state, and the session map lives in the back-office process.\n\nSo the original AC *\"a `box_office` session receives 403 on catalog write endpoints\"* describes something that cannot happen — there is no session on that path to have a role. Enforcing it needs an **authentication boundary for the catalog write API**, which is a different problem from a role matrix.\n\n**The central decision for the plan** (state the options, recommend one, record it as an ADR amendment):\n\n1. **Edge-deny catalog writes**, like `/api/<svc>/internal/` already is (ADR-002's route table is the security boundary), making the back office the only write client — which then needs its own way to reach catalog.\n2. **Move sessions to shared storage** so the gateway can validate them, and enforce the matrix at the edge for both `/admin/*` and `/api/catalog/*` writes. Reverses ADR-042's decision 2.\n3. **Authenticate catalog writes in catalog**, with the role travelling as a verified claim rather than a trusted header.\n\nReversibility and diff size differ sharply between these; prefer the reversible one absent a strong reason.\n\n---\n\n**In scope:** the role enum; the route→role matrix as a single declared table; enforcement composed into TKT-190's `gateRequest` (`web/backoffice/src/lib/gate.ts`) — the one place a session and a route are both in hand; a test that fails when a staff-reachable route has no classification; role-aware nav (defense in depth, never the enforcement); and **the decision above, implemented for the catalog write surface**.\n\n**Out of scope:** per-object permissions, per-organizer scoping, a role administration UI (roles are set at provisioning), delegation/impersonation, and login rate limiting (TKT-195).\n\n**Conditions of Success:**\n- [ ] Every staff-reachable route is classified in **one** declared matrix, and a test enumerates the real route table and **fails** if any route is reachable with no classification — fail-closed, so adding a route without classifying it breaks the build rather than shipping it open.\n- [ ] A `box_office` session is refused on the finance surface; a `finance` session is refused on the catalog authoring surface; an `admin` session reaches every staff-reachable route. Each proven by driving the real route, not by asserting on the matrix table.\n- [ ] **Catalog write endpoints are no longer reachable unauthenticated through the gateway.** A test drives `POST /api/catalog/events` with no credential and asserts it is refused — this is the AC that replaces the two that assumed a session existed on that path.\n- [ ] Whichever option above is chosen, a staff member with the right role can still complete an authoring write end-to-end through the back office — proven by a browser-submitted form, not only by an API call.\n- [ ] A refusal discloses neither the required role nor whether the route exists.\n- [ ] The back-office nav renders only in-role links, **and** a direct request to a hidden URL is still refused — proving the nav is not what enforces the rule.\n- [ ] Anonymous callers are still refused before any role check runs; TKT-190's behaviour is unchanged, and its tests still pass untouched.\n- [ ] ADR-042 is amended (or a new ADR supersedes its § Decision 2) to record what changed and which adversary the result constrains.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered.\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
+  "description": "**As** the platform owner, **I want** catalog to refuse writes it cannot attribute to the back office, **so that** the organizer-facing API stops accepting event creation and publication from anyone who can reach the gateway.\n\nSlice (a) of the former TKT-191, split on the owner's decision (2026-08-03). Slice (b) — the role matrix itself — is **TKT-197**, blocked by this ticket. Each half is demoable alone; together they are the epic's first COS.\n\n### The problem this closes\n\nTKT-190 gated the back-office **UI**. It did not authenticate the **API**: `POST /api/catalog/events`, `/performances`, `/publish` and the rest go browser → gateway → catalog without passing through the back office at all, carry no session, and are accepted today from any caller who can reach the gateway. ADR-042 § *The adversary this constrains* says so explicitly, and names this ticket.\n\n### The decided approach (owner, 2026-08-03)\n\n**Catalog authenticates its own write surface with a dedicated staff-write credential**, held by catalog and the back office and **nobody else**. Catalog already has this exact pattern — `s.internalCredential` guards `/internal/*` at `services/catalog/internal/api/server.go:136`.\n\nThe credential is **not** `INTERNAL_SERVICE_TOKEN`. That one value opens commerce's refunds and inventory's operational holds, and ADR-042 refused to place it in a public-facing SSR process; that refusal stands.\n\nThree alternatives were considered and rejected — record the reasoning in the ADR amendment, do not re-litigate it in the plan:\n- **Edge-deny catalog writes at the gateway.** If the edge denies writes, the back office cannot reach them *through the gateway* either, so it needs a direct compose-network path — and then still needs a credential. A gateway change and a new network path to arrive at the same place, plus rerouting every smoke test that writes through the gateway.\n- **Shared session storage + gateway enforcement.** Gives a database to the component deliberately built stateless, reverses ADR-042 § Decision 2, and buys multi-replica that a single-replica Compose stack does not need.\n- **Full signed role claims verified in catalog.** The right eventual destination, but it needs a signing key, a token format and the role vocabulary duplicated into catalog. This ticket is its first step; nothing here blocks it later.\n\n**Known and accepted:** this makes the back office a deputy — it holds a credential that can perform every catalog write, so its own compromise is total, and the role check (TKT-197) is what stands between a box-office user and an authoring write. That is what a backend-for-frontend is. **The ADR amendment must say it plainly** rather than implying catalog now enforces authorization itself.\n\n**In scope:** the credential and its startup validation (no default ships — the TKT-83 precedent); the guard on catalog's write operations; back-office write calls carrying it; smoke tests supplying it; the ADR-042 amendment.\n\n**Out of scope:** roles of any kind (TKT-197); public reads, which stay open; `/internal/*`, unchanged; rate limiting (TKT-195).\n\n**Conditions of Success:**\n- [ ] An unauthenticated `POST /api/catalog/events` through the gateway is **refused**, and a test drives it and asserts the refusal — this is the ticket.\n- [ ] Every catalog **write** operation is guarded, and a test enumerates the spec's write operations and **fails if one is unguarded** — fail-closed, so a future endpoint added without a guard breaks the build rather than shipping open.\n- [ ] Public reads (`/public/*`) and the storefront are unaffected; the existing storefront and catalog smoke coverage passes untouched.\n- [ ] A signed-in staff member still authors and publishes end-to-end through the back office — **proven by a browser-submitted form**, not only by an API call.\n- [ ] Catalog **fails startup** when the credential is absent or is a checked-in default (TKT-83's shape); no working credential ships in the repo.\n- [ ] The refusal discloses nothing about the credential or why it failed.\n- [ ] ADR-042 is amended: what changed, that the back office is now a deputy holding a write-capable credential, and which adversary the result does and does not constrain (ADR-021's rule).\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered.\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
   "links": [
     {
       "type": "blocked-by",
@@ -19,41 +19,49 @@
     "governingAdrs": [
       {
         "id": "ADR-002",
-        "why": "The gateway is the single public entry point and its route table IS the security boundary; /api/<svc>/internal/ is unreachable from the edge by construction. Anything this ticket adds to the edge must keep that construction true."
+        "why": "The gateway is the single public entry point and its route table IS the security boundary. Anything added to the edge must keep that construction true."
       },
       {
         "id": "ADR-009",
-        "why": "Contract-first: a new HTTP surface is authored in the service's openapi.yaml and the generated code committed BEFORE the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+        "why": "Contract-first: a new HTTP surface is authored in openapi.yaml and the generated code committed BEFORE the gate — check-generate diffs against HEAD."
       },
       {
         "id": "ADR-028",
-        "why": "Response drift fails closed: every status code the handler can emit must be declared, or the validator rejects the response at runtime."
+        "why": "Response drift fails closed: a 401/403 the handler can emit must be declared, or the validator turns it into a 500."
       },
       {
         "id": "ADR-006",
-        "why": "The back-office is Astro SSR behind the gateway. `security.checkOrigin` is already false in web/backoffice/astro.config.mjs and form actions must be RELATIVE — an absolute action trips the check even same-origin."
-      },
-      {
-        "id": "ADR-021",
-        "why": "Name the adversary before claiming a guarantee. This matrix constrains a staff caller arriving through the gateway; it constrains nobody with direct network access to a service container or the database. Say that in the ADR/COS wording rather than writing 'enforced server-side' unqualified."
+        "why": "The back office is Astro SSR behind the gateway; checkOrigin is off and form actions must be RELATIVE."
       },
       {
         "id": "ADR-042",
-        "why": "TKT-190 put staff sessions in the back-office process and enforcement in Astro middleware. That is WHY a role cannot travel on a direct /api/catalog/* request, and Decision 2 (process-local sessions) is what one of this ticket's options would reverse. Read it before choosing an enforcement layer."
+        "why": "Records where staff identity and sessions live, why the back office does not hold INTERNAL_SERVICE_TOKEN, and — in its adversary section — names the unauthenticated catalog write surface as the gap these two tickets close."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a guarantee. Neither ticket produces tamper-evidence; both constrain a caller arriving through the gateway and neither constrains anyone with network access to a container or write access to the database."
       }
     ],
     "reference": [
       {
-        "summary": "The route table is the security boundary and encoded separators are refused edge-wide — the RBAC check must sit inside that same construction, not beside it.",
-        "link": "gateway/cmd/gateway/main.go"
+        "summary": "SHARED CREDENTIAL BLAST RADIUS (decomposition.md § context-mémo): INTERNAL_SERVICE_TOKEN is ONE value across all five services (compose.yaml, the &go-env anchor). It opens commerce /internal/orders/{id}/refunds, inventory /internal/operational-holds and /internal/slots/{id}/capacity-adjustments, and access's refund surface. It must NOT be the credential these tickets give the back office.",
+        "link": "compose.yaml"
       },
       {
-        "summary": "US-B1's session/principal plumbing is the input to this matrix.",
-        "link": "TKT-190"
+        "summary": "Catalog's existing credential-guard pattern to reuse — an inline check at the top of each guarded handler.",
+        "link": "services/catalog/internal/api/server.go:136"
       },
       {
-        "summary": "TKT-190's composed gate — the one place a session and a route are both in hand, and where the matrix attaches.",
-        "link": "web/backoffice/src/lib/gate.ts"
+        "summary": "The 'no default ships, startup fails without one' precedent (TKT-83).",
+        "link": "shared/go/runtimecfg/runtimecfg.go"
+      },
+      {
+        "summary": "The back office's single catalog client — every write goes through postCatalog().",
+        "link": "web/backoffice/src/lib/api.ts"
+      },
+      {
+        "summary": "Smoke tests that write to catalog through the gateway and will need the credential.",
+        "link": "smoke/catalog_publication_test.go"
       }
     ],
     "capturedAt": "2026-08-03"
@@ -65,19 +73,19 @@
     },
     "scope": {
       "state": "met",
-      "note": "Re-synced after TKT-190; two ACs replaced, two added. See the kind=readiness comment."
+      "note": "Split from the former TKT-191; slice (b) is TKT-197."
     },
     "uncertainties": {
       "state": "deferred",
-      "note": "Option 2 would reverse ADR-042 Decision 2 (process-local sessions). Sizing risk noted in the re-verdict."
+      "note": "The deputy consequence is known and accepted; the ADR amendment must state it rather than imply catalog enforces authorization."
     },
     "dependencies": {
       "state": "met",
       "note": "blocked-by links wired; catalog/commerce/access endpoints this depends on are shipped and stable."
     },
     "approach": {
-      "state": "deferred",
-      "note": "Enforcement layer for catalog writes is the ticket's central decision; three options stated on the ticket, settled by the plan and recorded as an ADR amendment."
+      "state": "met",
+      "note": "Decided by the owner 2026-08-03: a dedicated staff-write credential in catalog. Three alternatives recorded on the ticket as rejected, with reasons."
     },
     "first_slice": {
       "state": "met",
@@ -97,6 +105,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Scope re-synced after TKT-190 — ACs rewritten before Gate 1\n\n`references/decomposition.md` requires a dependent ticket's ACs to be rewritten when its blocker\nlands a decision that narrows or contradicts them, **before** it reaches Ready — otherwise Planning\nre-litigates the contradiction and a review pass flags it, burning a cycle.\n\n**Two ACs were not implementable as written.** Both assumed a `box_office` / `finance` *session*\nwould be present on a request to a catalog write endpoint. After TKT-190 (ADR-042) that is false:\nsessions live in the back-office process, and `POST /api/catalog/*` reaches catalog through the\ngateway without passing through the back office at all. There is no session on that path to carry a\nrole — and those endpoints are, today, open to anyone who can reach the gateway.\n\n| Original AC | Disposition |\n|---|---|\n| \"A `box_office` session receives 403 … on catalog write endpoints\" | **Replaced.** No session exists on that path. Now: *catalog writes are not reachable unauthenticated through the gateway*, proven by an unauthenticated request. |\n| \"A `finance` session receives 403 on catalog write endpoints\" | **Replaced**, same reason; the role half is kept but re-pointed at the back-office authoring surface, where a session does exist. |\n| \"enforced at the edge where it cannot be bypassed\" (description) | **Amended.** TKT-190 put enforcement in the back-office app, not the gateway. Which layer enforces what is now this ticket's central decision, stated with three options in the description. |\n\n**Two ACs added:** the unauthenticated-catalog-write proof, and an ADR amendment — because whichever\noption the plan picks, it changes something ADR-042 currently records as decided.\n\n**Readiness re-verdict: CONCERNS → proceedable.** The scope is coherent and every AC is verifiable.\nThe named risk is that the central decision is genuinely architectural (one option reverses ADR-042\n§ Decision 2), so this ticket is **larger than its siblings** and may want splitting once the plan\npicks an option. That is a decision for plan-review, with the split criteria already in\n`decomposition.md`: split into narrower end-to-end slices, never into horizontal layers."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Split, and the approach decided — ✅ PASS\n\n**Split (owner, 2026-08-03).** The re-synced TKT-191 carried both an authentication boundary and a\nrole matrix. Each is demoable alone, so they are two slices rather than one oversized diff — TKT-190\nran to ~3,000 lines against a ~400 target and that is not a precedent to repeat.\n\n- **TKT-191** (this) — catalog refuses writes it cannot attribute. Demo: an anonymous `curl` can no\n  longer publish an event, while a signed-in admin still can through the UI.\n- **TKT-197** — the role matrix. Demo: a box-office sign-in cannot reach the finance surface.\n\n**Approach decided (owner, 2026-08-03):** a dedicated staff-write credential in catalog, reusing the\nguard pattern catalog already has. Three alternatives were costed and rejected on the ticket. The\n`approach` readiness item is therefore **met**, not deferred — Planning implements this, it does not\nre-open it.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Sizing | ✅ | Two slices, each end-to-end |\n| Dependencies | ✅ | TKT-191 → TKT-197 → {TKT-192, TKT-193} |\n| AC verifiable | ✅ | Every COS names an observable outcome; the fail-closed enumeration test is the load-bearing one |\n| Context-mémo | ✅ | Re-baked, now carrying the **shared-credential blast radius** the new `decomposition.md` rule requires — the fact that would have prevented TKT-190's draft error |\n\n**Verdict: PASS.**"
     }
   ]
 }
