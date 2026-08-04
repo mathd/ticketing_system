@@ -353,3 +353,147 @@ export function publishPerformance(performanceId: string): Promise<Performance> 
     null,
   );
 }
+
+// ---------------------------------------------------------------------------
+// The order console (TKT-193).
+//
+// Two reads, two services, ONE console — and the two are keyed by DIFFERENT
+// identifiers. Commerce looks up `orders.id`; access looks up `guest_order_ref`,
+// which ADR-012 makes a CSPRNG UUIDv4 deliberately distinct from it. Nothing
+// public maps one to the other, so the page takes both and renders whichever
+// half it can answer. That is not a shortcut around a missing join — TKT-201
+// owns the commerce-side read that would supply one.
+
+/** A read that can be absent or broken, and must never confuse the two. */
+export type Read<T> = { ok: true; value: T } | { ok: false; kind: 'not-found' | 'unavailable' };
+
+export type OrderState = { orderId: string; status: string };
+export type LifecycleEvent = {
+  id: string;
+  type: string;
+  /** Absent on legacy rows the chain backfill has not adopted (ADR-025 §D5). */
+  sequence?: number;
+  occurredAt: string;
+};
+export type SafeTicket = { ticketId: string; issuedAt: string; history: LifecycleEvent[] };
+
+const commerce = (path: string) => `${GATEWAY_URL}/api/commerce${path}`;
+const access = (path: string) => `${GATEWAY_URL}/api/access${path}`;
+
+/**
+ * A read result, or WHY there isn't one. The distinction is the whole point: a
+ * support agent told "no such order" when commerce is merely down will tell the
+ * customer their order does not exist. 404 is the only absence; everything else
+ * — including a 400, which means this client and the contract disagree — is a
+ * failure to answer.
+ */
+async function readJson<T>(url: string, project: (body: unknown) => T): Promise<Read<T>> {
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    return { ok: false, kind: 'unavailable' };
+  }
+  if (res.status === 404) return { ok: false, kind: 'not-found' };
+  if (!res.ok) return { ok: false, kind: 'unavailable' };
+  try {
+    return { ok: true, value: project(await res.json()) };
+  } catch {
+    return { ok: false, kind: 'unavailable' };
+  }
+}
+
+/**
+ * A required string, or a thrown projection failure that `readJson` turns into
+ * `unavailable`.
+ *
+ * A `200` whose body is missing the field is NOT a successful read: without
+ * this, commerce answering `{}` would render "Commerce reports this order as
+ * **undefined**" — a claim about an order, sourced from nothing. An upstream
+ * that answers 200 with the wrong shape has failed to answer.
+ */
+function required(v: unknown, field: string): string {
+  if (typeof v !== 'string' || v === '') throw new Error(`response is missing ${field}`);
+  return v;
+}
+
+/**
+ * The identifier a response carries must be the one we asked about.
+ *
+ * The console labels each half with the identifier the OPERATOR typed, so a
+ * misrouted, stale or proxy-cached 200 would otherwise let it present order B's
+ * status under order A's heading — the exact misreading the page's caveat
+ * exists to prevent, arriving through the back door. Compared
+ * case-insensitively: both sides are UUIDs, and a case difference is a
+ * formatting choice, not a different order.
+ */
+function sameIdentity(got: string, asked: string, field: string): void {
+  if (got.toLowerCase() !== asked.toLowerCase()) {
+    throw new Error(`response ${field} is not the one requested`);
+  }
+}
+
+/** Commerce's order state: `{order_id, status}` and, by contract, nothing else. */
+export function getOrderState(orderId: string): Promise<Read<OrderState>> {
+  return readJson(commerce(`/orders/${encodeURIComponent(orderId)}`), (body) => {
+    const b = body as { order_id?: unknown; status?: unknown };
+    const got = required(b.order_id, 'order_id');
+    sameIdentity(got, orderId, 'order_id');
+    return { orderId: got, status: required(b.status, 'status') };
+  });
+}
+
+/**
+ * The ticket bundle, with the QR credential removed.
+ *
+ * Access returns `qr_payload` — the value a scanner admits on — and `qr_url`,
+ * which points at an endpoint the gateway serves WITHOUT authentication. Either
+ * one rendered on a staff console is a working ticket for someone else's order,
+ * and it survives in screenshots and support transcripts long after the visit.
+ * The allow-list is here rather than in the page so that no page, present or
+ * future, can render what it was never handed.
+ */
+export function getOrderTickets(ref: string): Promise<Read<SafeTicket[]>> {
+  return readJson(access(`/orders/${encodeURIComponent(ref)}/tickets`), (body) => {
+    const b = body as { tickets?: unknown; order_ref?: unknown };
+    sameIdentity(required(b.order_ref, 'order_ref'), ref, 'order_ref');
+    if (!Array.isArray(b.tickets)) throw new Error('response is missing tickets');
+    return b.tickets.map((raw) => {
+      const t = raw as Record<string, unknown>;
+      // NOT `t.history ?? []`. The access contract makes `history` required, so
+      // its absence is a broken response, and defaulting it would render "no
+      // lifecycle events recorded yet" — a statement about the ticket — when
+      // what actually happened is that access did not answer properly.
+      const history = t.history;
+      if (!Array.isArray(history)) throw new Error('ticket history is missing or not a list');
+      return {
+        ticketId: required(t.ticket_id, 'ticket_id'),
+        issuedAt: required(t.issued_at, 'issued_at'),
+        history: history.map((rawEvent) => {
+          const e = rawEvent as Record<string, unknown>;
+          // A sequence that is present but not a number is a contract the client
+          // does not understand — rendering NaN beside a lifecycle event would
+          // read as a gap in the integrity chain (ADR-025 §D5) rather than as
+          // this client's confusion.
+          // Absent is legitimate — legacy rows the chain backfill has not
+          // adopted. Present means an integer >= 1 (openapi.yaml: int64,
+          // minimum 1); 0 or 1.5 is a chain position that cannot exist, and
+          // rendering one as "#0" would read as an integrity gap rather than as
+          // this client accepting nonsense.
+          if (
+            e.sequence !== undefined &&
+            (typeof e.sequence !== 'number' || !Number.isInteger(e.sequence) || e.sequence < 1)
+          ) {
+            throw new Error('lifecycle sequence is not a chain position');
+          }
+          return {
+            id: required(e.id, 'event id'),
+            type: required(e.type, 'event type'),
+            sequence: e.sequence as number | undefined,
+            occurredAt: required(e.occurred_at, 'occurred_at'),
+          };
+        }),
+      };
+    });
+  });
+}

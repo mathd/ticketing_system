@@ -63,15 +63,21 @@ export const ROUTE_MATRIX: readonly RouteRule[] = [
 
   // The catalog authoring surface — admin only.
   //
-  // box_office and finance reach almost nothing as a result, and that is
-  // CORRECT rather than an oversight: the surfaces they exist for are the order
-  // console (TKT-193/TKT-194) and settlement (TKT-23), none of which are built.
-  // Widening this row to give them something to do is the mistake; building
-  // those surfaces is the fix. When TKT-23 lands, its page joins this table as
-  // admin + finance.
+  // finance still reaches almost nothing, and that is CORRECT rather than an
+  // oversight: the surface it exists for is settlement (TKT-23), which is not
+  // built. Widening a row to give a role something to do is the mistake;
+  // building its surface is the fix. When TKT-23 lands, its page joins this
+  // table as admin + finance.
   { template: '/admin/venues/[id]', source: 'page', roles: ['admin'] },
   // The event builder (TKT-192). Authoring, so admin-only for the same reason.
   { template: '/admin/events/new', source: 'page', roles: ['admin'] },
+
+  // The order console (TKT-193) — the first box_office surface. Support work:
+  // it reads an order's status and its tickets' lifecycle history and carries no
+  // money, so finance has nothing to do here and least privilege says no. When
+  // TKT-194 adds refund/resend, those actions are gated inside this page, not by
+  // widening this row — an action is not a route.
+  { template: '/admin/orders', source: 'page', roles: ['admin', 'box_office'] },
 ];
 
 /** Trailing slashes are cosmetic; `/admin/` and `/admin` are one route. */

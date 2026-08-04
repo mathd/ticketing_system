@@ -9,6 +9,8 @@ import {
   createSeatMap,
   DEFAULT_ORGANIZER_ID,
   editSeatMap,
+  getOrderState,
+  getOrderTickets,
   getSeatMapGeometry,
   getVenues,
   listSeatMapVersions,
@@ -325,5 +327,158 @@ describe('staff role propagation (TKT-197)', () => {
   it('refuses a response with no role at all', async () => {
     spyFetch({ staff_id: 's1', organizer_id: 'o1' }, 200);
     await expect(authenticateStaff('ada@example.test', 'pw')).rejects.toThrow(/unrecognised staff role/);
+  });
+});
+
+
+describe('the order console reads (TKT-193)', () => {
+  // These carry hex LETTERS on purpose. An all-digit uuid makes
+  // `.toUpperCase()` a no-op, so the case-insensitivity test below would pass
+  // against a case-SENSITIVE comparison — a fixture that cannot express the
+  // negative it claims to prove (AGENTS.md; caught by mutation check M14).
+  const ORDER = 'abcdef01-2345-4678-89ab-cdef01234567';
+  const REF = 'fedcba98-7654-4321-8ba9-876543210fed';
+  const OTHER = 'deadbeef-1234-4567-89ab-cdef01234567';
+
+  it('reads order status from commerce through the gateway', async () => {
+    const calls = spyFetch({ order_id: ORDER, status: 'completed' }, 200);
+    await expect(getOrderState(ORDER)).resolves.toEqual({
+      ok: true,
+      value: { orderId: ORDER, status: 'completed' },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].url).toBe(`http://localhost:8080/api/commerce/orders/${ORDER}`);
+  });
+
+  it('reads the ticket bundle from access through the gateway', async () => {
+    const calls = spyFetch({ order_ref: REF, tickets: [] }, 200);
+    await getOrderTickets(REF);
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].url).toBe(`http://localhost:8080/api/access/orders/${REF}/tickets`);
+  });
+
+  // The two reads fail INDEPENDENTLY and the page renders each half on its own,
+  // so the client must distinguish "this reference is unknown" from "the service
+  // could not answer". Collapsing an outage into not-found tells a support agent
+  // the customer's order does not exist.
+  it.each([
+    [404, 'not-found'],
+    [500, 'unavailable'],
+    [503, 'unavailable'],
+    // We validate the shape before calling, so a 400 means our understanding of
+    // the contract is wrong — which is a failure to answer, not an absence.
+    [400, 'unavailable'],
+  ])('turns %i into %s', async (status, kind) => {
+    spyFetch({ error: 'nope' }, status);
+    await expect(getOrderState(ORDER)).resolves.toEqual({ ok: false, kind });
+    spyFetch({ error: 'nope' }, status);
+    await expect(getOrderTickets(REF)).resolves.toEqual({ ok: false, kind });
+  });
+
+  // ai-review pass 1. A 200 carrying the wrong shape is a failure to answer, not
+  // a successful read: without runtime validation, commerce answering `{}` would
+  // render "Commerce reports this order as **undefined**" — a claim about an
+  // order, sourced from nothing, at HTTP 200.
+  it.each([
+    ['an empty commerce body', {}],
+    // order_id: ORDER, not a placeholder. sameIdentity runs FIRST, so a fixture
+    // naming a different order is rejected before the status check is ever
+    // reached — and the test would stay green with that check deleted
+    // (ai-review pass 3).
+    ['a commerce body missing status', { order_id: ORDER }],
+    ['a commerce status that is not a string', { order_id: ORDER, status: 7 }],
+    ['a commerce status that is empty', { order_id: ORDER, status: '' }],
+  ])('treats %s as unavailable, not as a status', async (_name, body) => {
+    spyFetch(body, 200);
+    await expect(getOrderState(ORDER)).resolves.toEqual({ ok: false, kind: 'unavailable' });
+  });
+
+  it.each([
+    ['no tickets key', { order_ref: REF }],
+    ['a ticket with no id', { order_ref: REF, tickets: [{ issued_at: 'x', history: [] }] }],
+    ['a history entry with no type', { order_ref: REF, tickets: [{ ticket_id: 't', issued_at: 'x', history: [{ id: 'e', occurred_at: 'x' }] }] }],
+    ['a non-numeric sequence', { order_ref: REF, tickets: [{ ticket_id: 't', issued_at: 'x', history: [{ id: 'e', type: 'issued', sequence: 'two', occurred_at: 'x' }] }] }],
+    // The access contract makes history required; defaulting it to [] would
+    // make the page say "no lifecycle events recorded yet" about a ticket,
+    // when what happened is that access did not answer properly.
+    ['a ticket with no history at all', { order_ref: REF, tickets: [{ ticket_id: 't', issued_at: 'x' }] }],
+    // A chain position is an integer >= 1 (openapi.yaml). "#0" rendered beside
+    // an event would read as a gap in the integrity chain (ADR-025 §D5).
+    ['a zero sequence', { order_ref: REF, tickets: [{ ticket_id: 't', issued_at: 'x', history: [{ id: 'e', type: 'issued', sequence: 0, occurred_at: 'x' }] }] }],
+    ['a fractional sequence', { order_ref: REF, tickets: [{ ticket_id: 't', issued_at: 'x', history: [{ id: 'e', type: 'issued', sequence: 1.5, occurred_at: 'x' }] }] }],
+  ])('treats %s as unavailable, not as tickets', async (_name, body) => {
+    spyFetch(body, 200);
+    await expect(getOrderTickets(REF)).resolves.toEqual({ ok: false, kind: 'unavailable' });
+  });
+
+  // ai-review pass 2. The page labels each half with the identifier the OPERATOR
+  // typed, so a response about a DIFFERENT order — misrouted, stale, or served
+  // from a cache that ignored no-store — would appear under the wrong heading.
+  // That is the misreading the page's caveat exists to prevent, arriving by the
+  // back door, so the client refuses it rather than the page annotating it.
+  it('refuses a commerce response about a different order', async () => {
+    spyFetch({ order_id: OTHER, status: 'completed' }, 200);
+    await expect(getOrderState(ORDER)).resolves.toEqual({ ok: false, kind: 'unavailable' });
+  });
+
+  it('refuses a ticket bundle about a different reference', async () => {
+    spyFetch({ order_ref: OTHER, tickets: [] }, 200);
+    await expect(getOrderTickets(REF)).resolves.toEqual({ ok: false, kind: 'unavailable' });
+  });
+
+  // Both sides are UUIDs, so case is a formatting choice and not a different
+  // order — refusing on it would be a self-inflicted outage.
+  it('accepts the same identifier in a different case', async () => {
+    spyFetch({ order_id: ORDER.toUpperCase(), status: 'completed' }, 200);
+    await expect(getOrderState(ORDER)).resolves.toMatchObject({ ok: true });
+  });
+
+  // COS-7. qr_payload is the credential that admits at the gate, and qr_url
+  // points at an UNAUTHENTICATED endpoint that renders it as an image. Either
+  // one on a staff console is a working ticket for someone else's order, in
+  // every screenshot and support transcript thereafter. Dropped here, at the
+  // client boundary, so no page can render what it never receives.
+  it('drops the QR credential before the page can see it', async () => {
+    const raw = {
+      order_ref: REF,
+      tickets: [
+        {
+          ticket_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          qr_payload: 'SENTINEL-QR-PAYLOAD-VALUE',
+          qr_url: '/SENTINEL-QR-URL-VALUE.png',
+          issued_at: '2026-08-01T10:00:00Z',
+          history: [
+            { id: 'e1', type: 'issued', sequence: 1, occurred_at: '2026-08-01T10:00:00Z' },
+            { id: 'e2', type: 'delivered', occurred_at: '2026-08-01T10:05:00Z' },
+          ],
+        },
+      ],
+    };
+    spyFetch(raw, 200);
+    const got = await getOrderTickets(REF);
+
+    expect(got).toEqual({
+      ok: true,
+      value: [
+        {
+          ticketId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          issuedAt: '2026-08-01T10:00:00Z',
+          history: [
+            { id: 'e1', type: 'issued', sequence: 1, occurredAt: '2026-08-01T10:00:00Z' },
+            { id: 'e2', type: 'delivered', sequence: undefined, occurredAt: '2026-08-01T10:05:00Z' },
+          ],
+        },
+      ],
+    });
+
+    // Deep equality above already pins the shape; these pin the VALUES, which is
+    // what actually leaks. A future field carrying the payload under another
+    // name passes the shape check and fails this one.
+    const serialized = JSON.stringify(got);
+    expect(serialized).not.toContain('SENTINEL-QR-PAYLOAD-VALUE');
+    expect(serialized).not.toContain('SENTINEL-QR-URL-VALUE');
+    expect(serialized).not.toContain('qr_payload');
+    expect(serialized).not.toContain('qr_url');
   });
 });
