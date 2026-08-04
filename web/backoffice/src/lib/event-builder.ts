@@ -35,11 +35,12 @@ export function parseMinorUnits(raw: string): Parsed<number> {
       message: 'Enter the amount in minor units — digits only, no decimal point (€45.50 is 4550).',
     };
   }
-  // Bound the INPUT before parsing it (ai-review F4). `BigInt` on an
-  // arbitrarily long digit string does arbitrary work, and an authenticated
-  // operator can paste a megabyte. MAX_SAFE_INTEGER is 16 digits, so anything
-  // longer is already out of range — refuse on length and never build the value.
-  if (raw.length > 16) {
+  // Bound the input before parsing it: `BigInt` on an arbitrarily long digit
+  // string does arbitrary work, and an authenticated operator can paste a
+  // megabyte (ai-review pass 1). Bound the SIGNIFICANT digits, not the character
+  // count — "00000000000000001" is 1 and 17 characters, and rejecting it for its
+  // length would refuse a value that is perfectly in range (pass 2).
+  if (raw.replace(/^0+/, '').length > 16) {
     return { ok: false, field: 'amount', message: 'That amount is too large to represent exactly.' };
   }
   // BigInt only after the bound: parsing to a Number first and checking after

@@ -104,25 +104,23 @@ func TestBackofficeEventBuilderPublishesASellableEvent(t *testing.T) {
 	ticketTypeID := idFrom(t, loc, "ticket_type")
 
 	// 4. Publish.
-	followStep(t, client, url.Values{"_action": {"publish-performance"}},
-		eventID, performanceID, ticketTypeID)
-
-	// The page reports "on sale" only if catalog says so — that is the point of
-	// deriving it rather than trusting a query parameter (ai-review F2). So the
-	// assertion follows the redirect and reads the rendered claim, and asserting
-	// a `published=1` marker would be asserting the very thing that was removed.
+	// The terminal step does not redirect: it renders catalog's own status for
+	// the slot it just published. Assert on THAT string.
 	//
-	// Retried: publication is committed before the page is fetched, but the
-	// public list is an aggregated read and the slot must be listable on it.
-	retry(t, 30*time.Second, func() error {
-		page := readBody(t, doRequest(t, client, http.MethodGet,
-			gatewayURL+"/admin/events/new?event="+eventID+"&performance="+performanceID+
-				"&ticket_type="+ticketTypeID, nil, nil))
-		if !strings.Contains(page, "on sale") {
-			return fmt.Errorf("the builder does not yet report the slot as on sale")
-		}
-		return nil
-	})
+	// The previous assertion matched "on sale" — which the step-4 form itself
+	// contains ("Publishing puts this date on sale"), so it passed instantly on
+	// an unpublished page and proved nothing (ai-review pass 2). The page no
+	// longer contains that phrase anywhere, and "Publication accepted" appears
+	// only when catalog answered.
+	publishResp := postBuilder(t, client, url.Values{"_action": {"publish-performance"}},
+		eventID, performanceID, ticketTypeID)
+	confirm := readBody(t, publishResp)
+	if publishResp.StatusCode != http.StatusOK {
+		t.Fatalf("publish: status %d; body=%.400s", publishResp.StatusCode, confirm)
+	}
+	if !strings.Contains(confirm, "Publication accepted") || !strings.Contains(confirm, "published") {
+		t.Fatalf("the builder did not report catalog's published status; body=%.600s", confirm)
+	}
 
 	// COS-2: a buyer can now see it. Asserted from the STOREFRONT render, not
 	// the catalog API — the API proves the write, the storefront proves the sale.
@@ -196,17 +194,29 @@ func TestBackofficeEventBuilderSurfacesAPublishRefusal(t *testing.T) {
 		t.Fatalf("the refusal message from catalog is not on the page; body=%.600s", body)
 	}
 
-	// ai-review F7: a string on the page proves only that a string is on the
-	// page — the builder could hard-code it and this would pass. What proves
-	// catalog REFUSED is that the slot is still not on sale. Only published
-	// slots carrying a ticket type appear on the public read, so absence here is
-	// the refusal having actually happened.
-	code, listBody := get(t, gatewayURL+"/api/catalog/public/events?locale=en", nil)
-	if code != http.StatusOK {
-		t.Fatalf("public events: %d", code)
-	}
-	if strings.Contains(string(listBody), "Unpriced "+suffix) {
-		t.Fatalf("the refused slot is on sale anyway — the page reported a refusal that did not happen")
+	// Proving the refusal was REAL needs more than a string, and more than the
+	// slot's absence from the public list: that list excludes every slot without
+	// a ticket type, so absence was guaranteed by the fixture regardless of
+	// whether publication happened (ai-review pass 2 — my previous "state" proof
+	// was as vacuous as the string it replaced).
+	//
+	// What distinguishes them: give the slot the one thing it was missing, then
+	// publish again. If the refusal was about the ticket type, this now succeeds.
+	// If the first publish had silently succeeded, the state here would differ.
+	loc = followStep(t, client, url.Values{
+		"_action":    {"create-ticket-type"},
+		"tt_name_en": {"Standard"},
+		"tt_name_fr": {"Standard"},
+		"amount":     {"1000"},
+		"currency":   {"EUR"},
+	}, eventID, performanceID, "")
+	ticketTypeID := idFrom(t, loc, "ticket_type")
+
+	after := readBody(t, postBuilder(t, client, url.Values{"_action": {"publish-performance"}},
+		eventID, performanceID, ticketTypeID))
+	if !strings.Contains(after, "Publication accepted") {
+		t.Fatalf("publishing after adding the missing ticket type still failed — the earlier "+
+			"refusal was not about the ticket type; body=%.600s", after)
 	}
 }
 

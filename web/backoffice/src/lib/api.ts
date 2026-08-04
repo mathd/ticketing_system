@@ -353,29 +353,3 @@ export function publishPerformance(performanceId: string): Promise<Performance> 
     null,
   );
 }
-
-
-/**
- * Is this slot actually on sale?
- *
- * Read from catalog's public list — the same read a buyer's storefront makes —
- * because that is what "on sale" means. The builder previously reported success
- * from a `published=1` query parameter, which any admin could type (ai-review
- * F2): a page that tells an operator their event is selling when it is not is
- * worse than one that says nothing.
- *
- * Only published slots carrying a ticket type appear on this read, so presence
- * here is the whole claim.
- */
-export async function isPerformanceOnSale(performanceId: string): Promise<boolean> {
-  const res = await fetch(catalog('/public/events?locale=en'));
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  const body = (await res.json()) as {
-    events?: { performances?: { id?: string }[] }[];
-  };
-  return (body.events ?? []).some((e) =>
-    (e.performances ?? []).some((p) => p.id === performanceId),
-  );
-}
