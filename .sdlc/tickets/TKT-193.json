@@ -1,19 +1,14 @@
 {
   "key": "TKT-193",
   "type": "Story",
-  "summary": "US-B4: Order console — staff find an order and read its lifecycle",
+  "summary": "US-B4: Order console — staff find an order and read its ticket lifecycle",
   "status": "Backlog",
   "labels": [],
   "assignee": null,
   "pr": null,
   "parent": "TKT-22",
-  "description": "**As** box-office staff, **I want** to look up an order and see its full state, **so that** I can answer a customer without a database console.\n\nThe read half of the epic's third COS. Actions (refund, resend) are US-B5 — this story is deliberately read-only so the lookup, the role gate and the rendering are settled before anything mutates.\n\n**In scope:** an order lookup screen, an order detail view showing status, buyer contact, line items, money totals in minor units + currency, and the ticket lifecycle states for that order.\n\n**Out of scope:** every mutation (US-B5), search by buyer email/name, pagination over an order list, exports.\n\n**Conditions of Success:**\n- [ ] A signed-in staff member enters an order id and sees: order status, buyer delivery contact, line items, money totals, and each ticket's current lifecycle state.\n- [ ] An unknown order id renders a readable not-found page — not a 500 and not a blank render.\n- [ ] Money renders from integer minor units + the order's ISO currency code; no float parsing anywhere on the path.\n- [ ] The console read is `no-store` (ADR-004's 'never' tier for order state) and is not served from any cache.\n- [ ] An unauthenticated caller cannot reach the console; the roles that may reach it are the ones US-B2's matrix declares.\n- [ ] The rendered page exposes no data the acting role has no business seeing — state the rule explicitly and pin it with a test.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; OpenAPI regenerated and committed before the gate (ADR-009).\n- UI story: the write forms are **submitted** against the real stack (`make up`), not just rendered — API smoke cannot see the SSR layer (TKT-105 learning).\n- Read endpoints declare their ADR-004 TTL tier; auth/session responses are `no-store`.\n",
-  "links": [
-    {
-      "type": "blocked-by",
-      "key": "TKT-197"
-    }
-  ],
+  "description": "**As** box-office staff, **I want** to look up an order and see what happened to its tickets, **so that** I can answer a customer without a database console.\n\nThe read half of the epic's third COS. Actions (refund, resend) are US-B5 — this story is deliberately read-only so the lookup, the role gate and the rendering are settled before anything mutates.\n\n---\n\n### ⚠️ Rescoped 2026-08-04, after a survey found the data does not exist\n\nThe original COS asked for five things. **Two are readable; three are not.**\n\n| Originally required | Available |\n|---|---|\n| order status | ✅ `GET /orders/{id}` → `{order_id, status}` |\n| each ticket's lifecycle state | ✅ `GET /orders/{ref}/tickets` (access) → tickets with `history` |\n| buyer delivery contact | ❌ only `/internal/buyers/{id}/delivery-email`, edge-denied; the back office holds no internal credential (ADR-042) |\n| line items | ❌ no read exists |\n| money totals | ❌ no read exists |\n\n`OrderState` is `{order_id, status}` with `additionalProperties: false`, and ADR-028's validator fails\nclosed — the handler cannot return more even if it wanted to.\n\n**Owner decision (2026-08-04):** ship the console over what is readable; **TKT-201** carries the\ncommerce read for the rest. Exposing money totals and buyer PII is a contract change on a money path\nand deserves its own review rather than riding along in a UI story.\n\n**In scope:** an order lookup screen; a detail view showing the order's status and, for each ticket,\nits lifecycle history.\n\n**Out of scope:** every mutation (US-B5); buyer contact, line items and money totals (**TKT-201**);\nsearch by email/name; pagination; exports.\n\n**Conditions of Success:**\n- [ ] A signed-in staff member enters an order id and sees the order's status and each ticket's\n      lifecycle history.\n- [ ] An unknown order id renders a readable not-found page — not a 500, not a blank render. Both\n      upstream reads can 404 independently; say what the page shows when one succeeds and the other\n      does not.\n- [ ] The console read is `no-store` (ADR-004's \"never\" tier for order state) and is served from no\n      cache.\n- [ ] An unauthenticated caller cannot reach the console, and the page is classified in\n      `ROUTE_MATRIX` — a page with no rule fails the build (TKT-197).\n- [ ] `box_office` and `admin` may reach it; `finance` may not, and pasting the URL is refused —\n      proven by driving it, not by the link being absent.\n- [ ] **The page shows no money and no buyer contact**, because it cannot: state that plainly on the\n      screen rather than rendering empty fields that look like missing data.\n- [ ] Nothing on the page is a claim the reads do not support — in particular, a ticket's lifecycle\n      history is what access recorded, not an assertion that the ticket is currently valid at a gate.\n\n**Quality gates (every story):**\n- `make check` green (lint + test + build, Go & TS + gateway smoke suite).\n- Contract tests pass for any touched service boundary; no contract change is expected here.\n- UI story: the lookup form is **submitted** against the real stack (`make up`), not just rendered.\n- Read endpoints declare their ADR-004 tier; console reads are `no-store`.",
+  "links": [],
   "context": {
     "binding": [],
     "governingAdrs": [
@@ -44,6 +39,10 @@
       {
         "id": "ADR-021",
         "why": "The lifecycle states the console renders come from the access trail. Rendering them is not a tamper-evidence claim — do not word the UI as if it verifies anything."
+      },
+      {
+        "id": "ADR-042",
+        "why": "As amended twice. The back office holds a CATALOG-only write credential and no internal token, which is precisely why commerce's buyer-contact read is unreachable from here — that constraint is the reason this ticket is rescoped rather than the reason to weaken it."
       }
     ],
     "reference": [
@@ -54,6 +53,10 @@
       {
         "summary": "Access lifecycle trail operator surface and the exact wording to reuse for any claim about it.",
         "link": "docs/development.md"
+      },
+      {
+        "summary": "The access read that supplies the whole lifecycle half: tickets with their history, public (not /internal/).",
+        "link": "services/access/api/openapi.yaml /orders/{ref}/tickets"
       }
     ],
     "capturedAt": "2026-08-03"
@@ -65,7 +68,7 @@
     },
     "scope": {
       "state": "met",
-      "note": "In-scope and out-of-scope both enumerated on the ticket."
+      "note": "Rescoped 2026-08-04 to what is readable; TKT-201 carries the commerce order detail read."
     },
     "uncertainties": {
       "state": "deferred",
@@ -76,8 +79,8 @@
       "note": "blocked-by links wired; catalog/commerce/access endpoints this depends on are shipped and stable."
     },
     "approach": {
-      "state": "deferred",
-      "note": "Where staff identity lives (gateway-owned store vs a sixth service) is settled by US-B1's plan and recorded as an ADR to be authored; later stories inherit that decision."
+      "state": "met",
+      "note": "Two existing reads (commerce order status, access ticket bundle) rendered by one admin/box_office page in TKT-197's matrix. No contract change."
     },
     "first_slice": {
       "state": "met",
@@ -97,6 +100,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Blocker re-pointed (2026-08-03).** The former TKT-191 was split; the *role matrix* this ticket\nactually needs is now **TKT-197**, so `blocked-by` moves from TKT-191 to TKT-197. TKT-191 (catalog\nrefuses unattributed writes) still lands first — TKT-197 is blocked by it — so nothing runs earlier\nthan before."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Rescoped after a data survey — ✅ PASS\n\nWritten at decomposition against an assumption about what an order read returns. It returns\n`{order_id, status}`.\n\nThree of five COS items had no data behind them, and building them meant extending commerce's\ncontract to carry **money** and **buyer PII** — a money path this ticket never anticipated, ADR-003's\nboundary, and an ADR-004 tier decision. Surfaced to the owner rather than absorbed; the decision was\nto ship what is readable and file **TKT-201**.\n\n**What survived is still worth having.** \"Did this order complete, and what has happened to its\ntickets\" answers a real support question, and the lifecycle history is the more interesting half —\nit is the part no database console shows legibly.\n\n**One AC added that was not in the original:** the page must *say* it shows no money or contact,\nrather than render empty fields. A console with blank money columns reads as broken data; a console\nthat says why reads as a scoped tool.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Sizing | ✅ | Two reads, one page — the smallest story left in the epic |\n| Dependencies | ✅ | TKT-197 Done; TKT-201 is a sibling, not a blocker |\n| AC verifiable | ✅ | Every COS names something drivable |\n| Context-mémo | ✅ | Re-baked; carries the ADR-042 constraint that caused the rescope |\n\n**Verdict: PASS.**"
     }
   ]
 }
