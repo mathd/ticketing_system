@@ -24,3 +24,7 @@ spike/
 # They are scratch input to a model, never repo content.
 .plan-brief.*
 .brief.*
+# Review prompts too — these inline the diff under review, so they are large,
+# duplicate the history, and go stale the moment the branch moves. TKT-193
+# committed four of them (4,917 lines) to main on a `git add -A`.
+.review-*.md
