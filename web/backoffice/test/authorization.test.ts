@@ -204,16 +204,59 @@ describe('overlapping templates resolve by specificity, not declaration order', 
     expect(selectRule(overlapping, '/admin/venues/abc')?.template).toBe('/admin/venues/[id]');
   });
 
-  it('the shipped matrix has no ambiguous overlap today', () => {
-    // Not a substitute for the above — a guard so the shipped table cannot grow
-    // one accidentally. Two rules matching the same concrete path is a decision
-    // someone must make deliberately.
-    const probes = ['/admin', '/admin/login', '/admin/logout', '/admin/healthz', '/admin/venues/x'];
-    for (const path of probes) {
-      const hits = ROUTE_MATRIX.filter((r) => selectRule([r], path));
-      expect(hits.length, `${path} is matched by ${hits.length} rules`).toBeLessThanOrEqual(1);
+  it('gives every shipped rule a path that actually selects it', () => {
+    // ai-review pass 2, F2: the previous version of this guard probed five
+    // hand-written paths and called selectRule([r], path) — a single-element
+    // array, so it could only ever return that element. It was a verbose match
+    // predicate wearing the costume of an ambiguity check, and it is why the
+    // incomplete comparator above passed.
+    //
+    // The property that matters is REACHABILITY: a rule no path can select is a
+    // rule that has been shadowed, which is exactly what a role-inverting
+    // overlap looks like. Derived from the matrix, so it covers rules added
+    // later without anyone extending a probe list.
+    for (const rule of ROUTE_MATRIX) {
+      const path = rule.template.replace(/\[\.\.\.[^\]]+\]/g, 'a/b').replace(/\[[^\]]+\]/g, 'x');
+      expect(selectRule(ROUTE_MATRIX, path)?.template, `${rule.template} is shadowed by another rule`).toBe(
+        rule.template,
+      );
     }
   });
+
+  it('has no mixed segments, which the comparator does not model', () => {
+    // `order-[id]` is a legal Astro segment and would be classified static here,
+    // disagreeing with the router. Refuse it rather than mis-rank it.
+    for (const rule of ROUTE_MATRIX) {
+      for (const seg of rule.template.split('/')) {
+        const bracket = seg.indexOf('[');
+        expect(bracket === -1 || bracket === 0, `mixed segment ${seg} in ${rule.template}`).toBe(true);
+      }
+    }
+  });
+
+  // The positional case my first comparator got wrong: same dynamic count, so it
+  // tied and fell back to declaration order. Astro compares segment by segment
+  // and prefers the static one at the first differing position.
+  it('prefers the template whose EARLIER segment is static', () => {
+    const positional: readonly RouteRule[] = [
+      { template: '/admin/[section]/x', source: 'page', roles: ['admin'] },
+      { template: '/admin/x/[id]', source: 'page', roles: ['finance'] },
+    ];
+    for (const order of [positional, [...positional].reverse()]) {
+      expect(selectRule(order, '/admin/x/x')?.roles).toEqual(['finance']);
+    }
+  });
+
+  it('prefers a deeper rest template over a shallower one', () => {
+    const rests: readonly RouteRule[] = [
+      { template: '/admin/[...rest]', source: 'page', roles: ['admin'] },
+      { template: '/admin/reports/[...rest]', source: 'page', roles: ['finance'] },
+    ];
+    for (const order of [rests, [...rests].reverse()]) {
+      expect(selectRule(order, '/admin/reports/q3/summary')?.roles).toEqual(['finance']);
+    }
+  });
+
 });
 
 describe('anonymous access has ONE source of truth', () => {

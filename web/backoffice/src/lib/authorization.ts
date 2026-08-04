@@ -92,30 +92,75 @@ function matches(template: string, pathname: string): boolean {
 }
 
 /**
- * How specific a template is, for choosing between overlapping matches.
- * Lower sorts first: static beats dynamic beats rest, exactly as Astro resolves
- * its own routes.
+ * Segment kinds, ordered by precedence. Lower wins.
+ *
+ * Whole-segment only: this app has no mixed segments (`order-[id]`), and a test
+ * asserts the matrix never grows one — the comparator below would classify such
+ * a segment as static and disagree with Astro about it.
  */
-function specificity(template: string): [number, number] {
-  const segs = normalize(template).split('/');
-  return [
-    segs.some((s) => s.startsWith('[...')) ? 1 : 0,
-    segs.filter((s) => s.startsWith('[')).length,
-  ];
+const enum SegmentKind {
+  Static = 0,
+  Dynamic = 1,
+  Spread = 2,
+}
+
+function segmentKind(segment: string): SegmentKind {
+  if (segment.startsWith('[...')) return SegmentKind.Spread;
+  if (segment.startsWith('[')) return SegmentKind.Dynamic;
+  return SegmentKind.Static;
 }
 
 /**
- * The rule covering a path, chosen by SPECIFICITY rather than declaration order.
+ * Astro's own route precedence, mirrored (ai-review pass 2, F1).
  *
- * First-match would be a role-boundary bug waiting for a routine route addition
- * (ai-review F1). `/admin/venues/[id]` is admin-only; add a static, finance-only
- * `/admin/venues/settlement` page and first-match hands it the `[id]` rule —
- * admin reaches the finance page and finance is refused, exactly inverted. The
- * enumeration test would not notice, because both templates exist in both sets.
+ * Read from `astro/dist/core/routing/priority.js` (`routeComparator`) at the
+ * installed 7.0.9 rather than described from memory, because the property that
+ * matters is agreement with the router: a matcher that disagrees about which
+ * route a URL IS cannot be trusted to say who may reach it.
  *
- * Astro resolves static before dynamic before rest, so this must too: a matcher
- * that disagrees with the router about which route a URL IS cannot be trusted to
- * say who may reach it.
+ * Segment by segment: static beats dynamic beats spread, and two differing
+ * statics order alphabetically. Then longer beats shorter, except that a route
+ * ending in a spread loses to its one-segment-shorter sibling — Astro's own
+ * carve-out, kept so the two do not diverge on it.
+ *
+ * A first attempt scored whole templates as (hasSpread, dynamicCount) and tied
+ * on `/admin/[a]/x` vs `/admin/x/[b]`, falling back to declaration order — which
+ * is how a routine route addition inverts a role boundary.
+ */
+export function compareRoutePriority(a: string, b: string): number {
+  const as = normalize(a).split('/');
+  const bs = normalize(b).split('/');
+  const common = Math.min(as.length, bs.length);
+
+  for (let i = 0; i < common; i++) {
+    const ak = segmentKind(as[i]!);
+    const bk = segmentKind(bs[i]!);
+    if (ak !== bk) return ak - bk;
+    if (ak === SegmentKind.Static && as[i] !== bs[i]) return as[i]!.localeCompare(bs[i]!);
+  }
+
+  if (as.length !== bs.length) {
+    const aEndsInRest = segmentKind(as.at(-1)!) === SegmentKind.Spread;
+    const bEndsInRest = segmentKind(bs.at(-1)!) === SegmentKind.Spread;
+    if (aEndsInRest !== bEndsInRest && Math.abs(as.length - bs.length) === 1) {
+      if (as.length > bs.length && aEndsInRest) return 1;
+      if (bs.length > as.length && bEndsInRest) return -1;
+    }
+    return as.length > bs.length ? -1 : 1;
+  }
+  return a.localeCompare(b);
+}
+
+/**
+ * The rule covering a path, chosen by Astro's PRECEDENCE rather than by
+ * declaration order (ai-review pass 1, F1).
+ *
+ * First-match was a role-boundary bug waiting for a routine route addition:
+ * `/admin/venues/[id]` is admin-only, so a static finance-only
+ * `/admin/venues/settlement` added later would have been handed the `[id]` rule —
+ * admin reaching the finance page, finance refused, exactly inverted. The
+ * enumeration test would not have noticed, because both templates exist in both
+ * sets.
  */
 export function selectRule(
   rules: readonly RouteRule[],
@@ -123,11 +168,7 @@ export function selectRule(
 ): RouteRule | undefined {
   const candidates = rules.filter((rule) => matches(rule.template, pathname));
   if (candidates.length <= 1) return candidates[0];
-  return candidates.sort((a, b) => {
-    const [aRest, aDyn] = specificity(a.template);
-    const [bRest, bDyn] = specificity(b.template);
-    return aRest - bRest || aDyn - bDyn;
-  })[0];
+  return [...candidates].sort((x, y) => compareRoutePriority(x.template, y.template))[0];
 }
 
 /** The rule covering a path, or undefined when nothing covers it. */
