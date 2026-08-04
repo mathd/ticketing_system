@@ -70,6 +70,8 @@ export const ROUTE_MATRIX: readonly RouteRule[] = [
   // those surfaces is the fix. When TKT-23 lands, its page joins this table as
   // admin + finance.
   { template: '/admin/venues/[id]', source: 'page', roles: ['admin'] },
+  // The event builder (TKT-192). Authoring, so admin-only for the same reason.
+  { template: '/admin/events/new', source: 'page', roles: ['admin'] },
 ];
 
 /** Trailing slashes are cosmetic; `/admin/` and `/admin` are one route. */

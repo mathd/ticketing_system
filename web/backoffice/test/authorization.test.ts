@@ -86,10 +86,17 @@ describe('route enumeration is fail-closed (COS-1)', () => {
     expect(onDisk).toContain('/admin/logout');
     expect(onDisk).toContain('/admin/healthz');
     expect(onDisk).toContain('/admin/venues/[id]');
+    expect(onDisk).toContain('/admin/events/new');
   });
 });
 
 describe('what the matrix says (COS-2, COS-3)', () => {
+  it('gates the event builder to admin alone (TKT-192)', () => {
+    expect(canAccessRoute('/admin/events/new', 'admin')).toBe(true);
+    expect(canAccessRoute('/admin/events/new', 'finance')).toBe(false);
+    expect(canAccessRoute('/admin/events/new', 'box_office')).toBe(false);
+  });
+
   it('gates the catalog authoring surface to admin alone', () => {
     // COS-3: the matrix must be able to EXPRESS a role-exclusive route, and this
     // is the proof, using a route that exists. The finance/settlement surface it
