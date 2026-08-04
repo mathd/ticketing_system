@@ -1657,8 +1657,13 @@ func TestCatalogWriteCredentialDoesNotOpenAnotherService(t *testing.T) {
 	// 400 — inventory's request validation runs BEFORE its credential check, so a
 	// malformed request never reaches the guard, and a test asserting on the
 	// guard would have been reporting on the validator instead.
+	// Both parameters the operation declares (Id, OrganizerId) — read from
+	// services/inventory/api/openapi.yaml rather than guessed. Two earlier
+	// attempts failed on a missing one and reported the validator's 400 as if it
+	// were the guard's verdict.
 	req, err := http.NewRequest(http.MethodGet,
-		fmt.Sprintf("%s/internal/slots/%s/availability", inventoryURL, uuid.NewString()), nil)
+		fmt.Sprintf("%s/internal/slots/%s/availability?organizer_id=%s",
+			inventoryURL, uuid.NewString(), organizerID), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
