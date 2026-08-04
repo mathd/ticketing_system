@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // TKT-194. The back office gets a commerce credential so it can refund, and the
@@ -32,9 +36,11 @@ const (
 type internalOp struct {
 	name   string
 	method string
-	path   string
-	body   string
-	key    bool // sends Idempotency-Key
+	// routeTemplate is chi's pattern, compared against the real router.
+	routeTemplate string
+	path          string
+	body          string
+	key           bool // sends Idempotency-Key
 }
 
 // everyInternalOperationExceptRefund mirrors Router's internal registrations.
@@ -43,18 +49,18 @@ type internalOp struct {
 func everyInternalOperationExceptRefund() []internalOp {
 	conversion := `{"organizer_id":"` + someUUID + `","ticket_type_id":"` + otherUUID + `","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
 	return []internalOp{
-		{"convertOperationalHold", http.MethodPost, "/internal/operational-holds/" + someUUID + "/convert", conversion, true},
-		{"drawDownGroupReservation", http.MethodPost, "/internal/group-reservations/" + someUUID + "/draw-down", conversion, true},
-		{"exchangeOrder", http.MethodPost, "/internal/orders/" + someUUID + "/exchanges",
+		{"convertOperationalHold", http.MethodPost, "/internal/operational-holds/{id}/convert", "/internal/operational-holds/" + someUUID + "/convert", conversion, true},
+		{"drawDownGroupReservation", http.MethodPost, "/internal/group-reservations/{id}/draw-down", "/internal/group-reservations/" + someUUID + "/draw-down", conversion, true},
+		{"exchangeOrder", http.MethodPost, "/internal/orders/{id}/exchanges", "/internal/orders/" + someUUID + "/exchanges",
 			`{"organizer_id":"` + someUUID + `","target_ticket_type_id":"` + otherUUID + `","actor":"staff:amy","reason":"upgrade"}`, true},
-		{"exchangeTicketsSwitched", http.MethodPost, "/internal/exchanges/" + someUUID + "/tickets-switched",
+		{"exchangeTicketsSwitched", http.MethodPost, "/internal/exchanges/{id}/tickets-switched", "/internal/exchanges/" + someUUID + "/tickets-switched",
 			`{"organizer_id":"` + someUUID + `"}`, false},
-		{"createCancellationRefundRun", http.MethodPost, "/internal/slots/" + someUUID + "/cancellation-refunds",
+		{"createCancellationRefundRun", http.MethodPost, "/internal/slots/{id}/cancellation-refunds", "/internal/slots/" + someUUID + "/cancellation-refunds",
 			`{"organizer_id":"` + someUUID + `","actor":"staff:amy","reason":"event cancelled"}`, true},
 		// organizer_id is a REQUIRED query parameter here; without it the
 		// validator answers 400 and the credential check never runs.
-		{"getCancellationRefundReport", http.MethodGet, "/internal/cancellation-refunds/" + someUUID + "?organizer_id=" + someUUID, "", false},
-		{"getDeliveryEmail", http.MethodGet, "/internal/buyers/" + someUUID + "/delivery-email", "", false},
+		{"getCancellationRefundReport", http.MethodGet, "/internal/cancellation-refunds/{id}", "/internal/cancellation-refunds/" + someUUID + "?organizer_id=" + someUUID, "", false},
+		{"getDeliveryEmail", http.MethodGet, "/internal/buyers/{id}/delivery-email", "/internal/buyers/" + someUUID + "/delivery-email", "", false},
 	}
 }
 
@@ -76,14 +82,70 @@ func serveWithStaffCredential(t *testing.T, op internalOp) *httptest.ResponseRec
 	return res
 }
 
+// internalRoutesFromRouter walks the REAL router rather than trusting a count.
+//
+// A hand-maintained number cannot detect the drift it exists to catch: add a
+// ninth internal route — including one mistakenly guarded by staffOrInternal —
+// and a `len(ops) != 7` assertion stays green while the staff credential opens
+// something new (ai-review pass 1). The router is the only thing that knows
+// what commerce actually serves.
+func internalRoutesFromRouter(t *testing.T) []string {
+	t.Helper()
+	r := chi.NewRouter()
+	New(nil, http.DefaultClient, "", "", "", internalTok).registerRoutes(r)
+	var found []string
+	err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if strings.HasPrefix(route, "/internal/") {
+			found = append(found, method+" "+route)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk router: %v", err)
+	}
+	sort.Strings(found)
+	return found
+}
+
+// The fixture table and the router must describe the same surface, in BOTH
+// directions: a route the table misses is unproven, and a table entry naming a
+// route that no longer exists is a probe hitting a 404 for the wrong reason.
+func TestTheEnumerationCoversEveryInternalRouteCommerceServes(t *testing.T) {
+	onRouter := internalRoutesFromRouter(t)
+
+	covered := map[string]bool{"POST /internal/orders/{id}/refunds": true}
+	for _, op := range everyInternalOperationExceptRefund() {
+		covered[op.method+" "+op.routeTemplate] = true
+	}
+
+	var unproven, stale []string
+	for _, route := range onRouter {
+		if !covered[route] {
+			unproven = append(unproven, route)
+		}
+		delete(covered, route)
+	}
+	for route := range covered {
+		stale = append(stale, route)
+	}
+	sort.Strings(stale)
+
+	if len(unproven) > 0 {
+		t.Errorf("these internal routes are not covered by the credential enumeration — "+
+			"the staff credential could open them and nothing here would notice: %v", unproven)
+	}
+	if len(stale) > 0 {
+		t.Errorf("these enumeration entries name routes commerce no longer serves, so their "+
+			"probes prove nothing: %v", stale)
+	}
+	if len(onRouter) < 8 {
+		t.Errorf("the walk found %d internal routes, which is fewer than commerce has — "+
+			"the walk itself is broken: %v", len(onRouter), onRouter)
+	}
+}
+
 func TestStaffCredentialOpensNoInternalOperationButTheRefund(t *testing.T) {
 	ops := everyInternalOperationExceptRefund()
-	// Commerce registers 8 internal routes; 7 of them are here and the refund is
-	// the eighth. A new internal route added without a line in this table would
-	// otherwise be silently unproven.
-	if len(ops) != 7 {
-		t.Fatalf("the enumeration covers %d operations, want 7 — did commerce gain an internal route?", len(ops))
-	}
 	for _, op := range ops {
 		t.Run(op.name, func(t *testing.T) {
 			res := serveWithStaffCredential(t, op)

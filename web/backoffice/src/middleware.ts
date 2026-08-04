@@ -14,8 +14,18 @@
 
 import { defineMiddleware } from 'astro:middleware';
 
+import { assertCredentialSeparation } from './lib/credentials';
 import { LOGIN_PATH, gateRequest } from './lib/gate';
 import { SESSION_COOKIE, lookupSession } from './lib/session';
+
+// At MODULE SCOPE, so it runs once when the SSR server loads its entry (TKT-194).
+//
+// This is not a gate rule and does not belong in gate.ts: it is a startup
+// assertion about configuration, not a decision about a request, and it must
+// run exactly once whether or not anyone ever signs in. It is here because
+// module scope is what "at startup" means for an Astro SSR entry. The rule
+// itself, and its tests, live in lib/credentials.ts.
+assertCredentialSeparation();
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const response = await gateRequest({
