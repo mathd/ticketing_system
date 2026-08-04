@@ -114,6 +114,16 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	}
 	validator := oapimiddleware.OapiRequestValidatorWithOptions(doc, &oapimiddleware.Options{
 		ErrorHandler: func(w http.ResponseWriter, message string, statusCode int) {
+			// A 401 is the staff-write guard refusing (TKT-191). Answer with a
+			// fixed body rather than the validator's own phrasing ("security
+			// requirements failed: …"), which is internal wording that would
+			// reach an unauthenticated caller and vary with the library version.
+			// Validation messages on other statuses stay: a 400 is telling a
+			// legitimate caller what it got wrong.
+			if statusCode == http.StatusUnauthorized {
+				writeJSON(w, statusCode, Error{Error: "unauthorized"})
+				return
+			}
 			writeJSON(w, statusCode, Error{Error: message})
 		},
 		// The contract's security requirement is enforced HERE rather than in 26

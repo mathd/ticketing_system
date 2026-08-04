@@ -42,6 +42,11 @@ func postWithKey(t *testing.T, url, key string, body any) (int, []byte) {
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", key)
+	// TKT-191: catalog writes need the staff-write credential; other services
+	// must never see it.
+	if isCatalogURL(url) {
+		req.Header.Set(staffWriteHeader, staffWriteToken())
+	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
@@ -67,6 +72,11 @@ func postWithKeyAsync(t *testing.T, url, key string, body any) (int, []byte) {
 	req.Header.Set("Content-Type", "application/json")
 	if key != "" {
 		req.Header.Set("Idempotency-Key", key)
+	}
+	// TKT-191: catalog writes need the staff-write credential; other services
+	// must never see it.
+	if isCatalogURL(url) {
+		req.Header.Set(staffWriteHeader, staffWriteToken())
 	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
