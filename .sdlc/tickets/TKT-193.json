@@ -4,7 +4,7 @@
   "summary": "US-B4: Order console — staff find an order and read its ticket lifecycle",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent",
   "pr": null,
