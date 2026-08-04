@@ -4,7 +4,7 @@
   "summary": "US-B2a: Catalog refuses writes it cannot attribute — the back office becomes the only writer",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": null,
