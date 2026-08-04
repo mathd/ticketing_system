@@ -20,6 +20,7 @@ import {
   createPerformance,
   createTicketType,
   getVenues,
+  isPerformanceOnSale,
   publishPerformance,
 } from '../../lib/api';
 import { parseCurrency, parseLocalizedName, parseMinorUnits } from '../../lib/event-builder';
@@ -34,15 +35,31 @@ const here = `${base}/events/new`;
 let eventId = Astro.url.searchParams.get('event');
 let performanceId = Astro.url.searchParams.get('performance');
 let ticketTypeId = Astro.url.searchParams.get('ticket_type');
-const published = Astro.url.searchParams.get('published') === '1';
 
 // On a failed submit we re-render rather than redirect, so the operator keeps
 // what they typed (COS-4). `errorField` drives which input is flagged.
 let error: string | null = null;
 let errorField: string | null = null;
 let submitted: Record<string, string> = {};
+let venues: Awaited<ReturnType<typeof getVenues>> = [];
+let published = false;
 
-const venues = await getVenues(staff.organizerId);
+// Both reads are inside the error path (ai-review F5): a catalog read that fails
+// must render this page's readable message, not abort SSR into a 500 that says
+// nothing. `published` is READ from catalog rather than taken from the query
+// string (F2) — an operator must not be told their event is on sale because the
+// URL said so.
+try {
+  venues = await getVenues(staff.organizerId);
+  if (performanceId) {
+    published = await isPerformanceOnSale(performanceId);
+  }
+} catch (e) {
+  error =
+    e instanceof CatalogApiError
+      ? e.message
+      : 'Something went wrong talking to the catalog. Try again.';
+}
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -51,7 +68,18 @@ if (Astro.request.method === 'POST') {
   submitted = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 
   try {
-    if (action === 'create-event') {
+    // Replay guard (ai-review F3, partial): a step that has already produced an
+    // id must not run again. This kills the back-button re-POST and a stale form
+    // resubmitted from history. It does NOT close a true double-click race —
+    // catalog's create operations take no idempotency key, so that needs a
+    // contract change and is TKT-200.
+    const alreadyDone =
+      (action === 'create-event' && eventId) ||
+      (action === 'create-performance' && performanceId) ||
+      (action === 'create-ticket-type' && ticketTypeId);
+    if (alreadyDone) {
+      error = 'That step is already done — continue from where you left off.';
+    } else if (action === 'create-event') {
       const name = parseLocalizedName({ en: field('name_en'), fr: field('name_fr') });
       if (!name.ok) {
         error = name.message;
@@ -95,10 +123,12 @@ if (Astro.request.method === 'POST') {
       }
     } else if (action === 'publish-performance') {
       await publishPerformance(String(performanceId));
+      // No `published=1`: the next render asks catalog whether the slot is
+      // actually on sale.
       return Astro.redirect(
         `${here}?event=${encodeURIComponent(String(eventId))}` +
           `&performance=${encodeURIComponent(String(performanceId))}` +
-          `&ticket_type=${encodeURIComponent(String(ticketTypeId))}&published=1`,
+          `&ticket_type=${encodeURIComponent(String(ticketTypeId))}`,
         303,
       );
     }

@@ -178,8 +178,21 @@ func TestBackofficeEventBuilderSurfacesAPublishRefusal(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("a refused publish must re-render, got %d; body=%.400s", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, "no ticket type") {
+	if !strings.Contains(body, "performance has no ticket type") {
 		t.Fatalf("the refusal message from catalog is not on the page; body=%.600s", body)
+	}
+
+	// ai-review F7: a string on the page proves only that a string is on the
+	// page — the builder could hard-code it and this would pass. What proves
+	// catalog REFUSED is that the slot is still not on sale. Only published
+	// slots carrying a ticket type appear on the public read, so absence here is
+	// the refusal having actually happened.
+	code, listBody := get(t, gatewayURL+"/api/catalog/public/events?locale=en", nil)
+	if code != http.StatusOK {
+		t.Fatalf("public events: %d", code)
+	}
+	if strings.Contains(string(listBody), "Unpriced "+suffix) {
+		t.Fatalf("the refused slot is on sale anyway — the page reported a refusal that did not happen")
 	}
 }
 
