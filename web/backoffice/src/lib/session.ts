@@ -40,7 +40,22 @@ export function resetSessionsForTest(): void {
   sessions.clear();
 }
 
+/** Test-only: proves a sweep actually reclaimed entries rather than hiding them. */
+export function sessionCountForTest(): number {
+  return sessions.size;
+}
+
 export function createSession(principal: StaffPrincipal, now = Date.now()): string {
+  // Reclaim on create (ai-review F4). Expiry-on-read alone only collects a token
+  // that is presented again — and the entries that never come back are precisely
+  // the ones whose owner closed the tab, i.e. the common case. Left alone the map
+  // grows monotonically for the process's whole life. Sweeping here bounds it by
+  // the number of LIVE sessions instead, and the cost is trivial: it runs once
+  // per sign-in, behind a bcrypt comparison that costs far more, over a map whose
+  // size is the staff headcount.
+  for (const [token, entry] of sessions) {
+    if (now >= entry.expiresAt) sessions.delete(token);
+  }
   // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
   const token = randomBytes(32).toString('base64url');
   sessions.set(token, { principal, expiresAt: now + SESSION_TTL_MS });
@@ -70,10 +85,25 @@ export function destroySession(token: string): void {
   sessions.delete(token);
 }
 
+/**
+ * The cookie is scoped to the back office, NOT to the whole origin (ai-review
+ * F3). The gateway serves the storefront at `/`, the scanner at `/scanner/` and
+ * the service APIs at `/api/*` — all the SAME origin. A `Path=/` cookie is
+ * therefore attached by the browser to every storefront page view, every scanner
+ * request and every API call, so any access log, error report or diagnostic echo
+ * in those unrelated surfaces captures a live, reusable back-office credential.
+ * HttpOnly does not help: it stops scripts reading the cookie, not servers
+ * receiving it.
+ *
+ * Must match the deletion path exactly, or the browser keeps the old cookie
+ * beside the deletion and hands it straight back.
+ */
+export const SESSION_COOKIE_PATH = '/admin';
+
 export interface SessionCookieOptions {
   httpOnly: true;
   sameSite: 'lax';
-  path: '/';
+  path: typeof SESSION_COOKIE_PATH;
   maxAge: number;
   secure: boolean;
 }
@@ -89,7 +119,7 @@ export function sessionCookieOptions({ secure }: { secure: boolean }): SessionCo
     // the CSRF-relevant half — see gate.ts for the server-side control that does
     // not depend on the browser honouring this at all.
     sameSite: 'lax',
-    path: '/',
+    path: SESSION_COOKIE_PATH,
     maxAge: SESSION_TTL_MS / 1000,
     // Only over TLS. Setting it unconditionally would make the cookie
     // undeliverable on the plain-HTTP local stack, i.e. break sign-in entirely.

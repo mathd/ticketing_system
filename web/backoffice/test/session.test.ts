@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   SESSION_COOKIE,
+  SESSION_COOKIE_PATH,
   SESSION_TTL_MS,
   createSession,
   destroySession,
   lookupSession,
   resetSessionsForTest,
   sessionCookieOptions,
+  sessionCountForTest,
 } from '../src/lib/session';
 
 const principal = { staffId: 'staff-1', organizerId: 'org-1' };
@@ -57,6 +59,28 @@ describe('session lifecycle', () => {
     expect(lookupSession(token, issuedAt + SESSION_TTL_MS)).toBeUndefined();
   });
 
+  // ai-review F4: expiry-on-read only collects a token that is presented again,
+  // and the entries that never come back — the tab someone just closed — are the
+  // common case. Without a sweep the map grows for the process's whole life.
+  it('reclaims expired entries that were never presented again', () => {
+    const issuedAt = 1_000_000;
+    for (let i = 0; i < 5; i++) createSession(principal, issuedAt);
+    expect(sessionCountForTest()).toBe(5);
+
+    // One sign-in after they all expire: the abandoned five are gone, not merely
+    // unreadable.
+    createSession(principal, issuedAt + SESSION_TTL_MS);
+    expect(sessionCountForTest()).toBe(1);
+  });
+
+  it('does not sweep away sessions that are still live', () => {
+    const issuedAt = 1_000_000;
+    const live = createSession(principal, issuedAt);
+    createSession(principal, issuedAt + 1);
+    expect(sessionCountForTest()).toBe(2);
+    expect(lookupSession(live, issuedAt + 2)).toEqual(principal);
+  });
+
   it('forgets an expired entry rather than holding it forever', () => {
     const issuedAt = 1_000_000;
     const token = createSession(principal, issuedAt);
@@ -67,7 +91,7 @@ describe('session lifecycle', () => {
 });
 
 describe('session cookie attributes (COS-6)', () => {
-  it('is HttpOnly, SameSite=Lax, Path=/ and lifetime-bounded', () => {
+  it('is HttpOnly, SameSite=Lax, back-office-scoped and lifetime-bounded', () => {
     const opts = sessionCookieOptions({ secure: false });
     expect(opts.httpOnly).toBe(true);
     // Lax, not Strict: Strict would drop the cookie on a top-level navigation
@@ -75,7 +99,12 @@ describe('session cookie attributes (COS-6)', () => {
     // would look signed-out. Lax still withholds it from cross-site POSTs, which
     // is the CSRF-relevant half.
     expect(opts.sameSite).toBe('lax');
-    expect(opts.path).toBe('/');
+    // NOT '/' (ai-review F3). The gateway serves the storefront at '/', the
+    // scanner at '/scanner/' and the APIs at '/api/*' on the SAME origin, so an
+    // origin-wide cookie is handed to all of them on every request — and any log
+    // or diagnostic echo there captures a reusable back-office credential.
+    expect(opts.path).toBe('/admin');
+    expect(opts.path).toBe(SESSION_COOKIE_PATH);
     expect(opts.maxAge).toBe(SESSION_TTL_MS / 1000);
     expect(SESSION_TTL_MS).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
   });

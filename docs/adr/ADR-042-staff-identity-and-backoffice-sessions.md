@@ -81,6 +81,10 @@ Compose staff tool. The alternative costs a table, a migration and an expiry swe
 nobody has asked for. When someone does, the session module is replaced without moving the
 enforcement point — which is why this is the reversible choice, not merely the cheap one.
 
+Expired entries are swept **on sign-in**, not only when their own token is presented again. Reading
+is not enough on its own: the sessions that are never presented again — the tab someone closed — are
+the common case, so expiry-on-read alone would let the map grow for the life of the process.
+
 **3. CSRF is answered by two controls, and they do different things.**
 - `SameSite=Lax` on the session cookie means the cookie is **not transmitted** on a cross-site POST,
   so a forged request arrives with no session. This depends on the browser honouring it.
@@ -93,6 +97,20 @@ enforcement point — which is why this is the reversible choice, not merely the
 Astro's own `checkOrigin` stays disabled, for the reason in Context. A synchronizer token was
 rejected: it would add hidden fields and server state to every existing authoring form to defend
 against the same thing, using an origin the trusted gateway already supplies.
+
+The session cookie is scoped `Path=/admin`, **not** `Path=/`. The gateway serves the storefront at
+`/`, the scanner at `/scanner/` and every service API at `/api/*` — all on the **same origin**. An
+origin-wide cookie would therefore be attached by the browser to every storefront page view, every
+scanner request and every API call, so any access log, error report or diagnostic echo in those
+unrelated surfaces would capture a live, reusable back-office credential. `HttpOnly` does not help
+here: it stops scripts reading the cookie, not servers receiving it.
+
+**A password longer than 72 bytes is refused before the identifier is looked up**, and is never
+handed to bcrypt. This is not input hygiene, it is the same timing property as above: bcrypt returns
+`ErrPasswordTooLong` past 72 bytes *without doing the work*, and the KDF is the only thing masking
+the cost difference between a row that was found and `sql.ErrNoRows`. The contract's `maxLength: 72`
+cannot catch it — OpenAPI counts **characters**, bcrypt counts **bytes**, so 72 multibyte characters
+validate cleanly at three times the limit. Both findings came from the TKT-190 adversarial review.
 
 **4. Sign-in is by identifier alone, so `identifier_key` is unique across the whole table**, not per
 organizer. Two organizers holding the same address would make the lookup ambiguous. v1 has a single

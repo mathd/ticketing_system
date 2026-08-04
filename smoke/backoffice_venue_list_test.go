@@ -184,42 +184,67 @@ func TestBackofficeRefusesBadCredentialsIdentically(t *testing.T) {
 
 // COS-7, the server-side half. checkOrigin is off (it cannot work behind the
 // proxy), so this is what stands in its place: a submission whose Origin is not
-// the gateway's public origin is refused before any credential is read.
+// the gateway's public origin is refused BEFORE any credential is read.
+//
+// ai-review F5: "the response was 403" is not that claim. A middleware that
+// authenticated first, created the session, and only then rewrote the response
+// to 403 would satisfy it exactly. So each case asserts the STATE the request
+// was supposed to be refused before reaching:
+//   - a cross-origin login runs on a FRESH, unauthenticated jar, and must emit no
+//     session cookie and leave that jar still signed out;
+//   - a cross-origin logout runs on a live session, which must survive it.
 func TestBackofficeRefusesCrossOriginSubmissions(t *testing.T) {
 	identifier, password := staffCredential(t)
+	creds := url.Values{"identifier": {identifier}, "password": {password}}
 
-	// A signed-in session, so the logout case below is a real one to steal.
-	client := jarClient(t)
-	if resp := postForm(t, client, gatewayURL+"/admin/login", url.Values{
-		"identifier": {identifier}, "password": {password}}); resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("setup sign-in failed: %d", resp.StatusCode)
+	crossOriginPost := func(t *testing.T, c *http.Client, path string, origin string) *http.Response {
+		t.Helper()
+		hdr := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+		if origin != "" {
+			hdr["Origin"] = origin
+		}
+		return doRequest(t, c, http.MethodPost, gatewayURL+path, hdr, strings.NewReader(creds.Encode()))
 	}
 
-	for _, tc := range []struct {
-		name, path string
-		origin     map[string]string
-	}{
-		{"cross-site login", "/admin/login", map[string]string{"Origin": "http://evil.example"}},
-		{"cross-site logout", "/admin/logout", map[string]string{"Origin": "http://evil.example"}},
-		{"login with no Origin at all", "/admin/login", nil},
+	// Two login attempts with VALID credentials — the only kind that could
+	// actually mint a session if the ordering were wrong.
+	for _, tc := range []struct{ name, origin string }{
+		{"cross-site login", "http://evil.example"},
+		{"login with no Origin at all", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			hdr := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
-			for k, v := range tc.origin {
-				hdr[k] = v
-			}
-			resp := doRequest(t, client, http.MethodPost, gatewayURL+tc.path, hdr,
-				strings.NewReader(url.Values{"identifier": {identifier}, "password": {password}}.Encode()))
+			fresh := jarClient(t) // unauthenticated, so a minted session has nowhere to hide
+			resp := crossOriginPost(t, fresh, "/admin/login", tc.origin)
 			if resp.StatusCode != http.StatusForbidden {
 				t.Fatalf("status %d, want 403; body=%.300s", resp.StatusCode, readBody(t, resp))
+			}
+			for _, c := range resp.Cookies() {
+				if c.Name == "bo_sid" && c.Value != "" {
+					t.Fatalf("the refused submission still minted a session cookie — the origin "+
+						"check ran AFTER the credentials were verified")
+				}
+			}
+			// And the jar really is still signed out: valid credentials were
+			// submitted, so anything short of a redirect to login means a session
+			// was created somewhere.
+			after := doRequest(t, fresh, http.MethodGet, gatewayURL+"/admin/", nil, nil)
+			if after.StatusCode != http.StatusFound {
+				t.Fatalf("after a refused cross-origin sign-in the caller is not anonymous: status %d",
+					after.StatusCode)
 			}
 		})
 	}
 
-	// And the forged logout did NOT take effect — a 403 that still signed the
-	// user out would be a refusal in name only.
-	resp := doRequest(t, client, http.MethodGet, gatewayURL+"/admin/", nil, nil)
-	if resp.StatusCode != http.StatusOK {
+	// A live session, to prove a forged logout cannot end it.
+	client := jarClient(t)
+	if resp := postForm(t, client, gatewayURL+"/admin/login", creds); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("setup sign-in failed: %d", resp.StatusCode)
+	}
+	if resp := crossOriginPost(t, client, "/admin/logout", "http://evil.example"); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-site logout: status %d, want 403; body=%.300s", resp.StatusCode, readBody(t, resp))
+	}
+	// A 403 that still destroyed the session would be a refusal in name only.
+	if resp := doRequest(t, client, http.MethodGet, gatewayURL+"/admin/", nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the refused cross-site logout still ended the session: status %d", resp.StatusCode)
 	}
 }
@@ -307,8 +332,11 @@ func sessionCookie(t *testing.T, resp *http.Response) string {
 		if c.SameSite != http.SameSiteLaxMode {
 			t.Fatalf("the session cookie must be SameSite=Lax, got %v", c.SameSite)
 		}
-		if c.Path != "/" {
-			t.Fatalf("the session cookie must be Path=/, got %q", c.Path)
+		// Scoped to the back office, not the whole origin (ai-review F3): the
+		// gateway serves the storefront, the scanner and /api/* on this SAME
+		// origin, and a Path=/ cookie is handed to every one of them.
+		if c.Path != "/admin" {
+			t.Fatalf("the session cookie must be scoped to /admin, got %q", c.Path)
 		}
 		if c.MaxAge <= 0 || c.MaxAge > 24*60*60 {
 			t.Fatalf("the session cookie lifetime must be bounded and under a day, got %ds", c.MaxAge)

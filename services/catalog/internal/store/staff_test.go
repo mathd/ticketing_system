@@ -61,6 +61,57 @@ func TestAuthenticateStaffComparesOnceForUnknownAndKnownAccounts(t *testing.T) {
 	}
 }
 
+// ai-review F2. OpenAPI's maxLength counts CHARACTERS; bcrypt's 72 counts BYTES.
+// So 72 multibyte characters clear the contract and are ~3x over bcrypt's limit,
+// and bcrypt then returns ErrPasswordTooLong *without doing the work* — which
+// strips away the only thing masking the cost difference between "row found,
+// five columns scanned" and sql.ErrNoRows. An enumerator averaging that raw
+// difference over many samples gets the account list, using a password that can
+// never log anyone in.
+//
+// The fix is refusal before the lookup, so this asserts the DATABASE IS NEVER
+// TOUCHED — not merely that the answer is "invalid". A version that looked up
+// first and refused afterwards returns the same error and leaks the same timing.
+func TestAuthenticateStaffRefusesOverlongPasswordsWithoutTouchingTheDatabase(t *testing.T) {
+	// 72 characters, 216 bytes: passes maxLength: 72, fails bcrypt's byte bound.
+	multibyte := strings.Repeat("é", 72)
+	if len([]rune(multibyte)) != 72 {
+		t.Fatalf("fixture must be exactly 72 CHARACTERS to clear the contract, got %d", len([]rune(multibyte)))
+	}
+	if len(multibyte) <= bcryptMaxPasswordBytes {
+		t.Fatalf("fixture must exceed %d BYTES to reach the bug, got %d", bcryptMaxPasswordBytes, len(multibyte))
+	}
+
+	for _, tc := range []struct{ name, identifier string }{
+		{"known identifier", "boxoffice@example.test"},
+		{"unknown identifier", "nobody@example.test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newFakeStaffLookup()
+			s.add("boxoffice@example.test", mustHash(t, "correct horse"))
+
+			var compares int
+			restore := swapCompareHashAndPassword(func(hashed, password []byte) error {
+				compares++
+				return bcrypt.CompareHashAndPassword(hashed, password)
+			})
+			defer restore()
+
+			_, err := authenticateStaff(context.Background(), s, tc.identifier, multibyte)
+			if !errors.Is(err, ErrStaffCredentialsInvalid) {
+				t.Fatalf("want ErrStaffCredentialsInvalid, got %v", err)
+			}
+			if s.lookups != 0 {
+				t.Fatalf("the database was queried %d times; an over-long password must be refused "+
+					"before the lookup, or the lookup's cost is measurable", s.lookups)
+			}
+			if compares != 0 {
+				t.Fatalf("bcrypt was called %d times for an input it cannot hash", compares)
+			}
+		})
+	}
+}
+
 // The dummy-hash path must not become an authentication bypass: even if the
 // caller's password happens to match the dummy hash's plaintext, the answer is
 // still invalid credentials.
@@ -154,6 +205,9 @@ func mustHash(t *testing.T, password string) string {
 // tested without Postgres; staff_smoke_test.go proves the real query.
 type fakeStaffLookup struct {
 	byKey map[string]staffCredential
+	// lookups counts queries, so a test can prove the database was never
+	// reached — not merely that the answer came back wrong.
+	lookups int
 }
 
 func newFakeStaffLookup() *fakeStaffLookup {
@@ -170,6 +224,7 @@ func (f *fakeStaffLookup) addAccount(identifier, hash string, acct StaffAccount)
 }
 
 func (f *fakeStaffLookup) lookupStaffCredential(_ context.Context, key string) (staffCredential, error) {
+	f.lookups++
 	c, ok := f.byKey[key]
 	if !ok {
 		return staffCredential{}, ErrNotFound

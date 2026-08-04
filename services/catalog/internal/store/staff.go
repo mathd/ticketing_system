@@ -144,6 +144,23 @@ func hashPassword(password string) (string, error) {
 // staffDummyPassword is refused, because `found` gates the answer, not the
 // comparison's verdict.
 func authenticateStaff(ctx context.Context, s staffLookup, identifier, password string) (StaffAccount, error) {
+	// Refuse an over-long password BEFORE the lookup, and without touching the
+	// database. bcrypt returns ErrPasswordTooLong *without doing the work* past
+	// 72 bytes, so letting such an input through would skip the KDF — and the
+	// KDF is the only thing masking the cost difference between a row that was
+	// found (five columns scanned and allocated) and sql.ErrNoRows. That is the
+	// enumeration oracle this function exists to close, reopened by a password
+	// nobody can log in with anyway.
+	//
+	// The contract's maxLength cannot catch this: OpenAPI counts CHARACTERS and
+	// bcrypt counts BYTES, so 72 multibyte characters pass validation and are
+	// three times over the limit. Refusing here is uniform across identifiers —
+	// every caller gets the same immediate answer — so it introduces no oracle
+	// of its own.
+	if len(password) > bcryptMaxPasswordBytes {
+		return StaffAccount{}, ErrStaffCredentialsInvalid
+	}
+
 	cred, err := s.lookupStaffCredential(ctx, staffIdentifierKey(identifier))
 	found := err == nil
 	switch {

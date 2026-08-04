@@ -7,7 +7,7 @@
 import type { APIRoute } from 'astro';
 
 import { LOGIN_PATH } from '../lib/gate';
-import { SESSION_COOKIE, destroySession } from '../lib/session';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, destroySession } from '../lib/session';
 
 export const POST: APIRoute = ({ cookies, redirect }) => {
   const token = cookies.get(SESSION_COOKIE)?.value;
@@ -19,6 +19,6 @@ export const POST: APIRoute = ({ cookies, redirect }) => {
   }
   // Path must match how it was set, or the browser keeps the old cookie
   // alongside the deletion and sends it right back.
-  cookies.delete(SESSION_COOKIE, { path: '/' });
+  cookies.delete(SESSION_COOKIE, { path: SESSION_COOKIE_PATH });
   return redirect(LOGIN_PATH, 303);
 };
