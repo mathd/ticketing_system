@@ -91,13 +91,15 @@ if (Astro.request.method === 'POST') {
       }
     } else if (action === 'create-performance') {
       // Only THIS step needs the venue list, so only this step is blocked when
-      // that read failed. Gating every write on it (pass 2's fix) meant a venue
-      // outage also stopped event creation, pricing and publication whose
-      // endpoints were perfectly healthy — and discarded the operator's input on
-      // the way (pass 3).
+      // that read failed (pass 3 — gating every write also stopped writes whose
+      // endpoints were healthy).
+      //
+      // Not by throwing: a plain Error lands in the catch below, which only
+      // recognises CatalogApiError, and would replace the real venue-read reason
+      // with the generic fallback (pass 4). The error is already set; leave it.
       if (readFailed) {
-        throw new Error('venues unavailable');
-      }
+        // error already describes the venue read failure
+      } else {
       const perf = await createPerformance(staff.organizerId, {
         eventId: String(eventId),
         venueId: field('venue_id'),
@@ -108,6 +110,7 @@ if (Astro.request.method === 'POST') {
         `${here}?event=${encodeURIComponent(String(eventId))}&performance=${encodeURIComponent(perf.id)}`,
         303,
       );
+      }
     } else if (action === 'create-ticket-type') {
       const name = parseLocalizedName({ en: field('tt_name_en'), fr: field('tt_name_fr') });
       const amount = parseMinorUnits(field('amount'));
@@ -143,6 +146,10 @@ if (Astro.request.method === 'POST') {
       // that is not on sale as though it were (ai-review pass 3).
       if (slot.status === 'published') {
         publishedStatus = slot.status;
+        // Supersede an earlier venue-read failure: it is about a list this step
+        // never needed, and rendering it beside "Publication accepted" would
+        // show an error and a success for the same request (pass 4).
+        error = null;
       } else {
         error = `Catalog reports this date as ${slot.status ?? 'unknown'}, not published.`;
       }
@@ -184,7 +191,18 @@ const val = (name: string) => submitted[name] ?? '';
     </form>
   )}
 
-  {step === 2 && (
+  {step === 2 && readFailed && (
+    <section>
+      <h2>2. When and where</h2>
+      {/* The venue list could not be read, so this step cannot be completed —
+          and an enabled <select> over an empty list would invite an operator to
+          submit something that cannot succeed (ai-review pass 4). The error
+          above says why. */}
+      <p>The venue list is unavailable, so this step cannot be completed yet.</p>
+    </section>
+  )}
+
+  {step === 2 && !readFailed && (
     <form method="post" action="">
       <input type="hidden" name="_action" value="create-performance" />
       <h2>2. When and where</h2>

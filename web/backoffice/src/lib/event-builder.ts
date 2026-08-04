@@ -28,25 +28,24 @@ export const REQUIRED_LOCALES = ['en', 'fr'] as const;
  * integer that was typed — silently, which on money is the whole problem.
  */
 export function parseMinorUnits(raw: string): Parsed<number> {
+  // Length FIRST. A regex over an arbitrarily long string is itself the
+  // unbounded work this bound exists to cap, so checking the shape before the
+  // size defeats it (ai-review pass 4). 64 characters is far more than any
+  // legitimate amount and cheap to reject.
+  //
+  // Then significant digits, which caps the VALUE without rejecting
+  // "00000000000000001" — that is 1 wearing seventeen characters (pass 2). An
+  // all-zero megabyte has no significant digits at all, which is why the length
+  // bound cannot be dropped in favour of this one (pass 3).
+  if (raw.length > 64 || raw.replace(/^0+/, '').length > 16) {
+    return { ok: false, field: 'amount', message: 'That amount is too large to represent exactly.' };
+  }
   if (!/^[0-9]+$/.test(raw)) {
     return {
       ok: false,
       field: 'amount',
       message: 'Enter the amount in minor units — digits only, no decimal point (€45.50 is 4550).',
     };
-  }
-  // Bound the input before parsing it: `BigInt` on an arbitrarily long digit
-  // string does arbitrary work, and an authenticated operator can paste a
-  // megabyte (ai-review pass 1). Bound the SIGNIFICANT digits, not the character
-  // count — "00000000000000001" is 1 and 17 characters, and rejecting it for its
-  // length would refuse a value that is perfectly in range (pass 2).
-  // Two bounds, and the order matters. The raw length caps the WORK — an
-  // all-zero megabyte has no significant digits, so a significant-digit check
-  // alone would wave it through to BigInt and defeat its own purpose (ai-review
-  // pass 3). The significant-digit check then caps the VALUE without rejecting
-  // "00000000000000001", which is 1 wearing seventeen characters (pass 2).
-  if (raw.length > 64 || raw.replace(/^0+/, '').length > 16) {
-    return { ok: false, field: 'amount', message: 'That amount is too large to represent exactly.' };
   }
   // BigInt only after the bound: parsing to a Number first and checking after
   // would already have lost the precision we are checking for.
