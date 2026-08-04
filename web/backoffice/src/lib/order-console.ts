@@ -66,3 +66,54 @@ export async function loadOrderConsole(
 
   return { order, tickets, status };
 }
+
+/** What the refund form is allowed to contribute (TKT-194). */
+export type RefundInput = {
+  orderId: string;
+  quantity: number;
+  reason: string;
+  idempotencyKey: string;
+};
+
+/**
+ * Parse the refund form.
+ *
+ * Note what is NOT here: `actor`, `organizer_id`, `amount`, `currency`. The
+ * first two come from the session and the last two are commerce's to derive
+ * from the stored order price — a page that accepted an amount from the browser
+ * would let the browser choose how much money moves.
+ *
+ * `actor` matters most. It is the attribution for an operation that moves money,
+ * and reading it from the form would make every refund attributable to whatever
+ * the client typed. That is not a hardening detail: box office can refund
+ * (owner decision), so more people can do this than can approve it, and
+ * attribution is the control that remains.
+ */
+export function parseRefund(
+  field: (name: string) => string,
+): { ok: true; value: RefundInput } | { ok: false; message: string } {
+  const orderId = field('order_id').trim();
+  if (!UUID.test(orderId)) {
+    return { ok: false, message: 'That order id is not a valid identifier.' };
+  }
+  const raw = field('quantity').trim();
+  const quantity = /^[0-9]{1,3}$/.test(raw) ? Number(raw) : NaN;
+  // 1..50 is the contract's own bound (RefundCreate). Checked here so a typo is
+  // refused before it becomes a request, and digits-only so "1.5" and "two"
+  // cannot arrive as NaN and be compared into silence.
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
+    return { ok: false, message: 'Quantity must be a whole number between 1 and 50.' };
+  }
+  const reason = field('reason').trim();
+  if (reason === '' || reason.length > 500) {
+    return { ok: false, message: 'Give a reason for the refund, up to 500 characters.' };
+  }
+  // Minted server-side when the form rendered. Its absence means this submission
+  // cannot be made idempotent, and a refund that cannot be replayed safely is
+  // one a double-click performs twice.
+  const idempotencyKey = field('idempotency_key').trim();
+  if (!UUID.test(idempotencyKey)) {
+    return { ok: false, message: 'This form is stale — try the lookup again.' };
+  }
+  return { ok: true, value: { orderId, quantity, reason, idempotencyKey } };
+}
