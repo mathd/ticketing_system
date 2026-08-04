@@ -144,7 +144,7 @@ describe('ordering: refused before any credential is read (ai-review S2, T2)', (
     'x-forwarded-host': 'localhost:8080',
   };
 
-  function harness(request: Request, pathname: string) {
+  function harness(request: Request, pathname = '/admin/login') {
     const calls = { next: 0, lookup: 0, authenticated: 0, redirect: 0 };
     const run = () =>
       gateRequest({
