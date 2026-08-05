@@ -4,7 +4,7 @@
   "summary": "US-B5: Refund from the order console, with the credential that makes it possible",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": null,
