@@ -121,7 +121,7 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 	if allocs == nil {
 		allocs = []ChannelAllocation{}
 	}
-	return allocs, tx.Commit()
+	return allocs, p.commitAvailability(tx, slot)
 }
 
 // channelAvailabilities lists every allocation row (released ones included, with zero

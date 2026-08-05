@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	apispec "ticketing/services/inventory/api"
+	"ticketing/services/inventory/internal/availability"
 	"ticketing/services/inventory/internal/consumer"
 	"ticketing/services/inventory/internal/store"
 	"ticketing/shared/cachetier"
@@ -47,14 +50,32 @@ var CacheControlPublicAvailability = cachetier.Seconds.CacheControl()
 // operation hide behind the other still emitting it.
 var CacheControlPublicSeatOccupancy = cachetier.Seconds.CacheControl()
 
+// availabilityReader is the public display read, served from memory (TKT-205).
+//
+// Deliberately narrow, and deliberately NOT the way Server reaches the store for
+// anything else: `st` stays the concrete *store.Postgres for every write, every
+// claim and the staff read. Two paths to truth, and which is which is visible at
+// the call site — the claim path cannot reach a cached number even by accident,
+// which is ADR-002's rule that correctness lives at claim time.
+type availabilityReader interface {
+	Read(ctx context.Context, org, slot uuid.UUID, channel string) (availability.Read, error)
+}
+
 type Server struct {
 	st         *store.Postgres
 	credential string
 	pinner     SeatPinner
+	avail      availabilityReader
 }
 
 func New(st *store.Postgres, credential string, pinner SeatPinner) *Server {
-	return &Server{st: st, credential: credential, pinner: pinner}
+	return &Server{st: st, credential: credential, pinner: pinner, avail: availability.New(st)}
+}
+
+// NewWithAvailability injects the display-read collaborator. Tests use it to
+// count loads and to prove the claim path never touches it.
+func NewWithAvailability(st *store.Postgres, credential string, pinner SeatPinner, avail availabilityReader) *Server {
+	return &Server{st: st, credential: credential, pinner: pinner, avail: avail}
 }
 
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
@@ -155,6 +176,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, code, c)
 }
+
 // seatHoldResponse is a buyer hold plus the seats it holds.
 type seatHoldResponse struct {
 	store.Claim
@@ -284,13 +306,23 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "valid slot and organizer required"})
 		return
 	}
-	a, err := s.st.Availability(r.Context(), org, slot, r.URL.Query().Get("channel"))
+	read, err := s.avail.Read(r.Context(), org, slot, r.URL.Query().Get("channel"))
 	if err != nil {
 		problem(w, err)
 		return
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicAvailability)
-	write(w, 200, a)
+	// Age is what stops the two staleness budgets stacking. The tier declares this
+	// response publicly cacheable for five seconds; without Age, an entry already
+	// four seconds old inside this process would hand a conformant client another
+	// full five, doubling what a buyer can observe and breaking the tier the epic
+	// promises. Rounded UP, so the number is never optimistic.
+	//
+	// Varying Cache-Control by remaining freshness — what the storefront
+	// middleware does for pages — is not available here: ADR-028 makes this header
+	// a required single-valued enum on this operation, so a third value is a 500.
+	w.Header().Set("Age", strconv.Itoa(int(math.Ceil(read.Age.Seconds()))))
+	write(w, 200, read.Value)
 }
 
 // seatOccupancy answers which seats a seated slot cannot sell right now (TKT-172).

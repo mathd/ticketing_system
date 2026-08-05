@@ -98,7 +98,7 @@ func (p *Postgres) ReturnRefundedCapacity(ctx context.Context, org, claimID, ref
 		if !storedFingerprint.Valid || storedFingerprint.String != fingerprint {
 			return RefundCapacityReturn{}, ErrRefundReturnConflict
 		}
-		return RefundCapacityReturn{ClaimID: claimID, Quantity: quantity, UnreturnedQuantity: storedAfter, Replay: true}, tx.Commit()
+		return RefundCapacityReturn{ClaimID: claimID, Quantity: quantity, UnreturnedQuantity: storedAfter, Replay: true}, p.commitAvailability(tx, pool)
 	case !errors.Is(err, sql.ErrNoRows):
 		return RefundCapacityReturn{}, err
 	}
@@ -160,7 +160,7 @@ func (p *Postgres) ReturnRefundedCapacity(ctx context.Context, org, claimID, ref
 	if err = appendHistory(ctx, tx, org, claimID, nil, "refund_return", "commerce", "refund", quantity, after, "confirmed", &key, &fp); err != nil {
 		return RefundCapacityReturn{}, err
 	}
-	return RefundCapacityReturn{ClaimID: claimID, Quantity: quantity, UnreturnedQuantity: after}, tx.Commit()
+	return RefundCapacityReturn{ClaimID: claimID, Quantity: quantity, UnreturnedQuantity: after}, p.commitAvailability(tx, pool)
 }
 
 func refundReturnFingerprint(org, claimID uuid.UUID, quantity int32) string {

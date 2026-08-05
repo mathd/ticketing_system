@@ -38,6 +38,11 @@ func TestAvailabilityCacheTierIsContractEnforced(t *testing.T) {
 			r.Get("/slots/{id}/availability", func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", tc.emitted)
+				// TKT-205 added a required Age header to this response. The stub has to
+				// emit it or every case here 500s on the Age check before reaching the
+				// Cache-Control one — which would make this test pass for the wrong
+				// reason in the negative case and fail outright in the positive one.
+				w.Header().Set("Age", "0")
 				w.WriteHeader(http.StatusOK)
 				// Minimal schema-valid Availability, so only the header is under test.
 				_, _ = w.Write([]byte(`{"slot_id":"` + uuid.Nil.String() + `","capacity":0,` +

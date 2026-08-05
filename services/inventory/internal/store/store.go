@@ -121,6 +121,9 @@ type Postgres struct {
 	ttl time.Duration
 	// quarantineCap overrides MaxCatalogQuarantinePending in tests; 0 = the constant.
 	quarantineCap int
+	// The availability-cache invalidation seam (TKT-205) —
+	// availability_invalidation.go.
+	invalidatorFields
 }
 
 func New(db *sql.DB, ttl time.Duration) *Postgres { return &Postgres{db: db, ttl: ttl} }
@@ -139,7 +142,7 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return tx.Commit()
+		return p.commitAvailability(tx, slotID)
 	}
 	res, err = tx.ExecContext(ctx, `INSERT INTO inventory_pools(slot_id,organizer_id,capacity,source_event_id) VALUES($1,$2,$3,$4)
 		ON CONFLICT(slot_id) DO NOTHING`, slotID, organizerID, capacity, eventID)
@@ -147,7 +150,7 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 1 {
-		return tx.Commit()
+		return p.commitAvailability(tx, slotID)
 	}
 	// Existing pool: take the ADR-010 pool lock FIRST, then decide in a fresh statement
 	// snapshot. A single upsert cannot do this safely — its WHERE subqueries evaluate
@@ -166,7 +169,7 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return p.commitAvailability(tx, slotID)
 }
 
 // fingerprint stays byte-identical to the pre-channel format when channel is empty, so
@@ -228,12 +231,12 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 			if err = appendHistory(ctx, tx, org, existing.ID, nil, "expire", "system", "ttl_elapsed", existing.Quantity, 0, "expired", nil, nil); err != nil {
 				return Claim{}, false, err
 			}
-			if err = tx.Commit(); err != nil {
+			if err = p.commitAvailability(tx, slot); err != nil {
 				return Claim{}, false, err
 			}
 			return Claim{}, false, ErrConflict
 		}
-		return existing, true, tx.Commit()
+		return existing, true, p.commitAvailability(tx, slot)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Claim{}, false, err
@@ -290,7 +293,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	if err = appendHistory(ctx, tx, org, c.ID, nil, "create", "buyer", "public_hold", qty, qty, "held", nil, nil); err != nil {
 		return Claim{}, false, err
 	}
-	return c, false, tx.Commit()
+	return c, false, p.commitAvailability(tx, slot)
 }
 
 func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target string) (Claim, error) {
@@ -337,12 +340,12 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 		}
 	}
 	if c.Status == target {
-		return c, tx.Commit()
+		return c, p.commitAvailability(tx, pool)
 	}
 	// A checkout may crash after confirm succeeds but before commerce persists
 	// completion. Treat replaying its earlier finalize step as already satisfied.
 	if target == "finalizing" && c.Status == "confirmed" {
-		return c, tx.Commit()
+		return c, p.commitAvailability(tx, pool)
 	}
 	// A release against an expired claim is vacuously satisfied: expiry already freed
 	// the seats (the branch above / an earlier pass), so the obligation a release
@@ -351,7 +354,7 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	// recovery parked refundable orders on the difference (TKT-115). Confirm of an
 	// expired claim stays a conflict below: expired can never buy a seat.
 	if target == "released" && c.Status == "expired" {
-		return c, tx.Commit()
+		return c, p.commitAvailability(tx, pool)
 	}
 	if target == "finalizing" && c.Status == "held" {
 		c.Status = target
@@ -362,7 +365,7 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 		if err = appendHistory(ctx, tx, org, id, nil, "finalize", "commerce", "checkout", c.Quantity, c.Quantity, "finalizing", nil, nil); err != nil {
 			return c, err
 		}
-		return c, tx.Commit()
+		return c, p.commitAvailability(tx, pool)
 	}
 	if c.Status != "held" && c.Status != "finalizing" {
 		return c, ErrConflict
@@ -391,7 +394,7 @@ func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target str
 	if err = appendHistory(ctx, tx, org, id, nil, action, "commerce", "checkout", c.Quantity, after, target, nil, nil); err != nil {
 		return Claim{}, err
 	}
-	return c, tx.Commit()
+	return c, p.commitAvailability(tx, pool)
 }
 
 // Availability reports pool aggregates (capacity/held/confirmed) plus a channel-scoped

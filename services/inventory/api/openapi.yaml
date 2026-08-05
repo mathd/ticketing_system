@@ -40,6 +40,7 @@ paths:
           description: Availability
           headers:
             Cache-Control: {$ref: '#/components/headers/AvailabilityCacheControl'}
+            Age: {$ref: '#/components/headers/AvailabilityAge'}
           content: {application/json: {schema: {$ref: '#/components/schemas/Availability'}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
@@ -262,6 +263,29 @@ paths:
         '500': {$ref: '#/components/responses/Error'}
 components:
   headers:
+    AvailabilityAge:
+      description: >
+        Seconds this answer has already spent in inventory's in-memory
+        availability cache (TKT-205, ADR-044), rounded up. Required, and 0 on a
+        cache miss.
+
+        It exists so the two staleness budgets cannot stack. Cache-Control
+        declares this response publicly cacheable for five seconds; without Age,
+        an entry already four seconds old inside the service would grant a
+        conformant client another full five, so a buyer could observe ten
+        seconds of staleness against a tier that promises five. Age is the RFC
+        9111 mechanism for exactly that, and it is the only one available here:
+        varying Cache-Control by remaining freshness is what the storefront
+        middleware does for pages, but AvailabilityCacheControl is a required
+        single-valued enum, so ADR-028's validator turns a second value into a
+        500.
+
+        Bounded by the tier itself: an entry older than max-age is not served.
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 5
     AvailabilityCacheControl:
       description: >
         ADR-004 rule 1's seconds tier for the public availability read, declared

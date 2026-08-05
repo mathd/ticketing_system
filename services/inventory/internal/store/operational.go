@@ -138,7 +138,7 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	}
 	if found {
 		h := OperationalHold{ID: prior.claimID, OrganizerID: org, PoolID: slot, Quantity: prior.quantity, Purpose: purpose, Label: label, Status: prior.statusAfter, ServerTime: time.Now().UTC()}
-		return h, true, tx.Commit()
+		return h, true, p.commitAvailability(tx, slot)
 	}
 	// Same replay-then-guard order as CreateHold: a staff hold is a new hold too (TKT-75 AC2).
 	if err = guardOffering(lifecycle, closure); err != nil {
@@ -165,7 +165,7 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	if err = appendHistory(ctx, tx, org, h.ID, nil, "place", actor, reason, qty, qty, "held", &key, &fp); err != nil {
 		return OperationalHold{}, false, err
 	}
-	return h, false, tx.Commit()
+	return h, false, p.commitAvailability(tx, slot)
 }
 
 // lockOperational discovers the pool without locking, then locks pool → claim (ADR-010)
@@ -218,7 +218,7 @@ func (p *Postgres) ReleaseOperational(ctx context.Context, org, id uuid.UUID, qt
 	}
 	if found {
 		h := OperationalHold{ID: prior.claimID, OrganizerID: org, PoolID: pool, Quantity: prior.quantityAfter, Status: prior.statusAfter, ServerTime: time.Now().UTC()}
-		return h, true, tx.Commit()
+		return h, true, p.commitAvailability(tx, pool)
 	}
 	c, err := lockOperational(ctx, tx, org, id)
 	if err != nil {
@@ -247,7 +247,7 @@ func (p *Postgres) ReleaseOperational(ctx context.Context, org, id uuid.UUID, qt
 		return OperationalHold{}, false, err
 	}
 	h := OperationalHold{ID: id, OrganizerID: org, PoolID: pool, Quantity: remaining, Purpose: c.Purpose, Label: c.Label, Status: status, ServerTime: c.ServerTime}
-	return h, false, tx.Commit()
+	return h, false, p.commitAvailability(tx, pool)
 }
 
 // ConvertOperational atomically carves qty out of an operational hold into a normal buyer
@@ -290,7 +290,7 @@ func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType, 
 			return ConvertResult{}, false, err
 		}
 		res := ConvertResult{Child: child, SourceID: id, SourceRemaining: prior.quantityAfter, SourceStatus: prior.statusAfter}
-		return res, true, tx.Commit()
+		return res, true, p.commitAvailability(tx, pool)
 	}
 	c, err := lockOperational(ctx, tx, org, id)
 	if err != nil {
@@ -325,7 +325,7 @@ func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType, 
 		return ConvertResult{}, false, err
 	}
 	res := ConvertResult{Child: child, SourceID: id, SourceRemaining: remaining, SourceStatus: status}
-	return res, false, tx.Commit()
+	return res, false, p.commitAvailability(tx, pool)
 }
 
 func (p *Postgres) History(ctx context.Context, org, id uuid.UUID) ([]HistoryEntry, error) {

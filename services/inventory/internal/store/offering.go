@@ -107,12 +107,12 @@ func (p *Postgres) ApplyArchive(ctx context.Context, eventID, pool uuid.UUID) er
 		return err
 	}
 	if !fresh {
-		return tx.Commit()
+		return p.commitAvailability(tx, pool)
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET lifecycle_status='archived',updated_at=now() WHERE slot_id=$1`, pool); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return p.commitAvailability(tx, pool)
 }
 
 // ApplyClosure applies a closed/reopened transition for one performance at that
@@ -136,7 +136,7 @@ func (p *Postgres) ApplyClosure(ctx context.Context, eventID, pool, performance 
 		return err
 	}
 	if !fresh {
-		return tx.Commit()
+		return p.commitAvailability(tx, pool)
 	}
 	status := "open"
 	if closed {
@@ -154,5 +154,5 @@ func (p *Postgres) ApplyClosure(ctx context.Context, eventID, pool, performance 
 		WHERE slot_id=$1`, pool); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return p.commitAvailability(tx, pool)
 }
