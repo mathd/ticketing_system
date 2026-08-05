@@ -95,7 +95,24 @@ One qualification, because the difference matters to anyone reasoning about tota
 `web/storefront/src/middleware.ts` derives the page's outgoing `Cache-Control` from the **remaining**
 freshness of the entry it rendered from, so page-layer and data-layer staleness cannot stack — but its
 route test (`EVENT_PAGE`) covers the two `events` routes only. The **festival** page's data is cached
-while its HTML response is `no-store`. So of the three cached reads, two propagate a positive tier to
+while its HTML response is `no-store`.
+
+> **Page-layer festival gap CLOSED by TKT-208 (2026-08-05).** `/:locale/festivals/:festivalId` now
+> participates in [ADR-006](./ADR-006-astro-storefront-shell.md)'s minutes-tier page ownership
+> alongside the two `events` routes, so all three cached reads propagate a positive tier to the page
+> response and none stops at the data layer.
+>
+> **This is coverage, not a new cache and not a new TTL.** The page still performs its existing
+> single aggregated `getPublicFestival` read, and the middleware publishes only the **remaining**
+> freshness carried in `locals.pageData` — `max(0, maxAgeSeconds - ageSeconds)`. It therefore does not
+> reset catalog's `Age`, does not add another five-minute lifetime, and does not reopen the ~300-second
+> end-to-end bound [ADR-045](./ADR-045-catalog-public-read-cache.md) established. Replacing that
+> expression with a literal would reopen it, which is why `page-tier.ts` says so and a test pins it.
+>
+> The route stays `no-store` for a non-200 response or when the render established no freshness.
+> Buyer order and ticket routes stay outside this page class entirely: that state is rule 1's **never**
+> tier ([ADR-002](./ADR-002-services-from-day-one.md), [ADR-012](./ADR-012-ticket-issuance-and-qr-credentials.md)),
+> and a test asserts they cannot drift into it. So of the three cached reads, two propagate a positive tier to
 the page response and one stops at the data layer. Ownership of the minutes tier is
 [ADR-006](./ADR-006-astro-storefront-shell.md)'s caching-ownership rule, and this is its whole extent.
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { parseMaxAge } from '../lib/cache';
 import type { SeatMapGeometry, SeatMapRow, SeatMapSeat, SeatMapSection } from '../lib/api';
 import type { Locale } from '../lib/locales';
 import { UI_STRINGS } from '../lib/locales';
@@ -51,8 +52,46 @@ interface Props {
 
 /** The 1..50 band the claim path enforces (store.MaxSeatsPerHold). */
 const MAX_SEATS = 50;
-/** ADR-004's seconds tier, and the exact max-age the occupancy read declares. */
-const POLL_MS = 5000;
+/**
+ * Fallback poll cadence, used only when a response does not tell us its own
+ * (TKT-208).
+ *
+ * The cadence is DERIVED from each successful read's Cache-Control max-age —
+ * ADR-004 rule 3: "each response's TTL drives the client refresh cadence. No
+ * polling faster than the endpoint's TTL." This constant used to be the cadence
+ * itself, at 5000ms, which happened to equal the declared tier. Happening to
+ * match is not the same as being derived: nothing kept the two in step, and a
+ * tier change would have silently left the client polling at the old rate.
+ */
+const FALLBACK_POLL_MS = 5000;
+
+/**
+ * Floor on a derived cadence. No effect today — the contract declares 5s — but a
+ * parsing surprise or a future contract admitting a tiny positive value must not
+ * turn this into a hot loop against the service it exists to protect.
+ */
+const MIN_POLL_MS = 1000;
+
+/** Beyond this a browser timer overflows and fires immediately, which is the
+ * opposite of the intent. Treat it as no usable TTL. */
+const MAX_POLL_MS = 2_147_483_000;
+
+/**
+ * pollDelayFromResponse turns a response's declared freshness into the delay
+ * before the next routine read.
+ *
+ * Anything the contract does not promise — a missing header, no-store, zero,
+ * malformed, non-finite, or a value a timer cannot hold — falls back rather than
+ * inventing a cadence. The conservative direction is the CURRENT load, not a
+ * faster one.
+ */
+export function pollDelayFromResponse(cacheControl: string | null): number {
+  const seconds = parseMaxAge(cacheControl);
+  if (!Number.isFinite(seconds) || seconds <= 0) return FALLBACK_POLL_MS;
+  const ms = seconds * 1000;
+  if (ms > MAX_POLL_MS) return FALLBACK_POLL_MS;
+  return Math.max(MIN_POLL_MS, ms);
+}
 
 /**
  * orderByPosition sorts sections, rows and seats by `position` at every level.
@@ -134,7 +173,7 @@ const READ_TIMEOUT_MS = 8000;
  * cancellation as a failure, or — worse — swallowing a real timeout and leaving the
  * last snapshot claimable.
  */
-async function boundedJSON<T>(url: string, init: RequestInit, controller: AbortController): Promise<T> {
+async function boundedJSON<T>(url: string, init: RequestInit, controller: AbortController): Promise<{ body: T; cacheControl: string | null }> {
   let timedOut = false;
   const deadline = window.setTimeout(() => { timedOut = true; controller.abort(); }, READ_TIMEOUT_MS);
   try {
@@ -146,7 +185,11 @@ async function boundedJSON<T>(url: string, init: RequestInit, controller: AbortC
     // connection here: the caller never reaches its `finally`, so the authoritative-read
     // guard is never released and every later poll is skipped for good (ai-review
     // pass 4).
-    return (await response.json()) as T;
+    // The header rides along with the body: the caller derives its poll cadence
+    // from this response's declared freshness (TKT-208), and discarding the
+    // Response here is what previously made that impossible.
+    const cacheControl = response.headers.get('cache-control');
+    return { body: (await response.json()) as T, cacheControl };
   } catch (err) {
     // A DOMException is an Error, so this rides along on the real abort object rather
     // than replacing it — the caller still sees name === 'AbortError'.
@@ -185,6 +228,9 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
   const authoritative = useRef<AbortController | null>(null);
   const visible = useRef(true);
 
+  // Cadence derived from the latest successful routine read (TKT-208).
+  const pollDelay = useRef(FALLBACK_POLL_MS);
+
   const readOccupancy = useCallback(async (options: { bypassCache?: boolean } = {}) => {
     inFlight.current?.abort();
     const controller = new AbortController();
@@ -192,7 +238,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     if (options.bypassCache) authoritative.current = controller;
     const mine = ++generation.current;
     try {
-      const next = await boundedJSON<Occupancy>(
+      const { body: next, cacheControl } = await boundedJSON<Occupancy>(
         `/api/inventory/slots/${encodeURIComponent(slotId)}/seat-occupancy?organizer_id=${encodeURIComponent(organizerId)}`,
         // After a conflict the cached body is exactly the thing we must not trust.
         { cache: options.bypassCache ? 'no-store' : 'default' },
@@ -209,6 +255,9 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
       }
       setOccupancy(next);
       setOccupancyState('ok');
+      // Derived from THIS response, not a mount-time constant: if successive
+      // responses declare different tiers the cadence follows them (TKT-208).
+      pollDelay.current = pollDelayFromResponse(cacheControl);
       // A no-store read is authoritative — bypassing the cache is exactly what makes
       // it so — and therefore supersedes the conflict overlay. Without this the
       // overlay only ever grows, and a seat that caused one conflict stays dark for
@@ -239,7 +288,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     let live = true;
     void (async () => {
       try {
-        const geometry = await boundedJSON<SeatMapGeometry>(
+        const { body: geometry } = await boundedJSON<SeatMapGeometry>(
           `/api/catalog/public/seat-maps/${encodeURIComponent(seatMapId)}`, {}, controller,
         );
         if (live) {
@@ -267,7 +316,9 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     const tick = async () => {
       // Skip — do not abort — while an authoritative read is outstanding.
       if (!stopped && visible.current && authoritative.current === null) await readOccupancy();
-      if (!stopped) timer = window.setTimeout(tick, POLL_MS);
+      // A failed read carries no usable TTL, so the last derived delay stands
+      // (and the fallback before any success).
+      if (!stopped) timer = window.setTimeout(tick, pollDelay.current);
     };
     void tick();
     const onVisibility = () => { visible.current = document.visibilityState === 'visible'; };
