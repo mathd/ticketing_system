@@ -1,0 +1,20 @@
+{
+  "key": "TKT-213",
+  "type": "Task",
+  "parent": null,
+  "classification": "simple",
+  "summary": "TestStatusReplayWindowExpiryAnswers409 fails in hermetic smoke, on main — the weekly workflow has been red",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**Found during TKT-210, and confirmed to be nothing to do with it.**\n\n`TestStatusReplayWindowExpiryAnswers409` (`smoke/psp_recovery_test.go:260`) fails under `make smoke-hermetic`:\n\n```\nunresolved ref-less operation must expose occurred_at and the replay deadline:\n{\"occurred_at\":\"2026-08-05T08:56:19.720791Z\",\"resolved\":false}\n```\n\nThe response carries `occurred_at` and `resolved` but **no replay deadline**, which the test requires for an unresolved ref-less operation.\n\n**It is pre-existing.** TKT-210's PR was the first in a while to touch `compose.yaml`, which is what the `hermetic-smoke` workflow's path filter triggers on (`.github/workflows/hermetic.yaml`: weekly on main, plus any PR touching the build files). So the workflow simply had not run on a PR for some time. To be certain the ticket had not caused it, `make smoke-hermetic` was run on **`main` at `46fc41fa`** — it fails there identically, same test, same message.\n\n**Why the ordinary gate is green.** `make check` uses the fast host-built path (`compose.smoke.yaml`, TKT-42); hermetic runs the in-Docker build path with `compose.yaml` only. Something differs between them for this test, and *that difference is the interesting part of this ticket* — the two paths are supposed to be equivalent, which is the whole reason the hermetic workflow exists.\n\n**Conditions of Success:**\n- [ ] Root cause identified: why the replay deadline is absent from that response under the hermetic path and present under the host-built path. Likely candidates worth ruling in or out first — a timing/window difference (in-Docker builds are much slower, so the replay window may genuinely have expired), a configuration difference between the two compose paths, or a genuine response-shape bug that the faster path happens not to reach.\n- [ ] If it is timing: the test is made robust rather than the window widened, and the fix says which.\n- [ ] If it is a real defect in the replay-deadline response: fixed, with a test that fails on the host-built path too, so the ordinary gate catches it next time.\n- [ ] `make smoke-hermetic` green on `main`.\n- [ ] The gap that let this sit red is addressed: a weekly workflow that nobody watches is a workflow that reports nothing. Either its failures are surfaced somewhere a human sees them, or its scope is reconsidered.\n\n**Not urgent for correctness of the ordinary gate**, but it is a hole in the repo's confidence story: the hermetic path exists specifically to keep the fast path honest, and it has been failing without anyone noticing.\n\nQuality gates: `make check`; `make smoke-hermetic`.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Not yet shaped — created from a TKT-210 CI observation\n\nRaised 2026-08-05 while TKT-210 was in ai-review. Deliberately **not** fixed there: it is in the PSP-recovery area, which that ticket does not touch, and folding it in would have meant an unrelated fix inside a cache ticket.\n\n`risk:low` NOT claimable on its face: the answer might be a money-path response shape (the replay deadline on an unresolved PSP operation), which is exactly where a hasty fix is expensive.\n\n**Evidence already gathered, so the next session does not repeat it:**\n- Fails on `main` @ `46fc41fa` under `make smoke-hermetic`, identical message. Not caused by TKT-210.\n- Passes under `make check` (host-built path).\n- The workflow runs weekly on main and on PRs touching build files — `.github/workflows/hermetic.yaml`.\n- Test and assertion: `smoke/psp_recovery_test.go:260`."
+    }
+  ]
+}
