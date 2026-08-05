@@ -1,0 +1,121 @@
+{
+  "key": "TKT-206",
+  "type": "Story",
+  "parent": "TKT-31",
+  "classification": "complex",
+  "summary": "US-C3: Catalog event reads are served from memory, and publishing invalidates them",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-205"
+    }
+  ],
+  "description": "**ADR-004 rule 2, second surface.** US-C2 proves the mechanism on inventory's seconds tier; this applies it to catalog's minutes tier - the event list and event detail reads that every storefront page view lands on.\n\nThere is already a cache in front of these three reads: the storefront's SSR `PageDataCache` (ADR-004 amendment TKT-128). It is process-local to the Astro SSR process and helps only the storefront. The back office reads through plain `fetch` and discards the tier entirely, the gateway caches nothing, and any second consumer starts cold. Serving from catalog's own memory puts the saving on the service side, where every consumer gets it.\n\n**Conditions of Success:**\n- [ ] Repeated public event-list, event-detail and festival-detail reads for the same key inside the minutes window issue **one** store query each, not one per request.\n- [ ] Publishing, archiving or editing an event makes the **next** read of the affected detail **and** the lists that contain it reflect the change immediately, without waiting out the minutes tier. (Membership staleness is the failure ADR-004's TKT-107 amendment left open for seat-map lists and explicitly asked a future cache to close - closing it here for events is the point.)\n- [ ] The seat-map publication-status tier split (ADR-004 amendment TKT-107) is **preserved**: a draft-bearing, mixed or empty seat-map response is not cached in memory either. `no-store` means no store.\n- [ ] The same kill-switch from US-C2 bypasses catalog's cache at runtime, per service, no restart.\n- [ ] The cache is bounded and single-flighted, same guarantees as US-C2.\n- [ ] `make check` green.\n\nQuality gates: `make check`; staleness and invalidation covered by automated tests (epic COS 3).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Event reads are served from catalog's memory for every consumer, not just the storefront SSR process, and an authoring write is never invisible behind a minutes-long TTL."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Catalog public reads: event list, event detail, festival detail. NOT the seat-map reads' tier logic (preserved, not changed). NOT the storefront's own cache (US-C5)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Whether list invalidation is per-list-key or a generation counter is a plan-stage call - the COS constrains the outcome, not the mechanism."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-205, which builds the cache primitive and the kill-switch this reuses. Reusing them rather than re-inventing is a COS-level expectation."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Same read-through primitive as US-C2, minutes tier from the registry; catalog's slot-transition write paths (ADR-018) call invalidate after commit."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Event list + detail are the storefront's whole page-view read budget - the highest-traffic catalog reads."
+    },
+    "success": {
+      "state": "met",
+      "note": "Store-call counters plus a write-then-read assertion per write kind. Same test seam shape as US-C2."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-04."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-04",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-04",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "The epic's parent decision. Rule 1 (every public read declares a volatility tier), rule 2 (hot events served from memory, refreshed/invalidated from the write path, write path never served from cache), rule 3 (frontends call-frugal). Its TKT-128 amendment records that rule 2 is accepted and UNIMPLEMENTED and that this epic owns the deployment gap; its TKT-107 amendment splits the seat-map tier on publication status."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a tier that a handler emits must be DECLARED in the service's openapi.yaml or the gate cannot review it. TKT-128 named an emitted-but-undeclared header as a defect in its own right. Any spec edit means regenerating and committing openapi_gen.go BEFORE the gate."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Catalog and inventory wrap responses in contract.ResponseValidator, which validates response HEADERS and fails closed: a Cache-Control value outside the declared enum becomes a 500 with the payload withheld. So the emitted constant and the declaration can only move together."
+      },
+      {
+        "id": "ADR-018",
+        "why": "State-deriving catalog slot transitions decide under a row lock and EMIT AFTER COMMIT. Cache invalidation is the same class of after-effect and must follow the same rule - invalidating inside the transaction would drop the entry before the new state is visible, and a concurrent read would immediately re-populate it with the OLD row."
+      },
+      {
+        "id": "ADR-019",
+        "why": "Catalog read-path scoping: a scoped read is only scoped if an index backs the filter. A cache in front of a read does not remove the obligation on the miss path - the miss still has to be the scoped query it claims to be."
+      },
+      {
+        "id": "ADR-029",
+        "why": "A published seat-map version is immutable and an edit mints a NEW version; that immutability is what makes the hours tier correct there. It does NOT extend to events, whose detail rows are edited in place - so event caching cannot borrow the same argument."
+      },
+      {
+        "id": "ADR-015",
+        "why": "Series/season/festival grouping - the festival detail read is one of the three reads in scope and its membership changes are a write path that must invalidate."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the four epic-level COS",
+        "link": "board:TKT-31"
+      },
+      {
+        "summary": "ADR-004 amendment (TKT-128) is the authoritative inventory of what honors a tier today and what honors nothing - read it before assuming any cache exists",
+        "link": "docs/adr/ADR-004-cache-first-read-path.md"
+      },
+      {
+        "summary": "The three reads and their tier constant",
+        "link": "services/catalog/internal/api/server.go (CacheControlPublicReads and its call sites)"
+      },
+      {
+        "summary": "The seat-map tier split that must survive untouched",
+        "link": "services/catalog/internal/api/server.go (cacheControlForSeatMaps), services/catalog/internal/api/seatmap_test.go (TestSeatMapReadCacheTierByStatus)"
+      },
+      {
+        "summary": "The existing storefront-side cache these reads already sit behind - understand it before adding a second layer",
+        "link": "web/storefront/src/lib/cache.ts, web/storefront/src/lib/api.ts (pageRead)"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Implementation readiness - PASS\n\nThird slice of TKT-31 (decomposed 2026-08-04). Applies US-C2's primitive to catalog's minutes tier.\n\n`risk:low` NOT claimed: shared mutable state on public reads, and invalidation now has to interact with ADR-018's after-commit emission rule on the catalog write path - a correctness ordering concern, not a mechanical change.\n\n**Named risk carried into the plan:** these three reads already sit behind the storefront's SSR cache. Two caching layers with independent TTLs stack their staleness unless the second one's invalidation is authoritative. The plan must say what the total worst-case staleness becomes, not just what catalog's own is."
+    }
+  ]
+}
