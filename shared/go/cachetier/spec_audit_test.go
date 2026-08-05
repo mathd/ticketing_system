@@ -130,11 +130,25 @@ func auditSpec(doc *openapi3.T, service string) (violations, declared []string) 
 	if doc.Paths == nil {
 		return out, declared
 	}
+	// Webhooks are a 3.1 construct and cannot appear in these 3.0.3 documents;
+	// callbacks can, and this walk does not descend into them. So rather than
+	// carry traversal code no committed spec exercises — untested machinery
+	// guarding a case that does not exist — the audit asserts the absence. The day
+	// someone adds a callback, this fails and they extend the walk with a real
+	// document to test it against, instead of discovering years later that a
+	// declaration was never covered.
+	if len(doc.Webhooks) > 0 {
+		out = append(out, "document declares webhooks, which this audit does not traverse — extend auditSpec")
+	}
 	for path, item := range doc.Paths.Map() {
 		if path == specDocPath {
 			continue
 		}
 		for method, op := range item.Operations() {
+			if len(op.Callbacks) > 0 {
+				out = append(out, fmt.Sprintf("%s %s (%s) declares callbacks, which this audit does not traverse — extend auditSpec",
+					method, path, op.OperationID))
+			}
 			if op.Responses == nil {
 				continue
 			}
@@ -403,6 +417,42 @@ paths:
 	}
 	if len(d) != 0 {
 		t.Fatalf("a removed declaration must disappear from coverage, got %v", d)
+	}
+}
+
+// TestCacheControlAuditRefusesUntraversedLocations: a Cache-Control can also be
+// declared inside a callback, which this audit does not walk. No committed spec
+// has one (and webhooks are a 3.1 construct these 3.0.3 documents cannot express
+// at all), so the audit refuses rather than pretending to cover them — the gap
+// becomes a loud failure at the moment it is first reachable, instead of a
+// declaration that was silently never pinned.
+func TestCacheControlAuditRefusesUntraversedLocations(t *testing.T) {
+	const spec = `
+openapi: 3.0.3
+info: {title: synthetic, version: "1"}
+paths:
+  /things:
+    post:
+      operationId: createThing
+      responses:
+        '201': {description: ok}
+      callbacks:
+        onDone:
+          '{$request.body#/url}':
+            post:
+              operationId: onDone
+              responses:
+                '401':
+                  description: a tier declaration this walk would never see
+                  headers:
+                    Cache-Control: {schema: {type: string, enum: ['no-store']}}
+`
+	v, d := auditSpec(loadDoc(t, []byte(spec), "synthetic callback"), "catalog")
+	if len(v) != 1 {
+		t.Fatalf("a callback must be refused, not silently skipped, got %d violations: %v", len(v), v)
+	}
+	if len(d) != 0 {
+		t.Fatalf("the callback's declaration must not enter coverage — it is not traversed: %v", d)
 	}
 }
 
