@@ -252,6 +252,12 @@ func TestBackofficeOrderConsoleDoesNotCorrelateTwoOrders(t *testing.T) {
 // search that only anchored on ">"+label could span those inputs and stay green
 // after the provenance span was deleted from the real heading, which is the
 // regression it exists to catch (ai-review pass 3).
+//
+// Yes, this is a parser in a test. Replacing it with golang.org/x/net/html was
+// weighed and refused (TKT-22 refactor): that package is not a dependency of
+// this module, and taking one on — under ADR-035's declaration rules — to
+// delete thirty lines that three review passes tightened is the worse trade.
+// Revisit if the smoke module acquires an HTML parser for another reason.
 func heading(t *testing.T, page, label string) string {
 	t.Helper()
 	var found []string

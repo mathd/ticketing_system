@@ -25,6 +25,11 @@ import { SESSION_COOKIE, lookupSession } from './lib/session';
 // to the first request, so it can only ever be a backstop for a process started
 // some other way (`pnpm dev`, a hand-rolled entry). Saying so matters: an
 // earlier version of this file claimed this WAS the startup check.
+//
+// Kept on that basis and not as comfort code (TKT-22 refactor). `pnpm dev` does
+// not go through start.mjs, so deleting this line would leave every local run
+// with no separation check at all — and identical tokens look configured. The
+// cost is one module-scope call that runs once per process.
 assertCredentialSeparation();
 
 export const onRequest = defineMiddleware(async (context, next) => {

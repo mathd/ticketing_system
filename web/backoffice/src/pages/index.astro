@@ -3,7 +3,7 @@
 // their GA capacity. SSR reads through the gateway (ADR-002 public contract);
 // no seat-map logic — this renders venues that already exist. Served at /admin/.
 import Layout from '../layouts/Layout.astro';
-import { getVenues } from '../lib/api';
+import { getVenues } from '../lib/catalog';
 import { canAccessRoute } from '../lib/authorization';
 
 // The organizer comes from the session now (TKT-190), not from a constant. The

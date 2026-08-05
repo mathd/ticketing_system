@@ -28,6 +28,12 @@ func (s *Server) WithStaffWriteCredential(token string) *Server {
 // internal operation: either the shared internal token, or the back office's
 // commerce credential.
 //
+// An inline check rather than a contract `security:` declaration, and a 404
+// rather than a 401, are both decided in ADR-043: declared security guards a
+// service's public contract, an inline check guards its internal surface, and
+// the 404 keeps commerce's refusal indistinguishable from the gateway's own
+// edge deny on the same path. Read it before replacing either.
+//
 // One helper, so no call site can invent a second answer — and both arms fail
 // closed on an unconfigured value, because a service started without a
 // credential must refuse everyone rather than admit anyone presenting nothing.

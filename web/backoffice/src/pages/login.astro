@@ -7,7 +7,7 @@
 // trap TKT-105 paid for; and the middleware's own origin check runs on this POST
 // too, so a cross-site sign-in attempt is refused before any credential is read.
 import Layout from '../layouts/Layout.astro';
-import { authenticateStaff } from '../lib/api';
+import { authenticateStaff } from '../lib/catalog';
 import { SESSION_COOKIE, createSession, sessionCookieOptions } from '../lib/session';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');

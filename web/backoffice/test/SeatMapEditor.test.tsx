@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import SeatMapEditor, { nextSeat, toEdit } from '../src/components/SeatMapEditor';
-import type { SeatMapGeometry } from '../src/lib/api';
+import type { SeatMapGeometry } from '../src/lib/catalog';
 
 const ORG = '00000000-0000-0000-0000-000000000001';
 

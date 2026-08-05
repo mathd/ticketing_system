@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 
-import type { SeatMapEdit, SeatMapGeometry } from '../lib/api';
+import type { SeatMapEdit, SeatMapGeometry } from '../lib/catalog';
 
 // SeatMapEditor is the TKT-105 published-map editor. It loads the current
 // published geometry as editable state and lets staff rename/add/remove

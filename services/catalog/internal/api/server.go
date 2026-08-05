@@ -700,6 +700,16 @@ func performanceToAPI(p store.Performance) Performance {
 // (event_emitted_at null), so a failed emission is retried by re-POSTing
 // publish. Crash between DB commit and ack remains the recorded US-004
 // deferral (ADR-009).
+//
+// **Not organizer-scoped — TKT-199, deferred.** This and ArchivePerformance
+// take only a slot id, while every sibling write scopes by (id, organizer_id).
+// Any holder of the staff-write credential can therefore transition ANY
+// organizer's slot by naming its id. The deferral rests on one precondition:
+// `organizers` has exactly one row (migration 0002) and nothing outside a
+// migration inserts into it, so there is no second tenant to cross into.
+// Nothing enforces that precondition — seed a second organizer and this becomes
+// a live cross-tenant write with no test, no startup check and no signal.
+// Whoever does so owns TKT-199 first. (TKT-22 refactor: triage re-confirmed.)
 func (s *Server) PublishPerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
 	p, needsEmit, err := s.store.PublishPerformance(r.Context(), performanceId)
 	if err != nil {

@@ -17,6 +17,13 @@
 // risk actually has: it is the ORDER that has an outstanding refund, not the
 // person who happened to submit it.
 //
+// **This module has a known expiry: TKT-201.** It exists only because there is
+// no commerce read of an order's refunds — ADR-042 puts it plainly: *"the
+// durable answer is a read, not a store."* Once TKT-201 lands that read, the
+// page can ASK commerce what it applied instead of remembering what it sent, and
+// this becomes an optimisation at best. Whoever lands it should delete this, not
+// extend it.
+//
 // **Limits, stated rather than implied.** This is in-memory, like the session
 // store it sits beside (TKT-190). It does not survive a restart and is not
 // shared between replicas — the back office runs as a single container today,
@@ -40,7 +47,17 @@ const outstanding = new Map<string, Entry>();
  */
 export const UNRESOLVED_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** A bound, so a pathological run of outages cannot grow this without limit. */
+/**
+ * A bound, so a pathological run of outages cannot grow this without limit.
+ *
+ * Both this and the TTL were added defensively rather than from a measured
+ * need, and both were re-examined in the TKT-22 refactor and kept. The bound
+ * costs six lines in a process that runs for weeks; the test that pins it is
+ * not testing that a number exists, it is testing the eviction DIRECTION —
+ * dropping the oldest and keeping the newest — and getting that backwards would
+ * silently discard the entry most likely to still be unsettled. That is the
+ * half worth a test, and it is not self-evident from the code.
+ */
 export const MAX_UNRESOLVED = 1000;
 
 const key = (organizerId: string, orderId: string) => `${organizerId} ${orderId}`;

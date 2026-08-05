@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Read, OrderState, SafeTicket } from '../src/lib/api';
+import type { SafeTicket } from '../src/lib/access';
+import type { OrderState } from '../src/lib/commerce';
+import type { Read } from '../src/lib/upstream';
 import { loadOrderConsole, parseLookup, parseRefund, unresolvedRefund } from '../src/lib/order-console';
 
 const ORDER = '11111111-1111-4111-8111-111111111111';

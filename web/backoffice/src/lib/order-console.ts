@@ -4,7 +4,9 @@
 // Kept out of the .astro page so the failure matrix is unit-testable — an Astro
 // page can only be exercised through a running server, and the four-cell matrix
 // is exactly the part that must be proven without one.
-import { getOrderState, getOrderTickets, type Read, type OrderState, type SafeTicket } from './api';
+import { getOrderTickets, type SafeTicket } from './access';
+import { getOrderState, type OrderState } from './commerce';
+import type { Read } from './upstream';
 
 export type Lookup = { orderId?: string; ref?: string };
 

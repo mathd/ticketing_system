@@ -14,7 +14,7 @@
 // are optional; the page renders whichever half it can answer.
 import Layout from '../layouts/Layout.astro';
 import { loadOrderConsole, parseLookup, parseRefund, unresolvedRefund, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
-import { refundOrder, type Refund } from '../lib/api';
+import { refundOrder, type Refund } from '../lib/commerce';
 import {
   clearUnresolvedRefund,
   noteUnresolvedRefund,
@@ -30,22 +30,26 @@ if (!staff) throw new Error('unauthenticated request reached the order console')
 // than no answer — a support agent would act on it.
 Astro.response.headers.set('Cache-Control', 'no-store');
 
-let error: string | null = null;
+/**
+ * What this request DID, and therefore what the page may say about it.
+ *
+ * One value rather than four flags: the four accreted one review round at a
+ * time, and every combination they could express that is not one of these is a
+ * state the page has no copy for. `ambiguous` lives inside the refusal it
+ * qualifies because that is the only variant it means anything for.
+ */
+type Action =
+  | { kind: 'none' }
+  | { kind: 'lookup-refused'; message: string }
+  | { kind: 'refunded'; refund: Refund }
+  | { kind: 'refund-refused'; message: string; ambiguous: boolean };
+
+let action: Action = { kind: 'none' };
 let view: ConsoleView | null = null;
 let lookedUp: Lookup = {};
-let submitted = { order_id: '', ticket_ref: '' };
-
-// The refund's own outcome, kept separate from the lookup's. A reloaded lookup
-// must never overwrite what the refund reported.
-let refund: Refund | null = null;
-let refundError: string | null = null;
-let refundAmbiguous = false;
-// Minted fresh whenever a refund form renders, and carried through a failed
-// submit unchanged (TKT-194). Two concurrent submits of one rendered form
-// therefore share a key and commerce replays the second; a deliberate second
-// refund gets a new form and a new key.
-let refundKey = randomUUID();
-let refundValues = { quantity: '', reason: '' };
+// Echoed back so the agent can correct what they typed. Quantity and reason are
+// cleared on a successful refund and kept otherwise.
+let submitted = { order_id: '', ticket_ref: '', quantity: '', reason: '' };
 // The refund still hanging over this order: commerce may have moved money and
 // has not said so. While this is set the page offers only the retry, never a new
 // refund. Null when there is nothing outstanding.
@@ -54,18 +58,29 @@ let unresolved: RefundInput | null = null;
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
   const field = (name: string) => String(form.get(name) ?? '');
-  const action = field('_action');
-  submitted = { order_id: field('order_id'), ticket_ref: field('ticket_ref') };
+  const refunding = field('_action') === 'refund';
+  submitted = {
+    order_id: field('order_id'),
+    ticket_ref: field('ticket_ref'),
+    // Only the refund form carries these. Echoing them off a lookup would let a
+    // hand-made lookup POST prefill the refund form it renders.
+    quantity: refunding ? field('quantity') : '',
+    reason: refunding ? field('reason') : '',
+  };
 
-  if (action === 'refund') {
-    refundValues = { quantity: field('quantity'), reason: field('reason') };
+  // 1. Apply the action, if there is one. Its outcome — and the key left
+  //    outstanding on the order — belong to the refund alone; step 2 reloads
+  //    the order beneath it and must overwrite neither.
+  if (refunding) {
     const parsed = parseRefund(field);
     if (!parsed.ok) {
-      refundError = parsed.message;
-      // Keep the submitted key so a corrected resubmit is still the same
-      // logical refund rather than a second one.
-      const stale = field('idempotency_key');
-      if (stale) refundKey = stale;
+      action = { kind: 'refund-refused', message: parsed.message, ambiguous: false };
+      // The key comes from the SERVER, never from the submitted form. Nothing
+      // has reached commerce on this branch so no money is at stake, but an
+      // order that already has an outstanding key must be offered the retry
+      // rather than a fresh form — and browser-supplied provenance is not
+      // evidence of which key that is (ai-review pass 4).
+      unresolved = unresolvedRefundFor(staff.organizerId, submitted.order_id.trim()) ?? null;
     } else {
       const outcome = await refundOrder({
         orderId: parsed.value.orderId,
@@ -82,42 +97,41 @@ if (Astro.request.method === 'POST') {
       // became ambiguous, discarding the only replay-safe key there was
       // (ai-review pass 4).
       const outstanding = unresolvedRefundFor(staff.organizerId, parsed.value.orderId);
-      const retryOf = outstanding?.idempotencyKey ?? null;
       if (outcome.ok) {
-        refund = outcome.value;
+        action = { kind: 'refunded', refund: outcome.value };
         // Clear the prefill. Re-rendering the previous quantity and reason into
         // a freshly keyed form leaves a second refund one click away, on an
         // order that stays `completed` with quantity still refundable
         // (ai-review pass 3).
-        refundValues = { quantity: '', reason: '' };
+        submitted = { ...submitted, quantity: '', reason: '' };
       } else {
-        refundError = outcome.message;
-        refundAmbiguous = outcome.kind === 'ambiguous';
+        action = {
+          kind: 'refund-refused',
+          message: outcome.message,
+          ambiguous: outcome.kind === 'ambiguous',
+        };
         Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
       }
-      unresolved = unresolvedRefund(outcome, outstanding ?? parsed.value, retryOf);
+      unresolved = unresolvedRefund(
+        outcome,
+        outstanding ?? parsed.value,
+        outstanding?.idempotencyKey ?? null,
+      );
       if (unresolved) {
         noteUnresolvedRefund(staff.organizerId, unresolved);
-        refundKey = unresolved.idempotencyKey;
       } else {
         // Commerce told us what happened to this order's outstanding key.
         clearUnresolvedRefund(staff.organizerId, parsed.value.orderId);
       }
     }
-    // Reload the order so the page still shows what it is talking about. Its
-    // status must not overwrite the refund's.
-    const reload = parseLookup(submitted.order_id, submitted.ticket_ref);
-    if (reload.ok) {
-      lookedUp = reload.value;
-      view = await loadOrderConsole(reload.value);
-    }
-  } else {
-    const lookup = parseLookup(submitted.order_id, submitted.ticket_ref);
-    if (!lookup.ok) {
-      error = lookup.message;
-    } else {
-      lookedUp = lookup.value;
-      view = await loadOrderConsole(lookup.value);
+  }
+
+  // 2. Load the view, so the page shows what it is talking about either way.
+  const lookup = parseLookup(submitted.order_id, submitted.ticket_ref);
+  if (lookup.ok) {
+    lookedUp = lookup.value;
+    view = await loadOrderConsole(lookup.value);
+    if (!refunding) {
       Astro.response.status = view.status;
       // A plain lookup must surface an outstanding refund too — otherwise the
       // simplest possible recovery from an ambiguous result ("look it up
@@ -126,11 +140,24 @@ if (Astro.request.method === 'POST') {
         unresolved = unresolvedRefundFor(staff.organizerId, lookup.value.orderId) ?? null;
       }
     }
+  } else if (!refunding) {
+    action = { kind: 'lookup-refused', message: lookup.message };
   }
 }
 
-// The refund form renders only when there is a completed order to refund.
-const refundable = view?.order?.ok === true && view.order.value.status === 'completed';
+/**
+ * The one place that decides whether a NEW refund may be offered, and with what.
+ *
+ * There is a completed order to refund and nothing outstanding on it — while
+ * something is outstanding the page offers the retry and only the retry. The
+ * key is minted HERE, which is what "per rendered form" means: two concurrent
+ * submits of this form carry the same key and commerce replays the second,
+ * while a deliberate second refund gets a new form and a new key.
+ */
+const refundForm =
+  view?.order?.ok === true && view.order.value.status === 'completed' && !unresolved
+    ? { idempotencyKey: randomUUID(), quantity: submitted.quantity, reason: submitted.reason }
+    : null;
 ---
 
 <Layout title="Look up an order — Back-office">
@@ -148,7 +175,7 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
     </p>
   </section>
 
-  {error && <p class="error" role="alert">{error}</p>}
+  {action.kind === 'lookup-refused' && <p class="error" role="alert">{action.message}</p>}
 
   <form method="post" action="">
     <input type="hidden" name="_action" value="lookup" />
@@ -224,52 +251,51 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
     </section>
   )}
 
-  {(refund || refundError) && (
+  {(action.kind === 'refunded' || action.kind === 'refund-refused') && (
     <section class="refund-result">
       <h2>Refund</h2>
-      {refund && (
-        <>
-          {/* Commerce's OWN response, field by field. Never synthesized from
-              what was submitted: the quantity commerce refunded is the one it
-              reports, and on a replay it is the ORIGINAL refund's. */}
-          <p>
-            Commerce refunded <strong>{refund.quantity}</strong> ticket(s) —
-            <strong> {refund.amount} {refund.currency}</strong> in minor units.
+      {action.kind === 'refunded' && (
+      <>
+        {/* Commerce's OWN response, field by field. Never synthesized from what
+            was submitted: the quantity commerce refunded is the one it reports,
+            and on a replay it is the ORIGINAL refund's. */}
+        <p>
+          Commerce refunded <strong>{action.refund.quantity}</strong> ticket(s) —
+          <strong> {action.refund.amount} {action.refund.currency}</strong> in minor units.
+        </p>
+        <p>
+          This order is now <strong>{action.refund.refundStatus}</strong> refunded:
+          {' '}{action.refund.refundedQuantity} ticket(s), {action.refund.refundedAmount}
+          {' '}{action.refund.currency} in minor units, in total.
+        </p>
+        <p class="muted">Refund {action.refund.refundId}</p>
+        {action.refund.replay && (
+          /* A replay is the SAME refund answered again, not a second one — which
+             is what the idempotency key buys. Saying so stops an operator
+             refunding again because the first "did not seem to work". */
+          <p>This was a replay of a refund already recorded. No additional money moved.</p>
+        )}
+        {!action.refund.ticketsVoided && (
+          /* ADR-037/TKT-157: the money leg and the ticket leg are separate. False
+             means the tickets are STILL VALID AT THE GATE. Saying nothing here
+             would let staff tell a customer their ticket is dead when it will
+             still scan. */
+          <p class="error">
+            The money was refunded but the tickets are <strong>not yet void</strong> — they may
+            still scan at the gate. Commerce reports the reversal as outstanding.
           </p>
-          <p>
-            This order is now <strong>{refund.refundStatus}</strong> refunded:
-            {' '}{refund.refundedQuantity} ticket(s), {refund.refundedAmount} {refund.currency} in
-            minor units, in total.
-          </p>
-          <p class="muted">Refund {refund.refundId}</p>
-          {refund.replay && (
-            /* A replay is the SAME refund answered again, not a second one —
-               which is what the idempotency key buys. Saying so stops an
-               operator refunding again because the first "did not seem to
-               work". */
-            <p>This was a replay of a refund already recorded. No additional money moved.</p>
-          )}
-          {!refund.ticketsVoided && (
-            /* ADR-037/TKT-157: the money leg and the ticket leg are separate.
-               False means the tickets are STILL VALID AT THE GATE. Saying
-               nothing here would let staff tell a customer their ticket is
-               dead when it will still scan. */
-            <p class="error">
-              The money was refunded but the tickets are <strong>not yet void</strong> — they may
-              still scan at the gate. Commerce reports the reversal as outstanding.
-            </p>
-          )}
-          {!refund.capacityReturned && (
-            <p class="error">The refunded capacity has not been returned to inventory yet.</p>
-          )}
-        </>
+        )}
+        {!action.refund.capacityReturned && (
+          <p class="error">The refunded capacity has not been returned to inventory yet.</p>
+        )}
+      </>
       )}
-      {refundError && (
+      {action.kind === 'refund-refused' && (
         <p class="error" role="alert">
-          {refundError}
-          {refundAmbiguous && (
-            /* Never "no refund happened": commerce may have applied it. The
-               key below is preserved, so resubmitting is a replay. */
+          {action.message}
+          {action.ambiguous && (
+            /* Never "no refund happened": commerce may have applied it. The key
+               below is preserved, so resubmitting is a replay. */
             <> This refund may or may not have been applied. Submit the same request again — it
             will replay rather than refund twice.</>
           )}
@@ -300,15 +326,12 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
     </form>
   )}
 
-  {refundable && !unresolved && (
+  {refundForm && (
     <form method="post" action="" class="refund">
       <input type="hidden" name="_action" value="refund" />
       <input type="hidden" name="order_id" value={lookedUp.orderId} />
       <input type="hidden" name="ticket_ref" value={lookedUp.ref ?? ''} />
-      {/* Minted server-side, per rendered form. Not per request: two concurrent
-          submits of THIS form must carry the same key so commerce replays the
-          second instead of refunding twice. */}
-      <input type="hidden" name="idempotency_key" value={refundKey} />
+      <input type="hidden" name="idempotency_key" value={refundForm.idempotencyKey} />
       <h2>Refund this order</h2>
       <p class="muted">
         Refunds the money for the number of tickets given. The order stays <em>completed</em> —
@@ -316,9 +339,9 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
       </p>
       <label for="quantity">Tickets to refund</label>
       <input id="quantity" name="quantity" required inputmode="numeric" pattern="[0-9]+"
-             value={refundValues.quantity} />
+             value={refundForm.quantity} />
       <label for="reason">Reason</label>
-      <input id="reason" name="reason" required maxlength="500" value={refundValues.reason} />
+      <input id="reason" name="reason" required maxlength="500" value={refundForm.reason} />
       <button type="submit">Refund</button>
     </form>
   )}

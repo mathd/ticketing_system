@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// One file for all three service clients (catalog.ts, commerce.ts, access.ts):
+// they share these fixtures, and the response-validation rules they exercise
+// live in one place (upstream.ts).
+import { getOrderTickets } from '../src/lib/access';
 import {
   addSeatMapRow,
   addSeatMapSeat,
@@ -9,16 +13,14 @@ import {
   createSeatMap,
   DEFAULT_ORGANIZER_ID,
   editSeatMap,
-  getOrderState,
-  getOrderTickets,
-  refundOrder,
   getSeatMapGeometry,
   getVenues,
   listSeatMapVersions,
   listVenueSeatMaps,
   publishSeatMap,
   updateVenueGaCapacity,
-} from '../src/lib/api';
+} from '../src/lib/catalog';
+import { getOrderState, refundOrder } from '../src/lib/commerce';
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
