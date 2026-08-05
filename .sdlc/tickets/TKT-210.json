@@ -1,0 +1,115 @@
+{
+  "key": "TKT-210",
+  "type": "Story",
+  "parent": "TKT-31",
+  "classification": "complex",
+  "summary": "US-C2b: The cache kill-switch - bypass availability caching at runtime, without a redeploy",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-205"
+    }
+  ],
+  "description": "**Split out of TKT-205 at plan-final (2026-08-04).** It carries **epic TKT-31's third COS**: *\"Kill-switch bypasses caches per service without redeploy.\"*\n\nTKT-205 ships the in-memory availability cache. ADR-004's Consequences named the incident kill-switch as a requirement of that cache the moment it exists — *\"needs staleness tests and a kill-switch to bypass caches during incidents\"* — and TKT-205's plan showed the switch to be a second reviewable PR's worth of work on its own: a new credential threaded through `compose.yaml`, the `Makefile`, `scripts/smoke.sh` and two docs, plus a contract-declared control surface and its regeneration. A ticket cannot pass Gate 4 half-merged, so it is here rather than open across two PRs.\n\n**Conditions of Success:**\n- [ ] An operator can **disable** availability caching on a running inventory process, and **re-enable** it, **without a restart or redeploy**. Disabling purges what is cached and prevents in-flight loads started before the toggle from inserting.\n- [ ] While disabled, every availability read reaches the store — proven by the same store-call counter TKT-205 uses, not by timing.\n- [ ] The current state is **observable**: an operator can ask the running process whether the cache is on, and how much it holds.\n- [ ] The control surface is **declared in `services/inventory/api/openapi.yaml`** (ADR-009), with generated code regenerated and **committed before** the gate.\n- [ ] The credential decision is made explicitly and its **blast radius stated** (ADR-021: name the adversary). See the inherited context below.\n- [ ] `make check` green.\n\n**Inherited from TKT-205's plan draft — the design as `gpt-5.6-sol` proposed it, preserved so this ticket does not re-derive it:**\n- `GET` / `PUT /internal/cache/availability`; PUT body `{\"enabled\": false}`; response reports `enabled`, `entries`, `in_flight`, `max_entries`, `max_entries_per_slot`, `ttl_seconds`. Responses `no-store`.\n- A **new purpose-scoped credential** `INVENTORY_CACHE_CONTROL_TOKEN` / header `X-Inventory-Cache-Control-Token`, required at startup, **refused if equal to `INTERNAL_SERVICE_TOKEN`**, added only to inventory's Compose environment and never to the shared `&go-env` anchor. Rationale: the shared token opens commerce refunds and inventory operational holds, while this one controls only an availability/load trade-off.\n- Disabling takes the cache lock, bumps every slot generation, purges, and makes subsequent reads call the source directly. Re-enabling starts cold.\n\n**One open decision this ticket must settle, flagged at TKT-205's plan-review:**\nThe draft proposed answering **404** on a wrong or missing cache credential, matching the gateway's internal-route concealment and ADR-043's reasoning. But **inventory's existing `internalOnly` guard answers 401** (`services/inventory/internal/api/operational.go:22`), so adopting 404 for this one route would create a mixed convention *inside a single service* — which ADR-043 explicitly notes is already an unresolved inconsistency between catalog and commerce. Decide it deliberately: match inventory's existing 401, or change inventory's whole internal surface to 404. Do not split the difference silently.\n\n**A second question worth answering before building:** is a *new* credential warranted at all? A holder of `INTERNAL_SERVICE_TOKEN` can already place operational holds and refund capacity on this service — strictly more powerful than disabling a cache. A narrower credential is worth its cost only if an operator exists who should be able to toggle the cache **without** those powers. Name that operator, or reuse `internalOnly` and say why.\n\nQuality gates: `make check`; regenerated code committed before the gate.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "An operator can bypass availability caching on a running process during an incident, and see whether it is on."
+    },
+    "scope": {
+      "state": "met",
+      "note": "The control surface, its credential and its wiring. NOT the cache itself (TKT-205), NOT catalog's cache (TKT-206)."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "Two named decisions: 401-vs-404 on a wrong credential (inventory answers 401 today; the draft proposed 404), and whether a new purpose-scoped credential is warranted when INTERNAL_SERVICE_TOKEN already grants strictly more on this service. Both are stated in the description; under this run's waived gates the agent decides and records the rationale."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-205 - there must be a cache to switch off."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Inherited in full from TKT-205's plan draft; reproduced in the description so it is not re-derived."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The availability cache is the only cache that exists after TKT-205; catalog's arrives in TKT-206 and reuses whatever this establishes."
+    },
+    "success": {
+      "state": "met",
+      "note": "Store-call counter while disabled, plus a state read. Both are assertions, not timings."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-04 at the split."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-04",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-04",
+        "rule": "Local gate: `make check`. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      },
+      {
+        "id": "compose.yaml",
+        "date": "2026-08-04",
+        "rule": "INTERNAL_SERVICE_TOKEN in the &go-env anchor: that one value opens every service's internal surface."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "Its Consequences name the incident kill-switch as a requirement the moment in-memory hot-event structures exist. This ticket is that clause."
+      },
+      {
+        "id": "ADR-043",
+        "why": "Where a service auth guard lives: declared `security:` for the public contract, an inline check for the internal surface. Also the source of the 404-concealment argument - and of the note that catalog/commerce already disagree, which is why this ticket must not add a third convention."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a guarantee. A kill-switch credential's worth is exactly the difference between what it opens and what its holder could already do."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new control endpoint must be declared in the OpenAPI document, and generated code regenerated and committed BEFORE the gate."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: any declared response header on the new operations is validated at runtime, so the handler and the declaration can only move together."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the four epic-level COS; this ticket owns the third",
+        "link": "board:TKT-31"
+      },
+      {
+        "summary": "The full inherited design, and the reason for the split",
+        "link": "board:TKT-205 (kind=plan, kind=plan-final)"
+      },
+      {
+        "summary": "The existing internal guard this must either match or deliberately depart from - it answers 401",
+        "link": "services/inventory/internal/api/operational.go:19"
+      },
+      {
+        "summary": "The precedent for carving a narrower credential out of the shared token, and the comment explaining why",
+        "link": "compose.yaml (CATALOG_STAFF_WRITE_TOKEN)"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Implementation readiness - CONCERNS\n\nSplit out of TKT-205 at plan-final (2026-08-04) rather than created from scratch, so its approach is inherited and its context-memo is baked. Moved straight to Ready under this run's waived Gate 1.\n\n`risk:low` NOT claimed: a new operator surface, a credential decision with a stated blast radius, and an OpenAPI change with regeneration.\n\n**Concern 1 (readiness `uncertainties`, owner human):** two auth-shaped decisions, both named in the description - 401 vs 404, and whether a new credential is warranted at all when `INTERNAL_SERVICE_TOKEN` already grants strictly more on this service. Under the waived gates the agent decides and records the rationale; flagged so the decisions stay visible rather than absorbed into an implementation.\n\n**Concern 2:** this ticket is the epic's third COS in full. If it does not ship, TKT-31 cannot close - so it is not optional cleanup carved off to be forgotten."
+    }
+  ]
+}
