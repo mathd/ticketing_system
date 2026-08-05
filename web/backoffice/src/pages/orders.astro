@@ -13,7 +13,7 @@
 // nothing public maps one to the other (see lib/order-console.ts). Both fields
 // are optional; the page renders whichever half it can answer.
 import Layout from '../layouts/Layout.astro';
-import { loadOrderConsole, parseLookup, parseRefund, retryAfterAmbiguity, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
+import { loadOrderConsole, parseLookup, parseRefund, unresolvedRefund, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
 import { refundOrder, type Refund } from '../lib/api';
 import { randomUUID } from 'node:crypto';
 
@@ -41,9 +41,10 @@ let refundAmbiguous = false;
 // refund gets a new form and a new key.
 let refundKey = randomUUID();
 let refundValues = { quantity: '', reason: '' };
-// The exact request behind an ambiguous outcome, so its retry survives a failed
-// reload. Null whenever there is nothing to retry.
-let ambiguousRetry: RefundInput | null = null;
+// The refund still hanging over this order: commerce may have moved money and
+// has not said so. While this is set the page offers only the retry, never a new
+// refund. Null when there is nothing outstanding.
+let unresolved: RefundInput | null = null;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -70,25 +71,23 @@ if (Astro.request.method === 'POST') {
         actor: staff.staffId,
         organizerId: staff.organizerId,
       });
+      // `retry_of` is how a submission says "I am the continuation of an
+      // unresolved refund" — the page's only memory across requests.
+      const retryOf = field('retry_of') || null;
       if (outcome.ok) {
         refund = outcome.value;
+        // Clear the prefill. Re-rendering the previous quantity and reason into
+        // a freshly keyed form leaves a second refund one click away, on an
+        // order that stays `completed` with quantity still refundable
+        // (ai-review pass 3).
+        refundValues = { quantity: '', reason: '' };
       } else {
         refundError = outcome.message;
         refundAmbiguous = outcome.kind === 'ambiguous';
-        if (refundAmbiguous) {
-          // An ambiguous outcome MAY have refunded, so the retry must carry
-          // THIS key — a fresh one would refund a second time.
-          refundKey = parsed.value.idempotencyKey;
-          // Kept so the retry form can be rendered from the request itself,
-          // independently of whether the order reload below succeeds. If the
-          // reload also fails — the same outage that lost the response — the
-          // ordinary form does not render, the key leaves the page, and the
-          // operator's next lookup mints a new one. That sequence refunds
-          // twice, for real money (ai-review pass 2).
-          ambiguousRetry = retryAfterAmbiguity(outcome, parsed.value);
-        }
         Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
       }
+      unresolved = unresolvedRefund(outcome, parsed.value, retryOf);
+      if (unresolved) refundKey = unresolved.idempotencyKey;
     }
     // Reload the order so the page still shows what it is talking about. Its
     // status must not overwrite the refund's.
@@ -258,18 +257,22 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
     </section>
   )}
 
-  {ambiguousRetry && (
+  {unresolved && (
     /* Rendered from the REQUEST, not from a reloaded order: the outage that lost
        the response may also have taken the read. Same key, same quantity, same
        reason — so submitting this is a replay commerce recognises, never a
        second refund. */
     <form method="post" action="" class="refund">
       <input type="hidden" name="_action" value="refund" />
-      <input type="hidden" name="order_id" value={ambiguousRetry.orderId} />
+      <input type="hidden" name="order_id" value={unresolved.orderId} />
       <input type="hidden" name="ticket_ref" value={submitted.ticket_ref} />
-      <input type="hidden" name="idempotency_key" value={ambiguousRetry.idempotencyKey} />
-      <input type="hidden" name="quantity" value={String(ambiguousRetry.quantity)} />
-      <input type="hidden" name="reason" value={ambiguousRetry.reason} />
+      <input type="hidden" name="idempotency_key" value={unresolved.idempotencyKey} />
+      {/* Carries the unresolved key forward, so a refusal to THIS retry — a 409
+          from a shift change, since commerce fingerprints actor — does not read
+          as "settled" and re-enable an ordinary refund. */}
+      <input type="hidden" name="retry_of" value={unresolved.idempotencyKey} />
+      <input type="hidden" name="quantity" value={String(unresolved.quantity)} />
+      <input type="hidden" name="reason" value={unresolved.reason} />
       <h2>Retry this refund</h2>
       <p>
         Submitting this again replays the same request — commerce will return the original
@@ -280,7 +283,7 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
     </form>
   )}
 
-  {refundable && !ambiguousRetry && (
+  {refundable && !unresolved && (
     <form method="post" action="" class="refund">
       <input type="hidden" name="_action" value="refund" />
       <input type="hidden" name="order_id" value={lookedUp.orderId} />

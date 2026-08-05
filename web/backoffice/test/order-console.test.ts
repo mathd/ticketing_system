@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Read, OrderState, SafeTicket } from '../src/lib/api';
-import { loadOrderConsole, parseLookup, parseRefund, retryAfterAmbiguity } from '../src/lib/order-console';
+import { loadOrderConsole, parseLookup, parseRefund, unresolvedRefund } from '../src/lib/order-console';
 
 const ORDER = '11111111-1111-4111-8111-111111111111';
 const REF = '22222222-2222-4222-8222-222222222222';
@@ -138,22 +138,40 @@ describe('what the refund form is allowed to carry (TKT-194)', () => {
   });
 });
 
-describe('an ambiguous refund keeps a retry that replays (TKT-194)', () => {
+describe('an unresolved refund stays unresolved until commerce settles it (TKT-194)', () => {
   const request = { orderId: ORDER, quantity: 1, reason: 'customer called', idempotencyKey: KEY };
 
-  // The load-bearing property: it depends on the outcome and the request, and
-  // on NOTHING ELSE. No reloaded order, no view state — because the failure that
-  // produces ambiguity also takes the read.
-  it('offers a retry carrying the ORIGINAL key after an ambiguous outcome', () => {
-    expect(retryAfterAmbiguity({ ok: false, kind: 'ambiguous' }, request)).toEqual(request);
-    expect(retryAfterAmbiguity({ ok: false, kind: 'ambiguous' }, request)?.idempotencyKey).toBe(KEY);
+  // Not derived from any reloaded order: the outage that loses the response also
+  // takes the read.
+  it('holds the ORIGINAL key after an ambiguous first attempt', () => {
+    expect(unresolvedRefund({ ok: false, kind: 'ambiguous' }, request, null)).toEqual(request);
   });
 
   it.each([
-    ['a successful refund', { ok: true }],
-    ['a decided refusal', { ok: false, kind: 'refused' }],
-    ['an unknown order', { ok: false, kind: 'not-found' }],
-  ])('offers no retry after %s', (_name, outcome) => {
-    expect(retryAfterAmbiguity(outcome, request)).toBeNull();
+    ['a refund commerce confirmed', { ok: true }],
+    ['a refusal of a FIRST attempt, where nothing moved', { ok: false, kind: 'refused' }],
+    ['an unknown order on a first attempt', { ok: false, kind: 'not-found' }],
+  ])('is settled by %s', (_name, outcome) => {
+    expect(unresolvedRefund(outcome, request, null)).toBeNull();
+  });
+
+  // The pass-3 finding. Commerce fingerprints the key over (order, quantity,
+  // actor, reason), so the same retry submitted after a shift change is a 409 —
+  // a decided answer about the RETRY that says nothing about whether the first
+  // attempt moved money. Treating it as settled re-enabled a freshly keyed,
+  // prefilled refund form.
+  it.each([
+    ['refused', { ok: false, kind: 'refused' }],
+    ['not-found', { ok: false, kind: 'not-found' }],
+    ['ambiguous again', { ok: false, kind: 'ambiguous' }],
+  ])('stays unresolved when a RETRY is answered %s', (_name, outcome) => {
+    const got = unresolvedRefund(outcome, { ...request, idempotencyKey: 'a-different-key' }, KEY);
+    expect(got).not.toBeNull();
+    // And it keeps the ORIGINAL key, not whatever the latest request carried.
+    expect(got?.idempotencyKey).toBe(KEY);
+  });
+
+  it('is settled when a retry finally succeeds', () => {
+    expect(unresolvedRefund({ ok: true }, request, KEY)).toBeNull();
   });
 });

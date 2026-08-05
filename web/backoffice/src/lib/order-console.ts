@@ -119,19 +119,45 @@ export function parseRefund(
 }
 
 /**
- * The request a retry form must carry after a refund attempt, or null.
+ * The refund still hanging over this order, or null if there is none.
  *
- * Derived from the REQUEST and the outcome alone — deliberately not from any
- * reloaded order. The outage that loses a refund response is the same outage
- * that takes the follow-up read, and a retry form that renders only when the
- * reload succeeds disappears exactly when it is needed: the preserved
- * idempotency key leaves the page, the operator's next lookup mints a new one,
- * and submitting that refunds a second time. Real money, for a customer who
- * already got one refund (ai-review pass 2).
+ * "Unresolved" means: commerce may have moved money and has not told us so. The
+ * page must keep offering the SAME idempotency key until that is settled, and
+ * must not offer a new refund in the meantime.
+ *
+ * Two things this is deliberately not derived from:
+ *
+ * - **Any reloaded order.** The outage that loses a refund response is the same
+ *   one that takes the follow-up read, so a retry gated on that read disappears
+ *   exactly when it is needed (ai-review pass 2).
+ * - **The latest outcome alone.** A retry can be REFUSED and still leave the
+ *   original unresolved. Commerce fingerprints the idempotency key over
+ *   `(order, quantity, actor, reason)` (`store/refunds.go:204`), so the same
+ *   retry submitted by a different staff member — a shift change, an escalation
+ *   — is a 409. That is a decided answer about the RETRY and says nothing about
+ *   whether the first attempt moved money. Reading it as "resolved" re-enabled
+ *   an ordinary refund form, freshly keyed and prefilled with the same quantity:
+ *   one click from refunding a second ticket for a customer already refunded
+ *   (ai-review pass 3).
+ *
+ * `wasRetryOf` is the key the submitted form carried, which is how a request
+ * says "I am the continuation of an unresolved refund".
  */
-export function retryAfterAmbiguity(
+export function unresolvedRefund(
   outcome: { ok: boolean; kind?: string },
   request: RefundInput,
+  wasRetryOf: string | null,
 ): RefundInput | null {
-  return !outcome.ok && outcome.kind === 'ambiguous' ? request : null;
+  // Commerce answered with a refund — for a replay, the ORIGINAL one. Settled.
+  if (outcome.ok) return null;
+  // Once a key is unresolved it stays THE key: whatever the latest submission
+  // carried, the one still hanging over the order is the first one.
+  const key = wasRetryOf ?? request.idempotencyKey;
+  // Ambiguous may have moved money; a decided refusal to a RETRY settles the
+  // retry and not the original. Either way it is still outstanding.
+  if (outcome.kind === 'ambiguous' || wasRetryOf) {
+    return { ...request, idempotencyKey: key };
+  }
+  // A decided refusal to a first attempt: nothing moved.
+  return null;
 }
