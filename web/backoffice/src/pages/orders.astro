@@ -13,7 +13,7 @@
 // nothing public maps one to the other (see lib/order-console.ts). Both fields
 // are optional; the page renders whichever half it can answer.
 import Layout from '../layouts/Layout.astro';
-import { loadOrderConsole, parseLookup, parseRefund, type ConsoleView, type Lookup } from '../lib/order-console';
+import { loadOrderConsole, parseLookup, parseRefund, retryAfterAmbiguity, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
 import { refundOrder, type Refund } from '../lib/api';
 import { randomUUID } from 'node:crypto';
 
@@ -41,6 +41,9 @@ let refundAmbiguous = false;
 // refund gets a new form and a new key.
 let refundKey = randomUUID();
 let refundValues = { quantity: '', reason: '' };
+// The exact request behind an ambiguous outcome, so its retry survives a failed
+// reload. Null whenever there is nothing to retry.
+let ambiguousRetry: RefundInput | null = null;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -72,10 +75,18 @@ if (Astro.request.method === 'POST') {
       } else {
         refundError = outcome.message;
         refundAmbiguous = outcome.kind === 'ambiguous';
-        // An ambiguous outcome MAY have refunded. Preserving the key makes a
-        // retry a replay rather than a second refund — the whole reason the
-        // key is minted at render and not per request.
-        if (refundAmbiguous) refundKey = parsed.value.idempotencyKey;
+        if (refundAmbiguous) {
+          // An ambiguous outcome MAY have refunded, so the retry must carry
+          // THIS key — a fresh one would refund a second time.
+          refundKey = parsed.value.idempotencyKey;
+          // Kept so the retry form can be rendered from the request itself,
+          // independently of whether the order reload below succeeds. If the
+          // reload also fails — the same outage that lost the response — the
+          // ordinary form does not render, the key leaves the page, and the
+          // operator's next lookup mints a new one. That sequence refunds
+          // twice, for real money (ai-review pass 2).
+          ambiguousRetry = retryAfterAmbiguity(outcome, parsed.value);
+        }
         Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
       }
     }
@@ -247,7 +258,29 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
     </section>
   )}
 
-  {refundable && (
+  {ambiguousRetry && (
+    /* Rendered from the REQUEST, not from a reloaded order: the outage that lost
+       the response may also have taken the read. Same key, same quantity, same
+       reason — so submitting this is a replay commerce recognises, never a
+       second refund. */
+    <form method="post" action="" class="refund">
+      <input type="hidden" name="_action" value="refund" />
+      <input type="hidden" name="order_id" value={ambiguousRetry.orderId} />
+      <input type="hidden" name="ticket_ref" value={submitted.ticket_ref} />
+      <input type="hidden" name="idempotency_key" value={ambiguousRetry.idempotencyKey} />
+      <input type="hidden" name="quantity" value={String(ambiguousRetry.quantity)} />
+      <input type="hidden" name="reason" value={ambiguousRetry.reason} />
+      <h2>Retry this refund</h2>
+      <p>
+        Submitting this again replays the same request — commerce will return the original
+        refund rather than making a second one. Do not start a new refund for this order until
+        this has been resolved.
+      </p>
+      <button type="submit">Retry the same refund</button>
+    </form>
+  )}
+
+  {refundable && !ambiguousRetry && (
     <form method="post" action="" class="refund">
       <input type="hidden" name="_action" value="refund" />
       <input type="hidden" name="order_id" value={lookedUp.orderId} />

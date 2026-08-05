@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Read, OrderState, SafeTicket } from '../src/lib/api';
-import { loadOrderConsole, parseLookup, parseRefund } from '../src/lib/order-console';
+import { loadOrderConsole, parseLookup, parseRefund, retryAfterAmbiguity } from '../src/lib/order-console';
 
 const ORDER = '11111111-1111-4111-8111-111111111111';
 const REF = '22222222-2222-4222-8222-222222222222';
@@ -135,5 +135,25 @@ describe('what the refund form is allowed to carry (TKT-194)', () => {
     const fields = { order_id: ORDER, quantity: '1', reason: '  duplicate charge  ', idempotency_key: KEY };
     const got = parseRefund((k) => (fields as Record<string, string>)[k] ?? '');
     expect(got.ok && got.value.reason).toBe('duplicate charge');
+  });
+});
+
+describe('an ambiguous refund keeps a retry that replays (TKT-194)', () => {
+  const request = { orderId: ORDER, quantity: 1, reason: 'customer called', idempotencyKey: KEY };
+
+  // The load-bearing property: it depends on the outcome and the request, and
+  // on NOTHING ELSE. No reloaded order, no view state — because the failure that
+  // produces ambiguity also takes the read.
+  it('offers a retry carrying the ORIGINAL key after an ambiguous outcome', () => {
+    expect(retryAfterAmbiguity({ ok: false, kind: 'ambiguous' }, request)).toEqual(request);
+    expect(retryAfterAmbiguity({ ok: false, kind: 'ambiguous' }, request)?.idempotencyKey).toBe(KEY);
+  });
+
+  it.each([
+    ['a successful refund', { ok: true }],
+    ['a decided refusal', { ok: false, kind: 'refused' }],
+    ['an unknown order', { ok: false, kind: 'not-found' }],
+  ])('offers no retry after %s', (_name, outcome) => {
+    expect(retryAfterAmbiguity(outcome, request)).toBeNull();
   });
 });

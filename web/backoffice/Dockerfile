@@ -16,6 +16,10 @@ FROM node:26.5.0-alpine3.23@sha256:0473b6671ff22c8eeb570c0e1e51408595d3171e73f80
 ENV HOST=0.0.0.0 PORT=8080 NODE_ENV=production
 WORKDIR /app
 COPY --from=build /src/web/backoffice/dist ./dist
+COPY --from=build /src/web/backoffice/start.mjs /src/web/backoffice/credentials.mjs ./
 EXPOSE 8080
 USER node
-CMD ["node", "dist/server/entry.mjs"]
+# start.mjs, not entry.mjs: it refuses to start when the two staff credentials
+# are missing or identical, BEFORE the server listens (TKT-194). Astro defers
+# middleware to the first request, so a check there cannot fail the process.
+CMD ["node", "start.mjs"]

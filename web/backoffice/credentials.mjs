@@ -1,9 +1,12 @@
 // Back-office credential separation, checked ONCE at startup (TKT-194).
 //
-// middleware.ts calls this at MODULE SCOPE, so the check runs when the SSR
-// server loads its entry — not on the first refund. The call lives there rather
-// than here so this module stays importable by its own test: a module that
-// throws on import cannot be tested by importing it.
+// Plain .mjs at the package root, outside src/, so BOTH entrypoints can share
+// one copy of the rule: start.mjs runs it before the server listens, and
+// middleware.ts runs it again per module load as defence in depth. A security
+// rule written twice is a security rule that will disagree with itself.
+//
+// It does not throw on import — the callers decide what to do — so its own test
+// can import it.
 //
 // That distinction is the whole finding (ai-review pass 1). An earlier version
 // compared the two credentials inside `refundOrder`, which meant a deployment
@@ -19,7 +22,7 @@
 // both, so it is the only one that can compare them.
 
 /** Throws if the back office's two staff credentials are missing or identical. */
-export function assertCredentialSeparation(env: NodeJS.ProcessEnv = process.env): void {
+export function assertCredentialSeparation(env = process.env) {
   const catalog = env.CATALOG_STAFF_WRITE_TOKEN;
   const commerce = env.COMMERCE_STAFF_WRITE_TOKEN;
   if (!catalog) {

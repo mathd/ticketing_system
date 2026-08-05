@@ -117,3 +117,21 @@ export function parseRefund(
   }
   return { ok: true, value: { orderId, quantity, reason, idempotencyKey } };
 }
+
+/**
+ * The request a retry form must carry after a refund attempt, or null.
+ *
+ * Derived from the REQUEST and the outcome alone — deliberately not from any
+ * reloaded order. The outage that loses a refund response is the same outage
+ * that takes the follow-up read, and a retry form that renders only when the
+ * reload succeeds disappears exactly when it is needed: the preserved
+ * idempotency key leaves the page, the operator's next lookup mints a new one,
+ * and submitting that refunds a second time. Real money, for a customer who
+ * already got one refund (ai-review pass 2).
+ */
+export function retryAfterAmbiguity(
+  outcome: { ok: boolean; kind?: string },
+  request: RefundInput,
+): RefundInput | null {
+  return !outcome.ok && outcome.kind === 'ambiguous' ? request : null;
+}
