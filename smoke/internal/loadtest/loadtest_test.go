@@ -394,29 +394,56 @@ func TestReadReportRenamesWritePhaseFieldsForGets(t *testing.T) {
 }
 
 // TestFlatReadBoundUsesTheTierNotTheRequestCount is the assertion the whole
-// ticket rests on: the ceiling must scale with ELAPSED TIME over the tier, and
-// must not move when more requests arrive. A bound that grew with requests would
-// pass whether or not a cache existed.
+// ticket rests on: the ceiling scales with ELAPSED TIME over the tier, and
+// nothing else. Boundaries are pinned explicitly, because an off-by-one here is
+// the difference between a proof and a formality.
 func TestFlatReadBoundUsesTheTierNotTheRequestCount(t *testing.T) {
-	// 2s stage, 5s tier, 2 statements per load → 2 × (1 + ceil(2/5)) = 4.
-	if got := MaxStoreQueries(2*time.Second, 5*time.Second, 2); got != 4 {
-		t.Fatalf("bound = %d, want 4", got)
+	for _, tc := range []struct {
+		name              string
+		elapsed, tier     time.Duration
+		statementsPerLoad int
+		want              int
+	}{
+		// The measured window opens AFTER pre-warm, so a warm entry is present at
+		// t=0 and only expiries cost a load.
+		{"nothing can expire in no time", 0, 5 * time.Second, 1, 0},
+		{"just inside the tier", 4999 * time.Millisecond, 5 * time.Second, 1, 1},
+		{"exactly the tier", 5 * time.Second, 5 * time.Second, 1, 1},
+		{"just past the tier", 5001 * time.Millisecond, 5 * time.Second, 1, 2},
+		{"two statements per load doubles it", 5 * time.Second, 5 * time.Second, 2, 2},
+		{"a 2s stage against a 300s tier", 2 * time.Second, 5 * time.Minute, 1, 1},
+		{"a tier of zero is not a bound", time.Second, 0, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MaxStoreQueries(tc.elapsed, tc.tier, tc.statementsPerLoad); got != tc.want {
+				t.Fatalf("MaxStoreQueries(%v, %v, %d) = %d, want %d",
+					tc.elapsed, tc.tier, tc.statementsPerLoad, got, tc.want)
+			}
+		})
 	}
-	// 12s stage, 5s tier, 1 statement → 1 × (1 + ceil(12/5)) = 4.
-	if got := MaxStoreQueries(12*time.Second, 5*time.Second, 1); got != 4 {
-		t.Fatalf("bound = %d, want 4", got)
+}
+
+// TestFlatReadBoundIgnoresTraffic pins request-independence through the
+// EVIDENCE type rather than by comparing two identical calls to the same
+// function, which the first version did and which proved nothing. Same elapsed,
+// wildly different traffic: same verdict.
+func TestFlatReadBoundIgnoresTraffic(t *testing.T) {
+	const elapsed, tier = 2 * time.Second, 5 * time.Second
+	bound := MaxStoreQueries(elapsed, tier, 1)
+
+	light := ReadQueryEvidence{Endpoint: "availability", StoreQueries: 1, MaxAllowed: bound, Requests: 12}
+	heavy := ReadQueryEvidence{Endpoint: "availability", StoreQueries: 1, MaxAllowed: bound, Requests: 12000}
+	if !light.Flat() || !heavy.Flat() {
+		t.Fatal("a cached read is flat regardless of how much traffic it served")
 	}
-	// A 2s stage against a 300s tier allows exactly two loads: the pre-warm
-	// boundary plus one.
-	if got := MaxStoreQueries(2*time.Second, 300*time.Second, 1); got != 2 {
-		t.Fatalf("bound = %d, want 2", got)
+	// And the ceiling itself did not move with the traffic.
+	if light.MaxAllowed != heavy.MaxAllowed {
+		t.Fatalf("ceiling moved with request count: %d vs %d", light.MaxAllowed, heavy.MaxAllowed)
 	}
-	// Requests do not appear anywhere in the formula. Same elapsed, same bound,
-	// whether the stage served 60 requests or 60,000.
-	a := MaxStoreQueries(2*time.Second, 5*time.Second, 1)
-	b := MaxStoreQueries(2*time.Second, 5*time.Second, 1)
-	if a != b {
-		t.Fatal("the bound is not a pure function of elapsed, tier and statements-per-load")
+	// An uncached read at the same traffic is NOT flat — the discriminator.
+	uncached := ReadQueryEvidence{Endpoint: "availability", StoreQueries: 12000, MaxAllowed: bound, Requests: 12000}
+	if uncached.Flat() {
+		t.Fatal("one query per request must not be reported as flat")
 	}
 }
 

@@ -47,34 +47,41 @@ type readEndpoint struct {
 	url  string
 	// db is which database's pg_stat_statements rows to count.
 	db string
-	// fragment matches the normalized statement text. Distinctive enough that
-	// exactly one queryid matches — asserted, because a fragment matching zero
-	// statements would make the endpoint look permanently flat.
-	fragment string
-	// statementsPerLoad: one logical read is not one statement. Inventory's
-	// default-channel availability executes two — the pool/claims query and then
-	// reservedForChannelsSQL.
-	statementsPerLoad int
-	tier              time.Duration
+	// fragments are EVERY statement family this read executes, one entry per
+	// statement. Not a sentinel: counting one of two would let a regression where
+	// the other runs per-request hide behind a cached first query, and the gate
+	// would report flat load while unmeasured SQL scaled with traffic (found in
+	// ai-review — the first version documented two statements and counted one).
+	//
+	// Each must match exactly one queryid: zero would make the endpoint look
+	// permanently flat, which is the failure this proof exists to avoid.
+	fragments []string
+	tier      time.Duration
 }
+
+// statementsPerLoad is one per measured family, by construction.
+func (e readEndpoint) statementsPerLoad() int { return len(e.fragments) }
 
 func readEndpoints(slot, organizer string) []readEndpoint {
 	return []readEndpoint{
 		{
-			name:              "inventory availability",
-			url:               fmt.Sprintf("%s/api/inventory/slots/%s/availability?organizer_id=%s", gatewayURL, slot, organizer),
-			db:                "inventory",
-			fragment:          "%FROM inventory_pools WHERE slot_id=%",
-			statementsPerLoad: 1,
-			tier:              5 * time.Second,
+			name: "inventory availability",
+			url:  fmt.Sprintf("%s/api/inventory/slots/%s/availability?organizer_id=%s", gatewayURL, slot, organizer),
+			db:   "inventory",
+			// BOTH statements the default-channel read executes: the pool/claims
+			// query, then reservedForChannelsSQL.
+			fragments: []string{
+				"%FROM inventory_pools WHERE slot_id=%",
+				"%FROM channel_allocations a%",
+			},
+			tier: 5 * time.Second,
 		},
 		{
-			name:              "catalog public event list",
-			url:               gatewayURL + "/api/catalog/public/events?locale=en",
-			db:                "catalog",
-			fragment:          "%FROM performances p%JOIN events e%",
-			statementsPerLoad: 1,
-			tier:              5 * time.Minute,
+			name:      "catalog public event list",
+			url:       gatewayURL + "/api/catalog/public/events?locale=en",
+			db:        "catalog",
+			fragments: []string{"%FROM performances p%JOIN events e%"},
+			tier:      5 * time.Minute,
 		},
 	}
 }
@@ -115,6 +122,16 @@ func statementCalls(t *testing.T, conn *pgx.Conn, fragment string) int64 {
 	return calls
 }
 
+// endpointCalls sums every statement family the endpoint executes.
+func endpointCalls(t *testing.T, conn *pgx.Conn, ep readEndpoint) int64 {
+	t.Helper()
+	var total int64
+	for _, f := range ep.fragments {
+		total += statementCalls(t, conn, f)
+	}
+	return total
+}
+
 // buyerRead is one GET, recorded in the Hold slot so RunStage needs no
 // read-specific branch; ReadReport renames it at the report layer.
 func buyerRead(t *testing.T, url string) loadtest.AttemptFunc {
@@ -150,7 +167,7 @@ func runReadStage(t *testing.T, name string, rate int, dur time.Duration,
 
 	before := make([]int64, len(eps))
 	for i, ep := range eps {
-		before[i] = statementCalls(t, conns[ep.db], ep.fragment)
+		before[i] = endpointCalls(t, conns[ep.db], ep)
 	}
 
 	// Round-robin across endpoints so each gets a deterministic share.
@@ -174,12 +191,12 @@ func runReadStage(t *testing.T, name string, rate int, dur time.Duration,
 		merged.Elapsed += r.Elapsed
 		if r.Elapsed > 0 {
 			ep := eps[i]
-			after := statementCalls(t, conns[ep.db], ep.fragment)
+			after := endpointCalls(t, conns[ep.db], ep)
 			evidence = append(evidence, loadtest.ReadQueryEvidence{
 				Endpoint:     ep.name,
 				TierSeconds:  int(ep.tier.Seconds()),
 				StoreQueries: int(after - before[i]),
-				MaxAllowed:   loadtest.MaxStoreQueries(r.Elapsed, ep.tier, ep.statementsPerLoad),
+				MaxAllowed:   loadtest.MaxStoreQueries(r.Elapsed, ep.tier, ep.statementsPerLoad()),
 				Requests:     r.OK,
 			})
 		}
@@ -220,8 +237,20 @@ func readProof(t *testing.T, report *loadtest.Report, slot, organizer string, in
 		if stage.r.ClientErrors+stage.r.ServerErrors != 0 {
 			t.Fatalf("read stage %s: %d client / %d server errors", rr.Name, stage.r.ClientErrors, stage.r.ServerErrors)
 		}
+		// Drops are fatal here, unlike the write stages where they are advisory.
+		// RunStage records in-flight saturation as a DROP, not an error, so a
+		// stage that discarded most of its arrivals would serve few requests,
+		// keep its counters flat, and pass — demonstrating cache behaviour for
+		// the requests admitted rather than the load-scaling this ticket claims.
+		if stage.r.Dropped != 0 || stage.r.Started != stage.r.Offered {
+			t.Fatalf("read stage %s: started %d/%d offered, %d dropped — the stage did not deliver the load it claims to prove",
+				rr.Name, stage.r.Started, stage.r.Offered, stage.r.Dropped)
+		}
 		for _, e := range stage.ev {
 			t.Logf("  %-26s store_queries=%d max_allowed=%d requests=%d", e.Endpoint, e.StoreQueries, e.MaxAllowed, e.Requests)
+			if e.Requests == 0 {
+				t.Fatalf("%s served no requests in %s — a flat counter over zero traffic proves nothing", e.Endpoint, rr.Name)
+			}
 			if !e.Flat() {
 				t.Errorf("%s in %s: %d store queries for %d requests, ceiling %d — reads are NOT being served from memory",
 					e.Endpoint, rr.Name, e.StoreQueries, e.Requests, e.MaxAllowed)
@@ -232,12 +261,16 @@ func readProof(t *testing.T, report *loadtest.Report, slot, organizer string, in
 	// The scaling half of the COS: five times the offered rate must not move the
 	// database. Asserted as a ratio on what was actually achieved, because a slow
 	// runner can sit below the offered rate without anything being wrong.
-	if low.OK > 0 && high.OK > 0 {
-		lowRate, highRate := low.ReadReport().AchievedRate, high.ReadReport().AchievedRate
-		t.Logf("achieved read rate: low=%.1f/s high=%.1f/s (%.1fx)", lowRate, highRate, highRate/lowRate)
-		if highRate < 2*lowRate {
-			t.Logf("advisory: high stage only reached %.1fx the low stage — the generator, not the server, bounded this run", highRate/lowRate)
-		}
+	// The scaling half of the COS, and it is FATAL rather than advisory: without
+	// it the proof shows only that a cache serves whatever traffic it was given.
+	// Safe to assert because both stages are required above to start every
+	// offered arrival, so achieved rate follows the offered rate by construction
+	// — a slow runner shows up as drops, which already failed.
+	lowRate, highRate := low.ReadReport().AchievedRate, high.ReadReport().AchievedRate
+	t.Logf("achieved read rate: low=%.1f/s high=%.1f/s (%.1fx) — offered 5x", lowRate, highRate, highRate/lowRate)
+	if highRate < 2*lowRate {
+		t.Fatalf("high stage achieved %.1f/s against low %.1f/s (%.1fx) — the offered rate rose 5x, so this run did not "+
+			"demonstrate load scaling and its flat counters mean nothing", highRate, lowRate, highRate/lowRate)
 	}
 
 	readControl(t, report, eps, conns)
@@ -287,7 +320,7 @@ func readControl(t *testing.T, report *loadtest.Report, eps []readEndpoint, conn
 func epStatementsPerLoad(eps []readEndpoint, name string) int {
 	for _, e := range eps {
 		if e.name == name {
-			return e.statementsPerLoad
+			return e.statementsPerLoad()
 		}
 	}
 	return 1

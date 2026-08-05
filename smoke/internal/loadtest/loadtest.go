@@ -434,27 +434,32 @@ func (e ReadQueryEvidence) Flat() bool { return e.StoreQueries <= e.MaxAllowed }
 
 // MaxStoreQueries is the ceiling a cached read may reach in one stage.
 //
-//	statementsPerLoad × (1 + ceil(elapsed / tier))
+//	statementsPerLoad × ceil(elapsed / tier)
 //
-// Two things about it are load-bearing:
+// Three things about it are load-bearing:
 //
 //   - REQUESTS DO NOT APPEAR. That is the whole proof. A bound that grew with
 //     traffic would be satisfied whether or not a cache existed.
-//   - The +1 is not slack. It covers exactly one boundary: the entry loaded
-//     during pre-warm may expire inside the stage, so a stage shorter than the
-//     tier still permits one reload. It must not be raised to absorb a flaky
-//     run — a run that exceeds this is either uncached or measuring the wrong
-//     statement, and both deserve to fail.
+//   - THE MEASURED WINDOW STARTS AFTER PRE-WARM. Counters are snapshotted once
+//     the pre-warm load has already completed, so the entry is warm at t=0 and
+//     the only loads inside the window are expiries. An earlier version added a
+//     +1 "for the pre-warm boundary" and was simply too permissive — pre-warm is
+//     outside the window, so it needs no allowance, and the slack would have let
+//     one unexplained duplicate load pass (found in ai-review).
+//   - IT MUST NOT BE RAISED TO ABSORB A FLAKY RUN. A run that exceeds this is
+//     either uncached or measuring the wrong statement, and both deserve to fail.
+//
+// At elapsed = 0 the ceiling is 0: nothing can expire in no time.
 //
 // statementsPerLoad exists because one logical read is not one statement:
 // inventory's default-channel availability read executes two (the pool/claims
 // query, then reservedForChannelsSQL).
 func MaxStoreQueries(elapsed, tier time.Duration, statementsPerLoad int) int {
-	if tier <= 0 || statementsPerLoad <= 0 {
+	if tier <= 0 || statementsPerLoad <= 0 || elapsed <= 0 {
 		return 0
 	}
 	reloads := int((elapsed + tier - 1) / tier) // ceil
-	return statementsPerLoad * (1 + reloads)
+	return statementsPerLoad * reloads
 }
 
 // ReadStageReport is a read stage in the report. Deliberately a separate type
