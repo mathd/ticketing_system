@@ -192,6 +192,31 @@ describe('upstream Age propagation', () => {
 // advertises remaining freshness that does not exist — which is precisely the
 // stacking guarantee this ticket added Age to keep.
 describe('age is monotonic under a backward clock', () => {
+  it('does not decrease after age has already advanced', async () => {
+    // The case the first version of this test missed. Clamping elapsed time at
+    // zero only covers a jump to before fetchedAtMs; an entry that has already
+    // aged forward can still shrink, handing the page back freshness it spent.
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'cache-control': 'public, max-age=300', age: '100' },
+      }),
+    );
+    let now = 1_000_000;
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
+    await cache.get('http://catalog/public/events');
+
+    now = 1_100_000; // +100s → age 200
+    const advanced = await cache.get('http://catalog/public/events');
+    expect(advanced.ageSeconds).toBe(200);
+
+    now = 1_050_000; // 50s back, still AFTER fetchedAtMs
+    const afterStep = await cache.get('http://catalog/public/events');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(afterStep.ageSeconds).toBeGreaterThanOrEqual(advanced.ageSeconds);
+    expect(afterStep.ageSeconds).toBe(200);
+  });
+
   it('never reports less than the upstream age after the clock steps back', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true }), {

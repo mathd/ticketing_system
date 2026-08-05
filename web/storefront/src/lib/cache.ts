@@ -38,6 +38,14 @@ interface Entry {
   maxAgeSeconds: number;
   /** Upstream age at fetch time; the entry is already this stale when stored. */
   upstreamAgeSeconds: number;
+  /**
+   * The highest age this entry has ever reported. `now` is a WALL clock, so a
+   * backward step shrinks the elapsed term; without a high-water mark the same
+   * live entry would report a smaller age than a previous call already
+   * established, and the middleware would hand the page back freshness it had
+   * already spent.
+   */
+  reportedAgeSeconds: number;
 }
 
 export function parseMaxAge(cacheControl: string | null): number {
@@ -76,18 +84,24 @@ export class PageDataCache {
     const nowMs = this.#now();
     const entry = this.#entries.get(url);
     if (entry) {
-      // Clamped at zero because `now` is a WALL clock: an NTP step backwards
-      // would otherwise make elapsed time negative, pushing ageSeconds below the
-      // age upstream already reported and letting the middleware advertise more
-      // remaining freshness than exists. Age must never decrease.
+      // `now` is a WALL clock and can step backwards, so age is computed as a
+      // HIGH-WATER MARK rather than a subtraction. Clamping the elapsed term at
+      // zero is not enough on its own: an entry sitting at age 300 whose clock
+      // steps back 50 seconds still yields 250 — a decrease, and 50 seconds of
+      // advertised freshness the previous call had already spent.
       //
-      // This does not make expiry immune to a backward step — the entry can
-      // still outlive its TTL in real time by the size of the jump, which is a
-      // property this cache had before TKT-206 and would need a monotonic clock
-      // to close. What the clamp removes is the part this change introduced:
-      // advertising freshness we know we do not have.
+      // Monotonic by construction, and it makes expiry no later than before: age
+      // only ever rises, so an entry cannot regain life it has used.
+      //
+      // What this does NOT close: after a backward step the age stops advancing
+      // until wall time catches up, so an entry can outlive its TTL in real time
+      // by the size of the jump. That predates TKT-206 — this cache measured
+      // wall time before the ticket touched it — and closing it needs a
+      // monotonic clock source, which changes the injected-clock contract this
+      // cache shares with its tests and the middleware.
       const elapsedSeconds = Math.max(0, Math.floor((nowMs - entry.fetchedAtMs) / 1000));
-      const ageSeconds = entry.upstreamAgeSeconds + elapsedSeconds;
+      const ageSeconds = Math.max(entry.reportedAgeSeconds, entry.upstreamAgeSeconds + elapsedSeconds);
+      entry.reportedAgeSeconds = ageSeconds;
       if (ageSeconds < entry.maxAgeSeconds) {
         return { data: entry.data as T, ageSeconds, maxAgeSeconds: entry.maxAgeSeconds };
       }
@@ -116,7 +130,13 @@ export class PageDataCache {
     // max-age is served to this caller and then dropped: keeping it would hand
     // the next request a value that was already expired when it arrived.
     if (maxAgeSeconds > upstreamAgeSeconds) {
-      this.#entries.set(url, { data, fetchedAtMs: nowMs, maxAgeSeconds, upstreamAgeSeconds });
+      this.#entries.set(url, {
+        data,
+        fetchedAtMs: nowMs,
+        maxAgeSeconds,
+        upstreamAgeSeconds,
+        reportedAgeSeconds: upstreamAgeSeconds,
+      });
     }
     return { data, ageSeconds: upstreamAgeSeconds, maxAgeSeconds };
   }
