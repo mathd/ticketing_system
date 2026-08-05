@@ -106,6 +106,11 @@ var wantDeclarations = []string{
 	"catalog/listVenueSeatMaps 200",
 	"catalog/resolveTicketTypePrice 200",
 	"inventory/getAvailability 200",
+	// The operator kill-switch (TKT-210). A never-tier declaration on a control
+	// surface rather than a data read: a cached answer about whether a cache is
+	// on is the wrong thing to hand an operator mid-incident.
+	"inventory/getCacheControl 200",
+	"inventory/putCacheControl 200",
 	"inventory/getSeatOccupancy 200",
 }
 
