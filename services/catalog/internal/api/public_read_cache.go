@@ -293,16 +293,9 @@ func (c *publicReadCache) read(ctx context.Context, k readKey, load func(context
 	}
 
 	c.mu.Lock()
-	// Re-check the switch: an operator may have disabled the cache while this
-	// request waited for a slot.
-	if !c.enabled {
-		c.mu.Unlock()
-		lctx, cancel := context.WithTimeout(context.Background(), c.loadTimeout)
-		v, err := load(lctx)
-		cancel()
-		<-c.sem
-		return v, 0, err
-	}
+	// Deliberately no second `enabled` check: the insertion guard already requires
+	// `enabled`, so a read that queued while the cache was on and found it off
+	// cannot populate anything. See inventory's cache for the full reasoning.
 	if e, ok := c.entries[k]; ok {
 		if age := c.now().Sub(e.loadedAt); age < c.ttl {
 			c.lru.MoveToFront(e.elem)

@@ -289,19 +289,15 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 	}
 
 	// Re-check under the lock: while waiting for a slot, another goroutine may have
-	// cached this key or started a joinable load for it — or an operator may have
-	// disabled the cache. A request that queued for a slot while the switch was on
-	// must not register a shared flight after it was turned off.
+	// cached this key or started a joinable load for it.
+	//
+	// Deliberately NO second `enabled` check here. One was added and then removed:
+	// it could not populate the cache anyway (the insertion guard requires
+	// `enabled`), so all it did was avoid registering a transient flight — while
+	// adding a second place to leak a semaphore slot. A read that queued for a
+	// slot and found the cache disabled on the other side does its load and
+	// returns it; nothing is cached, which is the property that matters.
 	s.mu.Lock()
-	if !s.enabled {
-		s.mu.Unlock()
-		v, err := s.loadDirect(k)
-		<-s.sem
-		if err != nil {
-			return Read{}, err
-		}
-		return Read{Value: v}, nil
-	}
 	if e, ok := s.entries[k]; ok {
 		if age := s.now().Sub(e.loadedAt); age < s.ttl {
 			s.lru.MoveToFront(e.elem)

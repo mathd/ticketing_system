@@ -712,3 +712,81 @@ func TestAPostReEnableReaderDoesNotJoinAPreDisableFlight(t *testing.T) {
 		}
 	})
 }
+
+// TestAReadQueuedForASlotCannotPopulateADisabledCache is the narrow window a
+// second `enabled` check was briefly added for: a reader passes the entry check
+// while the cache is on, waits for a concurrency slot, and an operator disables
+// the cache in between.
+//
+// The check was removed again — it could not have populated the cache anyway,
+// because the insertion guard requires `enabled`. This test pins the property
+// that actually holds, rather than the branch that was providing it.
+func TestAReadQueuedForASlotCannotPopulateADisabledCache(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newFakeSource()
+		src.setAvailable(10)
+		src.release = make(chan struct{})
+		svc := New(src, WithMaxInFlight(1)) // one slot, so the second read must queue
+		org, slotA, slotB := uuid.New(), uuid.New(), uuid.New()
+
+		first := make(chan struct{})
+		go func() { defer close(first); _, _ = svc.Read(context.Background(), org, slotA, "") }()
+		synctest.Wait() // the sole slot is occupied
+
+		queued := make(chan int32, 1)
+		go func() {
+			r, _ := svc.Read(context.Background(), org, slotB, "")
+			queued <- r.Value.Available
+		}()
+		synctest.Wait() // waiting for the slot, cache still enabled
+
+		svc.SetEnabled(false)
+		src.setAvailable(4)
+		close(src.release)
+		<-first
+
+		if got := <-queued; got != 4 {
+			t.Fatalf("the queued read returned %d, want 4 — it used a value from before the disable", got)
+		}
+		if st := svc.Status(); st.Entries != 0 {
+			t.Fatalf("a read that acquired its slot after the disable populated the cache: %+v", st)
+		}
+	})
+}
+
+// TestABypassedLoadReleasesItsSlotWhenTheSourcePanics: net/http recovers a
+// handler panic, so the process lives on. If the bypass path did not release its
+// slot with defer, a repeatable source panic would exhaust every slot and every
+// later miss would block forever — a cache disabled during an incident quietly
+// becoming an outage.
+func TestABypassedLoadReleasesItsSlotWhenTheSourcePanics(t *testing.T) {
+	src := &panickingSource{panics: true}
+	svc := New(src, WithMaxInFlight(1))
+	svc.SetEnabled(false)
+
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = svc.Read(context.Background(), uuid.New(), uuid.New(), "")
+	}()
+
+	// The slot must be back. With a leak this read blocks until the test times out.
+	src.panics = false
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = svc.Read(context.Background(), uuid.New(), uuid.New(), "") }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a panicking bypassed load leaked its concurrency slot")
+	}
+}
+
+type panickingSource struct{ panics bool }
+
+func (p *panickingSource) Availability(context.Context, uuid.UUID, uuid.UUID, string) (store.Availability, error) {
+	if p.panics {
+		panic("source exploded")
+	}
+	return store.Availability{}, nil
+}
+
+func (p *panickingSource) RegisterAvailabilityInvalidator(func(uuid.UUID)) {}
