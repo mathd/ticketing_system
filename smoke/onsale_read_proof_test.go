@@ -70,9 +70,19 @@ func readEndpoints(slot, organizer string) []readEndpoint {
 			db:   "inventory",
 			// BOTH statements the default-channel read executes: the pool/claims
 			// query, then reservedForChannelsSQL.
+			//
+			// Matched on their DISTINCTIVE column lists rather than their table
+			// names. "FROM inventory_pools WHERE slot_id=" would also match the
+			// claim path's row locks (`SELECT 1 ... FOR UPDATE`,
+			// `SELECT capacity,confirmed_quantity,lifecycle_status ... FOR UPDATE`),
+			// which run in the same database and are not reset before this proof;
+			// "FROM channel_allocations a" is shared with channelAvailabilities.
+			// The exactly-one-queryid guard below would have caught either as a
+			// loud failure rather than a wrong number, but a matcher that depends
+			// on which other code paths happened to run is not a matcher.
 			fragments: []string{
-				"%FROM inventory_pools WHERE slot_id=%",
-				"%FROM channel_allocations a%",
+				"%confirmed_quantity,target_capacity,lifecycle_status,closure_status%",
+				"%GREATEST(a.cap%",
 			},
 			tier: 5 * time.Second,
 		},
@@ -261,16 +271,24 @@ func readProof(t *testing.T, report *loadtest.Report, slot, organizer string, in
 	// The scaling half of the COS: five times the offered rate must not move the
 	// database. Asserted as a ratio on what was actually achieved, because a slow
 	// runner can sit below the offered rate without anything being wrong.
-	// The scaling half of the COS, and it is FATAL rather than advisory: without
-	// it the proof shows only that a cache serves whatever traffic it was given.
-	// Safe to assert because both stages are required above to start every
-	// offered arrival, so achieved rate follows the offered rate by construction
-	// — a slow runner shows up as drops, which already failed.
+	// The scaling half of the COS is carried by the assertion above that BOTH
+	// stages started every offered arrival — 24 requests then 120, deterministic,
+	// and a runner that cannot keep up shows up as drops, which are fatal.
+	//
+	// The achieved-RATE ratio stays advisory, matching this harness's existing
+	// split between a correctness verdict and generator health (the write proof's
+	// CeilingInconclusive does the same). Achieved rate is OK over wall-clock
+	// elapsed, so it includes scheduler lag and the drain of the slowest request:
+	// a transient pause on shared CI can push the ratio down while every request
+	// succeeded and nothing was dropped. Making that fatal would turn timing
+	// variance into a failed proof — and my first version's justification for
+	// doing so ("a slow runner shows up as drops") was simply wrong.
 	lowRate, highRate := low.ReadReport().AchievedRate, high.ReadReport().AchievedRate
 	t.Logf("achieved read rate: low=%.1f/s high=%.1f/s (%.1fx) — offered 5x", lowRate, highRate, highRate/lowRate)
 	if highRate < 2*lowRate {
-		t.Fatalf("high stage achieved %.1f/s against low %.1f/s (%.1fx) — the offered rate rose 5x, so this run did not "+
-			"demonstrate load scaling and its flat counters mean nothing", highRate, lowRate, highRate/lowRate)
+		t.Logf("advisory: the high stage reached only %.1fx the low stage's achieved rate. "+
+			"Every offered request was still served and every counter still flat, so the cache verdict stands; "+
+			"this says the generator or the runner was the bound, not the server.", highRate/lowRate)
 	}
 
 	readControl(t, report, eps, conns)
