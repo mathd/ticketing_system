@@ -1,0 +1,125 @@
+{
+  "key": "TKT-205",
+  "type": "Story",
+  "parent": "TKT-31",
+  "classification": "complex",
+  "summary": "US-C2: A hot slot's availability is served from memory, and the write path invalidates it",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-204"
+    }
+  ],
+  "description": "**ADR-004 rule 2, first implementation.** Rule 2 - \"hot events are served from memory\" - has been accepted and unimplemented since 2026-07-12; the ADR's TKT-128 amendment says so explicitly and routes the deployment gap to this epic. Today every buyer poll of `GET /slots/{id}/availability` runs `store.Availability` against Postgres. At the festival NFR (~50-100k capacity, 100k+ queued buyers) that read load is exactly what ADR-004 was written to shed.\n\nShips inventory's in-memory availability snapshot: read-through, keyed by (organizer, slot, channel), lifetime taken from US-C1's `seconds` tier, bounded, single-flight on miss, and **invalidated from the write path** so a claim is visible on the next read rather than after the TTL. Plus the incident kill-switch ADR-004's Consequences named as a requirement: a per-service runtime bypass that needs no redeploy.\n\nThe claim path itself is untouched. ADR-002 and ADR-010 own correctness; a cache that served a claim would be a defect, not a feature.\n\n**Conditions of Success:**\n- [ ] Repeated `GET /slots/{id}/availability` for the same key inside the tier window issues **one** store query, not one per request - asserted by counting store calls, never by timing.\n- [ ] A hold, release, confirm or capacity adjustment on a slot makes the **next** read of that slot reflect the new remaining count **immediately**, without waiting out the TTL.\n- [ ] With no write to invalidate it, a stale entry decays within the declared tier - a \"sold out\" that became available is visible within the seconds tier and no later.\n- [ ] Concurrent misses for the same key produce **one** store query, not N: an expiring hot slot cannot stampede the database.\n- [ ] The kill-switch bypasses the cache **at runtime, per service, with no restart**; flipping it back re-enables. Its current state is observable by an operator.\n- [ ] The cache is **bounded**: entry count cannot exceed a declared ceiling however many distinct slots are read. (An organizer/slot/channel key space is attacker-reachable - the route is public.)\n- [ ] The claim path reads no cached value. A test pins it.\n- [ ] `make check` green.\n\n**Not in scope, deliberately:** explicit hot-event *designation* (manual or automatic). Population-by-access is what \"hot\" means operationally, and a designation surface is speculative until US-C4's load proof shows access-driven population is insufficient. If it does, that is a follow-up ticket - recorded here so the omission is a decision, not an oversight.\n\nQuality gates: `make check`; staleness and invalidation covered by automated tests (epic COS 3).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Buyer availability reads during an on-sale stop touching Postgres, without the display outliving its declared tier."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Inventory only. Availability read + write-path invalidation + kill-switch. NOT: catalog reads (US-C3), NOT the load proof (US-C4), NOT hot-event designation (carved out with a stated reason)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Kill-switch surface (internal HTTP toggle vs signal vs env) is a plan-stage call; the COS constrains it to 'runtime, no restart, observable' and any of those can satisfy it. Invalidation granularity (per-slot vs per-key) likewise."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-204 - the cache lifetime must come from the tier registry, which is the whole reason C1 goes first."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Read-through cache in front of store.Availability with single-flight, bounded entries, TTL from cachetier.Seconds; write path calls an explicit invalidate. Storefront's PageDataCache (web/storefront/src/lib/cache.ts) is the existing precedent for the shape, on the TS side."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Availability is the seconds-tier read and the one under real on-sale load - the highest-value single endpoint to prove rule 2 on."
+    },
+    "success": {
+      "state": "met",
+      "note": "Every COS is a counter assertion or a state assertion, not a timing one. The store-call counter is the test seam."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-04."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-04",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-04",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "The epic's parent decision. Rule 1 (every public read declares a volatility tier), rule 2 (hot events served from memory, refreshed/invalidated from the write path, write path never served from cache), rule 3 (frontends call-frugal). Its TKT-128 amendment records that rule 2 is accepted and UNIMPLEMENTED and that this epic owns the deployment gap; its TKT-107 amendment splits the seat-map tier on publication status."
+      },
+      {
+        "id": "ADR-002",
+        "why": "The claim is atomic and correctness lives at claim time. A stale 'available' display is acceptable because the claim resolves it; the WRITE path must never be served from cache."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a tier that a handler emits must be DECLARED in the service's openapi.yaml or the gate cannot review it. TKT-128 named an emitted-but-undeclared header as a defect in its own right. Any spec edit means regenerating and committing openapi_gen.go BEFORE the gate."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Catalog and inventory wrap responses in contract.ResponseValidator, which validates response HEADERS and fails closed: a Cache-Control value outside the declared enum becomes a 500 with the payload withheld. So the emitted constant and the declaration can only move together."
+      },
+      {
+        "id": "ADR-010",
+        "why": "The claim runs in one Postgres transaction and is the correctness boundary. Nothing this ticket adds may be read by the claim path - the cache serves display, the transaction serves truth."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a guarantee. The availability route is public and unauthenticated, so the cache key space is attacker-reachable: 'bounded' here means bounded against a hostile caller, not just a busy one."
+      },
+      {
+        "id": "ADR-026",
+        "why": "Capacity adjustment clamps remaining capacity - it is a write path that changes an availability answer, so it is one of the paths that must invalidate."
+      },
+      {
+        "id": "ADR-024",
+        "why": "Availability is answered per channel, so the cache key must include the channel or a channel-scoped read would serve another channel's number."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the four epic-level COS",
+        "link": "board:TKT-31"
+      },
+      {
+        "summary": "ADR-004 amendment (TKT-128) is the authoritative inventory of what honors a tier today and what honors nothing - read it before assuming any cache exists",
+        "link": "docs/adr/ADR-004-cache-first-read-path.md"
+      },
+      {
+        "summary": "The read under test and its tier constant",
+        "link": "services/inventory/internal/api/server.go (availability, CacheControlPublicAvailability), services/inventory/internal/store/store.go:401 (Availability)"
+      },
+      {
+        "summary": "Existing runtime/env config seam for services",
+        "link": "shared/go/runtimecfg/runtimecfg.go"
+      },
+      {
+        "summary": "The only cache in the stack today, as a shape precedent (TS, storefront SSR): fetch-through, URL-keyed, coalesces concurrent misses",
+        "link": "web/storefront/src/lib/cache.ts"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Implementation readiness - PASS\n\nSecond slice of TKT-31 (decomposed 2026-08-04). This is the epic's load-bearing story: it is the first implementation of ADR-004 rule 2 anywhere in the stack.\n\n`risk:low` NOT claimed: new shared state on a public, unauthenticated, high-contention read path, plus an operator kill-switch. Concurrency and staleness are the whole substance of the ticket.\n\n**One scope decision recorded at decomposition, not deferred silently:** hot-event *designation* (the epic description's \"manual + automatic\") is carved out. No epic COS requires it, population-by-access delivers the same operational result, and building a designation surface before the load proof exists would be speculative. If US-C4 shows access-driven population is not enough, that is a follow-up ticket with evidence behind it."
+    }
+  ]
+}
