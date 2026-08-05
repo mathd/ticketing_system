@@ -1,0 +1,94 @@
+{
+  "key": "TKT-204",
+  "type": "Story",
+  "parent": "TKT-31",
+  "classification": "simple",
+  "summary": "US-C1: One TTL tier registry - every cached read takes its tier from a single source",
+  "status": "Ready",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**Prefactor for the rest of TKT-31.** \"Make the change easy, then make the easy change.\"\n\nADR-004 rule 1 says every public read endpoint declares a TTL tiered by data volatility. Today those tiers are string literals scattered across two services - `CacheControlPublicReads`, `CacheControlPublicVenueReads` (catalog), `CacheControlPublicAvailability`, `CacheControlPublicSeatOccupancy` (inventory), `CacheControlPriceResolution` - each correct in isolation, none linked to the tier it claims to be, and nothing able to enumerate which endpoint classes exist.\n\nThat is fine while the header is the only artifact. It stops being fine the moment something *caches* on it: US-C2 and US-C3 give the in-memory structures a lifetime, and that lifetime must come from the same value the response header advertises, or cache and contract drift silently and nothing detects it.\n\nShips a `shared/go/cachetier` package - the ADR-004 tiers named once, each with a `time.Duration` and the exact `Cache-Control` string *derived* from it - and moves catalog's and inventory's emission onto it. **No behaviour change: every emitted header stays byte-identical.**\n\n**Conditions of Success:**\n- [ ] `shared/go/cachetier` defines the ADR-004 tiers (never / seconds / minutes / hours) once. Each carries a `time.Duration` and renders its `Cache-Control` string **from** that duration, so the two cannot disagree.\n- [ ] Catalog and inventory public-read handlers emit through the package. Every emitted header byte-identical to today's - proven by the existing tier tests passing **unchanged** (`TestSeatMapReadCacheTierByStatus`, `TestAvailabilityCacheTierIsContractEnforced`, and catalog's public-read tier assertions).\n- [ ] A test enumerates every `Cache-Control` value declared in `services/*/api/openapi.yaml` and fails if one is not a tier the registry knows. A future endpoint therefore cannot invent an undeclared tier.\n- [ ] The `/openapi.yaml` **spec-document** header (`public, max-age=300`) is explicitly excluded, with the reason in the test: it is a static-asset TTL, not an ADR-004 data tier (ADR-004 amendment TKT-128 says so in as many words).\n- [ ] The seat-map `no-store` branch (ADR-004 amendment TKT-107) survives: it is the `never` tier, not an absent one.\n- [ ] `make check` green.\n\nQuality gates: `make check`; regenerated code committed before the gate if any spec changes (none expected).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "One source for a tier's duration and its header string, so a cache built on it in US-C2/C3 cannot drift from the contract."
+    },
+    "scope": {
+      "state": "met",
+      "note": "New shared package + catalog/inventory emission + one enumeration test. Explicitly NOT: any caching behaviour, any spec change, any new tier value."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None material. Whether the registry keys by endpoint class or by tier alone is a plan-stage call; both satisfy the COS."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. First slice of the epic."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Constants -> a typed tier with Duration + Header(); the existing named constants become derived values so their call sites and tests are untouched."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "This IS the first slice."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS are byte-identical headers (existing tests unchanged) plus a new enumeration test that fails on an unknown tier."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-04."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-04",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-04",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "The epic's parent decision. Rule 1 (every public read declares a volatility tier), rule 2 (hot events served from memory, refreshed/invalidated from the write path, write path never served from cache), rule 3 (frontends call-frugal). Its TKT-128 amendment records that rule 2 is accepted and UNIMPLEMENTED and that this epic owns the deployment gap; its TKT-107 amendment splits the seat-map tier on publication status."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a tier that a handler emits must be DECLARED in the service's openapi.yaml or the gate cannot review it. TKT-128 named an emitted-but-undeclared header as a defect in its own right. Any spec edit means regenerating and committing openapi_gen.go BEFORE the gate."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Catalog and inventory wrap responses in contract.ResponseValidator, which validates response HEADERS and fails closed: a Cache-Control value outside the declared enum becomes a 500 with the payload withheld. So the emitted constant and the declaration can only move together."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the four epic-level COS",
+        "link": "board:TKT-31"
+      },
+      {
+        "summary": "ADR-004 amendment (TKT-128) is the authoritative inventory of what honors a tier today and what honors nothing - read it before assuming any cache exists",
+        "link": "docs/adr/ADR-004-cache-first-read-path.md"
+      },
+      {
+        "summary": "The five existing tier constants and their call sites",
+        "link": "services/catalog/internal/api/server.go, services/catalog/internal/api/pricing.go, services/inventory/internal/api/server.go"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Implementation readiness - PASS\n\nPrefactor slice, carved from TKT-31 at decomposition (2026-08-04). Mechanical: it moves five string literals behind one typed tier and adds an enumeration test. No behaviour change is the point, and it is checkable - the existing tier tests must pass unchanged.\n\n`risk:low` claimed: no auth, no money path, no data migration, no CI/deploy config; bounded to one new shared package plus header emission in two services. Restated at claim time per the skill's invariant."
+    }
+  ]
+}
