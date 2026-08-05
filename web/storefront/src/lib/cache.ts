@@ -76,8 +76,18 @@ export class PageDataCache {
     const nowMs = this.#now();
     const entry = this.#entries.get(url);
     if (entry) {
-      const ageSeconds =
-        entry.upstreamAgeSeconds + Math.floor((nowMs - entry.fetchedAtMs) / 1000);
+      // Clamped at zero because `now` is a WALL clock: an NTP step backwards
+      // would otherwise make elapsed time negative, pushing ageSeconds below the
+      // age upstream already reported and letting the middleware advertise more
+      // remaining freshness than exists. Age must never decrease.
+      //
+      // This does not make expiry immune to a backward step — the entry can
+      // still outlive its TTL in real time by the size of the jump, which is a
+      // property this cache had before TKT-206 and would need a monotonic clock
+      // to close. What the clamp removes is the part this change introduced:
+      // advertising freshness we know we do not have.
+      const elapsedSeconds = Math.max(0, Math.floor((nowMs - entry.fetchedAtMs) / 1000));
+      const ageSeconds = entry.upstreamAgeSeconds + elapsedSeconds;
       if (ageSeconds < entry.maxAgeSeconds) {
         return { data: entry.data as T, ageSeconds, maxAgeSeconds: entry.maxAgeSeconds };
       }

@@ -186,3 +186,30 @@ describe('upstream Age propagation', () => {
     }
   });
 });
+
+// TKT-206 ai-review: `now` is a wall clock, so it can step backwards. Age must
+// never decrease below what upstream already reported, or the middleware
+// advertises remaining freshness that does not exist — which is precisely the
+// stacking guarantee this ticket added Age to keep.
+describe('age is monotonic under a backward clock', () => {
+  it('never reports less than the upstream age after the clock steps back', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'cache-control': 'public, max-age=300', age: '200' },
+      }),
+    );
+    let now = 1_000_000;
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
+    const miss = await cache.get('http://catalog/public/events');
+    expect(miss.ageSeconds).toBe(200);
+
+    now = 940_000; // a 60-second backward step
+    const hit = await cache.get('http://catalog/public/events');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // Without the clamp this would report 140 and the page would claim 160
+    // seconds of freshness it does not have.
+    expect(hit.ageSeconds).toBe(200);
+    expect(hit.ageSeconds).toBeGreaterThanOrEqual(miss.ageSeconds);
+  });
+});
