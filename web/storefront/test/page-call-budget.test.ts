@@ -34,17 +34,19 @@ const minutesTier = { 'content-type': 'application/json', 'cache-control': 'publ
 // Non-trivial on purpose: an empty payload renders no children, so a future
 // per-child fetch would have nothing to fetch FOR and the budget would pass
 // while the regression shipped.
-const perf = (id: string, amount: number) => ({
+const perf = (id: string, amount: number, venue: string) => ({
   id,
   starts_at: '2026-09-01T18:00:00Z',
   timezone: 'UTC',
-  venue_name: 'A',
-  venue: { id: 'v1', name: 'A' },
+  // Distinct venue per performance: it is the marker that proves each repeated
+  // child was actually emitted, on every page that renders performances.
+  venue_name: venue,
+  venue: { id: `v-${id}`, name: venue },
   from_price: { amount, currency: 'EUR' },
   ticket_types: [{ id: `t-${id}`, name: 'GA', price: { amount, currency: 'EUR' } }],
 });
 
-const performances = [perf('p1', 1000), perf('p2', 2000), perf('p3', 3000)];
+const performances = [perf('p1', 1000, 'Alpha'), perf('p2', 2000, 'Bravo'), perf('p3', 3000, 'Charlie')];
 
 // One payload serving every page shape. Non-trivial on purpose: an empty payload
 // renders no children, so a future per-child fetch would have nothing to fetch
@@ -96,12 +98,26 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each([
-    ['event list', '../src/pages/[locale]/events/index.astro', { locale: 'en' }],
-    ['event detail', '../src/pages/[locale]/events/[eventId].astro', { locale: 'en', eventId: 'e1' }],
-    ['festival detail', '../src/pages/[locale]/festivals/[festivalId].astro', { locale: 'en', festivalId: 'f1' }],
-  ])('%s renders on exactly one upstream call', async (_name, page, params) => {
+    // Each page renders a different repeated child, so the marker is per page.
+    // The point is the same everywhere: prove the tree was actually emitted,
+    // three times over, not that a number came back.
+    ['event list', '../src/pages/[locale]/events/index.astro', { locale: 'en' }, ['One', 'Two', 'Three']],
+    ['event detail', '../src/pages/[locale]/events/[eventId].astro', { locale: 'en', eventId: 'e1' }, ['Alpha', 'Bravo', 'Charlie']],
+    ['festival detail', '../src/pages/[locale]/festivals/[festivalId].astro', { locale: 'en', festivalId: 'f1' }, ['Alpha', 'Bravo', 'Charlie']],
+  ])('%s renders on exactly one upstream call', async (_name, page, params, children) => {
     const calls = stubFetch(() => new Response(JSON.stringify(payload), { status: 200, headers: minutesTier }));
-    await renderPage(page, params as Record<string, string>);
+    const res = await renderPage(page, params as Record<string, string>);
+    const html = await res.text();
+
+    // The render must have SUCCEEDED and reached its children. Without these two
+    // the count alone is a weak oracle: a page that read once and then
+    // short-circuited to a 503 or a 404 spends exactly one call too, and would
+    // have passed while rendering nothing (ai-review).
+    expect(res.status, 'the page must render, not short-circuit').toBe(200);
+    for (const child of children as string[]) {
+      expect(html.includes(child), `repeated child ${child} must be rendered`).toBe(true);
+    }
+
     // One call for the whole render — frontmatter AND every child component.
     expect(calls.map((c) => c.url)).toHaveLength(1);
     expect(calls[0].url.startsWith(`${GATEWAY}/api/catalog/`)).toBe(true);

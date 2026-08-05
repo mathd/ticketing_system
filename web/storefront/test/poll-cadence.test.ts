@@ -41,14 +41,28 @@ describe('poll cadence is derived from the response', () => {
     expect(pollDelayFromResponse('public, max-age=1')).toBe(1000);
   });
 
-  it('obeys the longest tier the system declares, and nothing beyond it', () => {
-    // Five minutes is ADR-004's longest tier, so it is accepted...
-    expect(pollDelayFromResponse('public, max-age=300')).toBe(300000);
-    // ...and one second past it is not. A timer-overflow check alone would have
-    // accepted max-age=2147483 — about 24.9 DAYS — suspending occupancy refresh
-    // for the whole buyer session while every timer worked correctly.
-    expect(pollDelayFromResponse('public, max-age=301')).toBe(5000);
+  it('will not wait longer than a minute for a seconds-tier read', () => {
+    // The ceiling is scoped to THIS endpoint, not to the system's longest tier.
+    // A mistaken max-age=300 must not leave a buyer on a five-minute-old seat
+    // map mid-on-sale; checkout still refuses the claim, but they would keep
+    // picking seats that are already gone.
+    expect(pollDelayFromResponse('public, max-age=60')).toBe(60000);
+    expect(pollDelayFromResponse('public, max-age=61')).toBe(5000);
+    expect(pollDelayFromResponse('public, max-age=300')).toBe(5000);
+    // A timer-overflow check alone would have accepted max-age=2147483 — about
+    // 24.9 DAYS — while every timer behaved correctly.
     expect(pollDelayFromResponse('public, max-age=2147483')).toBe(5000);
     expect(pollDelayFromResponse('public, max-age=999999999')).toBe(5000);
+  });
+
+  it('reads max-age, never s-maxage', () => {
+    // Raised in ai-review as a suspected bug and checked rather than assumed:
+    // the shared-cache directive is `s-maxage`, with no hyphen between max and
+    // age, so /\bmax-age=/ cannot match it. Pinned because the question is a
+    // reasonable one to ask twice, and because a future parser rewrite could
+    // easily introduce the bug that was suspected here.
+    expect(pollDelayFromResponse('public, s-maxage=300, max-age=7')).toBe(7000);
+    expect(pollDelayFromResponse('public, max-age=7, s-maxage=300')).toBe(7000);
+    expect(pollDelayFromResponse('s-maxage=300')).toBe(5000);
   });
 });

@@ -73,17 +73,21 @@ const FALLBACK_POLL_MS = 5000;
 const MIN_POLL_MS = 1000;
 
 /**
- * Operational ceiling on a derived cadence: five minutes, the longest tier in
- * ADR-004's table.
+ * Operational ceiling on a derived cadence: one minute.
  *
- * The timer-overflow threshold is not a useful bound on its own — a max-age just
- * under it yields about 24.9 days, so a single bad or future tier declaration
- * would suspend occupancy refresh for the entire buyer session while every timer
- * behaved correctly. A seat map that silently stops updating during an on-sale is
- * the failure this poll exists to prevent, so anything past the longest tier the
- * system declares is treated as no usable TTL rather than obeyed (ai-review).
+ * Scoped to THIS endpoint, not to the system. A first version used ADR-004's
+ * longest tier (five minutes), which is the wrong yardstick — occupancy is a
+ * SECONDS-tier read, and a mistaken `max-age=300` would leave a buyer looking at
+ * a five-minute-old seat map during an on-sale. Checkout stays authoritative, so
+ * nobody oversells; they just repeatedly pick seats that are gone, which is the
+ * experience this poll exists to prevent.
+ *
+ * One minute is twelve times the declared tier, so a legitimate bump has room,
+ * and far below the timer-overflow threshold — which is not a bound at all: a
+ * max-age just under it yields about 24.9 days, suspending refresh for the whole
+ * session while every timer behaves correctly (ai-review).
  */
-const MAX_POLL_MS = 5 * 60 * 1000;
+const MAX_POLL_MS = 60 * 1000;
 
 /**
  * pollDelayFromResponse turns a response's declared freshness into the delay
