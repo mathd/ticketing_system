@@ -1,0 +1,132 @@
+{
+  "key": "TKT-217",
+  "type": "Story",
+  "parent": "TKT-6",
+  "classification": "complex",
+  "summary": "US-F4: The settlement ledger attributes every fee cent to a payee",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-215"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-216"
+    }
+  ],
+  "description": "**As** a platform operator, **I want** a captured order to land as ledger entries that name every\npayee and account for every cent, **so that** settlement is a read of recorded fact rather than a\nrecomputation.\n\n**Priority:** P0  **Depends on:** TKT-215, TKT-216\n\nThe other half of TKT-6's second COS: *the settlement ledger attributes every fee cent to a payee;\nsplits sum exactly to totals*. ADR-002 puts the settlement ledger in `payments`, next to the\nappend-only money journal.\n\n**Two traps worth naming up front.** First, **absorbed fees still have to balance**: the buyer paid\nface value, the payee is owed a fee out of it, so the organizer's line is face value *minus* the\nabsorbed fee. A ledger that only records passed-on fees balances against the charge and is wrong\nabout who earned what. Second, **capture is replayed** — ADR-016's recovery path re-runs a\ncheckout that may already have captured, so entry writing is idempotent or the ledger double-counts.\n\n**Acceptance Criteria:**\n- [ ] A migration adds settlement entries to payments: scoped to the organizer and the captured\n  order/fact, naming the payee, an entry kind (face value vs fee), the fee code where applicable,\n  amount and currency. **Append-only**, enforced the same way `journal_entries` enforces it — a\n  trigger that raises on UPDATE, DELETE and TRUNCATE.\n- [ ] Entries are written **in the same transaction** as the capture's journal append (ADR-003 /\n  ADR-011). A capture that journals but does not settle, or settles twice, is not a state this\n  system can reach.\n- [ ] **Sum-exactness is proven, not asserted in prose**: for a captured order, the entries sum\n  exactly to the captured amount. A test constructs a deliberately unbalanced set and shows it is\n  refused. State plainly — and test — whether the refusal is a database constraint or an\n  application check, and why that is the right level.\n- [ ] Absorbed fees are recorded as a payee credit against a reduced organizer line, so the buyer's\n  total is untouched **and** the ledger still balances. A test asserts both halves at once: same\n  captured amount, different entry set, exact sum.\n- [ ] Idempotent under replay: re-running a capture that already settled writes nothing new and\n  changes no amount (ADR-016's recovery path is the fixture, not a hand-rolled second call).\n- [ ] The entries for an order are readable through a contract-declared internal response; regen\n  committed.\n- [ ] The integrity claim **names its adversary** (ADR-021). Either the entries join the journal's\n  hash chain and the claim is tamper-evidence, or they do not and the claim is honest-writer\n  consistency. Say which, in the ADR/ledger comment, in the words ADR-021 uses. Do not write\n  \"tamper-evident\" about state a database writer can edit.\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code committed before the gate runs (ADR-009).\n\n**Non-goals:** settlement reports, per-event rollups and exports (TKT-23) · payout execution\n(not in this epic) · fee/settlement reversal on refund, exchange and cancellation (carved out to a\nfollow-up; see the epic readiness verdict) · the back-office settlement page (TKT-23 owns it, and\nADR-042 records that its route must be added to the role matrix when it lands).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Every captured cent is attributed to a payee in an append-only ledger, and the attribution is provably exact."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Payments: schema + write at capture + one internal read. Commerce hands over the resolved split it already computed; it does not re-resolve."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Whether the split travels on the existing charge call or a separate internal call, and whether entries chain into the journal hash (which decides the ADR-021 wording). Both are plan-stage calls; the ACs constrain either answer."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-215 (the breakdown to settle) and TKT-216 (the allocator that turns it into payee parts)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Follow journal_entries: append-only trigger, organizer scoping, one transaction with the money fact. The recovery runner is the replay fixture."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Last slice - it consumes both predecessors and is the COS's visible end."
+    },
+    "success": {
+      "state": "met",
+      "note": "Exact-sum, refusal and idempotency assertions, all deterministic."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-05."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-05",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-05",
+        "rule": "Money is integer minor units + ISO currency code - floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-05",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate - keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "The ownership line: catalog owns rule definitions, commerce owns 'pricing/fee/promo evaluation', payments owns the settlement ledger. ADR-036 §6 already amended this row once for price RESOLUTION; any further move of the line for fees must be an explicit amendment, not an assertion that the boundary did not really change."
+      },
+      {
+        "id": "ADR-001",
+        "why": "Money is integer minor units + ISO-4217. Every fee arithmetic path is integer-only: no float, no big.Float, no decimal-as-string round trip."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new operation or field must be declared in the service's openapi.yaml, and openapi_gen.go / api-types.gen.ts regenerated and COMMITTED before the gate (check-generate diffs against HEAD)."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Responses are validated against the contract and fail closed - an undeclared field or an out-of-enum header becomes a 500 with the payload withheld. A money amount above the contract's Money cap is the classic instance (ADR-036 records it as TKT-154's residue)."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before writing 'tamper-evident' or 'guaranteed'. State inside the database cannot constrain an adversary who writes to the database; only a hash chain over data they cannot re-sign does."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band as each binary's `migrate` subcommand, a one-shot Compose job the service waits on. The server path never migrates."
+      },
+      {
+        "id": "ADR-003",
+        "why": "Every money mutation flows through the append-only journal. The settlement ledger is money state and inherits the append-only discipline - the journal_entries trigger is the pattern, not an inspiration."
+      },
+      {
+        "id": "ADR-011",
+        "why": "The checkout journal protocol fixes what is written at capture and in which transaction. Settlement entries join that transaction or they can diverge from the money fact."
+      },
+      {
+        "id": "ADR-016",
+        "why": "Checkout recovery replays a capture whose outcome is unknown. Entry writing must be idempotent under that replay, and the recovery runner is the fixture that proves it."
+      },
+      {
+        "id": "ADR-032",
+        "why": "The PSP port boundary: the captured amount is what the provider confirmed, and the ledger settles that number - not a recomputed one."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the three epic-level COS",
+        "link": "board:TKT-6"
+      },
+      {
+        "summary": "The append-only pattern to follow verbatim: heads table, hash chain, trigger refusing UPDATE/DELETE/TRUNCATE",
+        "link": "services/payments/internal/store/migrations/0001_journal.sql"
+      },
+      {
+        "summary": "The capture path and its idempotency registry (payment_operations, lease-based)",
+        "link": "services/payments/internal/store, services/commerce/internal/recovery/runner.go"
+      },
+      {
+        "summary": "ADR-042 records that the settlement surface does not exist and that TKT-23 must add its route to the role matrix - do not add a back-office page here",
+        "link": "docs/adr/ADR-042-staff-identity-and-backoffice-sessions.md:284"
+      }
+    ]
+  },
+  "comments": []
+}
