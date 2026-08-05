@@ -4,7 +4,7 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F1: A fee schedule resolves through the hierarchy, per fee code and per channel",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
