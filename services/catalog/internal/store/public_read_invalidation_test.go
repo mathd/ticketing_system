@@ -83,7 +83,8 @@ var publicReadEffect = map[string]PublicReadScope{
 var readOnlyStoreMethods = map[string]bool{
 	"ListVenues": true, "ListVenueSeatMaps": true, "ListSeatMapVersions": true,
 	"ListSeatMapPins": true, "GetSeatMapGeometry": true, "GetTicketType": true,
-	"ResolveTicketTypePrice": true, "AuthenticateStaff": true,
+	"ResolveTicketTypePrice": true, "ResolveTicketTypeFees": true,
+	"AuthenticateStaff": true,
 	"GetPublishedPerformance": true, "GetPoolOfferState": true,
 	"ListPublishedEvents": true, "GetPublishedEvent": true,
 	"GetPublishedSeason": true, "GetPublishedFestival": true,
