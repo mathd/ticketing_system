@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
@@ -380,24 +381,36 @@ func TestASupersededLoadDoesNotEvictItsReplacement(t *testing.T) {
 // ceiling was not bounding anything and then passed. Counting the wrong thing is
 // how a test certifies the opposite of what it claims.
 func TestConcurrentSourceLoadsAreBounded(t *testing.T) {
-	const ceiling = 3
+	synctest.Test(t, testConcurrentSourceLoadsAreBounded)
+}
+
+func testConcurrentSourceLoadsAreBounded(t *testing.T) {
+	const ceiling, readers = 3, 25
 	src := newFakeSource()
 	src.release = make(chan struct{})
-	src.entered = make(chan struct{}, 64)
 	svc := New(src, WithBounds(16, 4), WithMaxInFlight(ceiling))
 
 	org := uuid.New()
 	var wg sync.WaitGroup
-	for range 25 {
+	for range readers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			_, _ = svc.Read(context.Background(), org, uuid.New(), "")
 		}()
 	}
-	// Let the ceiling fill and give any excess a chance to slip through.
-	waitFor(t, func() bool { return src.concurrentPeak() >= ceiling })
-	time.Sleep(50 * time.Millisecond)
+
+	// synctest.Wait returns once every goroutine in the bubble is durably
+	// blocked — each reader is then either inside the source waiting on release
+	// or waiting for a slot, and nothing is merely un-scheduled. Sampling the
+	// peak here is a statement about the system, not about the scheduler.
+	//
+	// The first version slept 50ms instead. That is not synchronisation: on a
+	// loaded CI runner a broken ceiling could have had only three readers reach
+	// the source by the sample, then let the other twenty-two through after
+	// release, and the peak would never have exceeded three. It would have
+	// certified the exact regression it was written to catch.
+	synctest.Wait()
 
 	if peak := src.concurrentPeak(); peak > ceiling {
 		t.Fatalf("peak concurrent source calls = %d, want at most %d — the ceiling must bound "+
@@ -408,8 +421,8 @@ func TestConcurrentSourceLoadsAreBounded(t *testing.T) {
 
 	// Everything still completes: the ceiling queues work, it does not shed it.
 	// Shedding would turn a cache into an availability outage.
-	if got := src.count(); got != 25 {
-		t.Fatalf("source called %d times, want all 25 reads served", got)
+	if got := src.count(); got != readers {
+		t.Fatalf("source called %d times, want all %d reads served", got, readers)
 	}
 }
 
