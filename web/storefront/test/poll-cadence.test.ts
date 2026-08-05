@@ -41,9 +41,14 @@ describe('poll cadence is derived from the response', () => {
     expect(pollDelayFromResponse('public, max-age=1')).toBe(1000);
   });
 
-  it('treats a value a browser timer cannot hold as no TTL at all', () => {
-    // setTimeout overflows past ~2^31 ms and fires IMMEDIATELY — the opposite of
-    // a long cadence, and the one failure mode worse than polling too slowly.
+  it('obeys the longest tier the system declares, and nothing beyond it', () => {
+    // Five minutes is ADR-004's longest tier, so it is accepted...
+    expect(pollDelayFromResponse('public, max-age=300')).toBe(300000);
+    // ...and one second past it is not. A timer-overflow check alone would have
+    // accepted max-age=2147483 — about 24.9 DAYS — suspending occupancy refresh
+    // for the whole buyer session while every timer worked correctly.
+    expect(pollDelayFromResponse('public, max-age=301')).toBe(5000);
+    expect(pollDelayFromResponse('public, max-age=2147483')).toBe(5000);
     expect(pollDelayFromResponse('public, max-age=999999999')).toBe(5000);
   });
 });

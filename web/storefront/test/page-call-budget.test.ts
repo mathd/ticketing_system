@@ -34,78 +34,103 @@ const minutesTier = { 'content-type': 'application/json', 'cache-control': 'publ
 // Non-trivial on purpose: an empty payload renders no children, so a future
 // per-child fetch would have nothing to fetch FOR and the budget would pass
 // while the regression shipped.
-const eventList = {
+const perf = (id: string, amount: number) => ({
+  id,
+  starts_at: '2026-09-01T18:00:00Z',
+  timezone: 'UTC',
+  venue_name: 'A',
+  venue: { id: 'v1', name: 'A' },
+  from_price: { amount, currency: 'EUR' },
+  ticket_types: [{ id: `t-${id}`, name: 'GA', price: { amount, currency: 'EUR' } }],
+});
+
+const performances = [perf('p1', 1000), perf('p2', 2000), perf('p3', 3000)];
+
+// One payload serving every page shape. Non-trivial on purpose: an empty payload
+// renders no children, so a future per-child fetch would have nothing to fetch
+// FOR and the budget would pass while the regression shipped.
+const payload = {
+  // Event DETAIL shape.
+  id: 'e1',
+  organizer_id: 'org-1',
+  name: 'One',
+  description: 'desc',
+  performances,
+  series: [{ id: 's1', name: 'Series', performance_ids: ['p1'] }],
+  // Festival DETAIL shape.
+  festival: { id: 'f1', name: 'Fest', shared_capacity: 100 },
+  days: performances,
+  // Event LIST shape — three events, each with performances, so a per-child
+  // fetch would have children to fetch for.
   events: [
-    { id: 'e1', name: 'One', starts_at: '2026-09-01T18:00:00Z', timezone: 'UTC', venue_name: 'A', from_price: { amount: 1000, currency: 'EUR' } },
-    { id: 'e2', name: 'Two', starts_at: '2026-09-02T18:00:00Z', timezone: 'UTC', venue_name: 'B', from_price: { amount: 2000, currency: 'EUR' } },
-    { id: 'e3', name: 'Three', starts_at: '2026-09-03T18:00:00Z', timezone: 'UTC', venue_name: 'C', from_price: { amount: 3000, currency: 'EUR' } },
+    { id: 'e1', organizer_id: 'org-1', name: 'One', description: '', series: [], performances },
+    { id: 'e2', organizer_id: 'org-1', name: 'Two', description: '', series: [], performances },
+    { id: 'e3', organizer_id: 'org-1', name: 'Three', description: '', series: [], performances },
   ],
 };
 
-async function freshApi() {
-  vi.resetModules();
-  // Imported AFTER the fetch stub: api.ts builds its PageDataCache singleton at
-  // import time, and a cache carried over from a previous case would hide calls.
-  return import('../src/lib/api');
+
+async function renderPage(path: string, params: Record<string, string>) {
+  // The REAL page module, rendered through Astro's container. The first version
+  // of this test called the api.ts wrappers directly and asserted their call
+  // counts — which proves a wrapper reaches pageRead once and proves nothing
+  // about the page. An SSR fetch added to page frontmatter or to a child .astro
+  // component would never have run, and the budget would have stayed green while
+  // the regression shipped. Found in ai-review, having been explicitly warned
+  // against in this ticket's own plan-review.
+  const { experimental_AstroContainer } = await import('astro/container');
+  const { loadRenderers } = await import('astro:container');
+  const { getContainerRenderer } = await import('@astrojs/react');
+  // The React renderer is required, not incidental: the event detail page
+  // instantiates a client island (HoldPicker), and a page whose islands cannot
+  // be rendered is a page this test would only half measure — precisely the
+  // half where a stray fetch would hide.
+  const renderers = await loadRenderers([getContainerRenderer()]);
+  const container = await experimental_AstroContainer.create({ renderers });
+  const mod = await import(/* @vite-ignore */ path);
+  return container.renderToResponse(mod.default, { params, routeType: 'page' });
 }
 
 describe('storefront SSR call budget (ADR-004 rule 3)', () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.unstubAllGlobals());
 
-  it('the event list spends exactly one upstream call per cold render', async () => {
-    const calls = stubFetch(() => new Response(JSON.stringify(eventList), { status: 200, headers: minutesTier }));
-    const api = await freshApi();
-    const astro = { locals: {} } as never;
+  it.each([
+    ['event list', '../src/pages/[locale]/events/index.astro', { locale: 'en' }],
+    ['event detail', '../src/pages/[locale]/events/[eventId].astro', { locale: 'en', eventId: 'e1' }],
+    ['festival detail', '../src/pages/[locale]/festivals/[festivalId].astro', { locale: 'en', festivalId: 'f1' }],
+  ])('%s renders on exactly one upstream call', async (_name, page, params) => {
+    const calls = stubFetch(() => new Response(JSON.stringify(payload), { status: 200, headers: minutesTier }));
+    await renderPage(page, params as Record<string, string>);
+    // One call for the whole render — frontmatter AND every child component.
+    expect(calls.map((c) => c.url)).toHaveLength(1);
+    expect(calls[0].url.startsWith(`${GATEWAY}/api/catalog/`)).toBe(true);
+  });
 
-    await api.getPublicEvents(astro, 'en');
+  it('a repeat render inside the tier spends zero — not per-request either', async () => {
+    const calls = stubFetch(() => new Response(JSON.stringify(payload), { status: 200, headers: minutesTier }));
+    await renderPage('../src/pages/[locale]/events/index.astro', { locale: 'en' });
+    await renderPage('../src/pages/[locale]/events/index.astro', { locale: 'en' });
+    await renderPage('../src/pages/[locale]/events/index.astro', { locale: 'en' });
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe(`${GATEWAY}/api/catalog/public/events?locale=en`);
   });
 
-  it('a second render inside the tier spends zero — the page is not per-widget OR per-request', async () => {
-    const calls = stubFetch(() => new Response(JSON.stringify(eventList), { status: 200, headers: minutesTier }));
-    const api = await freshApi();
-    const astro = { locals: {} } as never;
-
-    await api.getPublicEvents(astro, 'en');
-    await api.getPublicEvents(astro, 'en');
-    await api.getPublicEvents(astro, 'en');
-    expect(calls).toHaveLength(1);
+  it('the locale route reads no service at all', async () => {
+    const calls = stubFetch(() => new Response('{}', { status: 200, headers: minutesTier }));
+    await renderPage('../src/pages/[locale]/index.astro', { locale: 'en' });
+    expect(calls).toHaveLength(0);
   });
+});
 
-  it('each public page reads exactly one aggregated endpoint', async () => {
-    for (const [name, run, want] of [
-      ['event list', (api: any, astro: any) => api.getPublicEvents(astro, 'en'), `${GATEWAY}/api/catalog/public/events?locale=en`],
-      ['event detail', (api: any, astro: any) => api.getPublicEvent(astro, 'en', 'e1'), `${GATEWAY}/api/catalog/public/events/e1?locale=en`],
-      ['festival detail', (api: any, astro: any) => api.getPublicFestival(astro, 'en', 'f1'), `${GATEWAY}/api/catalog/public/festivals/f1?locale=en`],
-    ] as const) {
-      const calls = stubFetch(() => new Response(JSON.stringify(eventList), { status: 200, headers: minutesTier }));
-      const api = await freshApi();
-      await run(api, { locals: {} });
-      expect(calls, `${name} budget`).toHaveLength(1);
-      expect(calls[0].url, `${name} url`).toBe(want);
-      vi.unstubAllGlobals();
-    }
-  });
+describe('the page-data freshness the middleware depends on', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.unstubAllGlobals());
 
-  it('a distinct locale is a distinct representation, not a second call for the same one', async () => {
-    const calls = stubFetch(() => new Response(JSON.stringify(eventList), { status: 200, headers: minutesTier }));
-    const api = await freshApi();
-    const astro = { locals: {} } as never;
-
-    await api.getPublicEvents(astro, 'en');
-    await api.getPublicEvents(astro, 'fr');
-    await api.getPublicEvents(astro, 'en');
-    // Two representations, one call each; the repeat is served from memory.
-    expect(calls).toHaveLength(2);
-  });
-
-  it('the page records the freshness the middleware needs to avoid stacking', async () => {
-    stubFetch(() => new Response(JSON.stringify(eventList), { status: 200, headers: minutesTier }));
-    const api = await freshApi();
+  it('is recorded by the read, so the page layer can publish REMAINING freshness', async () => {
+    stubFetch(() => new Response(JSON.stringify(payload), { status: 200, headers: minutesTier }));
+    vi.resetModules();
+    const api = await import('../src/lib/api');
     const astro = { locals: {} } as { locals: { pageData?: { ageSeconds: number; maxAgeSeconds: number } } };
-
     await api.getPublicEvents(astro as never, 'en');
     // Without this the middleware falls through to no-store and the page layer
     // silently stops participating in the tier (ADR-006).

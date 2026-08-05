@@ -72,9 +72,18 @@ const FALLBACK_POLL_MS = 5000;
  */
 const MIN_POLL_MS = 1000;
 
-/** Beyond this a browser timer overflows and fires immediately, which is the
- * opposite of the intent. Treat it as no usable TTL. */
-const MAX_POLL_MS = 2_147_483_000;
+/**
+ * Operational ceiling on a derived cadence: five minutes, the longest tier in
+ * ADR-004's table.
+ *
+ * The timer-overflow threshold is not a useful bound on its own — a max-age just
+ * under it yields about 24.9 days, so a single bad or future tier declaration
+ * would suspend occupancy refresh for the entire buyer session while every timer
+ * behaved correctly. A seat map that silently stops updating during an on-sale is
+ * the failure this poll exists to prevent, so anything past the longest tier the
+ * system declares is treated as no usable TTL rather than obeyed (ai-review).
+ */
+const MAX_POLL_MS = 5 * 60 * 1000;
 
 /**
  * pollDelayFromResponse turns a response's declared freshness into the delay
