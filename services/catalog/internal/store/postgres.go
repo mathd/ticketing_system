@@ -39,6 +39,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 
 type Postgres struct {
 	db *sql.DB
+	// The public-read cache invalidation seam (TKT-206) —
+	// public_read_invalidation.go.
+	publicReadInvalidatorFields
 }
 
 func NewPostgres(db *sql.DB) *Postgres {
@@ -455,7 +458,7 @@ func (p *Postgres) attachSeasonMember(ctx context.Context, seasonID, memberID uu
 	if err != nil {
 		return Season{}, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = p.commitPublicRead(tx, PublicReadDetail); err != nil {
 		return Season{}, err
 	}
 	return s, nil
@@ -570,6 +573,10 @@ func (p *Postgres) CreateTicketType(ctx context.Context, in TicketTypeInput) (Ti
 	if err != nil {
 		return TicketType{}, fmt.Errorf("insert ticket type: %w", err)
 	}
+	// Pricing a previously unpriced published slot makes it publicly listable,
+	// so this changes list membership as well as detail. Autocommit: announced
+	// after the insert succeeded.
+	p.notifyPublicRead(PublicReadAll)
 	return tt, nil
 }
 
@@ -603,7 +610,16 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 	if err != nil {
 		return Performance{}, false, fmt.Errorf("publish: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	flipped, _ := res.RowsAffected()
+	if flipped > 0 {
+		// Autocommit, so there is no commit to hang the notification on — and
+		// this is the single most important write for the cached public reads.
+		// Announced HERE, before the canonical re-read below: the row is already
+		// public, and if that re-read failed the invalidation must still have
+		// happened or the event stays invisible for a full tier.
+		p.notifyPublicRead(PublicReadAll)
+	}
+	if flipped == 0 {
 		// Nothing flipped: not found, already published, or unpriced draft.
 		perf, _, _, err := p.getPerformance(ctx, id)
 		if err != nil {
@@ -914,7 +930,7 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 	if err != nil {
 		return Performance{}, false, false, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := p.commitPublicRead(tx, PublicReadAll); err != nil {
 		return Performance{}, false, false, fmt.Errorf("commit archive: %w", err)
 	}
 	return perf, publishedEmitted == nil, archiveEmitted == nil, nil
@@ -1126,7 +1142,7 @@ func (p *Postgres) transitionSeries(ctx context.Context, id uuid.UUID, target st
 		}
 		out = append(out, SeriesTransition{Performance: perf, PublishNeedsEmit: pubMark == nil, ArchiveNeedsEmit: target == "archived" && archiveMark == nil})
 	}
-	if err = tx.Commit(); err != nil {
+	if err = p.commitPublicRead(tx, PublicReadAll); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1235,7 +1251,7 @@ func (p *Postgres) transitionFestival(ctx context.Context, id uuid.UUID, target 
 		perf.SharedCapacity = &sharedCapacity
 		out = append(out, SeriesTransition{Performance: perf, PublishNeedsEmit: pubMark == nil, ArchiveNeedsEmit: target == "archived" && archiveMark == nil})
 	}
-	if err = tx.Commit(); err != nil {
+	if err = p.commitPublicRead(tx, PublicReadAll); err != nil {
 		return nil, err
 	}
 	return out, nil

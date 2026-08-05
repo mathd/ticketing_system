@@ -23,11 +23,11 @@ import (
 // one (TKT-60's 0007 index is what surfaced it: the guards silently started
 // testing the migration below their target).
 const (
-	versionBeforeTypedSlot          = 3 // roll 0004_typed_slot down
-	versionBeforeSeries             = 4 // roll 0005_series_seasons down
-	versionBeforeFestivals          = 5 // roll 0006_festivals down
-	versionBeforeArchived           = 2 // roll 0003_archived_performance_lifecycle down
-	versionBeforeSeatMaps           = 8 // roll 0009_seat_maps down
+	versionBeforeTypedSlot          = 3  // roll 0004_typed_slot down
+	versionBeforeSeries             = 4  // roll 0005_series_seasons down
+	versionBeforeFestivals          = 5  // roll 0006_festivals down
+	versionBeforeArchived           = 2  // roll 0003_archived_performance_lifecycle down
+	versionBeforeSeatMaps           = 8  // roll 0009_seat_maps down
 	versionBeforeSeatedPerformances = 9  // roll 0010_publish_seat_maps down
 	versionBeforeStaffAccounts      = 14 // roll 0015_staff_accounts down (TKT-190)
 )

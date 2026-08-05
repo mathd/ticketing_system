@@ -4,8 +4,16 @@
 // The key is the full request URL, so every representation selector (route,
 // id, locale) keys its own entry. Freshness is governed by the upstream
 // response's max-age; the middleware derives the page's outgoing
-// Cache-Control from the REMAINING freshness so total staleness never
-// exceeds the tier (no cache stacking).
+// Cache-Control from the REMAINING freshness so total staleness never exceeds
+// the tier.
+//
+// That last sentence used to be true because this was the only cache in the
+// chain. Since TKT-206 catalog serves these reads from its own memory, so an
+// entry can arrive ALREADY STALE and starting it at age zero here would stack
+// two five-minute tiers into ten. Upstream `Age` is therefore seeded into the
+// entry (RFC 9111) and a response already at or past its max-age is used once
+// and not retained. Freshness is now measured from catalog's load, not from
+// ours — which is what keeps the no-stacking claim true.
 
 export class UpstreamError extends Error {
   constructor(
@@ -28,12 +36,33 @@ interface Entry {
   data: unknown;
   fetchedAtMs: number;
   maxAgeSeconds: number;
+  /** Upstream age at fetch time; the entry is already this stale when stored. */
+  upstreamAgeSeconds: number;
+  /**
+   * The highest age this entry has ever reported. `now` is a WALL clock, so a
+   * backward step shrinks the elapsed term; without a high-water mark the same
+   * live entry would report a smaller age than a previous call already
+   * established, and the middleware would hand the page back freshness it had
+   * already spent.
+   */
+  reportedAgeSeconds: number;
 }
 
 export function parseMaxAge(cacheControl: string | null): number {
   if (!cacheControl || /\bno-store\b/.test(cacheControl)) return 0;
   const match = /\bmax-age=(\d+)/.exec(cacheControl);
   return match ? Number(match[1]) : 0;
+}
+
+/**
+ * Seconds the upstream says its answer has already been alive (RFC 9111).
+ * A missing, malformed or negative header is treated as 0 — the conservative
+ * direction is to under-report OUR freshness, never to invent some.
+ */
+export function parseAge(age: string | null): number {
+  if (!age) return 0;
+  const parsed = Number(age);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
 export class PageDataCache {
@@ -55,7 +84,24 @@ export class PageDataCache {
     const nowMs = this.#now();
     const entry = this.#entries.get(url);
     if (entry) {
-      const ageSeconds = Math.floor((nowMs - entry.fetchedAtMs) / 1000);
+      // `now` is a WALL clock and can step backwards, so age is computed as a
+      // HIGH-WATER MARK rather than a subtraction. Clamping the elapsed term at
+      // zero is not enough on its own: an entry sitting at age 300 whose clock
+      // steps back 50 seconds still yields 250 — a decrease, and 50 seconds of
+      // advertised freshness the previous call had already spent.
+      //
+      // Monotonic by construction, and it makes expiry no later than before: age
+      // only ever rises, so an entry cannot regain life it has used.
+      //
+      // What this does NOT close: after a backward step the age stops advancing
+      // until wall time catches up, so an entry can outlive its TTL in real time
+      // by the size of the jump. That predates TKT-206 — this cache measured
+      // wall time before the ticket touched it — and closing it needs a
+      // monotonic clock source, which changes the injected-clock contract this
+      // cache shares with its tests and the middleware.
+      const elapsedSeconds = Math.max(0, Math.floor((nowMs - entry.fetchedAtMs) / 1000));
+      const ageSeconds = Math.max(entry.reportedAgeSeconds, entry.upstreamAgeSeconds + elapsedSeconds);
+      entry.reportedAgeSeconds = ageSeconds;
       if (ageSeconds < entry.maxAgeSeconds) {
         return { data: entry.data as T, ageSeconds, maxAgeSeconds: entry.maxAgeSeconds };
       }
@@ -78,10 +124,20 @@ export class PageDataCache {
       throw new UpstreamError(response.status, url);
     }
     const maxAgeSeconds = parseMaxAge(response.headers.get('cache-control'));
+    const upstreamAgeSeconds = parseAge(response.headers.get('age'));
     const data = (await response.json()) as T;
-    if (maxAgeSeconds > 0) {
-      this.#entries.set(url, { data, fetchedAtMs: nowMs, maxAgeSeconds });
+    // Retain only what still has life left. An answer delivered at or past its
+    // max-age is served to this caller and then dropped: keeping it would hand
+    // the next request a value that was already expired when it arrived.
+    if (maxAgeSeconds > upstreamAgeSeconds) {
+      this.#entries.set(url, {
+        data,
+        fetchedAtMs: nowMs,
+        maxAgeSeconds,
+        upstreamAgeSeconds,
+        reportedAgeSeconds: upstreamAgeSeconds,
+      });
     }
-    return { data, ageSeconds: 0, maxAgeSeconds };
+    return { data, ageSeconds: upstreamAgeSeconds, maxAgeSeconds };
   }
 }

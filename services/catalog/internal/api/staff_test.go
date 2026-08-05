@@ -17,7 +17,7 @@ func TestAuthenticateStaffReturnsThePrincipal(t *testing.T) {
 	e := newEnv(t)
 	staffID, org := uuid.New(), uuid.New()
 	e.store.staffAccounts["ada@example.test"] = staffAuthResult{
-		account: store.StaffAccount{ID: staffID, OrganizerID: org, Identifier: "ada@example.test", Role: "admin"},
+		account:  store.StaffAccount{ID: staffID, OrganizerID: org, Identifier: "ada@example.test", Role: "admin"},
 		password: "correct horse",
 	}
 
