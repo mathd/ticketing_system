@@ -4,9 +4,11 @@
   "parent": "TKT-31",
   "classification": "complex",
   "summary": "US-C3: Catalog event reads are served from memory, and publishing invalidates them",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -116,6 +118,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "### Implementation readiness - PASS\n\nThird slice of TKT-31 (decomposed 2026-08-04). Applies US-C2's primitive to catalog's minutes tier.\n\n`risk:low` NOT claimed: shared mutable state on public reads, and invalidation now has to interact with ADR-018's after-commit emission rule on the catalog write path - a correctness ordering concern, not a mechanical change.\n\n**Named risk carried into the plan:** these three reads already sit behind the storefront's SSR cache. Two caching layers with independent TTLs stack their staleness unless the second one's invalidation is authoritative. The plan must say what the total worst-case staleness becomes, not just what catalog's own is."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "**Claimed** by the agent, third of TKT-31's five children.\n\n**Blocker check:** TKT-206's single `blocked-by` edge is TKT-205, now **Done** and merged (`main` @ `c022fe1f`). Zero open blockers.\n\n**Selection reason:** two tickets became claimable when TKT-205 merged — this one and TKT-207 (the load proof). TKT-206 goes first because **TKT-207 is evidence about what TKT-206 and TKT-205 ship**: running the load proof before catalog's cache exists would measure half the system and then need re-running. TKT-210 (kill-switch) is also unblocked but has two open auth-shaped decisions in its readiness, and this ticket is the one that completes ADR-004 rule 2's read coverage.\n\n**Risk verdict: `risk:low` NOT claimed.** The carve-outs, checked rather than assumed:\n- Shared mutable state on **public** reads, again — but with a harder invalidation shape than TKT-205's. Catalog's detail reads are id-keyed and inventory-shaped; **the event list is not**. Publishing one performance changes the *membership* of a list whose key includes caller-supplied query parameters, and invalidating \"the entry for this event\" does nothing for it.\n- Invalidation must interact with **ADR-018**'s after-commit rule on catalog's write path — a correctness ordering concern, not a mechanical change.\n- No money path, no auth decision, no data migration, no CI config. An OpenAPI change is *possible* (if these reads take an `Age` header, as availability did) which would mean regeneration.\n\n**Named risk carried into planning, from the epic's readiness verdict (concern 2):** these three reads already sit behind the storefront's SSR `PageDataCache`. **Two caching layers with independent TTLs stack their staleness unless invalidation is authoritative end to end.** The plan is required to state the total worst case as a number, not just catalog's own — a five-minute tier stacking on a five-minute tier is ten minutes of a buyer seeing an event that is no longer on sale.\n\n**A second thing the plan must settle rather than inherit:** the decomposition expected this ticket to *reuse TKT-205's cache primitive*. That expectation is being tested, not assumed. The two invalidation shapes may not be the same problem, and forcing one abstraction over both is a known way to get a bad one.\n\n---\n\n**Gates waived for this run** — same standing owner instruction recorded on TKT-204 and TKT-205: Gate 1 given; Gate 2 resolved by the agent after the cross-model critique (preferring the critique's recommendation, else the most reversible option); Gate 3 self-merged after the ai-review converges, review-guide posted first; Gate 4 self-validated against test evidence on merged code. `config.models` routing, cross-model review, TDD with tests observed red, `make check` green before every push and after the merge, and no AI attribution all stay in force.\n\nBranch: `TKT-206-catalog-reads-from-memory` off `origin/main`."
     }
   ]
 }
