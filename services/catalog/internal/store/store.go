@@ -591,6 +591,18 @@ type Store interface {
 	// A rule whose currency differs from the ticket type's fails the resolution
 	// with ErrPriceRuleCurrencyMismatch rather than being skipped (§2).
 	ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, at time.Time) (RuleSelection, error)
+	// CreateFeeRule attaches a fee rule to one of the same five scope levels
+	// (TKT-214 / ADR-046), with the same write gate and the same ErrNotFound
+	// disposition as CreatePriceRule.
+	CreateFeeRule(ctx context.Context, in FeeRuleInput) (FeeRule, error)
+	// ResolveTicketTypeFees returns every fee that applies to a ticket type in a
+	// channel at `at`, one winner PER FEE CODE, plus the losers and their
+	// reasons. `channel` nil is the default/public context, where only
+	// channel-agnostic rules are eligible — omitting it is not a wildcard.
+	// A rule whose currency differs from the ticket type's fails the resolution
+	// with ErrFeeRuleCurrencyMismatch rather than being skipped, whatever its
+	// channel.
+	ResolveTicketTypeFees(ctx context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (FeeSelection, error)
 	// AuthenticateStaff verifies a back-office sign-in (TKT-190, staff.go).
 	// Every credential failure is ErrStaffCredentialsInvalid — an unknown
 	// identifier and a wrong password are indistinguishable *by construction*,

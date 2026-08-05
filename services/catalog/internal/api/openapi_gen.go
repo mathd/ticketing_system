@@ -37,6 +37,72 @@ func (e ClosureStatus) Valid() bool {
 	}
 }
 
+// Defines values for FeeRuleProvenanceBasis.
+const (
+	PerOrderFixed  FeeRuleProvenanceBasis = "per_order_fixed"
+	PerTicketFixed FeeRuleProvenanceBasis = "per_ticket_fixed"
+	PercentageBps  FeeRuleProvenanceBasis = "percentage_bps"
+)
+
+// Valid indicates whether the value is a known member of the FeeRuleProvenanceBasis enum.
+func (e FeeRuleProvenanceBasis) Valid() bool {
+	switch e {
+	case PerOrderFixed:
+		return true
+	case PerTicketFixed:
+		return true
+	case PercentageBps:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FeeRuleProvenanceIncidence.
+const (
+	Absorbed FeeRuleProvenanceIncidence = "absorbed"
+	PassedOn FeeRuleProvenanceIncidence = "passed_on"
+)
+
+// Valid indicates whether the value is a known member of the FeeRuleProvenanceIncidence enum.
+func (e FeeRuleProvenanceIncidence) Valid() bool {
+	switch e {
+	case Absorbed:
+		return true
+	case PassedOn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FeeRuleProvenanceScopeLevel.
+const (
+	FeeRuleProvenanceScopeLevelEvent      FeeRuleProvenanceScopeLevel = "event"
+	FeeRuleProvenanceScopeLevelSeries     FeeRuleProvenanceScopeLevel = "series"
+	FeeRuleProvenanceScopeLevelSlot       FeeRuleProvenanceScopeLevel = "slot"
+	FeeRuleProvenanceScopeLevelTicketType FeeRuleProvenanceScopeLevel = "ticket_type"
+	FeeRuleProvenanceScopeLevelVenue      FeeRuleProvenanceScopeLevel = "venue"
+)
+
+// Valid indicates whether the value is a known member of the FeeRuleProvenanceScopeLevel enum.
+func (e FeeRuleProvenanceScopeLevel) Valid() bool {
+	switch e {
+	case FeeRuleProvenanceScopeLevelEvent:
+		return true
+	case FeeRuleProvenanceScopeLevelSeries:
+		return true
+	case FeeRuleProvenanceScopeLevelSlot:
+		return true
+	case FeeRuleProvenanceScopeLevelTicketType:
+		return true
+	case FeeRuleProvenanceScopeLevelVenue:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for FestivalStatus.
 const (
 	FestivalStatusArchived  FestivalStatus = "archived"
@@ -58,36 +124,75 @@ func (e FestivalStatus) Valid() bool {
 	}
 }
 
+// Defines values for LosingFeeRuleReason.
+const (
+	LosingFeeRuleReasonExcludedByForcedRule LosingFeeRuleReason = "excluded_by_forced_rule"
+	LosingFeeRuleReasonForcedBroaderScope   LosingFeeRuleReason = "forced_broader_scope"
+	LosingFeeRuleReasonLessChannelSpecific  LosingFeeRuleReason = "less_channel_specific"
+	LosingFeeRuleReasonLessSpecific         LosingFeeRuleReason = "less_specific"
+	LosingFeeRuleReasonLowerForcedScope     LosingFeeRuleReason = "lower_forced_scope"
+	LosingFeeRuleReasonLowerPriority        LosingFeeRuleReason = "lower_priority"
+	LosingFeeRuleReasonOutsideWindowFuture  LosingFeeRuleReason = "outside_window_future"
+	LosingFeeRuleReasonOutsideWindowPast    LosingFeeRuleReason = "outside_window_past"
+	LosingFeeRuleReasonStableIdTiebreak     LosingFeeRuleReason = "stable_id_tiebreak"
+)
+
+// Valid indicates whether the value is a known member of the LosingFeeRuleReason enum.
+func (e LosingFeeRuleReason) Valid() bool {
+	switch e {
+	case LosingFeeRuleReasonExcludedByForcedRule:
+		return true
+	case LosingFeeRuleReasonForcedBroaderScope:
+		return true
+	case LosingFeeRuleReasonLessChannelSpecific:
+		return true
+	case LosingFeeRuleReasonLessSpecific:
+		return true
+	case LosingFeeRuleReasonLowerForcedScope:
+		return true
+	case LosingFeeRuleReasonLowerPriority:
+		return true
+	case LosingFeeRuleReasonOutsideWindowFuture:
+		return true
+	case LosingFeeRuleReasonOutsideWindowPast:
+		return true
+	case LosingFeeRuleReasonStableIdTiebreak:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for LosingPriceRuleReason.
 const (
-	ExcludedByForcedRule LosingPriceRuleReason = "excluded_by_forced_rule"
-	ForcedBroaderScope   LosingPriceRuleReason = "forced_broader_scope"
-	LessSpecific         LosingPriceRuleReason = "less_specific"
-	LowerForcedScope     LosingPriceRuleReason = "lower_forced_scope"
-	LowerPriority        LosingPriceRuleReason = "lower_priority"
-	OutsideWindowFuture  LosingPriceRuleReason = "outside_window_future"
-	OutsideWindowPast    LosingPriceRuleReason = "outside_window_past"
-	StableIdTiebreak     LosingPriceRuleReason = "stable_id_tiebreak"
+	LosingPriceRuleReasonExcludedByForcedRule LosingPriceRuleReason = "excluded_by_forced_rule"
+	LosingPriceRuleReasonForcedBroaderScope   LosingPriceRuleReason = "forced_broader_scope"
+	LosingPriceRuleReasonLessSpecific         LosingPriceRuleReason = "less_specific"
+	LosingPriceRuleReasonLowerForcedScope     LosingPriceRuleReason = "lower_forced_scope"
+	LosingPriceRuleReasonLowerPriority        LosingPriceRuleReason = "lower_priority"
+	LosingPriceRuleReasonOutsideWindowFuture  LosingPriceRuleReason = "outside_window_future"
+	LosingPriceRuleReasonOutsideWindowPast    LosingPriceRuleReason = "outside_window_past"
+	LosingPriceRuleReasonStableIdTiebreak     LosingPriceRuleReason = "stable_id_tiebreak"
 )
 
 // Valid indicates whether the value is a known member of the LosingPriceRuleReason enum.
 func (e LosingPriceRuleReason) Valid() bool {
 	switch e {
-	case ExcludedByForcedRule:
+	case LosingPriceRuleReasonExcludedByForcedRule:
 		return true
-	case ForcedBroaderScope:
+	case LosingPriceRuleReasonForcedBroaderScope:
 		return true
-	case LessSpecific:
+	case LosingPriceRuleReasonLessSpecific:
 		return true
-	case LowerForcedScope:
+	case LosingPriceRuleReasonLowerForcedScope:
 		return true
-	case LowerPriority:
+	case LosingPriceRuleReasonLowerPriority:
 		return true
-	case OutsideWindowFuture:
+	case LosingPriceRuleReasonOutsideWindowFuture:
 		return true
-	case OutsideWindowPast:
+	case LosingPriceRuleReasonOutsideWindowPast:
 		return true
-	case StableIdTiebreak:
+	case LosingPriceRuleReasonStableIdTiebreak:
 		return true
 	default:
 		return false
@@ -294,6 +399,80 @@ type EventCreate struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
+// FeeCodeResolution One fee code's outcome. candidates holds every rule that competed for this code EXCEPT the winner, ordered by rule id — representation only, carrying no precedence.
+type FeeCodeResolution struct {
+	Candidates []LosingFeeRule `json:"candidates"`
+	FeeCode    string          `json:"fee_code"`
+
+	// Winner null when the code was considered and nothing currently applies — every rule for it fell outside its effective window. The candidates then ARE the answer to "why is this fee not showing up?". A code no rule carries produces no entry at all: considered-and-inapplicable and not-present are different states.
+	Winner *FeeRuleProvenance `json:"winner"`
+}
+
+// FeeResolution Every fee that applies to a ticket type in a channel, with provenance (ADR-046). fees is ordered by fee code so the document is stable; the order carries no precedence, because codes do not compete with each other — they are additive.
+// An empty fees array is the correct and complete answer for a ticket type with no fee rules, which is every ticket type that existed before this operation did.
+type FeeResolution struct {
+	// ChannelCode The channel this resolution was requested for; null is the default/public context. Echoed back so a stored snapshot records WHICH question was asked, not just the answer.
+	ChannelCode *string `json:"channel_code"`
+
+	// Currency The ticket type's currency, which every rule here was validated against — a fee and the thing it is a fee on must be the same money. A mismatched rule fails the resolution rather than being skipped.
+	Currency string `json:"currency"`
+
+	// EvaluatedAt The server-side instant the rules were evaluated against.
+	EvaluatedAt time.Time           `json:"evaluated_at"`
+	Fees        []FeeCodeResolution `json:"fees"`
+	OrganizerId openapi_types.UUID  `json:"organizer_id"`
+
+	// PerformanceId The dated slot the ticket type belongs to.
+	PerformanceId openapi_types.UUID `json:"performance_id"`
+
+	// ResolverVersion Bumped when the comparator's semantics change. A commitment, not a decoration: TKT-215 persists snapshots that must stay interpretable.
+	ResolverVersion int32 `json:"resolver_version"`
+}
+
+// FeeRuleProvenance One fee rule as reported in a resolution's provenance (ADR-046).
+type FeeRuleProvenance struct {
+	// Amount Minor units for a fixed basis; null on a percentage rule.
+	Amount *int64 `json:"amount"`
+
+	// Basis How the number becomes money. Catalog never multiplies — it reports the basis and commerce composes the order total (ADR-002, unamended by this ticket).
+	Basis FeeRuleProvenanceBasis `json:"basis"`
+
+	// ChannelCode null means channel-agnostic: eligible in every channel, including the default/public one. A non-null code is eligible only on an exact string match.
+	ChannelCode *string `json:"channel_code"`
+	Currency    string  `json:"currency"`
+
+	// EffectiveFrom Inclusive lower bound; null is unbounded. The interval is HALF-OPEN [effective_from, effective_until) — eligible at an instant equal to effective_from, NOT eligible at one equal to effective_until. Stated explicitly because an inclusive/exclusive ambiguity at a boundary is a money bug. A reversed window is rejected by the database.
+	EffectiveFrom *time.Time `json:"effective_from"`
+
+	// EffectiveUntil Exclusive upper bound; null is unbounded. A rule whose window has closed is inert: it can never charge anything again, so a misconfiguration in it is reported rather than failing every resolution forever.
+	EffectiveUntil *time.Time `json:"effective_until"`
+
+	// FeeCode The additive stream this rule belongs to. Opaque and case-sensitive; there is no registry and no normalization (TKT-17 owns that).
+	FeeCode string `json:"fee_code"`
+
+	// Forced force_ancestor_override — restricts the competition to forced rules and inverts BOTH specificity axes.
+	Forced bool `json:"forced"`
+
+	// Incidence passed_on is added to what the buyer is charged; absorbed is borne by the organizer out of the face value. This changes nothing about eligibility or precedence — it decides what commerce does with the number (TKT-215) and what the settlement ledger must balance (TKT-217).
+	Incidence FeeRuleProvenanceIncidence `json:"incidence"`
+	Priority  int32                      `json:"priority"`
+
+	// RateBps Basis points for a percentage basis; null on a fixed rule. 0..10000 — a rate above 100% is a fee larger than the thing it is a fee on.
+	RateBps    *int32                      `json:"rate_bps"`
+	RuleId     openapi_types.UUID          `json:"rule_id"`
+	ScopeId    openapi_types.UUID          `json:"scope_id"`
+	ScopeLevel FeeRuleProvenanceScopeLevel `json:"scope_level"`
+}
+
+// FeeRuleProvenanceBasis How the number becomes money. Catalog never multiplies — it reports the basis and commerce composes the order total (ADR-002, unamended by this ticket).
+type FeeRuleProvenanceBasis string
+
+// FeeRuleProvenanceIncidence passed_on is added to what the buyer is charged; absorbed is borne by the organizer out of the face value. This changes nothing about eligibility or precedence — it decides what commerce does with the number (TKT-215) and what the settlement ledger must balance (TKT-217).
+type FeeRuleProvenanceIncidence string
+
+// FeeRuleProvenanceScopeLevel defines model for FeeRuleProvenance.ScopeLevel.
+type FeeRuleProvenanceScopeLevel string
+
 // Festival defines model for Festival.
 type Festival struct {
 	CreatedAt time.Time            `json:"created_at"`
@@ -331,6 +510,17 @@ type FestivalLifecycleResult struct {
 
 // LocalizedString Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
 type LocalizedString map[string]string
+
+// LosingFeeRule A candidate that did not win its fee code, and why. The reason enum is closed and total over the comparator. Note what is NOT here: a rule belonging to a different channel is absent entirely rather than reported as a loser, because returning it would publish one caller's channel fee matrix to every other caller.
+type LosingFeeRule struct {
+	Reason LosingFeeRuleReason `json:"reason"`
+
+	// Rule One fee rule as reported in a resolution's provenance (ADR-046).
+	Rule FeeRuleProvenance `json:"rule"`
+}
+
+// LosingFeeRuleReason defines model for LosingFeeRule.Reason.
+type LosingFeeRuleReason string
 
 // LosingPriceRule A candidate that did not win, and why. The reason enum is closed and total over the comparator: every way a rule can lose has a value.
 type LosingPriceRule struct {
@@ -881,6 +1071,9 @@ type BadRequest = Error
 // InternalError defines model for InternalError.
 type InternalError = Error
 
+// InternalRouteUnauthorized defines model for InternalRouteUnauthorized.
+type InternalRouteUnauthorized = Error
+
 // NotFound defines model for NotFound.
 type NotFound = Error
 
@@ -889,6 +1082,12 @@ type StaffWriteUnauthorized = Error
 
 // catalogStaffWriteCredentialContextKey is the context key for CatalogStaffWriteCredential security scheme
 type catalogStaffWriteCredentialContextKey string
+
+// ResolveTicketTypeFeesParams defines parameters for ResolveTicketTypeFees.
+type ResolveTicketTypeFeesParams struct {
+	// ChannelCode The sales channel to resolve for. An exact opaque string (ADR-024) — there is no channel registry, and inventing one here would decide TKT-17's story. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel.
+	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
+}
 
 // ListPublicEventsParams defines parameters for ListPublicEvents.
 type ListPublicEventsParams struct {
@@ -994,6 +1193,9 @@ type ServerInterface interface {
 	// Atomically publish the festival and every member day
 	// (POST /festivals/{festivalId}/publish)
 	PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId)
+	// Resolve which fees apply to a ticket type, in a channel, with provenance
+	// (GET /internal/ticket-types/{id}/fee-resolution)
+	ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypeFeesParams)
 	// This contract, as committed (ADR-009)
 	// (GET /openapi.yaml)
 	GetOpenAPISpec(w http.ResponseWriter, r *http.Request)
@@ -1123,6 +1325,12 @@ func (_ Unimplemented) AttachDayToFestival(w http.ResponseWriter, r *http.Reques
 // Atomically publish the festival and every member day
 // (POST /festivals/{festivalId}/publish)
 func (_ Unimplemented) PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resolve which fees apply to a ticket type, in a channel, with provenance
+// (GET /internal/ticket-types/{id}/fee-resolution)
+func (_ Unimplemented) ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypeFeesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1454,6 +1662,48 @@ func (siw *ServerInterfaceWrapper) PublishFestival(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PublishFestival(w, r, festivalId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveTicketTypeFees operation middleware
+func (siw *ServerInterfaceWrapper) ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ResolveTicketTypeFeesParams
+
+	// ------------- Optional query parameter "channel_code" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "channel_code", r.URL.Query(), &params.ChannelCode, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "channel_code"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channel_code", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveTicketTypeFees(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2532,6 +2782,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/festivals/{festivalId}/publish", wrapper.PublishFestival)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/internal/ticket-types/{id}/fee-resolution", wrapper.ResolveTicketTypeFees)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)

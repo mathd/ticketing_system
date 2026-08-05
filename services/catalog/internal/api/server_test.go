@@ -60,6 +60,7 @@ type fakeStore struct {
 	// re-implementation of ADR-036 §4 that could agree with a wrong resolver.
 	priceRules map[uuid.UUID][]store.PriceRule
 	priceScope map[uuid.UUID]store.PricingScopes
+	feeRules   map[uuid.UUID][]store.FeeRule
 	// TKT-190 staff sign-in, keyed by normalized identifier.
 	staffAccounts  map[string]staffAuthResult
 	staffAuthErr   error
@@ -719,6 +720,74 @@ func (f *fakeStore) ResolveTicketTypePrice(_ context.Context, ticketTypeID uuid.
 	})
 	if err != nil {
 		return store.RuleSelection{}, err
+	}
+	sel.OrganizerID = tt.OrganizerID
+	return sel, nil
+}
+
+// CreateFeeRule mirrors the SQL write gate's contract, exactly as
+// CreatePriceRule does: a scope_id that names no seeded entity of that kind is
+// ErrNotFound and nothing is stored.
+func (f *fakeStore) CreateFeeRule(_ context.Context, in store.FeeRuleInput) (store.FeeRule, error) {
+	known := false
+	switch in.ScopeLevel {
+	case store.ScopeTicketType:
+		_, known = f.ticketTypes[in.ScopeID]
+	case store.ScopeSlot:
+		_, known = f.performances[in.ScopeID]
+	case store.ScopeSeries:
+		_, known = f.series[in.ScopeID]
+	case store.ScopeEvent:
+		_, known = f.events[in.ScopeID]
+	case store.ScopeVenue:
+		_, known = f.venues[in.ScopeID]
+	}
+	if !known {
+		return store.FeeRule{}, store.ErrNotFound
+	}
+	r := store.FeeRule{
+		ID: uuid.New(), OrganizerID: in.OrganizerID, ScopeLevel: in.ScopeLevel,
+		ScopeID: in.ScopeID, FeeCode: in.FeeCode, Basis: in.Basis, Amount: in.Amount,
+		RateBps: in.RateBps, Currency: in.Currency, Incidence: in.Incidence,
+		ChannelCode: in.ChannelCode, Priority: in.Priority,
+		ForceAncestorOverride: in.ForceAncestorOverride,
+		EffectiveFrom:         in.EffectiveFrom,
+		EffectiveUntil:        in.EffectiveUntil,
+		CreatedAt:             time.Now().UTC(),
+	}
+	if f.feeRules == nil {
+		f.feeRules = map[uuid.UUID][]store.FeeRule{}
+	}
+	f.feeRules[in.ScopeID] = append(f.feeRules[in.ScopeID], r)
+	return r, nil
+}
+
+// ResolveTicketTypeFees runs the REAL comparator over the fake's rows, so the
+// handler test exercises the same selection logic production does — a fake that
+// invented its own answer would let the mapping and the comparator disagree
+// forever.
+func (f *fakeStore) ResolveTicketTypeFees(_ context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (store.FeeSelection, error) {
+	tt, ok := f.ticketTypes[ticketTypeID]
+	if !ok {
+		return store.FeeSelection{}, store.ErrNotFound
+	}
+	scopes, ok := f.priceScope[ticketTypeID]
+	if !ok {
+		scopes = store.PricingScopes{TicketTypeID: ticketTypeID}
+	}
+	scopes.TicketTypeID = ticketTypeID
+	var rules []store.FeeRule
+	for _, id := range []uuid.UUID{scopes.TicketTypeID, scopes.SlotID, scopes.EventID, scopes.VenueID} {
+		rules = append(rules, f.feeRules[id]...)
+	}
+	if scopes.SeriesID != nil {
+		rules = append(rules, f.feeRules[*scopes.SeriesID]...)
+	}
+	sel, err := store.SelectFeeRules(at, store.FeeCandidates{
+		Currency: tt.Currency, Scopes: scopes, Channel: channel, Rules: rules,
+	})
+	if err != nil {
+		return store.FeeSelection{}, err
 	}
 	sel.OrganizerID = tt.OrganizerID
 	return sel, nil
