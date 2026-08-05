@@ -80,11 +80,14 @@ type Read struct {
 
 // Status is the operator-visible state. TKT-210 exposes it over HTTP.
 type Status struct {
-	Entries     int `json:"entries"`
-	InFlight    int `json:"in_flight"`
-	MaxEntries  int `json:"max_entries"`
-	MaxPerSlot  int `json:"max_entries_per_slot"`
-	MaxInFlight int `json:"max_in_flight"`
+	// Enabled is the state the READ PATH consults, not a separate flag that
+	// could drift from it (TKT-210).
+	Enabled     bool `json:"enabled"`
+	Entries     int  `json:"entries"`
+	InFlight    int  `json:"in_flight"`
+	MaxEntries  int  `json:"max_entries"`
+	MaxPerSlot  int  `json:"max_entries_per_slot"`
+	MaxInFlight int  `json:"max_in_flight"`
 }
 
 type key struct {
@@ -103,10 +106,12 @@ type entry struct {
 // load started: if the slot has been invalidated since, the result is stale on
 // arrival and must not be inserted.
 type flight struct {
-	done  chan struct{}
-	gen   uint64
-	value store.Availability
-	err   error
+	done chan struct{}
+	gen  uint64
+	// switchGen is the kill-switch generation when this load started.
+	switchGen uint64
+	value     store.Availability
+	err       error
 }
 
 type Service struct {
@@ -123,12 +128,20 @@ type Service struct {
 	// for exactly the duration of one load.
 	sem chan struct{}
 
-	mu       sync.Mutex
-	entries  map[key]*entry
-	lru      *list.List // front = most recently used; values are key
-	perSlot  map[uuid.UUID]int
-	gen      map[uuid.UUID]uint64
-	inflight map[key]*flight
+	mu      sync.Mutex
+	enabled bool
+	// switchGen advances on every real kill-switch transition, independently of
+	// the per-slot generations. Without it, a disable followed by a re-enable
+	// while a load is in flight would let that load insert on return: the cache
+	// is enabled again and the slot generation never moved, so every other guard
+	// says yes — but the value was read before an operator took the cache out of
+	// service, which is precisely the value they were stopping.
+	switchGen uint64
+	entries   map[key]*entry
+	lru       *list.List // front = most recently used; values are key
+	perSlot   map[uuid.UUID]int
+	gen       map[uuid.UUID]uint64
+	inflight  map[key]*flight
 }
 
 type Option func(*Service)
@@ -159,6 +172,7 @@ func New(src Source, opts ...Option) *Service {
 		maxPerSlot:  defaultMaxPerSlot,
 		maxInFlight: defaultMaxInFlight,
 		loadTimeout: defaultLoadTimeout,
+		enabled:     true,
 		entries:     map[key]*entry{},
 		lru:         list.New(),
 		perSlot:     map[uuid.UUID]int{},
@@ -193,12 +207,36 @@ func (s *Service) Invalidate(slot uuid.UUID) {
 	}
 }
 
+// SetEnabled is the incident kill-switch ADR-004's Consequences required
+// (TKT-210). Disabling purges everything and stops in-flight loads from
+// inserting; re-enabling starts cold.
+//
+// Idempotent: re-asserting the current state does not purge a warm cache, so an
+// operator repeating a command — or a retry — does not cost a reload wave on a
+// hot event.
+func (s *Service) SetEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.enabled == enabled {
+		return
+	}
+	s.enabled = enabled
+	s.switchGen++
+	for _, e := range s.entries {
+		s.removeLocked(e)
+	}
+}
+
 // Read answers from memory when a fresh entry exists, and otherwise loads once —
 // however many callers are waiting.
 func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string) (Read, error) {
 	k := key{org: org, slot: slot, channel: channel}
 
 	s.mu.Lock()
+	if !s.enabled {
+		s.mu.Unlock()
+		return s.bypass(ctx, k)
+	}
 	if e, ok := s.entries[k]; ok {
 		if age := s.now().Sub(e.loadedAt); age < s.ttl {
 			s.lru.MoveToFront(e.elem)
@@ -260,7 +298,7 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 		return s.wait(ctx, f)
 	}
 
-	f := &flight{done: make(chan struct{}), gen: s.gen[slot]}
+	f := &flight{done: make(chan struct{}), gen: s.gen[slot], switchGen: s.switchGen}
 	s.inflight[k] = f // replaces any superseded flight; see load's guarded delete
 	s.mu.Unlock()
 
@@ -283,7 +321,9 @@ func (s *Service) load(k key, f *flight) {
 	// Errors are never cached: a transient store failure must not be pinned for a
 	// tier, and ErrNotFound is not cached either — caching it would make a newly
 	// published slot answer 404 until the entry expired.
-	if err == nil && s.gen[k.slot] == f.gen {
+	// Every guard must hold: the cache is on, no toggle has happened since this
+	// load started, the slot has not moved on, and the source succeeded.
+	if err == nil && s.enabled && s.switchGen == f.switchGen && s.gen[k.slot] == f.gen {
 		s.insertLocked(k, v)
 	}
 	// Only clear the map entry if it is still THIS flight. An invalidation while
@@ -366,10 +406,29 @@ func (s *Service) removeLocked(e *entry) {
 	}
 }
 
+// bypass serves a read while the cache is disabled: its own source call, no
+// entry consulted, no flight registered, no insertion, age zero. It still takes
+// a concurrency slot, so disabling the cache does not remove the bound that
+// protects the database — a kill-switch is not a licence to stampede.
+func (s *Service) bypass(ctx context.Context, k key) (Read, error) {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return Read{}, ctx.Err()
+	}
+	defer func() { <-s.sem }()
+	v, err := s.loadDirect(k)
+	if err != nil {
+		return Read{}, err
+	}
+	return Read{Value: v}, nil
+}
+
 func (s *Service) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return Status{
+		Enabled:     s.enabled,
 		Entries:     len(s.entries),
 		InFlight:    len(s.inflight),
 		MaxEntries:  s.maxEntries,

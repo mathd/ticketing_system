@@ -159,6 +159,21 @@ type Availability struct {
 // AvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open
 type AvailabilityOfferingStatus string
 
+// CacheControlStatus defines model for CacheControlStatus.
+type CacheControlStatus struct {
+	// Enabled the state the read path itself consults, not a separate flag
+	Enabled bool `json:"enabled"`
+
+	// Entries cached entries held right now. CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory
+	Entries int `json:"entries"`
+}
+
+// CacheControlUpdate defines model for CacheControlUpdate.
+type CacheControlUpdate struct {
+	// Enabled false disables the in-memory availability cache on THIS process
+	Enabled bool `json:"enabled"`
+}
+
 // CapacityAdjust defines model for CapacityAdjust.
 type CapacityAdjust struct {
 	Actor       string             `json:"actor"`
@@ -554,6 +569,9 @@ type CreateHoldJSONRequestBody = HoldCreate
 
 // CreateSeatHoldJSONRequestBody defines body for CreateSeatHold for application/json ContentType.
 type CreateSeatHoldJSONRequestBody = SeatHoldCreate
+
+// PutCacheControlJSONRequestBody defines body for PutCacheControl for application/json ContentType.
+type PutCacheControlJSONRequestBody = CacheControlUpdate
 
 // PlaceGroupReservationJSONRequestBody defines body for PlaceGroupReservation for application/json ContentType.
 type PlaceGroupReservationJSONRequestBody = GroupReservationCreate
