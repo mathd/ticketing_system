@@ -53,6 +53,13 @@ var CacheControlPublicReads = cachetier.Minutes.CacheControl()
 // whole payload is published — see cacheControlForSeatMaps (TKT-107).
 var CacheControlPublicVenueReads = cachetier.Hours.CacheControl()
 
+// cacheControlNever is ADR-004's never tier, rendered once at init rather than
+// per request. The rendering is safe on any path for a registered tier, but
+// keeping every cachetier call at package level means the panic that guards
+// against an unregistered tier stays a process-start failure — and these routers
+// install no panic-recovery middleware.
+var cacheControlNever = cachetier.Never.CacheControl()
+
 // cacheControlForSeatMaps is TKT-107's tier rule for the three public seat-map
 // reads: the hours tier only when the response is non-empty and every seat map in
 // it is published, otherwise no-store. Draft geometry is mutable, so an hour of
@@ -71,11 +78,11 @@ var CacheControlPublicVenueReads = cachetier.Hours.CacheControl()
 // reader who knows the id still gets the draft (ADR-004 § TKT-107 amendment).
 func cacheControlForSeatMaps(maps ...store.SeatMap) string {
 	if len(maps) == 0 {
-		return cachetier.Never.CacheControl()
+		return cacheControlNever
 	}
 	for _, m := range maps {
 		if m.Status != "published" {
-			return cachetier.Never.CacheControl()
+			return cacheControlNever
 		}
 	}
 	return CacheControlPublicVenueReads

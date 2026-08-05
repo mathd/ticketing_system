@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -44,16 +46,58 @@ const wantSpecs = 5
 // all five carry a tier the registry knows (minutes for the four public reads,
 // hours for the venue list), verified by their own handler tests rather than here.
 //
-// A sixth operation reusing a free-form declaration fails. The exception is
-// therefore visible and bounded rather than a silent skip — and closing it
-// entirely is a spec change (single-valued minutes/hours components), which is
-// deliberately not this ticket's.
+// **Keyed by service, not by operationId alone.** An operationId is unique within
+// one contract and nothing more: `convertOperationalHold` and
+// `drawDownGroupReservation` already appear in two specs each at HEAD. A bare
+// operationId key would therefore let a new free-form declaration in *another*
+// service inherit catalog's exception by reusing a name — which would have made
+// "a sixth operation fails" untrue.
+//
+// Closing the exception entirely is a spec change (single-valued minutes/hours
+// components), deliberately not this ticket's.
 var freeFormAllowed = map[string]bool{
-	"listPublicEvents":  true, // minutes
-	"getPublicEvent":    true, // minutes
-	"getPublicSeason":   true, // minutes
-	"getPublicFestival": true, // minutes
-	"listPublicVenues":  true, // hours
+	"catalog/listPublicEvents":  true, // minutes
+	"catalog/getPublicEvent":    true, // minutes
+	"catalog/getPublicSeason":   true, // minutes
+	"catalog/getPublicFestival": true, // minutes
+	"catalog/listPublicVenues":  true, // hours
+}
+
+// wantDeclarations is every SUCCESS response that declares a Cache-Control at
+// HEAD, as `<service>/<operationId> <status>`.
+//
+// Without it the audit is only half a check: it constrains the values that ARE
+// declared and says nothing about declarations that stop existing. Delete every
+// Cache-Control from all five specs and a value-only audit reports zero
+// violations while staying green — coverage silently reaching zero is exactly the
+// emitted-versus-declared drift ADR-004's TKT-128 amendment recorded, so the
+// audit must not be able to shrink quietly.
+//
+// **2xx only, deliberately.** Catalog attaches `NeverCacheControl` to a shared
+// `StaffWriteUnauthorized` response, so every staff-write operation inherits a
+// 401 declaration — twenty-odd of them at HEAD, growing by one with every new
+// write endpoint. Pinning those would mean editing this list for changes that
+// make no tier decision at all, and a list nobody can read stops being read. A
+// non-2xx declaration is still VALUE-audited like any other; it is only its
+// presence that is not pinned. The tier decisions this ticket is about all live
+// on success responses.
+//
+// The cost is that adding or removing a success-response tier means editing this
+// list. That is the point: tier coverage becomes a decision someone states,
+// rather than a side effect nothing observes.
+var wantDeclarations = []string{
+	"catalog/authenticateStaff 200",
+	"catalog/getPublicEvent 200",
+	"catalog/getPublicFestival 200",
+	"catalog/getPublicSeatMapGeometry 200",
+	"catalog/getPublicSeason 200",
+	"catalog/listPublicEvents 200",
+	"catalog/listPublicVenues 200",
+	"catalog/listSeatMapVersions 200",
+	"catalog/listVenueSeatMaps 200",
+	"catalog/resolveTicketTypePrice 200",
+	"inventory/getAvailability 200",
+	"inventory/getSeatOccupancy 200",
 }
 
 // specDocPath is the route serving a service's own contract document. Excluded
@@ -65,13 +109,17 @@ var freeFormAllowed = map[string]bool{
 const specDocPath = "/openapi.yaml"
 
 // auditSpec reports every ADR-004 tier-declaration violation in one parsed
-// contract. Taking a document rather than a path is what lets the negative
-// fixtures below build synthetic specs in-test instead of mutating a tracked
-// openapi.yaml — which would either dirty the tree or fail `make check-generate`.
-func auditSpec(doc *openapi3.T) []string {
+// contract, and — separately — every declaration it saw, as
+// `<service>/<operationId> <status>`. The second return is what makes deletion
+// detectable: violations alone go to zero when the declarations do.
+//
+// Taking a document rather than a path is what lets the negative fixtures below
+// build synthetic specs in-test instead of mutating a tracked openapi.yaml —
+// which would either dirty the tree or fail `make check-generate`.
+func auditSpec(doc *openapi3.T, service string) (violations, declared []string) {
 	var out []string
 	if doc.Paths == nil {
-		return out
+		return out, declared
 	}
 	for path, item := range doc.Paths.Map() {
 		if path == specDocPath {
@@ -90,12 +138,15 @@ func auditSpec(doc *openapi3.T) []string {
 					continue
 				}
 				where := fmt.Sprintf("%s %s %s (%s)", method, path, code, op.OperationID)
+				if strings.HasPrefix(code, "2") {
+					declared = append(declared, fmt.Sprintf("%s/%s %s", service, op.OperationID, code))
+				}
 				var enum []any
 				if h.Value.Schema != nil && h.Value.Schema.Value != nil {
 					enum = h.Value.Schema.Value.Enum
 				}
 				if len(enum) == 0 {
-					if !freeFormAllowed[op.OperationID] {
+					if !freeFormAllowed[service+"/"+op.OperationID] {
 						out = append(out, where+": Cache-Control declared without an enum, and the "+
 							"operation is not in the bounded legacy allowlist — declare a single ADR-004 tier value")
 					}
@@ -115,7 +166,8 @@ func auditSpec(doc *openapi3.T) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	sort.Strings(declared)
+	return out, declared
 }
 
 func loadDoc(t *testing.T, data []byte, what string) *openapi3.T {
@@ -139,16 +191,32 @@ func TestDeclaredCacheControlValuesUseRegisteredTiers(t *testing.T) {
 		t.Fatalf("glob %s matched %d specs (%v), want %d — the audit is only cross-service if it finds every service",
 			specGlob, len(specs), specs, wantSpecs)
 	}
+	var declared []string
 	for _, path := range specs {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		if v := auditSpec(loadDoc(t, data, path)); len(v) > 0 {
-			for _, s := range v {
-				t.Errorf("%s: %s", path, s)
-			}
+		// services/<service>/api/openapi.yaml — the service name scopes both the
+		// allowlist and the coverage list, because an operationId is unique within
+		// one contract and nothing more.
+		service := filepath.Base(filepath.Dir(filepath.Dir(path)))
+		v, d := auditSpec(loadDoc(t, data, path), service)
+		for _, s := range v {
+			t.Errorf("%s: %s", path, s)
 		}
+		declared = append(declared, d...)
+	}
+
+	sort.Strings(declared)
+	// Sorted here rather than relying on the literal being in order — a future
+	// editor adding an entry should not be able to fail the audit by putting it on
+	// the wrong line.
+	want := slices.Sorted(slices.Values(wantDeclarations))
+	if !slices.Equal(declared, want) {
+		t.Errorf("declared ADR-004 tiers drifted.\n got: %v\nwant: %v\n"+
+			"Adding or removing a tier declaration is a decision — state it in wantDeclarations.",
+			declared, want)
 	}
 }
 
@@ -169,7 +237,7 @@ paths:
           headers:
             Cache-Control: {schema: {type: string}}
 `
-	v := auditSpec(loadDoc(t, []byte(spec), "synthetic free-form"))
+	v, _ := auditSpec(loadDoc(t, []byte(spec), "synthetic free-form"), "catalog")
 	if len(v) != 1 {
 		t.Fatalf("a new free-form Cache-Control must be rejected, got %d violations: %v", len(v), v)
 	}
@@ -189,8 +257,89 @@ paths:
           headers:
             Cache-Control: {schema: {type: string}}
 `
-	if v := auditSpec(loadDoc(t, []byte(allowed), "synthetic allowlisted")); len(v) != 0 {
+	if v, _ := auditSpec(loadDoc(t, []byte(allowed), "synthetic allowlisted"), "catalog"); len(v) != 0 {
 		t.Fatalf("an allowlisted operation must stay permitted, got %v", v)
+	}
+}
+
+// TestCacheControlAuditAllowlistIsServiceScoped: the legacy exception belongs to
+// catalog's five operations, not to their names. An operationId is unique within
+// one contract and nothing more — `convertOperationalHold` and
+// `drawDownGroupReservation` each already appear in two specs at HEAD — so an
+// unscoped key would let any service inherit the exception by reusing a name.
+func TestCacheControlAuditAllowlistIsServiceScoped(t *testing.T) {
+	const spec = `
+openapi: 3.0.3
+info: {title: synthetic, version: "1"}
+paths:
+  /public/events:
+    get:
+      operationId: listPublicEvents
+      responses:
+        '200':
+          description: ok
+          headers:
+            Cache-Control: {schema: {type: string}}
+`
+	doc := loadDoc(t, []byte(spec), "synthetic name reuse")
+	if v, _ := auditSpec(doc, "catalog"); len(v) != 0 {
+		t.Fatalf("catalog owns this exception and must keep it, got %v", v)
+	}
+	if v, _ := auditSpec(doc, "payments"); len(v) != 1 {
+		t.Fatalf("another service reusing the operationId must NOT inherit catalog's exception, got %d violations: %v", len(v), v)
+	}
+}
+
+// TestCacheControlAuditReportsDeclarationCoverage is the mechanism the coverage
+// assertion in TestDeclaredCacheControlValuesUseRegisteredTiers rests on. Without
+// it the audit would be only half a check: deleting every declaration from every
+// spec drives the violation count to zero, so a value-only audit stays green
+// while auditing nothing.
+//
+// It also pins the 2xx scoping, which is a deliberate narrowing rather than an
+// oversight — a non-2xx declaration is still value-audited, only its presence is
+// not pinned.
+func TestCacheControlAuditReportsDeclarationCoverage(t *testing.T) {
+	const declaring = `
+openapi: 3.0.3
+info: {title: synthetic, version: "1"}
+paths:
+  /public/things:
+    get:
+      operationId: getThing
+      responses:
+        '200':
+          description: ok
+          headers:
+            Cache-Control: {schema: {type: string, enum: ['no-store']}}
+        '401':
+          description: nope
+          headers:
+            Cache-Control: {schema: {type: string, enum: ['no-store']}}
+`
+	_, d := auditSpec(loadDoc(t, []byte(declaring), "synthetic declaring"), "catalog")
+	if len(d) != 1 || d[0] != "catalog/getThing 200" {
+		t.Fatalf("coverage must report the success declaration and only it, got %v", d)
+	}
+
+	// The same operation with the declaration removed must vanish from coverage —
+	// this is what makes a deletion fail the audit rather than pass it silently.
+	const deleted = `
+openapi: 3.0.3
+info: {title: synthetic, version: "1"}
+paths:
+  /public/things:
+    get:
+      operationId: getThing
+      responses:
+        '200': {description: ok}
+`
+	v, d := auditSpec(loadDoc(t, []byte(deleted), "synthetic deleted"), "catalog")
+	if len(v) != 0 {
+		t.Fatalf("a removed declaration is not a VALUE violation, got %v", v)
+	}
+	if len(d) != 0 {
+		t.Fatalf("a removed declaration must disappear from coverage, got %v", d)
 	}
 }
 
@@ -211,7 +360,7 @@ paths:
             Cache-Control:
               schema: {type: string, enum: ['public, max-age=60, s-maxage=60']}
 `
-	v := auditSpec(loadDoc(t, []byte(spec), "synthetic unknown tier"))
+	v, _ := auditSpec(loadDoc(t, []byte(spec), "synthetic unknown tier"), "inventory")
 	if len(v) != 1 {
 		t.Fatalf("an unregistered tier must be rejected, got %d violations: %v", len(v), v)
 	}
@@ -236,7 +385,7 @@ paths:
             Cache-Control:
               schema: {type: string, enum: ['public, max-age=42, s-maxage=42']}
 `
-	if v := auditSpec(loadDoc(t, []byte(spec), "synthetic spec document")); len(v) != 0 {
+	if v, d := auditSpec(loadDoc(t, []byte(spec), "synthetic spec document"), "catalog"); len(v) != 0 || len(d) != 0 {
 		t.Fatalf("the served contract document is not an ADR-004 data tier and must be excluded, got %v", v)
 	}
 }

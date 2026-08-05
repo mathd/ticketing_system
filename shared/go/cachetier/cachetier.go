@@ -55,12 +55,23 @@ func (t Tier) Duration() time.Duration { return time.Duration(t) }
 
 // CacheControl renders the tier's Cache-Control header from its duration.
 //
-// It panics on an unregistered Tier. That is deliberate: every call site is a
-// package-level var initializer, so an unregistered tier is a process-start
-// failure — loud, and before any traffic. A sentinel return would let a caller
-// ignore it and emit an empty Cache-Control, which ADR-028's response validator
-// would then turn into a 500 on a public read. If a future caller ever computes a
-// tier at request time, this contract has to be revisited.
+// It panics on an unregistered Tier — a value cast from some other duration. That
+// is deliberate, and the reason a sentinel is wrong: an empty Cache-Control would
+// be quietly emitted on a public read and turned into a 500 by ADR-028's response
+// validator, far from the mistake that caused it.
+//
+// The panic is only ever reachable through a Tier a caller CONSTRUCTED, since the
+// four registered tiers are constants. Callers must keep it that way, because no
+// service router installs panic-recovery middleware:
+//
+//   - Rendering one of the four constants is always safe, on any path.
+//   - A tier derived from a computed duration — configuration, TTL arithmetic —
+//     must go through FromCacheControl, which reports instead of panicking.
+//
+// Tier is left freely constructible rather than made opaque: with four constants
+// and no computed-tier caller, an opaque type plus a Must/error split would be
+// more API than the risk it removes. If a computed-tier caller ever appears, that
+// is the moment to revisit this, not before.
 func (t Tier) CacheControl() string {
 	for _, r := range All() {
 		if r == t {
