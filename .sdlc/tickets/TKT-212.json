@@ -1,0 +1,20 @@
+{
+  "key": "TKT-212",
+  "type": "Task",
+  "parent": "TKT-31",
+  "classification": "simple",
+  "summary": "The storefront cache ages entries on a wall clock, so a backward step extends their real lifetime",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**Carried out of TKT-206's ai-review (pass 2) as the half of a finding that was deliberately not fixed there.**\n\n`web/storefront/src/lib/cache.ts` measures an entry's age from an injected `now()` that is `Date.now` in production — a **wall** clock. An NTP step backwards makes elapsed time negative.\n\n**What TKT-206 fixed:** age is now a per-entry **high-water mark**, `max(previously reported, upstream + clamped elapsed)`. A live entry can no longer report a smaller age than a previous call already established, so the middleware cannot hand a page back freshness it had already spent. That was the part TKT-206 introduced, and it is closed.\n\n**What remains open, and is this ticket:** after a backward step the age stops advancing until wall time catches up, so an entry can **outlive its TTL in real time by roughly the size of the jump**. A buyer can see an event listing that should have expired.\n\n**Not a regression.** This cache measured wall time before TKT-206 touched it, and the reviewer checked the claim independently: *\"It does not change expiry behavior, so the delayed-expiry residual genuinely predates TKT-206 and is not made worse by this patch.\"*\n\n**Why it was not fixed there:** the fix changes the injected-clock contract. `PageDataCache`'s constructor takes `now: () => number` and that seam is shared with `web/storefront/src/middleware.ts` and every existing cache test, several of which drive wall-clock milliseconds directly. Swapping the source is a small change with a wide blast radius through test fixtures, and it deserves to be reviewed as itself rather than as a footnote to a 1,800-line caching ticket.\n\n**Conditions of Success:**\n- [ ] Entry aging uses a **monotonic** elapsed-time source (`performance.now()` in Node/SSR, or an injected monotonic clock), so a wall-clock step in either direction cannot change how long an entry lives.\n- [ ] Expiry is bounded in real time: a test steps the clock backward mid-life and proves the entry still expires within its original budget.\n- [ ] The high-water behaviour TKT-206 added is preserved — a monotonic source should make it redundant rather than contradict it. Say which, and if redundant, remove it rather than leaving two mechanisms for one property.\n- [ ] The existing injected-clock tests keep working, or are migrated deliberately with the reason recorded. `middleware.ts` still derives outgoing `Cache-Control` from remaining freshness correctly.\n- [ ] `make check` green, including the TS build (vitest does **not** typecheck — run the build before the full gate).\n\nQuality gates: `make check`.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Not yet shaped — created as a review carve-out\n\nBorn from TKT-206's ai-review pass 2 (2026-08-04). Minimal memo below; full shaping owed before Gate 1.\n\nSmall in lines, wider in reach than it looks: the clock is injected and shared, so this touches test fixtures across the storefront suite.\n\n**Context so the plan does not re-derive it:**\n- The aging arithmetic and its comment block: `web/storefront/src/lib/cache.ts` (`get`, `#fetchThrough`, `Entry.reportedAgeSeconds`).\n- The consumer whose behaviour must not change: `web/storefront/src/middleware.ts`, which derives the page's outgoing `Cache-Control` from remaining freshness.\n- The tests that inject a wall clock today: `web/storefront/test/cache.test.ts`.\n- **Governing ADRs:** ADR-045 (why `Age` exists at all and what it does *not* buy — the residual is named there), ADR-006 (the storefront owns the minutes tier on the page layer), ADR-004 (the tier itself).\n- The reviewer's own words on scope, worth reading before deciding how far to take this: the residual predates TKT-206 and this patch does not make it worse."
+    }
+  ]
+}
