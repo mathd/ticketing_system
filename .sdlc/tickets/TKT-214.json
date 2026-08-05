@@ -1,0 +1,127 @@
+{
+  "key": "TKT-214",
+  "type": "Story",
+  "parent": "TKT-6",
+  "classification": "complex",
+  "summary": "US-F1: A fee schedule resolves through the hierarchy, per fee code and per channel",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**As** an organizer, **I want** service fees defined once at the house level and bent per event,\nper day and per channel, **so that** the right fees apply everywhere without editing every ticket\ntype.\n\n**Priority:** P0  **Depends on:** — (first slice of TKT-6)\n\nThis is TKT-6's third COS: *fee rules participate in the TKT-5 hierarchy*. Definition and\nresolution only. The sale path is TKT-215's, payees and splits are TKT-216's, the settlement ledger\nis TKT-217's.\n\n**The model decision is this ticket's**, taken at the plan stage and recorded as an ADR in this PR\n— the same shape TKT-150/ADR-036 took for pricing. ADR-036 §2 deliberately left deltas out of\npricing *because they overlap this epic*, and it already fixed the constraint any relative action\nmust satisfy: basis points, checked multiplication, a documented rounding direction, no floats.\n\n**The non-obvious difference from pricing: fees are additive, prices are not.** A price resolution\nhas exactly one winner. A sale can carry a service fee *and* a facility fee at the same time. The\nhierarchy therefore resolves **per fee code** — one winner per code, many codes per resolution —\nwhich is what lets ADR-036's comparator be reused verbatim instead of inventing a stacking order.\n\n**Acceptance Criteria:**\n- [ ] An ADR (next free number in `docs/adr/`) records the fee model: what a fee rule may express\n  (the basis kinds — per-ticket fixed, per-order fixed, percentage in basis points), the rounding\n  direction **and the unit it rounds at**, incidence (`passed_on` vs `absorbed`), the channel\n  selector, and **which service computes the money**. It cites ADR-036 §2 for integer safety and\n  either respects ADR-002's ownership row or amends it explicitly.\n- [ ] A migration adds `fee_rules` to catalog: `organizer_id`-scoped, polymorphic\n  `(scope_level, scope_id)` reusing ADR-036 §1's five levels, plus `fee_code`, `basis`,\n  `amount` / `rate_bps`, `currency`, `incidence`, nullable `channel_code`, `priority`,\n  `force_ancestor_override`, and an effective window with the same semantics as\n  `price_rules` (append-mostly; `effective_until` the only mutable field, closing only).\n  `amount` bounded `>= 0 AND <= 9007199254740991` (the contract's `Money` cap, ADR-028);\n  `rate_bps` bounded `0..10000`; `channel_code` `length BETWEEN 1 AND 100` when non-NULL\n  (ADR-024's shape). Index `(organizer_id, scope_level, scope_id)`, plain `CREATE INDEX` (ADR-020).\n- [ ] Resolution is **per fee code**: each distinct `fee_code` resolves exactly one winner via\n  ADR-036 §4's comparator (specificity → forced override → priority → stable-id tiebreak);\n  fees are additive across codes and never stack within one code. The comparator is a **pure,\n  table-driven function** — that is the test seam, and its truth table is the test.\n- [ ] Channel selectivity: a rule with `channel_code = X` is a candidate only for a request in\n  channel X; a NULL-channel rule is a candidate in every channel; at the **same scope level** a\n  channel-specific rule beats the channel-agnostic one, and the loser carries a reason saying so.\n- [ ] A contract-declared read answers \"which fees apply to this ticket type, in this channel,\n  right now, and why\" — winner plus losing candidates with a closed reason enum per code, the\n  evaluation instant captured server-side (never a request parameter, for the same reason\n  `ResolveTicketTypePrice` refuses one), and the `never` cache tier via `shared/cachetier`.\n  Declared in `services/catalog/api/openapi.yaml`; regen committed.\n- [ ] A fee rule whose `currency` differs from the ticket type's **fails the resolution loudly**\n  (500, offending rule id logged and never returned) — the same disposition as\n  `ErrPriceRuleCurrencyMismatch`. A misconfigured rule on a money path is never silently skipped.\n- [ ] ADR-019 evidence for the new scoped read, both halves: a **poison-row result-scope** test (a\n  `fee_rules` row whose `scope_id` collides with an unrelated row of a different kind is not\n  loaded) **and** an `EXPLAIN`-under-`force_generic_plan` **scan** assertion over the production\n  query constant, on an `ANALYZE`d seed large enough that a sequential scan is the wrong and\n  expensive choice.\n- [ ] A ticket type with no fee rules resolves to an **empty** fee set. Nothing about today's\n  prices or reservations changes — this ticket adds no caller.\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code committed before the gate runs (ADR-009).\n\n**Non-goals (each has its owner):** the sale path and order totals (TKT-215) · payees and splits\n(TKT-216) · the settlement ledger (TKT-217) · fee reversal on refund/exchange (carved out, see the\nepic's readiness verdict) · a channel registry (ADR-024 keeps codes opaque; TKT-17 owns the registry).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Fee schedules become authorable and resolvable through the same hierarchy prices already use, per fee code and per channel."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Catalog only: schema + pure comparator + one read + the model ADR. No caller, no money charged, no payees."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Open by design and settled at the plan stage, recorded in the ADR: (a) the basis kinds v1 ships; (b) rounding direction and the unit it rounds at; (c) whether the resolution endpoint returns rules only or also computes amounts (which decides whether catalog needs quantity/base price as inputs); (d) whether fee rules live in a new table or a widened price_rules. Each is constrained by the ACs; none blocks starting."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. price_rules, the scope derivation and the comparator all exist at HEAD (services/catalog/internal/store/pricing.go, pricing_postgres.go, migrations 0012/0013)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror TKT-151/152's shape: pure comparator in store/pricing.go's style, DB-touching derivation in postgres.go, handler in internal/api. Reuse the existing scope derivation rather than re-deriving it."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Definition + resolution with no caller is the slice that can be wrong cheaply. Everything downstream reads this shape, so getting it wrong later is a migration over rows that priced real sales."
+    },
+    "success": {
+      "state": "met",
+      "note": "Every AC is a state or truth-table assertion plus the two ADR-019 tests. No timing assertions."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-05."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-05",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-05",
+        "rule": "Money is integer minor units + ISO currency code - floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-05",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate - keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "The pricing-rule model this epic extends. Fixes the five scope levels and how each is DERIVED from the ticket type (§1), the specificity order ticket_type > slot > series > event > venue and which parts of it are containment vs policy, the comparator steps (§4), the (scope_level, scope_id) index predicate and WHY matching on scope_id alone is a correctness bug (§3), append-mostly semantics with effective_until as the only mutable field, and - directly for this epic - §2: 'When a relative action is added, it must be integer-safe: basis points, checked multiplication, and a documented rounding direction. Floats stay banned.' It also states that deltas were deliberately left OUT of pricing because they overlap TKT-6."
+      },
+      {
+        "id": "ADR-002",
+        "why": "The ownership line: catalog owns rule definitions, commerce owns 'pricing/fee/promo evaluation', payments owns the settlement ledger. ADR-036 §6 already amended this row once for price RESOLUTION; any further move of the line for fees must be an explicit amendment, not an assertion that the boundary did not really change."
+      },
+      {
+        "id": "ADR-001",
+        "why": "Money is integer minor units + ISO-4217. Every fee arithmetic path is integer-only: no float, no big.Float, no decimal-as-string round trip."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new operation or field must be declared in the service's openapi.yaml, and openapi_gen.go / api-types.gen.ts regenerated and COMMITTED before the gate (check-generate diffs against HEAD)."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Responses are validated against the contract and fail closed - an undeclared field or an out-of-enum header becomes a 500 with the payload withheld. A money amount above the contract's Money cap is the classic instance (ADR-036 records it as TKT-154's residue)."
+      },
+      {
+        "id": "ADR-019",
+        "why": "A scoped catalog read is only scoped if an index backs the filter, and proving it takes TWO tests: the result is scoped AND the scan is (EXPLAIN under force_generic_plan, over the production query constant, on an ANALYZEd seed big enough that a seq scan is the wrong choice)."
+      },
+      {
+        "id": "ADR-020",
+        "why": "Plain `CREATE INDEX` only - CONCURRENTLY is still not adopted, and ADR-022 satisfying precondition (1) did not change that because the preconditions are conjunctive."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band as each binary's `migrate` subcommand, a one-shot Compose job the service waits on. The server path never migrates."
+      },
+      {
+        "id": "ADR-024",
+        "why": "Channel codes are EXACT OPAQUE STRINGS (1..100 chars) on inventory claims; NULL means the default/public channel. There is no channel registry and per-channel pricing/fee rules were explicitly deferred to TKT-17/TKT-5 - i.e. to this epic. Do not invent a registry here; match the existing opaque-code shape."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the three epic-level COS",
+        "link": "board:TKT-6"
+      },
+      {
+        "summary": "The pricing precedent to mirror: pure comparator + scope derivation + resolution handler",
+        "link": "services/catalog/internal/store/pricing.go, services/catalog/internal/store/pricing_postgres.go, services/catalog/internal/api/pricing.go"
+      },
+      {
+        "summary": "The price_rules schema and its effective-window migration - the shape a fee_rules table should rhyme with",
+        "link": "services/catalog/internal/store/migrations/0012_price_rules.sql, 0013_price_rule_effective_windows.sql"
+      },
+      {
+        "summary": "Generalized EXPLAIN helper required by ADR-019 (multi-parameter, extended in place, never forked)",
+        "link": "services/catalog/internal/store/season_smoke_test.go"
+      },
+      {
+        "summary": "The cache tier registry - the `never` tier and its Cache-Control string",
+        "link": "shared/go/cachetier/cachetier.go, services/catalog/internal/api/pricing.go:19"
+      },
+      {
+        "summary": "Channel codes as they exist today: opaque strings on inventory claims, NULL = public",
+        "link": "services/inventory/internal/store/migrations/0004_channel_allocations.sql"
+      }
+    ]
+  },
+  "comments": []
+}
