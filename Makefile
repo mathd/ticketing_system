@@ -60,10 +60,20 @@ lint-ts:
 ## ---- test ----
 test: test-go test-ts
 
+# -count=1 disables Go's test cache, deliberately (TKT-210).
+#
+# shared/go/cachetier's spec audit reads services/*/api/openapi.yaml — files
+# OUTSIDE its own module. Go's test caching does not track those as inputs, so
+# after a spec change it kept replaying a stale PASS: the audit was green locally
+# through four gate runs and only failed in CI, which has no warm cache. A gate
+# that can report a pass for code it did not run is not a gate, and this repo has
+# been bitten by a falsely-green gate signal twice before (TKT-94, TKT-101).
+#
+# The cost is seconds on unit tests the gate already spends minutes beside.
 test-go:
 	@for m in $(GO_TEST_MODULES); do \
 		echo "go test: $$m"; \
-		(cd $$m && go test ./...) || exit 1; \
+		(cd $$m && go test -count=1 ./...) || exit 1; \
 	done
 
 test-ts:

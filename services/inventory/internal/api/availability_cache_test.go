@@ -20,9 +20,17 @@ import (
 )
 
 type countingReader struct {
-	calls int
-	age   time.Duration
-	avail int32
+	calls   int
+	age     time.Duration
+	avail   int32
+	enabled bool
+	entries int
+}
+
+func (c *countingReader) SetEnabled(v bool) { c.enabled = v }
+
+func (c *countingReader) Status() availability.Status {
+	return availability.Status{Enabled: c.enabled, Entries: c.entries}
 }
 
 func (c *countingReader) Read(_ context.Context, _, slot uuid.UUID, _ string) (availability.Read, error) {
@@ -151,7 +159,11 @@ func TestOnlyTheDisplayReadTouchesTheCache(t *testing.T) {
 	}
 	for _, fn := range users {
 		// New/NewWithAvailability assign it; availability is the one reader.
-		if fn != "availability" && fn != "New" && fn != "NewWithAvailability" {
+		// The two cache-control handlers legitimately reach the collaborator —
+		// that is the whole point of routing the switch through the same object
+		// the read path uses (TKT-210). Named individually; no wildcard.
+		if fn != "availability" && fn != "New" && fn != "NewWithAvailability" &&
+			fn != "cacheControlStatus" && fn != "cacheControlSet" {
 			t.Errorf("%s reads s.avail — only the public display read may. "+
 				"The claim path takes truth from the store under ADR-010's transaction, and the "+
 				"staff read exists to check the cache, not to be served by it.", fn)

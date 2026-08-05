@@ -227,6 +227,27 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/cache-control:
+    get:
+      operationId: getCacheControl
+      summary: Whether this process is serving availability reads from memory, and how many entries it holds (TKT-210)
+      responses:
+        '200': {description: Current cache state, headers: {Cache-Control: {$ref: '#/components/headers/NeverCacheControl'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CacheControlStatus'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+    put:
+      operationId: putCacheControl
+      summary: >
+        The ADR-004 incident kill-switch. Disabling purges the cache and sends
+        every availability read to the store until re-enabled; re-enabling starts
+        cold. Idempotent. PROCESS-LOCAL - it says nothing about another replica -
+        and NOT durable: a restart comes back enabled.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CacheControlUpdate'}}}}
+      responses:
+        '200': {description: Resulting cache state, headers: {Cache-Control: {$ref: '#/components/headers/NeverCacheControl'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CacheControlStatus'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/slots/{id}/capacity-adjustments:
     post:
       operationId: adjustCapacity
@@ -263,6 +284,18 @@ paths:
         '500': {$ref: '#/components/responses/Error'}
 components:
   headers:
+    NeverCacheControl:
+      description: >
+        Always no-store — ADR-004's never tier. An operator control surface is
+        never shared-cacheable: it reports the live state of one process, and a
+        cached answer about whether a cache is on is exactly the wrong thing to
+        hand an operator mid-incident. Single-valued and required so ADR-028's
+        response validator turns any other value into a 500.
+      required: true
+      schema:
+        type: string
+        enum:
+          - 'no-store'
     AvailabilityAge:
       description: >
         Seconds this answer has already spent in inventory's in-memory
@@ -323,6 +356,19 @@ components:
     OperationalHold: {description: Operational hold state, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalHold'}}}}
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
+    CacheControlUpdate:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled: {type: boolean, description: 'false disables the in-memory availability cache on THIS process'}
+    CacheControlStatus:
+      type: object
+      additionalProperties: false
+      required: [enabled, entries]
+      properties:
+        enabled: {type: boolean, description: 'the state the read path itself consults, not a separate flag'}
+        entries: {type: integer, minimum: 0, description: 'cached entries held right now. CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory'}
     Error:
       type: object
       additionalProperties: false

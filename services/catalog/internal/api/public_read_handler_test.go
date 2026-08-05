@@ -21,8 +21,16 @@ import (
 // stubPublicReader answers with a fixed age so the handler's Age emission can be
 // tested without driving a real cache through five minutes.
 type stubPublicReader struct {
-	age   time.Duration
-	calls int
+	age     time.Duration
+	calls   int
+	enabled bool
+	entries int
+}
+
+func (s *stubPublicReader) SetEnabled(v bool) { s.enabled = v }
+
+func (s *stubPublicReader) Status() publicReadStatus {
+	return publicReadStatus{Enabled: s.enabled, Entries: s.entries}
 }
 
 func (s *stubPublicReader) ListPublishedEvents(context.Context) (cached[[]store.EventAggregate], error) {
@@ -99,6 +107,10 @@ func TestOnlyTheMinuteTierPublicReadsUseTheCache(t *testing.T) {
 		"ListPublicEvents": true, "GetPublicEvent": true,
 		"GetPublicSeason": true, "GetPublicFestival": true,
 		"newServer": true, "NewServer": true, "newServerWithPublicReader": true,
+		// The kill-switch handlers legitimately reach the collaborator — routing
+		// the switch through the same object the read path uses is the point
+		// (TKT-210). Named individually; no wildcard.
+		"cacheControlStatus": true, "cacheControlSet": true, "writeCacheState": true,
 	}
 
 	entries, err := os.ReadDir(".")

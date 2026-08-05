@@ -134,6 +134,11 @@ func newServer(st store.Store, pub events.Publisher, log *slog.Logger, internalC
 // reads and nothing else. No write is on it, so the write path cannot acquire a
 // cached number even by accident.
 type publicReader interface {
+	// SetEnabled and Status are the operator kill-switch (TKT-210). On THIS
+	// interface, not a separate controller, so the switch cannot address a
+	// different object than the read path consults.
+	SetEnabled(bool)
+	Status() publicReadStatus
 	ListPublishedEvents(ctx context.Context) (cached[[]store.EventAggregate], error)
 	GetPublishedEvent(ctx context.Context, id uuid.UUID) (cached[store.EventAggregate], error)
 	GetPublishedSeason(ctx context.Context, id uuid.UUID) (cached[store.SeasonAggregate], error)
@@ -176,6 +181,8 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	r.Get("/internal/ticket-types/{id}", s.getTicketType)
 	r.Get("/internal/performances/{id}", s.getPublishedPerformance)
 	r.Get("/internal/pools/{id}/offer-state", s.getPoolOfferState)
+	r.Get("/internal/cache-control", s.cacheControlStatus)
+	r.Put("/internal/cache-control", s.cacheControlSet)
 	// TKT-80: inventory pins/unpins a seat-hold's seats here (ADR-029 contract). Hand-mounted
 	// internal routes, like the reads above — service-to-service, not part of the public
 	// OpenAPI contract; the response validator skips undeclared paths.

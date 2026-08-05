@@ -159,6 +159,12 @@ services:
       # Held by catalog and the back office and nothing else — deliberately NOT in
       # the shared &go-env anchor, which every service inherits.
       CATALOG_STAFF_WRITE_TOKEN: ${CATALOG_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
+    # Catalog's internal surface is deliberately not routed through the gateway
+    # (public edge), same as inventory's. Since TKT-210 that surface includes the
+    # cache kill-switch, which an operator and the smoke suite must reach, so
+    # catalog gets the loopback port every other service already publishes.
+    # 127.0.0.1 only: no new external exposure, no new credential.
+    ports: ["127.0.0.1:${CATALOG_PORT:-8090}:8080"]
 
   inventory-migrate:
     <<: *migrate-job

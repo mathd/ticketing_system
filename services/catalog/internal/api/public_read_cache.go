@@ -97,10 +97,12 @@ type readEntry struct {
 }
 
 type readFlight struct {
-	done  chan struct{}
-	gen   uint64
-	value any
-	err   error
+	done chan struct{}
+	gen  uint64
+	// switchGen is the kill-switch generation when this load started (TKT-210).
+	switchGen uint64
+	value     any
+	err       error
 }
 
 type publicReadCache struct {
@@ -114,10 +116,17 @@ type publicReadCache struct {
 
 	sem chan struct{}
 
-	mu       sync.Mutex
-	entries  map[readKey]*readEntry
-	lru      *list.List
-	inflight map[readKey]*readFlight
+	mu      sync.Mutex
+	enabled bool
+	// switchGen advances on every real kill-switch transition, independently of
+	// the list/detail generations. Without it, a disable followed by a re-enable
+	// while a load is in flight would let that load insert on return: the cache
+	// is on again and neither generation moved, so every other guard says yes —
+	// but the value was read before an operator took the cache out of service.
+	switchGen uint64
+	entries   map[readKey]*readEntry
+	lru       *list.List
+	inflight  map[readKey]*readFlight
 	// Two generations, both global. See Invalidate for why global.
 	listGen   uint64
 	detailGen uint64
@@ -145,6 +154,7 @@ func newPublicReadCache(src publicReadSource, opts ...publicReadOption) *publicR
 		maxEntries:  defaultPublicReadEntries,
 		maxInFlight: defaultPublicReadInFlight,
 		loadTimeout: defaultPublicReadTimeout,
+		enabled:     true,
 		entries:     map[readKey]*readEntry{},
 		lru:         list.New(),
 		inflight:    map[readKey]*readFlight{},
@@ -155,6 +165,54 @@ func newPublicReadCache(src publicReadSource, opts ...publicReadOption) *publicR
 	c.sem = make(chan struct{}, c.maxInFlight)
 	src.RegisterPublicReadInvalidator(c.Invalidate)
 	return c
+}
+
+// SetEnabled is the incident kill-switch ADR-004's Consequences required
+// (TKT-210). Disabling purges everything and stops in-flight loads from
+// inserting; re-enabling starts cold. Idempotent, so an operator repeating a
+// command does not cost a reload wave across every cached event.
+func (c *publicReadCache) SetEnabled(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.enabled == enabled {
+		return
+	}
+	c.enabled = enabled
+	c.switchGen++
+	for _, e := range c.entries {
+		c.removeLocked(e)
+	}
+}
+
+// publicReadStatus is the operator-visible state. Only `enabled` and `entries`
+// are exposed: entry count is CARDINALITY, not a byte-size claim — ADR-045 is
+// explicit that the bounded entry count does not bound payload size.
+type publicReadStatus struct {
+	Enabled bool `json:"enabled"`
+	Entries int  `json:"entries"`
+}
+
+func (c *publicReadCache) Status() publicReadStatus {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return publicReadStatus{Enabled: c.enabled, Entries: len(c.entries)}
+}
+
+// bypass serves a read while the cache is disabled: its own source call, no
+// entry consulted, no flight registered, no insertion, age zero. It still takes
+// a concurrency slot, so disabling does not remove the bound protecting the
+// database — a kill-switch is not a licence to stampede.
+func (c *publicReadCache) bypass(ctx context.Context, load func(context.Context) (any, error)) (any, time.Duration, error) {
+	select {
+	case c.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, 0, ctx.Err()
+	}
+	defer func() { <-c.sem }()
+	lctx, cancel := context.WithTimeout(context.Background(), c.loadTimeout)
+	defer cancel()
+	v, err := load(lctx)
+	return v, 0, err
 }
 
 // Invalidate drops every cached representation in the given scope.
@@ -197,6 +255,10 @@ func (c *publicReadCache) generationLocked(k readKind) uint64 {
 // read is the whole cache in one function, shared by the four typed methods.
 func (c *publicReadCache) read(ctx context.Context, k readKey, load func(context.Context) (any, error)) (any, time.Duration, error) {
 	c.mu.Lock()
+	if !c.enabled {
+		c.mu.Unlock()
+		return c.bypass(ctx, load)
+	}
 	if e, ok := c.entries[k]; ok {
 		if age := c.now().Sub(e.loadedAt); age < c.ttl {
 			c.lru.MoveToFront(e.elem)
@@ -213,7 +275,7 @@ func (c *publicReadCache) read(ctx context.Context, k readKey, load func(context
 	// to cache, delivered by a shorter route. Discarding the result is not
 	// enough; the flight has to be unjoinable. (TKT-205 shipped this bug and had
 	// it caught in review.)
-	if f, ok := c.inflight[k]; ok && f.gen == gen {
+	if f, ok := c.inflight[k]; ok && f.gen == gen && f.switchGen == c.switchGen {
 		c.mu.Unlock()
 		return c.wait(ctx, f)
 	}
@@ -231,6 +293,9 @@ func (c *publicReadCache) read(ctx context.Context, k readKey, load func(context
 	}
 
 	c.mu.Lock()
+	// Deliberately no second `enabled` check: the insertion guard already requires
+	// `enabled`, so a read that queued while the cache was on and found it off
+	// cannot populate anything. See inventory's cache for the full reasoning.
 	if e, ok := c.entries[k]; ok {
 		if age := c.now().Sub(e.loadedAt); age < c.ttl {
 			c.lru.MoveToFront(e.elem)
@@ -242,12 +307,12 @@ func (c *publicReadCache) read(ctx context.Context, k readKey, load func(context
 		c.removeLocked(e)
 	}
 	gen = c.generationLocked(k.kind)
-	if f, ok := c.inflight[k]; ok && f.gen == gen {
+	if f, ok := c.inflight[k]; ok && f.gen == gen && f.switchGen == c.switchGen {
 		c.mu.Unlock()
 		<-c.sem
 		return c.wait(ctx, f)
 	}
-	f := &readFlight{done: make(chan struct{}), gen: gen}
+	f := &readFlight{done: make(chan struct{}), gen: gen, switchGen: c.switchGen}
 	c.inflight[k] = f
 	c.mu.Unlock()
 
@@ -271,7 +336,9 @@ func (c *publicReadCache) load(k readKey, f *readFlight, load func(context.Conte
 	// are never cached — a transient failure must not be pinned for five minutes,
 	// and ErrNotFound is not cached either: a newly published season would answer
 	// 404 until its entry expired.
-	if err == nil && c.generationLocked(k.kind) == f.gen {
+	// Every guard must hold: the cache is on, no toggle since this load started,
+	// the generation still matches, and the source succeeded.
+	if err == nil && c.enabled && c.switchGen == f.switchGen && c.generationLocked(k.kind) == f.gen {
 		c.insertLocked(k, v)
 	}
 	// Only clear the map entry if it is still THIS flight: an invalidation while

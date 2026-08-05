@@ -512,3 +512,179 @@ func TestPostInvalidationReadDoesNotJoinAStaleFlight(t *testing.T) {
 		}
 	})
 }
+
+// --- TKT-210: the incident kill-switch ---
+
+// TestDisablePurgesAndBypassesEveryPublicRead is COS 1 and 2 at the cache level,
+// across all four reads. Counted, never timed.
+func TestDisablePurgesAndBypassesEveryPublicRead(t *testing.T) {
+	src := newCountingSource()
+	c, _ := newTestCache(t, src)
+	ctx := context.Background()
+	id := uuid.New()
+
+	warm := func() {
+		_, _ = c.ListPublishedEvents(ctx)
+		_, _ = c.GetPublishedEvent(ctx, id)
+		_, _ = c.GetPublishedSeason(ctx, id)
+		_, _ = c.GetPublishedFestival(ctx, id)
+	}
+	warm()
+	warm()
+	if got := src.total(); got != 4 {
+		t.Fatalf("warm-up: source called %d times, want 4", got)
+	}
+
+	c.SetEnabled(false)
+	if st := c.Status(); st.Enabled || st.Entries != 0 {
+		t.Fatalf("after disable: %+v, want enabled=false entries=0", st)
+	}
+	warm()
+	warm()
+	if got := src.total(); got != 12 {
+		t.Fatalf("source called %d times across two disabled rounds, want 12 — every read must reach the store", got)
+	}
+	for _, op := range []string{"list", "event", "season", "festival"} {
+		if got := src.count(op); got != 3 {
+			t.Errorf("%s called %d times, want 3 (1 warm + 2 bypassed) — every read kind must bypass", op, got)
+		}
+	}
+
+	// Re-enabling starts all four cold.
+	c.SetEnabled(true)
+	if st := c.Status(); !st.Enabled || st.Entries != 0 {
+		t.Fatalf("after re-enable: %+v, want enabled=true entries=0", st)
+	}
+	warm()
+	warm()
+	if got := src.total(); got != 16 {
+		t.Fatalf("source called %d times after re-enable, want 16 — one cold load each, then hits", got)
+	}
+}
+
+// TestAToggleCycleRejectsPreToggleLoads: the case a plain `enabled` check misses.
+// Disable and re-enable while loads are in flight — on return the cache is on
+// again and neither the list nor the detail generation moved, so every other
+// guard says insert. But those values were read before an operator took the
+// cache out of service. Covers BOTH generation domains, since implementing the
+// switch for only one would leave the other silently repopulating.
+func TestAToggleCycleRejectsPreToggleLoads(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newCountingSource()
+		src.release = make(chan struct{})
+		c, _ := newTestCache(t, src)
+		id := uuid.New()
+
+		done := make(chan struct{}, 2)
+		go func() { _, _ = c.ListPublishedEvents(context.Background()); done <- struct{}{} }()
+		go func() { _, _ = c.GetPublishedEvent(context.Background(), id); done <- struct{}{} }()
+		synctest.Wait()
+
+		c.SetEnabled(false)
+		c.SetEnabled(true)
+
+		src.setLabel("second")
+		close(src.release)
+		<-done
+		<-done
+
+		if st := c.Status(); st.Entries != 0 {
+			t.Fatalf("loads that started before a toggle cycle were cached: %+v", st)
+		}
+		if r, _ := c.ListPublishedEvents(context.Background()); r.Value[0].Event.Name["en"] != "second" {
+			t.Errorf("list = %q, want the post-toggle value", r.Value[0].Event.Name["en"])
+		}
+		if r, _ := c.GetPublishedEvent(context.Background(), id); r.Value.Event.Name["en"] != "second" {
+			t.Errorf("detail = %q, want the post-toggle value", r.Value.Event.Name["en"])
+		}
+	})
+}
+
+// TestCatalogSetEnabledIsIdempotent: re-asserting the current state must not
+// purge a warm cache — an operator repeating a command should not cost a reload
+// wave across every cached event.
+func TestCatalogSetEnabledIsIdempotent(t *testing.T) {
+	src := newCountingSource()
+	c, _ := newTestCache(t, src)
+	ctx := context.Background()
+
+	_, _ = c.ListPublishedEvents(ctx)
+	c.SetEnabled(true)
+	_, _ = c.ListPublishedEvents(ctx)
+	if got := src.count("list"); got != 1 {
+		t.Fatalf("source called %d times, want 1 — enabling an enabled cache must not purge it", got)
+	}
+}
+
+// TestADisabledPublicReadDoesNotJoinAnInFlightLoad — same property as inventory's:
+// SetEnabled purges entries but does NOT clear the in-flight map, and the
+// list/detail generations do not move on a toggle. Without the read path's first
+// enabled check, a disabled reader would join a load that started before the
+// operator disabled the cache and be served the very value being withdrawn.
+func TestADisabledPublicReadDoesNotJoinAnInFlightLoad(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newCountingSource()
+		src.release = make(chan struct{})
+		c, _ := newTestCache(t, src)
+
+		done := make(chan struct{})
+		go func() { defer close(done); _, _ = c.ListPublishedEvents(context.Background()) }()
+		synctest.Wait()
+
+		c.SetEnabled(false)
+		src.setLabel("second")
+
+		fresh := make(chan string, 1)
+		go func() {
+			r, _ := c.ListPublishedEvents(context.Background())
+			fresh <- r.Value[0].Event.Name["en"]
+		}()
+		synctest.Wait()
+
+		close(src.release)
+		<-done
+		if got := <-fresh; got != "second" {
+			t.Fatalf("a disabled read returned %q — it joined a load started before the cache was disabled", got)
+		}
+		if got := src.count("list"); got != 2 {
+			t.Fatalf("source called %d times, want 2 — the disabled read must make its own call", got)
+		}
+	})
+}
+
+// TestAPostReEnableReadDoesNotJoinAPreDisableFlight — same transition window as
+// inventory's. TestAToggleCycleRejectsPreToggleLoads waits for the old loads to
+// finish, so it only exercised the insertion guard; a reader arriving while a
+// pre-disable load is still running would join it if the predicate checks only
+// the list/detail generation, which a toggle never moves.
+func TestAPostReEnableReadDoesNotJoinAPreDisableFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newCountingSource()
+		src.release = make(chan struct{})
+		c, _ := newTestCache(t, src)
+
+		stale := make(chan struct{})
+		go func() { defer close(stale); _, _ = c.ListPublishedEvents(context.Background()) }()
+		synctest.Wait()
+
+		c.SetEnabled(false)
+		c.SetEnabled(true)
+		src.setLabel("second")
+
+		fresh := make(chan string, 1)
+		go func() {
+			r, _ := c.ListPublishedEvents(context.Background())
+			fresh <- r.Value[0].Event.Name["en"]
+		}()
+		synctest.Wait()
+
+		close(src.release)
+		<-stale
+		if got := <-fresh; got != "second" {
+			t.Fatalf("post-re-enable read = %q, want the post-toggle value — it joined a pre-disable load", got)
+		}
+		if got := src.count("list"); got != 2 {
+			t.Fatalf("source called %d times, want 2", got)
+		}
+	})
+}

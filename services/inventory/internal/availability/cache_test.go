@@ -532,3 +532,261 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not reached within 2s")
 }
+
+// --- TKT-210: the incident kill-switch ---
+
+// TestDisablePurgesAndBypassesTheCache is COS 1 and 2 at the cache level: a
+// disabled cache serves nothing from memory and every read reaches the store.
+// Counted, never timed.
+func TestDisablePurgesAndBypassesTheCache(t *testing.T) {
+	src := newFakeSource()
+	src.setAvailable(7)
+	svc, _ := newTestService(t, src)
+	org, slot := uuid.New(), uuid.New()
+
+	mustRead(t, svc, org, slot, "")
+	mustRead(t, svc, org, slot, "")
+	if got := src.count(); got != 1 {
+		t.Fatalf("warm-up: source called %d times, want 1", got)
+	}
+
+	svc.SetEnabled(false)
+	if st := svc.Status(); st.Enabled || st.Entries != 0 {
+		t.Fatalf("after disable: %+v, want enabled=false entries=0 — disabling must purge", st)
+	}
+	for range 3 {
+		mustRead(t, svc, org, slot, "")
+	}
+	if got := src.count(); got != 4 {
+		t.Fatalf("source called %d times across 3 disabled reads, want 4 — a disabled cache must not serve from memory", got)
+	}
+
+	// Re-enabling starts COLD: the first read loads, the next is served.
+	svc.SetEnabled(true)
+	if st := svc.Status(); !st.Enabled || st.Entries != 0 {
+		t.Fatalf("after re-enable: %+v, want enabled=true entries=0 — re-enabling must not resurrect purged entries", st)
+	}
+	mustRead(t, svc, org, slot, "")
+	mustRead(t, svc, org, slot, "")
+	if got := src.count(); got != 5 {
+		t.Fatalf("source called %d times after re-enable, want 5 — one cold load then a hit", got)
+	}
+}
+
+// TestAToggleCycleRejectsALoadThatStartedBeforeIt is the case a plain `enabled`
+// check misses, and the reason the switch carries its own generation.
+//
+// Disable and re-enable while a load is in flight: on its return the cache is
+// enabled again and the slot generation never moved, so every other guard says
+// "insert this". But that value was read before an operator deliberately took
+// the cache out of service — exactly the value they were trying to stop being
+// served.
+func TestAToggleCycleRejectsALoadThatStartedBeforeIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newFakeSource()
+		src.setAvailable(10)
+		src.release = make(chan struct{})
+		svc, _ := newTestService(t, src)
+		org, slot := uuid.New(), uuid.New()
+
+		done := make(chan struct{})
+		go func() { defer close(done); _, _ = svc.Read(context.Background(), org, slot, "") }()
+		synctest.Wait() // the load is inside the source
+
+		svc.SetEnabled(false)
+		svc.SetEnabled(true)
+
+		src.setAvailable(4)
+		close(src.release)
+		<-done
+
+		if st := svc.Status(); st.Entries != 0 {
+			t.Fatalf("a load that started before a toggle cycle was cached: %+v", st)
+		}
+		if got := mustRead(t, svc, org, slot, "").Value.Available; got != 4 {
+			t.Fatalf("read after the toggle cycle = %d, want 4 — the pre-toggle load repopulated the cache", got)
+		}
+	})
+}
+
+// TestSetEnabledIsIdempotent: re-asserting the current state must not purge a
+// warm cache. An operator running the same command twice, or a retry, should
+// not silently cost a reload wave on a hot event.
+func TestSetEnabledIsIdempotent(t *testing.T) {
+	src := newFakeSource()
+	svc, _ := newTestService(t, src)
+	org, slot := uuid.New(), uuid.New()
+
+	mustRead(t, svc, org, slot, "")
+	svc.SetEnabled(true)
+	mustRead(t, svc, org, slot, "")
+	if got := src.count(); got != 1 {
+		t.Fatalf("source called %d times, want 1 — enabling an enabled cache must not purge it", got)
+	}
+}
+
+// TestADisabledReadDoesNotJoinAnInFlightLoad is the property that makes the
+// read path's FIRST enabled check load-bearing rather than an optimisation.
+//
+// SetEnabled purges entries, so a disabled read always misses the entry map —
+// which makes it tempting to think the post-semaphore check catches everything.
+// It does not: the in-flight map is NOT cleared by a toggle, and the slot
+// generation does not move either, so without the entry check a disabled reader
+// would find a load that started BEFORE the operator disabled the cache, join
+// it, and be served exactly the shared value they were taking out of service.
+//
+// Written because a mutation neutering that check left every other test green.
+func TestADisabledReadDoesNotJoinAnInFlightLoad(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newFakeSource()
+		src.setAvailable(10)
+		src.release = make(chan struct{})
+		svc, _ := newTestService(t, src)
+		org, slot := uuid.New(), uuid.New()
+
+		done := make(chan struct{})
+		go func() { defer close(done); _, _ = svc.Read(context.Background(), org, slot, "") }()
+		synctest.Wait() // a load is in flight
+
+		svc.SetEnabled(false)
+		src.setAvailable(4)
+
+		fresh := make(chan int32, 1)
+		go func() {
+			r, _ := svc.Read(context.Background(), org, slot, "")
+			fresh <- r.Value.Available
+		}()
+		synctest.Wait() // it must be in its OWN source call, not waiting on the first
+
+		close(src.release)
+		<-done
+		if got := <-fresh; got != 4 {
+			t.Fatalf("a disabled read returned %d — it joined a load started before the cache was disabled", got)
+		}
+		if got := src.count(); got != 2 {
+			t.Fatalf("source called %d times, want 2 — the disabled read must make its own call", got)
+		}
+	})
+}
+
+// TestAPostReEnableReaderDoesNotJoinAPreDisableFlight is the transition window
+// the earlier toggle test skipped, and the review found it.
+//
+// TestAToggleCycleRejectsALoadThatStartedBeforeIt waits for the old load to
+// FINISH before reading, so it only ever exercised the insertion guard. The
+// dangerous case is a reader arriving while that load is still running: after a
+// disable→re-enable the cache is on again and the slot generation never moved,
+// so a join predicate that checks only the slot generation hands the new reader
+// the pre-disable value directly. The switch would be defeated in exactly the
+// window it exists to cover.
+func TestAPostReEnableReaderDoesNotJoinAPreDisableFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newFakeSource()
+		src.setAvailable(10)
+		src.release = make(chan struct{})
+		svc, _ := newTestService(t, src)
+		org, slot := uuid.New(), uuid.New()
+
+		stale := make(chan struct{})
+		go func() { defer close(stale); _, _ = svc.Read(context.Background(), org, slot, "") }()
+		synctest.Wait() // the pre-disable load is running
+
+		svc.SetEnabled(false)
+		svc.SetEnabled(true)
+		src.setAvailable(4)
+
+		fresh := make(chan int32, 1)
+		go func() {
+			r, _ := svc.Read(context.Background(), org, slot, "")
+			fresh <- r.Value.Available
+		}()
+		synctest.Wait() // it must be in its OWN source call, not waiting on the first
+
+		close(src.release)
+		<-stale
+		if got := <-fresh; got != 4 {
+			t.Fatalf("post-re-enable read = %d, want 4 — it joined a load started before the cache was disabled", got)
+		}
+		if got := src.count(); got != 2 {
+			t.Fatalf("source called %d times, want 2 — the post-re-enable read must make its own call", got)
+		}
+	})
+}
+
+// TestAReadQueuedForASlotCannotPopulateADisabledCache is the narrow window a
+// second `enabled` check was briefly added for: a reader passes the entry check
+// while the cache is on, waits for a concurrency slot, and an operator disables
+// the cache in between.
+//
+// The check was removed again — it could not have populated the cache anyway,
+// because the insertion guard requires `enabled`. This test pins the property
+// that actually holds, rather than the branch that was providing it.
+func TestAReadQueuedForASlotCannotPopulateADisabledCache(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newFakeSource()
+		src.setAvailable(10)
+		src.release = make(chan struct{})
+		svc := New(src, WithMaxInFlight(1)) // one slot, so the second read must queue
+		org, slotA, slotB := uuid.New(), uuid.New(), uuid.New()
+
+		first := make(chan struct{})
+		go func() { defer close(first); _, _ = svc.Read(context.Background(), org, slotA, "") }()
+		synctest.Wait() // the sole slot is occupied
+
+		queued := make(chan int32, 1)
+		go func() {
+			r, _ := svc.Read(context.Background(), org, slotB, "")
+			queued <- r.Value.Available
+		}()
+		synctest.Wait() // waiting for the slot, cache still enabled
+
+		svc.SetEnabled(false)
+		src.setAvailable(4)
+		close(src.release)
+		<-first
+
+		if got := <-queued; got != 4 {
+			t.Fatalf("the queued read returned %d, want 4 — it used a value from before the disable", got)
+		}
+		if st := svc.Status(); st.Entries != 0 {
+			t.Fatalf("a read that acquired its slot after the disable populated the cache: %+v", st)
+		}
+	})
+}
+
+// TestABypassedLoadReleasesItsSlotWhenTheSourcePanics: net/http recovers a
+// handler panic, so the process lives on. If the bypass path did not release its
+// slot with defer, a repeatable source panic would exhaust every slot and every
+// later miss would block forever — a cache disabled during an incident quietly
+// becoming an outage.
+func TestABypassedLoadReleasesItsSlotWhenTheSourcePanics(t *testing.T) {
+	src := &panickingSource{panics: true}
+	svc := New(src, WithMaxInFlight(1))
+	svc.SetEnabled(false)
+
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = svc.Read(context.Background(), uuid.New(), uuid.New(), "")
+	}()
+
+	// The slot must be back. With a leak this read blocks until the test times out.
+	src.panics = false
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = svc.Read(context.Background(), uuid.New(), uuid.New(), "") }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a panicking bypassed load leaked its concurrency slot")
+	}
+}
+
+type panickingSource struct{ panics bool }
+
+func (p *panickingSource) Availability(context.Context, uuid.UUID, uuid.UUID, string) (store.Availability, error) {
+	if p.panics {
+		panic("source exploded")
+	}
+	return store.Availability{}, nil
+}
+
+func (p *panickingSource) RegisterAvailabilityInvalidator(func(uuid.UUID)) {}

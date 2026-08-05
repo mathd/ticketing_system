@@ -59,6 +59,11 @@ var CacheControlPublicSeatOccupancy = cachetier.Seconds.CacheControl()
 // which is ADR-002's rule that correctness lives at claim time.
 type availabilityReader interface {
 	Read(ctx context.Context, org, slot uuid.UUID, channel string) (availability.Read, error)
+	// SetEnabled and Status are the operator kill-switch (TKT-210). They are on
+	// THIS interface, not a separate controller, so the switch cannot address a
+	// different object than the read path consults.
+	SetEnabled(bool)
+	Status() availability.Status
 }
 
 type Server struct {
@@ -105,6 +110,8 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/internal/slots/{id}/capacity-adjustments", s.internalOnly(s.adjustCapacity))
 	r.Get("/internal/slots/{id}/capacity-adjustments", s.internalOnly(s.capacityHistory))
 	r.Put("/internal/slots/{id}/channel-allocations", s.internalOnly(s.replaceAllocations))
+	r.Get("/internal/cache-control", s.internalOnly(s.cacheControlStatus))
+	r.Put("/internal/cache-control", s.internalOnly(s.cacheControlSet))
 	validated, err := contract.RequestValidator(apispec.Spec, r, log, validateResponses)
 	if err != nil {
 		panic(err)
