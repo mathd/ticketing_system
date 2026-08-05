@@ -1,0 +1,20 @@
+{
+  "key": "TKT-211",
+  "type": "Task",
+  "parent": "TKT-31",
+  "classification": "simple",
+  "summary": "An availability read that outruns its query budget answers 500 — decide whether 503 is the honest status",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**Carried out of TKT-205's ai-review (pass 2, [medium]) as the one finding whose substance was fixed but whose recommendation was declined.**\n\nTKT-205 gave the detached availability load a query budget (`defaultLoadTimeout`, 10s). A query that outruns it fails, and every waiter coalesced behind it receives `context.DeadlineExceeded`, which `problem()` maps to a generic **500** carrying the raw error text.\n\n**Why this was not fixed there, stated plainly:** it is **not a regression**. Before the cache, the handler passed `r.Context()` to `store.Availability`, and a cancelled or timed-out read reached the same `problem()` default and produced the same 500. TKT-205 changed *when* that happens (a fixed 10s budget instead of the client's deadline), not *what* the caller sees.\n\n**Why it is still worth a ticket:** 500 says \"this service is broken\". A dependency that was too slow is a different statement, and **503** is the one HTTP has for it — it tells a caller to retry, which for a seconds-tier availability read is exactly the right advice. Making that change is not a one-liner: `getAvailability` declares 400/404/409/500 and nothing else, so under ADR-028's fail-closed response validator an undeclared 503 becomes a 500 anyway.\n\n**Conditions of Success:**\n- [ ] A decision, recorded: does an availability read whose source query exceeds its budget answer 500 or 503? Either is defensible; what is not defensible is the current state, where the answer was inherited rather than chosen.\n- [ ] If 503: declared in `services/inventory/api/openapi.yaml` for `getAvailability`, generated code regenerated and **committed before** the gate, and `problem()` mapping `context.DeadlineExceeded` to it.\n- [ ] Either way, the raw error text is reviewed — `context deadline exceeded` is not sensitive, but it is an internal phrase on a public unauthenticated route.\n- [ ] A test pins whichever status is chosen, so it stops being inherited.\n- [ ] Consider whether the same question applies to the seat-occupancy read, which shares the tier but not (yet) the cache.\n- [ ] `make check` green.\n\nQuality gates: `make check`; regenerated code committed before the gate if the spec changes.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Not yet shaped — created as a review carve-out\n\nBorn from TKT-205's ai-review (2026-08-04). Minimal memo below; full shaping owed before Gate 1.\n\nSmall and bounded, but **not** `risk:low` on its face: it changes a status code on a public unauthenticated read, and under ADR-028 a spec change here is enforced at runtime on every response.\n\n**Context so the plan does not re-derive it:**\n- The budget and its comment: `services/inventory/internal/availability/cache.go` (`defaultLoadTimeout`, `loadDirect`).\n- The mapping: `services/inventory/internal/api/server.go` (`problem`) — the default branch is what produces the 500.\n- The declaration to extend: `services/inventory/api/openapi.yaml`, `getAvailability` responses.\n- **Governing ADRs:** ADR-028 (an undeclared status fails closed, so 503 without a declaration is still a 500), ADR-009 (contract-first; regenerate and commit before the gate), ADR-044 (why the budget exists at all — a load holds a concurrency slot for its whole life).\n- The pre-cache behaviour, which is the baseline any claim of \"regression\" must be measured against: `r.Context()` → `problem()` → 500."
+    }
+  ]
+}
