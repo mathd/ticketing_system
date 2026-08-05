@@ -4,9 +4,11 @@
   "parent": "TKT-31",
   "classification": "complex",
   "summary": "US-C2: A hot slot's availability is served from memory, and the write path invalidates it",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -120,6 +122,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "### Implementation readiness - PASS\n\nSecond slice of TKT-31 (decomposed 2026-08-04). This is the epic's load-bearing story: it is the first implementation of ADR-004 rule 2 anywhere in the stack.\n\n`risk:low` NOT claimed: new shared state on a public, unauthenticated, high-contention read path, plus an operator kill-switch. Concurrency and staleness are the whole substance of the ticket.\n\n**One scope decision recorded at decomposition, not deferred silently:** hot-event *designation* (the epic description's \"manual + automatic\") is carved out. No epic COS requires it, population-by-access delivers the same operational result, and building a designation surface before the load proof exists would be speculative. If US-C4 shows access-driven population is not enough, that is a follow-up ticket with evidence behind it."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "**Claimed** by the agent, second of TKT-31's five children.\n\n**Blocker check:** TKT-205's single `blocked-by` edge is TKT-204, now **Done** and merged (`main` @ `132e0371`). Zero open blockers, so the ticket is claimable and not merely prioritized.\n\n**Selection reason:** it is the epic's load-bearing slice — the **first implementation of ADR-004 rule 2 anywhere in the stack**. Rule 2 has been accepted and unimplemented since 2026-07-12, and that ADR's TKT-128 amendment routes the deployment gap here in as many words. It also unblocks the most: TKT-206 and TKT-207 both wait on it, so it has the highest unblocking power of anything claimable.\n\n**Risk verdict: `risk:low` NOT claimed.** Stated explicitly rather than left to silence, because the carve-outs are exactly what this ticket touches:\n- New **shared mutable state** on a **public, unauthenticated** read path — the availability route takes an organizer and slot id from the query string, so the cache key space is attacker-reachable. \"Bounded\" here has to mean bounded against a hostile caller, not merely a busy one.\n- An **operator kill-switch** that changes behaviour at runtime without a restart — an operational surface, and one that must not become an unauthenticated write.\n- **Concurrency is the substance**, not an incidental: single-flight on miss, invalidation ordered against the write path's commit, and staleness bounded by a declared tier.\n- Not touched: no money path, no data migration, no CI/deploy config. No auth *decision* — but the kill-switch's guard is an auth-adjacent question the plan must answer, and if it turns out to need a new credential, that is a STOP-and-report condition under this run's terms rather than something to decide in-session.\n\n**Scope decision inherited from decomposition, restated so it is not silently re-litigated:** explicit hot-event *designation* (manual + automatic) is **carved out**. TKT-31's description names it; no epic COS requires it; population-by-access is what \"hot\" means operationally. If TKT-207's load proof shows access-driven population insufficient, that becomes a follow-up ticket with evidence behind it.\n\n---\n\n**Gates waived for this run** — same standing owner instruction recorded on TKT-204: Gate 1 given, Gate 2 resolved by the agent after the cross-model critique (preferring the critique's recommendation, else the most reversible option), Gate 3 self-merged after the ai-review converges with the review-guide posted first, Gate 4 self-validated against test evidence on merged code. `config.models` routing, cross-model review, TDD with tests observed red, `make check` green before every push and after the merge, and no AI attribution all stay in force.\n\nBranch: `TKT-205-availability-from-memory` off `origin/main`."
     }
   ]
 }
