@@ -265,6 +265,129 @@ func TestInvalidationSupersedesAnOlderInFlightLoad(t *testing.T) {
 	}
 }
 
+// TestPostInvalidationReadDoesNotJoinAStaleFlight is the gap
+// TestInvalidationSupersedesAnOlderInFlightLoad left open, and it is the more
+// dangerous half.
+//
+// That test proves a pre-commit load cannot POPULATE the cache after the write.
+// It says nothing about a reader that arrives after the write and finds the
+// pre-commit load still running: joining it hands that reader the old number
+// directly, without the cache being involved at all. COS 2 says the next read
+// reflects the write, and "next read" includes this one.
+func TestPostInvalidationReadDoesNotJoinAStaleFlight(t *testing.T) {
+	src := newFakeSource()
+	src.setAvailable(10)
+	src.release = make(chan struct{})
+	src.entered = make(chan struct{}, 4)
+	svc, _ := newTestService(t, src)
+	org, slot := uuid.New(), uuid.New()
+
+	stale := make(chan struct{})
+	go func() {
+		defer close(stale)
+		_, _ = svc.Read(context.Background(), org, slot, "")
+	}()
+	<-src.entered // the pre-commit load is inside the source
+
+	// The write commits and invalidates while that load is still running.
+	src.setAvailable(4)
+	svc.Invalidate(slot)
+
+	// A buyer reads now. It must not be served the pre-commit answer.
+	fresh := make(chan Read, 1)
+	go func() {
+		r, err := svc.Read(context.Background(), org, slot, "")
+		if err != nil {
+			t.Errorf("post-invalidation read: %v", err)
+		}
+		fresh <- r
+	}()
+	<-src.entered // it started its OWN load rather than joining the stale one
+
+	close(src.release)
+	<-stale
+	got := <-fresh
+	if got.Value.Available != 4 {
+		t.Fatalf("post-invalidation read = %d, want 4 — it joined the pre-commit load", got.Value.Available)
+	}
+}
+
+// TestASupersededLoadDoesNotEvictItsReplacement covers the bookkeeping half of
+// the same race. When an invalidation makes a running load unjoinable, the next
+// reader installs a replacement under the same key. If the superseded load then
+// cleared the map entry unconditionally on its way out, it would remove the
+// live replacement: later readers would start yet another load instead of
+// joining, and the in-flight ceiling would be counting records that no longer
+// match reality.
+//
+// Written because a mutation removing that guard left every other test green —
+// defensive code with nothing pinning it is indistinguishable from dead code.
+func TestASupersededLoadDoesNotEvictItsReplacement(t *testing.T) {
+	src := newFakeSource()
+	first := make(chan struct{})
+	second := make(chan struct{})
+	src.release = first
+	src.entered = make(chan struct{}, 4)
+	svc, _ := newTestService(t, src)
+	org, slot := uuid.New(), uuid.New()
+
+	stale := make(chan struct{})
+	go func() { defer close(stale); _, _ = svc.Read(context.Background(), org, slot, "") }()
+	<-src.entered
+
+	svc.Invalidate(slot)
+
+	// The replacement load blocks on a different channel, so it is still running
+	// when the superseded one finishes.
+	src.mu.Lock()
+	src.release = second
+	src.mu.Unlock()
+	replacement := make(chan struct{})
+	go func() { defer close(replacement); _, _ = svc.Read(context.Background(), org, slot, "") }()
+	<-src.entered
+
+	close(first)
+	<-stale
+	waitFor(t, func() bool { return src.count() == 2 })
+
+	if got := svc.Status().InFlight; got != 1 {
+		t.Fatalf("in-flight = %d after a superseded load finished, want 1 — it evicted its own replacement", got)
+	}
+	close(second)
+	<-replacement
+}
+
+// TestInFlightLoadsAreBounded is the other half of COS 6, and the half the LRU
+// does not cover: entries are bounded only once a load COMPLETES. Slot ids and
+// channels are caller-supplied on a public unauthenticated route, so without a
+// ceiling here a caller sending unique keys grows the in-flight map and the
+// goroutines behind it without limit — memory the LRU never sees.
+//
+// At the ceiling a load still happens; it just does not get coalescing metadata.
+// Shedding the read instead would turn a cache into an availability outage.
+func TestInFlightLoadsAreBounded(t *testing.T) {
+	src := newFakeSource()
+	src.release = make(chan struct{})
+	src.entered = make(chan struct{}, 64)
+	svc := New(src, WithBounds(16, 4), WithMaxInFlight(3))
+
+	org := uuid.New()
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = svc.Read(context.Background(), org, uuid.New(), "")
+		}()
+	}
+	waitFor(t, func() bool { return src.count() >= 10 })
+	if got := svc.Status().InFlight; got > 3 {
+		t.Fatalf("in-flight records = %d, want at most the ceiling of 3", got)
+	}
+	close(src.release)
+	wg.Wait()
+}
+
 // TestBoundedGloballyAndPerSlot is COS 6. The route is public and
 // unauthenticated, so both ceilings are against a hostile caller, not a busy one:
 // arbitrary slot UUIDs grow the global count, and arbitrary channel values grow

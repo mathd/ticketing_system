@@ -10,10 +10,11 @@
 //     advertises. Not a literal (that is why TKT-204 shipped first).
 //   - Concurrent misses for one key produce one load. An expiring hot slot must
 //     not stampede Postgres.
-//   - A load that started before a write committed can never populate the cache
-//     after it. Without this the cache would serve the pre-commit answer for a
-//     full tier — the exact defect this package exists to remove, reintroduced
-//     by its own mechanism.
+//   - A load that started before a write committed can never reach a reader who
+//     arrived after it: its result is neither cached NOR joinable. Discarding it
+//     alone is not enough — a post-commit reader could otherwise join the
+//     pre-commit load and be handed the old number directly, bypassing the cache
+//     and the guard together.
 //
 // What this package is NOT (ADR-021's rule — name the adversary before claiming
 // a guarantee):
@@ -22,8 +23,9 @@
 //     only the writer's process.
 //   - It is honest-writer consistency, not tamper-evidence. Anyone who can write
 //     to inventory's database bypasses every callback here.
-//   - Bounded memory is not bounded load. The ceilings stop the cache growing;
-//     they do not stop a hostile caller forcing real queries. This is not a rate
+//   - Bounded memory is not bounded load. Three ceilings — entries, entries per
+//     slot, and concurrent loads — stop the cache growing on a public route; they
+//     do not stop a hostile caller forcing real queries. This is not a rate
 //     limiter.
 package availability
 
@@ -47,6 +49,12 @@ import (
 const (
 	defaultMaxEntries = 10000
 	defaultMaxPerSlot = 128
+	// defaultMaxInFlight bounds concurrent loads, which the entry ceilings do not:
+	// an entry is only counted once its load COMPLETES.
+	defaultMaxInFlight = 1000
+	// defaultLoadTimeout stops a blocked query pinning an in-flight record
+	// indefinitely. Generous on purpose — it is a backstop, not a query budget.
+	defaultLoadTimeout = 10 * time.Second
 )
 
 // Source is what the cache reads through. RegisterAvailabilityInvalidator is on
@@ -68,10 +76,11 @@ type Read struct {
 
 // Status is the operator-visible state. TKT-210 exposes it over HTTP.
 type Status struct {
-	Entries    int `json:"entries"`
-	InFlight   int `json:"in_flight"`
-	MaxEntries int `json:"max_entries"`
-	MaxPerSlot int `json:"max_entries_per_slot"`
+	Entries     int `json:"entries"`
+	InFlight    int `json:"in_flight"`
+	MaxEntries  int `json:"max_entries"`
+	MaxPerSlot  int `json:"max_entries_per_slot"`
+	MaxInFlight int `json:"max_in_flight"`
 }
 
 type key struct {
@@ -101,8 +110,10 @@ type Service struct {
 	now func() time.Time
 	ttl time.Duration
 
-	maxEntries int
-	maxPerSlot int
+	maxEntries  int
+	maxPerSlot  int
+	maxInFlight int
+	loadTimeout time.Duration
 
 	mu       sync.Mutex
 	entries  map[key]*entry
@@ -123,18 +134,24 @@ func WithBounds(maxEntries, maxPerSlot int) Option {
 	return func(s *Service) { s.maxEntries, s.maxPerSlot = maxEntries, maxPerSlot }
 }
 
+// WithMaxInFlight overrides the concurrent-load ceiling, for tests that need to
+// reach it cheaply.
+func WithMaxInFlight(n int) Option { return func(s *Service) { s.maxInFlight = n } }
+
 func New(src Source, opts ...Option) *Service {
 	s := &Service{
-		src:        src,
-		now:        time.Now,
-		ttl:        cachetier.Seconds.Duration(),
-		maxEntries: defaultMaxEntries,
-		maxPerSlot: defaultMaxPerSlot,
-		entries:    map[key]*entry{},
-		lru:        list.New(),
-		perSlot:    map[uuid.UUID]int{},
-		gen:        map[uuid.UUID]uint64{},
-		inflight:   map[key]*flight{},
+		src:         src,
+		now:         time.Now,
+		ttl:         cachetier.Seconds.Duration(),
+		maxEntries:  defaultMaxEntries,
+		maxPerSlot:  defaultMaxPerSlot,
+		maxInFlight: defaultMaxInFlight,
+		loadTimeout: defaultLoadTimeout,
+		entries:     map[key]*entry{},
+		lru:         list.New(),
+		perSlot:     map[uuid.UUID]int{},
+		gen:         map[uuid.UUID]uint64{},
+		inflight:    map[key]*flight{},
 	}
 	for _, o := range opts {
 		o(s)
@@ -178,13 +195,35 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 		}
 		s.removeLocked(e)
 	}
-	// Join an in-flight load for the same key rather than starting a second one.
-	if f, ok := s.inflight[k]; ok {
+	gen := s.gen[slot]
+	// Join an in-flight load for the same key rather than starting a second one —
+	// but ONLY one from the current generation. A load that started before a write
+	// committed holds the pre-commit answer, and handing that to a reader who
+	// arrived after the commit is the same staleness the generation guard already
+	// refuses to cache, delivered by a shorter route. Discarding the result is not
+	// enough; the flight has to be unjoinable.
+	if f, ok := s.inflight[k]; ok && f.gen == gen {
 		s.mu.Unlock()
 		return s.wait(ctx, f)
 	}
-	f := &flight{done: make(chan struct{}), gen: s.gen[slot]}
-	s.inflight[k] = f
+
+	// Bound the in-flight map as well as the entry map. Entries are bounded only
+	// once a load completes, so without this a caller sending unique slot ids —
+	// both key components are caller-supplied on a public route — grows this map
+	// and its goroutines without limit, memory the LRU never sees. At the ceiling
+	// the load still happens, inline and uncoalesced; shedding the read would turn
+	// a cache into an availability outage.
+	if len(s.inflight) >= s.maxInFlight {
+		s.mu.Unlock()
+		v, err := s.loadDirect(k)
+		if err != nil {
+			return Read{}, err
+		}
+		return Read{Value: v}, nil
+	}
+
+	f := &flight{done: make(chan struct{}), gen: gen}
+	s.inflight[k] = f // replaces any superseded flight; see load's guarded delete
 	s.mu.Unlock()
 
 	go s.load(k, f)
@@ -197,7 +236,7 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 // not abort the load every other waiter is depending on. The loader's own bound
 // is the store's, and the entry it produces is discarded if the slot moved on.
 func (s *Service) load(k key, f *flight) {
-	v, err := s.src.Availability(context.Background(), k.org, k.slot, k.channel)
+	v, err := s.loadDirect(k)
 
 	s.mu.Lock()
 	f.value, f.err = v, err
@@ -208,9 +247,29 @@ func (s *Service) load(k key, f *flight) {
 	if err == nil && s.gen[k.slot] == f.gen {
 		s.insertLocked(k, v)
 	}
-	delete(s.inflight, k)
+	// Only clear the map entry if it is still THIS flight. An invalidation while
+	// this load was running makes a later reader install a replacement under the
+	// same key; deleting unconditionally would evict that live flight and leave
+	// its waiters attached to a record nothing will ever clean up.
+	if cur, ok := s.inflight[k]; ok && cur == f {
+		delete(s.inflight, k)
+	}
 	s.mu.Unlock()
 	close(f.done)
+}
+
+// loadDirect runs the source query with its own deadline.
+//
+// The caller's context is deliberately not used: a follower cancelling must not
+// abort the load every other waiter depends on. But a detached load with no
+// deadline at all can pin a flight record forever behind a blocked query, so it
+// gets one of its own. This bounds how long a load may occupy a slot in the
+// in-flight map — it is not an attempt to bound query time, which is the
+// database's business.
+func (s *Service) loadDirect(k key) (store.Availability, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.loadTimeout)
+	defer cancel()
+	return s.src.Availability(ctx, k.org, k.slot, k.channel)
 }
 
 func (s *Service) wait(ctx context.Context, f *flight) (Read, error) {
@@ -272,9 +331,10 @@ func (s *Service) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return Status{
-		Entries:    len(s.entries),
-		InFlight:   len(s.inflight),
-		MaxEntries: s.maxEntries,
-		MaxPerSlot: s.maxPerSlot,
+		Entries:     len(s.entries),
+		InFlight:    len(s.inflight),
+		MaxEntries:  s.maxEntries,
+		MaxPerSlot:  s.maxPerSlot,
+		MaxInFlight: s.maxInFlight,
 	}
 }

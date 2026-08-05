@@ -55,9 +55,12 @@ Five properties, each with a test that fails without it:
    read repopulate the entry from the pre-commit row, so the cache would serve the old number for a
    full tier. This is the same rule [ADR-018](./ADR-018-catalog-slot-transition-concurrency.md) sets
    for catalog's state-deriving transitions, and for the same reason.
-4. **A load that started before a write committed can never populate the cache after it.** Each slot
-   carries a generation; an in-flight load captures it and its result is discarded if the slot moved
-   on. Without this, rule 3 is defeated by timing alone.
+4. **A load that started before a write committed can never reach a reader that arrived after it.**
+   Each slot carries a generation; an in-flight load captures it. Two consequences, and the second is
+   the one that is easy to miss: the load's result is **discarded** rather than cached, *and* the
+   load is **unjoinable** by later readers. Discarding alone is not enough — a reader arriving after
+   the commit could still join the pre-commit load and be handed the old number directly, bypassing
+   the cache entirely. Without both, rule 3 is defeated by timing alone.
 5. **The claim path never reads the cache.** ADR-010's transaction is the only source of truth for a
    claim. Enforced structurally: only the public display handler may reference the collaborator.
 
@@ -117,10 +120,15 @@ against, because "the cache is invalidated" is exactly the kind of claim that ov
 - **Process-local.** With a second inventory replica, a write invalidates only the writer's process;
   the others stay stale until the tier expires. There is one inventory process today. **Trigger to
   revisit: the first time inventory is scaled horizontally** — not "eventually".
-- **Bounded memory is not bounded load.** The LRU ceilings (10,000 global, 128 per slot) stop a
-  public, unauthenticated route growing the cache without limit. They do **not** stop a hostile
-  caller forcing real database queries with high-cardinality slot UUIDs. **This is not a rate
-  limiter**, and it must not be cited as one.
+- **Bounded memory is not bounded load.** Three ceilings, not two: 10,000 entries globally, 128 per
+  slot, and **1,000 concurrent loads**. The third exists because the first two count an entry only
+  once its load *completes* — without it, a caller sending unique slot ids grows the in-flight map
+  and its goroutines without limit, memory the LRU never sees. At that ceiling a load still happens,
+  inline and uncoalesced; shedding the read would turn a cache into an availability outage. Detached
+  loads carry their own timeout so a blocked query cannot pin a record indefinitely.
+
+  None of that stops a hostile caller forcing real database queries with high-cardinality slot
+  UUIDs. **This is not a rate limiter**, and it must not be cited as one.
 - **"The next read reflects the write" means the next request reaching this process.** An HTTP
   response already delivered to a client cannot be recalled; it expires within the declared tier,
   which is what `Age` keeps true.

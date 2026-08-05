@@ -92,35 +92,9 @@ func TestAvailabilityMutationsUseInvalidatingCommit(t *testing.T) {
 		"availability_invalidation.go": true, // defines the helper
 	}
 
-	entries, err := os.ReadDir(".")
+	offenders, scanned, err := scanForRawCommits(".", exempt)
 	if err != nil {
 		t.Fatal(err)
-	}
-	var offenders, scanned []string
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || exempt[name] {
-			continue
-		}
-		scanned = append(scanned, name)
-		f, perr := parser.ParseFile(token.NewFileSet(), filepath.Join(".", name), nil, 0)
-		if perr != nil {
-			t.Fatalf("parse %s: %v", name, perr)
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Commit" {
-				return true
-			}
-			if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "tx" {
-				offenders = append(offenders, name)
-			}
-			return true
-		})
 	}
 
 	// A scan that reaches no files is a test that cannot fail.
@@ -134,6 +108,87 @@ func TestAvailabilityMutationsUseInvalidatingCommit(t *testing.T) {
 			"commitAvailability so the cache is invalidated after it. If this write genuinely "+
 			"cannot change an availability answer, add it to the exempt list above with the reason.",
 			offenders)
+	}
+}
+
+// scanForRawCommits reports every production file in dir containing a direct
+// `<something>.Commit()` call, and which files it looked at.
+//
+// It matches on the METHOD name only, never on what the receiver happens to be
+// called. Keying on an identifier spelled `tx` was the first version and it was
+// porous by construction: `txn.Commit()`, `dbtx.Commit()` or a commit reached
+// through a struct field would all have sailed past a guard whose whole purpose
+// is to make forgetting impossible. The only `Commit` in reach of this package
+// is a *sql.Tx's, so a name-only match has nothing to be confused by; if that
+// ever stops being true, this needs type information rather than a wider regex.
+func scanForRawCommits(dir string, exempt map[string]bool) (offenders, scanned []string, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || exempt[name] {
+			continue
+		}
+		scanned = append(scanned, name)
+		f, perr := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, 0)
+		if perr != nil {
+			return nil, nil, perr
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Commit" {
+				offenders = append(offenders, name)
+			}
+			return true
+		})
+	}
+	return offenders, scanned, nil
+}
+
+// TestRawCommitGuardIgnoresTheVariableName proves the guard catches a commit the
+// first version would have missed. Without this fixture the guard's own
+// correctness rests on the spelling of a variable in code that does not exist
+// yet — which is the same as resting on nothing.
+func TestRawCommitGuardIgnoresTheVariableName(t *testing.T) {
+	dir := t.TempDir()
+	const src = `package fake
+
+type t struct{}
+
+func (t) Commit() error { return nil }
+
+func sneaky(txn t) error {
+	// Not named tx, and therefore invisible to a receiver-name match.
+	return txn.Commit()
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "sneaky.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A file the guard must still ignore, so the fixture proves detection rather
+	// than "it flags everything".
+	const clean = `package fake
+
+func harmless() int { return 1 }
+`
+	if err := os.WriteFile(filepath.Join(dir, "clean.go"), []byte(clean), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	offenders, scanned, err := scanForRawCommits(dir, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scanned) != 2 {
+		t.Fatalf("scanned %v, want both fixture files", scanned)
+	}
+	if len(offenders) != 1 || offenders[0] != "sneaky.go" {
+		t.Fatalf("offenders = %v, want exactly [sneaky.go] — a commit is a commit whatever the variable is called", offenders)
 	}
 }
 
