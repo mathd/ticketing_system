@@ -67,7 +67,7 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	}
 	if found {
 		h := GroupReservation{ID: prior.claimID, OrganizerID: org, PoolID: slot, Quantity: prior.quantity, Counterparty: counterparty, Channel: channel, Status: prior.statusAfter, ExpiresAt: &expiresAt, ServerTime: time.Now().UTC()}
-		return h, true, tx.Commit()
+		return h, true, p.commitAvailability(tx, slot)
 	}
 	// Same replay-then-guard order as every staff op (TKT-75 AC2).
 	if err = guardOffering(lifecycle, closure); err != nil {
@@ -132,7 +132,7 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	if err = appendHistory(ctx, tx, org, h.ID, nil, "reserve", actor, reason, qty, qty, "held", &key, &fp); err != nil {
 		return GroupReservation{}, false, err
 	}
-	return h, false, tx.Commit()
+	return h, false, p.commitAvailability(tx, slot)
 }
 
 // DrawDownGroupReservation atomically carves qty out of a group reservation into a normal
@@ -173,7 +173,7 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 			return ConvertResult{}, false, err
 		}
 		res := ConvertResult{Child: child, SourceID: id, SourceRemaining: prior.quantityAfter, SourceStatus: prior.statusAfter}
-		return res, true, tx.Commit()
+		return res, true, p.commitAvailability(tx, pool)
 	}
 	var c Claim
 	var channel string
@@ -201,7 +201,7 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 		if err = reconcileCapacity(ctx, tx, pool); err != nil {
 			return ConvertResult{}, false, err
 		}
-		if err = tx.Commit(); err != nil {
+		if err = p.commitAvailability(tx, pool); err != nil {
 			return ConvertResult{}, false, err
 		}
 		return ConvertResult{}, false, ErrConflict
@@ -236,5 +236,5 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 		return ConvertResult{}, false, err
 	}
 	res := ConvertResult{Child: child, SourceID: id, SourceRemaining: remaining, SourceStatus: status}
-	return res, false, tx.Commit()
+	return res, false, p.commitAvailability(tx, pool)
 }

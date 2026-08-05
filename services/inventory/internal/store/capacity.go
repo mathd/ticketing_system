@@ -50,7 +50,7 @@ func (p *Postgres) AdjustCapacity(ctx context.Context, org, slot uuid.UUID, newC
 	}
 	if found {
 		adj := CapacityAdjustment{SlotID: slot, CapacityBefore: prior.quantity, Capacity: prior.quantityAfter, TargetCapacity: prior.targetCapacity, Status: prior.statusAfter, ServerTime: time.Now().UTC()}
-		return adj, true, tx.Commit()
+		return adj, true, p.commitAvailability(tx, slot)
 	}
 	// Replay-then-guard, like every staff op. Archival is terminal; a closed pool stays
 	// adjustable — closure is reversible and a capacity fix may precede reopening.
@@ -86,7 +86,7 @@ func (p *Postgres) AdjustCapacity(ctx context.Context, org, slot uuid.UUID, newC
 	if err != nil {
 		return CapacityAdjustment{}, false, err
 	}
-	return adj, false, tx.Commit()
+	return adj, false, p.commitAvailability(tx, slot)
 }
 
 // effectiveCapacity is the read-side clamp floor: max(target-or-capacity, demand). It

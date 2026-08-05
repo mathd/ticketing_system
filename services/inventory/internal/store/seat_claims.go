@@ -361,7 +361,7 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return tx.Commit()
+		return p.commitAvailability(tx, slotID)
 	}
 	// ON CONFLICT DO NOTHING is right for a REPLAY and wrong for an UPGRADE, and the
 	// difference is invisible from here — both arrive as "the pool already exists".
@@ -410,7 +410,7 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 			return err
 		}
 	}
-	return tx.Commit()
+	return p.commitAvailability(tx, slotID)
 }
 
 // CreateSeatHold holds a specific set of seats on a seated slot, reusing the ADR-010
@@ -475,7 +475,7 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 			if _, err = tx.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1 AND released_at IS NULL`, existing.ID); err != nil {
 				return SeatHold{}, err
 			}
-			if err = tx.Commit(); err != nil {
+			if err = p.commitAvailability(tx, slot); err != nil {
 				return SeatHold{}, err
 			}
 			return SeatHold{}, ErrConflict
@@ -487,7 +487,7 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 			return SeatHold{}, ErrConflict
 		}
 		existing.Kind = "buyer"
-		return SeatHold{Claim: existing, SeatMapID: seatMapID.UUID, Seats: canon, PinnedBy: pinnedBy(existing.ID), Replay: true}, tx.Commit()
+		return SeatHold{Claim: existing, SeatMapID: seatMapID.UUID, Seats: canon, PinnedBy: pinnedBy(existing.ID), Replay: true}, p.commitAvailability(tx, slot)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return SeatHold{}, err
@@ -601,7 +601,7 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	if err = appendHistory(ctx, tx, org, c.ID, nil, "create", "buyer", "seat_hold", qty, qty, "held", nil, nil); err != nil {
 		return SeatHold{}, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = p.commitAvailability(tx, slot); err != nil {
 		return SeatHold{}, err
 	}
 	return SeatHold{Claim: c, SeatMapID: seatMapID.UUID, Seats: canon, PinnedBy: pinnedBy(c.ID), ExpiredPins: expiredPins}, nil
@@ -987,7 +987,7 @@ func (p *Postgres) classifySeatClaimsInPool(ctx context.Context, pool uuid.UUID,
 			verdicts[id] = SeatClaimUnknown
 		}
 	}
-	if err = tx.Commit(); err != nil {
+	if err = p.commitAvailability(tx, pool); err != nil {
 		return fmt.Errorf("commit pool %s reconciliation: %w", pool, err)
 	}
 	// Published only after the commit: an uncommitted sweep is not yet the fact the "dead"
