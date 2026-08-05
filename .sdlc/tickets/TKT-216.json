@@ -1,0 +1,124 @@
+{
+  "key": "TKT-216",
+  "type": "Story",
+  "parent": "TKT-6",
+  "classification": "complex",
+  "summary": "US-F3: Payees and split schedules - a split that does not sum exactly is refused",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-214"
+    }
+  ],
+  "description": "**As** a platform operator, **I want** every fee to name who it is owed to and in what share,\n**so that** a settlement run has an unambiguous answer for every cent — and **so that** a\nmisconfigured split is impossible to author rather than discovered at payout.\n\n**Priority:** P0  **Depends on:** TKT-214\n\nHalf of TKT-6's second COS: *splits sum exactly to totals*. This ticket owns the **definition and\nthe allocator**; TKT-217 owns writing the result to the ledger.\n\n**The trap:** shares are percentages, money is whole cents, and the two do not divide. A fee of\n1 cent split three ways at 3333/3333/3334 bps floors to 0/0/0 and loses the cent. Every real\nticketing settlement has this bug once. The allocator here is a **pure function with a proof\nobligation**: the parts sum to the input exactly, for every input, or the test fails.\n\n**Acceptance Criteria:**\n- [ ] A migration adds a payee registry (organizer-scoped: a kind, a display name, an external\n  reference) and split schedules keyed by fee code and scope, each part carrying `share_bps`.\n  The **write refuses** any split set whose `share_bps` do not sum to exactly 10000 — enforced in\n  the database, not only in the handler, so a direct writer cannot author an unbalanced set.\n- [ ] `system`, `venue` and `artist` are expressible on day one and the list is **extensible**: a\n  new payee is a row, never a migration. Whether a new *kind* is also a row or a checked enum\n  change is a plan decision, stated with its reason (the ADR-021 lens: which of the two an\n  operator can get wrong, and what happens when they do).\n- [ ] A **pure allocator** turns one fee amount into whole-cent payee parts: floor by bps, then\n  **largest remainder** with a deterministic, documented tie-break. Property-tested: for every\n  amount in a wide range and every split shape under test, `sum(parts) == amount` **exactly** and\n  no part is negative. The pathological cases are named tests, not just generated: 1 cent across\n  3 payees, amount 0, the contract's maximum `Money` amount, and a two-payee 5000/5000 split of an\n  odd amount.\n- [ ] Split schedules resolve through the **same hierarchy** as fee rules, per fee code: one\n  winning split set per code, same comparator, same provenance shape. A fee code with no split\n  schedule resolves to \"unsplit\" — an explicit state with a reason, never an empty set that reads\n  as \"split to nobody\".\n- [ ] The resolved split per fee code is readable through a contract-declared response with\n  provenance; regen committed.\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code committed before the gate runs (ADR-009).\n\n**Non-goals:** the settlement ledger and anything written at capture time (TKT-217) · payout\nexecution, bank details or KYC (not in this epic) · reporting and exports (TKT-23).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Every fee code can name its payees and shares, and the arithmetic that turns a share into cents is exact by construction."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Definitions + resolution + the pure allocator. Nothing is written to a ledger and no sale changes."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "(a) payee kind as a checked enum vs a free row; (b) whether splits hang off the fee rule or off the fee code at a scope - the ACs require the hierarchy either way; (c) which service owns payees (catalog holds rule definitions per ADR-002, but a payee is an accounting entity payments may want). The plan decides and the ADR-002 boundary answer is stated explicitly."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-214 - splits key off fee codes and reuse its comparator."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Allocator as a pure function next to the comparator, tested by property + named pathological cases. Definition tables mirror fee_rules' scoping so one comparator serves both."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The allocator is the piece the ledger cannot be written without, and the piece a later fix cannot retroactively repair - already-settled cents stay misallocated."
+    },
+    "success": {
+      "state": "met",
+      "note": "Exact-sum property assertions and refusal assertions; both are deterministic."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-05."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-05",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-05",
+        "rule": "Money is integer minor units + ISO currency code - floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-05",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate - keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "The pricing-rule model this epic extends. Fixes the five scope levels and how each is DERIVED from the ticket type (§1), the specificity order ticket_type > slot > series > event > venue and which parts of it are containment vs policy, the comparator steps (§4), the (scope_level, scope_id) index predicate and WHY matching on scope_id alone is a correctness bug (§3), append-mostly semantics with effective_until as the only mutable field, and - directly for this epic - §2: 'When a relative action is added, it must be integer-safe: basis points, checked multiplication, and a documented rounding direction. Floats stay banned.' It also states that deltas were deliberately left OUT of pricing because they overlap TKT-6."
+      },
+      {
+        "id": "ADR-002",
+        "why": "The ownership line: catalog owns rule definitions, commerce owns 'pricing/fee/promo evaluation', payments owns the settlement ledger. ADR-036 §6 already amended this row once for price RESOLUTION; any further move of the line for fees must be an explicit amendment, not an assertion that the boundary did not really change."
+      },
+      {
+        "id": "ADR-001",
+        "why": "Money is integer minor units + ISO-4217. Every fee arithmetic path is integer-only: no float, no big.Float, no decimal-as-string round trip."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: a new operation or field must be declared in the service's openapi.yaml, and openapi_gen.go / api-types.gen.ts regenerated and COMMITTED before the gate (check-generate diffs against HEAD)."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Responses are validated against the contract and fail closed - an undeclared field or an out-of-enum header becomes a 500 with the payload withheld. A money amount above the contract's Money cap is the classic instance (ADR-036 records it as TKT-154's residue)."
+      },
+      {
+        "id": "ADR-019",
+        "why": "A scoped catalog read is only scoped if an index backs the filter, and proving it takes TWO tests: the result is scoped AND the scan is (EXPLAIN under force_generic_plan, over the production query constant, on an ANALYZEd seed big enough that a seq scan is the wrong choice)."
+      },
+      {
+        "id": "ADR-020",
+        "why": "Plain `CREATE INDEX` only - CONCURRENTLY is still not adopted, and ADR-022 satisfying precondition (1) did not change that because the preconditions are conjunctive."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band as each binary's `migrate` subcommand, a one-shot Compose job the service waits on. The server path never migrates."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before writing 'tamper-evident' or 'guaranteed'. State inside the database cannot constrain an adversary who writes to the database; only a hash chain over data they cannot re-sign does."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the three epic-level COS",
+        "link": "board:TKT-6"
+      },
+      {
+        "summary": "The fee model and comparator this ticket keys off",
+        "link": "board:TKT-214"
+      },
+      {
+        "summary": "The scoped-rule shape to mirror for split schedules",
+        "link": "services/catalog/internal/store/migrations/0012_price_rules.sql, services/catalog/internal/store/pricing.go"
+      },
+      {
+        "summary": "Write-side validation pattern catalog already uses to make a malformed row unrepresentable through the store (INSERT ... SELECT gate)",
+        "link": "services/catalog/internal/store/postgres.go"
+      }
+    ]
+  },
+  "comments": []
+}
