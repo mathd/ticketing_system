@@ -480,6 +480,14 @@ func onsaleGate(t *testing.T) {
 	}
 	t.Logf("claim_history INSERT: %.3fms/mutation mean (min %.3f max %.3f stddev %.3f), %d calls, %.1fms total — pg_stat_statements over the measured window",
 		stats.MeanMs, stats.MinMs, stats.MaxMs, stats.StddevMs, stats.Calls, stats.TotalMs)
+
+	// TKT-207's read proof runs AFTER the claim work, deliberately: every claim
+	// invalidates the availability cache by design, so reads racing claims would
+	// measure writes rather than requests. It also runs after the history stats
+	// are captured, since it does not reset pg_stat_statements (the reset is
+	// cluster-wide and would take catalog's counters with it).
+	readProof(t, report, slot, organizerID, conn)
+
 	complete()
 }
 

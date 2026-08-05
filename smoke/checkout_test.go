@@ -700,7 +700,7 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 		"starts_at": "2026-11-05T20:00:00Z", "timezone": "UTC", "seat_map_id": seatMap["id"]})
 	tt := created(t, catalog+"/ticket-types", map[string]any{
 		"organizer_id": organizerID, "performance_id": perf["id"],
-		"name": map[string]string{"fr": "Place", "en": "Seat"},
+		"name":  map[string]string{"fr": "Place", "en": "Seat"},
 		"price": map[string]any{"amount": 3000, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != http.StatusOK {
 		t.Fatalf("publish performance: %d %s", code, body)

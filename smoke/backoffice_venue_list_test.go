@@ -220,7 +220,7 @@ func TestBackofficeRefusesCrossOriginSubmissions(t *testing.T) {
 			}
 			for _, c := range resp.Cookies() {
 				if c.Name == "bo_sid" && c.Value != "" {
-					t.Fatalf("the refused submission still minted a session cookie — the origin "+
+					t.Fatalf("the refused submission still minted a session cookie — the origin " +
 						"check ran AFTER the credentials were verified")
 				}
 			}
