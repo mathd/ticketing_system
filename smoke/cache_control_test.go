@@ -3,10 +3,8 @@
 package smoke_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"testing"
 )
@@ -40,30 +38,16 @@ func cacheControlSet(t *testing.T, baseURL string, enabled bool) cacheState {
 	return cacheControlCall(t, http.MethodPut, baseURL, map[string]bool{"enabled": enabled})
 }
 
+// cacheControlCall goes through internalJSON, not a raw client. That is not
+// convenience: internalJSON reaches checkDirectServiceResponse, which
+// contract-validates the response AND records the operation for the smoke
+// coverage gate (TKT-47). A raw client would leave inventory's two declared
+// operations uncovered — which is exactly what the gate caught on the first run.
 func cacheControlCall(t *testing.T, method, baseURL string, body any) cacheState {
 	t.Helper()
-	var rd io.Reader
-	if body != nil {
-		b, _ := json.Marshal(body)
-		rd = bytes.NewReader(b)
-	}
-	req, err := http.NewRequest(method, baseURL+"/internal/cache-control", rd)
-	if err != nil {
-		t.Fatalf("cache-control request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", internalToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("%s %s cache-control: %v", method, baseURL, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("%s %s cache-control: %d %s", method, baseURL, resp.StatusCode, out)
-	}
-	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
-		t.Fatalf("%s cache-control answered Cache-Control %q, want no-store", baseURL, cc)
+	code, out := internalJSON(t, method, baseURL+"/internal/cache-control", "", body)
+	if code != http.StatusOK {
+		t.Fatalf("%s %s cache-control: %d %s", method, baseURL, code, out)
 	}
 	var st cacheState
 	if err := json.Unmarshal(out, &st); err != nil {
