@@ -360,3 +360,99 @@ func TestReportJSONCarriesRequiredMetadata(t *testing.T) {
 		t.Fatalf(`complete report must serialize "partial": false explicitly: %s`, b)
 	}
 }
+
+// --- TKT-207: the read-load proof's report and its bound ---
+
+func TestReadReportRenamesWritePhaseFieldsForGets(t *testing.T) {
+	r := StageResult{
+		Stage:   Stage{Name: "cached-high", Rate: 30, Duration: 2 * time.Second},
+		Offered: 60, Started: 60, OK: 60, Elapsed: 2 * time.Second,
+		Hold: []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond},
+	}
+	got := r.ReadReport()
+	if got.Name != "cached-high" || got.OK != 60 || got.Offered != 60 {
+		t.Fatalf("read report lost the stage's shape: %+v", got)
+	}
+	if got.AchievedRate != 30 {
+		t.Fatalf("achieved rate = %v, want 30", got.AchievedRate)
+	}
+	// The point of a separate type: a GET's latency must not surface as
+	// hold_p99_ms or lifecycle_p99_ms, which mean write phases to every existing
+	// consumer of `stages`.
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"hold_p", "lifecycle_p", "finalize_", "confirm_"} {
+		if strings.Contains(string(b), forbidden) {
+			t.Errorf("read stage JSON contains %q — a GET has no write phases: %s", forbidden, b)
+		}
+	}
+	if !strings.Contains(string(b), "request_p99_ms") {
+		t.Errorf("read stage JSON has no request latency: %s", b)
+	}
+}
+
+// TestFlatReadBoundUsesTheTierNotTheRequestCount is the assertion the whole
+// ticket rests on: the ceiling must scale with ELAPSED TIME over the tier, and
+// must not move when more requests arrive. A bound that grew with requests would
+// pass whether or not a cache existed.
+func TestFlatReadBoundUsesTheTierNotTheRequestCount(t *testing.T) {
+	// 2s stage, 5s tier, 2 statements per load → 2 × (1 + ceil(2/5)) = 4.
+	if got := MaxStoreQueries(2*time.Second, 5*time.Second, 2); got != 4 {
+		t.Fatalf("bound = %d, want 4", got)
+	}
+	// 12s stage, 5s tier, 1 statement → 1 × (1 + ceil(12/5)) = 4.
+	if got := MaxStoreQueries(12*time.Second, 5*time.Second, 1); got != 4 {
+		t.Fatalf("bound = %d, want 4", got)
+	}
+	// A 2s stage against a 300s tier allows exactly two loads: the pre-warm
+	// boundary plus one.
+	if got := MaxStoreQueries(2*time.Second, 300*time.Second, 1); got != 2 {
+		t.Fatalf("bound = %d, want 2", got)
+	}
+	// Requests do not appear anywhere in the formula. Same elapsed, same bound,
+	// whether the stage served 60 requests or 60,000.
+	a := MaxStoreQueries(2*time.Second, 5*time.Second, 1)
+	b := MaxStoreQueries(2*time.Second, 5*time.Second, 1)
+	if a != b {
+		t.Fatal("the bound is not a pure function of elapsed, tier and statements-per-load")
+	}
+}
+
+func TestReadQueryEvidenceFlagsAViolation(t *testing.T) {
+	flat := ReadQueryEvidence{Endpoint: "availability", StoreQueries: 4, MaxAllowed: 4}
+	if !flat.Flat() {
+		t.Fatal("equal to the bound must be flat — the boundary is allowed")
+	}
+	over := ReadQueryEvidence{Endpoint: "availability", StoreQueries: 5, MaxAllowed: 4}
+	if over.Flat() {
+		t.Fatal("one query over the bound must not be flat")
+	}
+}
+
+func TestReportCarriesReadStagesSeparately(t *testing.T) {
+	r := NewReport("TKT-207", "gate", "sha")
+	r.Stages = append(r.Stages, StageReport{Name: "sustained"})
+	r.ReadStages = append(r.ReadStages, ReadStageReport{
+		Name:    "cached-high",
+		Queries: []ReadQueryEvidence{{Endpoint: "availability", StoreQueries: 2, MaxAllowed: 4}},
+	})
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Report
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Stages) != 1 || back.Stages[0].Name != "sustained" {
+		t.Fatalf("claim stages did not survive: %s", b)
+	}
+	if len(back.ReadStages) != 1 || len(back.ReadStages[0].Queries) != 1 {
+		t.Fatalf("read stages did not survive: %s", b)
+	}
+	if back.ReadStages[0].Queries[0].StoreQueries != 2 {
+		t.Fatalf("query evidence did not survive: %s", b)
+	}
+}

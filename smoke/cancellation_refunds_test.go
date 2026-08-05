@@ -37,7 +37,7 @@ type cancellationReport struct {
 		Pending         int `json:"pending"`
 	} `json:"counts"`
 	IncompleteAtEnumeration int `json:"incomplete_at_enumeration"`
-	Orders             []struct {
+	Orders                  []struct {
 		OrderID          string `json:"order_id"`
 		Outcome          string `json:"outcome"`
 		RefundID         string `json:"refund_id"`

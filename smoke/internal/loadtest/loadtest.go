@@ -321,11 +321,14 @@ type Report struct {
 	Notes                 string        `json:"notes,omitempty"`
 	ClientMaxConnsPerHost int           `json:"client_max_conns_per_host,omitempty"`
 	Stages                []StageReport `json:"stages"`
-	Accounting            []Accounting  `json:"accounting"`
-	History               *HistoryStats `json:"claim_history_insert,omitempty"`
-	CeilingHighestStable  float64       `json:"ceiling_highest_stable_per_s"`
-	CeilingFirstUnstable  float64       `json:"ceiling_first_unstable_per_s"`
-	CeilingLowerBoundOnly bool          `json:"ceiling_lower_bound_only"`
+	// ReadStages is TKT-207's evidence, kept beside the claim stages rather than
+	// inside them so no existing consumer can read a GET as a write phase.
+	ReadStages            []ReadStageReport `json:"read_stages,omitempty"`
+	Accounting            []Accounting      `json:"accounting"`
+	History               *HistoryStats     `json:"claim_history_insert,omitempty"`
+	CeilingHighestStable  float64           `json:"ceiling_highest_stable_per_s"`
+	CeilingFirstUnstable  float64           `json:"ceiling_first_unstable_per_s"`
+	CeilingLowerBoundOnly bool              `json:"ceiling_lower_bound_only"`
 	// Partial marks a run that did not reach the end of its profile (TKT-130).
 	//
 	// Two limits, stated because both are easy to misread:
@@ -403,4 +406,91 @@ func NewReport(ticket, profile, gitSHA string) *Report {
 	r := &Report{Ticket: ticket, Profile: profile, GitSHA: gitSHA}
 	r.Host.OS, r.Host.Arch, r.Host.CPUs = runtime.GOOS, runtime.GOARCH, runtime.NumCPU()
 	return r
+}
+
+// --- TKT-207: the on-sale READ-load proof ---
+//
+// ADR-004's Consequences promised "read load during on-sales scales with
+// cache/memory, not database". TKT-205 and TKT-206 made that true; these types
+// make it measurable.
+//
+// The evidence is a per-endpoint count of SQL statements the services actually
+// executed, taken from pg_stat_statements — server-side, and unrelated to how
+// long anything took. Latency would prove nothing about where an answer came
+// from.
+
+// ReadQueryEvidence is one endpoint's verdict for one stage.
+type ReadQueryEvidence struct {
+	Endpoint     string `json:"endpoint"`
+	TierSeconds  int    `json:"tier_seconds"`
+	StoreQueries int    `json:"store_queries"`
+	MaxAllowed   int    `json:"max_allowed"`
+	Requests     int    `json:"requests"`
+}
+
+// Flat reports whether the endpoint stayed within its tier-derived ceiling.
+// Equality passes: the bound is the highest legal count, not a target.
+func (e ReadQueryEvidence) Flat() bool { return e.StoreQueries <= e.MaxAllowed }
+
+// MaxStoreQueries is the ceiling a cached read may reach in one stage.
+//
+//	statementsPerLoad × (1 + ceil(elapsed / tier))
+//
+// Two things about it are load-bearing:
+//
+//   - REQUESTS DO NOT APPEAR. That is the whole proof. A bound that grew with
+//     traffic would be satisfied whether or not a cache existed.
+//   - The +1 is not slack. It covers exactly one boundary: the entry loaded
+//     during pre-warm may expire inside the stage, so a stage shorter than the
+//     tier still permits one reload. It must not be raised to absorb a flaky
+//     run — a run that exceeds this is either uncached or measuring the wrong
+//     statement, and both deserve to fail.
+//
+// statementsPerLoad exists because one logical read is not one statement:
+// inventory's default-channel availability read executes two (the pool/claims
+// query, then reservedForChannelsSQL).
+func MaxStoreQueries(elapsed, tier time.Duration, statementsPerLoad int) int {
+	if tier <= 0 || statementsPerLoad <= 0 {
+		return 0
+	}
+	reloads := int((elapsed + tier - 1) / tier) // ceil
+	return statementsPerLoad * (1 + reloads)
+}
+
+// ReadStageReport is a read stage in the report. Deliberately a separate type
+// from StageReport: a GET has no hold, finalize or confirm phase, and emitting
+// its latency under those names would let every existing consumer of `stages`
+// read a cache hit as a write-path measurement.
+type ReadStageReport struct {
+	Name         string              `json:"name"`
+	OfferedRate  float64             `json:"offered_rate_per_s"`
+	AchievedRate float64             `json:"achieved_ok_per_s"`
+	Offered      int                 `json:"offered"`
+	Started      int                 `json:"started"`
+	Dropped      int                 `json:"dropped"`
+	OK           int                 `json:"ok"`
+	Errors       int                 `json:"errors"`
+	RequestP50Ms float64             `json:"request_p50_ms"`
+	RequestP95Ms float64             `json:"request_p95_ms"`
+	RequestP99Ms float64             `json:"request_p99_ms"`
+	CacheBypass  bool                `json:"cache_bypass"`
+	Queries      []ReadQueryEvidence `json:"queries,omitempty"`
+}
+
+// ReadReport projects a stage result into read vocabulary. A read attempt
+// records its single round trip in Hold, so RunStage needs no read-specific
+// branch — only the report layer renames.
+func (r StageResult) ReadReport() ReadStageReport {
+	rr := ReadStageReport{
+		Name: r.Stage.Name, Offered: r.Offered, Started: r.Started, Dropped: r.Dropped,
+		OK: r.OK, Errors: r.ClientErrors + r.ServerErrors,
+		OfferedRate:  float64(r.Stage.Rate),
+		RequestP50Ms: ms(Percentile(r.Hold, 50)),
+		RequestP95Ms: ms(Percentile(r.Hold, 95)),
+		RequestP99Ms: ms(Percentile(r.Hold, 99)),
+	}
+	if r.Elapsed > 0 {
+		rr.AchievedRate = float64(r.OK) / r.Elapsed.Seconds()
+	}
+	return rr
 }

@@ -301,7 +301,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// passed (ai-review F5).
 	dearerType := created(t, gatewayURL+"/api/catalog/ticket-types", map[string]any{
 		"organizer_id": organizerID, "performance_id": slot,
-		"name": map[string]string{"fr": "Cher", "en": "Dearer"},
+		"name":  map[string]string{"fr": "Cher", "en": "Dearer"},
 		"price": map[string]any{"amount": 5000, "currency": "EUR"}})
 	dearer := fmt.Sprint(dearerType["id"])
 
@@ -489,8 +489,8 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	var downgraded struct {
 		ExchangeID  string `json:"exchange_id"`
 		DeltaAmount int64  `json:"delta_amount"`
-		SourceTotal int64 `json:"source_total"`
-		TargetTotal int64 `json:"target_total"`
+		SourceTotal int64  `json:"source_total"`
+		TargetTotal int64  `json:"target_total"`
 	}
 	if err := json.Unmarshal(body, &downgraded); err != nil {
 		t.Fatal(err)
@@ -548,7 +548,6 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("exchange state = %+v, want switch_pending on a first call", exchanged)
 	}
 }
-
 
 // assertExchangeCharge proves the UPGRADE leg reached payments: an operation bound under
 // the exchange's deterministic key, captured, for exactly the delta. Reading commerce's
