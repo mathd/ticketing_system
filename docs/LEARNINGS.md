@@ -15,6 +15,9 @@ exists are in *Historical* at the bottom; their files are kept.
   debugging. (TKT-172/182/183)
 - [**A passing test is not evidence it tests anything**](./learnings/2026-07-15-prove-tests-fail.md) —
   observe red first, or mutate the line and watch it fail. (TKT-64)
+- [**A hand-maintained inventory cannot detect its own drift**](./learnings/2026-08-05-a-hand-maintained-inventory-cannot-detect-its-own-drift.md) —
+  an "only X may do Y" test counted a hand-written list against a hand-written 7; a ninth route left
+  it green while the credential opened it. Read the candidate set from the system. (TKT-194)
 - [**Check *why* a test is red, not just that it is**](./learnings/2026-07-30-check-why-a-test-is-red-not-just-that-it-is.md) —
   a red test passing for a compile error is a green test wearing a costume. (TKT-67)
 - [**When a new check fails 27 tests, ask which side is wrong**](./learnings/2026-07-30-ask-whether-the-fixtures-or-production-are-wrong.md) —
@@ -110,6 +113,9 @@ exists are in *Historical* at the bottom; their files are kept.
 - [**A fingerprint of a symmetric secret is an oracle**](./learnings/2026-07-30-a-fingerprint-of-a-symmetric-secret-is-an-oracle.md) —
   and see [ADR-021](./adr/ADR-021-ticket-lifecycle-trail-integrity.md): name the adversary before
   writing "tamper-evident". (TKT-67)
+- [**"At startup" is a claim about a runtime**](./learnings/2026-08-05-at-startup-is-a-claim-about-a-runtime.md) —
+  a credential check at module scope in Astro middleware runs on the first REQUEST, not at boot: the
+  framework lazily imports its own hooks. Name the runtime event, and test the process. (TKT-194)
 
 ## Historical — the repo instance is gone, the lesson is kept
 
