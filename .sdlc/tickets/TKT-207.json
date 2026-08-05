@@ -4,9 +4,11 @@
   "parent": "TKT-31",
   "classification": "complex",
   "summary": "US-C4: The on-sale read-load proof - buyer reads scale while database reads stay flat",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -96,6 +98,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "### Implementation readiness - PASS\n\nFourth slice of TKT-31 (decomposed 2026-08-04). Evidence slice: it proves what C2/C3 shipped rather than adding behaviour.\n\n`risk:low` NOT claimed: it touches the gate's smoke suite, so a mistake here makes `make check` slow or flaky for every future ticket - and TKT-149 shows this suite already has a live flake.\n\n**Blocker note:** blocked by TKT-205 only. TKT-206 would strengthen the proof but is not required by any COS, so wiring it as a hard blocker would serialize the epic for no acceptance-criteria reason."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "**Claimed** by the agent, fourth of TKT-31's five children.\n\n**Blocker check:** TKT-207's single `blocked-by` edge is TKT-205, **Done** and merged. TKT-206 was never a hard blocker — deliberately, since the availability read alone satisfies the COS — but it merged first anyway (`main` @ `46fc41fa`), so this proof can now measure **both** caches instead of half the system. That sequencing was the reason TKT-206 was claimed ahead of this one.\n\n**Selection reason:** it is the epic's **first COS** and the only one that is evidence rather than behaviour. Everything TKT-205 and TKT-206 shipped is currently asserted by unit and smoke tests at the seam; ADR-004's actual promise — *\"read load during on-sales scales with cache/memory, not database\"* — has never been measured. Until it is, the epic has three implementations and no proof.\n\n**Risk verdict: `risk:low` NOT claimed.**\n- It touches the **gate's smoke suite**, so a mistake here makes `make check` slow or flaky for every future ticket. **TKT-149 records a live flake in this exact suite** (`TestOnsaleLoadProof` fails on a single 5xx in 250 requests), which is the standard this must not fall below.\n- COS 3 requires running with the cache **bypassed**, and the kill-switch is TKT-210's and does not exist yet. That may force a source change in two services — see the open question below.\n- No money path, no auth, no data migration. CI config is *not* expected to change, but the gate's wall-clock cost is a shared resource and this ticket spends it.\n\n**Open question carried into planning, not settled at claim time:** COS 3 says the control case — cache off, counter tracks request count, assertion trips — must be *part of the test, not a manual step*. The runtime kill-switch belongs to TKT-210. A test needs something simpler than an operator surface, and whatever it is must not become **a second way to disable the same cache**. The plan decides: a startup toggle, a dependency on TKT-210, or a narrower reading of COS 3. Flagged here so the decision is visible rather than absorbed.\n\n**A second question the plan must answer:** where the server-side counter comes from. Postgres 18's `pg_stat_user_tables` is reachable from the smoke suite today — it already opens a direct connection to the inventory database — and would need no source change at all. The alternative is exposing the caches' own source-load counters, which needs an HTTP surface that is, again, TKT-210's.\n\n---\n\n**Gates waived for this run** — same standing owner instruction recorded on TKT-204, TKT-205 and TKT-206. `config.models` routing, cross-model review, TDD with tests observed red, `make check` green before every push and after the merge, and no AI attribution all stay in force.\n\nBranch: `TKT-207-onsale-read-load-proof` off `origin/main`."
     }
   ]
 }
