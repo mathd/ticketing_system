@@ -345,6 +345,34 @@ which destroys attribution rather than protecting it).
 `actor` therefore carries the weight. It is the signed-in staff member's id, taken from the session
 and never from the form, and it is what makes a refund attributable at all.
 
+### An unresolved refund is server state, and the residual is named
+
+A refund whose response is lost may have moved money. The only safe next step is
+replaying the **same** idempotency key, so the console must keep offering that key
+— across a fresh lookup, a reload, and a shift change to another operator, because
+commerce deliberately leaves the order `completed` with quantity still refundable.
+An operator offered a freshly keyed refund form in that state is one click from
+refunding a customer twice.
+
+Neither request state nor a hidden form field can carry that. Request state dies
+with the request, and a browser-supplied field is not evidence of provenance —
+a forged or stale value could name a key other than the one that actually became
+ambiguous, discarding the only replay-safe key there was. So the back office
+holds it **server-side, keyed by organizer and order**, and the ordinary refund
+form is suppressed while anything is outstanding.
+
+**What that does not cover, stated plainly:** the store is in-memory, beside the
+session store, so it does not survive a process restart and is not shared between
+replicas. The back office runs as one container today; a second would need this in
+Postgres or Redis. A restart *during* an outage still loses the key, and the
+reconciliation is then manual.
+
+**The durable answer is a read, not a store.** Commerce already knows what happened
+to that key — the ambiguity is only about whether the back office learned it. A
+read of an order's refunds would settle it definitively and make this store an
+optimisation rather than a control. There is no such read (`OrderState` is
+`{order_id, status}`), which is **TKT-201**'s territory.
+
 ### Name the adversary (ADR-021)
 
 `actor` is **honest-operator attribution**. It records which signed-in staff member drove a refund,

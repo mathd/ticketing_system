@@ -15,6 +15,11 @@
 import Layout from '../layouts/Layout.astro';
 import { loadOrderConsole, parseLookup, parseRefund, unresolvedRefund, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
 import { refundOrder, type Refund } from '../lib/api';
+import {
+  clearUnresolvedRefund,
+  noteUnresolvedRefund,
+  unresolvedRefundFor,
+} from '../lib/unresolved-refunds';
 import { randomUUID } from 'node:crypto';
 
 const staff = Astro.locals.staff;
@@ -71,9 +76,13 @@ if (Astro.request.method === 'POST') {
         actor: staff.staffId,
         organizerId: staff.organizerId,
       });
-      // `retry_of` is how a submission says "I am the continuation of an
-      // unresolved refund" — the page's only memory across requests.
-      const retryOf = field('retry_of') || null;
+      // Provenance comes from the SERVER, never the browser. An earlier version
+      // read a hidden `retry_of` field, which is not evidence of anything: a
+      // forged or stale value could name a key other than the one that actually
+      // became ambiguous, discarding the only replay-safe key there was
+      // (ai-review pass 4).
+      const outstanding = unresolvedRefundFor(staff.organizerId, parsed.value.orderId);
+      const retryOf = outstanding?.idempotencyKey ?? null;
       if (outcome.ok) {
         refund = outcome.value;
         // Clear the prefill. Re-rendering the previous quantity and reason into
@@ -86,8 +95,14 @@ if (Astro.request.method === 'POST') {
         refundAmbiguous = outcome.kind === 'ambiguous';
         Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
       }
-      unresolved = unresolvedRefund(outcome, parsed.value, retryOf);
-      if (unresolved) refundKey = unresolved.idempotencyKey;
+      unresolved = unresolvedRefund(outcome, outstanding ?? parsed.value, retryOf);
+      if (unresolved) {
+        noteUnresolvedRefund(staff.organizerId, unresolved);
+        refundKey = unresolved.idempotencyKey;
+      } else {
+        // Commerce told us what happened to this order's outstanding key.
+        clearUnresolvedRefund(staff.organizerId, parsed.value.orderId);
+      }
     }
     // Reload the order so the page still shows what it is talking about. Its
     // status must not overwrite the refund's.
@@ -104,6 +119,12 @@ if (Astro.request.method === 'POST') {
       lookedUp = lookup.value;
       view = await loadOrderConsole(lookup.value);
       Astro.response.status = view.status;
+      // A plain lookup must surface an outstanding refund too — otherwise the
+      // simplest possible recovery from an ambiguous result ("look it up
+      // again") is the one that offers a freshly keyed refund form.
+      if (lookup.value.orderId) {
+        unresolved = unresolvedRefundFor(staff.organizerId, lookup.value.orderId) ?? null;
+      }
     }
   }
 }
@@ -267,10 +288,6 @@ const refundable = view?.order?.ok === true && view.order.value.status === 'comp
       <input type="hidden" name="order_id" value={unresolved.orderId} />
       <input type="hidden" name="ticket_ref" value={submitted.ticket_ref} />
       <input type="hidden" name="idempotency_key" value={unresolved.idempotencyKey} />
-      {/* Carries the unresolved key forward, so a refusal to THIS retry — a 409
-          from a shift change, since commerce fingerprints actor — does not read
-          as "settled" and re-enable an ordinary refund. */}
-      <input type="hidden" name="retry_of" value={unresolved.idempotencyKey} />
       <input type="hidden" name="quantity" value={String(unresolved.quantity)} />
       <input type="hidden" name="reason" value={unresolved.reason} />
       <h2>Retry this refund</h2>
