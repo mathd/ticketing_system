@@ -14,6 +14,7 @@ import (
 	apispec "ticketing/services/inventory/api"
 	"ticketing/services/inventory/internal/consumer"
 	"ticketing/services/inventory/internal/store"
+	"ticketing/shared/cachetier"
 	"ticketing/shared/contract"
 	"ticketing/shared/httpx"
 )
@@ -33,14 +34,18 @@ type SeatPinner interface {
 // contract value enforced at runtime on both sides (the '200' response declares
 // it required, with this string as its only allowed value): changing it here
 // without changing the spec fails the contract, and vice versa.
-const CacheControlPublicAvailability = "public, max-age=5, s-maxage=5"
+// Derived from the tier registry rather than written out (TKT-204), so the
+// lifetime a future in-memory availability cache honours (TKT-205) and the
+// lifetime this header advertises are one number. A var rather than a const only
+// because Go cannot make a function-derived string constant.
+var CacheControlPublicAvailability = cachetier.Seconds.CacheControl()
 
 // CacheControlPublicSeatOccupancy is the same ADR-004 seconds tier for the seat
 // occupancy read (TKT-172). Same value, separate constant and separate header
 // declaration (SeatOccupancyCacheControl): ADR-028 fails closed per declaration,
 // so sharing one would let a handler that stopped emitting the tier on one
 // operation hide behind the other still emitting it.
-const CacheControlPublicSeatOccupancy = "public, max-age=5, s-maxage=5"
+var CacheControlPublicSeatOccupancy = cachetier.Seconds.CacheControl()
 
 type Server struct {
 	st         *store.Postgres

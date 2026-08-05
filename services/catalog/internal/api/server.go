@@ -25,6 +25,7 @@ import (
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
+	"ticketing/shared/cachetier"
 	"ticketing/shared/contract"
 
 	apispec "ticketing/services/catalog/api"
@@ -38,13 +39,19 @@ var SupportedLocales = []string{"en", "fr"}
 
 // CacheControlPublicReads is the ADR-004 minutes tier carried by both
 // aggregated public reads (event list, event detail).
-const CacheControlPublicReads = "public, max-age=300, s-maxage=300"
+//
+// Derived from the tier registry rather than written out (TKT-204): the tier's
+// lifetime and the header advertising it are now one number, so a cache built on
+// the tier cannot outlive what the response promises. A var rather than a const
+// only because Go cannot make a function-derived string constant; no call site
+// needs a constant expression.
+var CacheControlPublicReads = cachetier.Minutes.CacheControl()
 
 // CacheControlPublicVenueReads is the ADR-004 hours tier: venue/seat-map
 // geometry is long-lived, so the back-office venue read (US-018) is cacheable
 // far longer than the events minutes tier. Seat-map reads earn it only when the
 // whole payload is published — see cacheControlForSeatMaps (TKT-107).
-const CacheControlPublicVenueReads = "public, max-age=3600, s-maxage=3600"
+var CacheControlPublicVenueReads = cachetier.Hours.CacheControl()
 
 // cacheControlForSeatMaps is TKT-107's tier rule for the three public seat-map
 // reads: the hours tier only when the response is non-empty and every seat map in
@@ -64,11 +71,11 @@ const CacheControlPublicVenueReads = "public, max-age=3600, s-maxage=3600"
 // reader who knows the id still gets the draft (ADR-004 § TKT-107 amendment).
 func cacheControlForSeatMaps(maps ...store.SeatMap) string {
 	if len(maps) == 0 {
-		return "no-store"
+		return cachetier.Never.CacheControl()
 	}
 	for _, m := range maps {
 		if m.Status != "published" {
-			return "no-store"
+			return cachetier.Never.CacheControl()
 		}
 	}
 	return CacheControlPublicVenueReads
