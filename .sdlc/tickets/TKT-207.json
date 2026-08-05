@@ -1,0 +1,101 @@
+{
+  "key": "TKT-207",
+  "type": "Story",
+  "parent": "TKT-31",
+  "classification": "complex",
+  "summary": "US-C4: The on-sale read-load proof - buyer reads scale while database reads stay flat",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-205"
+    }
+  ],
+  "description": "**The epic's first COS, and the only one that is evidence rather than behaviour.** ADR-004's Consequences promised \"read load during on-sales scales with cache/memory, not database\". US-C2 and US-C3 make that true; this ticket makes it *provable*, in the harness that already proves the write path (TKT-82's `TestOnsaleLoadProof`).\n\nThe existing load proof drives the claim path and asks the database whether oversell happened. This adds the read side: a buyer-read stage at a rising rate, with the assertion made against a **server-side store-query counter** - the number of times the service actually went to Postgres - not against latency, which would prove nothing about where the answer came from.\n\nThe proof must be able to fail. Running the same stage with the kill-switch on is the control: the counter tracks request count, and the assertion trips.\n\n**Conditions of Success:**\n- [ ] The load harness gains a **read** stage driving buyer-facing reads (availability, event detail) against the same running stack the claim stages use.\n- [ ] The proof asserts the epic COS: as read RPS scales, the services' store-query count for those reads stays near-flat - bounded by `elapsed / tier`, not by request count.\n- [ ] **The control case is part of the test, not a manual step:** with the cache bypassed, the same stage shows the counter tracking request count and the flat-reads assertion failing. A proof that cannot fail is not evidence (repo learning: a fixture too small cannot show the negative).\n- [ ] The counter is server-side evidence exposed by the services themselves; the test does not infer it from timing or from the client side.\n- [ ] The report JSON carries the read stage alongside the existing claim stages and survives an aborted stage (TKT-130's `beginReport`).\n- [ ] The gate profile stays cheap; festival-NFR numbers stay behind `ONSALE_PROFILE=full` / `make onsale-load-full`.\n- [ ] `make check` green.\n\nQuality gates: `make check`; the gate profile must not become slow or flaky (see TKT-149).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Turn ADR-004's promised read-scaling property into a runnable proof with a demonstrated failure mode."
+    },
+    "scope": {
+      "state": "met",
+      "note": "The smoke load harness + whatever counter surface the services must expose to be measurable. NOT new caching behaviour - it measures what C2/C3 shipped."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Whether the counter is exposed per-service over HTTP or read from pg_stat_statements is a plan-stage call; the COS requires only that it be server-side. Prefer whichever is reversible."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-205 (there must be a cache to prove). TKT-206 is not a hard blocker: the availability read alone satisfies the COS, and event reads strengthen it if merged first."
+    },
+    "approach": {
+      "state": "met",
+      "note": "New Stage in smoke/internal/loadtest driven like the existing claim stages; assertion on a store-query counter delta; kill-switch control case as a second stage or a sub-test."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Availability reads - the seconds tier, the one under real on-sale contention."
+    },
+    "success": {
+      "state": "met",
+      "note": "Counter-delta assertion plus a control case that must fail with the cache off. Both are in-test, not manual."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-04."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-04",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-04",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "The epic's parent decision. Rule 1 (every public read declares a volatility tier), rule 2 (hot events served from memory, refreshed/invalidated from the write path, write path never served from cache), rule 3 (frontends call-frugal). Its TKT-128 amendment records that rule 2 is accepted and UNIMPLEMENTED and that this epic owns the deployment gap; its TKT-107 amendment splits the seat-map tier on publication status."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Correctness is at claim time. The read proof must not weaken or reorder anything the existing claim-path proof asserts - oversell evidence stays the write proof's job."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Catalog and inventory wrap responses in contract.ResponseValidator, which validates response HEADERS and fails closed: a Cache-Control value outside the declared enum becomes a 500 with the payload withheld. So the emitted constant and the declaration can only move together."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Epic lineage and the four epic-level COS",
+        "link": "board:TKT-31"
+      },
+      {
+        "summary": "ADR-004 amendment (TKT-128) is the authoritative inventory of what honors a tier today and what honors nothing - read it before assuming any cache exists",
+        "link": "docs/adr/ADR-004-cache-first-read-path.md"
+      },
+      {
+        "summary": "The existing load proof and its harness - read both before adding a stage; the report/abort mechanism is load-bearing (TKT-130, TKT-138)",
+        "link": "smoke/onsale_load_test.go, smoke/onsale_load_report_test.go, smoke/internal/loadtest/loadtest.go"
+      },
+      {
+        "summary": "Known flake in the existing gate profile - a single 5xx in 250 requests fails it. Do not make the read stage more flake-prone than the write stage.",
+        "link": "board:TKT-149"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Implementation readiness - PASS\n\nFourth slice of TKT-31 (decomposed 2026-08-04). Evidence slice: it proves what C2/C3 shipped rather than adding behaviour.\n\n`risk:low` NOT claimed: it touches the gate's smoke suite, so a mistake here makes `make check` slow or flaky for every future ticket - and TKT-149 shows this suite already has a live flake.\n\n**Blocker note:** blocked by TKT-205 only. TKT-206 would strengthen the proof but is not required by any COS, so wiring it as a hard blocker would serialize the epic for no acceptance-criteria reason."
+    }
+  ]
+}
