@@ -4,7 +4,7 @@
   "parent": "TKT-31",
   "classification": "complex",
   "summary": "US-C4: The on-sale read-load proof - buyer reads scale while database reads stay flat",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
     "agent:coding"
   ],
