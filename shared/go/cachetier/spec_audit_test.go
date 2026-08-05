@@ -73,20 +73,29 @@ var freeFormAllowed = map[string]bool{
 // emitted-versus-declared drift ADR-004's TKT-128 amendment recorded, so the
 // audit must not be able to shrink quietly.
 //
-// **2xx only, deliberately.** Catalog attaches `NeverCacheControl` to a shared
-// `StaffWriteUnauthorized` response, so every staff-write operation inherits a
-// 401 declaration — twenty-odd of them at HEAD, growing by one with every new
-// write endpoint. Pinning those would mean editing this list for changes that
-// make no tier decision at all, and a list nobody can read stops being read. A
-// non-2xx declaration is still VALUE-audited like any other; it is only its
-// presence that is not pinned. The tier decisions this ticket is about all live
-// on success responses.
+// **Every 2xx, plus every INLINE non-2xx, plus every shared response component
+// that declares one.** The narrowing that is deliberately NOT made is by status:
+// a `no-store` on an authentication 401 is a real tier decision — the contract
+// requires the header there, and losing it could let a credential-validity answer
+// become cacheable — so excluding non-2xx wholesale would let exactly that
+// disappear unnoticed.
 //
-// The cost is that adding or removing a success-response tier means editing this
-// list. That is the point: tier coverage becomes a decision someone states,
-// rather than a side effect nothing observes.
+// What is excluded is repetition, not risk. Catalog attaches `NeverCacheControl`
+// to a shared `StaffWriteUnauthorized` response which twenty-odd staff-write
+// operations `$ref`; pinning each inheritance would mean editing this list for
+// changes that make no tier decision at all, and a list nobody can read stops
+// being read. So the shared response is pinned ONCE, by name (`<service>#<name>`),
+// and its inheritors are not — deleting the header from the component still
+// fails, which is the case that matters. An inline non-2xx (`authenticateStaff`
+// 401) is nobody's inheritance and is pinned directly.
+//
+// The cost is that adding or removing a tier declaration means editing this list.
+// That is the point: tier coverage becomes a decision someone states, rather than
+// a side effect nothing observes.
 var wantDeclarations = []string{
+	"catalog#StaffWriteUnauthorized",
 	"catalog/authenticateStaff 200",
+	"catalog/authenticateStaff 401",
 	"catalog/getPublicEvent 200",
 	"catalog/getPublicFestival 200",
 	"catalog/getPublicSeatMapGeometry 200",
@@ -138,7 +147,10 @@ func auditSpec(doc *openapi3.T, service string) (violations, declared []string) 
 					continue
 				}
 				where := fmt.Sprintf("%s %s %s (%s)", method, path, code, op.OperationID)
-				if strings.HasPrefix(code, "2") {
+				// A response reached through $ref is an inheritance, not a decision:
+				// its declaration is pinned once at the component below. Everything
+				// else — every success, and every inline non-2xx — is pinned here.
+				if strings.HasPrefix(code, "2") || respRef.Ref == "" {
 					declared = append(declared, fmt.Sprintf("%s/%s %s", service, op.OperationID, code))
 				}
 				var enum []any
@@ -165,9 +177,50 @@ func auditSpec(doc *openapi3.T, service string) (violations, declared []string) 
 			}
 		}
 	}
+	// Shared response components, audited and pinned by name. This is what makes
+	// deleting the Cache-Control from StaffWriteUnauthorized fail, without pinning
+	// each of the twenty-odd operations that inherit it.
+	if doc.Components != nil {
+		for name, respRef := range doc.Components.Responses {
+			if respRef == nil || respRef.Value == nil {
+				continue
+			}
+			h := respRef.Value.Headers["Cache-Control"]
+			if h == nil || h.Value == nil {
+				continue
+			}
+			declared = append(declared, fmt.Sprintf("%s#%s", service, name))
+			out = append(out, auditHeaderValue(h, fmt.Sprintf("components.responses.%s", name))...)
+		}
+	}
 	sort.Strings(out)
 	sort.Strings(declared)
 	return out, declared
+}
+
+// auditHeaderValue is the value check, shared by the operation walk and the
+// component walk so a shared response cannot declare a tier the registry does not
+// know just by being reached from a different direction.
+func auditHeaderValue(h *openapi3.HeaderRef, where string) []string {
+	var out []string
+	var enum []any
+	if h.Value.Schema != nil && h.Value.Schema.Value != nil {
+		enum = h.Value.Schema.Value.Enum
+	}
+	if len(enum) == 0 {
+		return []string{where + ": Cache-Control declared without an enum — declare a single ADR-004 tier value"}
+	}
+	for _, v := range enum {
+		s, ok := v.(string)
+		if !ok {
+			out = append(out, fmt.Sprintf("%s: Cache-Control enum member %v is not a string", where, v))
+			continue
+		}
+		if _, known := FromCacheControl(s); !known {
+			out = append(out, fmt.Sprintf("%s: Cache-Control declares %q, which is not a registered ADR-004 tier", where, s))
+		}
+	}
+	return out
 }
 
 func loadDoc(t *testing.T, data []byte, what string) *openapi3.T {
@@ -296,9 +349,10 @@ paths:
 // spec drives the violation count to zero, so a value-only audit stays green
 // while auditing nothing.
 //
-// It also pins the 2xx scoping, which is a deliberate narrowing rather than an
-// oversight — a non-2xx declaration is still value-audited, only its presence is
-// not pinned.
+// It also pins the exclusion rule, which is about REPETITION, not status: an
+// inline non-2xx (an authentication 401 saying no-store) is a real tier decision
+// and is pinned; a non-2xx reached through $ref is an inheritance, pinned once at
+// its shared component instead of once per inheriting operation.
 func TestCacheControlAuditReportsDeclarationCoverage(t *testing.T) {
 	const declaring = `
 openapi: 3.0.3
@@ -313,13 +367,22 @@ paths:
           headers:
             Cache-Control: {schema: {type: string, enum: ['no-store']}}
         '401':
-          description: nope
+          description: inline, so a decision of its own
           headers:
             Cache-Control: {schema: {type: string, enum: ['no-store']}}
+        '403':
+          $ref: '#/components/responses/Shared'
+components:
+  responses:
+    Shared:
+      description: inherited by anyone who refs it
+      headers:
+        Cache-Control: {schema: {type: string, enum: ['no-store']}}
 `
 	_, d := auditSpec(loadDoc(t, []byte(declaring), "synthetic declaring"), "catalog")
-	if len(d) != 1 || d[0] != "catalog/getThing 200" {
-		t.Fatalf("coverage must report the success declaration and only it, got %v", d)
+	want := []string{"catalog#Shared", "catalog/getThing 200", "catalog/getThing 401"}
+	if !slices.Equal(d, want) {
+		t.Fatalf("coverage must pin the success, the INLINE 401 and the shared component once —\n got: %v\nwant: %v", d, want)
 	}
 
 	// The same operation with the declaration removed must vanish from coverage —
