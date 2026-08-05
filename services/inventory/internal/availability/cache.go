@@ -248,12 +248,21 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 	}
 	gen := s.gen[slot]
 	// Join an in-flight load for the same key rather than starting a second one —
-	// but ONLY one from the current generation. A load that started before a write
-	// committed holds the pre-commit answer, and handing that to a reader who
-	// arrived after the commit is the same staleness the generation guard already
-	// refuses to cache, delivered by a shorter route. Discarding the result is not
-	// enough; the flight has to be unjoinable.
-	if f, ok := s.inflight[k]; ok && f.gen == gen {
+	// but ONLY one from the current generation AND the current switch generation.
+	//
+	// A load that started before a write committed holds the pre-commit answer,
+	// and handing that to a reader who arrived after the commit is the same
+	// staleness the generation guard already refuses to cache, delivered by a
+	// shorter route. Discarding the result is not enough; the flight has to be
+	// unjoinable.
+	//
+	// The switch generation is the same argument along the other axis, and it is
+	// the one the first version of this ticket got wrong: a toggle moves neither
+	// the slot generation nor `enabled` back, so after a disable→re-enable a new
+	// reader would join a load started before the operator pulled the cache and
+	// be served exactly the value they withdrew — in the transition window the
+	// switch exists to cover.
+	if f, ok := s.inflight[k]; ok && f.gen == gen && f.switchGen == s.switchGen {
 		s.mu.Unlock()
 		return s.wait(ctx, f)
 	}
@@ -280,8 +289,19 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 	}
 
 	// Re-check under the lock: while waiting for a slot, another goroutine may have
-	// cached this key or started a joinable load for it.
+	// cached this key or started a joinable load for it — or an operator may have
+	// disabled the cache. A request that queued for a slot while the switch was on
+	// must not register a shared flight after it was turned off.
 	s.mu.Lock()
+	if !s.enabled {
+		s.mu.Unlock()
+		v, err := s.loadDirect(k)
+		<-s.sem
+		if err != nil {
+			return Read{}, err
+		}
+		return Read{Value: v}, nil
+	}
 	if e, ok := s.entries[k]; ok {
 		if age := s.now().Sub(e.loadedAt); age < s.ttl {
 			s.lru.MoveToFront(e.elem)
@@ -292,7 +312,7 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 		}
 		s.removeLocked(e)
 	}
-	if f, ok := s.inflight[k]; ok && f.gen == s.gen[slot] {
+	if f, ok := s.inflight[k]; ok && f.gen == s.gen[slot] && f.switchGen == s.switchGen {
 		s.mu.Unlock()
 		<-s.sem
 		return s.wait(ctx, f)

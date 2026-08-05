@@ -275,7 +275,7 @@ func (c *publicReadCache) read(ctx context.Context, k readKey, load func(context
 	// to cache, delivered by a shorter route. Discarding the result is not
 	// enough; the flight has to be unjoinable. (TKT-205 shipped this bug and had
 	// it caught in review.)
-	if f, ok := c.inflight[k]; ok && f.gen == gen {
+	if f, ok := c.inflight[k]; ok && f.gen == gen && f.switchGen == c.switchGen {
 		c.mu.Unlock()
 		return c.wait(ctx, f)
 	}
@@ -314,7 +314,7 @@ func (c *publicReadCache) read(ctx context.Context, k readKey, load func(context
 		c.removeLocked(e)
 	}
 	gen = c.generationLocked(k.kind)
-	if f, ok := c.inflight[k]; ok && f.gen == gen {
+	if f, ok := c.inflight[k]; ok && f.gen == gen && f.switchGen == c.switchGen {
 		c.mu.Unlock()
 		<-c.sem
 		return c.wait(ctx, f)

@@ -668,3 +668,47 @@ func TestADisabledReadDoesNotJoinAnInFlightLoad(t *testing.T) {
 		}
 	})
 }
+
+// TestAPostReEnableReaderDoesNotJoinAPreDisableFlight is the transition window
+// the earlier toggle test skipped, and the review found it.
+//
+// TestAToggleCycleRejectsALoadThatStartedBeforeIt waits for the old load to
+// FINISH before reading, so it only ever exercised the insertion guard. The
+// dangerous case is a reader arriving while that load is still running: after a
+// disable→re-enable the cache is on again and the slot generation never moved,
+// so a join predicate that checks only the slot generation hands the new reader
+// the pre-disable value directly. The switch would be defeated in exactly the
+// window it exists to cover.
+func TestAPostReEnableReaderDoesNotJoinAPreDisableFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newFakeSource()
+		src.setAvailable(10)
+		src.release = make(chan struct{})
+		svc, _ := newTestService(t, src)
+		org, slot := uuid.New(), uuid.New()
+
+		stale := make(chan struct{})
+		go func() { defer close(stale); _, _ = svc.Read(context.Background(), org, slot, "") }()
+		synctest.Wait() // the pre-disable load is running
+
+		svc.SetEnabled(false)
+		svc.SetEnabled(true)
+		src.setAvailable(4)
+
+		fresh := make(chan int32, 1)
+		go func() {
+			r, _ := svc.Read(context.Background(), org, slot, "")
+			fresh <- r.Value.Available
+		}()
+		synctest.Wait() // it must be in its OWN source call, not waiting on the first
+
+		close(src.release)
+		<-stale
+		if got := <-fresh; got != 4 {
+			t.Fatalf("post-re-enable read = %d, want 4 — it joined a load started before the cache was disabled", got)
+		}
+		if got := src.count(); got != 2 {
+			t.Fatalf("source called %d times, want 2 — the post-re-enable read must make its own call", got)
+		}
+	})
+}

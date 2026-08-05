@@ -651,3 +651,40 @@ func TestADisabledPublicReadDoesNotJoinAnInFlightLoad(t *testing.T) {
 		}
 	})
 }
+
+// TestAPostReEnableReadDoesNotJoinAPreDisableFlight — same transition window as
+// inventory's. TestAToggleCycleRejectsPreToggleLoads waits for the old loads to
+// finish, so it only exercised the insertion guard; a reader arriving while a
+// pre-disable load is still running would join it if the predicate checks only
+// the list/detail generation, which a toggle never moves.
+func TestAPostReEnableReadDoesNotJoinAPreDisableFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newCountingSource()
+		src.release = make(chan struct{})
+		c, _ := newTestCache(t, src)
+
+		stale := make(chan struct{})
+		go func() { defer close(stale); _, _ = c.ListPublishedEvents(context.Background()) }()
+		synctest.Wait()
+
+		c.SetEnabled(false)
+		c.SetEnabled(true)
+		src.setLabel("second")
+
+		fresh := make(chan string, 1)
+		go func() {
+			r, _ := c.ListPublishedEvents(context.Background())
+			fresh <- r.Value[0].Event.Name["en"]
+		}()
+		synctest.Wait()
+
+		close(src.release)
+		<-stale
+		if got := <-fresh; got != "second" {
+			t.Fatalf("post-re-enable read = %q, want the post-toggle value — it joined a pre-disable load", got)
+		}
+		if got := src.count("list"); got != 2 {
+			t.Fatalf("source called %d times, want 2", got)
+		}
+	})
+}

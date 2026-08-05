@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 )
 
@@ -44,10 +46,20 @@ func (s *Server) cacheControlSet(w http.ResponseWriter, r *http.Request) {
 	// A pointer so a missing field is distinguishable from an explicit false.
 	// Inferring "disable" from an absent field is how a malformed script takes a
 	// cache down.
+	// Exactly one JSON value, no trailing anything. A plain Decode reads the
+	// first value and ignores the rest, so `{"enabled":false}{"enabled":true}`
+	// would be accepted and silently take the cache down on an ambiguous body.
+	// This route is hand-mounted and therefore outside request validation, so the
+	// check has to be here — inventory gets it from httpx.DecodeJSON.
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil || in.Enabled == nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "enabled (boolean) required"})
+		return
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, Error{Error: "body must contain exactly one JSON object"})
 		return
 	}
 	s.public.SetEnabled(*in.Enabled)

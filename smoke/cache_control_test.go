@@ -3,10 +3,13 @@
 package smoke_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // The ADR-004 incident kill-switch, end to end (TKT-210).
@@ -75,23 +78,56 @@ func disableBothCaches(t *testing.T) {
 	}
 }
 
-// restoreBothCaches re-enables both. Idempotent, and it attempts BOTH services
-// even if the first fails — a half-restored stack is worse than a failed test,
-// because the damage lands on whatever runs next.
+// restoreBothCaches re-enables both, attempting BOTH unconditionally — a
+// half-restored stack is worse than a failed test, because the damage lands on
+// whatever runs next.
+//
+// It deliberately does NOT go through cacheControlSet: that calls t.Fatalf,
+// which is runtime.Goexit, which recover() cannot catch. A first version wrapped
+// each call in a recover and claimed to attempt both; it did not, and a failure
+// restoring inventory would have terminated the cleanup with catalog still
+// disabled for every later test. Errors are collected and reported after both
+// attempts.
 func restoreBothCaches(t *testing.T) {
 	t.Helper()
+	var failures []string
 	for _, u := range []string{inventoryURL, catalogURL} {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("restoring %s panicked: %v", u, r)
-				}
-			}()
-			if st := cacheControlSet(t, u, true); !st.Enabled {
-				t.Errorf("%s did not re-enable", u)
-			}
-		}()
+		if err := enableCache(u); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", u, err))
+		}
 	}
+	for _, f := range failures {
+		t.Errorf("restoring a cache failed: %s", f)
+	}
+}
+
+// enableCache re-enables one cache and reports rather than failing, so a caller
+// can attempt every service before deciding the run is broken.
+func enableCache(baseURL string) error {
+	body, _ := json.Marshal(map[string]bool{"enabled": true})
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/internal/cache-control", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", internalToken)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%d %s", resp.StatusCode, out)
+	}
+	var st cacheState
+	if err := json.Unmarshal(out, &st); err != nil {
+		return err
+	}
+	if !st.Enabled {
+		return fmt.Errorf("still disabled after re-enable: %+v", st)
+	}
+	return nil
 }
 
 // TestCacheControlTogglesBothRunningServices is COS 1-3 against the real stack:

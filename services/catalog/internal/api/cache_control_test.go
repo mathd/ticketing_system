@@ -102,7 +102,14 @@ func TestCatalogCacheControlReportsAndTogglesTheLiveCollaborator(t *testing.T) {
 // TestCatalogCacheControlRejectsAnAmbiguousBody: a missing `enabled` must not be
 // read as "disable".
 func TestCatalogCacheControlRejectsAnAmbiguousBody(t *testing.T) {
-	for _, body := range []string{`{}`, `{"enabled":null}`, `{"enabled":"false"}`, `{"nope":true}`, `not json`} {
+	// The concatenated case is the one a plain Decode accepts: it reads the first
+	// value and ignores the rest, so an ambiguous body would silently take the
+	// cache down. Found in review.
+	for _, body := range []string{
+		`{}`, `{"enabled":null}`, `{"enabled":"false"}`, `{"nope":true}`, `not json`,
+		`{"enabled":false}{"enabled":true}`,
+		`{"enabled":false} trailing`,
+	} {
 		rd := &stubPublicReader{enabled: true}
 		rec := catalogCacheControl(t, cacheControlServer(rd), http.MethodPut, "secret", body)
 		if rec.Code != http.StatusBadRequest {
