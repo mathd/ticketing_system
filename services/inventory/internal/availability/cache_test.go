@@ -19,6 +19,8 @@ import (
 type fakeSource struct {
 	mu      sync.Mutex
 	calls   int
+	inside  int // source calls executing right now
+	peak    int // the most that were ever executing at once
 	perKey  map[string]int
 	avail   int32
 	err     error
@@ -32,9 +34,12 @@ func newFakeSource() *fakeSource { return &fakeSource{perKey: map[string]int{}} 
 func (f *fakeSource) Availability(ctx context.Context, org, slot uuid.UUID, channel string) (store.Availability, error) {
 	f.mu.Lock()
 	f.calls++
+	f.inside++
+	f.peak = max(f.peak, f.inside)
 	f.perKey[org.String()+"|"+slot.String()+"|"+channel]++
 	release, entered, err, avail := f.release, f.entered, f.err, f.avail
 	f.mu.Unlock()
+	defer func() { f.mu.Lock(); f.inside--; f.mu.Unlock() }()
 	if entered != nil {
 		entered <- struct{}{}
 	}
@@ -52,6 +57,12 @@ func (f *fakeSource) Availability(ctx context.Context, org, slot uuid.UUID, chan
 }
 
 func (f *fakeSource) RegisterAvailabilityInvalidator(fn func(uuid.UUID)) { f.inval = fn }
+
+func (f *fakeSource) concurrentPeak() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.peak
+}
 
 func (f *fakeSource) count() int {
 	f.mu.Lock()
@@ -357,35 +368,69 @@ func TestASupersededLoadDoesNotEvictItsReplacement(t *testing.T) {
 	<-replacement
 }
 
-// TestInFlightLoadsAreBounded is the other half of COS 6, and the half the LRU
-// does not cover: entries are bounded only once a load COMPLETES. Slot ids and
-// channels are caller-supplied on a public unauthenticated route, so without a
-// ceiling here a caller sending unique keys grows the in-flight map and the
-// goroutines behind it without limit — memory the LRU never sees.
+// TestConcurrentSourceLoadsAreBounded is the other half of COS 6, and the half
+// the LRU does not cover: an entry is counted only once its load COMPLETES.
+// Slot ids and channels are caller-supplied on a public unauthenticated route,
+// so without a ceiling a caller sending unique keys drives unbounded concurrent
+// queries into a 25-connection pool.
 //
-// At the ceiling a load still happens; it just does not get coalescing metadata.
-// Shedding the read instead would turn a cache into an availability outage.
-func TestInFlightLoadsAreBounded(t *testing.T) {
+// It asserts PEAK CONCURRENT SOURCE CALLS, which is the actual invariant. The
+// first version of this test asserted the size of the bookkeeping map instead,
+// after deliberately waiting for ten concurrent loads to start — it proved the
+// ceiling was not bounding anything and then passed. Counting the wrong thing is
+// how a test certifies the opposite of what it claims.
+func TestConcurrentSourceLoadsAreBounded(t *testing.T) {
+	const ceiling = 3
 	src := newFakeSource()
 	src.release = make(chan struct{})
 	src.entered = make(chan struct{}, 64)
-	svc := New(src, WithBounds(16, 4), WithMaxInFlight(3))
+	svc := New(src, WithBounds(16, 4), WithMaxInFlight(ceiling))
 
 	org := uuid.New()
 	var wg sync.WaitGroup
-	for range 20 {
+	for range 25 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			_, _ = svc.Read(context.Background(), org, uuid.New(), "")
 		}()
 	}
-	waitFor(t, func() bool { return src.count() >= 10 })
-	if got := svc.Status().InFlight; got > 3 {
-		t.Fatalf("in-flight records = %d, want at most the ceiling of 3", got)
+	// Let the ceiling fill and give any excess a chance to slip through.
+	waitFor(t, func() bool { return src.concurrentPeak() >= ceiling })
+	time.Sleep(50 * time.Millisecond)
+
+	if peak := src.concurrentPeak(); peak > ceiling {
+		t.Fatalf("peak concurrent source calls = %d, want at most %d — the ceiling must bound "+
+			"real queries, not just the bookkeeping map", peak, ceiling)
 	}
 	close(src.release)
 	wg.Wait()
+
+	// Everything still completes: the ceiling queues work, it does not shed it.
+	// Shedding would turn a cache into an availability outage.
+	if got := src.count(); got != 25 {
+		t.Fatalf("source called %d times, want all 25 reads served", got)
+	}
+}
+
+// TestASlowLoadFailsRatherThanWedging pins the detached-load deadline.
+//
+// The load runs on its own context, because a follower cancelling must not abort
+// the load other waiters depend on. That decision has a cost, and this is it: a
+// query slower than the budget fails for every waiter. It has to fail, though —
+// a detached load with no deadline holds its concurrency slot forever, and once
+// enough of them do, the cache stops serving misses at all.
+func TestASlowLoadFailsRatherThanWedging(t *testing.T) {
+	src := newFakeSource()
+	src.release = make(chan struct{}) // never closed: the query never returns
+	svc := New(src, WithLoadTimeout(30*time.Millisecond))
+
+	_, err := svc.Read(context.Background(), uuid.New(), uuid.New(), "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a load past its budget returned %v, want context.DeadlineExceeded", err)
+	}
+	// And the slot it held must be back, or one slow query would poison the cache.
+	waitFor(t, func() bool { return svc.Status().InFlight == 0 })
 }
 
 // TestBoundedGloballyAndPerSlot is COS 6. The route is public and

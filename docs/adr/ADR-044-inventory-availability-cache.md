@@ -120,15 +120,24 @@ against, because "the cache is invalidated" is exactly the kind of claim that ov
 - **Process-local.** With a second inventory replica, a write invalidates only the writer's process;
   the others stay stale until the tier expires. There is one inventory process today. **Trigger to
   revisit: the first time inventory is scaled horizontally** — not "eventually".
-- **Bounded memory is not bounded load.** Three ceilings, not two: 10,000 entries globally, 128 per
-  slot, and **1,000 concurrent loads**. The third exists because the first two count an entry only
-  once its load *completes* — without it, a caller sending unique slot ids grows the in-flight map
-  and its goroutines without limit, memory the LRU never sees. At that ceiling a load still happens,
-  inline and uncoalesced; shedding the read would turn a cache into an availability outage. Detached
-  loads carry their own timeout so a blocked query cannot pin a record indefinitely.
+- **Bounded memory is not bounded load — but concurrency IS bounded.** Three ceilings, not two:
+  10,000 entries globally, 128 per slot, and **1,000 concurrent source calls**.
 
-  None of that stops a hostile caller forcing real database queries with high-cardinality slot
-  UUIDs. **This is not a rate limiter**, and it must not be cited as one.
+  The third is the one that matters under attack, and it bounds *queries*, not bookkeeping. The
+  first two count an entry only once its load **completes**, so they constrain nothing about a
+  caller sending unique slot ids — both key components are caller-supplied on a public route. The
+  ceiling is a semaphore taken before a load starts and released when it ends, which also bounds the
+  in-flight map by the same number for free, since a load exists only while it holds a slot.
+
+  It **queues rather than sheds**: a request waits for a slot, cancellable by its own context.
+  Shedding would turn a cache into an availability outage, a worse failure than a slow read. Each
+  load carries a **query budget** (10s) — not a backstop but an actual budget, because a load holds
+  its slot for its whole life, and enough hung queries would take every slot and stop the cache
+  serving misses at all.
+
+  What remains open, and must not be overstated: an attacker can still make this service issue up to
+  1,000 concurrent real queries against a 25-connection pool. **This is not a rate limiter**, and it
+  must not be cited as one.
 - **"The next read reflects the write" means the next request reaching this process.** An HTTP
   response already delivered to a client cannot be recalled; it expires within the declared tier,
   which is what `Age` keeps true.

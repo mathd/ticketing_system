@@ -52,8 +52,12 @@ const (
 	// defaultMaxInFlight bounds concurrent loads, which the entry ceilings do not:
 	// an entry is only counted once its load COMPLETES.
 	defaultMaxInFlight = 1000
-	// defaultLoadTimeout stops a blocked query pinning an in-flight record
-	// indefinitely. Generous on purpose — it is a backstop, not a query budget.
+	// defaultLoadTimeout is the availability query budget. Naming it a backstop
+	// would be dishonest: a detached load holds one of maxInFlight slots, so a
+	// query slower than this fails for its waiters, and that is the intended
+	// behaviour — without a deadline, enough hung queries take every slot and the
+	// cache stops serving misses at all. Generous relative to a read that is
+	// normally single-digit milliseconds.
 	defaultLoadTimeout = 10 * time.Second
 )
 
@@ -115,6 +119,10 @@ type Service struct {
 	maxInFlight int
 	loadTimeout time.Duration
 
+	// sem bounds concurrent source calls. Buffered to maxInFlight; a slot is held
+	// for exactly the duration of one load.
+	sem chan struct{}
+
 	mu       sync.Mutex
 	entries  map[key]*entry
 	lru      *list.List // front = most recently used; values are key
@@ -138,6 +146,10 @@ func WithBounds(maxEntries, maxPerSlot int) Option {
 // reach it cheaply.
 func WithMaxInFlight(n int) Option { return func(s *Service) { s.maxInFlight = n } }
 
+// WithLoadTimeout overrides the query budget, for tests that need to reach it
+// without waiting the production ten seconds.
+func WithLoadTimeout(d time.Duration) Option { return func(s *Service) { s.loadTimeout = d } }
+
 func New(src Source, opts ...Option) *Service {
 	s := &Service{
 		src:         src,
@@ -156,6 +168,7 @@ func New(src Source, opts ...Option) *Service {
 	for _, o := range opts {
 		o(s)
 	}
+	s.sem = make(chan struct{}, s.maxInFlight)
 	src.RegisterAvailabilityInvalidator(s.Invalidate)
 	return s
 }
@@ -207,26 +220,51 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 		return s.wait(ctx, f)
 	}
 
-	// Bound the in-flight map as well as the entry map. Entries are bounded only
-	// once a load completes, so without this a caller sending unique slot ids —
-	// both key components are caller-supplied on a public route — grows this map
-	// and its goroutines without limit, memory the LRU never sees. At the ceiling
-	// the load still happens, inline and uncoalesced; shedding the read would turn
-	// a cache into an availability outage.
-	if len(s.inflight) >= s.maxInFlight {
-		s.mu.Unlock()
-		v, err := s.loadDirect(k)
-		if err != nil {
-			return Read{}, err
-		}
-		return Read{Value: v}, nil
+	s.mu.Unlock()
+
+	// Bound CONCURRENT SOURCE CALLS, not bookkeeping. Entries are counted only
+	// once a load completes, so the LRU ceilings do not constrain a caller sending
+	// unique slot ids — and both key components are caller-supplied on a public,
+	// unauthenticated route. What has to be bounded is the number of queries
+	// actually in the database at once, which shares a 25-connection pool with the
+	// claim path.
+	//
+	// Taking the slot BEFORE registering the flight also bounds the map by the
+	// same number, for free: a flight exists only while it holds a slot.
+	//
+	// It queues rather than sheds. A request waits here, cancellable by its own
+	// context; shedding would turn a cache into an availability outage, which is
+	// a worse failure than a slow read.
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return Read{}, ctx.Err()
 	}
 
-	f := &flight{done: make(chan struct{}), gen: gen}
+	// Re-check under the lock: while waiting for a slot, another goroutine may have
+	// cached this key or started a joinable load for it.
+	s.mu.Lock()
+	if e, ok := s.entries[k]; ok {
+		if age := s.now().Sub(e.loadedAt); age < s.ttl {
+			s.lru.MoveToFront(e.elem)
+			v := e.value
+			s.mu.Unlock()
+			<-s.sem
+			return Read{Value: v, Age: age}, nil
+		}
+		s.removeLocked(e)
+	}
+	if f, ok := s.inflight[k]; ok && f.gen == s.gen[slot] {
+		s.mu.Unlock()
+		<-s.sem
+		return s.wait(ctx, f)
+	}
+
+	f := &flight{done: make(chan struct{}), gen: s.gen[slot]}
 	s.inflight[k] = f // replaces any superseded flight; see load's guarded delete
 	s.mu.Unlock()
 
-	go s.load(k, f)
+	go s.load(k, f) // releases the slot when it finishes
 	return s.wait(ctx, f)
 }
 
@@ -236,6 +274,7 @@ func (s *Service) Read(ctx context.Context, org, slot uuid.UUID, channel string)
 // not abort the load every other waiter is depending on. The loader's own bound
 // is the store's, and the entry it produces is discarded if the slot moved on.
 func (s *Service) load(k key, f *flight) {
+	defer func() { <-s.sem }()
 	v, err := s.loadDirect(k)
 
 	s.mu.Lock()
