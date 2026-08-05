@@ -8,6 +8,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"ticketing/services/catalog/internal/store"
+	"ticketing/shared/cachetier"
 )
 
 // CacheControlPriceResolution is a correctness tier, not a performance one
@@ -15,7 +16,7 @@ import (
 // money decision, and once TKT-152 adds effective windows the answer's
 // correctness expires at a known instant, so caching it past that instant would
 // serve a stale price to a buyer.
-const CacheControlPriceResolution = "no-store"
+var CacheControlPriceResolution = cachetier.Never.CacheControl()
 
 // ResolveTicketTypePrice answers "what does this ticket type cost right now,
 // and why" (TKT-151 / ADR-036 §6 — catalog's question since that ADR amended
