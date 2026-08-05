@@ -201,6 +201,10 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://commerce:commerce@postgres:5432/commerce
+      # TKT-194: the back office's credential, checked on the staff refund and on
+      # nothing else. Held by commerce and the back office only — deliberately NOT
+      # in the shared &go-env anchor.
+      COMMERCE_STAFF_WRITE_TOKEN: ${COMMERCE_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
       CATALOG_URL: http://catalog:8080
       INVENTORY_URL: http://inventory:8080
       PAYMENTS_URL: http://payments:8080
@@ -360,6 +364,14 @@ services:
       # INTERNAL_SERVICE_TOKEN in the &go-env anchor: that one value opens every
       # service's internal surface, and this is a public-facing SSR process.
       CATALOG_STAFF_WRITE_TOKEN: ${CATALOG_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
+      # The staff refund (TKT-194). Commerce's refund lives under /internal/,
+      # which the gateway edge-denies by construction (ADR-002) — so the back
+      # office reaches it DIRECTLY, in-network, exactly as access already reaches
+      # commerce's delivery-email read. Routing it through the gateway would mean
+      # publishing a money-moving endpoint to the internet to reach a service
+      # this process can already open a socket to.
+      COMMERCE_URL: http://commerce:8080
+      COMMERCE_STAFF_WRITE_TOKEN: ${COMMERCE_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
     healthcheck:
       # base:'/admin' means Astro serves healthz at /admin/healthz; the probe
       # hits the container directly (pre-gateway), so it targets the base path.

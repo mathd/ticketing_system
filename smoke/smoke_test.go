@@ -465,6 +465,11 @@ func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
 		"-e", "NATS_URL=nats://nats:4222",
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		// TKT-194: commerce refuses to start without its staff-write credential,
+		// for the same reason catalog does — a commerce started without it
+		// answers every refund 404, which is indistinguishable from "no such
+		// order", so the misconfiguration would arrive as a support ticket.
+		"-e", "COMMERCE_STAFF_WRITE_TOKEN="+os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",
@@ -562,6 +567,11 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 		"-e", "NATS_URL=nats://nats:4222",
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		// TKT-194: commerce refuses to start without its staff-write credential,
+		// for the same reason catalog does — a commerce started without it
+		// answers every refund 404, which is indistinguishable from "no such
+		// order", so the misconfiguration would arrive as a support ticket.
+		"-e", "COMMERCE_STAFF_WRITE_TOKEN="+os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",

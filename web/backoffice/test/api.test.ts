@@ -11,6 +11,7 @@ import {
   editSeatMap,
   getOrderState,
   getOrderTickets,
+  refundOrder,
   getSeatMapGeometry,
   getVenues,
   listSeatMapVersions,
@@ -31,11 +32,16 @@ function jsonResponse(body: unknown): Response {
 // one test that asserts the refusal deletes it deliberately.
 beforeEach(() => {
   process.env.CATALOG_STAFF_WRITE_TOKEN = 'test-credential';
+  // TKT-194. Deliberately a DIFFERENT value from the catalog one: the client
+  // refuses equal credentials, so a suite that set both to the same string
+  // would fail every refund test for a reason unrelated to what it is testing.
+  process.env.COMMERCE_STAFF_WRITE_TOKEN = 'commerce-test-credential';
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.CATALOG_STAFF_WRITE_TOKEN;
+  delete process.env.COMMERCE_STAFF_WRITE_TOKEN;
 });
 
 describe('getVenues', () => {
@@ -432,6 +438,85 @@ describe('the order console reads (TKT-193)', () => {
   it('accepts the same identifier in a different case', async () => {
     spyFetch({ order_id: ORDER.toUpperCase(), status: 'completed' }, 200);
     await expect(getOrderState(ORDER)).resolves.toMatchObject({ ok: true });
+  });
+
+  // TKT-194. The refund goes DIRECT to commerce, not through the gateway: the
+  // gateway edge-denies /internal/ by construction and adding an exception would
+  // publish a money-moving endpoint to the internet, while granting nothing the
+  // in-network call does not. Access already reaches commerce this way.
+  it('sends the refund direct to commerce with the staff credential', async () => {
+    const calls = spyFetch(
+      {
+        refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 1250, currency: 'EUR',
+        refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1250,
+        replay: false, tickets_voided: true, capacity_returned: true,
+      },
+      200,
+    );
+    const got = await refundOrder({
+      orderId: ORDER, quantity: 1, reason: 'customer called',
+      actor: 'staff-42', organizerId: 'org-1', idempotencyKey: 'key-1',
+    });
+
+    expect(got).toMatchObject({ ok: true });
+    // COMMERCE_URL is unset in the suite, so this is the client's own default —
+    // which is what a developer running `pnpm dev` outside compose gets.
+    expect(calls[0].url).toBe(`http://localhost:8082/internal/orders/${ORDER}/refunds`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].headers['X-Commerce-Staff-Write-Token']).toBe('commerce-test-credential');
+    expect(calls[0].headers['Idempotency-Key']).toBe('key-1');
+    // Never the shared internal token, which the back office does not hold.
+    expect(calls[0].headers['X-Internal-Token']).toBeUndefined();
+  });
+
+  // COS-5. `actor` is the attribution for an operation that moves money. Taking
+  // it from the form would make a refund attributable to whatever the client
+  // typed, which is not attributable at all — and it matters more now that box
+  // office can refund, because attribution is the control that remains.
+  it('sends only the four contract fields, with actor and organizer from the caller', async () => {
+    const calls = spyFetch({ refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 1, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }, 200);
+    await refundOrder({ orderId: ORDER, quantity: 2, reason: 'why', actor: 'staff-42', organizerId: 'org-1', idempotencyKey: 'k' });
+    expect(calls[0].body).toEqual({
+      organizer_id: 'org-1', quantity: 2, actor: 'staff-42', reason: 'why',
+    });
+  });
+
+  it.each([
+    [404, 'not-found'],
+    [409, 'refused'],
+    [400, 'refused'],
+    [500, 'ambiguous'],
+    [502, 'ambiguous'],
+    [503, 'ambiguous'],
+  ])('maps a %i to %s without inventing a refund', async (status, kind) => {
+    spyFetch({ error: 'commerce says no' }, status);
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', organizerId: 'o', idempotencyKey: 'k' });
+    expect(got).toMatchObject({ ok: false, kind, message: 'commerce says no' });
+  });
+
+  // A 200 whose body is not a Refund is not a refund. Rendering a success
+  // section from it would claim money moved on the strength of a shape we did
+  // not check — and after an ambiguous response the page must say retry, not
+  // that nothing happened.
+  it.each([
+    ['an empty body', {}],
+    ['a refund for a different order', { refund_id: 'r1', order_id: OTHER, quantity: 1, amount: 1, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
+    ['a fractional amount', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 12.5, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
+    // Commerce declares these int64. Past 2^53 a JSON number no longer maps
+    // one-to-one onto a JS number, so a larger int64 arrives already rounded and
+    // an isInteger check passes it — presenting a figure that is not the one
+    // commerce sent as the exact refund amount.
+    //
+    // MAX_SAFE_INTEGER + 1 rather than a literal: the literal that demonstrates
+    // this is itself unrepresentable, so writing it out is a lint error (and
+    // would silently become a different number than the one intended).
+    ['an amount past what JS can represent exactly', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: Number.MAX_SAFE_INTEGER + 1, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
+    ['a refund_status outside the enum', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 1, currency: 'EUR', refund_status: 'reversed', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: true, capacity_returned: true }],
+    ['a non-boolean tickets_voided', { refund_id: 'r1', order_id: ORDER, quantity: 1, amount: 1, currency: 'EUR', refund_status: 'partial', refunded_quantity: 1, refunded_amount: 1, replay: false, tickets_voided: 'yes', capacity_returned: true }],
+  ])('treats %s as ambiguous rather than a refund', async (_name, body) => {
+    spyFetch(body, 200);
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', organizerId: 'o', idempotencyKey: 'k' });
+    expect(got).toMatchObject({ ok: false, kind: 'ambiguous' });
   });
 
   // COS-7. qr_payload is the credential that admits at the gate, and qr_url

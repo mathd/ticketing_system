@@ -14,8 +14,18 @@
 
 import { defineMiddleware } from 'astro:middleware';
 
+import { assertCredentialSeparation } from '../credentials.mjs';
 import { LOGIN_PATH, gateRequest } from './lib/gate';
 import { SESSION_COOKIE, lookupSession } from './lib/session';
+
+// Defence in depth, NOT the mechanism (TKT-194, ai-review pass 2).
+//
+// The real check runs in start.mjs before the server listens. This one runs
+// when Astro resolves the middleware module — which the standalone build defers
+// to the first request, so it can only ever be a backstop for a process started
+// some other way (`pnpm dev`, a hand-rolled entry). Saying so matters: an
+// earlier version of this file claimed this WAS the startup check.
+assertCredentialSeparation();
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const response = await gateRequest({

@@ -59,7 +59,14 @@ func refundProblem(err error) (int, string) {
 }
 
 func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
-	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+	// Either the shared internal token or the back office's commerce credential
+	// (TKT-194). This is the ONE internal operation that accepts the second;
+	// every other one still compares the internal token inline, and
+	// staff_credential_test.go enumerates them to keep that true.
+	//
+	// Same 404 as everywhere else in this service, not a 401: it does not
+	// confirm the route exists.
+	if !s.staffOrInternal(r) {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}

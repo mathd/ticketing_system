@@ -58,6 +58,13 @@ export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
 SMOKE_CATALOG_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_CATALOG_STAFF_WRITE_TOKEN
 export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
+# TKT-194. A separate /dev/urandom read, not a copy: commerce refuses to start
+# when this equals INTERNAL_SERVICE_TOKEN, and the back office refuses to refund
+# when it equals CATALOG_STAFF_WRITE_TOKEN. Deriving one from another here would
+# make the smoke suite the one place those guards are never exercised honestly.
+SMOKE_COMMERCE_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_COMMERCE_STAFF_WRITE_TOKEN
+export COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN"
 
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
@@ -247,6 +254,7 @@ SMOKE_BOXOFFICE_PASSWORD="$SMOKE_BOXOFFICE_PASSWORD" \
 SMOKE_FINANCE_IDENTIFIER="$SMOKE_FINANCE_IDENTIFIER" \
 SMOKE_FINANCE_PASSWORD="$SMOKE_FINANCE_PASSWORD" \
 SMOKE_CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN" \
+SMOKE_COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN" \
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \
 SMOKE_PG=localhost:${POSTGRES_PORT} \

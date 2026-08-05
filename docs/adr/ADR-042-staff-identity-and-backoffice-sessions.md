@@ -10,6 +10,9 @@ Accepted
 
 **Amended by TKT-191 (2026-08-03)** — *Decision 1 only*. Everything else stands.
 
+**Amended by TKT-194 (2026-08-04)** — the back office is no longer catalog-only. See
+§ *TKT-194 amendment* below.
+
 `POST /staff/authenticate` is **no longer public**: it is guarded like every other unsafe catalog
 operation, by a dedicated `CatalogStaffWriteCredential`. The **conclusion** changed; the
 **reasoning** did not. Decision 1's objection was to placing the *shared*
@@ -282,3 +285,106 @@ tamper-evidence.
 matrix can express and enforce a role-exclusive route, demonstrated on the catalog authoring surface.
 The settlement surface itself does not exist — **TKT-23** owns it, and must add its page to this
 matrix as `admin` + `finance` and drive the box-office refusal for real.
+
+
+## TKT-194 amendment — the back office holds a second credential, and it moves money
+
+This ADR said, repeatedly and on purpose, that the back office holds a **catalog-only** credential.
+That is no longer true, and the sentence it replaces is worth keeping intact because the argument
+behind it is the reason this amendment is narrow.
+
+### What the original argument was, and why it still holds
+
+TKT-191 withheld `INTERNAL_SERVICE_TOKEN` from the back office because **one value opens every
+service's internal surface** — commerce's refunds and exchanges, inventory's operational holds,
+access's ticket voids — and the back office is an internet-facing SSR process. A credential that
+broad, held there, means one SSR compromise is a compromise of everything.
+
+**That reasoning is unchanged and is exactly why the new credential is shaped the way it is.**
+`COMMERCE_STAFF_WRITE_TOKEN` opens **one operation**: the staff refund. It does not open exchanges,
+cancellation-refund runs, operational-hold conversion, group draw-down, or the buyer delivery-email
+read — commerce's other seven internal operations still require the shared token, and a test
+enumerates all seven to keep that true rather than trusting the sentence.
+
+### What changed
+
+| | before TKT-194 | after |
+|---|---|---|
+| catalog writes | `CATALOG_STAFF_WRITE_TOKEN` | unchanged |
+| commerce staff refund | **unreachable** | `COMMERCE_STAFF_WRITE_TOKEN`, that operation only |
+| every other internal route | `INTERNAL_SERVICE_TOKEN`, not held here | unchanged |
+
+**The honest cost, stated plainly:** an internet-facing process now holds a credential that moves
+money. Before this ticket, an SSR compromise could author catalog content; now it can also refund
+completed orders, up to 50 tickets per request, without limit on the number of requests. There is no
+approval step, no per-refund or cumulative value cap, and no review surface. Those are not
+oversights this amendment closes — they are the controls a production deployment would add, and
+naming them here is how the next person knows they are missing.
+
+### Why the credential and not a gateway route
+
+The refund lives under `/internal/`, which the gateway edge-denies by construction — ADR-002 makes
+the route table *the* security boundary. Reaching it could have been done by adding a named exception
+to that table. It was not, because **the exception would have published a money-moving endpoint to
+the public internet** behind a single bearer token, while granting the back office nothing: it is a
+server-side process on the container network and can already open a socket to `commerce:8080`.
+
+So it reaches commerce **directly**, exactly as access already reaches commerce's delivery-email read
+(`COMMERCE_URL: http://commerce:8080`). The gateway's `/internal/` deny remains **absolute, with no
+exceptions**, and a smoke test asserts the refund path is still edge-denied — an assertion that
+matters more after this ticket than before it.
+
+### The deputy boundary, restated
+
+Commerce authenticates **the deputy**, not the staff member: it knows the request came from the back
+office, not who is sitting at it. Which staff member may refund is decided **here**, by the route
+matrix — `/admin/orders` is `admin` + `box_office` (owner decision, 2026-08-04: box office refunds,
+because an admin-only refund in a system with no delegation means the admin password gets shared,
+which destroys attribution rather than protecting it).
+
+`actor` therefore carries the weight. It is the signed-in staff member's id, taken from the session
+and never from the form, and it is what makes a refund attributable at all.
+
+### An unresolved refund is server state, and the residual is named
+
+A refund whose response is lost may have moved money. The only safe next step is
+replaying the **same** idempotency key, so the console must keep offering that key
+— across a fresh lookup, a reload, and a shift change to another operator, because
+commerce deliberately leaves the order `completed` with quantity still refundable.
+An operator offered a freshly keyed refund form in that state is one click from
+refunding a customer twice.
+
+Neither request state nor a hidden form field can carry that. Request state dies
+with the request, and a browser-supplied field is not evidence of provenance —
+a forged or stale value could name a key other than the one that actually became
+ambiguous, discarding the only replay-safe key there was. So the back office
+holds it **server-side, keyed by organizer and order**, and the ordinary refund
+form is suppressed while anything is outstanding.
+
+**What that does not cover, stated plainly:** the store is in-memory, beside the
+session store, so it does not survive a process restart and is not shared between
+replicas. The back office runs as one container today; a second would need this in
+Postgres or Redis. A restart *during* an outage still loses the key, and the
+reconciliation is then manual.
+
+**The durable answer is a read, not a store.** Commerce already knows what happened
+to that key — the ambiguity is only about whether the back office learned it. A
+read of an order's refunds would settle it definitively and make this store an
+optimisation rather than a control. There is no such read (`OrderState` is
+`{order_id, status}`), which is **TKT-201**'s territory.
+
+### Name the adversary (ADR-021)
+
+`actor` is **honest-operator attribution**. It records which signed-in staff member drove a refund,
+and it is evidence in a dispute about who did what.
+
+It is **not** evidence against an adversary who can write to commerce's database, forge a session, or
+reach commerce's port with the credential — any of those can produce a refund row naming anyone. The
+claim this supports is "we can tell which operator refunded this", not "this refund is tamper-evident".
+
+### References
+
+TKT-194 (US-B5), TKT-191, TKT-197, TKT-193, ADR-002 (the route table is the boundary),
+ADR-037 (a refunded order stays completed), ADR-040 (idempotency), ADR-001 (money), ADR-021 (name the
+adversary). **TKT-203** carries the resend, which does not exist. Refund limits, approval and a review
+surface are unowned.

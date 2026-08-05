@@ -40,6 +40,8 @@ type Server struct {
 	db                                           *sql.DB
 	client                                       *http.Client
 	catalogURL, inventoryURL, paymentsURL, token string
+	// The back office's commerce credential (TKT-194); see staff_credential.go.
+	staffWriteToken string
 	// accessURL drives the ticket-voiding half of a refund reversal (TKT-157). Empty
 	// leaves the obligation outstanding rather than failing the refund — the money has
 	// already moved by then.
@@ -76,13 +78,13 @@ func (s *Server) WithAccess(access string) *Server {
 	s.refunds = refunds.New(s.db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 	return s
 }
-func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
-	r := chi.NewRouter()
-	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/yaml")
-		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
-		_, _ = w.Write(apispec.Spec)
-	})
+
+// registerRoutes is separate from Router so a test can WALK the real route
+// inventory (TKT-194). The credential enumeration proving that the back
+// office's token opens exactly one internal operation is only as good as its
+// knowledge of which operations exist, and a hand-maintained list cannot detect
+// a route added after it was written.
+func (s *Server) registerRoutes(r chi.Router) {
 	r.Post("/reservations", s.reserve)
 	r.Post("/orders", s.checkout)
 	r.Get("/orders/{id}", s.getOrder)
@@ -94,6 +96,16 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)
 	r.Post("/internal/operational-holds/{id}/convert", s.convertOperational)
 	r.Post("/internal/group-reservations/{id}/draw-down", s.drawDownGroupReservation)
+}
+
+func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
+	r := chi.NewRouter()
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
+		_, _ = w.Write(apispec.Spec)
+	})
+	s.registerRoutes(r)
 	validated, err := contract.RequestValidator(apispec.Spec, r, log, validateResponses)
 	if err != nil {
 		panic(err)
