@@ -887,6 +887,8 @@ paths:
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
+            Age:
+              $ref: '#/components/headers/PublicReadAge'
           content:
             application/json:
               schema:
@@ -915,6 +917,8 @@ paths:
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
+            Age:
+              $ref: '#/components/headers/PublicReadAge'
           content:
             application/json:
               schema:
@@ -944,6 +948,7 @@ paths:
           description: Published season detail, localized
           headers:
             Cache-Control: { $ref: '#/components/headers/CacheControl' }
+            Age: { $ref: '#/components/headers/PublicReadAge' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublicSeasonDetail' }
@@ -970,6 +975,7 @@ paths:
           description: Published festival detail, localized
           headers:
             Cache-Control: { $ref: '#/components/headers/CacheControl' }
+            Age: { $ref: '#/components/headers/PublicReadAge' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublicFestivalDetail' }
@@ -1167,6 +1173,28 @@ components:
       description: ADR-004 volatility tier, explicit on every public read
       schema:
         type: string
+    PublicReadAge:
+      description: >
+        Seconds this answer has already spent in catalog's in-memory public-read
+        cache (TKT-206, ADR-045), rounded up. Required, and 0 on a cache miss.
+
+        It exists so two staleness budgets cannot stack. Cache-Control declares
+        these responses publicly cacheable for five minutes, and the storefront's
+        SSR cache starts every entry it fetches at age zero — so without Age, a
+        catalog entry already 299 seconds old would be granted another 300 by
+        Astro, giving a buyer ten minutes of staleness against a tier that
+        promises five. Age is RFC 9111's mechanism for exactly this, and it is
+        the only one available here: varying Cache-Control by remaining freshness
+        is what the storefront middleware does for pages, but ADR-028 validates
+        this response header against its declaration, so the tier is a fixed
+        value.
+
+        Bounded by the tier itself: an entry older than max-age is not served.
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 300
     SeatMapCacheControl:
       description: >
         ADR-004 volatility tier for a seat-map read, driven by the payload's

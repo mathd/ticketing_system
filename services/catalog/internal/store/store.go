@@ -634,4 +634,9 @@ type Store interface {
 	GetPublishedEvent(ctx context.Context, id uuid.UUID) (EventAggregate, error)
 	GetPublishedSeason(ctx context.Context, id uuid.UUID) (SeasonAggregate, error)
 	GetPublishedFestival(ctx context.Context, id uuid.UUID) (FestivalAggregate, error)
+	// RegisterPublicReadInvalidator wires the cache that fronts the four public
+	// reads above (TKT-206). On the interface rather than only on *Postgres so
+	// there is no path where a Server is built with a store that silently
+	// announces nothing — a cache nobody invalidates looks like it works.
+	RegisterPublicReadInvalidator(func(PublicReadScope))
 }

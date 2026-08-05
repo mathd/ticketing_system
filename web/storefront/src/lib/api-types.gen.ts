@@ -1325,6 +1325,12 @@ export interface components {
     headers: {
         /** @description ADR-004 volatility tier, explicit on every public read */
         CacheControl: string;
+        /**
+         * @description Seconds this answer has already spent in catalog's in-memory public-read cache (TKT-206, ADR-045), rounded up. Required, and 0 on a cache miss.
+         *     It exists so two staleness budgets cannot stack. Cache-Control declares these responses publicly cacheable for five minutes, and the storefront's SSR cache starts every entry it fetches at age zero — so without Age, a catalog entry already 299 seconds old would be granted another 300 by Astro, giving a buyer ten minutes of staleness against a tier that promises five. Age is RFC 9111's mechanism for exactly this, and it is the only one available here: varying Cache-Control by remaining freshness is what the storefront middleware does for pages, but ADR-028 validates this response header against its declaration, so the tier is a fixed value.
+         *     Bounded by the tier itself: an entry older than max-age is not served.
+         */
+        PublicReadAge: number;
         /** @description ADR-004 volatility tier for a seat-map read, driven by the payload's statuses (TKT-107): the hours tier only when the response is non-empty and every seat map in it is published, otherwise no-store. Draft geometry is mutable, so an hour of shared-cache lifetime would make an authoring write look lost; a published version is immutable (ADR-029), which is what makes the hours branch correct. One response carries one header, so a list takes its least-cacheable member's tier, and an empty list fails closed. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. no-store closes the shared-cache vector only — it is not access control. */
         SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
         /** @description Always no-store. A resolved price feeds a money decision (ADR-004's "never" tier), and once TKT-152 adds effective windows the response's correctness expires at a known instant — caching it past that instant would sell at a stale price. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
@@ -2312,6 +2318,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["CacheControl"];
+                    Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2340,6 +2347,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["CacheControl"];
+                    Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2369,6 +2377,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["CacheControl"];
+                    Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2398,6 +2407,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["CacheControl"];
+                    Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
                 content: {

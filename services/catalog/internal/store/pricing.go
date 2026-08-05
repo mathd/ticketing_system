@@ -178,13 +178,13 @@ type RuleSelection struct {
 	// whole question — commerce needs the organizer to authorize and the slot to
 	// place the hold, and a second catalog read to fetch them would have to be
 	// reconciled against this one on every sale (TKT-153).
-	OrganizerID   uuid.UUID
-	PerformanceID uuid.UUID
-	BasePrice       Money
-	ResolvedPrice   Money
-	Winner          *PriceRule
-	Candidates      []LosingPriceRule
-	FallbackReason  *string
+	OrganizerID    uuid.UUID
+	PerformanceID  uuid.UUID
+	BasePrice      Money
+	ResolvedPrice  Money
+	Winner         *PriceRule
+	Candidates     []LosingPriceRule
+	FallbackReason *string
 }
 
 // SelectPricingRule resolves one unit price and reports why (ADR-036 §4).

@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/getkin/kin-openapi/openapi3filter"
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
@@ -90,8 +90,13 @@ func cacheControlForSeatMaps(maps ...store.SeatMap) string {
 
 type Server struct {
 	store store.Store
-	pub   events.Publisher
-	log   *slog.Logger
+	// public serves the four minute-tier public reads from memory (TKT-206).
+	// Deliberately separate from `store`: every write and the seat-map reads keep
+	// using `store` directly, so nothing but those four handlers can reach a
+	// cached value. Asserted structurally, not by convention.
+	public publicReader
+	pub    events.Publisher
+	log    *slog.Logger
 	// internalCredential guards the hand-mounted /internal/* routes. It is the
 	// SHARED service token: whatever holds it reaches every service.
 	internalCredential string
@@ -111,8 +116,28 @@ const (
 )
 
 func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string) *Server {
-	return &Server{store: st, pub: pub, log: log,
+	return newServer(st, pub, log, internalCredential, staffWriteCredential, newPublicReadCache(st))
+}
+
+// newServerWithPublicReader injects the display-read collaborator. Tests use it
+// to count store loads and to prove no other handler can reach it.
+func newServerWithPublicReader(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string, pr publicReader) *Server {
+	return newServer(st, pub, log, internalCredential, staffWriteCredential, pr)
+}
+
+func newServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string, pr publicReader) *Server {
+	return &Server{store: st, pub: pub, log: log, public: pr,
 		internalCredential: internalCredential, staffWriteCredential: staffWriteCredential}
+}
+
+// publicReader is the narrow display-read collaborator — the four minute-tier
+// reads and nothing else. No write is on it, so the write path cannot acquire a
+// cached number even by accident.
+type publicReader interface {
+	ListPublishedEvents(ctx context.Context) (cached[[]store.EventAggregate], error)
+	GetPublishedEvent(ctx context.Context, id uuid.UUID) (cached[store.EventAggregate], error)
+	GetPublishedSeason(ctx context.Context, id uuid.UUID) (cached[store.SeasonAggregate], error)
+	GetPublishedFestival(ctx context.Context, id uuid.UUID) (cached[store.FestivalAggregate], error)
 }
 
 // NewRouter mounts the generated routes wrapped in spec request validation
@@ -1048,16 +1073,18 @@ func (s *Server) ListPublicEvents(w http.ResponseWriter, r *http.Request, params
 		writeJSON(w, http.StatusBadRequest, Error{Error: fmt.Sprintf("unsupported locale %q", params.Locale)})
 		return
 	}
-	aggs, err := s.store.ListPublishedEvents(r.Context())
+	read, err := s.public.ListPublishedEvents(r.Context())
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	aggs := read.Value
 	out := PublicEventList{Events: make([]PublicEventSummary, 0, len(aggs))}
 	for _, agg := range aggs {
 		out.Events = append(out.Events, eventSummary(agg, params.Locale))
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicReads)
+	setPublicReadAge(w, read.Age)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1116,13 +1143,15 @@ func (s *Server) GetPublicEvent(w http.ResponseWriter, r *http.Request, eventId 
 		writeJSON(w, http.StatusBadRequest, Error{Error: fmt.Sprintf("unsupported locale %q", params.Locale)})
 		return
 	}
-	agg, err := s.store.GetPublishedEvent(r.Context(), eventId)
+	read, err := s.public.GetPublishedEvent(r.Context(), eventId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	agg := read.Value
 	detail := publicEventDetail(agg, params.Locale)
 	w.Header().Set("Cache-Control", CacheControlPublicReads)
+	setPublicReadAge(w, read.Age)
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -1164,16 +1193,18 @@ func (s *Server) GetPublicSeason(w http.ResponseWriter, r *http.Request, seasonI
 		writeJSON(w, http.StatusBadRequest, Error{Error: fmt.Sprintf("unsupported locale %q", params.Locale)})
 		return
 	}
-	agg, err := s.store.GetPublishedSeason(r.Context(), seasonId)
+	read, err := s.public.GetPublishedSeason(r.Context(), seasonId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	agg := read.Value
 	out := PublicSeasonDetail{Id: agg.Season.ID, OrganizerId: agg.Season.OrganizerID, Name: resolve(agg.Season.Name, params.Locale), Events: make([]PublicEventDetail, 0, len(agg.Events))}
 	for _, event := range agg.Events {
 		out.Events = append(out.Events, publicEventDetail(event, params.Locale))
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicReads)
+	setPublicReadAge(w, read.Age)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1182,11 +1213,12 @@ func (s *Server) GetPublicFestival(w http.ResponseWriter, r *http.Request, festi
 		writeJSON(w, http.StatusBadRequest, Error{Error: fmt.Sprintf("unsupported locale %q", params.Locale)})
 		return
 	}
-	agg, err := s.store.GetPublishedFestival(r.Context(), festivalId)
+	read, err := s.public.GetPublishedFestival(r.Context(), festivalId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	agg := read.Value
 	out := PublicFestivalDetail{
 		Id: agg.Festival.ID, OrganizerId: agg.Festival.OrganizerID,
 		Name: resolve(agg.Festival.Name, params.Locale), Days: make([]PublicPerformanceDetail, 0, len(agg.Performances)),
@@ -1204,6 +1236,7 @@ func (s *Server) GetPublicFestival(w http.ResponseWriter, r *http.Request, festi
 		out.Days = append(out.Days, day)
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicReads)
+	setPublicReadAge(w, read.Age)
 	writeJSON(w, http.StatusOK, out)
 }
 

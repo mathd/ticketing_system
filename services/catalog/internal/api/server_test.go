@@ -29,6 +29,11 @@ import (
 
 // fakeStore is an in-memory Store. It mirrors the referential/tenancy checks
 // the SQL enforces; the real queries are exercised by the smoke suite.
+// RegisterPublicReadInvalidator satisfies store.Store (TKT-206). The fake never
+// writes through a transaction, so it announces nothing; the cache's own tests
+// drive invalidation directly.
+func (f *fakeStore) RegisterPublicReadInvalidator(func(store.PublicReadScope)) {}
+
 type fakeStore struct {
 	venues         map[uuid.UUID]store.Venue
 	events         map[uuid.UUID]store.Event
@@ -108,7 +113,7 @@ func (f *fakeStore) AuthenticateStaff(_ context.Context, identifier, password st
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		staffAccounts: map[string]staffAuthResult{},
+		staffAccounts:  map[string]staffAuthResult{},
 		venues:         map[uuid.UUID]store.Venue{},
 		events:         map[uuid.UUID]store.Event{},
 		performances:   map[uuid.UUID]store.Performance{},

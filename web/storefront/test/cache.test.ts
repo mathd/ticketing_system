@@ -116,3 +116,73 @@ describe('PageDataCache', () => {
     await expect(cache.get('http://gw/z')).rejects.toMatchObject({ status: 404 });
   });
 });
+
+// TKT-206: catalog now serves these reads from its own memory, so a response can
+// arrive ALREADY stale. Starting such an entry at age zero here would stack two
+// five-minute tiers into ten minutes of buyer-visible staleness — the exact
+// thing the epic's COS bounds. These pin the propagation.
+describe('upstream Age propagation', () => {
+  const headers = (maxAge: number, age?: string) =>
+    new Headers(
+      age === undefined
+        ? { 'cache-control': `public, max-age=${maxAge}` }
+        : { 'cache-control': `public, max-age=${maxAge}`, age },
+    );
+
+  it('reports upstream age on a miss rather than zero', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, '120') }),
+    );
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
+    const result = await cache.get('http://catalog/public/events');
+    expect(result.ageSeconds).toBe(120);
+  });
+
+  it('counts local elapsed time on top of upstream age', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, '200') }),
+    );
+    let now = 0;
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
+    await cache.get('http://catalog/public/events');
+    now = 30_000;
+    const hit = await cache.get('http://catalog/public/events');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // 200 upstream + 30 local. Without propagation this would report 30, and the
+    // middleware would grant the page 270 seconds it does not have.
+    expect(hit.ageSeconds).toBe(230);
+  });
+
+  it('expires an entry using the combined age, not the local one', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, '290') }),
+    );
+    let now = 0;
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
+    await cache.get('http://catalog/public/events');
+    now = 20_000; // 290 + 20 = 310 > 300
+    await cache.get('http://catalog/public/events');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retain a response that arrived already expired', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, '300') }),
+    );
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
+    await cache.get('http://catalog/public/events');
+    await cache.get('http://catalog/public/events');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats a missing or malformed Age as zero', async () => {
+    for (const age of [undefined, 'not-a-number', '-5']) {
+      const fetchImpl = vi.fn(async () =>
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, age) }),
+      );
+      const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
+      const result = await cache.get(`http://catalog/public/events?a=${age}`);
+      expect(result.ageSeconds).toBe(0);
+    }
+  });
+});
