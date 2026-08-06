@@ -4,7 +4,7 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "US-A1: Customer accounts - register, sign in, sign out (the identity substrate)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
