@@ -4,9 +4,11 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "US-A3: The wallet - a signed-in customer sees their orders and reaches their tickets",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -133,5 +135,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-222\n\n**Branch:** `TKT-222-wallet` off `origin/main` @ `cb019de5` (TKT-221 merged as `5bba9427`).\n**Routing:** plan = `gpt-5.6-luna` · planReview = `main-agent` · implement = `main-agent` ·\naiReview = `gpt-5.6-luna`. Cross-model invariant checked both ways. No substitution.\n\n**Blockers:** TKT-221 — **resolved** (merged, Done). Zero open blockers.\n\n**Selection reason:** the only claimable child of TKT-21; TKT-223 is blocked by this one.\n\n**Gate waiver:** the owner waiver recorded in full on TKT-220 applies. The `overrides:` list in this\nticket's closeout is its audit record.\n\n### Risk verdict: **`risk:low` NOT claimed**\n\nThe carve-outs it hits:\n\n1. **Auth** — the whole ticket is one authorization claim: *a customer sees their orders and nobody\n   else's*. That is the deliverable, not a side effect.\n2. Likely **>5 files** (contract, handler, store read, index migration, storefront page, tests).\n\nNot a money path — nothing here writes. Not a data migration in the risky sense, though an **index**\nmigration is likely (see below). Auth is anticipated by the ticket, so this proceeds under the waiver.\n\n### Context-mémo re-resolved at claim — two ADRs have landed since the bake\n\nBoth are TKT-220/221's and both constrain this ticket directly:\n\n- **ADR-049 + its TKT-221 amendment.** Customer accounts live in commerce; the storefront holds the\n  session; a commerce-signed **customer assertion** proves who the caller is, presented in\n  `X-Customer-Assertion`. **That is the mechanism this read has to use** — there is no other way for\n  commerce to know who is asking, and the storefront still holds no service credential.\n  The amendment also says plainly: `GET /orders/{id}` reports `customer_id` and is **informational,\n  not an ownership check** — TKT-222 \"must not treat it as one\".\n- **`orders.customer_id`** exists, nullable, NULL = guest, and **has no index** — deliberately, with\n  ADR-019 cited: an index is justified by the scan it removes, and this is the ticket that issues the\n  scan.\n\nRest of the governing set: **ADR-019** (a scoped read is only scoped if an index backs the filter,\nand proving it takes two tests — the result is scoped *and* the scan is), **ADR-021** (name the\nadversary), **ADR-012** (`guest_order_ref` is a bearer credential and is never logged — TKT-202 is\nthe open bug where the gateway logs it via the path), **ADR-004/006/045** (per-customer HTML is never\ncacheable), **ADR-009**, **ADR-022**, **ADR-028**, **ADR-002**.\n\n**Scope narrowing carried from decomposition, restated because it is the epic's COS:** TKT-21 says\nthe wallet lists \"tickets, passes, lodging and wristbands\". Passes (TKT-12), lodging (TKT-13) and\nwristbands (TKT-15) are un-started Backlog epics with no schema anywhere. This lists **orders and\ntheir tickets**, which is everything that exists to list.\n"
+    }
+  ]
 }
