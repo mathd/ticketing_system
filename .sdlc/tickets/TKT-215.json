@@ -4,7 +4,7 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F2: The sale charges passed-on fees and records the breakdown, per channel",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -50,7 +50,7 @@
     }
   },
   "context": {
-    "capturedAt": "2026-08-05",
+    "capturedAt": "2026-08-05 (re-baked at claim)",
     "binding": [
       {
         "id": "AGENTS.md",
@@ -65,40 +65,52 @@
     ],
     "governingAdrs": [
       {
+        "id": "ADR-046",
+        "why": "SHIPPED BY TKT-214 AND THIS TICKET'S DIRECT INPUT. Fixes the fee model: three basis kinds as a database-enforced tagged union (per_ticket_fixed / per_order_fixed / percentage_bps), FLOOR rounding AT THE INDIVIDUAL TICKET with checked multiplication before the divide (§2 - this ticket implements that arithmetic; catalog never multiplies), passed_on vs absorbed incidence and what each does to the charged total (§3), exact-match channel semantics with NULL meaning channel-agnostic and an omitted channel NOT being a wildcard (§4), catalog-resolves/commerce-computes ownership with ADR-002 unamended (§5), the /internal/ read and its X-Internal-Token guard (§6), and - easy to miss - §2's rule that A RESOLVED FEE OF AMOUNT 0 IS STILL A RESOLVED FEE and must appear in the breakdown."
+      },
+      {
         "id": "ADR-036",
-        "why": "The pricing-rule model this epic extends. Fixes the five scope levels and how each is DERIVED from the ticket type (§1), the specificity order ticket_type > slot > series > event > venue and which parts of it are containment vs policy, the comparator steps (§4), the (scope_level, scope_id) index predicate and WHY matching on scope_id alone is a correctness bug (§3), append-mostly semantics with effective_until as the only mutable field, and - directly for this epic - §2: 'When a relative action is added, it must be integer-safe: basis points, checked multiplication, and a documented rounding direction. Floats stay banned.' It also states that deltas were deliberately left OUT of pricing because they overlap TKT-6."
+        "why": "The pricing model ADR-046 extends. Relevant here for §2's integer-safety requirement and for the precedent that commerce consumes catalog's resolved number and NEVER recomputes it - two places computing one number is a divergence bug waiting for its first mismatch."
       },
       {
         "id": "ADR-001",
-        "why": "Money is integer minor units + ISO-4217. Every fee arithmetic path is integer-only: no float, no big.Float, no decimal-as-string round trip."
+        "why": "Money is integer minor units + ISO-4217. Every fee computation on this ticket is integer-only with a checked multiplication; no float, no big.Float, no decimal-as-string round trip."
       },
       {
         "id": "ADR-002",
-        "why": "The ownership line: catalog owns rule definitions, commerce owns 'pricing/fee/promo evaluation', payments owns the settlement ledger. ADR-036 §6 already amended this row once for price RESOLUTION; any further move of the line for fees must be an explicit amendment, not an assertion that the boundary did not really change."
+        "why": "Commerce owns 'pricing/fee/promo evaluation' - the arithmetic is this service's job. Catalog owns the rules. ADR-046 §5 deliberately did NOT move that line, so this ticket must not push arithmetic back into catalog."
       },
       {
         "id": "ADR-009",
-        "why": "Contract-first: a new operation or field must be declared in the service's openapi.yaml, and openapi_gen.go / api-types.gen.ts regenerated and COMMITTED before the gate (check-generate diffs against HEAD)."
+        "why": "Contract-first: ReservationCreate and Reservation changes must be declared in services/commerce/api/openapi.yaml and the generated code committed BEFORE the gate."
       },
       {
         "id": "ADR-028",
-        "why": "Responses are validated against the contract and fail closed - an undeclared field or an out-of-enum header becomes a 500 with the payload withheld. A money amount above the contract's Money cap is the classic instance (ADR-036 records it as TKT-154's residue)."
-      },
-      {
-        "id": "ADR-024",
-        "why": "Channel codes are EXACT OPAQUE STRINGS (1..100 chars) on inventory claims; NULL means the default/public channel. There is no channel registry and per-channel pricing/fee rules were explicitly deferred to TKT-17/TKT-5 - i.e. to this epic. Do not invent a registry here; match the existing opaque-code shape."
+        "why": "Response validation fails closed. A new REQUIRED response field turns every pre-existing valid response into a 500 - which is why the breakdown must be optional in the contract, exactly as Reservation.seats had to be."
       },
       {
         "id": "ADR-011",
-        "why": "The checkout journal protocol: what commerce may do before/after the hold exists, and why a failure after inventory commits is the expensive one. The fee snapshot's storability must be proven BEFORE the hold, for the same reason TKT-153 moved that check."
+        "why": "The checkout journal protocol: what commerce may do before and after the hold exists. A failure AFTER inventory commits leaves an orphan hold and a 500 for the buyer, which is why TKT-153 moved the snapshot storability check to before the hold. Same discipline applies to the fee snapshot."
       },
       {
         "id": "ADR-010",
-        "why": "The claim runs in one Postgres transaction and is the correctness boundary. Nothing this ticket adds may make the claim path slower or conditional on a second network read completing after the hold."
+        "why": "The claim runs in one Postgres transaction and is the correctness boundary. Nothing here may make the claim conditional on a second network read completing after the hold."
       },
       {
         "id": "ADR-016",
-        "why": "Checkout recovery replays. A total recomputed on replay from a re-resolved fee set would drift from the total the buyer authorised; the stored total is the only one that may be charged."
+        "why": "Checkout recovery REPLAYS a checkout whose outcome is unknown. A total recomputed on replay from a re-resolved fee set would drift from the total the buyer authorised; only the stored total may be charged."
+      },
+      {
+        "id": "ADR-024",
+        "why": "Channel codes are exact opaque strings, 1..100 chars, NULL = default/public. Inventory already stores one on claims. There is no registry; do not invent one."
+      },
+      {
+        "id": "ADR-043",
+        "why": "SAME-WEEK ADR, included by the TKT-214 retro rule rather than by area match - and it is the one that governs how commerce reaches catalog's new /internal/ route. Declared security: guards a service's PUBLIC contract; an inline check guards its internal surface. Commerce already holds catalog's internal token and calls /internal/ticket-types/{id} with it (server.go:1158, internal=true) - the fee read takes the SAME credential, so this adds no blast radius."
+      },
+      {
+        "id": "ADR-032",
+        "why": "Same-week-adjacent: the PSP port boundary. The captured amount is what the provider confirmed; the fee breakdown must reconcile to it, not to a recomputation."
       }
     ],
     "reference": [
@@ -107,20 +119,32 @@
         "link": "board:TKT-6"
       },
       {
-        "summary": "The consumer to mirror, including the two failure classes and the storability guard",
+        "summary": "The fee model, shipped and merged - read §2 (rounding), §3 (incidence), §4 (channel), §9 (a considered code with a null winner)",
+        "link": "docs/adr/ADR-046-fee-rules-representation.md"
+      },
+      {
+        "summary": "The read this ticket consumes: GET /internal/ticket-types/{id}/fee-resolution?channel_code=... , X-Internal-Token, 401. Winner is NULLABLE - a code every rule of which is outside its window resolves with winner:null and must be skipped, not treated as a fee of zero",
+        "link": "services/catalog/api/openapi.yaml"
+      },
+      {
+        "summary": "The consumer to mirror end to end: one read, strict-semantics/tolerant-fields decode, storableSnapshot BEFORE the hold, validate() before use, two failure classes that never degrade to a default",
         "link": "services/commerce/internal/api/catalog_pricing.go"
       },
       {
-        "summary": "The reserve path and the EUR-only limitation it carries",
-        "link": "services/commerce/internal/api/server.go"
+        "summary": "The reserve path, the EUR-only limitation, and how commerce sends the internal credential (call(..., internal=true))",
+        "link": "services/commerce/internal/api/server.go:128,1158"
       },
       {
         "summary": "The snapshot precedent: nullable, not backfilled, CHECK-shaped, Down refuses to drop with data present",
         "link": "services/commerce/internal/store/migrations/0006_price_resolution_snapshot.sql"
       },
       {
-        "summary": "ReservationCreate's minProperties/maxProperties XOR - adding an optional property changes those counts",
+        "summary": "ReservationCreate's minProperties/maxProperties XOR - adding an optional property changes those counts and the XOR must still hold",
         "link": "services/commerce/api/openapi.yaml:209"
+      },
+      {
+        "summary": "TKT-214 closeout: the two agent-made decisions this ticket inherits (the forced/channel inversion, and the /internal/ route)",
+        "link": "board:TKT-214"
       }
     ]
   },
