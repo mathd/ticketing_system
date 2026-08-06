@@ -391,10 +391,22 @@ func (s *Server) settleExchangeDelta(r *http.Request, ex commercestore.Exchange,
 	case delta == 0:
 		return nil
 	case delta > 0:
+		// The delta charge settles FEE-FREE, and that follows from a decision this
+		// epic already took rather than from convenience: TKT-215 made the fee
+		// travel WITH the order on an exchange, so no fee money moves here — the
+		// delta is a pure price difference and the organizer is owed all of it.
+		//
+		// A settlement plan is required because payments refuses a captured fact
+		// with no attribution (ADR-048); "no fees" is an attribution, not an
+		// absence of one.
 		code, _, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/charges",
 			"exchange-charge:"+ex.ID.String(), map[string]any{
 				"order_id": ex.SourceOrderID, "organizer_id": ex.OrganizerID, "buyer_id": ex.BuyerID,
 				"amount": delta, "currency": ex.Currency, "payment_token": "fake-ok",
+				"settlement": map[string]any{
+					"face_value": delta, "passed_on": 0, "absorbed": 0,
+					"total_amount": delta, "currency": ex.Currency, "fees": []any{},
+				},
 			}, true)
 		if err != nil || code != http.StatusOK {
 			return fmt.Errorf("exchange charge: status %d: %w", code, err)
