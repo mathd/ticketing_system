@@ -4,9 +4,11 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "US-A4: Claim a guest order into an account, retroactively",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -125,5 +127,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-223\n\n**Branch:** `TKT-223-claim-guest-order` off `origin/main` @ `28bda3ed` (TKT-222 merged as `81df0a0a`).\n**Routing:** plan = `gpt-5.6-luna` · planReview = `main-agent` · implement = `main-agent` ·\naiReview = `gpt-5.6-luna`. Cross-model invariant checked both ways. No substitution.\n\n**Blockers:** TKT-222 — **resolved** (merged, Done). Zero open blockers. This is the last child of\nTKT-21.\n\n**Gate waiver:** the owner waiver recorded in full on TKT-220 applies. The `overrides:` list in this\nticket's closeout is its audit record.\n\n### Risk verdict: **`risk:low` NOT claimed**\n\n- **Auth** — the ticket *is* an authorization question: what proves that a guest order is yours.\n- **A write to `orders`** on a row that may be months old and already settled.\n- Likely **>5 files**.\n\nNot a money path — nothing charges, refunds or moves capacity. No migration is expected: TKT-221's\n`customer_id` column is the field this writes.\n\n### Context-mémo re-resolved at claim — and one entry is a direct collision\n\nTwo ADRs and one **test invariant** have landed since the bake, and the invariant is the interesting\none:\n\n> **`TestNoProductionCodeUpdatesOrderAttribution`** (TKT-221, `attribution_invariant_test.go`) scans\n> every production Go file in commerce and **fails if any `UPDATE orders SET` mentions\n> `customer_id`.** It exists because attribution is written once, at `claimOrder`, and must survive\n> completion and recovery untouched.\n>\n> **This ticket's entire deliverable is an `UPDATE orders SET customer_id`.** That is not the\n> invariant being wrong — it is the invariant doing its job and demanding that the one legitimate\n> exception be made deliberately, in the open, with its reasoning. Amending it is part of the work,\n> and \"why is claiming allowed to do what recovery must not\" is the question the plan has to answer.\n\nAlso landed and constraining:\n\n- **ADR-049 § TKT-221** — attribution is immutable under idempotency; a replay cannot repoint a\n  purchase or promote a guest order. A claim is exactly \"promote a guest order\", so the plan must say\n  what makes it different from the replay case that is forbidden.\n- **ADR-049 § TKT-222** — the wallet excludes orders with **no `guest_order_ref`**; a claimed order\n  has one, so it appears. `GET /orders/{id}` is informational and not an ownership check.\n- **ADR-012** — `guest_order_ref` is a **bearer credential**: holding it already grants the tickets\n  themselves. That is the fact the \"what proves ownership\" decision turns on, and TKT-202 (the\n  gateway logs it via the URL path) is still open.\n- **ADR-021** — name the adversary. **ADR-016** — do not perturb the recovery states. **ADR-009**,\n  **ADR-022**, **ADR-028**, **ADR-043**, **ADR-002** as before.\n\nCredential blast radius unchanged: the storefront holds only `GATEWAY_URL`; identity reaches commerce\nas the `X-Customer-Assertion` header and nothing else.\n"
+    }
+  ]
 }
