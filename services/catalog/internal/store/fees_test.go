@@ -575,3 +575,62 @@ func sliceHas(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// The reason constants pinned to their LITERAL wire values, and asserted
+// distinct.
+//
+// Every other test in this file names the reasons through the production
+// constants, which means an ALIASING change moves the expectation and the
+// assertion together and nothing fails. Concretely: setting
+// ReasonLowerPriority = "less_specific" would make the lower-priority fixture
+// emit "less_specific", its exact assertion expect "less_specific", and the
+// reachability inventory contain that value twice — all green, while callers
+// received the wrong provenance and the contract's enum happily accepted it.
+// Caught at ai-review pass 2; it is the "a fixture built from the type under
+// test cannot fail" trap wearing constants instead of a struct.
+//
+// One test closes it for all of them: with the literals pinned and distinct,
+// aliasing is unrepresentable, so every other test may keep using the readable
+// constant names.
+func TestFeeLossReasonWireValuesArePinned(t *testing.T) {
+	pinned := map[string]string{
+		"ReasonLessSpecific":         "less_specific",
+		"ReasonForcedBroaderScope":   "forced_broader_scope",
+		"ReasonExcludedByForcedRule": "excluded_by_forced_rule",
+		"ReasonLowerForcedScope":     "lower_forced_scope",
+		"ReasonLessChannelSpecific":  "less_channel_specific",
+		"ReasonLowerPriority":        "lower_priority",
+		"ReasonStableIDTiebreak":     "stable_id_tiebreak",
+		"ReasonOutsideWindowPast":    "outside_window_past",
+		"ReasonOutsideWindowFuture":  "outside_window_future",
+	}
+	actual := map[string]string{
+		"ReasonLessSpecific":         ReasonLessSpecific,
+		"ReasonForcedBroaderScope":   ReasonForcedBroaderScope,
+		"ReasonExcludedByForcedRule": ReasonExcludedByForcedRule,
+		"ReasonLowerForcedScope":     ReasonLowerForcedScope,
+		"ReasonLessChannelSpecific":  ReasonLessChannelSpecific,
+		"ReasonLowerPriority":        ReasonLowerPriority,
+		"ReasonStableIDTiebreak":     ReasonStableIDTiebreak,
+		"ReasonOutsideWindowPast":    ReasonOutsideWindowPast,
+		"ReasonOutsideWindowFuture":  ReasonOutsideWindowFuture,
+	}
+	for name, want := range pinned {
+		if actual[name] != want {
+			t.Errorf("%s = %q, want the pinned wire value %q. Changing a reason's wire "+
+				"value is a contract change: it is a declared enum member and TKT-215 "+
+				"persists it in provenance snapshots.", name, actual[name], want)
+		}
+	}
+	seen := map[string]string{}
+	for name, v := range actual {
+		if other, dup := seen[v]; dup {
+			t.Errorf("%s and %s share the wire value %q — aliased reasons make every "+
+				"other assertion in this file unable to fail", name, other, v)
+		}
+		seen[v] = name
+	}
+	if len(seen) != len(pinned) {
+		t.Errorf("got %d distinct reason values, want %d", len(seen), len(pinned))
+	}
+}

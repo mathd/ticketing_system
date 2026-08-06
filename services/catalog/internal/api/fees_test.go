@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
 
+	apispec "ticketing/services/catalog/api"
 	"ticketing/services/catalog/internal/store"
 )
 
@@ -423,5 +425,91 @@ func TestTheInternalGuardDoesNotTouchPublicRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the public price resolution must still answer without a credential: %d %s",
 			rec.Code, rec.Body)
+	}
+}
+
+// The prefix guard's load-bearing assumption, pinned: it reads r.URL.Path and
+// chi routes on r.URL.Path, so a spelling that reaches the handler cannot be a
+// spelling the guard missed. These are the variants that break naive prefix
+// guards — a leading double slash, dot segments, a different case, an internal
+// double slash. Each must answer 401 (guard caught it) or 404 (the router never
+// matched it), and NEVER 200.
+//
+// Written because this is the one property the guard's whole design rests on,
+// and it is exactly the kind of thing that silently stops holding when someone
+// adds a path-normalising middleware upstream.
+func TestTheInternalGuardCannotBeSpelledAround(t *testing.T) {
+	e := newEnv(t)
+	ttID, scopes := seedPricedTicketType(t, e, 4550, "EUR")
+	addFeeRule(t, e, fixedFee(scopes, store.ScopeVenue, "service", 300))
+	id := ttID.String()
+
+	for name, path := range map[string]string{
+		"leading double slash":  "//internal/ticket-types/" + id + "/fee-resolution",
+		"dot segment":           "/internal/../internal/ticket-types/" + id + "/fee-resolution",
+		"leading dot segment":   "/./internal/ticket-types/" + id + "/fee-resolution",
+		"uppercase prefix":      "/INTERNAL/ticket-types/" + id + "/fee-resolution",
+		"internal double slash": "/internal//ticket-types/" + id + "/fee-resolution",
+		"prefix without slash":  "/internalticket-types/" + id + "/fee-resolution",
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://catalog.local"+path, nil)
+			rec := httptest.NewRecorder()
+			e.handler.ServeHTTP(rec, req)
+			if rec.Code == http.StatusOK {
+				t.Fatalf("%s reached the handler without a credential: %s", path, rec.Body)
+			}
+			if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want 401 (guarded) or 404 (unrouted); body %s", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+// The Go reason vocabulary and the CONTRACT's enum must be the same set.
+//
+// They are declared in two places — store/fees.go and the LosingFeeRule schema
+// in openapi.yaml — and nothing else compares them. A reason the resolver can
+// emit but the contract does not declare becomes a fail-closed 500 on a money
+// read (ADR-028); a reason the contract declares but nothing emits is a lie to
+// every consumer generating types from the document.
+func TestFeeLossReasonEnumMatchesTheContract(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(apispec.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, ok := doc.Components.Schemas["LosingFeeRule"]
+	if !ok {
+		t.Fatal("the contract declares no LosingFeeRule schema")
+	}
+	reason, ok := schema.Value.Properties["reason"]
+	if !ok {
+		t.Fatal("LosingFeeRule declares no reason property")
+	}
+	declared := map[string]bool{}
+	for _, v := range reason.Value.Enum {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("non-string enum member %v", v)
+		}
+		declared[s] = true
+	}
+	emitted := map[string]bool{
+		store.ReasonLessSpecific: true, store.ReasonForcedBroaderScope: true,
+		store.ReasonExcludedByForcedRule: true, store.ReasonLowerForcedScope: true,
+		store.ReasonLessChannelSpecific: true, store.ReasonLowerPriority: true,
+		store.ReasonStableIDTiebreak: true, store.ReasonOutsideWindowPast: true,
+		store.ReasonOutsideWindowFuture: true,
+	}
+	for r := range emitted {
+		if !declared[r] {
+			t.Errorf("the resolver can emit %q, which the contract does not declare — "+
+				"response validation would turn that into a 500 on a money read", r)
+		}
+	}
+	for r := range declared {
+		if !emitted[r] {
+			t.Errorf("the contract declares %q, which nothing emits", r)
+		}
 	}
 }
