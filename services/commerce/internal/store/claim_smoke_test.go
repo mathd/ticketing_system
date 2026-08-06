@@ -100,6 +100,11 @@ func TestClaimRefusesEveryUnclaimableOrder(t *testing.T) {
 	_, incomplete := seedClaimable(t, db, ctx, "created", uuid.NullUUID{})
 	_, taken := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: theirs, Valid: true})
 
+	// Byte-identical error TEXT, not merely the same sentinel: a caller sees what
+	// the handler renders from this, and two messages that differ by a word are
+	// two answers (ai-review). The handler maps all three to one body; this pins
+	// that the store gives it nothing to differentiate them with.
+	var messages []string
 	for _, tc := range []struct {
 		name string
 		ref  uuid.UUID
@@ -109,10 +114,18 @@ func TestClaimRefusesEveryUnclaimableOrder(t *testing.T) {
 		{"already claimed by somebody else", taken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ClaimGuestOrder(ctx, db, tc.ref, mine); !errors.Is(err, ErrOrderNotClaimable) {
+			_, err := ClaimGuestOrder(ctx, db, tc.ref, mine)
+			if !errors.Is(err, ErrOrderNotClaimable) {
 				t.Fatalf("want ErrOrderNotClaimable, got %v", err)
 			}
+			messages = append(messages, err.Error())
 		})
+	}
+	for i := 1; i < len(messages); i++ {
+		if messages[i] != messages[0] {
+			t.Fatalf("refusal %d reads %q where the first reads %q — three answers, not one",
+				i, messages[i], messages[0])
+		}
 	}
 }
 

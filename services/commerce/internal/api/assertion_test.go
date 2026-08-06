@@ -52,6 +52,10 @@ func TestCustomerAssertionRefusesEveryTamperedForm(t *testing.T) {
 		{"empty", ""},
 		{"not a token at all", "hello"},
 		{"unparseable customer id", strings.Join([]string{parts[0], "not-a-uuid", parts[2], parts[3]}, ".")},
+		// The nil uuid is what a zero value looks like, not an identity. A
+		// correctly SIGNED one is the interesting case: it can only come from a
+		// construction bug on this side, and it must not arrive as a principal.
+		{"the nil uuid, correctly signed", mintCustomerAssertion(testAssertionKey, uuid.Nil, now.Add(CustomerAssertionTTL))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := verifyCustomerAssertion(testAssertionKey, tc.token, now); !errors.Is(err, ErrCustomerAssertionInvalid) {

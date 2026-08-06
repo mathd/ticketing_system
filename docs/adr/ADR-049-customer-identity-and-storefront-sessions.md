@@ -508,6 +508,15 @@ Nonexistent, not completed, and already claimed by somebody else are all **404 `
 found"}`**. Telling them apart hands a caller probing references an oracle for which are real,
 complete and unclaimed. The cost is real and is accepted: a buyer who mistypes gets no help.
 
+**The claim is "one answer", not "one cost", and the difference is worth stating** (ai-review): the
+three cases take different database paths — a row found and locked, versus no row — so they are not
+equalized in *time*. Closing that would mean a dummy row lock on every miss, which is
+disproportionate to what it buys: the attacker still has to hold a v4 uuid to time anything, and
+volume is what makes timing measurable, which is **TKT-224**'s subject rather than this one's.
+
+A **malformed** reference is 400. That distinction is deliberate and discloses nothing about the
+order book — a caller who cannot spell a uuid has learned only that they cannot spell a uuid.
+
 A **malformed** reference is 400 — that is request validation, and a caller who cannot spell a uuid
 has learned nothing about the order book.
 

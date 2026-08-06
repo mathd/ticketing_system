@@ -35,7 +35,11 @@ import (
 // worse than no scanner, so TestTheScannerSeesTheShapesThatExist pins each shape
 // it must recognise.
 var (
-	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\x60|\bWHERE\b|;)`)
+	// Two captures: $1 is the SET clause, $2 is everything from WHERE to the end of
+	// the raw string. The second exists so a predicate check can be bound to the
+	// STATEMENT rather than to the file — searching the file passes when the
+	// predicates live in a comment or a different function (ai-review [medium]).
+	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;)`)
 	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+orders\s*\(([^)]*)\)`)
 )
 
@@ -97,7 +101,7 @@ func TestNoProductionCodeUpdatesOrderAttribution(t *testing.T) {
 			if !strings.Contains(strings.ToLower(match[1]), "customer_id") {
 				continue
 			}
-			if allowedAttributionUpdates(match[1]) && claimPredicatesIntact(body) {
+			if allowedAttributionUpdates(match[1]) && claimPredicatesIntact(match[2]) {
 				allowed++
 				continue
 			}
@@ -210,13 +214,18 @@ func TestOrderSQLIsWrittenAsLiterals(t *testing.T) {
 // claimPredicatesIntact requires the claim statement to keep the three predicates
 // that make it narrow. Without them the allowlisted statement would be a blanket
 // "set any order's customer to anyone".
-func claimPredicatesIntact(body string) bool {
+//
+// Takes the statement's OWN where-clause, not the file it lives in. The first
+// version searched the whole file, so predicates sitting in a comment — or in a
+// different function entirely — would authorize a statement that had none of them
+// (ai-review [medium]).
+func claimPredicatesIntact(where string) bool {
 	for _, predicate := range []string{
 		"guest_order_ref = $1",
 		"status = 'completed'",
 		"customer_id IS NULL OR customer_id = $2",
 	} {
-		if !strings.Contains(body, predicate) {
+		if !strings.Contains(where, predicate) {
 			return false
 		}
 	}
@@ -274,5 +283,34 @@ func TestTheAllowlistCannotBeWidened(t *testing.T) {
 						false: "admits a statement nobody reviewed"}[tc.want])
 			}
 		})
+	}
+}
+
+// The bypass the file-scoped version admitted (ai-review [medium]).
+//
+// `claimPredicatesIntact` is only as good as what it is handed. The first version
+// was handed the whole FILE, so a statement with no predicates at all passed as
+// long as the words appeared *somewhere* — in a comment, or in a different
+// function. This drives the real regex over synthetic source and asserts the
+// where-clause it extracts belongs to the statement it matched.
+func TestPredicatesAreReadFromTheStatementAndNotTheFile(t *testing.T) {
+	source := `
+// A comment that mentions guest_order_ref = $1 and status = 'completed' and
+// customer_id IS NULL OR customer_id = $2 — none of which is in the statement.
+const sneaky = ` + "`" + `
+	UPDATE orders SET customer_id = $2 WHERE id = $1` + "`" + `
+`
+	matches := updateOrders.FindAllStringSubmatch(withoutLineComments(source), -1)
+	if len(matches) != 1 {
+		t.Fatalf("matched %d statements, want 1 — the regex has stopped seeing this shape", len(matches))
+	}
+	if claimPredicatesIntact(matches[0][2]) {
+		t.Fatalf("a statement whose only predicate is `id = $1` passed the predicate check; its "+
+			"where-clause was %q. The words are in the file, not the statement.", matches[0][2])
+	}
+	// And the real statement, read the same way, does pass.
+	real := updateOrders.FindAllStringSubmatch(withoutLineComments("const x = `"+claimGuestOrderStatement+"`"), -1)
+	if len(real) != 1 || !claimPredicatesIntact(real[0][2]) {
+		t.Fatalf("the actual claim statement failed its own predicate check: %+v", real)
 	}
 }
