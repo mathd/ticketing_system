@@ -35,6 +35,62 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /customers:
+    post:
+      operationId: registerCustomer
+      summary: Create an optional customer account (TKT-220)
+      description: >
+        Registers a buyer account. Commerce owns orders and buyer_pii, so the
+        buyer principal lives here rather than in catalog, on the stateless
+        gateway, or in a sixth service — ADR-049 records the decision and why
+        ADR-042's reasoning for putting STAFF in catalog does not transplant to a
+        customer, who administers nothing.
+
+        This operation is PUBLIC and carries no credential. Registration is open
+        to anyone by definition, and the storefront that renders the form holds no
+        service token at all — giving it one to reach an /internal/ endpoint would
+        put a credential inside a process that serves anonymous internet traffic.
+        ADR-043's rule is what places it here: declared contract operations are the
+        service's public surface, inline X-Internal-Token checks guard /internal/.
+
+        An address that is already registered answers 409. That deliberately
+        discloses whether an address holds an account — an unauthenticated,
+        unrate-limited membership oracle over the whole customer base. The
+        alternative (answer 201 and mail the owner) is not available: this repo has
+        no mail path, so it would be a lie told to a legitimate buyer rather than a
+        protection. Rate limiting is TKT-224 and is the control that addresses it.
+
+        buyer_pii is NOT touched. It is keyed per reservation and rewritten on
+        every checkout — an order-time snapshot, not an identity. Attaching an
+        order to an account is TKT-221.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerRegistration'}}}}
+      responses:
+        '201': {description: Registered, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerPrincipal'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {description: The address already holds an account, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '500': {$ref: '#/components/responses/Error'}
+  /customers/authenticate:
+    post:
+      operationId: authenticateCustomer
+      summary: Verify customer credentials and return the principal (TKT-220)
+      description: >
+        Verifies an email/password pair and returns the principal — customer id
+        and the address in its original spelling. Never any password material.
+
+        An unknown address and a wrong password are the SAME answer: the same 401,
+        the same body. They also cost the same, because the unknown-address path
+        still performs one bcrypt comparison against a fixed dummy hash of the
+        production cost. A response that is byte-identical but an order of
+        magnitude faster is still an enumeration oracle.
+
+        Public for the same reason as registerCustomer: the sign-in form in front
+        of it is anonymous by construction.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerCredentials'}}}}
+      responses:
+        '200': {description: Authenticated, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerPrincipal'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {description: Invalid credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/operational-holds/{id}/convert:
     post:
       operationId: convertOperationalHold
@@ -359,6 +415,46 @@ components:
         expires_at: {type: string, format: date-time}
         server_time: {type: string, format: date-time}
         source_remaining: {type: integer}
+    CustomerRegistration:
+      description: >
+        A customer registration attempt (TKT-220). maxLength on both fields bounds
+        the work an unauthenticated caller can ask for. 72 on the password is
+        bcrypt's hard input limit, past which it silently ignores the tail — so a
+        longer password and its 72-byte prefix would authenticate each other.
+
+        Note the limit is not fully expressible here: OpenAPI counts CHARACTERS
+        and bcrypt counts BYTES, so 72 multibyte characters clear this schema and
+        are three times over bcrypt's bound. The store refuses those before it
+        touches the database, uniformly, so the refusal leaks nothing.
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email: {type: string, minLength: 3, maxLength: 320}
+        password: {type: string, minLength: 8, maxLength: 72}
+    CustomerCredentials:
+      description: A customer sign-in attempt (TKT-220). Bounded for the same reason as CustomerRegistration.
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email: {type: string, minLength: 1, maxLength: 320}
+        # minLength 1, not 8: raising the floor here would refuse a short password
+        # BEFORE the credential check and answer differently from a wrong one,
+        # which is a distinction an enumerator can read. Registration is where the
+        # policy is enforced; sign-in only verifies.
+        password: {type: string, minLength: 1, maxLength: 72}
+    CustomerPrincipal:
+      description: >
+        A signed-in buyer. `email` is the address in the spelling the buyer
+        registered with, for display; every lookup goes through the normalized
+        form, which is never exposed.
+      type: object
+      required: [customer_id, email]
+      additionalProperties: false
+      properties:
+        customer_id: {type: string, format: uuid}
+        email: {type: string}
     Checkout:
       type: object
       additionalProperties: false

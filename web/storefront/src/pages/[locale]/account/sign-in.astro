@@ -1,0 +1,116 @@
+---
+// Customer sign-in (TKT-220 / US-A1). One of the two anonymous account paths — a
+// buyer cannot sign in through a page that requires a session.
+//
+// The form action is RELATIVE (`action=""` posts to this same URL). An absolute
+// action trips Astro's origin handling even same-origin, which is the second trap
+// TKT-105 paid for; and the middleware's own origin check runs on this POST too,
+// so a cross-site sign-in attempt is refused before any credential is read.
+import Layout from '../../../layouts/Layout.astro';
+import { authenticateCustomer } from '../../../lib/customer-api';
+import {
+  SESSION_COOKIE,
+  SessionCapacityError,
+  createSession,
+  isSecureRequest,
+  sessionCookieOptions,
+} from '../../../lib/session';
+import { UI_STRINGS, isLocale } from '../../../lib/locales';
+
+const locale = Astro.params.locale;
+if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404 });
+const t = UI_STRINGS[locale];
+
+let error: string | null = null;
+
+// Deliberately NOT preserved across a failed attempt. Echoing the submitted
+// address back into the HTML makes the page a reflection surface and puts the
+// addresses someone is probing into anything that captures rendered output.
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const email = String(form.get('email') ?? '');
+  const password = String(form.get('password') ?? '');
+
+  if (!email || !password) {
+    error = t.credentialsInvalid;
+  } else {
+    const result = await authenticateCustomer(email, password);
+    if (result.ok) {
+      // The process can refuse to mint a session when it is at capacity — a
+      // flood of registrations, nothing to do with this buyer (see
+      // MAX_SESSIONS_TOTAL). It is an OUTAGE, never a credential verdict.
+      try {
+        const token = createSession({
+          customerId: result.principal.customer_id,
+          email: result.principal.email,
+        });
+        Astro.cookies.set(
+          SESSION_COOKIE,
+          token,
+          sessionCookieOptions({ secure: isSecureRequest(Astro.request) }),
+        );
+        return Astro.redirect(`/${locale}/account`, 303);
+      } catch (cause) {
+        if (!(cause instanceof SessionCapacityError)) throw cause;
+        error = t.accountUnavailable;
+      }
+    } else {
+      error = result.reason === 'unavailable' ? t.accountUnavailable : t.credentialsInvalid;
+    }
+  }
+}
+---
+
+<Layout locale={locale} title={t.signIn}>
+  <h1>{t.signIn}</h1>
+  <p class="notice">{t.accountOptionalNotice}</p>
+  <form method="post" action="">
+    {error && <p class="error" role="alert">{error}</p>}
+    <label for="email">{t.email}</label>
+    <input id="email" name="email" type="email" autocomplete="username" required />
+    <label for="password">{t.password}</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required />
+    <button type="submit">{t.signIn}</button>
+  </form>
+  <p><a href={`/${locale}/account/register`}>{t.registerCta}</a></p>
+</Layout>
+
+<style>
+  form {
+    max-width: 24rem;
+    display: grid;
+    gap: 0.4rem;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+  }
+  label {
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+  input {
+    padding: 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 0.3rem;
+    font: inherit;
+  }
+  button {
+    margin-top: 0.75rem;
+    padding: 0.55rem;
+    border: 0;
+    border-radius: 0.3rem;
+    background: var(--accent);
+    color: white;
+    font: inherit;
+    cursor: pointer;
+  }
+  .error {
+    margin: 0 0 0.5rem;
+    color: #a11;
+  }
+  .notice {
+    color: var(--muted);
+    max-width: 32rem;
+  }
+</style>

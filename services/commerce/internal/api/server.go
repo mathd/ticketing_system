@@ -88,6 +88,11 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Post("/reservations", s.reserve)
 	r.Post("/orders", s.checkout)
 	r.Get("/orders/{id}", s.getOrder)
+	// Public, credential-free, and deliberately NOT under /internal/ (TKT-220,
+	// ADR-049): the storefront that renders these forms holds no service token,
+	// and the gateway edge-denies /api/commerce/internal/ by construction.
+	r.Post("/customers", s.registerCustomer)
+	r.Post("/customers/authenticate", s.authenticateCustomer)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)

@@ -574,6 +574,54 @@ prove a browser sends it on a same-origin POST, nor that a browser honours `Same
 `make up` and submit the forms (see the ticket DoD and
 `learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md`).
 
+## Customer accounts (TKT-220)
+
+Buyers may create an **optional** account on the storefront. Guest checkout is unchanged and stays
+the default: no storefront route redirects to sign-in, and buying never requires an account. See
+ADR-049.
+
+**Where things live.** Accounts are `customer_accounts` in **commerce** (migration `0015`), reached
+through two public contract operations — `POST /api/commerce/customers` (register) and
+`POST /api/commerce/customers/authenticate`. Neither takes a credential, which is why the storefront
+container still holds exactly one environment variable (`GATEWAY_URL`) and **no service token**. Do
+not "fix" that by giving it one.
+
+**Sign in / register / sign out** are at `/{locale}/account/sign-in`, `/{locale}/account/register`
+and (POST only) `/{locale}/account/sign-out`. There is no provisioning CLI and no seeded account —
+registration is public, unlike staff.
+
+**There is no password recovery.** No reset, no email verification, no magic link: this repo has no
+mail path. A customer who forgets their password cannot get back in, and their existing orders stay
+reachable only by order reference. That is why the guest retrieval page matters.
+
+**Registering an address that already exists answers 409 and says so.** That is a deliberate,
+recorded disclosure — an unauthenticated membership oracle over the customer base (ADR-049 §2).
+Rate limiting it is **TKT-224**.
+
+**A wrong password and an unknown address are the same answer and the same cost.** If you are
+debugging a sign-in and want to know which it was, the answer is deliberately unavailable from
+outside; look at `customer_accounts` directly.
+
+**Sessions are in-process and are not persisted**, exactly like the back office: a storefront
+restart signs every customer out, a second replica would not share them, the eight-hour lifetime is
+absolute and does not slide, and one customer holds at most **five** concurrent sessions. The cap is
+what bounds the session map, not the expiry sweep.
+
+**The customer session cookie is scoped to `/`, not to an account subtree** — a deliberate departure
+from the back office's `/admin`-scoped cookie, argued in ADR-049 §5. It is therefore attached to
+same-origin requests to `/api/*`, `/admin/` and `/scanner/`.
+
+> **Standing constraint:** request logging must never log the `Cookie` header. Today nothing does —
+> `shared/go/obs/requestlog.go` records method, path, status and duration only — and ADR-049 §5
+> accepts the cookie's scope *on that basis*. Adding header logging anywhere in the gateway or the
+> services invalidates that argument and needs the cookie re-scoped, not a note.
+
+**Verifying a change here needs a real browser**, for the same reason as the back office and with
+one extra: `security.checkOrigin` defaults to **true** in Astro 7 and the storefront had never set
+it, because it had no form until this ticket. `make check` renders storefront pages and never
+submits one, so the whole "SSR rejects the write before the handler runs" class is invisible to it.
+Drive `make up` and submit register, sign-in and sign-out.
+
 ## Cache kill-switch (TKT-210)
 
 Both in-memory read caches — inventory's availability cache (ADR-044) and catalog's public-read

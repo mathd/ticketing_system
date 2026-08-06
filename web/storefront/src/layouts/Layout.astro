@@ -24,6 +24,16 @@ const switchTarget = (target: Locale) =>
   <body>
     <header>
       <a class="brand" href={`/${locale}/events`}>{t.events}</a>
+      <nav class="account" aria-label={t.account}>
+        {/*
+          A plain link, never "Signed in as …". Public pages do not consult the
+          session — the gate only resolves it for the account area (guest-first,
+          TKT-220) — so this header cannot know, and pretending otherwise would
+          mean reading the cookie on every catalog page and making that HTML
+          per-customer, which the minutes tier (ADR-004) forbids.
+        */}
+        <a href={`/${locale}/account`}>{t.account}</a>
+      </nav>
       <nav class="locales" aria-label="Language">
         {
           LOCALES.map((l) => (
@@ -78,6 +88,16 @@ const switchTarget = (target: Locale) =>
     letter-spacing: 0.01em;
     color: var(--ink);
     text-decoration: none;
+  }
+  header nav {
+    display: inline-flex;
+    align-items: baseline;
+  }
+  .account a {
+    margin-left: 0.9rem;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.9rem;
   }
   .locales a {
     margin-left: 0.9rem;

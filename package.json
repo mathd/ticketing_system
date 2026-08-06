@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@11.12.0",
   "scripts": {
-    "generate:api": "openapi-typescript services/catalog/api/openapi.yaml -o web/storefront/src/lib/api-types.gen.ts && openapi-typescript services/catalog/api/openapi.yaml -o web/backoffice/src/lib/api-types.gen.ts"
+    "generate:api": "openapi-typescript services/catalog/api/openapi.yaml -o web/storefront/src/lib/api-types.gen.ts && openapi-typescript services/catalog/api/openapi.yaml -o web/backoffice/src/lib/api-types.gen.ts && openapi-typescript services/commerce/api/openapi.yaml -o web/storefront/src/lib/commerce-api-types.gen.ts"
   },
   "devDependencies": {
     "openapi-typescript": "^7.10.1",

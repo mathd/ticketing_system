@@ -1,0 +1,286 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  MAX_SESSIONS_PER_CUSTOMER,
+  MAX_SESSIONS_TOTAL,
+  SESSION_COOKIE_PATH,
+  SESSION_TTL_MS,
+  SessionCapacityError,
+  createSession,
+  destroySession,
+  isSecureRequest,
+  lookupSession,
+  resetSessionsForTest,
+  sessionCookieOptions,
+  sessionCountForTest,
+} from '../src/lib/session';
+
+const alice = { customerId: 'cust-a', email: 'Alice@Example.TEST' };
+const bob = { customerId: 'cust-b', email: 'bob@example.test' };
+
+beforeEach(() => {
+  resetSessionsForTest();
+});
+
+describe('customer sessions', () => {
+  it('mints an opaque 256-bit token that resolves to the principal', () => {
+    const token = createSession(alice);
+
+    // base64url of 32 bytes: 43 chars, no padding, no +/ characters.
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // The token must not encode who holds it — a leaked one discloses nothing.
+    expect(token).not.toContain(alice.customerId);
+    expect(lookupSession(token)).toEqual(alice);
+  });
+
+  it('does not resolve a token it never issued', () => {
+    createSession(alice);
+    expect(lookupSession('a'.repeat(43))).toBeUndefined();
+    expect(lookupSession('')).toBeUndefined();
+  });
+
+  it('expires on an absolute clock and does not renew on use', () => {
+    const t0 = 1_000_000;
+    const token = createSession(alice, t0);
+
+    // Used repeatedly right up to the deadline — an idle timeout would keep
+    // pushing the expiry out, which is exactly what an absolute one must not do.
+    expect(lookupSession(token, t0 + SESSION_TTL_MS - 1)).toEqual(alice);
+    expect(lookupSession(token, t0 + SESSION_TTL_MS - 1)).toEqual(alice);
+    expect(lookupSession(token, t0 + SESSION_TTL_MS)).toBeUndefined();
+  });
+
+  it('destroys server-side, so a captured token stops working', () => {
+    const token = createSession(alice);
+    destroySession(token);
+    // The holder still has the string; that is the point. Expiring the browser
+    // cookie only asks the browser to forget.
+    expect(lookupSession(token)).toBeUndefined();
+  });
+
+  it('caps concurrent sessions per customer, evicting the oldest issued', () => {
+    const tokens = Array.from({ length: MAX_SESSIONS_PER_CUSTOMER }, () => createSession(alice));
+    expect(tokens.every((t) => lookupSession(t))).toBe(true);
+
+    const extra = createSession(alice);
+
+    expect(lookupSession(tokens[0]!)).toBeUndefined();
+    expect(lookupSession(tokens[1]!)).toEqual(alice);
+    expect(lookupSession(extra)).toEqual(alice);
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_CUSTOMER);
+  });
+
+  // Per principal, never global: a global cap would let one busy account evict a
+  // stranger's live session, turning a safety limit into a denial of service.
+  it("does not evict another customer's sessions", () => {
+    const bobs = createSession(bob);
+    for (let i = 0; i <= MAX_SESSIONS_PER_CUSTOMER; i++) createSession(alice);
+
+    expect(lookupSession(bobs)).toEqual(bob);
+  });
+
+  // Insertion order is issuance order and no clock can move it. Sorting by
+  // expiry would look equivalent under a fixed TTL and is not: a host clock
+  // stepping backwards gives the NEWER session the SMALLER expiry, so the next
+  // sign-in would evict the session just issued.
+  it('evicts by issuance order even when the clock steps backwards', () => {
+    const first = createSession(alice, 10_000_000);
+    const rest = [
+      createSession(alice, 9_000_000),
+      createSession(alice, 9_000_001),
+      createSession(alice, 9_000_002),
+      createSession(alice, 9_000_003),
+    ];
+
+    createSession(alice, 9_000_004);
+
+    expect(lookupSession(first, 9_000_005)).toBeUndefined();
+    expect(rest.every((t) => lookupSession(t, 9_000_005))).toBe(true);
+  });
+
+  // ai-review [high]: the per-principal cap bounds the map only if the number of
+  // principals is bounded, and registration is PUBLIC — so one actor mints
+  // unlimited accounts, each entitled to five sessions. The back office's cap
+  // reasoning was inherited here with its premise (an operator-provisioned
+  // headcount) removed.
+  //
+  // Deliberately many DISTINCT principals: a fixture with two customers, which is
+  // what the per-principal test uses, cannot observe a global bound at all.
+  it('bounds the map globally, across unlimited distinct principals', () => {
+    let refused = 0;
+    for (let i = 0; i < MAX_SESSIONS_TOTAL + 50; i++) {
+      try {
+        createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+      } catch (cause) {
+        if (!(cause instanceof SessionCapacityError)) throw cause;
+        refused++;
+      }
+    }
+
+    expect(sessionCountForTest()).toBeLessThanOrEqual(MAX_SESSIONS_TOTAL);
+    expect(refused).toBeGreaterThan(0);
+  });
+
+  // ai-review pass 2 [high]: the first version of this cap EVICTED oldest-first,
+  // which turned memory exhaustion into a targeted availability attack — an
+  // attacker who can mint principals freely (registration is public) fills the map
+  // and every further sign-in displaces a real customer's live session, silently.
+  //
+  // Refusing instead leaves everyone already signed in untouched and makes the new
+  // sign-in fail loudly. Neither is a fix; TKT-224 is. This test pins which
+  // failure the code chooses, because it is the kind of thing a later "cleanup"
+  // reverses without noticing.
+  it('refuses a new session at capacity rather than evicting a live one', () => {
+    const victim = createSession(alice);
+    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+    }
+
+    expect(() => createSession(bob)).toThrow(SessionCapacityError);
+    // The buyer who was already signed in is untouched.
+    expect(lookupSession(victim)).toEqual(alice);
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+  });
+
+  // ai-review pass 3 [medium]: the two caps interact, and the interaction is
+  // observable. A customer already at their OWN five-session cap succeeds even
+  // when the map is full, because their own oldest slot is freed before the
+  // global check runs.
+  //
+  // That is the intended precedence, not a bypass — the rule is "nobody's session
+  // is taken to make room for a STRANGER", and rotating your own sixth device
+  // takes nothing from anyone. Pinned because the previous test used a victim
+  // with ONE session and could not observe this case at all.
+  it('lets a customer at their own cap rotate a session even when the map is full', () => {
+    const mine = Array.from({ length: MAX_SESSIONS_PER_CUSTOMER }, () => createSession(alice));
+    for (let i = 0; i < MAX_SESSIONS_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+    }
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+
+    // A stranger is refused...
+    expect(() => createSession(bob)).toThrow(SessionCapacityError);
+    // ...but alice rotates her own oldest, taking nothing from anyone.
+    const rotated = createSession(alice);
+    expect(lookupSession(rotated)).toEqual(alice);
+    expect(lookupSession(mine[0]!)).toBeUndefined();
+    expect(lookupSession(mine[1]!)).toEqual(alice);
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+  });
+
+  // The bound must not be a permanent wedge: capacity freed by expiry or sign-out
+  // has to become usable again, or one flood ends sign-in for the process's life.
+  it('accepts new sessions again once capacity frees up', () => {
+    const doomed = createSession(alice);
+    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+    }
+    expect(() => createSession(bob)).toThrow(SessionCapacityError);
+
+    destroySession(doomed);
+
+    expect(() => createSession(bob)).not.toThrow();
+  });
+
+  // ai-review [medium]: Date.now() is not monotonic. If the wall clock passes an
+  // entry's expiry with nothing reading it, then steps BACKWARDS — NTP, a VM
+  // snapshot resume, an operator setting the date — a Date.now() comparison
+  // starts resolving the dead token again.
+  //
+  // Asserting that through the injected `now` parameter proves nothing: a lookup
+  // at the expired time DELETES the entry, so the second call would return
+  // undefined whatever the clock did. That version of this test passed against a
+  // fix that did not work, and the mutation check is what exposed it.
+  //
+  // What actually has to hold is that expiry does not consult the wall clock AT
+  // ALL — while still expiring on the monotonic one.
+  //
+  // Asserting only "survives a Date.now() jump" is not enough either, and pass 2
+  // of the review caught that: an implementation that never expires anything also
+  // survives it. So this asserts BOTH halves in one sequence — the wall clock is
+  // moved ten TTLs in each direction and cannot kill the session, and the
+  // monotonic clock crossing the TTL still does.
+  // Third attempt at this test, and the two before it could not fail:
+  //
+  //  1. injecting `now` on both sides proved nothing, because the lookup at the
+  //     expired time DELETES the entry;
+  //  2. stubbing Date.now and asserting survival also passes against an
+  //     implementation that never expires anything (ai-review pass 3);
+  //  3. and injecting `now` ANYWHERE means the production clock default is never
+  //     exercised, so swapping monotonicNow back to Date.now would leave the test
+  //     green (also pass 3).
+  //
+  // So this drives the DEFAULT arguments only, controls `performance.now` — the
+  // clock the code is supposed to be using — and moves `Date.now` in both
+  // directions underneath. It fails if expiry stops happening, and it fails if
+  // the default clock goes back to the wall clock.
+  it('expires on the default monotonic clock, which the wall clock cannot move', () => {
+    const realDateNow = Date.now;
+    const perf = vi.spyOn(performance, 'now');
+    try {
+      perf.mockReturnValue(1_000);
+      const token = createSession(alice);
+
+      // Wall clock leaps ten TTLs forward: irrelevant.
+      Date.now = () => realDateNow() + SESSION_TTL_MS * 10;
+      expect(lookupSession(token)).toEqual(alice);
+
+      // Wall clock leaps ten TTLs backward: still irrelevant.
+      Date.now = () => realDateNow() - SESSION_TTL_MS * 10;
+      expect(lookupSession(token)).toEqual(alice);
+
+      // The monotonic clock crossing the TTL is what ends it — with the wall
+      // clock still rolled back, so nothing here can be attributed to Date.now.
+      perf.mockReturnValue(1_000 + SESSION_TTL_MS);
+      expect(lookupSession(token)).toBeUndefined();
+    } finally {
+      Date.now = realDateNow;
+      perf.mockRestore();
+    }
+  });
+
+  it('reclaims expired entries rather than letting the map grow', () => {
+    const t0 = 1_000_000;
+    for (let i = 0; i < 3; i++) createSession(bob, t0);
+    expect(sessionCountForTest()).toBe(3);
+
+    // A sign-in well after those expired must collect them: the tokens nobody
+    // presents again — the tab someone closed — are the common case, so
+    // expiry-on-read alone would leave them for the life of the process.
+    createSession(alice, t0 + SESSION_TTL_MS + 1);
+    expect(sessionCountForTest()).toBe(1);
+  });
+});
+
+describe('the session cookie', () => {
+  it('is HttpOnly, Lax, and scoped to the whole storefront origin', () => {
+    const options = sessionCookieOptions({ secure: true });
+
+    expect(options.httpOnly).toBe(true);
+    expect(options.sameSite).toBe('lax');
+    expect(options.maxAge).toBe(SESSION_TTL_MS / 1000);
+    // `/` and not an account subtree: the checkout flow (TKT-221) and the guest
+    // ticket page (TKT-223) are locale-first routes outside any /account prefix,
+    // and a per-locale path would drop the session on a language switch.
+    // ADR-049 records what this costs.
+    expect(options.path).toBe('/');
+    expect(SESSION_COOKIE_PATH).toBe('/');
+  });
+
+  // Setting Secure unconditionally would make the cookie undeliverable on the
+  // plain-HTTP local stack, i.e. break sign-in outright.
+  it('is Secure iff the public origin is https', () => {
+    const https = new Request('http://storefront:8080/en/account', {
+      headers: { 'x-forwarded-proto': 'https, http' },
+    });
+    const http = new Request('http://storefront:8080/en/account', {
+      headers: { 'x-forwarded-proto': 'http' },
+    });
+    const none = new Request('http://storefront:8080/en/account');
+
+    expect(isSecureRequest(https)).toBe(true);
+    expect(isSecureRequest(http)).toBe(false);
+    expect(isSecureRequest(none)).toBe(false);
+    expect(sessionCookieOptions({ secure: isSecureRequest(https) }).secure).toBe(true);
+  });
+});
