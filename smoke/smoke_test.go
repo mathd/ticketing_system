@@ -470,6 +470,9 @@ func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
 		// answers every refund 404, which is indistinguishable from "no such
 		// order", so the misconfiguration would arrive as a support ticket.
 		"-e", "COMMERCE_STAFF_WRITE_TOKEN="+os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN"),
+		// TKT-221: commerce refuses to start without it, and refuses again if it
+		// equals either other credential — smoke.sh generates all three separately.
+		"-e", "COMMERCE_CUSTOMER_ASSERTION_KEY="+os.Getenv("SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",
@@ -572,6 +575,9 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 		// answers every refund 404, which is indistinguishable from "no such
 		// order", so the misconfiguration would arrive as a support ticket.
 		"-e", "COMMERCE_STAFF_WRITE_TOKEN="+os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN"),
+		// TKT-221: commerce refuses to start without it, and refuses again if it
+		// equals either other credential — smoke.sh generates all three separately.
+		"-e", "COMMERCE_CUSTOMER_ASSERTION_KEY="+os.Getenv("SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",
