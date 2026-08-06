@@ -155,3 +155,12 @@ exists are in *Historical* at the bottom; their files are kept.
 - [**Catalog's `/internal/*` routes are hand-mounted**](./learnings/2026-07-21-catalog-internal-routes-are-hand-mounted-outside-openapi.md),
   outside the OpenAPI contract — still true (`services/catalog/internal/api/server.go`), and now a
   convention rather than a surprise.
+- [A refusal after the point of no return is not a safety check](learnings/2026-08-05-a-refusal-after-the-point-of-no-return-loses-money.md)
+  — TKT-217. Validating a settlement plan after the PSP call loses money; after `BindOperation`
+  leaves a recoverable operation with no ledger; before the idempotency lookup breaks replay. Ask
+  what is already irreversible where the check runs. A durable row another process will act on is
+  past the line and looks like bookkeeping.
+- [A mutation check against a stale schema tests last revision's constraints](learnings/2026-08-05-a-schema-too-old-cannot-fail-a-mutation-check.md)
+  — TKT-217. A mutant survived because the test database was migrated from an earlier revision of
+  the same unreleased migration; goose does not re-run a changed file. Recreate the database before
+  mutation-checking anything schema-adjacent. And a gate result only describes the tree it ran on.
