@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/url"
 	"time"
@@ -362,14 +361,11 @@ func checkFeeValue(w resolvedFeeRule) error {
 // the face value, and adding them here would charge the buyer for the
 // organizer's cost.
 func composedTotal(faceValue, passedOn int64) (int64, error) {
-	total, err := checkedAdd(faceValue, passedOn)
-	if err != nil {
-		return 0, err
-	}
-	if total > math.MaxInt64 {
-		return 0, fmt.Errorf("%w: total exceeds int64", errFeeTotalOverflow)
-	}
-	return total, nil
+	// checkedAdd already bounds the result at the contract's Money cap, which is
+	// well below MaxInt64 — so there is deliberately no second int64 check here.
+	// One existed and staticcheck correctly called it unreachable: a check that
+	// cannot fire is not defence in depth, it is a comment that compiles.
+	return checkedAdd(faceValue, passedOn)
 }
 
 // feeSnapshotEnvelope assembles what gets persisted: catalog's document
