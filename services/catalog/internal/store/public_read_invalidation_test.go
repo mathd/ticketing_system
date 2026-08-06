@@ -27,6 +27,9 @@ import (
 //   - CreatePriceRule: these reads carry ticket_types.price_amount; price rules
 //     live in another table reached only by ResolveTicketTypePrice, a different
 //     endpoint on the never tier.
+//   - CreatePayee / CreateSplitSchedule: payout configuration. It reaches the
+//     sale only through the fee resolution, an /internal/ read, and never
+//     appears in a cached public payload at all.
 //   - CreateFeeRule: same shape, one step further out. fee_rules is reached only
 //     by ResolveTicketTypeFees, which is an /internal/ operation and not a public
 //     read at all, so no cached public payload can carry a fee.
@@ -53,6 +56,8 @@ var publicReadEffect = map[string]PublicReadScope{
 	"CreatePerformance":             0,
 	"CreatePriceRule":               0,
 	"CreateFeeRule":                 0,
+	"CreatePayee":                   0,
+	"CreateSplitSchedule":           0,
 	"CloseSlot":                     0,
 	"ReopenSlot":                    0,
 	"CreateSeries":                  0,

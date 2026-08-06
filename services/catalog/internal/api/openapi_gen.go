@@ -199,6 +199,45 @@ func (e LosingPriceRuleReason) Valid() bool {
 	}
 }
 
+// Defines values for LosingSplitScheduleReason.
+const (
+	ExcludedByForcedRule LosingSplitScheduleReason = "excluded_by_forced_rule"
+	ForcedBroaderScope   LosingSplitScheduleReason = "forced_broader_scope"
+	LessChannelSpecific  LosingSplitScheduleReason = "less_channel_specific"
+	LessSpecific         LosingSplitScheduleReason = "less_specific"
+	LowerForcedScope     LosingSplitScheduleReason = "lower_forced_scope"
+	LowerPriority        LosingSplitScheduleReason = "lower_priority"
+	OutsideWindowFuture  LosingSplitScheduleReason = "outside_window_future"
+	OutsideWindowPast    LosingSplitScheduleReason = "outside_window_past"
+	StableIdTiebreak     LosingSplitScheduleReason = "stable_id_tiebreak"
+)
+
+// Valid indicates whether the value is a known member of the LosingSplitScheduleReason enum.
+func (e LosingSplitScheduleReason) Valid() bool {
+	switch e {
+	case ExcludedByForcedRule:
+		return true
+	case ForcedBroaderScope:
+		return true
+	case LessChannelSpecific:
+		return true
+	case LessSpecific:
+		return true
+	case LowerForcedScope:
+		return true
+	case LowerPriority:
+		return true
+	case OutsideWindowFuture:
+		return true
+	case OutsideWindowPast:
+		return true
+	case StableIdTiebreak:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PerformanceStatus.
 const (
 	PerformanceStatusArchived  PerformanceStatus = "archived"
@@ -340,6 +379,72 @@ func (e SlotKind) Valid() bool {
 	}
 }
 
+// Defines values for SplitResolutionMode.
+const (
+	Split   SplitResolutionMode = "split"
+	Unsplit SplitResolutionMode = "unsplit"
+)
+
+// Valid indicates whether the value is a known member of the SplitResolutionMode enum.
+func (e SplitResolutionMode) Valid() bool {
+	switch e {
+	case Split:
+		return true
+	case Unsplit:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SplitResolutionReason.
+const (
+	Empty         SplitResolutionReason = ""
+	NoSchedule    SplitResolutionReason = "no_schedule"
+	OutsideWindow SplitResolutionReason = "outside_window"
+)
+
+// Valid indicates whether the value is a known member of the SplitResolutionReason enum.
+func (e SplitResolutionReason) Valid() bool {
+	switch e {
+	case Empty:
+		return true
+	case NoSchedule:
+		return true
+	case OutsideWindow:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SplitScheduleProvenanceScopeLevel.
+const (
+	SplitScheduleProvenanceScopeLevelEvent      SplitScheduleProvenanceScopeLevel = "event"
+	SplitScheduleProvenanceScopeLevelSeries     SplitScheduleProvenanceScopeLevel = "series"
+	SplitScheduleProvenanceScopeLevelSlot       SplitScheduleProvenanceScopeLevel = "slot"
+	SplitScheduleProvenanceScopeLevelTicketType SplitScheduleProvenanceScopeLevel = "ticket_type"
+	SplitScheduleProvenanceScopeLevelVenue      SplitScheduleProvenanceScopeLevel = "venue"
+)
+
+// Valid indicates whether the value is a known member of the SplitScheduleProvenanceScopeLevel enum.
+func (e SplitScheduleProvenanceScopeLevel) Valid() bool {
+	switch e {
+	case SplitScheduleProvenanceScopeLevelEvent:
+		return true
+	case SplitScheduleProvenanceScopeLevelSeries:
+		return true
+	case SplitScheduleProvenanceScopeLevelSlot:
+		return true
+	case SplitScheduleProvenanceScopeLevelTicketType:
+		return true
+	case SplitScheduleProvenanceScopeLevelVenue:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StaffRole.
 const (
 	Admin     StaffRole = "admin"
@@ -400,9 +505,14 @@ type EventCreate struct {
 }
 
 // FeeCodeResolution One fee code's outcome. candidates holds every rule that competed for this code EXCEPT the winner, ordered by rule id — representation only, carrying no precedence.
+// `split` says who the fee is owed to. It rides this response rather than a second endpoint deliberately: commerce persists this whole document as the reservation's snapshot, so carrying the split here captures it AT SALE TIME, and a schedule edited afterwards cannot change who gets paid for a sale that already happened.
 type FeeCodeResolution struct {
 	Candidates []LosingFeeRule `json:"candidates"`
 	FeeCode    string          `json:"fee_code"`
+
+	// Split Who a fee code is owed to (TKT-216 / ADR-047).
+	// `mode` is `split` when a schedule won, and `unsplit` when the code was CONSIDERED and nothing applies. Those are different facts from each other and from an empty part list: `no_schedule` means nobody ever authored one, while `outside_window` means somebody did and it stopped applying — and only the second is evidence of a configuration that needs attention. The losing schedules ship with it, because they are the answer to "why is this fee not being split?".
+	Split SplitResolution `json:"split"`
 
 	// Winner null when the code was considered and nothing currently applies — every rule for it fell outside its effective window. The candidates then ARE the answer to "why is this fee not showing up?". A code no rule carries produces no entry at all: considered-and-inapplicable and not-present are different states.
 	Winner *FeeRuleProvenance `json:"winner"`
@@ -533,10 +643,32 @@ type LosingPriceRule struct {
 // LosingPriceRuleReason defines model for LosingPriceRule.Reason.
 type LosingPriceRuleReason string
 
+// LosingSplitSchedule A schedule that did not win its fee code, and why. The reason vocabulary is the fee resolver's, reused verbatim — the ranking axes are identical, so a parallel vocabulary would be two words for one fact.
+// A schedule belonging to another CHANNEL is absent entirely rather than reported: returning it would publish the whole channel payout matrix.
+type LosingSplitSchedule struct {
+	Reason LosingSplitScheduleReason `json:"reason"`
+
+	// Schedule One split schedule as reported in provenance.
+	Schedule SplitScheduleProvenance `json:"schedule"`
+}
+
+// LosingSplitScheduleReason defines model for LosingSplitSchedule.Reason.
+type LosingSplitScheduleReason string
+
 // Money Integer minor units + ISO-4217 code (ADR-001); no floats, ever
 type Money struct {
 	Amount   int64  `json:"amount"`
 	Currency string `json:"currency"`
+}
+
+// Payee Someone a fee is owed to (TKT-216). `kind` is DESCRIPTIVE metadata for reporting and must never be read as a routing rule — money goes where the share says, not where the kind implies.
+type Payee struct {
+	DisplayName string `json:"display_name"`
+
+	// ExternalReference The operator's own identifier for this payee in whatever system pays them. Opaque here; payout execution is not in this epic.
+	ExternalReference *string            `json:"external_reference"`
+	Kind              string             `json:"kind"`
+	PayeeId           openapi_types.UUID `json:"payee_id"`
 }
 
 // Performance defines model for Performance.
@@ -967,6 +1099,48 @@ type SlotCloseRequest struct {
 
 // SlotKind The dated-slot kind (ADR-005 amendment / US-009). 'performance' carries starts_at; 'festival_day'/'operating_day' carry the operating window.
 type SlotKind string
+
+// SplitPart One payee's share of a fee, in basis points. Parts of a schedule always sum to exactly 10000.
+type SplitPart struct {
+	// Payee Someone a fee is owed to (TKT-216). `kind` is DESCRIPTIVE metadata for reporting and must never be read as a routing rule — money goes where the share says, not where the kind implies.
+	Payee    Payee `json:"payee"`
+	ShareBps int32 `json:"share_bps"`
+}
+
+// SplitResolution Who a fee code is owed to (TKT-216 / ADR-047).
+// `mode` is `split` when a schedule won, and `unsplit` when the code was CONSIDERED and nothing applies. Those are different facts from each other and from an empty part list: `no_schedule` means nobody ever authored one, while `outside_window` means somebody did and it stopped applying — and only the second is evidence of a configuration that needs attention. The losing schedules ship with it, because they are the answer to "why is this fee not being split?".
+type SplitResolution struct {
+	Candidates []LosingSplitSchedule `json:"candidates"`
+	Mode       SplitResolutionMode   `json:"mode"`
+
+	// Reason Empty when mode is `split`; otherwise why nothing applies.
+	Reason          SplitResolutionReason    `json:"reason"`
+	ResolverVersion int32                    `json:"resolver_version"`
+	Winner          *SplitScheduleProvenance `json:"winner"`
+}
+
+// SplitResolutionMode defines model for SplitResolution.Mode.
+type SplitResolutionMode string
+
+// SplitResolutionReason Empty when mode is `split`; otherwise why nothing applies.
+type SplitResolutionReason string
+
+// SplitScheduleProvenance One split schedule as reported in provenance.
+type SplitScheduleProvenance struct {
+	ChannelCode    *string                           `json:"channel_code"`
+	EffectiveFrom  *time.Time                        `json:"effective_from"`
+	EffectiveUntil *time.Time                        `json:"effective_until"`
+	FeeCode        string                            `json:"fee_code"`
+	Forced         bool                              `json:"forced"`
+	Parts          []SplitPart                       `json:"parts"`
+	Priority       int32                             `json:"priority"`
+	ScheduleId     openapi_types.UUID                `json:"schedule_id"`
+	ScopeId        openapi_types.UUID                `json:"scope_id"`
+	ScopeLevel     SplitScheduleProvenanceScopeLevel `json:"scope_level"`
+}
+
+// SplitScheduleProvenanceScopeLevel defines model for SplitScheduleProvenance.ScopeLevel.
+type SplitScheduleProvenanceScopeLevel string
 
 // StaffCredentials A back-office sign-in attempt (TKT-190). maxLength on both fields bounds the work an unauthenticated caller can ask for: 72 bytes is bcrypt's hard input limit, past which it silently ignores the tail, so a longer password and its 72-byte prefix would authenticate each other.
 type StaffCredentials struct {

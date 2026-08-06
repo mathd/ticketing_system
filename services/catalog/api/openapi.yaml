@@ -1706,15 +1706,127 @@ components:
             - stable_id_tiebreak
             - outside_window_past
             - outside_window_future
+    Payee:
+      description: >
+        Someone a fee is owed to (TKT-216). `kind` is DESCRIPTIVE metadata for
+        reporting and must never be read as a routing rule — money goes where the
+        share says, not where the kind implies.
+      type: object
+      required: [payee_id, kind, display_name, external_reference]
+      properties:
+        payee_id: {type: string, format: uuid}
+        kind: {type: string, minLength: 1, maxLength: 40}
+        display_name: {type: string, minLength: 1, maxLength: 200}
+        external_reference:
+          description: The operator's own identifier for this payee in whatever system pays them. Opaque here; payout execution is not in this epic.
+          type: string
+          minLength: 1
+          maxLength: 200
+          nullable: true
+    SplitPart:
+      description: One payee's share of a fee, in basis points. Parts of a schedule always sum to exactly 10000.
+      type: object
+      required: [payee, share_bps]
+      properties:
+        payee:
+          $ref: '#/components/schemas/Payee'
+        share_bps: {type: integer, format: int32, minimum: 0, maximum: 10000}
+    SplitScheduleProvenance:
+      description: One split schedule as reported in provenance.
+      type: object
+      required: [schedule_id, scope_level, scope_id, fee_code, channel_code,
+                 effective_from, effective_until, priority, forced, parts]
+      properties:
+        schedule_id: {type: string, format: uuid}
+        scope_level:
+          type: string
+          enum: [ticket_type, slot, series, event, venue]
+        scope_id: {type: string, format: uuid}
+        fee_code: {type: string, minLength: 1, maxLength: 64}
+        channel_code:
+          type: string
+          minLength: 1
+          maxLength: 100
+          nullable: true
+        effective_from: {type: string, format: date-time, nullable: true}
+        effective_until: {type: string, format: date-time, nullable: true}
+        priority: {type: integer, format: int32}
+        forced: {type: boolean}
+        parts:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SplitPart'
+    LosingSplitSchedule:
+      description: >
+        A schedule that did not win its fee code, and why. The reason vocabulary
+        is the fee resolver's, reused verbatim — the ranking axes are identical,
+        so a parallel vocabulary would be two words for one fact.
+
+        A schedule belonging to another CHANNEL is absent entirely rather than
+        reported: returning it would publish the whole channel payout matrix.
+      type: object
+      required: [schedule, reason]
+      properties:
+        schedule:
+          $ref: '#/components/schemas/SplitScheduleProvenance'
+        reason:
+          type: string
+          enum:
+            - less_specific
+            - forced_broader_scope
+            - excluded_by_forced_rule
+            - lower_forced_scope
+            - less_channel_specific
+            - lower_priority
+            - stable_id_tiebreak
+            - outside_window_past
+            - outside_window_future
+    SplitResolution:
+      description: >
+        Who a fee code is owed to (TKT-216 / ADR-047).
+
+        `mode` is `split` when a schedule won, and `unsplit` when the code was
+        CONSIDERED and nothing applies. Those are different facts from each
+        other and from an empty part list: `no_schedule` means nobody ever
+        authored one, while `outside_window` means somebody did and it stopped
+        applying — and only the second is evidence of a configuration that needs
+        attention. The losing schedules ship with it, because they are the answer
+        to "why is this fee not being split?".
+      type: object
+      required: [resolver_version, mode, reason, winner, candidates]
+      properties:
+        resolver_version: {type: integer, format: int32, minimum: 1}
+        mode:
+          type: string
+          enum: [split, unsplit]
+        reason:
+          description: Empty when mode is `split`; otherwise why nothing applies.
+          type: string
+          enum: ['', no_schedule, outside_window]
+        winner:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SplitScheduleProvenance'
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/LosingSplitSchedule'
     FeeCodeResolution:
       description: >
         One fee code's outcome. candidates holds every rule that competed for
         this code EXCEPT the winner, ordered by rule id — representation only,
         carrying no precedence.
+
+        `split` says who the fee is owed to. It rides this response rather than a
+        second endpoint deliberately: commerce persists this whole document as
+        the reservation's snapshot, so carrying the split here captures it AT
+        SALE TIME, and a schedule edited afterwards cannot change who gets paid
+        for a sale that already happened.
       type: object
       # winner is required and nullable: a considered-but-inapplicable code must
       # say "winner: null", not omit the key.
-      required: [fee_code, winner, candidates]
+      required: [fee_code, winner, candidates, split]
       properties:
         fee_code:
           type: string
@@ -1734,6 +1846,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LosingFeeRule'
+        split:
+          $ref: '#/components/schemas/SplitResolution'
     FeeResolution:
       description: >
         Every fee that applies to a ticket type in a channel, with provenance
