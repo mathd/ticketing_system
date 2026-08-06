@@ -65,13 +65,25 @@ export const POST: APIRoute = async ({ request, cookies }) => {
       signal: AbortSignal.timeout(20_000),
     });
   } catch {
-    // 503 and NOT a payment verdict: nothing was submitted, so a retry is safe
-    // and the buyer should be told to retry rather than left wondering whether
-    // they were charged.
-    return new Response(JSON.stringify({ error: 'checkout is temporarily unavailable' }), {
-      status: 503,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    });
+    // The outcome here is UNKNOWN, and the first version of this comment claimed
+    // "nothing was submitted, so a retry is safe" — which is false (ai-review
+    // pass 2 [high]). A timeout or a disconnect can land *after* the gateway
+    // accepted the request and payments accepted the charge; only the response
+    // was lost. Telling a buyer that is safe to retry is telling them to pay
+    // twice.
+    //
+    // What actually protects them is commerce, not this handler: a retry carries
+    // a fresh Idempotency-Key while an order already exists for that reservation,
+    // which claimOrder answers with errCheckoutConflict (409) rather than a second
+    // charge. And ADR-016's recovery runner resolves the order either way.
+    //
+    // So this returns 503 with a body that says UNKNOWN. The island's fallback
+    // branch renders exactly that — "payment status is being checked" — which is
+    // the honest answer and the one it already gave before this bridge existed.
+    return new Response(
+      JSON.stringify({ error: 'the payment outcome is unknown; it is being checked' }),
+      { status: 503, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } },
+    );
   }
 
   // Commerce's status and body, verbatim. The island already understands every

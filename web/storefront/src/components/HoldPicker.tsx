@@ -121,10 +121,16 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       if (response.ok && result.status === 'completed' && result.guest_order_ref) { setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.completed); return; }
       if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.declined); return; }
       // 401 = the customer assertion was refused (expired, or signed with a key
-      // that has since rotated). NO order exists and no money moved, so calling
-      // this "payment status is being checked" would be a lie in the frightening
-      // direction (ai-review [high]). The hold is deliberately KEPT: signing in
-      // again in another tab and pressing pay is a complete recovery.
+      // that has since rotated). It is NOT the payment-uncertainty answer, which
+      // is what this fell through to before — a lie in the frightening direction.
+      //
+      // But it is not proof that nothing happened either, and the first version of
+      // this said "your seats are still held" as if it were (ai-review pass 2
+      // [high]). Commerce verifies the assertion BEFORE it resolves an existing
+      // order, so a retry of an already-successful checkout whose assertion has
+      // since died gets this same 401 — with the order completed and the seats
+      // long since confirmed. The copy therefore points at the tickets page rather
+      // than asserting a state this code cannot know.
       if (response.status === 401) { setStatus(strings.signInAgain); return; }
       setStatus('Payment status is being checked');
     } catch { setStatus('Payment status is being checked'); }

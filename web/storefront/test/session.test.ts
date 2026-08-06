@@ -325,3 +325,18 @@ describe('the session never outlives its assertion', () => {
     expect(lookupSession(token)).toEqual(expect.objectContaining({ customerId: 'cust-a' }));
   });
 });
+
+// ai-review pass 2 [medium]: `Number` accepts whitespace, hex, exponent notation
+// and Infinity — values commerce's strconv.ParseInt could never have produced, so
+// honouring them means agreeing with a token commerce never minted. They fall back
+// to the plain TTL instead.
+describe('the assertion expiry is parsed strictly', () => {
+  it.each(['0x7fffffff', ' 99999999999', '1e12', 'Infinity', '1.5', '-1'])(
+    'ignores %s and falls back to the full TTL',
+    (field) => {
+      const token = createSession({ ...alice, assertion: `v1.cust-a.${field}.mac` });
+      expect(lookupSession(token)).toEqual(expect.objectContaining({ customerId: 'cust-a' }));
+      expect(lookupSession(token, performance.now() + SESSION_TTL_MS - 1000)).toBeDefined();
+    },
+  );
+});

@@ -21,6 +21,7 @@ const alice = { customerId: 'cust-a', email: 'alice@example.test', assertion: `v
 interface Captured {
   headers: Headers;
   body: string;
+  signal?: AbortSignal | null;
 }
 
 let captured: Captured | undefined;
@@ -34,7 +35,7 @@ beforeEach(() => {
     headers: { 'content-type': 'application/json' },
   });
   vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
-    captured = { headers: new Headers(init.headers), body: String(init.body) };
+    captured = { headers: new Headers(init.headers), body: String(init.body), signal: init.signal };
     return upstream;
   });
 });
@@ -143,7 +144,21 @@ describe('the checkout bridge', () => {
 
     expect(response.status).toBe(503);
     expect(response.headers.get('content-type')).toContain('application/json');
-    expect(await response.json()).toHaveProperty('error');
+    // The outcome is UNKNOWN, not safe-to-retry: a disconnect can land after
+    // commerce accepted the charge (ai-review pass 2 [high]). The body must not
+    // invite a retry.
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('unknown');
+  });
+
+  // Removing the AbortSignal would leave the test above green — it rejects
+  // immediately and never looks at how the call was made. So this asserts the
+  // deadline is actually attached (ai-review pass 2 [medium]).
+  it('bounds the upstream call with a deadline', async () => {
+    await post();
+
+    const signal = (captured as unknown as { signal?: AbortSignal }).signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
   });
 
   it('forwards the request body verbatim', async () => {

@@ -181,14 +181,31 @@ export function sessionCountForTest(): number {
  * live session holding an assertion commerce refuses, surfacing as a 401 at the
  * payment button (ai-review [medium]).
  *
+ * This is a BEST-EFFORT UPPER BOUND, not synchronization, and the difference
+ * matters (ai-review pass 2). The subtraction mixes this host's wall clock with
+ * commerce's, so a storefront clock running behind commerce's still leaves a
+ * window where the session outlives the assertion. **Commerce remains
+ * authoritative for expiry**; what this removes is the systematic gap (the round
+ * trip), not skew. The residual surfaces as a 401, which the island now handles
+ * honestly rather than as payment uncertainty.
+ *
  * Returns undefined when the token is unreadable, which falls back to the plain
  * TTL rather than refusing: an unparseable assertion is commerce's problem to
  * reject, not a reason to deny someone a session.
  */
 function assertionLifetimeMs(assertion: string, wallClockNow = Date.now()): number | undefined {
-  const seconds = Number(assertion.split('.')[2]);
-  if (!Number.isFinite(seconds)) return undefined;
-  return seconds * 1000 - wallClockNow;
+  const parts = assertion.split('.');
+  // Four fields, exactly — commerce's format is `v1.<id>.<expiry>.<mac>`. A token
+  // with a stray dot is one commerce will reject anyway, and reading position 2 out
+  // of it lands on a fragment (`v1.a.1.5.mac` yields "1", i.e. 1970).
+  if (parts.length !== 4) return undefined;
+  const field = parts[2];
+  // Strict, matching the issuer's grammar exactly. `Number` accepts whitespace,
+  // hex, exponent notation and Infinity — none of which commerce's strconv.ParseInt
+  // would have produced, so accepting them here means agreeing with a token
+  // commerce never minted (ai-review pass 2 [medium]).
+  if (!field || !/^\d+$/.test(field)) return undefined;
+  return Number(field) * 1000 - wallClockNow;
 }
 
 export function createSession(principal: CustomerPrincipal, now = monotonicNow()): string {

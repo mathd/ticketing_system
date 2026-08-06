@@ -28,8 +28,14 @@ import (
 //     silently creates orders that can never belong to anyone, and the buyer finds
 //     out by not seeing their purchase.
 
+// The alias group is not optional decoration: recovery.go already writes
+// `UPDATE orders o SET …`, and the first version of these patterns — which
+// required `orders` to be followed immediately by `SET` — did not match it
+// (ai-review pass 2 [medium]). A scanner that silently skips a real statement is
+// worse than no scanner, so TestTheScannerSeesTheShapesThatExist pins each shape
+// it must recognise.
 var (
-	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+SET\s+(.*?)(?:\x60|WHERE)`)
+	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\x60|\bWHERE\b|;)`)
 	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+orders\s*\(([^)]*)\)`)
 )
 
@@ -119,4 +125,51 @@ func withoutLineComments(body string) string {
 		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
+}
+
+// A detector is only as good as its ability to see. These are the statement
+// shapes that exist in this service today plus the ones a future author would
+// plausibly write; if the patterns stop matching any of them, the invariant tests
+// above go quietly green over a real violation (ai-review pass 2 [medium]).
+func TestTheScannerSeesTheShapesThatExist(t *testing.T) {
+	for _, tc := range []struct {
+		name, sql string
+		update    bool
+	}{
+		{"plain update", "UPDATE orders SET customer_id=NULL WHERE id=$1", true},
+		{"aliased update", "UPDATE orders o SET customer_id=NULL WHERE o.id=$1", true},
+		{"AS-aliased update", "UPDATE orders AS o SET customer_id=NULL WHERE o.id=$1", true},
+		{"lowercase", "update orders set customer_id=null where id=$1", true},
+		{"multi-line", "UPDATE orders\n\t\tSET customer_id=NULL\n\t\tWHERE id=$1", true},
+		{"plain insert", "INSERT INTO orders(id,status) VALUES($1,$2)", false},
+		{"insert select", "INSERT INTO orders(id,status)\n\t\tSELECT $1,'x' FROM orders WHERE id=$2", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pattern, kind := insertOrders, "INSERT INTO orders(...)"
+			if tc.update {
+				pattern, kind = updateOrders, "UPDATE orders SET"
+			}
+			if pattern.FindStringSubmatch(tc.sql) == nil {
+				t.Fatalf("the %s scanner does not see this shape, so the invariant it enforces "+
+					"would pass over it:\n\t%s", kind, tc.sql)
+			}
+		})
+	}
+}
+
+// The scanner reads Go source, not SQL, so it cannot see a statement assembled at
+// runtime. That limit is real and is stated rather than implied: the guarantee is
+// "no LITERAL production statement violates this", and a future author who builds
+// order SQL by concatenation defeats it. Nothing in this service does that today,
+// and this test is what makes the assumption checkable rather than silent.
+func TestOrderSQLIsWrittenAsLiterals(t *testing.T) {
+	for path, body := range commerceProductionSQL(t) {
+		for _, suspicious := range []string{`"UPDATE orders" +`, `"INSERT INTO orders" +`, `+ " orders"`} {
+			if strings.Contains(body, suspicious) {
+				t.Errorf("%s appears to build order SQL by concatenation (%q); the source scanners "+
+					"in this file cannot see through that and their guarantee no longer holds",
+					path, suspicious)
+			}
+		}
+	}
 }
