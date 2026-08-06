@@ -9,10 +9,12 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -32,18 +34,18 @@ var listCustomerOrdersFn = commercestore.CustomerOrders
 // that learns to construct `<rfc3339>|<uuid>` starts depending on the sort key,
 // and changing it then breaks them. base64 is not secrecy — anyone can decode it
 // — it is a fence that makes the dependency deliberate rather than accidental.
-func encodeCursor(c commercestore.WalletCursor) string {
+func (s *Server) encodeCursor(c commercestore.WalletCursor) string {
 	if c.OrderID == uuid.Nil {
 		return ""
 	}
-	return base64.RawURLEncoding.EncodeToString([]byte(
-		c.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + c.OrderID.String() + "|" + c.CustomerID.String()))
+	payload := c.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + c.OrderID.String() + "|" + c.CustomerID.String()
+	return base64.RawURLEncoding.EncodeToString([]byte(payload + "|" + assertionMAC(s.assertionKey, payload)))
 }
 
 // decodeCursor is deliberately unforgiving. A malformed cursor is a client error,
 // not a reason to silently serve page one: quietly restarting would make a paging
 // client loop over the same rows for ever without any error to notice.
-func decodeCursor(raw string) (commercestore.WalletCursor, error) {
+func (s *Server) decodeCursor(raw string) (commercestore.WalletCursor, error) {
 	if raw == "" {
 		return commercestore.WalletCursor{}, nil
 	}
@@ -52,7 +54,19 @@ func decodeCursor(raw string) (commercestore.WalletCursor, error) {
 		return commercestore.WalletCursor{}, errors.New("invalid cursor")
 	}
 	parts := strings.Split(string(decoded), "|")
-	if len(parts) != 3 {
+	if len(parts) != 4 {
+		return commercestore.WalletCursor{}, errors.New("invalid cursor")
+	}
+	// The MAC, checked before any field is believed.
+	//
+	// Comparing the customer field alone was not enough (ai-review pass 2): a
+	// forged cursor naming the NIL customer slipped past a `!= uuid.Nil` guard,
+	// and one naming the caller's OWN customer with an arbitrary timestamp could
+	// still skip or repeat their rows — rendering as a genuine-looking empty
+	// wallet with no error anywhere. Signing removes the whole category instead of
+	// patching its cases, and the key is already here.
+	payload := strings.Join(parts[:3], "|")
+	if subtle.ConstantTimeCompare([]byte(parts[3]), []byte(assertionMAC(s.assertionKey, payload))) != 1 {
 		return commercestore.WalletCursor{}, errors.New("invalid cursor")
 	}
 	created, err := time.Parse(time.RFC3339Nano, parts[0])
@@ -94,17 +108,29 @@ func (s *Server) listCustomerOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	locale := r.URL.Query().Get("locale")
-	after, err := decodeCursor(r.URL.Query().Get("after"))
+	// url.ParseQuery rather than r.URL.Query(), because the latter SWALLOWS a
+	// parse error and hands back whatever it managed to read — so a malformed
+	// query string silently drops `after` and restarts paging from page one,
+	// which is the exact silent-restart this handler refuses to do for a
+	// malformed cursor (ai-review pass 2).
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		write(w, http.StatusBadRequest, map[string]string{"error": "invalid query"})
+		return
+	}
+	locale := query.Get("locale")
+	after, err := s.decodeCursor(query.Get("after"))
 	if err != nil {
 		write(w, http.StatusBadRequest, map[string]string{"error": "invalid cursor"})
 		return
 	}
-	// A cursor issued for somebody else is refused rather than applied. It could
-	// never have read their rows — the query filters on the asserted customer —
-	// but applied to THIS customer it silently suppresses their own, which is a
-	// failure with no symptom (ai-review [medium]).
-	if after.CustomerID != uuid.Nil && after.CustomerID != caller.UUID {
+	// A cursor issued for somebody else is refused rather than applied. The
+	// signature above already makes one impossible to forge; this catches a
+	// genuine cursor replayed from another session, which the signature cannot
+	// distinguish. It could never have read their rows — the query filters on the
+	// asserted customer — but applied to THIS customer it silently suppresses
+	// their own, which is a failure with no symptom.
+	if after.OrderID != uuid.Nil && after.CustomerID != caller.UUID {
 		write(w, http.StatusBadRequest, map[string]string{"error": "invalid cursor"})
 		return
 	}
@@ -142,7 +168,7 @@ func (s *Server) listCustomerOrders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := map[string]any{"orders": rows, "next_cursor": nil}
-	if cursor := encodeCursor(next); cursor != "" {
+	if cursor := s.encodeCursor(next); cursor != "" {
 		out["next_cursor"] = cursor
 	}
 	write(w, http.StatusOK, out)

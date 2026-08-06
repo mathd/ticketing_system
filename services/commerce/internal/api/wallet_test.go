@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -97,7 +98,7 @@ func TestWalletAnswersAnEmptyPageForAValidAssertionNamingItself(t *testing.T) {
 func TestWalletRefusesACursorIssuedForSomebodyElse(t *testing.T) {
 	alice, bob := uuid.New(), uuid.New()
 	s := walletServer(t, nil, commercestore.WalletCursor{})
-	bobsCursor := encodeCursor(commercestore.WalletCursor{
+	bobsCursor := s.encodeCursor(commercestore.WalletCursor{
 		CreatedAt: time.Now(), OrderID: uuid.New(), CustomerID: bob,
 	})
 
@@ -224,7 +225,8 @@ func TestWalletCursorRoundTrips(t *testing.T) {
 		CustomerID: uuid.New(),
 	}
 
-	got, err := decodeCursor(encodeCursor(want))
+	s := &Server{assertionKey: walletKey}
+	got, err := s.decodeCursor(s.encodeCursor(want))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +234,7 @@ func TestWalletCursorRoundTrips(t *testing.T) {
 		t.Fatalf("round trip lost precision: %v != %v", got, want)
 	}
 	// An empty cursor is the first page, not an error.
-	if _, err := decodeCursor(""); err != nil {
+	if _, err := s.decodeCursor(""); err != nil {
 		t.Fatalf("the first page must not need a cursor: %v", err)
 	}
 }
@@ -251,4 +253,44 @@ func bytesContains(haystack, needle string) bool {
 		}
 		return false
 	})()
+}
+
+// ai-review pass 2 [medium]: comparing the cursor's customer field was not enough
+// on its own. A forged cursor naming the NIL customer slipped past the guard, and
+// one naming the caller's own customer with an arbitrary timestamp could still
+// skip or repeat their rows — which renders as a genuine empty wallet with no
+// error anywhere. The cursor is signed now; these are the shapes that must fail.
+func TestWalletRefusesEveryForgedCursor(t *testing.T) {
+	customer := uuid.New()
+	s := walletServer(t, nil, commercestore.WalletCursor{})
+	assertion := mintCustomerAssertion(walletKey, customer, time.Now().Add(time.Hour))
+
+	forge := func(payload string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(payload))
+	}
+	future := time.Now().Add(100 * time.Hour).UTC().Format(time.RFC3339Nano)
+
+	for _, tc := range []struct{ name, cursor string }{
+		{"nil customer, no signature", forge(future + "|" + uuid.New().String() + "|" + uuid.Nil.String())},
+		{"own customer, no signature", forge(future + "|" + uuid.New().String() + "|" + customer.String())},
+		{"own customer, wrong signature", forge(future + "|" + uuid.New().String() + "|" + customer.String() + "|not-a-mac")},
+		{"three fields, as the unsigned format used to be", forge(future + "|" + uuid.New().String() + "|" + customer.String())},
+		{"not base64", "%%%"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := walletGet(s, customer, assertion, "&after="+tc.cursor)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 — a forged cursor must be refused, not applied "+
+					"(it renders as an empty wallet): %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// And a cursor this server genuinely issued still works.
+	real := s.encodeCursor(commercestore.WalletCursor{
+		CreatedAt: time.Now(), OrderID: uuid.New(), CustomerID: customer,
+	})
+	if rec := walletGet(s, customer, assertion, "&after="+real); rec.Code != http.StatusOK {
+		t.Fatalf("a genuine cursor was refused: %d %s", rec.Code, rec.Body.String())
+	}
 }

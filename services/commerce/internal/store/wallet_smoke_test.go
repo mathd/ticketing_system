@@ -276,10 +276,25 @@ func TestWalletReadScanIsScopedNotJustItsResult(t *testing.T) {
 			"scanning every order in the table, which is the defect ADR-019 exists to prevent:\n%s", plan)
 	}
 	// Using the index is not the same as being SCOPED by it: the customer must be
-	// an Index Cond, not a filter applied after reading every completed entry.
-	if !strings.Contains(plan, "Index Cond") || !strings.Contains(plan, "customer_id = $1") {
-		t.Fatalf("customer_id is not an index CONDITION, so the scan reads every completed order "+
-			"and filters afterwards — the result is scoped and the scan is not:\n%s", plan)
+	// an Index COND, not a filter applied after reading every completed entry.
+	//
+	// Asserted on ONE LINE rather than as two independent substring searches over
+	// the whole plan (ai-review pass 2). Searching separately passes when the
+	// `Index Cond` comes from the reservations join — whose condition is
+	// `(id = o.reservation_id)` — while `customer_id = $1` sits in a `Filter:` on
+	// an unscoped scan of orders. Requiring both in the same line is enough to
+	// tell them apart, because no other node in this plan can produce an index
+	// condition mentioning customer_id.
+	scoped := false
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.Contains(line, "Index Cond") && strings.Contains(line, "customer_id = $1") {
+			scoped = true
+			break
+		}
+	}
+	if !scoped {
+		t.Fatalf("customer_id is not an index CONDITION on the orders scan, so the read walks every "+
+			"completed order and filters afterwards — the result is scoped and the scan is not:\n%s", plan)
 	}
 	if strings.Contains(plan, "Seq Scan on orders") {
 		t.Fatalf("the wallet read sequentially scans orders:\n%s", plan)
@@ -325,5 +340,37 @@ func TestWalletExcludesOrdersWithNoTicketReference(t *testing.T) {
 	}
 	if len(page) != 1 || page[0].OrderID != real {
 		t.Fatalf("page = %+v, want only the order that has a ticket reference (%s)", page, real)
+	}
+}
+
+// The empty wallet through the REAL query (ai-review pass 2 [medium]).
+//
+// The handler test for this replaced the store with a stub returning nil, so it
+// only ever proved the JSON serialization. A SQL error, a bad first-page sentinel
+// or a broken cursor could all regress while it stayed green — and "you have
+// bought nothing" is the first thing every new customer sees.
+func TestCustomerOrdersAnswersAnEmptyPageForANewCustomer(t *testing.T) {
+	db, ctx := outboxDB(t)
+	account, err := RegisterCustomer(ctx, db, uniqueEmail("wallet-empty"), "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Somebody ELSE has purchases, so an empty answer here means "scoped", not
+	// "the table is empty".
+	stranger, err := RegisterCustomer(ctx, db, uniqueEmail("wallet-empty-stranger"), "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWalletOrder(t, db, ctx, uuid.NullUUID{UUID: stranger.ID, Valid: true}, "completed", time.Now().Add(-time.Hour))
+
+	page, next, err := CustomerOrders(ctx, db, account.ID, WalletCursor{}, WalletPageLimit)
+	if err != nil {
+		t.Fatalf("a customer with no orders must not be an error: %v", err)
+	}
+	if len(page) != 0 {
+		t.Fatalf("page = %+v, want empty", page)
+	}
+	if next.OrderID != uuid.Nil {
+		t.Fatalf("an empty page must carry no cursor, got %+v", next)
 	}
 }
