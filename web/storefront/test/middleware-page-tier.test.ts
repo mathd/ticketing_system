@@ -47,4 +47,29 @@ describe('page-layer cache tier', () => {
     expect(run('/en/festivals/f1', undefined).cacheControl).toBe('no-store');
     expect(run('/en/festivals/f1', { ageSeconds: 0, maxAgeSeconds: 300 }, 503).cacheControl).toBe('no-store');
   });
+
+  // TKT-220. Account HTML is per-customer and can never be cached.
+  //
+  // These are asserted with page data present AND status 200 on purpose: that is
+  // the ONLY input combination that can produce a positive tier, so it is the
+  // only one where a widened CACHED_PAGE would be visible. Asserting no-store on
+  // a 404 or on a render that established no freshness proves nothing — those are
+  // no-store for a different reason entirely.
+  //
+  // It holds today because the account paths do not match CACHED_PAGE. That regex
+  // is edited by other tickets (TKT-208 widened it once, TKT-209 is open against
+  // the same area), which is why this is pinned rather than left to inspection.
+  it('never caches an account page, even with fresh page data behind a 200', () => {
+    for (const path of [
+      '/en/account',
+      '/fr/account',
+      '/en/account/sign-in',
+      '/fr/account/register',
+      '/en/account/sign-out',
+    ]) {
+      const res = run(path, { ageSeconds: 0, maxAgeSeconds: 300 }, 200);
+      expect(res.cacheControl, path).toBe('no-store');
+      expect(res.pageDataAge, path).toBeUndefined();
+    }
+  });
 });

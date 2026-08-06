@@ -1,0 +1,42 @@
+---
+// The signed-in account page (TKT-220 / US-A1).
+//
+// Deliberately almost empty. This slice creates an identity and nothing else:
+// listing a customer's orders is TKT-222 and claiming a past guest order is
+// TKT-223. What it does have to do is make the ticket demonstrable — a sign-in
+// with nowhere to land proves nothing.
+//
+// The gate has already resolved the session by the time this renders
+// (src/lib/gate.ts): reaching here without `Astro.locals.customer` is impossible
+// through the middleware, and the fallback below is a fail-closed backstop rather
+// than an expected path.
+import Layout from '../../../layouts/Layout.astro';
+import { UI_STRINGS, isLocale } from '../../../lib/locales';
+
+const locale = Astro.params.locale;
+if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404 });
+const t = UI_STRINGS[locale];
+
+const customer = Astro.locals.customer;
+if (!customer) return Astro.redirect(`/${locale}/account/sign-in`, 302);
+---
+
+<Layout locale={locale} title={t.account}>
+  <h1>{t.account}</h1>
+  <p>{t.signedInAs} <strong>{customer.email}</strong></p>
+  <form method="post" action={`/${locale}/account/sign-out`}>
+    <button type="submit">{t.signOut}</button>
+  </form>
+</Layout>
+
+<style>
+  button {
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: 0.3rem;
+    background: var(--card);
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+  }
+</style>

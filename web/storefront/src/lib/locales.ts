@@ -45,6 +45,29 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatsWouldStrand: 'This would leave {seats} on its own. Add it, or pick a different seat.',
     seatMapStale: 'Showing the last known seat availability — reconnecting.',
     reserveSeats: 'Reserve seats',
+    // Customer accounts (TKT-220). An account is OPTIONAL everywhere: the copy
+    // must never imply that buying requires one.
+    account: 'Account',
+    accountOptionalNotice:
+      'An account is optional — you can always buy as a guest and keep your order reference.',
+    signIn: 'Sign in',
+    signOut: 'Sign out',
+    register: 'Create an account',
+    registerCta: 'No account yet? Create one.',
+    signInCta: 'Already have an account? Sign in.',
+    email: 'Email',
+    password: 'Password',
+    passwordMinimum: 'At least 8 characters.',
+    signedInAs: 'Signed in as',
+    // One message for every failure a caller can provoke. Distinguishing "no such
+    // account" from "wrong password" here would undo, in the UI, exactly what the
+    // store and the handler go to some trouble to prevent.
+    credentialsInvalid: 'Those credentials are not valid.',
+    accountTaken: 'An account already exists for that address.',
+    // An outage is NOT a credential verdict: telling someone their correct
+    // password is wrong sends them to reset it while the real fault goes
+    // unreported.
+    accountUnavailable: 'Accounts are temporarily unavailable. Try again shortly.',
   },
   fr: {
     events: 'Événements',
@@ -77,5 +100,20 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatsWouldStrand: 'Cela isolerait {seats}. Ajoutez cette place, ou choisissez-en une autre.',
     seatMapStale: 'Affichage de la dernière disponibilité connue — reconnexion en cours.',
     reserveSeats: 'Réserver les places',
+    account: 'Compte',
+    accountOptionalNotice:
+      'Le compte est facultatif — vous pouvez toujours acheter en tant qu’invité et conserver votre référence de commande.',
+    signIn: 'Se connecter',
+    signOut: 'Se déconnecter',
+    register: 'Créer un compte',
+    registerCta: 'Pas encore de compte ? Créez-en un.',
+    signInCta: 'Vous avez déjà un compte ? Connectez-vous.',
+    email: 'Courriel',
+    password: 'Mot de passe',
+    passwordMinimum: 'Au moins 8 caractères.',
+    signedInAs: 'Connecté en tant que',
+    credentialsInvalid: 'Ces identifiants ne sont pas valides.',
+    accountTaken: 'Un compte existe déjà pour cette adresse.',
+    accountUnavailable: 'Les comptes sont temporairement indisponibles. Réessayez sous peu.',
   },
 };

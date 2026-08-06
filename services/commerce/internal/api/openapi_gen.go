@@ -274,6 +274,25 @@ type Checkout struct {
 	ReservationId openapi_types.UUID `json:"reservation_id"`
 }
 
+// CustomerCredentials A customer sign-in attempt (TKT-220). Bounded for the same reason as CustomerRegistration.
+type CustomerCredentials struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// CustomerPrincipal A signed-in buyer. `email` is the address in the spelling the buyer registered with, for display; every lookup goes through the normalized form, which is never exposed.
+type CustomerPrincipal struct {
+	CustomerId openapi_types.UUID `json:"customer_id"`
+	Email      string             `json:"email"`
+}
+
+// CustomerRegistration A customer registration attempt (TKT-220). maxLength on both fields bounds the work an unauthenticated caller can ask for. 72 on the password is bcrypt's hard input limit, past which it silently ignores the tail — so a longer password and its 72-byte prefix would authenticate each other.
+// Note the limit is not fully expressible here: OpenAPI counts CHARACTERS and bcrypt counts BYTES, so 72 multibyte characters clear this schema and are three times over bcrypt's bound. The store refuses those before it touches the database, uniformly, so the refusal leaks nothing.
+type CustomerRegistration struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 // DeliveryEmail defines model for DeliveryEmail.
 type DeliveryEmail struct {
 	Email string `json:"email"`
@@ -523,6 +542,12 @@ type CheckoutParams struct {
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
+
+// RegisterCustomerJSONRequestBody defines body for RegisterCustomer for application/json ContentType.
+type RegisterCustomerJSONRequestBody = CustomerRegistration
+
+// AuthenticateCustomerJSONRequestBody defines body for AuthenticateCustomer for application/json ContentType.
+type AuthenticateCustomerJSONRequestBody = CustomerCredentials
 
 // ExchangeTicketsSwitchedJSONRequestBody defines body for ExchangeTicketsSwitched for application/json ContentType.
 type ExchangeTicketsSwitchedJSONRequestBody = ExchangeSwitched

@@ -1,0 +1,124 @@
+---
+// Customer registration (TKT-220 / US-A1). Anonymous by construction, like
+// sign-in. Relative form action for the same TKT-105 reason.
+//
+// A successful registration signs the buyer straight in. Making them type the
+// credential a second time buys nothing: they proved they hold it one request
+// ago, and commerce answered with the principal.
+import Layout from '../../../layouts/Layout.astro';
+import { registerCustomer } from '../../../lib/customer-api';
+import {
+  SESSION_COOKIE,
+  createSession,
+  isSecureRequest,
+  sessionCookieOptions,
+} from '../../../lib/session';
+import { UI_STRINGS, isLocale } from '../../../lib/locales';
+
+const locale = Astro.params.locale;
+if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404 });
+const t = UI_STRINGS[locale];
+
+let error: string | null = null;
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const email = String(form.get('email') ?? '');
+  const password = String(form.get('password') ?? '');
+
+  if (!email || !password) {
+    error = t.credentialsInvalid;
+  } else {
+    const result = await registerCustomer(email, password);
+    if (result.ok) {
+      const token = createSession({
+        customerId: result.principal.customer_id,
+        email: result.principal.email,
+      });
+      Astro.cookies.set(
+        SESSION_COOKIE,
+        token,
+        sessionCookieOptions({ secure: isSecureRequest(Astro.request) }),
+      );
+      return Astro.redirect(`/${locale}/account`, 303);
+    }
+    // "Taken" is said plainly. ADR-049 records that this discloses whether an
+    // address holds an account and accepts it: with no mail path in this repo,
+    // the alternative is telling a legitimate buyer their account was created
+    // when it was not.
+    error =
+      result.reason === 'taken'
+        ? t.accountTaken
+        : result.reason === 'unavailable'
+          ? t.accountUnavailable
+          : t.credentialsInvalid;
+  }
+}
+---
+
+<Layout locale={locale} title={t.register}>
+  <h1>{t.register}</h1>
+  <p class="notice">{t.accountOptionalNotice}</p>
+  <form method="post" action="">
+    {error && <p class="error" role="alert">{error}</p>}
+    <label for="email">{t.email}</label>
+    <input id="email" name="email" type="email" autocomplete="username" required />
+    <label for="password">{t.password}</label>
+    <input
+      id="password"
+      name="password"
+      type="password"
+      autocomplete="new-password"
+      minlength="8"
+      maxlength="72"
+      required
+      aria-describedby="password-hint"
+    />
+    <small id="password-hint">{t.passwordMinimum}</small>
+    <button type="submit">{t.register}</button>
+  </form>
+  <p><a href={`/${locale}/account/sign-in`}>{t.signInCta}</a></p>
+</Layout>
+
+<style>
+  form {
+    max-width: 24rem;
+    display: grid;
+    gap: 0.4rem;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+  }
+  label {
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+  input {
+    padding: 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 0.3rem;
+    font: inherit;
+  }
+  small {
+    color: var(--muted);
+  }
+  button {
+    margin-top: 0.75rem;
+    padding: 0.55rem;
+    border: 0;
+    border-radius: 0.3rem;
+    background: var(--accent);
+    color: white;
+    font: inherit;
+    cursor: pointer;
+  }
+  .error {
+    margin: 0 0 0.5rem;
+    color: #a11;
+  }
+  .notice {
+    color: var(--muted);
+    max-width: 32rem;
+  }
+</style>
