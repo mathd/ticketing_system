@@ -30,6 +30,7 @@ const (
 	versionBeforeSeatMaps           = 8  // roll 0009_seat_maps down
 	versionBeforeSeatedPerformances = 9  // roll 0010_publish_seat_maps down
 	versionBeforeStaffAccounts      = 14 // roll 0015_staff_accounts down (TKT-190)
+	versionBeforeFeeRules           = 15 // roll 0016_fee_rules down (TKT-214)
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -536,6 +537,67 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if !archivedAt || !archiveEmittedAt {
 			t.Fatal("failed down partially dropped archived lifecycle columns")
+		}
+	})
+
+	// TKT-214. The first version of this assertion executed a DO block COPIED
+	// from 0016 rather than running the migration, so deleting the guard — or
+	// the whole Down body — from 0016_fee_rules.sql would not have failed it:
+	// the test's private copy would still have raised. Caught at ai-review. A
+	// rollback guard can only be proved by rolling back.
+	t.Run("0016 down refuses to discard fee rules", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID := uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'fees') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'hall',10 FROM o RETURNING id
+		)
+		INSERT INTO fee_rules(organizer_id,scope_level,scope_id,fee_code,basis,amount,currency,incidence)
+		SELECT $1,'venue',v.id,'service','per_ticket_fixed',300,'EUR','passed_on' FROM v`,
+			organizerID, venueID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeFeeRules); err == nil {
+			t.Fatal("0016 down unexpectedly discarded fee-rule data")
+		}
+		// A refused Down must leave the schema INTACT, not half-dropped: the
+		// index and the table both survive, and the row with them.
+		var table, index bool
+		var rows int
+		if err := db.QueryRowContext(ctx, `SELECT
+			to_regclass(current_schema() || '.fee_rules') IS NOT NULL,
+			to_regclass(current_schema() || '.fee_rules_scope') IS NOT NULL,
+			(SELECT count(*) FROM fee_rules)`).Scan(&table, &index, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if !table || !index || rows != 1 {
+			t.Fatalf("failed 0016 down partially dropped fee schema: table=%v index=%v rows=%d",
+				table, index, rows)
+		}
+	})
+
+	// The other half, and the one that makes the guard a guard rather than a
+	// wall: with no fee rows the rollback SUCCEEDS and removes the table.
+	// Without this, an unconditional `RAISE` would pass the test above.
+	t.Run("0016 down succeeds with no fee rules", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeFeeRules); err != nil {
+			t.Fatalf("0016 down with no data should succeed: %v", err)
+		}
+		var table bool
+		if err := db.QueryRowContext(ctx,
+			`SELECT to_regclass(current_schema() || '.fee_rules') IS NOT NULL`).Scan(&table); err != nil {
+			t.Fatal(err)
+		}
+		if table {
+			t.Fatal("0016 down left fee_rules behind")
 		}
 	})
 }

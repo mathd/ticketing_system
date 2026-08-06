@@ -13,13 +13,19 @@ import (
 // ResolveTicketTypeFees answers "which fees apply to this ticket type, in this
 // channel, right now, and why" (TKT-214 / ADR-046).
 //
-// INTERNAL, and the credential check is the first thing it does. This response
-// carries `absorbed` fees — the organizer's cost structure, not anything the
-// buyer pays — so unlike its price-resolution sibling it is not a public read.
-// The gateway already denies /api/<svc>/internal/ at the edge; this guard is
-// what stands between it and the container network, and it is inline rather than
-// declared because ADR-043 puts a service's internal surface on that side of the
-// line.
+// INTERNAL. This response carries `absorbed` fees — the organizer's cost
+// structure, not anything the buyer pays — so unlike its price-resolution
+// sibling it is not a public read. The gateway already denies
+// /api/<svc>/internal/ at the edge; the credential is what stands between it and
+// the container network, and it is an inline check rather than a declared
+// security scheme because ADR-043 puts a service's internal surface on that side
+// of the line.
+//
+// The check itself is NOT here, and that is the point: it runs in
+// guardInternalSurface (server.go), outside the generated handler, because the
+// generated wrapper binds and validates parameters before any middleware. A
+// check in this function would let a malformed id or channel_code answer 400
+// with validation details to a caller holding no credential.
 //
 // The evaluation instant is captured HERE and is deliberately not a request
 // parameter, for the same reason ResolveTicketTypePrice refuses one: a
@@ -27,10 +33,6 @@ import (
 // schedule that has expired or has not opened. The store and the pure comparator
 // still take an instant, so the clock stays testable below HTTP.
 func (s *Server) ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypeFeesParams) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
-		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
-		return
-	}
 	// nil channel is the default/public context, in which only channel-agnostic
 	// rules are eligible. Omitting the parameter is NOT a wildcard, and the
 	// pointer is what carries that distinction all the way to the comparator —

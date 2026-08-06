@@ -3,8 +3,6 @@
 package store
 
 import (
-	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -466,34 +464,5 @@ func TestResolveTicketTypeFeesIsIndexScoped(t *testing.T) {
 		if strings.Contains(line, "Filter:") && strings.Contains(line, "scope_id") {
 			t.Errorf("scope_id is filtered AFTER the index fetch, not by it: %s\nplan:\n%s", line, plan)
 		}
-	}
-}
-
-// The rollback guard: fee configuration must not be silently destroyed.
-func TestFeeRulesDownMigrationRefusesToDropData(t *testing.T) {
-	ctx, db, st := seasonSmokeStore(t)
-	_, orgID, venueID, _, _, _ := seedPricingChain(ctx, t, db)
-	if _, err := st.CreateFeeRule(ctx, fixedFeeInput(orgID, venueID, ScopeVenue, "service", 100)); err != nil {
-		t.Fatal(err)
-	}
-	assertFeeRollbackRefused(ctx, t, db)
-}
-
-func assertFeeRollbackRefused(ctx context.Context, t *testing.T, db *sql.DB) {
-	t.Helper()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	_, err = tx.ExecContext(ctx, `
-		DO $$
-		BEGIN
-		    IF EXISTS (SELECT 1 FROM fee_rules) THEN
-		        RAISE EXCEPTION 'cannot roll back 0016: fee-rule data exists';
-		    END IF;
-		END $$;`)
-	if err == nil {
-		t.Error("the down migration's guard must refuse while fee-rule data exists")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,5 +376,52 @@ func TestResolveTicketTypeFeesTakesNoCallerInstant(t *testing.T) {
 				t.Errorf("the contract declares a caller-supplied instant %q", forbidden)
 			}
 		}
+	}
+}
+
+// The finding this test exists for (ai-review): a credential check inside the
+// handler runs AFTER the generated wrapper has bound and validated parameters,
+// so a malformed id or channel_code answered 400-with-details to a caller
+// holding no credential — a schema oracle on the internal surface, and a
+// contradiction of the handler's own claim to check the credential first.
+//
+// Every row here is malformed in a way that would produce a DIFFERENT status if
+// the guard sat downstream of validation. They must all be indistinguishable.
+func TestResolveTicketTypeFeesRefusesMalformedRequestsUniformly(t *testing.T) {
+	e := newEnv(t)
+	ttID, _ := seedPricedTicketType(t, e, 4550, "EUR")
+
+	for name, path := range map[string]string{
+		"malformed uuid":          "/internal/ticket-types/not-a-uuid/fee-resolution",
+		"empty uuid":              "/internal/ticket-types//fee-resolution",
+		"channel below minLength": feePath(ttID, "") + "?channel_code=",
+		"channel above maxLength": feePath(ttID, strings.Repeat("x", 101)),
+		"unknown ticket type":     feePath(uuid.New(), ""),
+		"unknown internal path":   "/internal/ticket-types/" + ttID.String() + "/fee-resolution/extra",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := e.doWithHeaders(http.MethodGet, path, nil, nil)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401 — an unauthenticated caller must not learn "+
+					"whether the route or its parameters are well formed (body %s)", rec.Code, rec.Body)
+			}
+			if rec.Body.String() != `{"error":"unauthorized"}`+"\n" {
+				t.Errorf("body = %s, want the same fixed refusal every other case gets", rec.Body)
+			}
+		})
+	}
+}
+
+// The guard is a prefix guard, so the same test owes the negative: a PUBLIC
+// route must be untouched by it. Without this, tightening the prefix into
+// something that matched everything would pass every assertion above.
+func TestTheInternalGuardDoesNotTouchPublicRoutes(t *testing.T) {
+	e := newEnv(t)
+	ttID, _ := seedPricedTicketType(t, e, 4550, "EUR")
+
+	rec := e.do(http.MethodGet, "/ticket-types/"+ttID.String()+"/price-resolution", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the public price resolution must still answer without a credential: %d %s",
+			rec.Code, rec.Body)
 	}
 }

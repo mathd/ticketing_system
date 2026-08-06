@@ -2,7 +2,6 @@ package store
 
 import (
 	"errors"
-	"sort"
 	"testing"
 	"time"
 
@@ -140,6 +139,15 @@ func TestSelectFeeRulesTruthTable(t *testing.T) {
 		"a forced broader rule beats a narrower unforced one": {
 			rules:      []FeeRule{feeForced(fee(1, ScopeVenue, "service")), fee(2, ScopeTicketType, "service")},
 			wantWinner: ruleID(1), wantLoser: ruleID(2), wantReason: ReasonForcedBroaderScope,
+		},
+		// The forced partition EXCLUDES unforced rules, and when the forced
+		// winner is the NARROWER one there is no "broader scope" to name — the
+		// loser was simply thrown out of the competition. This row is the only
+		// producer of that reason; without it feeLossReason could return
+		// forced_broader_scope for every forced case and no test would know.
+		"an unforced rule excluded by a narrower forced one": {
+			rules:      []FeeRule{feeForced(fee(1, ScopeTicketType, "service")), fee(2, ScopeVenue, "service")},
+			wantWinner: ruleID(1), wantLoser: ruleID(2), wantReason: ReasonExcludedByForcedRule,
 		},
 		"among forced rules the broadest binds": {
 			rules:      []FeeRule{feeForced(fee(1, ScopeVenue, "service")), feeForced(fee(2, ScopeTicketType, "service"))},
@@ -431,33 +439,139 @@ func TestSelectFeeRulesHidesOtherChannelsEntirely(t *testing.T) {
 	}
 }
 
-// Every rule the comparator can produce has a reason, and the enum is closed:
-// an unmapped path would surface as an empty string on a money document.
-func TestFeeLossReasonsAreClosed(t *testing.T) {
-	known := map[string]bool{
-		ReasonLessSpecific: true, ReasonForcedBroaderScope: true, ReasonExcludedByForcedRule: true,
-		ReasonLowerForcedScope: true, ReasonLowerPriority: true, ReasonStableIDTiebreak: true,
-		ReasonOutsideWindowPast: true, ReasonOutsideWindowFuture: true, ReasonLessChannelSpecific: true,
+// EVERY loser reason the comparator can emit, asserted by rule id — not by
+// membership in a set.
+//
+// The membership-and-count version of this test was a defect the ai-review
+// caught: it checked only that each reason was *known* and that four losers
+// existed, so a feeLossReason returning less_specific for every loser passed it
+// unchanged. A test whose subject is "the right reason" must assert WHICH rule
+// got WHICH reason.
+func TestFeeLossReasonsAreExactAndTotal(t *testing.T) {
+	past := feeAt.Add(-time.Hour)
+	future := feeAt.Add(time.Hour)
+	reseller := ptr("reseller")
+
+	for name, tc := range map[string]struct {
+		channel *string
+		rules   []FeeRule
+		// want maps a loser's rule id to the exact reason it must carry.
+		want map[uuid.UUID]string
+	}{
+		"scope, priority and id": {
+			rules: []FeeRule{
+				fee(1, ScopeTicketType, "service"),
+				fee(2, ScopeVenue, "service"),
+				feeWithPriority(fee(3, ScopeTicketType, "service"), -5),
+			},
+			want: map[uuid.UUID]string{
+				ruleID(2): ReasonLessSpecific,
+				ruleID(3): ReasonLowerPriority,
+			},
+		},
+		"a full tie falls to the id": {
+			rules: []FeeRule{fee(1, ScopeEvent, "service"), fee(2, ScopeEvent, "service")},
+			want:  map[uuid.UUID]string{ruleID(2): ReasonStableIDTiebreak},
+		},
+		"a forced broader winner names the scope": {
+			rules: []FeeRule{feeForced(fee(1, ScopeVenue, "service")), fee(2, ScopeTicketType, "service")},
+			want:  map[uuid.UUID]string{ruleID(2): ReasonForcedBroaderScope},
+		},
+		"a forced narrower winner excludes rather than outranks": {
+			rules: []FeeRule{feeForced(fee(1, ScopeTicketType, "service")), fee(2, ScopeVenue, "service")},
+			want:  map[uuid.UUID]string{ruleID(2): ReasonExcludedByForcedRule},
+		},
+		"forced rules rank against each other by scope": {
+			rules: []FeeRule{feeForced(fee(1, ScopeVenue, "service")), feeForced(fee(2, ScopeTicketType, "service"))},
+			want:  map[uuid.UUID]string{ruleID(2): ReasonLowerForcedScope},
+		},
+		"channel specificity at one level": {
+			channel: reseller,
+			rules: []FeeRule{feeWithChannel(fee(1, ScopeEvent, "service"), "reseller"),
+				fee(2, ScopeEvent, "service")},
+			want: map[uuid.UUID]string{ruleID(2): ReasonLessChannelSpecific},
+		},
+		"both window edges": {
+			rules: []FeeRule{
+				fee(1, ScopeTicketType, "service"),
+				feeWithWindow(fee(2, ScopeVenue, "service"), nil, &past),
+				feeWithWindow(fee(3, ScopeVenue, "service"), &future, nil),
+			},
+			want: map[uuid.UUID]string{
+				ruleID(2): ReasonOutsideWindowPast,
+				ruleID(3): ReasonOutsideWindowFuture,
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sel := resolve(t, tc.channel, tc.rules...)
+			got := map[uuid.UUID]string{}
+			for _, f := range sel.Fees {
+				for _, c := range f.Candidates {
+					got[c.Rule.ID] = c.Reason
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("losers = %v, want %v", got, tc.want)
+			}
+			for id, reason := range tc.want {
+				if got[id] != reason {
+					t.Errorf("rule %s lost with %q, want %q", id, got[id], reason)
+				}
+			}
+		})
+	}
+}
+
+// Totality, asserted separately from correctness: every reason the closed enum
+// declares must be REACHABLE by some input above. A reason no case produces is
+// either dead code or an untested branch, and both are worth failing on.
+func TestEveryFeeLossReasonIsReachable(t *testing.T) {
+	declared := []string{
+		ReasonLessSpecific, ReasonForcedBroaderScope, ReasonExcludedByForcedRule,
+		ReasonLowerForcedScope, ReasonLessChannelSpecific, ReasonLowerPriority,
+		ReasonStableIDTiebreak, ReasonOutsideWindowPast, ReasonOutsideWindowFuture,
 	}
 	past := feeAt.Add(-time.Hour)
-	sel := resolve(t, ptr("reseller"),
-		feeForced(fee(1, ScopeVenue, "service")),
-		fee(2, ScopeTicketType, "service"),
-		feeWithChannel(fee(3, ScopeVenue, "service"), "reseller"),
-		feeWithWindow(fee(4, ScopeEvent, "service"), nil, &past),
-		feeWithPriority(fee(5, ScopeVenue, "service"), 9),
-	)
-	var seen []string
-	for _, f := range sel.Fees {
-		for _, c := range f.Candidates {
-			if !known[c.Reason] {
-				t.Errorf("rule %s lost with an unmapped reason %q", c.Rule.ID, c.Reason)
+	future := feeAt.Add(time.Hour)
+	reseller := ptr("reseller")
+
+	produced := map[string]bool{}
+	record := func(sel FeeSelection) {
+		for _, f := range sel.Fees {
+			for _, c := range f.Candidates {
+				produced[c.Reason] = true
 			}
-			seen = append(seen, c.Reason)
 		}
 	}
-	sort.Strings(seen)
-	if len(seen) != 4 {
-		t.Errorf("want four losers, got %d (%v)", len(seen), seen)
+	record(resolve(t, nil, fee(1, ScopeTicketType, "service"), fee(2, ScopeVenue, "service")))
+	record(resolve(t, nil, feeForced(fee(1, ScopeVenue, "service")), fee(2, ScopeTicketType, "service")))
+	record(resolve(t, nil, feeForced(fee(1, ScopeTicketType, "service")), fee(2, ScopeVenue, "service")))
+	record(resolve(t, nil, feeForced(fee(1, ScopeVenue, "service")), feeForced(fee(2, ScopeTicketType, "service"))))
+	record(resolve(t, reseller, feeWithChannel(fee(1, ScopeEvent, "service"), "reseller"), fee(2, ScopeEvent, "service")))
+	record(resolve(t, nil, fee(1, ScopeEvent, "service"), feeWithPriority(fee(2, ScopeEvent, "service"), -3)))
+	record(resolve(t, nil, fee(1, ScopeEvent, "service"), fee(2, ScopeEvent, "service")))
+	record(resolve(t, nil, fee(1, ScopeTicketType, "service"),
+		feeWithWindow(fee(2, ScopeVenue, "service"), nil, &past),
+		feeWithWindow(fee(3, ScopeVenue, "service"), &future, nil)))
+
+	for _, r := range declared {
+		if !produced[r] {
+			t.Errorf("no input in this suite produces the reason %q — it is untested or unreachable", r)
+		}
 	}
+	for r := range produced {
+		if !sliceHas(declared, r) {
+			t.Errorf("the comparator produced an undeclared reason %q", r)
+		}
+	}
+}
+
+func sliceHas(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }
