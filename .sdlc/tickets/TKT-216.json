@@ -4,7 +4,7 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F3: Payees and split schedules - a split that does not sum exactly is refused",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -50,7 +50,7 @@
     }
   },
   "context": {
-    "capturedAt": "2026-08-05",
+    "capturedAt": "2026-08-05 (re-baked at claim)",
     "binding": [
       {
         "id": "AGENTS.md",
@@ -65,40 +65,48 @@
     ],
     "governingAdrs": [
       {
-        "id": "ADR-036",
-        "why": "The pricing-rule model this epic extends. Fixes the five scope levels and how each is DERIVED from the ticket type (§1), the specificity order ticket_type > slot > series > event > venue and which parts of it are containment vs policy, the comparator steps (§4), the (scope_level, scope_id) index predicate and WHY matching on scope_id alone is a correctness bug (§3), append-mostly semantics with effective_until as the only mutable field, and - directly for this epic - §2: 'When a relative action is added, it must be integer-safe: basis points, checked multiplication, and a documented rounding direction. Floats stay banned.' It also states that deltas were deliberately left OUT of pricing because they overlap TKT-6."
+        "id": "ADR-046",
+        "why": "SHIPPED (TKT-214) AND CONSUMED (TKT-215). Fixes the fee model this ticket attaches payees to: fee codes are opaque and case-sensitive, one winner per code, rounding is floor at the individual ticket, incidence is passed_on vs absorbed, and - directly for this ticket - §2 states that A RESOLVED FEE OF AMOUNT 0 IS STILL A RESOLVED FEE, which means a split allocator will be handed zero amounts and must not treat them as absent."
       },
       {
-        "id": "ADR-002",
-        "why": "The ownership line: catalog owns rule definitions, commerce owns 'pricing/fee/promo evaluation', payments owns the settlement ledger. ADR-036 §6 already amended this row once for price RESOLUTION; any further move of the line for fees must be an explicit amendment, not an assertion that the boundary did not really change."
+        "id": "ADR-036",
+        "why": "The hierarchy and comparator that fee rules reuse and split schedules will reuse again: five derived scope levels, specificity order, forced-override partition, priority, stable-id tiebreak, and the (scope_level, scope_id) index predicate. Also §3's write-gate pattern for a polymorphic scope with no FK."
       },
       {
         "id": "ADR-001",
-        "why": "Money is integer minor units + ISO-4217. Every fee arithmetic path is integer-only: no float, no big.Float, no decimal-as-string round trip."
+        "why": "Money is integer minor units. The allocator is integer-only: bps shares divide money that does not divide evenly, and the residue must be allocated, never rounded away."
+      },
+      {
+        "id": "ADR-002",
+        "why": "catalog owns rule definitions; payments owns the settlement ledger. A PAYEE is an accounting entity - deciding which service owns it is this ticket's boundary question, and moving the line needs an explicit amendment, not an assertion."
       },
       {
         "id": "ADR-009",
-        "why": "Contract-first: a new operation or field must be declared in the service's openapi.yaml, and openapi_gen.go / api-types.gen.ts regenerated and COMMITTED before the gate (check-generate diffs against HEAD)."
+        "why": "Contract-first: any new operation must be declared and the generated code committed BEFORE the gate."
       },
       {
         "id": "ADR-028",
-        "why": "Responses are validated against the contract and fail closed - an undeclared field or an out-of-enum header becomes a 500 with the payload withheld. A money amount above the contract's Money cap is the classic instance (ADR-036 records it as TKT-154's residue)."
+        "why": "Response validation fails closed. A new REQUIRED field breaks every pre-existing response; amounts above the Money cap 500 at read time."
       },
       {
         "id": "ADR-019",
-        "why": "A scoped catalog read is only scoped if an index backs the filter, and proving it takes TWO tests: the result is scoped AND the scan is (EXPLAIN under force_generic_plan, over the production query constant, on an ANALYZEd seed big enough that a seq scan is the wrong choice)."
+        "why": "A scoped catalog read needs an index behind its filter and TWO tests: the result is scoped AND the scan is. TKT-214 did this for fee_rules; split schedules resolving through the same hierarchy owe the same pair."
       },
       {
         "id": "ADR-020",
-        "why": "Plain `CREATE INDEX` only - CONCURRENTLY is still not adopted, and ADR-022 satisfying precondition (1) did not change that because the preconditions are conjunctive."
+        "why": "Plain CREATE INDEX; CONCURRENTLY is not adopted."
       },
       {
         "id": "ADR-022",
-        "why": "Migrations run out-of-band as each binary's `migrate` subcommand, a one-shot Compose job the service waits on. The server path never migrates."
+        "why": "Migrations run out-of-band via each binary's migrate subcommand."
       },
       {
         "id": "ADR-021",
-        "why": "Name the adversary before writing 'tamper-evident' or 'guaranteed'. State inside the database cannot constrain an adversary who writes to the database; only a hash chain over data they cannot re-sign does."
+        "why": "Name the adversary before claiming an integrity property. A sum-to-10000 CHECK is honest-writer consistency, not tamper-evidence - a direct DB writer bypasses it."
+      },
+      {
+        "id": "ADR-043",
+        "why": "Where a service's auth guard lives: declared security guards a public contract, an inline check guards an internal surface. TKT-214 put the fee read on /internal/ because absorbed fees are the organizer's cost structure - SPLIT SHARES ARE STRICTLY MORE SENSITIVE, so the same reasoning applies with more force."
       }
     ],
     "reference": [
@@ -107,16 +115,24 @@
         "link": "board:TKT-6"
       },
       {
-        "summary": "The fee model and comparator this ticket keys off",
-        "link": "board:TKT-214"
+        "summary": "The fee model, merged: basis kinds, rounding, incidence, channel, the /internal/ read and why",
+        "link": "docs/adr/ADR-046-fee-rules-representation.md"
       },
       {
-        "summary": "The scoped-rule shape to mirror for split schedules",
-        "link": "services/catalog/internal/store/migrations/0012_price_rules.sql, services/catalog/internal/store/pricing.go"
+        "summary": "The fee comparator and its per-code partition - split schedules resolve the same way",
+        "link": "services/catalog/internal/store/fees.go"
       },
       {
-        "summary": "Write-side validation pattern catalog already uses to make a malformed row unrepresentable through the store (INSERT ... SELECT gate)",
-        "link": "services/catalog/internal/store/postgres.go"
+        "summary": "The write gate for a polymorphic scope with no FK, and the ADR-019 evidence pair",
+        "link": "services/catalog/internal/store/fees_postgres.go, fees_smoke_test.go"
+      },
+      {
+        "summary": "What TKT-215 persists and TKT-217 will settle from: the envelope {resolution, breakdown, face_value, passed_on_fees, absorbed_fees, total_amount}, and the breakdown item shape {fee_code, basis, incidence, amount, currency}",
+        "link": "services/commerce/internal/api/catalog_fees.go, services/commerce/internal/store/migrations/0014_fee_composition.sql"
+      },
+      {
+        "summary": "TKT-215 closeout: the fee-on-exchange policy was decided by an agent as 'carried', and refunds under-refund by the passed-on fee. Both bear on what a settlement ledger must eventually reverse",
+        "link": "board:TKT-215"
       }
     ]
   },
