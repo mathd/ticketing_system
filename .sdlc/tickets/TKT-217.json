@@ -4,9 +4,11 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F4: The settlement ledger attributes every fee cent to a payee",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -144,5 +146,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-217 (US-F4)\n\n**Selection.** The last child of TKT-6, and now the only claimable one. Both blockers closed.\n\n**Blockers verified:** `blocked-by TKT-215` — resolved (`f1d5f44f`). `blocked-by TKT-216` — resolved\n(`43fdd0f5`). Zero open.\n\n**Branch:** `TKT-217-settlement-ledger`, cut from `origin/main` at `ac550399`.\n\n**Risk verdict — `risk:low` NOT claimed.** This ticket writes the ledger that says who is owed what.\nIt touches the capture transaction, adds append-only money state, and makes an integrity claim. Money\npath, data migration, and an audit-trail assertion all apply — this is the highest-risk ticket of the\nfour, and it is the one whose mistakes are least recoverable: a misattributed cent stays\nmisattributed.\n\n**Gates waived — same terms as TKT-214/215/216**, restated so this ticket stands alone: Gate 1 by the\nowner's instruction; Gate 2 by agent judgement after the cross-model critique; Gate 3 by agent\nsquash-merge after the ai-review converges under the churn cap, review-guide first; Gate 4 by\nself-validation against test evidence on merged code.\n\n**Model routing** re-read at claim, unchanged: `plan` = `gpt-5.6-luna` · `planReview` = `main-agent` ·\n`implement` = `main-agent` · `aiReview` = `gpt-5.6-luna`.\n\n**Context-mémo re-baked**, and this one carries more than ADRs:\n\n- **ADR-047 leads** — the allocator is **already written and tested**. This ticket consumes\n  `splits.Allocate`; it does not reimplement it.\n- **ADR-003 flagged with a specific instruction**: copy `journal_entries`' append-only trigger,\n  including its TRUNCATE guard. TKT-216 shipped exactly that hole by writing a new guard from first\n  principles while the battle-tested one sat in this same service. That is the \"prior art\" retro item\n  from TKT-216, applied to the next ticket rather than filed and forgotten.\n- **Both predecessors' closeouts are references**, because they carry facts no code shows: refunds\n  currently under-refund by the passed-on fee, the fee-on-exchange policy was chosen by an agent as\n  \"carried\", and a deferred-trigger design had two escapes. All three bear on what this ledger must\n  eventually reverse.\n\n**Applying TKT-216's process wins:** the `agent:plan-review` label moves **before** the critique, and\nI will run `golangci-lint` plus every module's tests before invoking the gate."
+    }
+  ]
 }
