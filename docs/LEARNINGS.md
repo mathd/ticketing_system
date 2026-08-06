@@ -9,6 +9,16 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- **A test can defend the bug it was written to catch** — TKT-215's overflow test asserted that a
+  large price at a 100% rate *must be refused*, pinning broken arithmetic as required behaviour.
+  Mutation testing does not help: the mutant dies correctly against a wrong oracle. Ask what the
+  test WANTS, not only whether it can fail. (TKT-215)
+- **A mutation check that does not compile is not a check** — it reports "no failure" and looks
+  exactly like a passing one. Assert the mutant builds and the suite actually ran before reading the
+  result. (TKT-215)
+- **`git reset --hard origin/<branch>` destroys unpushed local commits** — a direct commit that was
+  never pushed vanished while a closeout comment claimed it had been promoted. Push immediately and
+  verify `git log origin/<branch> -1` before claiming it anywhere. (TKT-215)
 - **A test that copies the code under test cannot fail** — a rollback-guard test that ran a `DO`
   block *copied out of* the migration would have passed with the migration's entire `Down` guard
   deleted; expectations naming production *constants* likewise survive aliasing one to another's
