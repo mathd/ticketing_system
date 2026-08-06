@@ -243,3 +243,72 @@ func TestSettleFromAPlanBalances(t *testing.T) {
 		t.Errorf("ledger sums to %d, want 5600", total)
 	}
 }
+
+// AC6: the ledger is readable, and what it reads back balances.
+func TestReadOrderSettlementReturnsBalancedLines(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+
+	f := capturedFact(org, order)
+	if _, _, err := j.AppendWithSettlement(ctx, f, balancedEntries(5000, 600, 400)); err != nil {
+		t.Fatal(err)
+	}
+	lines, total, currency, err := j.ReadOrderSettlement(ctx, org, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3", len(lines))
+	}
+	if total != 5600 {
+		t.Errorf("total = %d, want the captured 5600", total)
+	}
+	if currency != "EUR" {
+		t.Errorf("currency = %q", currency)
+	}
+	// Another organizer's read must not see it.
+	other, _, _, err := j.ReadOrderSettlement(ctx, uuid.New(), order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other) != 0 {
+		t.Errorf("a foreign organizer read %d lines — settlement is per-tenant", len(other))
+	}
+}
+
+// An unattributed fee survives the round trip and is visible as such, because
+// finding one is the signal to author a schedule.
+func TestReadOrderSettlementShowsUnattributedFees(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+
+	f := capturedFact(org, order)
+	entries := []SettlementEntry{
+		{Kind: EntryFaceValue, Amount: 5000, Currency: "EUR"},
+		{Kind: EntryFee, FeeCode: "service", Incidence: "passed_on", Amount: 600, Currency: "EUR"},
+	}
+	if _, _, err := j.AppendWithSettlement(ctx, f, entries); err != nil {
+		t.Fatalf("an unattributed fee must settle: %v", err)
+	}
+	lines, total, _, err := j.ReadOrderSettlement(ctx, org, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5600 {
+		t.Errorf("total = %d, want 5600 — an unattributed fee is still collected money", total)
+	}
+	found := false
+	for _, l := range lines {
+		if l.Kind == EntryFee && l.PayeeID == nil {
+			found = true
+			if l.FeeCode == nil || *l.FeeCode != "service" {
+				t.Errorf("the unattributed line lost its fee code: %+v", l)
+			}
+		}
+	}
+	if !found {
+		t.Error("the unattributed fee must be visible as such — that is the signal to author a schedule")
+	}
+}

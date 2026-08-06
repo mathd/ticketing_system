@@ -631,12 +631,13 @@ func settlementPlanFromSnapshot(x reservation) (map[string]any, error) {
 
 	fees := make([]any, 0, len(env.Breakdown))
 	for _, b := range env.Breakdown {
-		parts, ok := splitByCode[b.FeeCode]
-		if !ok || len(parts) == 0 {
-			// An unattributable fee. Payments refuses it too, but refusing here
-			// says which code and does it before the provider is called.
-			return nil, fmt.Errorf("%w: fee %s has no split to settle against",
-				errResolveUnusable, b.FeeCode)
+		// A fee with no split is forwarded with NO parts. Payments records it as
+		// collected-and-unattributed rather than refusing: fees shipped before
+		// split schedules did, and failing those sales at checkout would break
+		// shipped behaviour to enforce a configuration rule.
+		parts := splitByCode[b.FeeCode]
+		if parts == nil {
+			parts = []any{}
 		}
 		fees = append(fees, map[string]any{
 			"fee_code": b.FeeCode, "incidence": b.Incidence, "amount": b.Amount,

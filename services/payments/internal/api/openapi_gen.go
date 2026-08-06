@@ -92,16 +92,52 @@ func (e PSPStatusOutcome) Valid() bool {
 
 // Defines values for SettlementFeeIncidence.
 const (
-	Absorbed SettlementFeeIncidence = "absorbed"
-	PassedOn SettlementFeeIncidence = "passed_on"
+	SettlementFeeIncidenceAbsorbed SettlementFeeIncidence = "absorbed"
+	SettlementFeeIncidencePassedOn SettlementFeeIncidence = "passed_on"
 )
 
 // Valid indicates whether the value is a known member of the SettlementFeeIncidence enum.
 func (e SettlementFeeIncidence) Valid() bool {
 	switch e {
-	case Absorbed:
+	case SettlementFeeIncidenceAbsorbed:
 		return true
-	case PassedOn:
+	case SettlementFeeIncidencePassedOn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettlementLedgerEntryEntryKind.
+const (
+	FaceValue SettlementLedgerEntryEntryKind = "face_value"
+	Fee       SettlementLedgerEntryEntryKind = "fee"
+)
+
+// Valid indicates whether the value is a known member of the SettlementLedgerEntryEntryKind enum.
+func (e SettlementLedgerEntryEntryKind) Valid() bool {
+	switch e {
+	case FaceValue:
+		return true
+	case Fee:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettlementLedgerEntryIncidence.
+const (
+	SettlementLedgerEntryIncidenceAbsorbed SettlementLedgerEntryIncidence = "absorbed"
+	SettlementLedgerEntryIncidencePassedOn SettlementLedgerEntryIncidence = "passed_on"
+)
+
+// Valid indicates whether the value is a known member of the SettlementLedgerEntryIncidence enum.
+func (e SettlementLedgerEntryIncidence) Valid() bool {
+	switch e {
+	case SettlementLedgerEntryIncidenceAbsorbed:
+		return true
+	case SettlementLedgerEntryIncidencePassedOn:
 		return true
 	default:
 		return false
@@ -166,6 +202,16 @@ type OperationState struct {
 	StatusReplayDeadlineAt *time.Time          `json:"status_replay_deadline_at,omitempty"`
 }
 
+// OrderSettlement defines model for OrderSettlement.
+type OrderSettlement struct {
+	Currency string                  `json:"currency"`
+	Entries  []SettlementLedgerEntry `json:"entries"`
+	OrderId  openapi_types.UUID      `json:"order_id"`
+
+	// Total The sum of every line, which equals the captured amount.
+	Total int64 `json:"total"`
+}
+
 // PSPCompensation defines model for PSPCompensation.
 type PSPCompensation struct {
 	IdempotencyKey string             `json:"idempotency_key"`
@@ -217,17 +263,38 @@ type PSPStatus struct {
 // PSPStatusOutcome defines model for PSPStatus.Outcome.
 type PSPStatusOutcome string
 
-// SettlementFee One fee and the payees it resolved to. `parts` is never empty: a fee that resolved `unsplit` is unattributable, and settling it would collect money nobody is recorded as owed.
+// SettlementFee One fee and the payees it resolved to.
 type SettlementFee struct {
 	Amount    int64                  `json:"amount"`
 	Currency  string                 `json:"currency"`
 	FeeCode   string                 `json:"fee_code"`
 	Incidence SettlementFeeIncidence `json:"incidence"`
-	Parts     []SettlementPart       `json:"parts"`
+
+	// Parts EMPTY when the fee code had no split schedule at sale time. The fee is then recorded as collected and UNATTRIBUTED rather than refused: fees shipped before split schedules did, so refusing would fail those sales at checkout, after the buyer committed.
+	Parts []SettlementPart `json:"parts"`
 }
 
 // SettlementFeeIncidence defines model for SettlementFee.Incidence.
 type SettlementFeeIncidence string
+
+// SettlementLedgerEntry defines model for SettlementLedgerEntry.
+type SettlementLedgerEntry struct {
+	// Amount SIGNED. The organizer's line goes negative when they absorbed more in fees than the face value — a real, if misconfigured, sale.
+	Amount           int64                           `json:"amount"`
+	Currency         string                          `json:"currency"`
+	EntryKind        SettlementLedgerEntryEntryKind  `json:"entry_kind"`
+	FeeCode          *string                         `json:"fee_code"`
+	Incidence        *SettlementLedgerEntryIncidence `json:"incidence"`
+	PayeeDisplayName *string                         `json:"payee_display_name"`
+	PayeeId          *openapi_types.UUID             `json:"payee_id"`
+	PayeeKind        *string                         `json:"payee_kind"`
+}
+
+// SettlementLedgerEntryEntryKind defines model for SettlementLedgerEntry.EntryKind.
+type SettlementLedgerEntryEntryKind string
+
+// SettlementLedgerEntryIncidence defines model for SettlementLedgerEntry.Incidence.
+type SettlementLedgerEntryIncidence string
 
 // SettlementPart One payee's share, with its identity SNAPSHOTTED — a settlement row must keep saying who was paid at the time they were paid, and a display name is editable in catalog.
 type SettlementPart struct {
@@ -260,6 +327,11 @@ type ChargeParams struct {
 type GetOperationParams struct {
 	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
 	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
+}
+
+// GetOrderSettlementParams defines parameters for GetOrderSettlement.
+type GetOrderSettlementParams struct {
+	OrganizerId openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
 }
 
 // PspStatusParams defines parameters for PspStatus.

@@ -42,11 +42,19 @@ CREATE TABLE settlement_entries (
     currency char(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
     -- The two shapes, enforced rather than described: a fee line names a payee,
     -- a fee code and an incidence; the organizer's line names none of them.
+    -- A fee entry with NO payee is money collected and UNATTRIBUTED: a fee whose
+    -- code had no split schedule when the sale happened. It is a real state, not
+    -- a defect to refuse -- TKT-215 shipped fees before TKT-216 shipped
+    -- schedules, so every fee sold in that window is exactly this. Refusing it
+    -- would have broken those sales at CHECKOUT, after the buyer committed.
+    -- Recording it keeps the ledger balanced AND makes the gap queryable, which
+    -- is what an operator needs in order to fix it.
     CONSTRAINT settlement_entries_shape CHECK (
         (entry_kind = 'fee'
-             AND payee_id IS NOT NULL AND payee_kind IS NOT NULL
-             AND payee_display_name IS NOT NULL AND fee_code IS NOT NULL
-             AND incidence IS NOT NULL AND amount >= 0)
+             AND fee_code IS NOT NULL AND incidence IS NOT NULL AND amount >= 0
+             AND ((payee_id IS NOT NULL AND payee_kind IS NOT NULL AND payee_display_name IS NOT NULL)
+                  OR (payee_id IS NULL AND payee_kind IS NULL AND payee_display_name IS NULL
+                      AND payee_external_ref IS NULL)))
         OR (entry_kind = 'face_value'
              AND payee_id IS NULL AND payee_kind IS NULL
              AND payee_display_name IS NULL AND payee_external_ref IS NULL

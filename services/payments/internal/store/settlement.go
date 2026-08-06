@@ -129,10 +129,35 @@ func BuildSettlementEntries(plan SettlementPlan, capturedAmount int64) ([]Settle
 		if f.Amount < 0 {
 			return nil, bad("fee " + f.FeeCode + " is negative")
 		}
-		// An unattributable fee is the whole failure this ledger exists to
-		// prevent: money was collected and nobody is recorded as owed it.
+		// A fee with no split is UNATTRIBUTED, not invalid.
+		//
+		// The first version refused it, and the gate caught what that meant:
+		// TKT-215 shipped fees before TKT-216 shipped split schedules, so every
+		// fee sold in that window has no schedule — and refusing would have
+		// failed those sales at CHECKOUT, after the buyer had committed and
+		// entered payment details. Breaking shipped sales to enforce a
+		// configuration rule is the wrong trade, and it is the same trade this
+		// epic already declined twice (a payout misconfiguration must not refuse
+		// a purchase).
+		//
+		// So the money is recorded as collected and unattributed: one fee entry
+		// with no payee. The ledger stays balanced, the sale completes, and the
+		// gap is queryable — which is the thing an operator actually needs.
 		if len(f.Shares) == 0 {
-			return nil, bad("fee " + f.FeeCode + " resolved to no payees (unsplit)")
+			entries = append(entries, SettlementEntry{
+				Kind: EntryFee, FeeCode: f.FeeCode, Incidence: f.Incidence,
+				Amount: f.Amount, Currency: f.Currency,
+			})
+			feeTotal += f.Amount
+			switch f.Incidence {
+			case "passed_on":
+				passedOnSeen += f.Amount
+			case "absorbed":
+				absorbedSeen += f.Amount
+			default:
+				return nil, bad("fee " + f.FeeCode + " has unknown incidence " + f.Incidence)
+			}
+			continue
 		}
 		// The allocator validates the shares itself — and it must, because these
 		// come from a PERSISTED snapshot rather than from the write path that
@@ -261,4 +286,52 @@ func insertSettlement(ctx context.Context, tx *sql.Tx, f Fact, entries []Settlem
 		}
 	}
 	return nil
+}
+
+// LedgerLine is one settlement row as read back.
+type LedgerLine struct {
+	Kind             EntryKind
+	Amount           int64
+	Currency         string
+	PayeeID          *uuid.UUID
+	PayeeKind        *string
+	PayeeDisplayName *string
+	FeeCode          *string
+	Incidence        *string
+}
+
+// ReadOrderSettlement returns every line attributing an order's capture, and
+// their total.
+//
+// Ordered so the answer is stable between reads: a settlement report that
+// reshuffles is one nobody can diff.
+func (j *Journal) ReadOrderSettlement(ctx context.Context, organizerID, orderID uuid.UUID) ([]LedgerLine, int64, string, error) {
+	rows, err := j.db.QueryContext(ctx, `
+		SELECT entry_kind, amount, currency, payee_id, payee_kind, payee_display_name,
+		       fee_code, incidence
+		FROM settlement_entries
+		WHERE organizer_id = $1 AND order_id = $2
+		ORDER BY entry_kind, fee_code NULLS FIRST, payee_id NULLS FIRST`, organizerID, orderID)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []LedgerLine
+	var total int64
+	var currency string
+	for rows.Next() {
+		var l LedgerLine
+		if err := rows.Scan(&l.Kind, &l.Amount, &l.Currency, &l.PayeeID, &l.PayeeKind,
+			&l.PayeeDisplayName, &l.FeeCode, &l.Incidence); err != nil {
+			return nil, 0, "", err
+		}
+		total += l.Amount
+		currency = l.Currency
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, "", err
+	}
+	return out, total, currency, nil
 }

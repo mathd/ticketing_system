@@ -59,6 +59,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	})
 	r.Post("/internal/facts", s.fact)
 	r.Post("/internal/charges", s.charge)
+	r.Get("/internal/orders/{orderId}/settlement", s.getOrderSettlement)
 	r.Get("/internal/operations", s.operation)
 	r.Get("/internal/psp/status", s.pspStatus)
 	r.Post("/internal/psp/void", s.pspVoid)

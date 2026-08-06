@@ -185,19 +185,7 @@ func TestBuildSettlementEntriesRefusesUnusablePlans(t *testing.T) {
 			Currency: "EUR", Fees: []FeeLine{feeLine("booking", "passed_on", 600, 10000)}}
 	}
 	for name, mutate := range map[string]func(*SettlementPlan){
-		"a fee resolved unsplit": func(p *SettlementPlan) {
-			p.Fees[0].Shares = nil
-		},
-		// The case that makes the unsplit check LOAD-BEARING. With a non-zero
-		// unsplit fee the plan-totals check fires first, so removing the unsplit
-		// check entirely leaves the suite green — found by mutating it away. A
-		// ZERO-amount unsplit fee changes no total, so only the unsplit check
-		// itself can refuse it.
-		"a ZERO-amount fee resolved unsplit": func(p *SettlementPlan) {
-			p.Fees = []FeeLine{{FeeCode: "service", Incidence: "passed_on", Amount: 0,
-				Currency: "EUR", Payees: map[uuid.UUID]PayeeRef{}}}
-			p.PassedOn, p.FaceValue, p.TotalAmount = 0, 5600, 5600
-		},
+
 		"a persisted split that does not balance": func(p *SettlementPlan) {
 			p.Fees[0] = feeLine("booking", "passed_on", 600, 3333, 3333, 3333)
 		},
@@ -237,5 +225,66 @@ func TestBuildSettlementEntriesRefusesAProviderMismatch(t *testing.T) {
 		Fees: []FeeLine{feeLine("booking", "passed_on", 600, 10000)}}
 	if _, err := BuildSettlementEntries(plan, 5599); !errors.Is(err, ErrSettlementPlanUnusable) {
 		t.Errorf("a captured amount that differs from the plan must be refused, got %v", err)
+	}
+}
+
+// A fee with no split is COLLECTED AND UNATTRIBUTED, not refused.
+//
+// The first implementation refused it, and the gate showed what that meant:
+// TKT-215 shipped fees before TKT-216 shipped split schedules, so every fee sold
+// in that window has no schedule — and refusing failed those sales at CHECKOUT,
+// after the buyer had committed. Breaking shipped sales to enforce a
+// configuration rule is the wrong trade, and the same one this epic already
+// declined twice.
+//
+// The ledger still balances; the gap is recorded rather than hidden.
+func TestBuildSettlementEntriesRecordsUnattributedFees(t *testing.T) {
+	unsplit := FeeLine{FeeCode: "service", Incidence: "passed_on", Amount: 600,
+		Currency: "EUR", Payees: map[uuid.UUID]PayeeRef{}}
+	plan := SettlementPlan{FaceValue: 5000, PassedOn: 600, Absorbed: 0, TotalAmount: 5600,
+		Currency: "EUR", Fees: []FeeLine{unsplit}}
+
+	entries, err := BuildSettlementEntries(plan, 5600)
+	if err != nil {
+		t.Fatalf("a fee with no split must still settle — refusing breaks sales made before "+
+			"split schedules existed: %v", err)
+	}
+	if got := sumOf(t, entries); got != 5600 {
+		t.Errorf("entries sum to %d, want the captured 5600", got)
+	}
+	var unattributed int
+	for _, e := range entries {
+		if e.Kind == EntryFee && e.Payee == nil {
+			unattributed++
+			if e.FeeCode != "service" || e.Amount != 600 {
+				t.Errorf("unattributed entry = %+v, want the 600 service fee", e)
+			}
+		}
+	}
+	if unattributed != 1 {
+		t.Errorf("got %d unattributed fee entries, want 1 — the money was collected, so it must "+
+			"appear in the ledger even though nobody was configured to receive it", unattributed)
+	}
+}
+
+// A ZERO-amount unsplit fee is recorded too. It changes no total, so nothing
+// else in the builder would notice it going missing.
+func TestBuildSettlementEntriesRecordsAZeroUnattributedFee(t *testing.T) {
+	plan := SettlementPlan{FaceValue: 5600, PassedOn: 0, TotalAmount: 5600, Currency: "EUR",
+		Fees: []FeeLine{{FeeCode: "service", Incidence: "passed_on", Amount: 0,
+			Currency: "EUR", Payees: map[uuid.UUID]PayeeRef{}}}}
+	entries, err := BuildSettlementEntries(plan, 5600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Kind == EntryFee && e.Payee == nil && e.FeeCode == "service" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a zero-amount unattributed fee must still be recorded — it affects no total, " +
+			"so nothing else would notice it vanishing")
 	}
 }
