@@ -539,3 +539,12 @@ func sameTerms(in reserveRequest, qty int32, ticketType uuid.UUID, channel *stri
 	}
 	return true
 }
+
+// checkedSub refuses a difference that would go negative, which on a money path
+// is never a legitimate value — it means the two operands were mixed up.
+func checkedSub(a, b int64) (int64, error) {
+	if a < 0 || b < 0 || a < b {
+		return 0, fmt.Errorf("%w: %d - %d", errFeeTotalOverflow, a, b)
+	}
+	return a - b, nil
+}

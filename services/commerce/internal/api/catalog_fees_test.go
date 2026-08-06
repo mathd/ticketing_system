@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -612,7 +613,10 @@ func TestExchangeFactLegsReverseTheGrossAndSellTheTarget(t *testing.T) {
 		SourceTotal:      9100, // face
 		SourceGrossTotal: 9400, // what was captured
 	}
-	legs := exchangeFactLegs(ex, 8000)
+	legs, err := exchangeFactLegs(ex, 8000)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(legs) != 2 {
 		t.Fatalf("want two legs, got %d", len(legs))
 	}
@@ -655,7 +659,10 @@ func TestExchangeFactLegsBalanceAgainstTheProviderDelta(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ex := commercestore.Exchange{ID: uuid.New(), SourceTotal: tc.face, SourceGrossTotal: tc.gross}
-			legs := exchangeFactLegs(ex, tc.target)
+			legs, err := exchangeFactLegs(ex, tc.target)
+			if err != nil {
+				t.Fatalf("a representable exchange must not be refused: %v", err)
+			}
 			var reversed, sold int64
 			for _, l := range legs {
 				switch l.typ {
@@ -665,31 +672,46 @@ func TestExchangeFactLegsBalanceAgainstTheProviderDelta(t *testing.T) {
 					sold = l.amount
 				}
 			}
+			// Pin WHICH number each leg carries, not only that they balance:
+			// reversing the face and selling the target also balances, and the
+			// balance check alone would accept it (ai-review pass 3).
+			if reversed != tc.gross {
+				t.Errorf("reversed = %d, want the captured gross %d", reversed, tc.gross)
+			}
+			// Compare through big.Int so a WRAPPED result cannot satisfy the
+			// check: two wrapped int64s can differ by exactly the right amount,
+			// which is how the first version of this test accepted an overflow.
 			delta := commercestore.ExchangeDelta(tc.face, tc.target)
-			if sold-reversed != delta {
-				t.Errorf("reversed=%d sold=%d net=%d, but the provider moves %d",
-					reversed, sold, sold-reversed, delta)
+			gotNet := new(big.Int).Sub(big.NewInt(sold), big.NewInt(reversed))
+			wantSold := new(big.Int).Add(big.NewInt(tc.target),
+				new(big.Int).Sub(big.NewInt(tc.gross), big.NewInt(tc.face)))
+			if gotNet.Cmp(big.NewInt(delta)) != 0 {
+				t.Errorf("reversed=%d sold=%d net=%s, but the provider moves %d",
+					reversed, sold, gotNet, delta)
+			}
+			if wantSold.Cmp(big.NewInt(sold)) != 0 {
+				t.Errorf("sold = %d, want %s (target + carried fee), computed without wrapping",
+					sold, wantSold)
 			}
 		})
 	}
 }
 
-// The decomposition identity, pinned rather than argued (ai-review pass 2 asked
-// whether it is exact for every input).
+// The decomposition identity, pinned against an oracle that CANNOT overflow.
 //
 //	floor(a×b/10000) == (a/10000)×b + floor((a mod 10000)×b/10000)
 //
-// The right-hand side is what feeFromRate computes, and it exists because the
-// left-hand side forms a product that overflows. This test checks the two agree
-// wherever the left-hand side can be evaluated without overflowing — the
-// boundaries plus a deterministic sweep — and separately checks the intermediates
-// stay inside int64 at the extreme.
-func TestFeeFromRateMatchesTheDirectFormulaWhereverItFits(t *testing.T) {
-	direct := func(a int64, b int32) (int64, bool) {
-		if a != 0 && int64(b) > math.MaxInt64/a {
-			return 0, false // the product would overflow; nothing to compare against
-		}
-		return a * int64(b) / 10000, true
+// The first version compared against int64 arithmetic and skipped any sample
+// whose product overflowed — which, for random a near MaxInt64, was 3997 of
+// 4000 samples (ai-review pass 3). Those 3997 asserted only "no error
+// returned", so the sweep looked thorough and checked almost nothing.
+//
+// big.Int gives every sample a real expected value, including the ones that
+// motivated the decomposition in the first place.
+func TestFeeFromRateMatchesTheExactQuotientEverywhere(t *testing.T) {
+	oracle := func(a int64, b int32) int64 {
+		product := new(big.Int).Mul(big.NewInt(a), big.NewInt(int64(b)))
+		return new(big.Int).Div(product, big.NewInt(10000)).Int64()
 	}
 	check := func(a int64, b int32) {
 		t.Helper()
@@ -697,18 +719,19 @@ func TestFeeFromRateMatchesTheDirectFormulaWhereverItFits(t *testing.T) {
 		if err != nil {
 			t.Fatalf("feeFromRate(%d, %d) refused a legal input: %v", a, b, err)
 		}
-		if want, ok := direct(a, b); ok && got != want {
+		if want := oracle(a, b); got != want {
 			t.Errorf("feeFromRate(%d, %d) = %d, want %d", a, b, got, want)
 		}
 	}
 	for _, a := range []int64{0, 1, 9999, 10000, 10001, 100, 150, maxContractAmount,
-		math.MaxInt64 / 2, math.MaxInt64 / 10000 * 10000, math.MaxInt64} {
-		for _, b := range []int32{0, 1, 333, 5000, 9999, 10000} {
+		math.MaxInt64 / 2, math.MaxInt64 / 10000 * 10000, math.MaxInt64 - 1, math.MaxInt64} {
+		for _, b := range []int32{0, 1, 2, 333, 5000, 9999, 10000} {
 			check(a, b)
 		}
 	}
 	// A deterministic sweep — a fixed generator rather than a random one, so a
-	// failure is reproducible from the test name alone.
+	// failure reproduces from the test name alone. Every sample is now checked
+	// against the oracle, not merely for the absence of an error.
 	a := int64(1)
 	for i := 0; i < 4000; i++ {
 		a = (a*6364136223846793005 + 1442695040888963407) & math.MaxInt64
@@ -742,8 +765,22 @@ func TestSameTermsComparesEveryIdempotencyTerm(t *testing.T) {
 	if sameTerms(base, 2, tt, &reseller, nil) {
 		t.Error("a channel-less request must NOT match a reservation sold in a channel")
 	}
-	if !sameTerms(channelled, 2, tt, &reseller, nil) {
-		t.Error("the same channel must match")
+	// A DISTINCT pointer holding the same string: the previous version reused
+	// &reseller on both sides, so an implementation comparing pointer identity
+	// passed (ai-review pass 3). The comparison must be on the VALUE.
+	otherPointer := "reseller"
+	if !sameTerms(channelled, 2, tt, &otherPointer, nil) {
+		t.Error("the same channel must match — compared by value, not by pointer identity")
+	}
+	empty := ""
+	if sameTerms(channelled, 2, tt, &empty, nil) {
+		t.Error("an empty channel is not the reseller channel")
+	}
+	// A seated request whose PERSISTED quantity disagrees is a different request
+	// even when the seat set matches — the two must be checked together.
+	seatedTwo := reserveRequest{TicketTypeID: tt, SeatIdentities: []string{"A/1/1", "A/1/2"}}
+	if sameTerms(seatedTwo, 1, tt, nil, []string{"A/1/1", "A/1/2"}) {
+		t.Error("a persisted quantity that disagrees with the seat set is a different request")
 	}
 	// Seats compare as a SET, not a count.
 	seated := reserveRequest{TicketTypeID: tt, SeatIdentities: []string{"A/1/1", "A/1/2"}}
@@ -755,5 +792,44 @@ func TestSameTermsComparesEveryIdempotencyTerm(t *testing.T) {
 	}
 	if sameTerms(seated, 2, tt, nil, nil) {
 		t.Error("a seated request must not match a GA reservation")
+	}
+}
+
+// replacementGross is the number the journal's sold leg AND the replacement
+// reservation must both use, so it gets its own assertions (ai-review pass 3).
+//
+// The overflow row is the one that matters: the first version added the two
+// unchecked and wrapped negative, and the balance test accepted it because the
+// difference wrapped back to the right answer.
+func TestReplacementGrossCarriesTheFeeAndRefusesOverflow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		face, gross, target int64
+		want                int64
+		wantErr             bool
+	}{
+		"a carried fee":             {face: 9100, gross: 9400, target: 8000, want: 8300},
+		"no fee at all":             {face: 9100, gross: 9100, target: 8000, want: 8000},
+		"an even exchange":          {face: 9100, gross: 9400, target: 9100, want: 9400},
+		"a target of zero":          {face: 9100, gross: 9400, target: 0, want: 300},
+		"the sum overflows int64":   {face: 0, gross: math.MaxInt64, target: 1, wantErr: true},
+		"gross below face is bogus": {face: 9400, gross: 9100, target: 1, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ex := commercestore.Exchange{SourceTotal: tc.face, SourceGrossTotal: tc.gross}
+			got, err := replacementGross(ex, tc.target)
+			if tc.wantErr {
+				if !errors.Is(err, errFeeTotalOverflow) {
+					t.Fatalf("want errFeeTotalOverflow, got %v (value %d). A wrapped sum here is "+
+						"journalled AFTER the provider has already moved money", err, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("replacementGross = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

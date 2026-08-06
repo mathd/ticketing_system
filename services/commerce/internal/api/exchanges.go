@@ -229,6 +229,15 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 		return
 	}
+	// Prove the whole exchange is REPRESENTABLE before the provider moves money
+	// (ai-review pass 3). The carried fee is added to the target to produce the
+	// replacement's gross, and an unrepresentable sum discovered after settlement
+	// leaves the delta charged and a fact commerce cannot journal — a state with
+	// no good exit. Refusing here costs the buyer a 409 and nothing else.
+	if _, err := replacementGross(ex, ex.TargetTotal); err != nil {
+		write(w, http.StatusConflict, map[string]string{"error": "exchange total out of range"})
+		return
+	}
 	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount); err != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "exchange settlement unresolved"})
 		return
@@ -418,7 +427,28 @@ type exchangeFactLeg struct {
 // reversed the face value against a gross capture, and the payments journal
 // stopped agreeing with the original charge. The delta is a price comparison;
 // the reversal is a money movement. They need different numbers.
-func exchangeFactLegs(ex commercestore.Exchange, targetTotal int64) []exchangeFactLeg {
+// replacementGross is what the buyer has paid for the order they end up holding:
+// the new face value plus the fee carried over from the old one.
+//
+// It returns an error rather than wrapping, and that is not defensive
+// decoration — the first version added the two unchecked, and with a source
+// gross near int64's ceiling the sum wrapped NEGATIVE. Worse, the balance test
+// accepted it, because `sold - reversed` wraps back to the right answer: two
+// wrapped numbers whose difference is correct. Go's arithmetic is consistent
+// even when it is nonsense.
+//
+// The check must run BEFORE the provider moves money. After settlement there is
+// no good answer left: the delta has been charged, and commerce would be trying
+// to journal a fact it cannot represent.
+func replacementGross(ex commercestore.Exchange, targetTotal int64) (int64, error) {
+	retained, err := checkedSub(ex.SourceGrossTotal, ex.SourceTotal)
+	if err != nil {
+		return 0, err
+	}
+	return checkedAdd(targetTotal, retained)
+}
+
+func exchangeFactLegs(ex commercestore.Exchange, targetTotal int64) ([]exchangeFactLeg, error) {
 	// The retained fee travels with the order. targetTotal is a rule-resolved
 	// price carrying no fee, so selling it bare against a GROSS reversal records
 	// a refund the provider never made:
@@ -431,16 +461,23 @@ func exchangeFactLegs(ex commercestore.Exchange, targetTotal int64) []exchangeFa
 	// the product question carved out of TKT-6. Carrying preserves the status quo:
 	// the buyer paid 9400, still holds a ticket, and nothing is refunded or
 	// recharged.
-	retainedFee := ex.SourceGrossTotal - ex.SourceTotal
+	sold, err := replacementGross(ex, targetTotal)
+	if err != nil {
+		return nil, err
+	}
 	return []exchangeFactLeg{
 		{commercestore.ExchangeReversedFactID(ex.ID), "order.exchange.reversed", ex.SourceGrossTotal},
-		{commercestore.ExchangeSoldFactID(ex.ID), "order.exchange.sold", targetTotal + retainedFee},
-	}
+		{commercestore.ExchangeSoldFactID(ex.ID), "order.exchange.sold", sold},
+	}, nil
 }
 
 func (s *Server) exchangeFacts(r *http.Request, ex commercestore.Exchange, targetTotal int64) error {
 	occurred := ex.CreatedAt.UTC()
-	for _, leg := range exchangeFactLegs(ex, targetTotal) {
+	legs, err := exchangeFactLegs(ex, targetTotal)
+	if err != nil {
+		return err
+	}
+	for _, leg := range legs {
 		if _, err := s.db.ExecContext(r.Context(), `
 			INSERT INTO order_facts(fact_id,order_id,organizer_id,buyer_id,fact_type,amount,currency,occurred_at)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
@@ -473,13 +510,23 @@ func (s *Server) exchangeFacts(r *http.Request, ex commercestore.Exchange, targe
 // new tickets while the old ones still admit — the both-admit window ADR-039 §3 rejects.
 // TKT-166 publishes the exchange event that switches them atomically.
 func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Exchange) (uuid.UUID, error) {
+	// The replacement must record what the buyer actually paid for it, or
+	// commerce and the payments journal disagree about the same sale
+	// (ai-review pass 3). Storing the bare target as both total and face made the
+	// carried fee vanish from the order the buyer now holds — and a SECOND
+	// exchange of that order would then reverse a gross that had silently lost
+	// the fee.
+	gross, err := replacementGross(ex, ex.TargetTotal)
+	if err != nil {
+		return uuid.Nil, err
+	}
 	reservation := ex.ReplacementReservationID
 	replacement := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-order:"+ex.ID.String()))
 	if _, err := s.db.ExecContext(r.Context(), `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,'completed',$11) ON CONFLICT(id) DO NOTHING`,
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'completed',$12) ON CONFLICT(id) DO NOTHING`,
 		reservation, ex.OrganizerID, ex.TargetHoldID, ex.TargetSlotID, ex.TargetTicketTypeID, ex.BuyerID,
-		ex.Quantity, ex.TargetUnitAmount, ex.TargetTotal, ex.Currency, ex.TargetPriceSnapshot); err != nil {
+		ex.Quantity, ex.TargetUnitAmount, gross, ex.TargetTotal, ex.Currency, ex.TargetPriceSnapshot); err != nil {
 		return uuid.Nil, err
 	}
 	if _, err := s.db.ExecContext(r.Context(), `
