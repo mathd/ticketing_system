@@ -381,3 +381,21 @@ func TestSettlementCurrencyMustMatchTheCapturedFact(t *testing.T) {
 		t.Fatal("a USD ledger settled a EUR capture — the sum matched and the money did not")
 	}
 }
+
+// 'legacy_unattributed' belongs to migration 0004's backfill and to nothing else.
+// It exists to say "this capture predates the ledger and its split is unknown",
+// which is true of exactly the rows the migration writes. Reachable at runtime it
+// would be a way to record a LIVE capture as owed to nobody — the ledger would
+// balance, and the money would have no claimant.
+func TestALiveCaptureCannotBeRecordedAsLegacy(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order)
+
+	split := []SettlementEntry{{Kind: "legacy_unattributed", Amount: 5600, Currency: "EUR"}}
+	if _, _, err := j.AppendWithSettlement(ctx, f, split); err == nil {
+		t.Fatal("a live capture was recorded as legacy_unattributed — the backfill's kind " +
+			"is not a runtime disposition for money that has a real composition")
+	}
+}

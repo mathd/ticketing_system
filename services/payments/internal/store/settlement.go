@@ -259,6 +259,14 @@ func insertSettlement(ctx context.Context, tx *sql.Tx, f Fact, entries []Settlem
 			ErrSettlementPlanUnusable, err)
 	}
 	for _, e := range entries {
+		// 'legacy_unattributed' is migration 0004's backfill kind and must never be
+		// written at runtime: it says the composition is unknown, which is true of
+		// captures predating the ledger and of nothing a live charge produces. A
+		// live capture recorded that way balances and leaves the money unclaimed.
+		if e.Kind != EntryFaceValue && e.Kind != EntryFee {
+			return fmt.Errorf("%w: settlement entry kind %q is not writable at runtime",
+				ErrSettlementPlanUnusable, e.Kind)
+		}
 		var payeeID *uuid.UUID
 		var kind, name, ref, feeCode, incidence *string
 		if e.Payee != nil {
