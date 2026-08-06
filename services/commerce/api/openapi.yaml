@@ -119,7 +119,7 @@ paths:
       responses:
         '200': {description: One page of the wallet, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerOrderPage'}}}}
         '400': {$ref: '#/components/responses/Error'}
-        '401': {description: The assertion is absent, forged or expired, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: 'The assertion is absent, forged or expired.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: 'No such customer — or the assertion names a different one. Deliberately the same answer.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
