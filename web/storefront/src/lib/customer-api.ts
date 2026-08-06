@@ -108,3 +108,43 @@ export async function listCustomerOrders(
     return undefined;
   }
 }
+
+// --- claiming a past guest order (TKT-223) ---
+
+export type ClaimResult = { ok: true; orderId: string } | { ok: false; reason: 'refused' | 'unavailable' };
+
+/**
+ * Attach a completed guest order to the signed-in customer.
+ *
+ * The assertion travels as a header, server-side; the order reference is a bearer
+ * credential (ADR-012) and must not be logged.
+ *
+ * `refused` covers every case commerce refuses — no such order, not completed,
+ * claimed by somebody else — because commerce deliberately answers all three
+ * identically and this layer must not invent a distinction it was not given.
+ */
+export async function claimGuestOrder(
+  guestOrderRef: string,
+  assertion: string,
+): Promise<ClaimResult> {
+  try {
+    const response = await fetch(`${GATEWAY_URL}/api/commerce/orders/claim`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Customer-Assertion': assertion,
+      },
+      body: JSON.stringify({ guest_order_ref: guestOrderRef }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.status === 200) {
+      const body = (await response.json()) as { order_id: string };
+      return { ok: true, orderId: body.order_id };
+    }
+    if (response.status === 404 || response.status === 400) return { ok: false, reason: 'refused' };
+    return { ok: false, reason: 'unavailable' };
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
+}

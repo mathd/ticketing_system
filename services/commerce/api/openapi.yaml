@@ -133,6 +133,50 @@ paths:
         '404': {description: 'No such customer — or the assertion names a different one. Deliberately the same answer.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /orders/claim:
+    post:
+      operationId: claimGuestOrder
+      summary: Attach a past guest order to the signed-in customer (TKT-223)
+      description: >
+        Claims a completed guest order by its reference, attributing it to the
+        customer the `X-Customer-Assertion` header authenticates as. It closes
+        TKT-21's first COS: creating an account later must not cost a buyer their
+        history.
+
+        **What proves ownership is the reference, and nothing else.** That is a
+        deliberate choice with a real cost, recorded in ADR-049 § TKT-223. The
+        alternative — also requiring the address to match `buyer_pii` — refuses a
+        buyer who signed up with a different address, which is common and which
+        they cannot fix. Reference-only admits anyone holding a leaked reference.
+
+        Be precise about what that grants, because it is more than it looks:
+        holding the reference already returns the tickets themselves (ADR-012), so
+        reading is unchanged. What is new is that a claim is **destructive,
+        exclusive, permanent and unrecoverable** — the first claimant takes the
+        order away from its buyer, and there is no un-claim path.
+
+        **Nonexistent, not completed, and already claimed by somebody else are one
+        answer: 404.** Telling them apart would hand a caller probing references an
+        oracle for which are real, complete and unclaimed. The cost is that a buyer
+        who mistypes gets no help.
+
+        **Idempotent by predicate**, not by replay detection: the same customer
+        claiming twice takes the same branch and gets the same answer, so a browser
+        retry is safe. No `Idempotency-Key`.
+
+        No order status changes. `orders.status` keeps ADR-016's vocabulary and
+        `updated_at` is not touched — it means "when did this order's checkout last
+        move", and a claim months later is not checkout activity.
+      parameters:
+        - {$ref: '#/components/parameters/CustomerAssertion'}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OrderClaim'}}}}
+      responses:
+        '200': {description: 'Claimed, or already claimed by this same customer', content: {application/json: {schema: {$ref: '#/components/schemas/OrderClaimResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {description: 'The assertion is absent, forged or expired.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: 'No such order, not completed, or claimed by somebody else. Deliberately one answer.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /customers/authenticate:
     post:
       operationId: authenticateCustomer
@@ -510,6 +554,27 @@ components:
         # which is a distinction an enumerator can read. Registration is where the
         # policy is enforced; sign-in only verifies.
         password: {type: string, minLength: 1, maxLength: 72}
+    OrderClaim:
+      type: object
+      additionalProperties: false
+      required: [guest_order_ref]
+      properties:
+        guest_order_ref: {type: string, format: uuid}
+    OrderClaimResult:
+      type: object
+      additionalProperties: false
+      required: [order_id, guest_order_ref, customer_id]
+      description: >
+        Returns the attribution itself rather than a word like "claimed". There is
+        no order status called claimed — `orders.status` is a vocabulary ADR-016
+        owns and this operation adds nothing to it — and a `status` field here
+        would send the next reader looking for a state that does not exist. The
+        customer id lets the caller confirm the outcome instead of trusting an
+        adjective.
+      properties:
+        order_id: {type: string, format: uuid}
+        guest_order_ref: {type: string, format: uuid}
+        customer_id: {type: string, format: uuid}
     CustomerOrderPage:
       type: object
       additionalProperties: false

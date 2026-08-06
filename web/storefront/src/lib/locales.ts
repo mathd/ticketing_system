@@ -55,6 +55,13 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     walletPurchasedOn: 'Bought',
     walletMore: 'Show more',
     walletUnnamedEvent: 'Purchase',
+    // Claiming a past guest order (TKT-223).
+    claimTitle: 'Add these tickets to your account',
+    claimBody: 'You are signed in. Add this order to your account so you can find it again without this link.',
+    claimAction: 'Add to my account',
+    claimSignedOut: 'Sign in to add this order to your account.',
+    claimRefused: 'This order could not be added to your account.',
+    claimUnavailable: 'That could not be done just now. Try again shortly.',
     // Customer accounts (TKT-220). An account is OPTIONAL everywhere: the copy
     // must never imply that buying requires one.
     account: 'Account',
@@ -126,6 +133,12 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     walletPurchasedOn: 'Acheté le',
     walletMore: 'Afficher plus',
     walletUnnamedEvent: 'Achat',
+    claimTitle: 'Ajoutez ces billets à votre compte',
+    claimBody: 'Vous êtes connecté. Ajoutez cette commande à votre compte pour la retrouver sans ce lien.',
+    claimAction: 'Ajouter à mon compte',
+    claimSignedOut: 'Connectez-vous pour ajouter cette commande à votre compte.',
+    claimRefused: 'Cette commande n’a pas pu être ajoutée à votre compte.',
+    claimUnavailable: 'Impossible pour le moment. Réessayez sous peu.',
     account: 'Compte',
     accountOptionalNotice:
       'Le compte est facultatif — vous pouvez toujours acheter en tant qu’invité et conserver votre référence de commande.',

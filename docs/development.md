@@ -663,6 +663,24 @@ state from an empty wallet, and the page distinguishes them on purpose.
 **A customer asking for another customer's wallet gets 404, not 403** — the same answer as an id that
 does not exist. That is deliberate non-disclosure, not a bug: 403 would confirm the account exists.
 
+### Claiming a past guest order (TKT-223)
+
+A signed-in buyer can attach a completed guest order to their account from the ticket page. See
+ADR-049 § *TKT-223 amendment*.
+
+> **A claim cannot be undone.** There is no un-claim endpoint, CLI or support tool — the first
+> claimant keeps the order. **TKT-225** is the ticket for an operator path; until it lands, a
+> mistaken or hostile claim is permanent, and the only remedy is a manual `UPDATE`.
+
+**The proof is the order reference alone**, deliberately — matching the email would refuse a buyer
+who signed up with a different address. That means anyone holding a leaked reference can claim the
+order, which makes **TKT-202** (the gateway logs the reference via the URL path) a safety issue for
+this feature and not just logging hygiene.
+
+**Every refusal is the same 404.** "No such order", "not completed" and "already claimed by somebody
+else" are indistinguishable on purpose. If a buyer reports that claiming does not work, the answer is
+in `orders` — check `status` and `customer_id` for that `guest_order_ref`.
+
 **Paging is keyset on `created_at`, never `updated_at`.** `updated_at` is rewritten by checkout
 retries, recovery and the refund runner, and a cursor on a mutable key makes rows jump pages. If
 someone "optimizes" the sort key, that is the bug to look for.

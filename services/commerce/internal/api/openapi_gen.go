@@ -399,6 +399,18 @@ type OperationalConversionCreate struct {
 	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
 }
 
+// OrderClaim defines model for OrderClaim.
+type OrderClaim struct {
+	GuestOrderRef openapi_types.UUID `json:"guest_order_ref"`
+}
+
+// OrderClaimResult Returns the attribution itself rather than a word like "claimed". There is no order status called claimed — `orders.status` is a vocabulary ADR-016 owns and this operation adds nothing to it — and a `status` field here would send the next reader looking for a state that does not exist. The customer id lets the caller confirm the outcome instead of trusting an adjective.
+type OrderClaimResult struct {
+	CustomerId    openapi_types.UUID `json:"customer_id"`
+	GuestOrderRef openapi_types.UUID `json:"guest_order_ref"`
+	OrderId       openapi_types.UUID `json:"order_id"`
+}
+
 // OrderConflict defines model for OrderConflict.
 type OrderConflict struct {
 	Error   string              `json:"error"`
@@ -586,6 +598,11 @@ type CheckoutParams struct {
 	XCustomerAssertion *CustomerAssertion `json:"X-Customer-Assertion,omitempty"`
 }
 
+// ClaimGuestOrderParams defines parameters for ClaimGuestOrder.
+type ClaimGuestOrderParams struct {
+	XCustomerAssertion *CustomerAssertion `json:"X-Customer-Assertion,omitempty"`
+}
+
 // CreateReservationParams defines parameters for CreateReservation.
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -617,6 +634,9 @@ type CreateCancellationRefundRunJSONRequestBody = CancellationRefundCreate
 
 // CheckoutJSONRequestBody defines body for Checkout for application/json ContentType.
 type CheckoutJSONRequestBody = Checkout
+
+// ClaimGuestOrderJSONRequestBody defines body for ClaimGuestOrder for application/json ContentType.
+type ClaimGuestOrderJSONRequestBody = OrderClaim
 
 // CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
 type CreateReservationJSONRequestBody = ReservationCreate

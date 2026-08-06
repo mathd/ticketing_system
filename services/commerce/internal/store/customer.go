@@ -404,3 +404,69 @@ func CustomerOrders(ctx context.Context, db *sql.DB, customer uuid.UUID, after W
 	}
 	return page, next, nil
 }
+
+// --- claiming a guest order (TKT-223 / US-A4) ---
+
+// ErrOrderNotClaimable is the ONE refusal this operation reports. No such order,
+// not completed, and already claimed by somebody else are the same answer by
+// construction: telling them apart hands a caller probing order references an
+// oracle for which ones are real, complete, and unclaimed.
+var ErrOrderNotClaimable = errors.New("order is not claimable")
+
+// claimGuestOrderStatement is the ONE production statement permitted to write
+// orders.customer_id outside claimOrder's INSERT.
+//
+// Kept as a const because attribution_invariant_test.go allowlists it BY TEXT and
+// asserts it appears exactly once: the guard TKT-221 added exists to stop a
+// recovery or compensation path quietly rewriting attribution, and this is the
+// single sanctioned exception to it.
+//
+// Why claiming may do what recovery must not: recovery and checkout replay are
+// not ownership operations — they finish work that is already attributed, and
+// must leave that attribution exactly as they found it. A claim IS the ownership
+// operation, and it is the only NULL -> customer transition in the system. Once
+// customer_id is non-NULL, nothing here can repoint it either: the predicate
+// admits only the unattributed row or the one already owned by this caller.
+//
+// One conditional UPDATE and NO preflight SELECT. A select-then-update is both a
+// race two claimants can both win and a second place to accidentally disclose
+// whether an order exists. Under READ COMMITTED the loser's UPDATE blocks on the
+// row lock, re-evaluates this predicate against the winner's committed version,
+// matches nothing, and reports zero rows.
+//
+// `SET customer_id = $2` and not COALESCE: the WHERE clause is the single
+// authority for what may be written, and a second expression that "also" enforces
+// it is a second thing to keep in step.
+//
+// updated_at is deliberately NOT touched. It means "when did this order's CHECKOUT
+// last move" — recovery reads it to decide what is stale — and a claim months
+// later is not checkout activity.
+const claimGuestOrderStatement = `
+	UPDATE orders
+	   SET customer_id = $2
+	 WHERE guest_order_ref = $1
+	   AND status = 'completed'
+	   AND (customer_id IS NULL OR customer_id = $2)
+	 RETURNING id`
+
+// ClaimGuestOrder attributes a completed guest order to a customer.
+//
+// Idempotent by predicate rather than by detection: the same customer claiming
+// twice takes the same branch and gets the same answer, so a browser retry is
+// safe and there is no replay state to keep.
+//
+// ADR-021, the adversary: this refuses an HTTP caller who does not hold the order
+// reference. It does not constrain anyone who does — holding the reference already
+// grants the tickets themselves (ADR-012) — and it says nothing about someone with
+// database access.
+func ClaimGuestOrder(ctx context.Context, db *sql.DB, ref, customer uuid.UUID) (uuid.UUID, error) {
+	var order uuid.UUID
+	err := db.QueryRowContext(ctx, claimGuestOrderStatement, ref, customer).Scan(&order)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, ErrOrderNotClaimable
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("claim guest order: %w", err)
+	}
+	return order, nil
+}
