@@ -4,9 +4,11 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F3: Payees and split schedules - a split that does not sum exactly is refused",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -136,5 +138,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-216 (US-F3)\n\n**Selection.** TKT-215 closed. TKT-216 is the only remaining claimable child — TKT-217 is still\nblocked on it. No tie-break needed.\n\n**Blockers verified:** `blocked-by TKT-214` — resolved (Done, `0d821677`). TKT-216 does not depend on\nTKT-215, but it lands after it, which is useful: the breakdown shape a split allocator must consume\nnow exists rather than being predicted.\n\n**Branch:** `TKT-216-payees-and-splits`, cut from `origin/main` at `a05d5cc6`.\n\n**Risk verdict — `risk:low` NOT claimed.** This ticket decides how money is *attributed*, and its\nallocator is the thing TKT-217 settles from. A rounding residue lost here is money that never\nreaches a payee, and unlike a display bug it is unrecoverable after the fact. Data migration and\nmoney-path carve-outs both apply.\n\n**Gates waived — same terms as TKT-214 and TKT-215**, restated so this ticket's history stands alone:\nGate 1 by the owner's instruction; Gate 2 replaced by agent judgement after the cross-model critique\n(prefer the critique's recommendation, else the most reversible option, every decision recorded in\n`kind=plan-final`); Gate 3 replaced by agent squash-merge after the ai-review converges under the\nunchanged churn cap, review-guide posted first; Gate 4 replaced by self-validation against test\nevidence on merged code.\n\n**Model routing** re-read at claim, unchanged: `plan` = `gpt-5.6-luna` · `planReview` = `main-agent` ·\n`implement` = `main-agent` · `aiReview` = `gpt-5.6-luna`. Both cross-model pairs hold.\n\n**Context-mémo re-baked**, applying TKT-214's retro rule (include every ADR of the current week\nregardless of area match):\n\n- **ADR-046 promoted to the top** — it is now shipped and consumed, and its §2 clause *\"a resolved\n  fee of amount 0 is still a resolved fee\"* lands directly on this ticket: the allocator will be\n  handed zero amounts and must not treat them as absent.\n- **ADR-043 added** — TKT-214 put the fee read on `/internal/` because absorbed fees are the\n  organizer's cost structure. **Split shares are strictly more sensitive than that**, so the same\n  reasoning applies with more force, and the plan should not have to rediscover it.\n- **TKT-215's closeout added as a reference** — the fee-on-exchange policy was decided by an agent\n  as \"carried\", and refunds currently under-refund by the passed-on fee. Both bear on what a\n  settlement ledger eventually has to reverse, and neither is visible from the code.\n\n**Carried forward from TKT-215's retro, since it recurs here:** the `agent:plan-review` label moves\n**before** the critique starts on this ticket, not when its comment is posted — so the cross-model\nsplit is measurable for once."
+    }
+  ]
 }
