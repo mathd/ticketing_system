@@ -121,7 +121,17 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
     // One call for the whole render — frontmatter AND every child component.
     expect(calls.map((c) => c.url)).toHaveLength(1);
     expect(calls[0].url.startsWith(`${GATEWAY}/api/catalog/`)).toBe(true);
-  });
+    // 30s, not the 5s default (TKT-218, found while gating TKT-216). These cases
+    // render real .astro modules through Astro's vite plugin, and that transform
+    // alone takes ~10s on a busy machine — so the default turned load into a
+    // failure of the BUDGET, which is not what this test is about.
+    //
+    // This does NOT close TKT-218. One of the failures observed there did not
+    // time out: it counted TWO upstream calls where the budget allows one. That
+    // assertion can therefore still fail OPEN, and whether a second fetch is ever
+    // genuine — a retry path, or a cancelled request the stub counts twice — is
+    // an open question this timeout deliberately does not answer.
+  }, 30_000);
 
   it('a repeat render inside the tier spends zero — not per-request either', async () => {
     const calls = stubFetch(() => new Response(JSON.stringify(payload), { status: 200, headers: minutesTier }));
