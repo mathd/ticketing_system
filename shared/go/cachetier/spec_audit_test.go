@@ -104,6 +104,12 @@ var wantDeclarations = []string{
 	"catalog/listPublicVenues 200",
 	"catalog/listSeatMapVersions 200",
 	"catalog/listVenueSeatMaps 200",
+	// TKT-214: fee resolution takes the same never tier as price resolution, and
+	// for the same reason — it feeds a money decision whose correctness expires
+	// at a known instant once effective windows are in play. It is an /internal/
+	// operation rather than a public read (ADR-046 §6), which changes who may ask
+	// but not how long the answer stays true.
+	"catalog/resolveTicketTypeFees 200",
 	"catalog/resolveTicketTypePrice 200",
 	"inventory/getAvailability 200",
 	// The operator kill-switch (TKT-210). A never-tier declaration on a control

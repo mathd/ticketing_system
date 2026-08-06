@@ -27,6 +27,9 @@ import (
 //   - CreatePriceRule: these reads carry ticket_types.price_amount; price rules
 //     live in another table reached only by ResolveTicketTypePrice, a different
 //     endpoint on the never tier.
+//   - CreateFeeRule: same shape, one step further out. fee_rules is reached only
+//     by ResolveTicketTypeFees, which is an /internal/ operation and not a public
+//     read at all, so no cached public payload can carry a fee.
 //   - Draft-creating writes: a draft is not publicly listable, so nothing cached
 //     can change until the later lifecycle transition, which IS classified.
 var publicReadEffect = map[string]PublicReadScope{
@@ -49,6 +52,7 @@ var publicReadEffect = map[string]PublicReadScope{
 	"CreateEvent":                   0,
 	"CreatePerformance":             0,
 	"CreatePriceRule":               0,
+	"CreateFeeRule":                 0,
 	"CloseSlot":                     0,
 	"ReopenSlot":                    0,
 	"CreateSeries":                  0,
@@ -79,7 +83,8 @@ var publicReadEffect = map[string]PublicReadScope{
 var readOnlyStoreMethods = map[string]bool{
 	"ListVenues": true, "ListVenueSeatMaps": true, "ListSeatMapVersions": true,
 	"ListSeatMapPins": true, "GetSeatMapGeometry": true, "GetTicketType": true,
-	"ResolveTicketTypePrice": true, "AuthenticateStaff": true,
+	"ResolveTicketTypePrice": true, "ResolveTicketTypeFees": true,
+	"AuthenticateStaff": true,
 	"GetPublishedPerformance": true, "GetPoolOfferState": true,
 	"ListPublishedEvents": true, "GetPublishedEvent": true,
 	"GetPublishedSeason": true, "GetPublishedFestival": true,

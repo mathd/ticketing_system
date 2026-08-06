@@ -500,6 +500,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/ticket-types/{id}/fee-resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve which fees apply to a ticket type, in a channel, with provenance
+         * @description Answers "which fees apply to this ticket type, in this channel, right now, and why" (TKT-214, ADR-046). Rules attach to the same five scope levels as price rules — ticket_type, slot, series, event, venue — and the narrowest wins, except that a rule marked force_ancestor_override restricts the competition to forced rules and inverts the order.
+         *     THE STRUCTURAL DIFFERENCE FROM price-resolution: fees are ADDITIVE. A price resolution has exactly one winner; this one has one winner PER FEE CODE, and a sale can carry a service fee and a facility fee at once. Rules never stack within a code.
+         *     Precedence within a code, in order: scope level, then channel specificity, then priority, then the lowest rule id. Under a forced partition BOTH specificity axes invert, so the broadest house rule — including the channel-agnostic one — is the one that binds.
+         *     This operation is INTERNAL and deliberately so. Its response carries `absorbed` fees, which are the organizer's cost structure rather than anything the buyer pays: publishing them would disclose what the platform and the venue take out of a face price. The gateway registers /api/<svc>/internal/ to a deny handler, so the route is unreachable from the edge by construction; the inline credential check is what guards it on the container network. Compare TKT-155, which records the equivalent exposure on the PUBLIC price-resolution route as a defect.
+         *     The evaluation instant is the server's, NOT a request parameter — the same reason resolveTicketTypePrice refuses one: letting a caller choose it would let anyone ask a sale-time endpoint for a fee schedule that has expired or has not opened.
+         *     A ticket type with no fee rules resolves to an empty `fees` array. A fee code every rule of which is outside its window resolves to an entry with a null winner and the expired rules as candidates — "considered, nothing applies" and "no such code" are different answers.
+         *     Cache-Control: no-store, the same correctness tier as price resolution.
+         */
+        get: operations["resolveTicketTypeFees"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/staff/authenticate": {
         parameters: {
             query?: never;
@@ -805,6 +831,95 @@ export interface components {
              * @enum {string}
              */
             fallback_reason?: "no_eligible_rule";
+        };
+        /** @description One fee rule as reported in a resolution's provenance (ADR-046). */
+        FeeRuleProvenance: {
+            /** Format: uuid */
+            rule_id: string;
+            /** @enum {string} */
+            scope_level: "ticket_type" | "slot" | "series" | "event" | "venue";
+            /** Format: uuid */
+            scope_id: string;
+            /** @description The additive stream this rule belongs to. Opaque and case-sensitive; there is no registry and no normalization (TKT-17 owns that). */
+            fee_code: string;
+            /**
+             * @description How the number becomes money. Catalog never multiplies — it reports the basis and commerce composes the order total (ADR-002, unamended by this ticket).
+             * @enum {string}
+             */
+            basis: "per_ticket_fixed" | "per_order_fixed" | "percentage_bps";
+            /**
+             * Format: int64
+             * @description Minor units for a fixed basis; null on a percentage rule.
+             */
+            amount: number | null;
+            /**
+             * Format: int32
+             * @description Basis points for a percentage basis; null on a fixed rule. 0..10000 — a rate above 100% is a fee larger than the thing it is a fee on.
+             */
+            rate_bps: number | null;
+            currency: string;
+            /**
+             * @description passed_on is added to what the buyer is charged; absorbed is borne by the organizer out of the face value. This changes nothing about eligibility or precedence — it decides what commerce does with the number (TKT-215) and what the settlement ledger must balance (TKT-217).
+             * @enum {string}
+             */
+            incidence: "passed_on" | "absorbed";
+            /** @description null means channel-agnostic: eligible in every channel, including the default/public one. A non-null code is eligible only on an exact string match. */
+            channel_code: string | null;
+            /**
+             * Format: date-time
+             * @description Inclusive lower bound; null is unbounded. The interval is HALF-OPEN [effective_from, effective_until) — eligible at an instant equal to effective_from, NOT eligible at one equal to effective_until. Stated explicitly because an inclusive/exclusive ambiguity at a boundary is a money bug. A reversed window is rejected by the database.
+             */
+            effective_from: string | null;
+            /**
+             * Format: date-time
+             * @description Exclusive upper bound; null is unbounded. A rule whose window has closed is inert: it can never charge anything again, so a misconfiguration in it is reported rather than failing every resolution forever.
+             */
+            effective_until: string | null;
+            /** Format: int32 */
+            priority: number;
+            /** @description force_ancestor_override — restricts the competition to forced rules and inverts BOTH specificity axes. */
+            forced: boolean;
+        };
+        /** @description A candidate that did not win its fee code, and why. The reason enum is closed and total over the comparator. Note what is NOT here: a rule belonging to a different channel is absent entirely rather than reported as a loser, because returning it would publish one caller's channel fee matrix to every other caller. */
+        LosingFeeRule: {
+            rule: components["schemas"]["FeeRuleProvenance"];
+            /** @enum {string} */
+            reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "less_channel_specific" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
+        };
+        /** @description One fee code's outcome. candidates holds every rule that competed for this code EXCEPT the winner, ordered by rule id — representation only, carrying no precedence. */
+        FeeCodeResolution: {
+            fee_code: string;
+            /** @description null when the code was considered and nothing currently applies — every rule for it fell outside its effective window. The candidates then ARE the answer to "why is this fee not showing up?". A code no rule carries produces no entry at all: considered-and-inapplicable and not-present are different states. */
+            winner: components["schemas"]["FeeRuleProvenance"] | null;
+            candidates: components["schemas"]["LosingFeeRule"][];
+        };
+        /**
+         * @description Every fee that applies to a ticket type in a channel, with provenance (ADR-046). fees is ordered by fee code so the document is stable; the order carries no precedence, because codes do not compete with each other — they are additive.
+         *     An empty fees array is the correct and complete answer for a ticket type with no fee rules, which is every ticket type that existed before this operation did.
+         */
+        FeeResolution: {
+            /**
+             * Format: int32
+             * @description Bumped when the comparator's semantics change. A commitment, not a decoration: TKT-215 persists snapshots that must stay interpretable.
+             */
+            resolver_version: number;
+            /**
+             * Format: date-time
+             * @description The server-side instant the rules were evaluated against.
+             */
+            evaluated_at: string;
+            /** Format: uuid */
+            organizer_id: string;
+            /**
+             * Format: uuid
+             * @description The dated slot the ticket type belongs to.
+             */
+            performance_id: string;
+            /** @description The ticket type's currency, which every rule here was validated against — a fee and the thing it is a fee on must be the same money. A mismatched rule fails the resolution rather than being skipped. */
+            currency: string;
+            /** @description The channel this resolution was requested for; null is the default/public context. Echoed back so a stored snapshot records WHICH question was asked, not just the answer. */
+            channel_code: string | null;
+            fees: components["schemas"]["FeeCodeResolution"][];
         };
         /** @description Integer minor units + ISO-4217 code (ADR-001); no floats, ever */
         Money: {
@@ -1274,6 +1389,15 @@ export interface components {
         StaffWriteUnauthorized: {
             headers: {
                 "Cache-Control": components["headers"]["NeverCacheControl"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The internal service credential was absent or wrong. Catalog answers 401 on its internal surface; commerce answers 404 on its own. ADR-043 records that split as deliberate-but-not-uniform and declines to churn catalog's existing routes, so a NEW catalog internal route follows catalog's convention — two refusal codes inside one service would be worse than the inconsistency across two. */
+        InternalRouteUnauthorized: {
+            headers: {
                 [name: string]: unknown;
             };
             content: {
@@ -2258,6 +2382,37 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    resolveTicketTypeFees: {
+        parameters: {
+            query?: {
+                /** @description The sales channel to resolve for. An exact opaque string (ADR-024) — there is no channel registry, and inventing one here would decide TKT-17's story. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel. */
+                channel_code?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Named `id` rather than `ticketTypeId` to match the hand-mounted sibling /internal/ticket-types/{id} it shares a router with; two different parameter names at one position is a routing conflict, not a style choice. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The fees that apply, with full provenance */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PriceResolutionCacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeeResolution"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["InternalRouteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };

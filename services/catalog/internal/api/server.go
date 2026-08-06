@@ -208,7 +208,46 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	})
 	// Response drift fails closed (ADR-028): hand-built payloads are checked
 	// against the committed spec at runtime, same as the non-codegen services.
-	return contract.ResponseValidator(apispec.Spec, handler, s.log, validateResponses)
+	return contract.ResponseValidator(apispec.Spec, guardInternalSurface(s, handler), s.log, validateResponses)
+}
+
+// guardInternalSurface authenticates catalog's WHOLE /internal/ surface before
+// routing, parameter binding or request validation (TKT-214 ai-review).
+//
+// Why it cannot live in the handler, or even in ChiServerOptions.Middlewares:
+// the generated wrapper binds and validates path and query parameters BEFORE it
+// applies HandlerMiddlewares (openapi_gen.go — the BindStyledParameterWithOptions
+// / ErrorHandlerFunc block precedes the middleware loop). So a handler-level
+// check answers 401 for a well-formed request and the VALIDATOR answers 400,
+// with details, for a malformed one — handing an unauthenticated caller a
+// schema oracle on the internal surface and making "the credential check is the
+// first thing it does" false. Wrapping the finished handler is what makes that
+// sentence true.
+//
+// It is a prefix guard rather than a per-route one on purpose: a newly declared
+// /internal/ operation is then closed BY CONSTRUCTION, which is the same
+// argument TKT-191 made for expressing the staff-write requirement once at the
+// document level instead of in 26 handlers. The per-handler checks on the
+// hand-mounted routes stay: they are cheap, and a guard that can be removed in
+// one place should not be the only thing standing there.
+//
+// Side effect, named rather than discovered: an UNKNOWN /internal/ path now
+// answers 401 instead of chi's 404. That is a strict improvement in the
+// direction ADR-043 argues for — "enumerating the internal surface is the
+// caller's problem to solve, not ours to help with" — and it is why this guard
+// answers before routing rather than after it.
+func guardInternalSurface(s *Server, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// r.URL.Path is the DECODED path, so an escaped spelling such as
+		// internal%2Fx resolves here even where chi would route it elsewhere.
+		// That direction is fail-closed: it can only guard more, never less.
+		if strings.HasPrefix(r.URL.Path, "/internal/") &&
+			(s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential) {
+			writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
