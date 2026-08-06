@@ -9,6 +9,12 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- [**A guard's worst failure is not seeing**](./learnings/2026-08-06-a-guards-worst-failure-is-not-seeing.md) —
+  a source-scanning invariant matched neither `UPDATE ONLY orders` nor `UPDATE public.orders`, so a
+  real attribution writer would have been invisible while the allowlist count stayed satisfied. A
+  guard that permits too much fails loudly; a guard that cannot SEE fails silently forever. For any
+  recogniser, write the test that proves it recognises before the one that proves it judges. (TKT-222,
+  TKT-223)
 - [**A fake store cannot see the driver**](./learnings/2026-08-06-a-fake-store-cannot-see-the-driver.md) —
   three defects in one query, all compile-clean and all fatal against real Postgres: an uninferable
   array parameter, a jsonb column with no Scanner, and a NULL scanned into a value type. A fake

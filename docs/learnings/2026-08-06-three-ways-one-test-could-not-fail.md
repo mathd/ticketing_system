@@ -78,3 +78,26 @@ file.
 
 Related: [a fixture too small cannot show the negative](2026-08-03-a-fixture-too-small-cannot-show-the-negative.md),
 [check why a test is red](2026-07-30-check-why-a-test-is-red-not-just-that-it-is.md).
+
+## Postscript — the same fix, three more times (TKT-221, TKT-222, TKT-223)
+
+Across the rest of the TKT-21 epic this recurred five more times, and every instance had the same
+remedy:
+
+- a clock test that injected `now` on every call, so the production default was never exercised;
+- a plan assertion that searched a whole EXPLAIN for two independent substrings, satisfied by an
+  unrelated node;
+- a bridge test that set a session cookie through the accessor but never as a **header**, so
+  forwarding the header was unobservable;
+- a parity test that compared two *mismatches* while claiming to compare a mismatch against an
+  unknown customer;
+- a regression test named for a file-scoped bug that called the helpers directly, staying green with
+  the bug restored.
+
+**The fix is always the same shape: make the test call what production calls.** Extract the whole
+decision — match, recognise, authorize; or resolve, compare, answer — into one function, and have
+both the production path and the test invoke *that*. Every one of these tests was asserting a helper
+while claiming to assert the wiring.
+
+Eight in one epic, none found by writing the test carefully, all found by mutation-checking or an
+adversarial pass.
