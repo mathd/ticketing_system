@@ -90,6 +90,63 @@ func (e PSPStatusOutcome) Valid() bool {
 	}
 }
 
+// Defines values for SettlementFeeIncidence.
+const (
+	SettlementFeeIncidenceAbsorbed SettlementFeeIncidence = "absorbed"
+	SettlementFeeIncidencePassedOn SettlementFeeIncidence = "passed_on"
+)
+
+// Valid indicates whether the value is a known member of the SettlementFeeIncidence enum.
+func (e SettlementFeeIncidence) Valid() bool {
+	switch e {
+	case SettlementFeeIncidenceAbsorbed:
+		return true
+	case SettlementFeeIncidencePassedOn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettlementLedgerEntryEntryKind.
+const (
+	FaceValue          SettlementLedgerEntryEntryKind = "face_value"
+	Fee                SettlementLedgerEntryEntryKind = "fee"
+	LegacyUnattributed SettlementLedgerEntryEntryKind = "legacy_unattributed"
+)
+
+// Valid indicates whether the value is a known member of the SettlementLedgerEntryEntryKind enum.
+func (e SettlementLedgerEntryEntryKind) Valid() bool {
+	switch e {
+	case FaceValue:
+		return true
+	case Fee:
+		return true
+	case LegacyUnattributed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettlementLedgerEntryIncidence.
+const (
+	SettlementLedgerEntryIncidenceAbsorbed SettlementLedgerEntryIncidence = "absorbed"
+	SettlementLedgerEntryIncidencePassedOn SettlementLedgerEntryIncidence = "passed_on"
+)
+
+// Valid indicates whether the value is a known member of the SettlementLedgerEntryIncidence enum.
+func (e SettlementLedgerEntryIncidence) Valid() bool {
+	switch e {
+	case SettlementLedgerEntryIncidenceAbsorbed:
+		return true
+	case SettlementLedgerEntryIncidencePassedOn:
+		return true
+	default:
+		return false
+	}
+}
+
 // Charge defines model for Charge.
 type Charge struct {
 	Amount       int64              `json:"amount"`
@@ -98,6 +155,10 @@ type Charge struct {
 	OrderId      openapi_types.UUID `json:"order_id"`
 	OrganizerId  openapi_types.UUID `json:"organizer_id"`
 	PaymentToken string             `json:"payment_token"`
+
+	// Settlement How this capture is attributed (TKT-217, ADR-048). Commerce derives it from the fee snapshot it already persisted at reserve time — NEVER from a fresh catalog read, so a schedule edited between the sale and the capture cannot change who gets paid for it.
+	// REQUIRED, and required BEFORE the outcome is known. A declined or timed-out charge settles nothing, so an attribution for it is never written — but the plan has to be validated before the provider is called, and at that point the outcome does not exist yet. Making it optional meant a charge that could not be settled was discovered only after the money had moved, with no captured fact and no ledger to account for it. This costs nothing: the charge path's only success outcome is a capture, so a plan-less charge could never have succeeded.
+	Settlement SettlementPlan `json:"settlement"`
 }
 
 // ChargeCurrency defines model for Charge.Currency.
@@ -142,6 +203,16 @@ type OperationState struct {
 	Resolved               bool                `json:"resolved"`
 	Status                 *string             `json:"status,omitempty"`
 	StatusReplayDeadlineAt *time.Time          `json:"status_replay_deadline_at,omitempty"`
+}
+
+// OrderSettlement defines model for OrderSettlement.
+type OrderSettlement struct {
+	Currency string                  `json:"currency"`
+	Entries  []SettlementLedgerEntry `json:"entries"`
+	OrderId  openapi_types.UUID      `json:"order_id"`
+
+	// Total The sum of every line, which equals the captured amount.
+	Total int64 `json:"total"`
 }
 
 // PSPCompensation defines model for PSPCompensation.
@@ -195,6 +266,60 @@ type PSPStatus struct {
 // PSPStatusOutcome defines model for PSPStatus.Outcome.
 type PSPStatusOutcome string
 
+// SettlementFee One fee and the payees it resolved to.
+type SettlementFee struct {
+	Amount    int64                  `json:"amount"`
+	Currency  string                 `json:"currency"`
+	FeeCode   string                 `json:"fee_code"`
+	Incidence SettlementFeeIncidence `json:"incidence"`
+
+	// Parts EMPTY when the fee code had no split schedule at sale time. The fee is then recorded as collected and UNATTRIBUTED rather than refused: fees shipped before split schedules did, so refusing would fail those sales at checkout, after the buyer committed.
+	Parts []SettlementPart `json:"parts"`
+}
+
+// SettlementFeeIncidence defines model for SettlementFee.Incidence.
+type SettlementFeeIncidence string
+
+// SettlementLedgerEntry defines model for SettlementLedgerEntry.
+type SettlementLedgerEntry struct {
+	// Amount SIGNED. The organizer's line goes negative when they absorbed more in fees than the face value — a real, if misconfigured, sale.
+	Amount   int64  `json:"amount"`
+	Currency string `json:"currency"`
+
+	// EntryKind `legacy_unattributed` marks a capture that predates the settlement ledger: the amount is known and its split is not, so it is recorded whole and owed to nobody rather than guessed at.
+	EntryKind        SettlementLedgerEntryEntryKind  `json:"entry_kind"`
+	FeeCode          *string                         `json:"fee_code"`
+	Incidence        *SettlementLedgerEntryIncidence `json:"incidence"`
+	PayeeDisplayName *string                         `json:"payee_display_name"`
+	PayeeId          *openapi_types.UUID             `json:"payee_id"`
+	PayeeKind        *string                         `json:"payee_kind"`
+}
+
+// SettlementLedgerEntryEntryKind `legacy_unattributed` marks a capture that predates the settlement ledger: the amount is known and its split is not, so it is recorded whole and owed to nobody rather than guessed at.
+type SettlementLedgerEntryEntryKind string
+
+// SettlementLedgerEntryIncidence defines model for SettlementLedgerEntry.Incidence.
+type SettlementLedgerEntryIncidence string
+
+// SettlementPart One payee's share, with its identity SNAPSHOTTED — a settlement row must keep saying who was paid at the time they were paid, and a display name is editable in catalog.
+type SettlementPart struct {
+	DisplayName       string             `json:"display_name"`
+	ExternalReference *string            `json:"external_reference,omitempty"`
+	Kind              string             `json:"kind"`
+	PayeeId           openapi_types.UUID `json:"payee_id"`
+	ShareBps          int32              `json:"share_bps"`
+}
+
+// SettlementPlan The composition of one capture. `face_value + passed_on` must equal both `total_amount` and the charged amount; absorbed fees do not change what the buyer paid but are still owed to a payee out of it.
+type SettlementPlan struct {
+	Absorbed    int64           `json:"absorbed"`
+	Currency    string          `json:"currency"`
+	FaceValue   int64           `json:"face_value"`
+	Fees        []SettlementFee `json:"fees"`
+	PassedOn    int64           `json:"passed_on"`
+	TotalAmount int64           `json:"total_amount"`
+}
+
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
@@ -207,6 +332,11 @@ type ChargeParams struct {
 type GetOperationParams struct {
 	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
 	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
+}
+
+// GetOrderSettlementParams defines parameters for GetOrderSettlement.
+type GetOrderSettlementParams struct {
+	OrganizerId openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
 }
 
 // PspStatusParams defines parameters for PspStatus.

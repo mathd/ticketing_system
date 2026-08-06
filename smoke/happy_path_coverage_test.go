@@ -135,7 +135,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	chargeKey := "cov-charge-" + slot
 	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", chargeKey,
 		map[string]any{"order_id": uuid.NewString(), "organizer_id": organizerID, "buyer_id": uuid.NewString(),
-			"amount": 1000, "currency": "EUR", "payment_token": "fake-ok"}); code != http.StatusOK {
+			"amount": 1000, "currency": "EUR", "payment_token": "fake-ok", "settlement": feeFreeSettlement(1000)}); code != http.StatusOK {
 		t.Fatalf("charge: %d %s", code, body)
 	}
 	if code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=%s", paymentsURL, organizerID, chargeKey), "", nil); code != http.StatusOK {

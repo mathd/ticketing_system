@@ -14,6 +14,18 @@ import (
 // PostgreSQL (migration 0002), real journal, fake PSP. Drives the durable compensation
 // sequence the unit tests cannot (bind → provider → fact → complete → replay), and the
 // contract middleware validates every response against the payments OpenAPI document.
+
+// feeFreeSettlement is the attribution for a direct charge with no fees
+// (TKT-217): the organizer is owed the whole amount. Every /internal/charges
+// caller must carry one, because the database refuses a captured fact with no
+// settlement entries — that refusal is the invariant, not an inconvenience.
+func feeFreeSettlement(amount int64) map[string]any {
+	return map[string]any{
+		"face_value": amount, "passed_on": 0, "absorbed": 0,
+		"total_amount": amount, "currency": "EUR", "fees": []any{},
+	}
+}
+
 func TestPSPCompensationFlow(t *testing.T) {
 	organizer := uuid.NewString()
 	buyer := uuid.NewString()
@@ -23,7 +35,7 @@ func TestPSPCompensationFlow(t *testing.T) {
 	// A fake-ok charge: captured, with provider evidence persisted on the operation row.
 	code, body := internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", chargeKey,
 		map[string]any{"order_id": order, "organizer_id": organizer, "buyer_id": buyer,
-			"amount": 1250, "currency": "EUR", "payment_token": "fake-ok"})
+			"amount": 1250, "currency": "EUR", "payment_token": "fake-ok", "settlement": feeFreeSettlement(1250)})
 	if code != http.StatusOK {
 		t.Fatalf("charge = %d: %s", code, body)
 	}
@@ -123,7 +135,7 @@ func TestPSPCompensationFlow(t *testing.T) {
 	holdKey := "psp-comp-hold-" + uuid.NewString()
 	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", holdKey,
 		map[string]any{"order_id": uuid.NewString(), "organizer_id": organizer, "buyer_id": buyer,
-			"amount": 800, "currency": "EUR", "payment_token": "fake-auth-hold"}); code != http.StatusInternalServerError {
+			"amount": 800, "currency": "EUR", "payment_token": "fake-auth-hold", "settlement": feeFreeSettlement(800)}); code != http.StatusInternalServerError {
 		t.Fatalf("auth-hold charge = %d, want 500 (fails closed, operation unresolved): %s", code, body)
 	}
 	holdStatusURL := paymentsURL + "/internal/psp/status?organizer_id=" + organizer + "&idempotency_key=" + holdKey
@@ -202,7 +214,7 @@ func TestPSPCompensationFlow(t *testing.T) {
 	declinedKey := "psp-comp-declined-" + uuid.NewString()
 	if code, body = internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", declinedKey,
 		map[string]any{"order_id": uuid.NewString(), "organizer_id": organizer, "buyer_id": buyer,
-			"amount": 900, "currency": "EUR", "payment_token": "fake-decline"}); code != http.StatusPaymentRequired {
+			"amount": 900, "currency": "EUR", "payment_token": "fake-decline", "settlement": feeFreeSettlement(900)}); code != http.StatusPaymentRequired {
 		t.Fatalf("declined charge = %d: %s", code, body)
 	}
 	declined := map[string]any{"organizer_id": organizer, "idempotency_key": declinedKey}

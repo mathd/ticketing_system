@@ -776,13 +776,18 @@ func paymentFailureResponse(body []byte, fallbackStatus string) map[string]any {
 type reservation struct {
 	ID, OrganizerID, HoldID, BuyerID, SlotID, TicketTypeID uuid.UUID
 	Quantity                                               int32
-	Amount                                                 int64
-	Currency, Status                                       string
+	// Amount is the GROSS charge; FaceValue is the face alone. TKT-215 split
+	// them because the exchange delta needs one and the PSP needs the other.
+	Amount, FaceValue int64
+	Currency, Status  string
+	// FeeSnapshot is the verbatim fee resolution persisted at reserve time.
+	// NULL on a pre-TKT-215 or staff-created reservation.
+	FeeSnapshot []byte
 }
 
 func (s *Server) load(ctx context.Context, id uuid.UUID) (reservation, error) {
 	var x reservation
-	err := s.db.QueryRowContext(ctx, `SELECT id,organizer_id,hold_id,buyer_id,slot_id,ticket_type_id,quantity,total_amount,currency,status FROM reservations WHERE id=$1`, id).Scan(&x.ID, &x.OrganizerID, &x.HoldID, &x.BuyerID, &x.SlotID, &x.TicketTypeID, &x.Quantity, &x.Amount, &x.Currency, &x.Status)
+	err := s.db.QueryRowContext(ctx, `SELECT id,organizer_id,hold_id,buyer_id,slot_id,ticket_type_id,quantity,total_amount,face_value_amount,currency,status,fee_resolution_snapshot FROM reservations WHERE id=$1`, id).Scan(&x.ID, &x.OrganizerID, &x.HoldID, &x.BuyerID, &x.SlotID, &x.TicketTypeID, &x.Quantity, &x.Amount, &x.FaceValue, &x.Currency, &x.Status, &x.FeeSnapshot)
 	return x, err
 }
 
@@ -1177,7 +1182,16 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "persist checkout"})
 		return
 	}
-	charge := map[string]any{"order_id": order, "organizer_id": x.OrganizerID, "buyer_id": x.BuyerID, "amount": x.Amount, "currency": x.Currency, "payment_token": in.PaymentToken}
+	// The settlement plan comes from the PERSISTED snapshot, never a fresh
+	// catalog read (TKT-217 / ADR-048). A schedule edited between the sale and
+	// the capture must not change who gets paid for that sale — the same reason
+	// the snapshot exists at all.
+	plan, err := settlementPlanFromSnapshot(x)
+	if err != nil {
+		write(w, 500, map[string]string{"error": "settlement plan unavailable"})
+		return
+	}
+	charge := map[string]any{"order_id": order, "organizer_id": x.OrganizerID, "buyer_id": x.BuyerID, "amount": x.Amount, "currency": x.Currency, "payment_token": in.PaymentToken, "settlement": plan}
 	code, body, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/charges", key, charge, true)
 	if err != nil {
 		if !s.markUnknown(r.Context(), x.ID, order) && s.answerRecovered(r.Context(), w, x, order) {

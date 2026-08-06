@@ -143,7 +143,7 @@ func TestRecoveryRefundsCapturedMoneyWithGoneClaim(t *testing.T) {
 	code, body := internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", chargeKey,
 		map[string]any{"order_id": orderID, "organizer_id": organizerID,
 			"buyer_id": reservation["buyer_id"], "amount": 2500, "currency": "EUR",
-			"payment_token": "fake-ok"})
+			"payment_token": "fake-ok", "settlement": feeFreeSettlement(2500)})
 	if code != http.StatusOK {
 		t.Fatalf("charge = %d: %s", code, body)
 	}
@@ -237,7 +237,7 @@ func TestStatusReplayWindowExpiryAnswers409(t *testing.T) {
 	// An auth-hold charge 500s and leaves the operation bound-unresolved, ref-less.
 	code, body := internalJSON(t, http.MethodPost, paymentsURL+"/internal/charges", chargeKey,
 		map[string]any{"order_id": uuid.NewString(), "organizer_id": organizer, "buyer_id": uuid.NewString(),
-			"amount": 1250, "currency": "EUR", "payment_token": "fake-auth-hold"})
+			"amount": 1250, "currency": "EUR", "payment_token": "fake-auth-hold", "settlement": feeFreeSettlement(1250)})
 	if code != http.StatusInternalServerError {
 		t.Fatalf("auth-hold charge = %d %s, want 500 (bound, unresolved)", code, body)
 	}

@@ -145,7 +145,19 @@ func validate(f Fact) error {
 	return nil
 }
 
+// Append writes a fact with no settlement. Every caller but the capture path
+// uses this.
 func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
+	return j.AppendWithSettlement(ctx, f, nil)
+}
+
+// AppendWithSettlement writes a fact AND its ledger lines in ONE transaction.
+//
+// `settlement` is nil for every fact that is not a capture. A payment.captured
+// fact with nil settlement will be refused at commit by the deferred trigger,
+// which is the point: the invariant lives in the database, not in the
+// discipline of callers.
+func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement []SettlementEntry) (Entry, bool, error) {
 	if err := validate(f); err != nil {
 		return Entry{}, false, err
 	}
@@ -200,6 +212,17 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE journal_heads SET last_sequence=$2,last_hash=$3 WHERE organizer_id=$1`, f.OrganizerID, seq, sum)
 	if err != nil {
+		return Entry{}, false, err
+	}
+	// Settlement rides THIS transaction (TKT-217 / ADR-048). Not a separate call
+	// and not a later finalizer: the entries then exist if and only if the
+	// captured fact does, so "a capture that journals but does not settle" is not
+	// a state the database can hold.
+	//
+	// Replay needs nothing extra. The fact id is deterministic, and the two
+	// existing-fact branches above return before reaching here — so a replayed
+	// append writes neither the fact nor the entries.
+	if err = insertSettlement(ctx, tx, f, settlement); err != nil {
 		return Entry{}, false, err
 	}
 	return Entry{Fact: f, Sequence: seq, PreviousHash: prev, EntryHash: sum, KeyID: j.keys.ActiveKeyID(), Signature: sig}, false, tx.Commit()
@@ -284,10 +307,25 @@ type OperationRequest struct {
 	Amount           int64
 	Currency         string
 	PaymentMethodRef string
+	// SettlementDigest identifies the attribution this charge bound with
+	// (TKT-219). The request fingerprint deliberately does not cover the
+	// settlement plan -- it is not part of what the buyer is being charged -- so
+	// without this an unresolved operation whose lease expired could be retried
+	// with a different plan and re-attribute money the provider already took.
+	SettlementDigest string
+}
+
+// nullableDigest keeps an empty digest out of the column as NULL, so "no plan
+// was recorded" and "a plan resolving to nothing" stay distinguishable.
+func nullableDigest(d string) any {
+	if d == "" {
+		return nil
+	}
+	return d
 }
 
 func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerprint string, req OperationRequest) (string, uuid.UUID, time.Time, bool, error) {
-	result, err := j.db.ExecContext(ctx, `INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint,order_id,buyer_id,request_amount,request_currency,payment_method_ref) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`, org, key, fingerprint, req.OrderID, req.BuyerID, req.Amount, req.Currency, req.PaymentMethodRef)
+	result, err := j.db.ExecContext(ctx, `INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint,order_id,buyer_id,request_amount,request_currency,payment_method_ref,settlement_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, org, key, fingerprint, req.OrderID, req.BuyerID, req.Amount, req.Currency, req.PaymentMethodRef, nullableDigest(req.SettlementDigest))
 	if err != nil {
 		return "", uuid.Nil, time.Time{}, false, err
 	}
@@ -295,7 +333,8 @@ func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerp
 	var status sql.NullString
 	var factID uuid.NullUUID
 	var occurredAt, leaseUntil time.Time
-	err = j.db.QueryRowContext(ctx, `SELECT request_fingerprint,status,fact_id,occurred_at,lease_until FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).Scan(&stored, &status, &factID, &occurredAt, &leaseUntil)
+	var storedDigest sql.NullString
+	err = j.db.QueryRowContext(ctx, `SELECT request_fingerprint,status,fact_id,occurred_at,lease_until,settlement_digest FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).Scan(&stored, &status, &factID, &occurredAt, &leaseUntil, &storedDigest)
 	if err != nil {
 		return "", uuid.Nil, time.Time{}, false, err
 	}
@@ -304,7 +343,20 @@ func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerp
 	}
 	inserted, _ := result.RowsAffected()
 	if inserted == 0 && !status.Valid {
-		taken, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET lease_until=now()+interval '30 seconds' WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL AND lease_until<=now()`, org, key)
+		// An operation that already bound a plan keeps it. The provider may
+		// ALREADY have captured against this key -- an unresolved row is exactly
+		// the case where nobody knows -- so letting a retry substitute a different
+		// attribution would record that money as owed to someone else. Same
+		// disposition as a reused key with a different request, because that is
+		// what it is (TKT-219, ADR-048 §3e).
+		//
+		// A NULL digest is a row bound before the column existed. There is nothing
+		// to compare against and nothing to recover it from, so the retry's plan is
+		// adopted below -- the behaviour that preceded this check, and no worse.
+		if storedDigest.Valid && storedDigest.String != req.SettlementDigest {
+			return "", uuid.Nil, time.Time{}, false, errors.New("idempotency key reused with a different settlement plan")
+		}
+		taken, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET lease_until=now()+interval '30 seconds', settlement_digest=COALESCE(settlement_digest,$3) WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL AND lease_until<=now()`, org, key, nullableDigest(req.SettlementDigest))
 		if err != nil {
 			return "", uuid.Nil, time.Time{}, false, err
 		}
@@ -325,6 +377,11 @@ type Operation struct {
 	// charge was bound and is still in flight, or the process driving it died. Callers
 	// must not read that as "no side effect" — it is the payment_unknown case.
 	Resolved bool
+	// The fingerprint of the request that bound this operation. The charge path
+	// compares it BEFORE validating a settlement plan, so a reused key with a
+	// different request is still answered with the documented 409 rather than a
+	// plan error (TKT-217, third review pass).
+	RequestFingerprint string
 	// The durable original request (TKT-114/S2). Zero values on rows bound before
 	// migration 0002 — a compensation cannot be built from such a row.
 	OrderID          uuid.UUID
@@ -365,8 +422,9 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	var occurredAt time.Time
 	var reqAmount, authAmount, capAmount sql.NullInt64
 	var reqCurrency, pmRef, provPayRef, provChRef, provState sql.NullString
-	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount)
+	var fingerprint string
+	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount,request_fingerprint FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount, &fingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, false, nil
 	}
@@ -374,6 +432,7 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 		return Operation{}, false, err
 	}
 	op.Resolved = status.Valid
+	op.RequestFingerprint = fingerprint
 	op.Status = status.String
 	op.FactID = factID.UUID
 	op.OccurredAt = occurredAt.UTC().Truncate(time.Microsecond)

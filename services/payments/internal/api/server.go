@@ -15,6 +15,7 @@ import (
 
 	apispec "ticketing/services/payments/api"
 	"ticketing/services/payments/internal/psp"
+	"ticketing/services/payments/internal/splits"
 	"ticketing/services/payments/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/httpx"
@@ -58,6 +59,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	})
 	r.Post("/internal/facts", s.fact)
 	r.Post("/internal/charges", s.charge)
+	r.Get("/internal/orders/{orderId}/settlement", s.getOrderSettlement)
 	r.Get("/internal/operations", s.operation)
 	r.Get("/internal/psp/status", s.pspStatus)
 	r.Post("/internal/psp/void", s.pspVoid)
@@ -152,6 +154,51 @@ type chargeRequest struct {
 	Amount       int64     `json:"amount"`
 	Currency     string    `json:"currency"`
 	PaymentToken string    `json:"payment_token"`
+	// Settlement is how this capture is attributed (TKT-217). Derived by
+	// commerce from the fee snapshot it persisted at reserve time.
+	Settlement *settlementPlanRequest `json:"settlement,omitempty"`
+}
+
+type settlementPlanRequest struct {
+	FaceValue   int64  `json:"face_value"`
+	PassedOn    int64  `json:"passed_on"`
+	Absorbed    int64  `json:"absorbed"`
+	TotalAmount int64  `json:"total_amount"`
+	Currency    string `json:"currency"`
+	Fees        []struct {
+		FeeCode   string `json:"fee_code"`
+		Incidence string `json:"incidence"`
+		Amount    int64  `json:"amount"`
+		Currency  string `json:"currency"`
+		Parts     []struct {
+			PayeeID           uuid.UUID `json:"payee_id"`
+			Kind              string    `json:"kind"`
+			DisplayName       string    `json:"display_name"`
+			ExternalReference *string   `json:"external_reference,omitempty"`
+			ShareBps          int32     `json:"share_bps"`
+		} `json:"parts"`
+	} `json:"fees"`
+}
+
+// toStorePlan maps the wire shape onto the store's plan. The mapping is here
+// rather than in the store so the store's types stay free of JSON concerns —
+// and so an added wire field cannot silently change settlement semantics.
+func (p *settlementPlanRequest) toStorePlan() store.SettlementPlan {
+	out := store.SettlementPlan{
+		FaceValue: p.FaceValue, PassedOn: p.PassedOn, Absorbed: p.Absorbed,
+		TotalAmount: p.TotalAmount, Currency: p.Currency,
+	}
+	for _, f := range p.Fees {
+		line := store.FeeLine{FeeCode: f.FeeCode, Incidence: f.Incidence, Amount: f.Amount,
+			Currency: f.Currency, Payees: map[uuid.UUID]store.PayeeRef{}}
+		for _, part := range f.Parts {
+			line.Shares = append(line.Shares, splits.Share{PayeeID: part.PayeeID, ShareBps: part.ShareBps})
+			line.Payees[part.PayeeID] = store.PayeeRef{ID: part.PayeeID, Kind: part.Kind,
+				DisplayName: part.DisplayName, ExternalReference: part.ExternalReference}
+		}
+		out.Fees = append(out.Fees, line)
+	}
+	return out
 }
 
 func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
@@ -173,8 +220,66 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s", in.OrderID, in.BuyerID, in.Amount, in.Currency, in.PaymentToken))))
+	// An ALREADY-DECIDED operation is answered from the record, before the plan is
+	// looked at. Validating first would make idempotency depend on the settlement
+	// plan travelling with every retry, when the plan is not part of the request
+	// fingerprint and the stored result is the whole point: a replay of a captured
+	// charge must return that capture, not a plan error. The reused-key 409 is
+	// checked here too, for the same reason — a different request under the same
+	// key is a 409 whatever its plan looks like.
+	if prior, found, err := s.journal.LookupOperation(r.Context(), in.OrganizerID, key); err == nil && found {
+		if prior.RequestFingerprint != fingerprint {
+			write(w, 409, map[string]string{"error": "idempotency key reused with different request"})
+			return
+		}
+		if prior.Resolved {
+			code := 200
+			if prior.Status == "declined" {
+				code = 402
+			}
+			if prior.Status == "timeout" {
+				code = 408
+			}
+			write(w, code, map[string]any{"status": prior.Status, "payment_id": prior.FactID, "replay": true})
+			return
+		}
+	}
+	// Build the ledger BEFORE anything durable happens — before the provider is
+	// called AND before the operation is bound.
+	//
+	// Before the provider, because validating afterwards means a charge with an
+	// unusable plan gets an error back while the PSP has already taken the money,
+	// with no payment.captured fact and no settlement to account for it. The
+	// deferred triggers cannot repair that: they govern journal commits, not the
+	// outside world.
+	//
+	// Before BindOperation, because a bound operation is NOT inert. It carries no
+	// terminal status, which is the payment_unknown case: commerce's recovery path
+	// resolves such an operation against the provider and can complete the order
+	// from it. An operation whose plan was rejected is then a capture waiting to
+	// happen with no ledger able to record it. The first fix for this finding
+	// moved validation ahead of the provider only, and left exactly that hole —
+	// two correct-looking orderings, one still wrong.
+	//
+	// The plan is required unconditionally, before the outcome is known. This
+	// costs nothing: the charge path's only success outcome is a capture, so a
+	// charge with no usable plan could never have succeeded.
+	if in.Settlement == nil {
+		write(w, 400, map[string]string{"error": "a charge must carry a settlement plan"})
+		return
+	}
+	plan, err := store.BuildSettlementEntries(in.Settlement.toStorePlan(), in.Amount)
+	if err != nil {
+		// The plan is our own data being wrong, not the caller's request shape —
+		// the same disposition catalog gives a misconfigured rule. The reason is
+		// deliberately not returned: it names fee codes and payees, and this
+		// response reaches commerce, not an operator.
+		write(w, 500, map[string]string{"error": "settlement plan unusable"})
+		return
+	}
 	boundStatus, boundID, occurredAt, replay, err := s.journal.BindOperation(r.Context(), in.OrganizerID, key, fingerprint, store.OperationRequest{
 		OrderID: in.OrderID, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, PaymentMethodRef: in.PaymentToken,
+		SettlementDigest: store.PlanDigest(plan),
 	})
 	if err != nil {
 		write(w, 409, map[string]string{"error": err.Error()})
@@ -262,7 +367,14 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":"+factType))
-	e, replay, err := s.journal.Append(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}})
+	// Settlement rides the captured fact's transaction (ADR-048). Only a capture
+	// settles, and `settlement` is nil for every other outcome: a decline or a
+	// timeout moved no money, so there is nothing to attribute.
+	var settlement []store.SettlementEntry
+	if factType == "payment.captured" {
+		settlement = plan
+	}
+	e, replay, err := s.journal.AppendWithSettlement(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}, settlement)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "journal append failed"})
 		return

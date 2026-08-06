@@ -986,4 +986,51 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 		t.Errorf("stored total=%d face=%d passed_on=%d, want %v/%v/%v",
 			total, storedFace, passedOn, face+feeTotal, face, feeTotal)
 	}
+
+	// TKT-217: the ledger says who that money is owed to, and it balances against
+	// what the provider took. This is the epic's second condition of success,
+	// asserted end to end rather than at a seam.
+	settlementURL := fmt.Sprintf("%s/internal/orders/%v/settlement?organizer_id=%s",
+		paymentsURL, order["order_id"], organizerID)
+	code, body = internalJSON(t, http.MethodGet, settlementURL, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("settlement read %d %s", code, body)
+	}
+	var ledger struct {
+		Total   int64 `json:"total"`
+		Entries []struct {
+			EntryKind string  `json:"entry_kind"`
+			Amount    int64   `json:"amount"`
+			FeeCode   *string `json:"fee_code"`
+			PayeeID   *string `json:"payee_id"`
+		} `json:"entries"`
+	}
+	if err = json.Unmarshal(body, &ledger); err != nil {
+		t.Fatal(err)
+	}
+	if ledger.Total != int64(face+feeTotal) {
+		t.Errorf("ledger totals %d, want the captured %v — every cent of a capture must be "+
+			"attributed", ledger.Total, face+feeTotal)
+	}
+	var organizerLine, feeLines int64
+	var sawFee bool
+	for _, e := range ledger.Entries {
+		switch e.EntryKind {
+		case "face_value":
+			organizerLine += e.Amount
+		case "fee":
+			feeLines += e.Amount
+			if e.FeeCode != nil && *e.FeeCode == "service" {
+				sawFee = true
+			}
+		}
+	}
+	if organizerLine != int64(face) {
+		t.Errorf("organizer line = %d, want the face %v (no absorbed fee on this order)",
+			organizerLine, face)
+	}
+	if feeLines != int64(feeTotal) || !sawFee {
+		t.Errorf("fee lines total %d (service seen: %v), want %v — the fee the buyer paid must be "+
+			"owed to somebody", feeLines, sawFee, feeTotal)
+	}
 }

@@ -548,3 +548,104 @@ func checkedSub(a, b int64) (int64, error) {
 	}
 	return a - b, nil
 }
+
+// settlementPlanFromSnapshot turns the reservation's persisted fee snapshot into
+// the attribution payments needs (TKT-217 / ADR-048).
+//
+// Everything here comes from the SNAPSHOT. Nothing re-reads catalog: a schedule
+// edited between the sale and the capture must not change who gets paid for that
+// sale, which is the whole reason the snapshot is stored verbatim.
+//
+// A reservation with no snapshot — pre-TKT-215, or a staff path that is
+// deliberately fee-free — settles as face value alone. That is not a degraded
+// answer: those sales genuinely had no fee concept, so the organizer is owed all
+// of it.
+func settlementPlanFromSnapshot(x reservation) (map[string]any, error) {
+	face := x.FaceValue
+	plan := map[string]any{
+		"face_value": face, "passed_on": int64(0), "absorbed": int64(0),
+		"total_amount": x.Amount, "currency": x.Currency, "fees": []any{},
+	}
+	if len(x.FeeSnapshot) == 0 {
+		if face != x.Amount {
+			// A gross that exceeds the face with no snapshot to explain it means
+			// fees were charged and their attribution was lost. Refuse rather
+			// than settle the difference to nobody.
+			return nil, fmt.Errorf("%w: reservation charged %d over a face of %d with no fee snapshot",
+				errResolveUnusable, x.Amount, face)
+		}
+		return plan, nil
+	}
+
+	var env struct {
+		Breakdown []struct {
+			FeeCode   string `json:"fee_code"`
+			Incidence string `json:"incidence"`
+			Amount    int64  `json:"amount"`
+			Currency  string `json:"currency"`
+		} `json:"breakdown"`
+		PassedOnFees int64 `json:"passed_on_fees"`
+		AbsorbedFees int64 `json:"absorbed_fees"`
+		Resolution   struct {
+			Fees []struct {
+				FeeCode string `json:"fee_code"`
+				Split   struct {
+					Mode   string `json:"mode"`
+					Winner *struct {
+						Parts []struct {
+							Payee struct {
+								PayeeID           string  `json:"payee_id"`
+								Kind              string  `json:"kind"`
+								DisplayName       string  `json:"display_name"`
+								ExternalReference *string `json:"external_reference"`
+							} `json:"payee"`
+							ShareBps int32 `json:"share_bps"`
+						} `json:"parts"`
+					} `json:"winner"`
+				} `json:"split"`
+			} `json:"fees"`
+		} `json:"resolution"`
+	}
+	if err := json.Unmarshal(x.FeeSnapshot, &env); err != nil {
+		return nil, fmt.Errorf("%w: fee snapshot is unreadable: %v", errResolveUnusable, err)
+	}
+
+	splitByCode := map[string][]any{}
+	for _, f := range env.Resolution.Fees {
+		if f.Split.Winner == nil {
+			continue
+		}
+		parts := make([]any, 0, len(f.Split.Winner.Parts))
+		for _, p := range f.Split.Winner.Parts {
+			part := map[string]any{
+				"payee_id": p.Payee.PayeeID, "kind": p.Payee.Kind,
+				"display_name": p.Payee.DisplayName, "share_bps": p.ShareBps,
+			}
+			if p.Payee.ExternalReference != nil {
+				part["external_reference"] = *p.Payee.ExternalReference
+			}
+			parts = append(parts, part)
+		}
+		splitByCode[f.FeeCode] = parts
+	}
+
+	fees := make([]any, 0, len(env.Breakdown))
+	for _, b := range env.Breakdown {
+		// A fee with no split is forwarded with NO parts. Payments records it as
+		// collected-and-unattributed rather than refusing: fees shipped before
+		// split schedules did, and failing those sales at checkout would break
+		// shipped behaviour to enforce a configuration rule.
+		parts := splitByCode[b.FeeCode]
+		if parts == nil {
+			parts = []any{}
+		}
+		fees = append(fees, map[string]any{
+			"fee_code": b.FeeCode, "incidence": b.Incidence, "amount": b.Amount,
+			"currency": b.Currency, "parts": parts,
+		})
+	}
+	plan["passed_on"] = env.PassedOnFees
+	plan["absorbed"] = env.AbsorbedFees
+	plan["fees"] = fees
+	return plan, nil
+}
