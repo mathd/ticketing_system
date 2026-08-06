@@ -96,7 +96,7 @@ func TestCustomerPasswordHashColumnRefusesPlaintext(t *testing.T) {
 	if err == nil {
 		t.Fatal("the database accepted a plaintext password_hash — the tripwire is not armed")
 	}
-	if !strings.Contains(err.Error(), "customer_accounts_password_hash_check") {
+	if !strings.Contains(err.Error(), "customer_accounts_password_hash_is_bcrypt") {
 		t.Fatalf("refused, but not by the password_hash CHECK: %v", err)
 	}
 }
@@ -134,7 +134,7 @@ func TestCustomerEmailKeyColumnRefusesAKeyThatIsNotItsEmail(t *testing.T) {
 			if err == nil {
 				t.Fatalf("the database accepted email=%q with email_key=%q", mine, tc.key)
 			}
-			if !strings.Contains(err.Error(), "customer_accounts_email_key_check") {
+			if !strings.Contains(err.Error(), "customer_accounts_email_key_matches_email") {
 				t.Fatalf("refused, but not by the email_key CHECK: %v", err)
 			}
 		})

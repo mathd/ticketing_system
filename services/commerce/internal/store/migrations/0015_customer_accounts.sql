@@ -36,11 +36,23 @@ CREATE TABLE customer_accounts (
     -- arrives and only case-mapping is left. If they ever diverge on some exotic
     -- input, this fails LOUDLY at registration rather than storing a row nobody
     -- can sign in to, which is what a tripwire is for.
-    email_key     text NOT NULL UNIQUE CHECK (email_key = lower(btrim(email))),
+    --
+    -- NAMED, because this one references two columns: Postgres makes any such
+    -- CHECK a TABLE-level constraint and auto-names it `customer_accounts_check`,
+    -- which says nothing about what it enforces and shifts if another table-level
+    -- constraint is ever added. A test that has to identify which rule refused a
+    -- write needs a name that means something.
+    email_key     text NOT NULL UNIQUE
+                  CONSTRAINT customer_accounts_email_key_matches_email
+                  CHECK (email_key = lower(btrim(email))),
     -- A bcrypt modular-crypt string. The CHECK is a tripwire, not security: it
     -- makes a plaintext password written straight into this column fail loudly
     -- instead of becoming a credential that silently never matches.
-    password_hash text NOT NULL CHECK (password_hash LIKE '$2%$%'),
+    -- Named for the same reason as the one above: a test proving WHICH rule
+    -- refused a write should not depend on a name Postgres generated.
+    password_hash text NOT NULL
+                  CONSTRAINT customer_accounts_password_hash_is_bcrypt
+                  CHECK (password_hash LIKE '$2%$%'),
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
