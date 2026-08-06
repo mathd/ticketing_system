@@ -9,6 +9,11 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- [**A fix can be correct and still lie about itself**](./learnings/2026-08-06-a-fix-can-be-correct-and-still-lie-about-itself.md) —
+  two [high] findings on a money path were both about a code comment and a line of UI copy, not
+  behaviour: "nothing was submitted, so a retry is safe" (a disconnect can land after the charge) and
+  "your seats are still held" (a 401 can arrive on a completed purchase). On a money path the claim
+  IS part of the product. (TKT-221)
 - [**Three ways one test could not fail, and "observe it red" caught none of them**](./learnings/2026-08-06-three-ways-one-test-could-not-fail.md) —
   the assertion was satisfied by a side effect of the code under test; then it asserted only the
   positive half; then it never ran the production default. Red-then-green proves a test can tell
