@@ -1,0 +1,120 @@
+{
+  "key": "TKT-220",
+  "type": "Story",
+  "parent": "TKT-21",
+  "classification": "complex",
+  "summary": "US-A1: Customer accounts - register, sign in, sign out (the identity substrate)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**As** a ticket buyer, **I want** an optional account I can create and sign in to,\n**so that** my purchases can hang off an identity instead of only an order reference I have to keep.\n\n**Priority:** P0  **Depends on:** -\n\nFirst slice of TKT-21. Guest checkout already works end to end (`buyer_pii`, `orders.guest_order_ref`,\nand the retrieval page `web/storefront/src/pages/[locale]/tickets/[orderRef].astro`). What does not\nexist is a *customer* - anywhere. This ticket creates one and nothing else: no order is attached to\nit yet (TKT-221), there is no wallet (TKT-222) and no claiming (TKT-223).\n\n**The decision this ticket owns:** where customer identity lives. ADR-042 put *staff* in catalog\nbecause catalog owns organizers and staff administer an organizer. A customer administers nothing and\nbuys things, so the same reasoning does not transplant - it has to be re-run. That is a plan\ndecision with an ADR, not an implementation detail.\n\n**Acceptance Criteria:**\n- [ ] An **ADR** records where customer identity lives and why, naming the rejected options with\n  their reasons (a sixth service - already rejected once by ADR-042; the gateway - also already\n  rejected; reusing `staff_accounts`; commerce; catalog). It states explicitly how the choice\n  relates to ADR-002's five-service cut.\n- [ ] A migration in the owning service adds customer accounts: the address in the buyer's original\n  spelling for display, a normalized (trimmed, lower-cased) UNIQUE key that every lookup goes\n  through, and a password hash. Mirror `staff_accounts`' two safety properties: a CHECK tripwire so\n  a plaintext password written straight into the column fails loudly, and a **Down that refuses to\n  drop a non-empty table**.\n- [ ] Contract-declared **register** and **authenticate** operations (ADR-009; regen committed).\n  The plan states, with reasoning, (a) which surface they live on and therefore how they are guarded\n  per ADR-043, and (b) what registering with an already-registered address answers - account\n  enumeration is a real disclosure and \"answer success and mail the owner\" is not available because\n  **no email infrastructure exists in this repo**. Pick, and write down what the pick leaks.\n- [ ] Authenticate makes **unknown account and wrong password indistinguishable** in the response,\n  and does not skip the hash comparison when the account is unknown (a fast \"no such account\" is a\n  timing oracle for which addresses are registered).\n- [ ] The **storefront owns the session**, mirroring ADR-042's design: an opaque 256-bit token,\n  HttpOnly, `SameSite=Lax`, an **absolute** TTL (not idle), a per-principal concurrent-session cap\n  that is what actually bounds the session map, server-side destruction on sign-out (expiring the\n  browser cookie only asks the browser to forget), and a cookie **path-scoped to the customer area\n  rather than `/`** - the gateway serves the storefront, the scanner, `/admin/` and `/api/*` on one\n  origin, so a `Path=/` cookie is attached to every API call and every scanner request.\n- [ ] Every unsafe POST passes a **proxy-aware origin check**. Astro's `security.checkOrigin` cannot\n  be used behind the gateway (TKT-105 / ADR-042): the Node adapter builds its URL from the\n  container's own Host, so the comparison never matches and it 403s every POST.\n- [ ] **The guest-first default is unchanged and provably so**: every existing storefront route stays\n  reachable signed-out, no route gains a redirect-to-login, and checkout still needs no account.\n- [ ] Signed-in pages answer `Cache-Control: no-store` and do **not** enter the minutes tier\n  (`web/storefront/src/lib/page-tier.ts`).\n- [ ] The storefront receives **no service credential** for this - or, if the chosen design needs\n  one, the plan argues it explicitly and it is scoped to exactly these operations, never\n  `INTERNAL_SERVICE_TOKEN` and never `COMMERCE_STAFF_WRITE_TOKEN`.\n- [ ] Browser-submit verification (AGENTS.md): `make up`, then **submit** the new form(s) in a real browser — the smoke suite only renders, so the whole SSR-rejects-the-write class (origin check, base path, redirect, CSP) is invisible to it. Evidence in the PR.\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code (`openapi_gen.go`, `api-types.gen.ts`) committed BEFORE the gate runs (ADR-009).\n\n**Non-goals:** password reset, email verification, magic links, OAuth/SSO (there is no mail path in\nthis repo) - attaching an order to an account (TKT-221) - the wallet (TKT-222) - claiming a guest\norder (TKT-223) - rate limiting the public sign-in/registration surface (TKT-195 is the back-office\nequivalent; the storefront one is a follow-up this ticket must file, not solve).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A buyer can create an account and sign in; nothing else changes. The identity exists for TKT-221/222/223 to hang off."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Accounts table + register/authenticate + storefront session and forms + an ADR. No order touches an account in this ticket."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "(a) which service owns customer accounts - the ADR is an AC, not an assumption; (b) public-contract operation vs guarded surface, which ADR-043 decides once (a) is answered; (c) what a duplicate registration answers, an explicit named trade-off in the ACs. None of the three blocks starting: each is a plan decision with the constraints already written down."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Guest checkout, the gateway route table and the storefront shell all exist."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror the shipped staff-auth stack: catalog 0015 + staff.go + api/staff.go for the service half, web/backoffice/src/lib/{session,gate}.ts + middleware.ts for the session half. The test seams are the same ones those use (gate.ts extracted from middleware.ts precisely because astro:middleware does not resolve under vitest)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Nothing in this epic can be demonstrated without a customer that exists and can prove who it is."
+    },
+    "success": {
+      "state": "met",
+      "note": "Deterministic: register, authenticate, refuse, sign out, plus a browser submit of each form."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-06."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Money is integer minor units + ISO currency code - floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate - keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "A web-UI ticket isn't verified until a browser has *submitted* its forms. `make check`'s smoke suite exercises the catalog API directly and only *renders* back-office pages - it never submits an Astro form, so the whole class of \"the SSR layer rejects/mangles the request before the handler runs\" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "Cuts the system at five services + a stateless gateway. Customer accounts must land inside an existing service or the deviation is recorded as an ADR - ADR-042 rejected a sixth identity service and rejected giving the gateway a database."
+      },
+      {
+        "id": "ADR-042",
+        "why": "The precedent AND its reasoning: staff accounts in catalog because catalog owns organizers; the SSR app owns the session, not the service; sessions in-process and unpersisted; per-principal session cap is what bounds the map; the cookie is path-scoped because storefront/scanner/admin/api share ONE origin. It also records that Astro's `security.checkOrigin` CANNOT be turned on behind the gateway (the Node adapter compares against the container Host) - a proxy-aware origin check replaces it."
+      },
+      {
+        "id": "ADR-043",
+        "why": "The rule for where a guard lives: declared `security:` guards operations in a service's PUBLIC contract; an inline `X-Internal-Token` check guards its INTERNAL surface. Commerce's 404-on-internal is load-bearing (it matches the gateway edge-deny), not cargo. Whichever surface customer register/authenticate lands on, this decides how it is guarded."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: any new operation is declared in the service's openapi.yaml and the generated code is committed before the gate runs."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run OUT-OF-BAND - the binary's `migrate` subcommand as a one-shot Compose job the service waits on. The server path never migrates. Any new table follows this."
+      },
+      {
+        "id": "ADR-045",
+        "why": "Catalog public read cache / the minutes tier. Per-customer HTML is never cacheable: signed-in pages must answer `Cache-Control: no-store` and must not enter `web/storefront/src/lib/page-tier.ts`'s CACHED_PAGE set."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a security property. 'A customer cannot see another customer's orders' means an unauthenticated or differently-authenticated HTTP caller - it says nothing about anyone with database access."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: a handler whose response does not match the declared schema is refused, so a new operation's schema must actually match what the handler writes."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "BLAST RADIUS - `INTERNAL_SERVICE_TOKEN` (compose.yaml `&go-env` anchor) is ONE shared value across all five Go services: whatever holds it can call commerce's /internal/orders/{id}/refunds, inventory's /internal/operational-holds and /internal/slots/{id}/capacity-adjustments, and access's refund surface. The storefront must NEVER receive it.",
+        "link": "compose.yaml:32"
+      },
+      {
+        "summary": "BLAST RADIUS - `COMMERCE_STAFF_WRITE_TOKEN` opens commerce's staff refund (money-moving). Held today only by the back office. The storefront must NEVER receive it.",
+        "link": "compose.yaml:213,380"
+      },
+      {
+        "summary": "The storefront container today has exactly ONE env var: `GATEWAY_URL`. It holds no credential of any kind and serves anonymous internet traffic. Any design that hands it a token is a new trust decision that must be argued, not assumed.",
+        "link": "compose.yaml:336-348"
+      },
+      {
+        "summary": "Precedent to mirror, not to copy blindly: staff sign-in is catalog `staff_accounts` (migration 0015, bcrypt + tripwire CHECK + non-empty-Down refusal), `services/catalog/internal/store/staff.go`, `services/catalog/internal/api/staff.go`; the SESSION lives in the back-office Astro process (`web/backoffice/src/lib/session.ts`, `gate.ts`, `src/middleware.ts`) - opaque 256-bit token, HttpOnly, SameSite=Lax, absolute 8h TTL, per-principal cap of 5, cookie scoped to `/admin` NOT `/`.",
+        "link": "docs/adr/ADR-042-staff-identity-and-backoffice-sessions.md"
+      }
+    ]
+  },
+  "comments": []
+}
