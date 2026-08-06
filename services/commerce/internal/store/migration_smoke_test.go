@@ -434,6 +434,15 @@ func TestMigration0014DownRefusesToDestroyFeeComposition(t *testing.T) {
 		res, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), []byte(env)); err != nil {
 		t.Fatal(err)
 	}
+	// Unwind everything above 0014 first, for exactly the reason recorded on the
+	// 0012 test above: provider.Down() rolls back ONE migration, so this assertion
+	// stopped testing 0014 the moment 0015 landed on top of it (TKT-220) — it
+	// rolled back the new migration, saw that succeed, and reported a missing
+	// guard on a guard that was still there. Second occurrence of the same defect;
+	// DownTo pins the aim so the next migration cannot move it again.
+	if _, err := provider.DownTo(ctx, 14); err != nil {
+		t.Fatalf("unwind to 0014: %v", err)
+	}
 	if _, err := provider.Down(ctx); err == nil {
 		t.Fatal("0014 rolled back over a stored fee snapshot — the guard is missing")
 	}

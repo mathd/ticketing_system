@@ -136,6 +136,14 @@ func TestCustomerAccountsDownRefusesToDiscardCredentials(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
+	// Unwind anything above 0015 before rolling it back. provider.Down() rolls
+	// back exactly ONE migration, so without this the assertion aims at whatever
+	// migration lands next instead of at 0015 — which is how the 0012 guard test
+	// broke on TKT-173 and the 0014 one broke on this very ticket. DownTo pins the
+	// aim; today it is a no-op, and that is the point.
+	if _, err := provider.DownTo(ctx, 15); err != nil {
+		t.Fatalf("unwind to 0015: %v", err)
+	}
 	if _, err := provider.Down(ctx); err == nil {
 		t.Fatal("0015 rolled back with an account present — credentials would have been discarded silently")
 	}
