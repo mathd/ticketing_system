@@ -147,6 +147,70 @@ components:
         amount: {type: integer, format: int64, minimum: 0}
         currency: {type: string, enum: [EUR]}
         payment_token: {type: string}
+        settlement:
+          description: >
+            How this capture is attributed (TKT-217, ADR-048). Commerce derives it
+            from the fee snapshot it already persisted at reserve time — NEVER
+            from a fresh catalog read, so a schedule edited between the sale and
+            the capture cannot change who gets paid for it.
+
+            OPTIONAL in the schema and REQUIRED in practice for a captured
+            outcome: the database refuses a `payment.captured` fact with no
+            settlement entries. It is optional here because a declined or
+            timed-out charge settles nothing, and requiring it would make the
+            contract demand an attribution for money that never moved.
+          allOf:
+            - $ref: '#/components/schemas/SettlementPlan'
+    SettlementPlan:
+      description: >
+        The composition of one capture. `face_value + passed_on` must equal both
+        `total_amount` and the charged amount; absorbed fees do not change what
+        the buyer paid but are still owed to a payee out of it.
+      type: object
+      additionalProperties: false
+      required: [face_value, passed_on, absorbed, total_amount, currency, fees]
+      properties:
+        face_value: {type: integer, format: int64, minimum: 0}
+        passed_on: {type: integer, format: int64, minimum: 0}
+        absorbed: {type: integer, format: int64, minimum: 0}
+        total_amount: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        fees:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettlementFee'
+    SettlementFee:
+      description: >
+        One fee and the payees it resolved to. `parts` is never empty: a fee that
+        resolved `unsplit` is unattributable, and settling it would collect money
+        nobody is recorded as owed.
+      type: object
+      additionalProperties: false
+      required: [fee_code, incidence, amount, currency, parts]
+      properties:
+        fee_code: {type: string, minLength: 1, maxLength: 64}
+        incidence: {type: string, enum: [passed_on, absorbed]}
+        amount: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        parts:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SettlementPart'
+    SettlementPart:
+      description: >
+        One payee's share, with its identity SNAPSHOTTED — a settlement row must
+        keep saying who was paid at the time they were paid, and a display name
+        is editable in catalog.
+      type: object
+      additionalProperties: false
+      required: [payee_id, kind, display_name, share_bps]
+      properties:
+        payee_id: {type: string, format: uuid}
+        kind: {type: string, minLength: 1, maxLength: 40}
+        display_name: {type: string, minLength: 1, maxLength: 200}
+        external_reference: {type: string, minLength: 1, maxLength: 200}
+        share_bps: {type: integer, format: int32, minimum: 0, maximum: 10000}
     ChargeResult:
       type: object
       additionalProperties: false

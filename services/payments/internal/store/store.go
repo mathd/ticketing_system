@@ -145,7 +145,19 @@ func validate(f Fact) error {
 	return nil
 }
 
+// Append writes a fact with no settlement. Every caller but the capture path
+// uses this.
 func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
+	return j.AppendWithSettlement(ctx, f, nil)
+}
+
+// AppendWithSettlement writes a fact AND its ledger lines in ONE transaction.
+//
+// `settlement` is nil for every fact that is not a capture. A payment.captured
+// fact with nil settlement will be refused at commit by the deferred trigger,
+// which is the point: the invariant lives in the database, not in the
+// discipline of callers.
+func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement []SettlementEntry) (Entry, bool, error) {
 	if err := validate(f); err != nil {
 		return Entry{}, false, err
 	}
@@ -200,6 +212,17 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE journal_heads SET last_sequence=$2,last_hash=$3 WHERE organizer_id=$1`, f.OrganizerID, seq, sum)
 	if err != nil {
+		return Entry{}, false, err
+	}
+	// Settlement rides THIS transaction (TKT-217 / ADR-048). Not a separate call
+	// and not a later finalizer: the entries then exist if and only if the
+	// captured fact does, so "a capture that journals but does not settle" is not
+	// a state the database can hold.
+	//
+	// Replay needs nothing extra. The fact id is deterministic, and the two
+	// existing-fact branches above return before reaching here — so a replayed
+	// append writes neither the fact nor the entries.
+	if err = insertSettlement(ctx, tx, f, settlement); err != nil {
 		return Entry{}, false, err
 	}
 	return Entry{Fact: f, Sequence: seq, PreviousHash: prev, EntryHash: sum, KeyID: j.keys.ActiveKeyID(), Signature: sig}, false, tx.Commit()

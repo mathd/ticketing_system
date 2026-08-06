@@ -15,6 +15,7 @@ import (
 
 	apispec "ticketing/services/payments/api"
 	"ticketing/services/payments/internal/psp"
+	"ticketing/services/payments/internal/splits"
 	"ticketing/services/payments/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/httpx"
@@ -152,6 +153,51 @@ type chargeRequest struct {
 	Amount       int64     `json:"amount"`
 	Currency     string    `json:"currency"`
 	PaymentToken string    `json:"payment_token"`
+	// Settlement is how this capture is attributed (TKT-217). Derived by
+	// commerce from the fee snapshot it persisted at reserve time.
+	Settlement *settlementPlanRequest `json:"settlement,omitempty"`
+}
+
+type settlementPlanRequest struct {
+	FaceValue   int64  `json:"face_value"`
+	PassedOn    int64  `json:"passed_on"`
+	Absorbed    int64  `json:"absorbed"`
+	TotalAmount int64  `json:"total_amount"`
+	Currency    string `json:"currency"`
+	Fees        []struct {
+		FeeCode   string `json:"fee_code"`
+		Incidence string `json:"incidence"`
+		Amount    int64  `json:"amount"`
+		Currency  string `json:"currency"`
+		Parts     []struct {
+			PayeeID           uuid.UUID `json:"payee_id"`
+			Kind              string    `json:"kind"`
+			DisplayName       string    `json:"display_name"`
+			ExternalReference *string   `json:"external_reference,omitempty"`
+			ShareBps          int32     `json:"share_bps"`
+		} `json:"parts"`
+	} `json:"fees"`
+}
+
+// toStorePlan maps the wire shape onto the store's plan. The mapping is here
+// rather than in the store so the store's types stay free of JSON concerns —
+// and so an added wire field cannot silently change settlement semantics.
+func (p *settlementPlanRequest) toStorePlan() store.SettlementPlan {
+	out := store.SettlementPlan{
+		FaceValue: p.FaceValue, PassedOn: p.PassedOn, Absorbed: p.Absorbed,
+		TotalAmount: p.TotalAmount, Currency: p.Currency,
+	}
+	for _, f := range p.Fees {
+		line := store.FeeLine{FeeCode: f.FeeCode, Incidence: f.Incidence, Amount: f.Amount,
+			Currency: f.Currency, Payees: map[uuid.UUID]store.PayeeRef{}}
+		for _, part := range f.Parts {
+			line.Shares = append(line.Shares, splits.Share{PayeeID: part.PayeeID, ShareBps: part.ShareBps})
+			line.Payees[part.PayeeID] = store.PayeeRef{ID: part.PayeeID, Kind: part.Kind,
+				DisplayName: part.DisplayName, ExternalReference: part.ExternalReference}
+		}
+		out.Fees = append(out.Fees, line)
+	}
+	return out
 }
 
 func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +308,29 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":"+factType))
-	e, replay, err := s.journal.Append(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}})
+	// Settlement rides the captured fact's transaction (ADR-048). Only a capture
+	// settles: a decline or a timeout moved no money, so there is nothing to
+	// attribute and the ledger stays silent about it.
+	var settlement []store.SettlementEntry
+	if factType == "payment.captured" {
+		if in.Settlement == nil {
+			// Fail closed. The database would refuse this anyway — the deferred
+			// trigger requires entries for a captured fact — but refusing here
+			// says WHY, and says it before the row lock is taken.
+			write(w, 400, map[string]string{"error": "a captured charge must carry a settlement plan"})
+			return
+		}
+		settlement, err = store.BuildSettlementEntries(in.Settlement.toStorePlan(), in.Amount)
+		if err != nil {
+			// The plan is our own data being wrong, not the caller's request
+			// shape — the same disposition catalog gives a misconfigured rule.
+			// The reason is deliberately not returned: it names fee codes and
+			// payees, and this response reaches commerce, not an operator.
+			write(w, 500, map[string]string{"error": "settlement plan unusable"})
+			return
+		}
+	}
+	e, replay, err := s.journal.AppendWithSettlement(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}, settlement)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "journal append failed"})
 		return

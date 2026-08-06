@@ -90,6 +90,24 @@ func (e PSPStatusOutcome) Valid() bool {
 	}
 }
 
+// Defines values for SettlementFeeIncidence.
+const (
+	Absorbed SettlementFeeIncidence = "absorbed"
+	PassedOn SettlementFeeIncidence = "passed_on"
+)
+
+// Valid indicates whether the value is a known member of the SettlementFeeIncidence enum.
+func (e SettlementFeeIncidence) Valid() bool {
+	switch e {
+	case Absorbed:
+		return true
+	case PassedOn:
+		return true
+	default:
+		return false
+	}
+}
+
 // Charge defines model for Charge.
 type Charge struct {
 	Amount       int64              `json:"amount"`
@@ -98,6 +116,10 @@ type Charge struct {
 	OrderId      openapi_types.UUID `json:"order_id"`
 	OrganizerId  openapi_types.UUID `json:"organizer_id"`
 	PaymentToken string             `json:"payment_token"`
+
+	// Settlement How this capture is attributed (TKT-217, ADR-048). Commerce derives it from the fee snapshot it already persisted at reserve time — NEVER from a fresh catalog read, so a schedule edited between the sale and the capture cannot change who gets paid for it.
+	// OPTIONAL in the schema and REQUIRED in practice for a captured outcome: the database refuses a `payment.captured` fact with no settlement entries. It is optional here because a declined or timed-out charge settles nothing, and requiring it would make the contract demand an attribution for money that never moved.
+	Settlement *SettlementPlan `json:"settlement,omitempty"`
 }
 
 // ChargeCurrency defines model for Charge.Currency.
@@ -194,6 +216,37 @@ type PSPStatus struct {
 
 // PSPStatusOutcome defines model for PSPStatus.Outcome.
 type PSPStatusOutcome string
+
+// SettlementFee One fee and the payees it resolved to. `parts` is never empty: a fee that resolved `unsplit` is unattributable, and settling it would collect money nobody is recorded as owed.
+type SettlementFee struct {
+	Amount    int64                  `json:"amount"`
+	Currency  string                 `json:"currency"`
+	FeeCode   string                 `json:"fee_code"`
+	Incidence SettlementFeeIncidence `json:"incidence"`
+	Parts     []SettlementPart       `json:"parts"`
+}
+
+// SettlementFeeIncidence defines model for SettlementFee.Incidence.
+type SettlementFeeIncidence string
+
+// SettlementPart One payee's share, with its identity SNAPSHOTTED — a settlement row must keep saying who was paid at the time they were paid, and a display name is editable in catalog.
+type SettlementPart struct {
+	DisplayName       string             `json:"display_name"`
+	ExternalReference *string            `json:"external_reference,omitempty"`
+	Kind              string             `json:"kind"`
+	PayeeId           openapi_types.UUID `json:"payee_id"`
+	ShareBps          int32              `json:"share_bps"`
+}
+
+// SettlementPlan The composition of one capture. `face_value + passed_on` must equal both `total_amount` and the charged amount; absorbed fees do not change what the buyer paid but are still owed to a payee out of it.
+type SettlementPlan struct {
+	Absorbed    int64           `json:"absorbed"`
+	Currency    string          `json:"currency"`
+	FaceValue   int64           `json:"face_value"`
+	Fees        []SettlementFee `json:"fees"`
+	PassedOn    int64           `json:"passed_on"`
+	TotalAmount int64           `json:"total_amount"`
+}
 
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
