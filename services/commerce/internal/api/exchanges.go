@@ -221,21 +221,25 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		ex.TargetTotal, ex.DeltaAmount, ex.BasisRecorded = basis.TargetTotal, basis.DeltaAmount, true
 	}
 
+	// Prove the whole exchange is REPRESENTABLE before ANYTHING becomes hard to
+	// undo (ai-review passes 3 and 4). The carried fee is added to the target to
+	// produce the replacement's gross, and an unrepresentable sum has no good
+	// resting place later: after settlement the delta is charged and the fact
+	// cannot be journalled, and after FINALIZE the claim is out of the expiry
+	// predicate — so a permanently-refusing exchange would withhold that capacity
+	// forever while every retry hit the same arithmetic. Refusing here costs a
+	// 409 and nothing else.
+	if _, err := replacementGross(ex, ex.TargetTotal); err != nil {
+		write(w, http.StatusConflict, map[string]string{"error": "exchange total out of range"})
+		return
+	}
+
 	// FINALIZE before the money and CONFIRM after — the sequence checkout uses, and the
 	// steps the plan listed that the first implementation dropped (ai-review F1). Finalize
 	// also takes the claim out of the expiry predicate, which only fires on `held`, so the
 	// target cannot lapse between settlement and confirmation.
 	if err := s.transitionExchangeHold(r, ex, "finalize"); err != nil {
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
-		return
-	}
-	// Prove the whole exchange is REPRESENTABLE before the provider moves money
-	// (ai-review pass 3). The carried fee is added to the target to produce the
-	// replacement's gross, and an unrepresentable sum discovered after settlement
-	// leaves the delta charged and a fact commerce cannot journal — a state with
-	// no good exit. Refusing here costs the buyer a 409 and nothing else.
-	if _, err := replacementGross(ex, ex.TargetTotal); err != nil {
-		write(w, http.StatusConflict, map[string]string{"error": "exchange total out of range"})
 		return
 	}
 	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount); err != nil {
