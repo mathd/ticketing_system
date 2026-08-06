@@ -5,6 +5,7 @@ import {
   MAX_SESSIONS_TOTAL,
   SESSION_COOKIE_PATH,
   SESSION_TTL_MS,
+  SessionCapacityError,
   createSession,
   destroySession,
   isSecureRequest,
@@ -106,21 +107,53 @@ describe('customer sessions', () => {
   // Deliberately many DISTINCT principals: a fixture with two customers, which is
   // what the per-principal test uses, cannot observe a global bound at all.
   it('bounds the map globally, across unlimited distinct principals', () => {
+    let refused = 0;
     for (let i = 0; i < MAX_SESSIONS_TOTAL + 50; i++) {
-      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+      try {
+        createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+      } catch (cause) {
+        if (!(cause instanceof SessionCapacityError)) throw cause;
+        refused++;
+      }
     }
 
     expect(sessionCountForTest()).toBeLessThanOrEqual(MAX_SESSIONS_TOTAL);
+    expect(refused).toBeGreaterThan(0);
   });
 
-  it('evicts the oldest issued when the global bound is reached', () => {
-    const first = createSession(alice);
-    for (let i = 0; i < MAX_SESSIONS_TOTAL; i++) {
+  // ai-review pass 2 [high]: the first version of this cap EVICTED oldest-first,
+  // which turned memory exhaustion into a targeted availability attack — an
+  // attacker who can mint principals freely (registration is public) fills the map
+  // and every further sign-in displaces a real customer's live session, silently.
+  //
+  // Refusing instead leaves everyone already signed in untouched and makes the new
+  // sign-in fail loudly. Neither is a fix; TKT-224 is. This test pins which
+  // failure the code chooses, because it is the kind of thing a later "cleanup"
+  // reverses without noticing.
+  it('refuses a new session at capacity rather than evicting a live one', () => {
+    const victim = createSession(alice);
+    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
       createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
     }
 
-    expect(lookupSession(first)).toBeUndefined();
-    expect(sessionCountForTest()).toBeLessThanOrEqual(MAX_SESSIONS_TOTAL);
+    expect(() => createSession(bob)).toThrow(SessionCapacityError);
+    // The buyer who was already signed in is untouched.
+    expect(lookupSession(victim)).toEqual(alice);
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+  });
+
+  // The bound must not be a permanent wedge: capacity freed by expiry or sign-out
+  // has to become usable again, or one flood ends sign-in for the process's life.
+  it('accepts new sessions again once capacity frees up', () => {
+    const doomed = createSession(alice);
+    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+    }
+    expect(() => createSession(bob)).toThrow(SessionCapacityError);
+
+    destroySession(doomed);
+
+    expect(() => createSession(bob)).not.toThrow();
   });
 
   // ai-review [medium]: Date.now() is not monotonic. If the wall clock passes an
@@ -134,18 +167,27 @@ describe('customer sessions', () => {
   // fix that did not work, and the mutation check is what exposed it.
   //
   // What actually has to hold is that expiry does not consult the wall clock AT
-  // ALL. So: move Date.now() far past the TTL and require the session to survive.
-  // Against a Date.now()-based expiry this fails; against a monotonic one it
-  // cannot.
-  it('expires on a monotonic clock, so the wall clock cannot move expiry', () => {
-    const token = createSession(alice);
+  // ALL — while still expiring on the monotonic one.
+  //
+  // Asserting only "survives a Date.now() jump" is not enough either, and pass 2
+  // of the review caught that: an implementation that never expires anything also
+  // survives it. So this asserts BOTH halves in one sequence — the wall clock is
+  // moved ten TTLs in each direction and cannot kill the session, and the
+  // monotonic clock crossing the TTL still does.
+  it('expires on the monotonic clock and ignores the wall clock entirely', () => {
+    const t0 = 1_000_000;
+    const token = createSession(alice, t0);
     const realDateNow = Date.now;
     try {
       Date.now = () => realDateNow() + SESSION_TTL_MS * 10;
-      expect(lookupSession(token)).toEqual(alice);
+      expect(lookupSession(token, t0 + 1)).toEqual(alice);
 
       Date.now = () => realDateNow() - SESSION_TTL_MS * 10;
-      expect(lookupSession(token)).toEqual(alice);
+      expect(lookupSession(token, t0 + SESSION_TTL_MS - 1)).toEqual(alice);
+
+      // ...and the monotonic clock still ends it, with the wall clock still
+      // rolled backwards. An implementation that stopped expiring fails here.
+      expect(lookupSession(token, t0 + SESSION_TTL_MS)).toBeUndefined();
     } finally {
       Date.now = realDateNow;
     }

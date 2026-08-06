@@ -58,6 +58,46 @@ func TestRegisterCustomerRoundTripsThroughTheNormalizedKey(t *testing.T) {
 	}
 }
 
+// The CHECK recomputes email_key from email, so Go's customerEmailKey and
+// Postgres's `lower(btrim(email) COLLATE "C")` are two implementations of one
+// function that must agree for every input the contract admits — or a legitimate
+// registration is refused by a constraint.
+//
+// This is the case that would break a naive `lower()`: Postgres's is
+// COLLATION-DEPENDENT and this deployment pins no locale, so on a Turkish-locale
+// server `lower('I')` is a dotless ı while Go gives 'i' (ai-review pass 2). Both
+// sides fold ASCII only, which is locale-independent — this exercises the
+// boundary with a multibyte address the ASCII-only rule leaves alone, plus a
+// capital I, which is the specific character the Turkish case turns on.
+//
+// The documented consequence is asserted too: 'Ü' and 'ü' are DIFFERENT accounts.
+// That is the price of not depending on an unstated collation, and it should fail
+// visibly here if anyone changes the rule.
+func TestRegisterCustomerHandlesUnicodeAddressesConsistentlyWithTheDatabase(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	suffix := uuid.NewString()[:8]
+	unicodeEmail := "ÜnÏque-I-" + suffix + "@example.test"
+
+	account, err := RegisterCustomer(ctx, db, unicodeEmail, "correct horse battery")
+	if err != nil {
+		t.Fatalf("the CHECK refused a contract-valid unicode address — Go and Postgres disagree: %v", err)
+	}
+
+	// The ASCII half folds: the capital I signs in as a lowercase i.
+	if _, err := AuthenticateCustomer(ctx, db, strings.ReplaceAll(unicodeEmail, "I", "i"), "correct horse battery"); err != nil {
+		t.Fatalf("ASCII case folding did not apply: %v", err)
+	}
+
+	// The non-ASCII half does not. Documented, deliberate, and pinned so a change
+	// to the folding rule shows up here rather than as a mystery duplicate.
+	lowered := strings.ReplaceAll(unicodeEmail, "Ü", "ü")
+	if _, err := AuthenticateCustomer(ctx, db, lowered, "correct horse battery"); !errors.Is(err, ErrCustomerCredentialsInvalid) {
+		t.Fatalf("non-ASCII case is folded after all — want a distinct account, got %v", err)
+	}
+	_ = account
+}
+
 // Registration has no SELECT-then-INSERT pre-check, deliberately: that is a race
 // two concurrent registrations both win. The UNIQUE constraint is the authority,
 // and this pins that its violation is what surfaces — including when the second

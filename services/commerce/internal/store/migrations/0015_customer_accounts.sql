@@ -30,12 +30,19 @@ CREATE TABLE customer_accounts (
     -- reserving another's unique key and being unreachable from every application
     -- lookup (ai-review, TKT-220 [medium]).
     --
-    -- Two normalizers must now agree — Go's strings.ToLower(strings.TrimSpace(x))
-    -- and Postgres's lower(btrim(x)). They reduce to the same thing here because
-    -- RegisterCustomer trims before inserting, so btrim is a no-op on what
-    -- arrives and only case-mapping is left. If they ever diverge on some exotic
-    -- input, this fails LOUDLY at registration rather than storing a row nobody
-    -- can sign in to, which is what a tripwire is for.
+    -- Two normalizers must now agree — this one and customerEmailKey in
+    -- customer.go — for every input the contract admits, or a legitimate
+    -- registration is refused by a constraint.
+    --
+    -- `COLLATE "C"` is what makes that true rather than probable. Postgres's
+    -- `lower()` is COLLATION-DEPENDENT and this deployment pins no locale: on a
+    -- Turkish-locale database `lower('I')` is a dotless ı where Go's ASCII fold
+    -- gives 'i', so a capital I in an address would be refused (ai-review pass 2).
+    -- Under the C collation `lower()` touches exactly A-Z, which is precisely what
+    -- customerEmailKey does, on every server.
+    --
+    -- btrim is a no-op in practice — RegisterCustomer trims before inserting — and
+    -- is kept so a direct writer cannot slip a padded value past the comparison.
     --
     -- NAMED, because this one references two columns: Postgres makes any such
     -- CHECK a TABLE-level constraint and auto-names it `customer_accounts_check`,
@@ -44,7 +51,7 @@ CREATE TABLE customer_accounts (
     -- write needs a name that means something.
     email_key     text NOT NULL UNIQUE
                   CONSTRAINT customer_accounts_email_key_matches_email
-                  CHECK (email_key = lower(btrim(email))),
+                  CHECK (email_key = lower(btrim(email) COLLATE "C")),
     -- A bcrypt modular-crypt string. The CHECK is a tripwire, not security: it
     -- makes a plaintext password written straight into this column fail loudly
     -- instead of becoming a credential that silently never matches.

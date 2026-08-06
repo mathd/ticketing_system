@@ -106,8 +106,32 @@ type customerLookup interface {
 // customerEmailKey is the normalized lookup form. Global, not organizer-scoped: a
 // customer buys across organizers, so "which organizer are you signing in to?" has
 // no answer at the storefront's sign-in form.
+//
+// Lower-cases **ASCII only**, deliberately, and not strings.ToLower.
+//
+// The database CHECK recomputes this key from `email` so a row cannot display one
+// address while reserving another's (ai-review pass 1). That makes Go and
+// Postgres two implementations of one function, and they have to agree for every
+// input the contract admits — otherwise a legitimate registration is refused by a
+// constraint. `strings.ToLower` is full-Unicode; Postgres's `lower()` is
+// COLLATION-DEPENDENT, and this deployment pins no collation. On a Turkish-locale
+// database `lower('I')` is a dotless ı where Go produces 'i', so an address with a
+// capital I would be refused (ai-review pass 2 [medium]).
+//
+// ASCII-only folding is the same function on both sides regardless of server
+// locale — `lower(x COLLATE "C")` touches exactly A-Z. The cost is that two
+// addresses differing only in the case of a non-ASCII character are two accounts.
+// That is a real limitation and the honest one to take: the alternative is a
+// constraint whose behaviour depends on a locale nobody has written down.
 func customerEmailKey(email string) string {
-	return strings.ToLower(strings.TrimSpace(email))
+	trimmed := strings.TrimSpace(email)
+	out := []byte(trimmed)
+	for i := 0; i < len(out); i++ {
+		if out[i] >= 'A' && out[i] <= 'Z' {
+			out[i] += 'a' - 'A'
+		}
+	}
+	return string(out)
 }
 
 // hashCustomerPassword produces the stored credential. bcrypt salts internally, so

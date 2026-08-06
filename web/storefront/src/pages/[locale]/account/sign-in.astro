@@ -10,6 +10,7 @@ import Layout from '../../../layouts/Layout.astro';
 import { authenticateCustomer } from '../../../lib/customer-api';
 import {
   SESSION_COOKIE,
+  SessionCapacityError,
   createSession,
   isSecureRequest,
   sessionCookieOptions,
@@ -35,18 +36,27 @@ if (Astro.request.method === 'POST') {
   } else {
     const result = await authenticateCustomer(email, password);
     if (result.ok) {
-      const token = createSession({
-        customerId: result.principal.customer_id,
-        email: result.principal.email,
-      });
-      Astro.cookies.set(
-        SESSION_COOKIE,
-        token,
-        sessionCookieOptions({ secure: isSecureRequest(Astro.request) }),
-      );
-      return Astro.redirect(`/${locale}/account`, 303);
+      // The process can refuse to mint a session when it is at capacity — a
+      // flood of registrations, nothing to do with this buyer (see
+      // MAX_SESSIONS_TOTAL). It is an OUTAGE, never a credential verdict.
+      try {
+        const token = createSession({
+          customerId: result.principal.customer_id,
+          email: result.principal.email,
+        });
+        Astro.cookies.set(
+          SESSION_COOKIE,
+          token,
+          sessionCookieOptions({ secure: isSecureRequest(Astro.request) }),
+        );
+        return Astro.redirect(`/${locale}/account`, 303);
+      } catch (cause) {
+        if (!(cause instanceof SessionCapacityError)) throw cause;
+        error = t.accountUnavailable;
+      }
+    } else {
+      error = result.reason === 'unavailable' ? t.accountUnavailable : t.credentialsInvalid;
     }
-    error = result.reason === 'unavailable' ? t.accountUnavailable : t.credentialsInvalid;
   }
 }
 ---

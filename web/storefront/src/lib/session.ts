@@ -65,17 +65,45 @@ export const MAX_SESSIONS_PER_CUSTOMER = 5;
  * provisioned by an operator, so headcount is the bound. It was inherited here
  * with its premise removed (ai-review, TKT-220 [high]).
  *
- * Eviction is oldest-issued-first. Under the flood this exists for, that means
- * real customers get signed out — which is a bad day, and strictly better than
- * the SSR process dying and taking the whole storefront with it. The signature of
- * hitting it is customers being signed out for no reason, and the actual fix for
- * the cause is rate limiting (TKT-224), not a larger number here.
+ * **At capacity this REFUSES a new session; it does not evict a live one.** The
+ * first version of this cap evicted oldest-issued-first, and pass 2 of the review
+ * was right that it turned memory exhaustion into a targeted availability attack:
+ * an attacker who can mint principals freely fills the map and then every further
+ * sign-in displaces the *oldest live session*, which is a real customer's.
+ *
+ * Both behaviours are bad under the flood, so the choice is which failure to
+ * prefer, and it is not close for a ticketing storefront:
+ *
+ *  - Evicting silently signs out buyers who are already signed in — including
+ *    mid-purchase — for something a stranger did, with no error anywhere.
+ *  - Refusing leaves every existing session untouched and makes NEW sign-ins fail
+ *    loudly with "temporarily unavailable", which is diagnosable and recoverable.
+ *
+ * Neither is a fix. The cause is unauthenticated unlimited registration, and the
+ * fix for that is rate limiting — **TKT-224**. This bound exists only to stop the
+ * SSR process being killed by memory growth, and hitting it is a symptom to
+ * escalate, not a state to tune around.
  *
  * 20 000 tokens is ~2 MB of map at this entry size — far above any real
  * concurrent-buyer count for a single-replica stack, and far below anything that
  * threatens the process.
  */
 export const MAX_SESSIONS_TOTAL = 20_000;
+
+/**
+ * Thrown by createSession when the process is at MAX_SESSIONS_TOTAL.
+ *
+ * A distinct type, not a boolean or a null: the sign-in and registration pages
+ * must render this as an OUTAGE and never as a credential verdict. Telling a
+ * buyer their password is wrong because a stranger filled a Map is both false and
+ * unactionable.
+ */
+export class SessionCapacityError extends Error {
+  constructor() {
+    super('session capacity reached');
+    this.name = 'SessionCapacityError';
+  }
+}
 
 interface Entry {
   principal: CustomerPrincipal;
@@ -150,16 +178,15 @@ export function createSession(principal: CustomerPrincipal, now = monotonicNow()
     sessions.delete(mine[i]!);
   }
 
-  // Then the global bound. Runs AFTER the sweep and the per-principal eviction so
-  // it only ever fires on genuinely live sessions belonging to distinct
-  // principals — the flood case — and never on entries the two cheaper rules were
-  // about to reclaim anyway. Oldest issued goes first; Map iteration is insertion
-  // order, which no clock can move.
+  // Then the global bound. Checked AFTER the sweep and the per-principal
+  // eviction, so it only ever fires when the map is full of genuinely LIVE
+  // sessions belonging to distinct principals — the flood case — and never on
+  // entries the two cheaper rules were about to reclaim anyway.
+  //
+  // Refuses rather than evicting: see MAX_SESSIONS_TOTAL. The caller's own
+  // sign-in fails; nobody already signed in is disturbed.
   if (sessions.size >= MAX_SESSIONS_TOTAL) {
-    for (const token of sessions.keys()) {
-      if (sessions.size < MAX_SESSIONS_TOTAL) break;
-      sessions.delete(token);
-    }
+    throw new SessionCapacityError();
   }
 
   // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
