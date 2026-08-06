@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   MAX_SESSIONS_PER_CUSTOMER,
@@ -142,6 +142,32 @@ describe('customer sessions', () => {
     expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
   });
 
+  // ai-review pass 3 [medium]: the two caps interact, and the interaction is
+  // observable. A customer already at their OWN five-session cap succeeds even
+  // when the map is full, because their own oldest slot is freed before the
+  // global check runs.
+  //
+  // That is the intended precedence, not a bypass — the rule is "nobody's session
+  // is taken to make room for a STRANGER", and rotating your own sixth device
+  // takes nothing from anyone. Pinned because the previous test used a victim
+  // with ONE session and could not observe this case at all.
+  it('lets a customer at their own cap rotate a session even when the map is full', () => {
+    const mine = Array.from({ length: MAX_SESSIONS_PER_CUSTOMER }, () => createSession(alice));
+    for (let i = 0; i < MAX_SESSIONS_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+    }
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+
+    // A stranger is refused...
+    expect(() => createSession(bob)).toThrow(SessionCapacityError);
+    // ...but alice rotates her own oldest, taking nothing from anyone.
+    const rotated = createSession(alice);
+    expect(lookupSession(rotated)).toEqual(alice);
+    expect(lookupSession(mine[0]!)).toBeUndefined();
+    expect(lookupSession(mine[1]!)).toEqual(alice);
+    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+  });
+
   // The bound must not be a permanent wedge: capacity freed by expiry or sign-out
   // has to become usable again, or one flood ends sign-in for the process's life.
   it('accepts new sessions again once capacity frees up', () => {
@@ -174,22 +200,42 @@ describe('customer sessions', () => {
   // survives it. So this asserts BOTH halves in one sequence — the wall clock is
   // moved ten TTLs in each direction and cannot kill the session, and the
   // monotonic clock crossing the TTL still does.
-  it('expires on the monotonic clock and ignores the wall clock entirely', () => {
-    const t0 = 1_000_000;
-    const token = createSession(alice, t0);
+  // Third attempt at this test, and the two before it could not fail:
+  //
+  //  1. injecting `now` on both sides proved nothing, because the lookup at the
+  //     expired time DELETES the entry;
+  //  2. stubbing Date.now and asserting survival also passes against an
+  //     implementation that never expires anything (ai-review pass 3);
+  //  3. and injecting `now` ANYWHERE means the production clock default is never
+  //     exercised, so swapping monotonicNow back to Date.now would leave the test
+  //     green (also pass 3).
+  //
+  // So this drives the DEFAULT arguments only, controls `performance.now` — the
+  // clock the code is supposed to be using — and moves `Date.now` in both
+  // directions underneath. It fails if expiry stops happening, and it fails if
+  // the default clock goes back to the wall clock.
+  it('expires on the default monotonic clock, which the wall clock cannot move', () => {
     const realDateNow = Date.now;
+    const perf = vi.spyOn(performance, 'now');
     try {
+      perf.mockReturnValue(1_000);
+      const token = createSession(alice);
+
+      // Wall clock leaps ten TTLs forward: irrelevant.
       Date.now = () => realDateNow() + SESSION_TTL_MS * 10;
-      expect(lookupSession(token, t0 + 1)).toEqual(alice);
+      expect(lookupSession(token)).toEqual(alice);
 
+      // Wall clock leaps ten TTLs backward: still irrelevant.
       Date.now = () => realDateNow() - SESSION_TTL_MS * 10;
-      expect(lookupSession(token, t0 + SESSION_TTL_MS - 1)).toEqual(alice);
+      expect(lookupSession(token)).toEqual(alice);
 
-      // ...and the monotonic clock still ends it, with the wall clock still
-      // rolled backwards. An implementation that stopped expiring fails here.
-      expect(lookupSession(token, t0 + SESSION_TTL_MS)).toBeUndefined();
+      // The monotonic clock crossing the TTL is what ends it — with the wall
+      // clock still rolled back, so nothing here can be attributed to Date.now.
+      perf.mockReturnValue(1_000 + SESSION_TTL_MS);
+      expect(lookupSession(token)).toBeUndefined();
     } finally {
       Date.now = realDateNow;
+      perf.mockRestore();
     }
   });
 

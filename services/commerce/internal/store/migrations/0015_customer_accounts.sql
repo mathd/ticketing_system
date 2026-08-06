@@ -41,8 +41,16 @@ CREATE TABLE customer_accounts (
     -- Under the C collation `lower()` touches exactly A-Z, which is precisely what
     -- customerEmailKey does, on every server.
     --
-    -- btrim is a no-op in practice — RegisterCustomer trims before inserting — and
-    -- is kept so a direct writer cannot slip a padded value past the comparison.
+    -- The trim character set is spelled out for the same reason. Bare `btrim`
+    -- removes only the ASCII space, while Go's strings.TrimSpace removes Unicode
+    -- whitespace — so an address padded with U+2003 EM SPACE, written directly,
+    -- could satisfy this CHECK with a key that keeps those bytes while every
+    -- application lookup strips them and asks for a different key (ai-review
+    -- pass 3). Both sides now trim exactly these six ASCII bytes.
+    --
+    -- It is a no-op on the application path: RegisterCustomer trims before
+    -- inserting. It is kept so a direct writer cannot slip a padded value past
+    -- the comparison.
     --
     -- NAMED, because this one references two columns: Postgres makes any such
     -- CHECK a TABLE-level constraint and auto-names it `customer_accounts_check`,
@@ -51,7 +59,7 @@ CREATE TABLE customer_accounts (
     -- write needs a name that means something.
     email_key     text NOT NULL UNIQUE
                   CONSTRAINT customer_accounts_email_key_matches_email
-                  CHECK (email_key = lower(btrim(email) COLLATE "C")),
+                  CHECK (email_key = lower(btrim(email, E' \t\n\r\v\f') COLLATE "C")),
     -- A bcrypt modular-crypt string. The CHECK is a tripwire, not security: it
     -- makes a plaintext password written straight into this column fail loudly
     -- instead of becoming a credential that silently never matches.

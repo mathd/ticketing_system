@@ -185,6 +185,15 @@ export function createSession(principal: CustomerPrincipal, now = monotonicNow()
   //
   // Refuses rather than evicting: see MAX_SESSIONS_TOTAL. The caller's own
   // sign-in fails; nobody already signed in is disturbed.
+  //
+  // **Precedence, stated because the ordering has an observable consequence**
+  // (ai-review pass 3): a customer who is already at their own five-session cap
+  // succeeds even when the map is full, because the eviction above freed their
+  // own oldest slot before this check runs. That is deliberate and it is the
+  // right way round — the rule this cap enforces is "nobody's session is taken to
+  // make room for a STRANGER", and rotating your own sixth device takes nothing
+  // from anyone. Reversing the order would refuse a returning customer during a
+  // flood they have no part in, while freeing nothing.
   if (sessions.size >= MAX_SESSIONS_TOTAL) {
     throw new SessionCapacityError();
   }

@@ -123,9 +123,25 @@ type customerLookup interface {
 // addresses differing only in the case of a non-ASCII character are two accounts.
 // That is a real limitation and the honest one to take: the alternative is a
 // constraint whose behaviour depends on a locale nobody has written down.
+// The trim is ASCII-only for the same reason as the fold, and it is NOT
+// strings.TrimSpace. TrimSpace strips Unicode whitespace; Postgres's btrim with
+// this character set strips exactly these six bytes. A direct writer inserting an
+// address padded with U+2003 EM SPACE would otherwise satisfy the CHECK with a
+// key that still carries those bytes, while every application lookup trims them
+// and asks for a different key — an account nobody can reach (ai-review pass 3).
+//
+// The application path never sees whitespace here anyway: RegisterCustomer trims
+// with TrimSpace before storing, which is the buyer-friendly behaviour and is
+// applied to `email` and `email_key` alike, so the two normalizers agree whatever
+// arrives.
+//
+// A byte walk is safe on UTF-8 by construction: every byte of a multibyte
+// sequence has the high bit set, so none can fall in A-Z or match an ASCII
+// whitespace byte, and none can be modified here.
+const asciiWhitespace = " \t\n\r\v\f"
+
 func customerEmailKey(email string) string {
-	trimmed := strings.TrimSpace(email)
-	out := []byte(trimmed)
+	out := []byte(strings.Trim(email, asciiWhitespace))
 	for i := 0; i < len(out); i++ {
 		if out[i] >= 'A' && out[i] <= 'Z' {
 			out[i] += 'a' - 'A'

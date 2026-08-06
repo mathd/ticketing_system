@@ -21,6 +21,9 @@ if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404
 const t = UI_STRINGS[locale];
 
 let error: string | null = null;
+// Set when the account WAS created but no session could be minted (capacity).
+// A different state from an error: nothing needs retrying, only signing in.
+let accountCreatedNoSession = false;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -48,7 +51,13 @@ if (Astro.request.method === 'POST') {
         return Astro.redirect(`/${locale}/account`, 303);
       } catch (cause) {
         if (!(cause instanceof SessionCapacityError)) throw cause;
-        error = t.accountUnavailable;
+        // NOT the generic "unavailable" message. The commerce INSERT already
+        // committed, so the account exists and only the session failed. Telling
+        // the buyer registration was unavailable sends them to retry, where they
+        // are told the address is taken — a contradiction from their side, and a
+        // support call (ai-review pass 3). Say what actually happened and point
+        // at sign-in.
+        accountCreatedNoSession = true;
       }
     } else {
       // "Taken" is said plainly. ADR-049 records that this discloses whether an
@@ -69,6 +78,13 @@ if (Astro.request.method === 'POST') {
 <Layout locale={locale} title={t.register}>
   <h1>{t.register}</h1>
   <p class="notice">{t.accountOptionalNotice}</p>
+  {
+    accountCreatedNoSession && (
+      <p class="notice notice--created" role="status">
+        {t.accountCreatedSignInLater} <a href={`/${locale}/account/sign-in`}>{t.signIn}</a>
+      </p>
+    )
+  }
   <form method="post" action="">
     {error && <p class="error" role="alert">{error}</p>}
     <label for="email">{t.email}</label>
@@ -130,5 +146,10 @@ if (Astro.request.method === 'POST') {
   .notice {
     color: var(--muted);
     max-width: 32rem;
+  }
+  .notice--created {
+    color: var(--ink);
+    border-left: 3px solid var(--accent);
+    padding-left: 0.75rem;
   }
 </style>

@@ -68,6 +68,13 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     // password is wrong sends them to reset it while the real fault goes
     // unreported.
     accountUnavailable: 'Accounts are temporarily unavailable. Try again shortly.',
+    // Registration commits in commerce BEFORE the session is minted, so at
+    // capacity the account genuinely EXISTS and only sign-in failed. Saying
+    // "unavailable" there reads as "registration failed", and the buyer's retry
+    // then answers "already exists" — which looks like a contradiction and is a
+    // support call (ai-review pass 3).
+    accountCreatedSignInLater:
+      'Your account was created, but signing in is temporarily unavailable. Try signing in shortly.',
   },
   fr: {
     events: 'Événements',
@@ -115,5 +122,7 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     credentialsInvalid: 'Ces identifiants ne sont pas valides.',
     accountTaken: 'Un compte existe déjà pour cette adresse.',
     accountUnavailable: 'Les comptes sont temporairement indisponibles. Réessayez sous peu.',
+    accountCreatedSignInLater:
+      'Votre compte a été créé, mais la connexion est temporairement indisponible. Réessayez de vous connecter sous peu.',
   },
 };
