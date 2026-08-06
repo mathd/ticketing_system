@@ -1,0 +1,101 @@
+{
+  "key": "TKT-225",
+  "type": "Story",
+  "parent": "TKT-21",
+  "classification": "complex",
+  "summary": "An operator path to undo a guest-order claim (TKT-223 follow-up)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-223"
+    }
+  ],
+  "description": "Filed by TKT-223, whose ACs required the ownership decision to be argued rather than assumed. It was\nargued, and this is the part the argument left open.\n\n**The problem, in ADR-049 § TKT-223's own words:** *\"A claim is destructive, exclusive, permanent and\nunrecoverable. The first holder to claim takes the order away from its buyer, and there is no\nun-claim path — no endpoint, no CLI, no support tool. The buyer's recourse is nothing.\"*\n\nThe proof of ownership is the order reference alone, deliberately: matching the email would refuse a\nbuyer who signed up with a different address. The cost of that choice is that anyone holding a leaked\nreference can permanently take an order — and references **do** leak, because the gateway logs them\nvia the URL path (**TKT-202**, open).\n\nToday the only remedy is a manual `UPDATE` against the commerce database.\n\n**Acceptance Criteria:**\n- [ ] An operator can detach an order from the customer it is attributed to, restoring it to\n  unattributed so the real buyer can claim it.\n- [ ] The plan states **who may do this and how they are authenticated**. It is a support action on\n  someone else's purchase, so \"an internal endpoint\" is the start of the answer and not the whole of\n  it — ADR-043 decides the guard, and the back office already has a staff credential and a role\n  matrix (ADR-042/TKT-197).\n- [ ] The action is **recorded**, with who did it and why. An un-claim that leaves no trace turns a\n  support tool into a way to move purchases quietly.\n- [ ] It does **not** become a transfer. Detaching restores NULL; it never repoints an order at a\n  different customer in one step. (Transfers are TKT-9/TKT-160 and have a different adversary.)\n- [ ] `TestNoProductionCodeUpdatesOrderAttribution`'s allowlist grows to **exactly two** statements,\n  and `TestTheAllowlistCannotBeWidened` covers the new one. That invariant is the thing keeping\n  attribution honest; widening it is part of the work, not a side effect.\n- [ ] The plan says whether an un-claimed order should be re-claimable by the same attacker\n  immediately, and if not, what stops it.\n- [ ] `make check` green.\n\n**Non-goals:** transfers between accounts (TKT-9/TKT-160) · rate limiting the claim (TKT-224) ·\nfixing the reference leak (TKT-202).",
+  "readiness": {
+    "objective": {
+      "state": "open",
+      "note": "Clear in outline; the authentication and audit questions are unshaped."
+    },
+    "scope": {
+      "state": "open",
+      "note": "Whether this is a back-office surface or a CLI is undecided."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "Who may un-claim; what is recorded and where; whether an un-claimed order needs protection from immediate re-claim."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-223, which creates the state this undoes."
+    },
+    "approach": {
+      "state": "open",
+      "note": "Unshaped."
+    },
+    "first_slice": {
+      "state": "open",
+      "note": "Unshaped."
+    },
+    "success": {
+      "state": "open",
+      "note": "Unshaped."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Minimal memo baked at creation (born mid-implementation, per decomposition.md)."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). CI runs the same gate - keep them mirrored. Commit regenerated code before running the gate."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-049",
+        "why": "The TKT-223 amendment states the gap this closes, in the words this ticket quotes. Its 'one exception to attribution never changes' section is the rule the un-claim becomes a SECOND exception to - read why the first one was allowed before adding another."
+      },
+      {
+        "id": "ADR-042",
+        "why": "Staff identity and the back-office session; TKT-197's role matrix is what would decide who may un-claim, if the back office is where this lands."
+      },
+      {
+        "id": "ADR-043",
+        "why": "Declared `security:` guards public contract operations; an inline X-Internal-Token check guards the internal surface. This is an internal support action, so that rule decides its guard."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary. An audit record inside the same database it audits constrains a careless operator, not a hostile one."
+      },
+      {
+        "id": "ADR-016",
+        "why": "Do not add an order status. Attribution is its own dimension."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The statement to mirror and the guard to widen: `claimGuestOrderStatement` in services/commerce/internal/store/customer.go, allowlisted BY TEXT AND BY COUNT in attribution_invariant_test.go. Exactly one is permitted today; this ticket makes it two, and TestTheAllowlistCannotBeWidened must cover the second.",
+        "link": "services/commerce/internal/store/attribution_invariant_test.go"
+      },
+      {
+        "summary": "PREREQUISITE, not a coincidence: TKT-202 (the gateway logs guest_order_ref via the URL path). ADR-049 calls it a safety issue for claiming rather than logging hygiene - a leaked reference is what makes a hostile claim possible in the first place.",
+        "link": "TKT-202"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by TKT-223 (ai-review stage, gateless run 2026-08-06). Not shaped: `readiness` is mostly `open` and it must go through `shaping.md` before Gate 1. The three open questions are who may un-claim, what is recorded, and whether an un-claimed order needs protection from immediate re-claim by the same actor."
+    }
+  ]
+}
