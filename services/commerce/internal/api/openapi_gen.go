@@ -280,6 +280,31 @@ type CustomerCredentials struct {
 	Password string `json:"password"`
 }
 
+// CustomerOrderPage defines model for CustomerOrderPage.
+type CustomerOrderPage struct {
+	// NextCursor The cursor for the next page, or null when this page is the last. REQUIRED and nullable rather than optional: an absent field and an explicit null read the same to a careless client, and "there is no more" is a different fact from "we did not say".
+	NextCursor *string                `json:"next_cursor"`
+	Orders     []CustomerOrderSummary `json:"orders"`
+}
+
+// CustomerOrderSummary defines model for CustomerOrderSummary.
+type CustomerOrderSummary struct {
+	Currency string `json:"currency"`
+
+	// EventName Resolved from catalog in one call per page. Null when catalog cannot name the performance — a row the buyer can still open beats a wallet that will not load.
+	EventName *string `json:"event_name"`
+
+	// GuestOrderRef A bearer credential for the ticket bundle (ADR-012). Present so the wallet can LINK to the existing ticket page; never log it.
+	GuestOrderRef openapi_types.UUID `json:"guest_order_ref"`
+	OrderId       openapi_types.UUID `json:"order_id"`
+	PurchasedAt   time.Time          `json:"purchased_at"`
+	Quantity      int                `json:"quantity"`
+	StartsAt      *time.Time         `json:"starts_at"`
+
+	// TotalAmount Integer minor units (ADR-001). Never a float, never divided here.
+	TotalAmount int `json:"total_amount"`
+}
+
 // CustomerPrincipal A signed-in buyer. `email` is the address in the spelling the buyer registered with, for display; every lookup goes through the normalized form, which is never exposed.
 type CustomerPrincipal struct {
 	// CustomerAssertion A commerce-signed, expiring proof that the holder authenticated as this customer, presented on checkout in `X-Customer-Assertion` (TKT-221, ADR-049).
@@ -504,11 +529,24 @@ type Id = openapi_types.UUID
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
+// Locale defines model for Locale.
+type Locale = string
+
 // OrganizerIdQuery defines model for OrganizerIdQuery.
 type OrganizerIdQuery = openapi_types.UUID
 
 // ReportLimit defines model for ReportLimit.
 type ReportLimit = int
+
+// ListCustomerOrdersParams defines parameters for ListCustomerOrders.
+type ListCustomerOrdersParams struct {
+	// Locale BCP-47 primary subtag; the supported set is data, not schema (TKT-36)
+	Locale Locale `form:"locale" json:"locale"`
+
+	// After The opaque cursor from the previous page. Absent means the first page.
+	After              *string            `form:"after,omitempty" json:"after,omitempty"`
+	XCustomerAssertion *CustomerAssertion `json:"X-Customer-Assertion,omitempty"`
+}
 
 // GetCancellationRefundReportParams defines parameters for GetCancellationRefundReport.
 type GetCancellationRefundReportParams struct {

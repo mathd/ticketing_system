@@ -648,6 +648,25 @@ can still reach by order reference.
 **`GET /orders/{id}` reports `customer_id` and it is informational only** — that read is public and
 answers for any order id. It is not an ownership check.
 
+### The wallet (TKT-222)
+
+`/{locale}/account` lists the signed-in customer's completed purchases, newest first, 20 to a page,
+each linking to the existing ticket page. See ADR-049 § *TKT-222 amendment*.
+
+**If the wallet shows purchases with no event name**, catalog's display-name resolver is failing —
+commerce logs a `WARN` and renders the rows anyway, deliberately: a row the buyer can still open
+beats a wallet that will not load. Look for `wallet display names unavailable`.
+
+**If the wallet says "could not be loaded"**, the commerce read itself failed. That is a different
+state from an empty wallet, and the page distinguishes them on purpose.
+
+**A customer asking for another customer's wallet gets 404, not 403** — the same answer as an id that
+does not exist. That is deliberate non-disclosure, not a bug: 403 would confirm the account exists.
+
+**Paging is keyset on `created_at`, never `updated_at`.** `updated_at` is rewritten by checkout
+retries, recovery and the refund runner, and a cursor on a mutable key makes rows jump pages. If
+someone "optimizes" the sort key, that is the bug to look for.
+
 ## Cache kill-switch (TKT-210)
 
 Both in-memory read caches — inventory's availability cache (ADR-044) and catalog's public-read

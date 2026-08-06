@@ -61,3 +61,36 @@ export async function authenticateCustomer(
   if (response.status === 401 || response.status === 400) return { ok: false, reason: 'invalid' };
   return { ok: false, reason: 'unavailable' };
 }
+
+// --- the wallet (TKT-222) ---
+
+export type CustomerOrderPage = components['schemas']['CustomerOrderPage'];
+export type CustomerOrderSummary = components['schemas']['CustomerOrderSummary'];
+
+/**
+ * One page of the signed-in customer's purchases.
+ *
+ * The assertion is read from the session and sent as a header, server-side. It
+ * must never be handed to the browser — an XSS that could read it would be able
+ * to attribute purchases to this customer for the rest of the session.
+ *
+ * A failure returns undefined rather than throwing: the account page renders a
+ * "temporarily unavailable" state, which is a better answer for a buyer than a
+ * 500, and the distinction between "you have nothing" and "we could not look" is
+ * one the page must be able to make.
+ */
+export async function listCustomerOrders(
+  customerId: string,
+  assertion: string,
+  locale: string,
+  after?: string,
+): Promise<CustomerOrderPage | undefined> {
+  const query = new URLSearchParams({ locale });
+  if (after) query.set('after', after);
+  const response = await fetch(
+    `${GATEWAY_URL}/api/commerce/customers/${encodeURIComponent(customerId)}/orders?${query}`,
+    { headers: { Accept: 'application/json', 'X-Customer-Assertion': assertion } },
+  );
+  if (response.status !== 200) return undefined;
+  return (await response.json()) as CustomerOrderPage;
+}

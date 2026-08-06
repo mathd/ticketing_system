@@ -801,6 +801,51 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /internal/performances/display-names:
+    get:
+      operationId: resolvePerformanceDisplayNames
+      # Opts out of the document-level staff-write requirement, then relies on the
+      # inline X-Internal-Token check that guards catalog's whole /internal/
+      # surface (ADR-043: declared `security:` guards the PUBLIC contract, an
+      # inline check guards the internal one). The staff-write credential would be
+      # the wrong one — this is a service-to-service read, not a back-office write,
+      # and commerce does not hold it.
+      security: []
+      summary: Resolve event display names for a set of performances, in one call (TKT-222)
+      description: >
+        Answers "what are these performances called, in this locale" for a bounded
+        set of ids at once. It exists for commerce's wallet read (TKT-222): a
+        purchase carries a slot id, and the name a buyer would recognise lives here.
+
+        A GET with the ids in the query string, NOT a POST with a body — and the
+        difference is not stylistic. Catalog's contract invariant
+        (write_credential_test.go) reads the spec and requires every UNSAFE method
+        to demand the staff-write credential; a read shaped as a POST fights that
+        rule rather than fitting it. Length is not a problem (twenty uuids is under
+        800 characters) and neither is disclosure: the request logger records
+        `r.URL.Path` and not the query, and a performance id is not a secret.
+
+        It deliberately does NOT filter on published state. A wallet is mostly PAST
+        purchases, so a resolver that only sees on-sale performances goes blank
+        exactly where it is needed — the buyer looking up what they bought last
+        year. Publication controls what may be SOLD, not what may be named.
+
+        INTERNAL because it takes no organizer scope and answers for any id its
+        caller names. Nothing here is a secret — an event name is on the public
+        site — but an unscoped bulk read is not something to publish.
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          # Bounded to one wallet page. An unbounded set is a way to ask one
+          # request to do arbitrary work; the caller pages, like everyone else.
+          schema: {type: array, minItems: 1, maxItems: 20, items: {type: string, format: uuid}}
+          style: form
+          explode: false
+        - {$ref: '#/components/parameters/Locale'}
+      responses:
+        '200': {description: Resolved names, content: {application/json: {schema: {$ref: '#/components/schemas/PerformanceDisplayNames'}}}}
+        '400': { $ref: '#/components/responses/BadRequest' }
   /internal/ticket-types/{id}/fee-resolution:
     get:
       operationId: resolveTicketTypeFees
@@ -1374,6 +1419,27 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    PerformanceDisplayNames:
+      type: object
+      additionalProperties: false
+      required: [performances]
+      properties:
+        performances:
+          type: array
+          description: >
+            One entry per id that RESOLVED. An id that names nothing is simply
+            absent rather than an error — the caller holds a set and one unknown
+            member should not fail the other nineteen, and a wallet with one
+            unnameable row is better than a wallet that will not load.
+          items: {$ref: '#/components/schemas/PerformanceDisplayName'}
+    PerformanceDisplayName:
+      type: object
+      additionalProperties: false
+      required: [performance_id, event_name, starts_at]
+      properties:
+        performance_id: {type: string, format: uuid}
+        event_name: {type: string}
+        starts_at: {type: string, format: date-time}
     Error:
       type: object
       required: [error]

@@ -66,6 +66,11 @@ describe('page-layer cache tier', () => {
       '/en/account/sign-in',
       '/fr/account/register',
       '/en/account/sign-out',
+      // TKT-222: the wallet is a per-customer purchase list served on the
+      // account path, so it inherits that no-store in both locales. (Paging is a
+      // query parameter, and `pathname` never carries one — a fixture with
+      // `?after=` in it would be asserting nothing.)
+      '/fr/account',
     ]) {
       const res = run(path, { ageSeconds: 0, maxAgeSeconds: 300 }, 200);
       expect(res.cacheControl, path).toBe('no-store');

@@ -2292,3 +2292,41 @@ func (p *Postgres) GetSeatMapGeometry(ctx context.Context, seatMapID uuid.UUID) 
 	}
 	return g, nil
 }
+
+// performanceDisplayNamesQuery is a const so a plan assertion can EXPLAIN the
+// statement production runs rather than a lookalike (ADR-019).
+//
+// `= ANY($1)` over a uuid[] rather than an IN-list built by string concatenation:
+// one prepared statement shape for every page size, and no injection surface.
+//
+// No publication predicate — see the port's doc comment. No organizer scope
+// either: this is an internal, unscoped read, which is exactly why it sits behind
+// guardInternalSurface and the gateway's edge-deny rather than in the public
+// contract.
+const performanceDisplayNamesQuery = `
+	SELECT p.id, e.name, p.starts_at
+	  FROM performances p
+	  JOIN events e ON e.id = p.event_id
+	 WHERE p.id = ANY($1)`
+
+// PerformanceDisplayNames resolves a set of performances to their event names.
+func (p *Postgres) PerformanceDisplayNames(ctx context.Context, ids []uuid.UUID) ([]PerformanceDisplayName, error) {
+	rows, err := p.db.QueryContext(ctx, performanceDisplayNamesQuery, ids)
+	if err != nil {
+		return nil, fmt.Errorf("resolve performance display names: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]PerformanceDisplayName, 0, len(ids))
+	for rows.Next() {
+		var d PerformanceDisplayName
+		if err := rows.Scan(&d.PerformanceID, &d.EventName, &d.StartsAt); err != nil {
+			return nil, fmt.Errorf("scan performance display name: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate performance display names: %w", err)
+	}
+	return out, nil
+}

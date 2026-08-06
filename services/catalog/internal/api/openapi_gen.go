@@ -738,6 +738,19 @@ type PerformanceCreate struct {
 	VenueId  openapi_types.UUID `json:"venue_id"`
 }
 
+// PerformanceDisplayName defines model for PerformanceDisplayName.
+type PerformanceDisplayName struct {
+	EventName     string             `json:"event_name"`
+	PerformanceId openapi_types.UUID `json:"performance_id"`
+	StartsAt      time.Time          `json:"starts_at"`
+}
+
+// PerformanceDisplayNames defines model for PerformanceDisplayNames.
+type PerformanceDisplayNames struct {
+	// Performances One entry per id that RESOLVED. An id that names nothing is simply absent rather than an error — the caller holds a set and one unknown member should not fail the other nineteen, and a wallet with one unnameable row is better than a wallet that will not load.
+	Performances []PerformanceDisplayName `json:"performances"`
+}
+
 // PriceResolution A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. It is ordered by rule id ascending; the order is representation only and carries no precedence.
 // INVARIANT, guaranteed by the server: winner and fallback_reason are mutually exclusive and jointly exhaustive — exactly one of "winner is non-null" and "fallback_reason is present" holds.
 // This FLAT schema cannot express that. OpenAPI 3.0 could, as a oneOf of two variants — the accurate statement is not "impossible" but "not worth it here": a oneOf would turn PriceResolution into a union in the generated Go and in both generated TypeScript clients, for a pair no consumer branches on. So the contract is deliberately BROADER than the runtime: a client may rely on the invariant, and the server side is pinned by TestResolveTicketTypePriceWinnerAndFallbackAreExclusive, which covers a winner, an empty-candidate fallback, and a fallback WITH candidates (every rule window-ineligible) — the three shapes the handler can actually produce.
@@ -1257,6 +1270,14 @@ type StaffWriteUnauthorized = Error
 // catalogStaffWriteCredentialContextKey is the context key for CatalogStaffWriteCredential security scheme
 type catalogStaffWriteCredentialContextKey string
 
+// ResolvePerformanceDisplayNamesParams defines parameters for ResolvePerformanceDisplayNames.
+type ResolvePerformanceDisplayNamesParams struct {
+	Ids []openapi_types.UUID `form:"ids" json:"ids"`
+
+	// Locale BCP-47 primary subtag; supported set is data, not schema (TKT-36)
+	Locale Locale `form:"locale" json:"locale"`
+}
+
 // ResolveTicketTypeFeesParams defines parameters for ResolveTicketTypeFees.
 type ResolveTicketTypeFeesParams struct {
 	// ChannelCode The sales channel to resolve for. An exact opaque string (ADR-024) — there is no channel registry, and inventing one here would decide TKT-17's story. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel.
@@ -1367,6 +1388,9 @@ type ServerInterface interface {
 	// Atomically publish the festival and every member day
 	// (POST /festivals/{festivalId}/publish)
 	PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId)
+	// Resolve event display names for a set of performances, in one call (TKT-222)
+	// (GET /internal/performances/display-names)
+	ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.Request, params ResolvePerformanceDisplayNamesParams)
 	// Resolve which fees apply to a ticket type, in a channel, with provenance
 	// (GET /internal/ticket-types/{id}/fee-resolution)
 	ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypeFeesParams)
@@ -1499,6 +1523,12 @@ func (_ Unimplemented) AttachDayToFestival(w http.ResponseWriter, r *http.Reques
 // Atomically publish the festival and every member day
 // (POST /festivals/{festivalId}/publish)
 func (_ Unimplemented) PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resolve event display names for a set of performances, in one call (TKT-222)
+// (GET /internal/performances/display-names)
+func (_ Unimplemented) ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.Request, params ResolvePerformanceDisplayNamesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1836,6 +1866,52 @@ func (siw *ServerInterfaceWrapper) PublishFestival(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PublishFestival(w, r, festivalId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolvePerformanceDisplayNames operation middleware
+func (siw *ServerInterfaceWrapper) ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ResolvePerformanceDisplayNamesParams
+
+	// ------------- Required query parameter "ids" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, true, "ids", r.URL.Query(), &params.Ids, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "ids"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ids", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "locale" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "locale", r.URL.Query(), &params.Locale, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "locale"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "locale", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolvePerformanceDisplayNames(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2956,6 +3032,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/festivals/{festivalId}/publish", wrapper.PublishFestival)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/internal/performances/display-names", wrapper.ResolvePerformanceDisplayNames)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/internal/ticket-types/{id}/fee-resolution", wrapper.ResolveTicketTypeFees)

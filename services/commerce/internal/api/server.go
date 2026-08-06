@@ -97,6 +97,9 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// and the gateway edge-denies /api/commerce/internal/ by construction.
 	r.Post("/customers", s.registerCustomer)
 	r.Post("/customers/authenticate", s.authenticateCustomer)
+	// The wallet (TKT-222). Public surface, identified by the assertion — the
+	// storefront still holds no service credential.
+	r.Get("/customers/{id}/orders", s.listCustomerOrders)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)
