@@ -1,0 +1,97 @@
+{
+  "key": "TKT-224",
+  "type": "Story",
+  "parent": "TKT-21",
+  "classification": "complex",
+  "summary": "Rate-limit the public customer registration and sign-in surface (TKT-220 follow-up)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-220"
+    }
+  ],
+  "description": "Filed by TKT-220, which its own ACs required it to file rather than solve. ADR-049 §2 names this\nas the control that addresses what it deliberately left open.\n\n**The exposure, stated as ADR-049 states it:** `POST /api/commerce/customers` answers **409** when an\naddress already holds an account. That is an *unauthenticated, unrate-limited membership oracle over\nthe entire customer base* — anyone can walk a list of addresses and learn which of them buy tickets\nhere. It is reachable through the gateway with no credential, by construction, because the\nstorefront that renders the form holds no service token.\n\n`POST /api/commerce/customers/authenticate` is the second half: unlimited credential submission\nagainst real accounts. Sign-in answers and costs are already indistinguishable between an unknown\naddress and a wrong password (ADR-049 §3), so what is missing is **volume**, not disclosure.\n\nThis is the storefront twin of **TKT-195** (the back-office login form), which is still open. Whether\none mechanism serves both, or the two surfaces are genuinely different (staff have a known\nprovisioned set; customers do not), is the first thing the plan should settle rather than assume.\n\n**Acceptance Criteria:**\n- [ ] Both operations are rate limited. The plan states **where** the limiter lives and why — the\n  gateway (stateless today by ADR-002, which is a real constraint, not a preference), commerce\n  itself, or the storefront SSR layer — and what each placement fails to protect.\n- [ ] The storefront **forms** are covered too, not only the API: a limiter that a caller bypasses by\n  posting to the gateway directly protects nothing.\n- [ ] The limit key is stated with its evasion cost. Per-IP is trivially evaded and punishes shared\n  NAT; per-address protects one account while leaving enumeration open. Say which is chosen, what it\n  does not stop, and why that residual is acceptable.\n- [ ] A refused request is indistinguishable from... — decide and state it. A distinctive\n  rate-limit response is itself a signal, and a silent one is unusable for a legitimate buyer.\n- [ ] Whether the 409 disclosure should ALSO be narrowed is answered explicitly. Rate limiting slows\n  enumeration; it does not remove it. If the answer is \"no, ADR-049's trade stands\", say so and why.\n- [ ] Tests prove the limiter refuses under the intended volume AND that a normal buyer flow —\n  register, sign in, mistype once, sign in again — is never refused.\n- [ ] `make check` green.\n\n**Non-goals:** CAPTCHA or proof-of-work · account lockout (a lockout on a public address is a\ndenial-of-service primitive against any customer whose address is known) · anything requiring mail.",
+  "readiness": {
+    "objective": {
+      "state": "open",
+      "note": "Shaping needed: the placement question is genuinely open and interacts with the gateway's statelessness."
+    },
+    "scope": {
+      "state": "open",
+      "note": "Depends on whether this shares a mechanism with TKT-195."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "Placement, limit key, and whether the 409 disclosure is narrowed as well."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-220, which creates the surface."
+    },
+    "approach": {
+      "state": "open",
+      "note": "Unshaped."
+    },
+    "first_slice": {
+      "state": "open",
+      "note": "Unshaped."
+    },
+    "success": {
+      "state": "open",
+      "note": "Unshaped."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Minimal mémo baked at creation (born mid-implementation, per decomposition.md)."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). CI runs the same gate - keep them mirrored. Commit regenerated code before running the gate."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-049",
+        "why": "Created the surface and named this ticket as the control. Sections 1 (why the operations are public and credential-free), 2 (the membership oracle) and 3 (why sign-in answers and costs are already uniform) are the exact constraints."
+      },
+      {
+        "id": "ADR-002",
+        "why": "The gateway owns no database and has no requires in its go.mod. A limiter placed there is a deviation to be argued, not a default."
+      },
+      {
+        "id": "ADR-043",
+        "why": "Declared `security:` guards public contract operations; inline checks guard /internal/. A limiter is neither, so where it hooks in is an open question."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary. 'Rate limited' against a single scripted client is a different claim from 'rate limited' against a distributed one."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The sibling ticket, still open: TKT-195 rate-limits the BACK-OFFICE login form and endpoint. Settle whether one mechanism serves both before designing a second.",
+        "link": "TKT-195"
+      },
+      {
+        "summary": "The surface: services/commerce/internal/api/customer.go (handlers), registered in server.go as POST /customers and POST /customers/authenticate; storefront forms at web/storefront/src/pages/[locale]/account/{register,sign-in}.astro.",
+        "link": "services/commerce/internal/api/customer.go"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by TKT-220 (ai-review stage, gateless run 2026-08-06) as an incidental its own ACs required it to file rather than solve. Not shaped: `readiness` is mostly `open` and it must go through `shaping.md` before Gate 1."
+    }
+  ]
+}
