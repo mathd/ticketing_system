@@ -65,16 +65,47 @@ func TestWalletRefusesOneCustomerAskingForAnothers(t *testing.T) {
 	}
 }
 
-// An unknown customer answers identically, which is what makes the refusal above
-// disclose nothing: a caller cannot tell "not yours" from "no such account".
-func TestWalletAnswersTheSameForAMismatchAndAnUnknownCustomer(t *testing.T) {
+// What a valid assertion naming an id that has no account actually gets.
+//
+// The first version of this test claimed to compare a MISMATCH against an UNKNOWN
+// customer and compared two mismatches: both calls used a random path uuid and an
+// assertion for a *different* random uuid (ai-review [medium]). It could not fail.
+//
+// The real answer is 200 with an empty wallet, and that is correct rather than a
+// gap: an assertion is only ever minted for an account that authenticated, so
+// "valid assertion, no such account" needs the account to have been deleted, and
+// there is no delete path. Adding an existence check would put a database round
+// trip on every wallet read to defend an unreachable case. The contract says this
+// in as many words now — the 404 is for a MISMATCH, not an existence check.
+func TestWalletAnswersAnEmptyPageForAValidAssertionNamingItself(t *testing.T) {
+	unknown := uuid.New()
 	s := walletServer(t, nil, commercestore.WalletCursor{})
-	mismatch := walletGet(s, uuid.New(), mintCustomerAssertion(walletKey, uuid.New(), time.Now().Add(time.Hour)), "")
-	unknown := walletGet(s, uuid.New(), mintCustomerAssertion(walletKey, uuid.New(), time.Now().Add(time.Hour)), "")
 
-	if mismatch.Code != unknown.Code || mismatch.Body.String() != unknown.Body.String() {
-		t.Fatalf("the two answers differ:\n mismatch: %d %s unknown:  %d %s",
-			mismatch.Code, mismatch.Body.String(), unknown.Code, unknown.Body.String())
+	rec := walletGet(s, unknown, mintCustomerAssertion(walletKey, unknown, time.Now().Add(time.Hour)), "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with an empty page: %s", rec.Code, rec.Body.String())
+	}
+	if !jsonContains(t, rec.Body.String(), `"orders":[]`) {
+		t.Fatalf("body = %s, want an empty array", rec.Body.String())
+	}
+}
+
+// A cursor issued for another customer is refused, not applied. It could never
+// have read their rows, but applied to this customer it silently suppresses their
+// own — a failure with no symptom (ai-review [medium]).
+func TestWalletRefusesACursorIssuedForSomebodyElse(t *testing.T) {
+	alice, bob := uuid.New(), uuid.New()
+	s := walletServer(t, nil, commercestore.WalletCursor{})
+	bobsCursor := encodeCursor(commercestore.WalletCursor{
+		CreatedAt: time.Now(), OrderID: uuid.New(), CustomerID: bob,
+	})
+
+	rec := walletGet(s, alice, mintCustomerAssertion(walletKey, alice, time.Now().Add(time.Hour)), "&after="+bobsCursor)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — a foreign cursor must be refused, not applied: %s",
+			rec.Code, rec.Body.String())
 	}
 }
 
@@ -187,13 +218,17 @@ func TestWalletRefusesAMalformedCursorRatherThanRestarting(t *testing.T) {
 }
 
 func TestWalletCursorRoundTrips(t *testing.T) {
-	want := commercestore.WalletCursor{CreatedAt: time.Date(2026, 3, 18, 17, 30, 0, 123456789, time.UTC), OrderID: uuid.New()}
+	want := commercestore.WalletCursor{
+		CreatedAt: time.Date(2026, 3, 18, 17, 30, 0, 123456789, time.UTC),
+		OrderID:   uuid.New(),
+		CustomerID: uuid.New(),
+	}
 
 	got, err := decodeCursor(encodeCursor(want))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.CreatedAt.Equal(want.CreatedAt) || got.OrderID != want.OrderID {
+	if !got.CreatedAt.Equal(want.CreatedAt) || got.OrderID != want.OrderID || got.CustomerID != want.CustomerID {
 		t.Fatalf("round trip lost precision: %v != %v", got, want)
 	}
 	// An empty cursor is the first page, not an error.

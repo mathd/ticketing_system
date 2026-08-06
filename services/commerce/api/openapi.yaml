@@ -87,11 +87,21 @@ paths:
         **The path id is a selector, not authority.** The handler compares it with
         the customer the assertion resolves to and refuses when they differ — the
         assertion is the only identity commerce has (ADR-049 § TKT-221). A mismatch
-        answers **404**, identical to an id that does not exist: a 403 would confirm
-        that the named customer exists, which is an account-existence oracle
-        reachable by anyone who can register once. Commerce already answers 404
-        rather than 401 on its internal surface for the same non-disclosure reason
-        (ADR-043).
+        answers **404** rather than 403, because a 403 would confirm that the named
+        customer exists. Commerce already answers 404 rather than 401 on its
+        internal surface for the same non-disclosure reason (ADR-043).
+
+        The 404 is a MISMATCH answer and NOT an existence check: there is no lookup
+        against `customer_accounts`, so a valid assertion naming an id with no
+        account answers 200 with an empty page. That is unreachable in practice —
+        an assertion is only minted for an account that authenticated, and there is
+        no delete path — and defending it would put a database round trip on every
+        wallet read.
+
+        The `after` cursor is bound to the customer it was issued for and a foreign
+        one is refused. It could never read another customer's rows (the query
+        filters on the assertion regardless), but applied to the wrong customer it
+        silently suppresses their own.
 
         Paged on `(created_at, id)` DESC, NOT `updated_at`: that column is
         rewritten by checkout retries, the payment_unknown and confirmation_pending

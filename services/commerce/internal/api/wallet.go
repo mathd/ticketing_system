@@ -36,7 +36,8 @@ func encodeCursor(c commercestore.WalletCursor) string {
 	if c.OrderID == uuid.Nil {
 		return ""
 	}
-	return base64.RawURLEncoding.EncodeToString([]byte(c.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + c.OrderID.String()))
+	return base64.RawURLEncoding.EncodeToString([]byte(
+		c.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + c.OrderID.String() + "|" + c.CustomerID.String()))
 }
 
 // decodeCursor is deliberately unforgiving. A malformed cursor is a client error,
@@ -50,19 +51,23 @@ func decodeCursor(raw string) (commercestore.WalletCursor, error) {
 	if err != nil {
 		return commercestore.WalletCursor{}, errors.New("invalid cursor")
 	}
-	at, id, ok := strings.Cut(string(decoded), "|")
-	if !ok {
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) != 3 {
 		return commercestore.WalletCursor{}, errors.New("invalid cursor")
 	}
-	created, err := time.Parse(time.RFC3339Nano, at)
+	created, err := time.Parse(time.RFC3339Nano, parts[0])
 	if err != nil {
 		return commercestore.WalletCursor{}, errors.New("invalid cursor")
 	}
-	order, err := uuid.Parse(id)
+	order, err := uuid.Parse(parts[1])
 	if err != nil {
 		return commercestore.WalletCursor{}, errors.New("invalid cursor")
 	}
-	return commercestore.WalletCursor{CreatedAt: created, OrderID: order}, nil
+	owner, err := uuid.Parse(parts[2])
+	if err != nil {
+		return commercestore.WalletCursor{}, errors.New("invalid cursor")
+	}
+	return commercestore.WalletCursor{CreatedAt: created, OrderID: order, CustomerID: owner}, nil
 }
 
 func (s *Server) listCustomerOrders(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +97,14 @@ func (s *Server) listCustomerOrders(w http.ResponseWriter, r *http.Request) {
 	locale := r.URL.Query().Get("locale")
 	after, err := decodeCursor(r.URL.Query().Get("after"))
 	if err != nil {
+		write(w, http.StatusBadRequest, map[string]string{"error": "invalid cursor"})
+		return
+	}
+	// A cursor issued for somebody else is refused rather than applied. It could
+	// never have read their rows — the query filters on the asserted customer —
+	// but applied to THIS customer it silently suppresses their own, which is a
+	// failure with no symptom (ai-review [medium]).
+	if after.CustomerID != uuid.Nil && after.CustomerID != caller.UUID {
 		write(w, http.StatusBadRequest, map[string]string{"error": "invalid cursor"})
 		return
 	}
@@ -165,6 +178,13 @@ func (s *Server) performanceNames(ctx context.Context, orders []commercestore.Wa
 		seen[o.SlotID] = true
 		ids = append(ids, o.SlotID.String())
 	}
+
+	// A wallet-specific deadline. The shared client's timeout is sized for the
+	// checkout path; a hung catalog must not hold a page render for that long when
+	// the degraded answer — rows without names — is already acceptable
+	// (ai-review [medium]).
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 
 	url := s.catalogURL + "/internal/performances/display-names?locale=" + locale + "&ids=" + strings.Join(ids, ",")
 	code, body, err := s.call(ctx, http.MethodGet, url, "", nil, true)

@@ -218,13 +218,30 @@ func TestWalletReadScanIsScopedNotJustItsResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A body of orders belonging to OTHER customers. Without them the planner may
-	// legitimately choose a sequential scan on a tiny table and the assertion
-	// would be about the fixture rather than the index (the fixture-too-small
-	// trap, TKT-172/182).
-	other := uuid.NullUUID{UUID: account.ID, Valid: true}
+	// A body of orders belonging to OTHER customers — and they must really be
+	// other customers.
+	//
+	// The first version of this bound `other` to `account.ID`, so all forty rows
+	// belonged to the customer being queried (ai-review [medium]). The variable
+	// was named `other` and was not, which is what made it read as correct: the
+	// plan could scan every completed row and the assertion would still pass,
+	// because there was nothing to exclude. A fixture with one customer cannot
+	// prove a per-customer scan is scoped.
+	//
+	// Without a body of rows at all, the planner may legitimately prefer a
+	// sequential scan on a tiny table and the assertion becomes a statement about
+	// the fixture (TKT-172/182).
 	for range 40 {
-		seedWalletOrder(t, db, ctx, other, "completed", time.Now().Add(-time.Hour))
+		stranger, err := RegisterCustomer(ctx, db, uniqueEmail("wallet-stranger"), "correct horse battery")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedWalletOrder(t, db, ctx, uuid.NullUUID{UUID: stranger.ID, Valid: true}, "completed", time.Now().Add(-time.Hour))
+	}
+	// And a couple for the customer under test, so the query has something to
+	// find and the plan is not trivially empty.
+	for range 2 {
+		seedWalletOrder(t, db, ctx, uuid.NullUUID{UUID: account.ID, Valid: true}, "completed", time.Now().Add(-time.Hour))
 	}
 	if _, err := db.ExecContext(ctx, `ANALYZE orders`); err != nil {
 		t.Fatal(err)
@@ -240,7 +257,55 @@ func TestWalletReadScanIsScopedNotJustItsResult(t *testing.T) {
 		t.Fatalf("the wallet read does not use its index — the result would still be correct while "+
 			"scanning every order in the table, which is the defect ADR-019 exists to prevent:\n%s", plan)
 	}
+	// Using the index is not the same as being SCOPED by it: the customer must be
+	// an Index Cond, not a filter applied after reading every completed entry.
+	if !strings.Contains(plan, "Index Cond") || !strings.Contains(plan, "customer_id = $1") {
+		t.Fatalf("customer_id is not an index CONDITION, so the scan reads every completed order "+
+			"and filters afterwards — the result is scoped and the scan is not:\n%s", plan)
+	}
 	if strings.Contains(plan, "Seq Scan on orders") {
 		t.Fatalf("the wallet read sequentially scans orders:\n%s", plan)
+	}
+}
+
+// An order with no guest_order_ref must not reach the wallet (ai-review [high]).
+//
+// That is what an EXCHANGE replacement looks like: a second completed order that
+// inherits the buyer's customer_id and has no reference of its own, because
+// ADR-039/TKT-166 has the replacement tickets share the SOURCE order's link.
+// Without the predicate the wallet renders a row pointing at the zero uuid — or
+// fails the scan and 503s, hiding the customer's entire wallet because one of
+// their purchases was exchanged.
+func TestWalletExcludesOrdersWithNoTicketReference(t *testing.T) {
+	db, ctx := outboxDB(t)
+	account, err := RegisterCustomer(ctx, db, uniqueEmail("wallet-exchange"), "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customer := uuid.NullUUID{UUID: account.ID, Valid: true}
+	real := seedWalletOrder(t, db, ctx, customer, "completed", time.Now().Add(-time.Hour))
+
+	// The exchange-replacement shape, inserted exactly as exchanges.go does:
+	// completed, attributed, no guest_order_ref.
+	reservation := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,1,1500,1500,1500,'EUR','completed')`,
+		reservation, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id)
+		VALUES($1,$2,'completed',$3,'exchange',$4)`,
+		uuid.New(), reservation, "exchange:"+uuid.NewString(), customer); err != nil {
+		t.Fatal(err)
+	}
+
+	page, _, err := CustomerOrders(ctx, db, account.ID, WalletCursor{}, WalletPageLimit)
+	if err != nil {
+		t.Fatalf("one unreferenced order must not fail the whole wallet: %v", err)
+	}
+	if len(page) != 1 || page[0].OrderID != real {
+		t.Fatalf("page = %+v, want only the order that has a ticket reference (%s)", page, real)
 	}
 }

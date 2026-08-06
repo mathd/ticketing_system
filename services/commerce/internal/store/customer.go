@@ -306,10 +306,32 @@ type WalletOrder struct {
 type WalletCursor struct {
 	CreatedAt time.Time
 	OrderID   uuid.UUID
+	// CustomerID is the customer the cursor was ISSUED for (ai-review [medium]).
+	//
+	// A cursor is only a position, so it cannot read another customer's rows —
+	// the query filters on the asserted customer regardless. What it CAN do
+	// unbound is suppress: a cursor copied from someone else's page, or one
+	// forged with a future timestamp, makes the holder's own next page skip rows
+	// or come back empty, with no error anywhere. Binding it makes that a 400
+	// instead of silence.
+	CustomerID uuid.UUID
 }
 
 // walletPageQuery is a const so the ADR-019 scan-scope proof can EXPLAIN the exact
 // statement production executes, rather than a lookalike.
+//
+// `guest_order_ref IS NOT NULL` is not defensive tidying — it excludes EXCHANGE
+// REPLACEMENT orders (ai-review [high]). An exchange inserts a second completed
+// order that inherits the buyer's `customer_id` and has NO reference of its own,
+// deliberately: ADR-039/TKT-166 has the replacement tickets share the SOURCE
+// order's link, so both credentials sit under one reference. Without this
+// predicate the wallet either renders a row linking to the zero uuid, or fails
+// the row scan and 503s — hiding the customer's ENTIRE wallet because one of
+// their purchases was exchanged.
+//
+// Excluding it is also the right answer for the buyer: the replacement is the
+// same purchase in a different seat, and its tickets are already reachable from
+// the source order's row.
 //
 // The keyset predicate is the row-value form `(created_at, id) < ($2, $3)`, which
 // Postgres can drive straight off the index — writing it as
@@ -325,6 +347,7 @@ const walletPageQuery = `
 	  JOIN reservations r ON r.id = o.reservation_id
 	 WHERE o.customer_id = $1
 	   AND o.status = 'completed'
+	   AND o.guest_order_ref IS NOT NULL
 	   AND (o.created_at, o.id) < ($2, $3)
 	 ORDER BY o.created_at DESC, o.id DESC
 	 LIMIT $4`
@@ -371,7 +394,7 @@ func CustomerOrders(ctx context.Context, db *sql.DB, customer uuid.UUID, after W
 			// The limit+1'th row is not returned; it only proves there is more,
 			// and the cursor is the LAST EMITTED row so the next page resumes
 			// exactly where this one stopped.
-			next = WalletCursor{CreatedAt: page[limit-1].CreatedAt, OrderID: page[limit-1].OrderID}
+			next = WalletCursor{CreatedAt: page[limit-1].CreatedAt, OrderID: page[limit-1].OrderID, CustomerID: customer}
 			break
 		}
 		page = append(page, o)

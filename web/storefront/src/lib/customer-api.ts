@@ -87,10 +87,24 @@ export async function listCustomerOrders(
 ): Promise<CustomerOrderPage | undefined> {
   const query = new URLSearchParams({ locale });
   if (after) query.set('after', after);
-  const response = await fetch(
-    `${GATEWAY_URL}/api/commerce/customers/${encodeURIComponent(customerId)}/orders?${query}`,
-    { headers: { Accept: 'application/json', 'X-Customer-Assertion': assertion } },
-  );
-  if (response.status !== 200) return undefined;
-  return (await response.json()) as CustomerOrderPage;
+  // Every failure becomes `undefined`, including a rejected fetch and an
+  // undecodable body (ai-review [medium]). Without the catch a gateway reset
+  // escapes Astro's frontmatter and the buyer gets a 500 instead of the
+  // "temporarily unavailable" state the page already knows how to render — and a
+  // 500 is the one answer that tells them nothing and offers nothing.
+  try {
+    const response = await fetch(
+      `${GATEWAY_URL}/api/commerce/customers/${encodeURIComponent(customerId)}/orders?${query}`,
+      {
+        headers: { Accept: 'application/json', 'X-Customer-Assertion': assertion },
+        // A wallet is a page render, not a background job: it must not hold the
+        // SSR request for the global client timeout while commerce is stuck.
+        signal: AbortSignal.timeout(5_000),
+      },
+    );
+    if (response.status !== 200) return undefined;
+    return (await response.json()) as CustomerOrderPage;
+  } catch {
+    return undefined;
+  }
 }
