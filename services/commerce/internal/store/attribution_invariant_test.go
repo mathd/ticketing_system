@@ -39,7 +39,7 @@ var (
 	// the raw string. The second exists so a predicate check can be bound to the
 	// STATEMENT rather than to the file — searching the file passes when the
 	// predicates live in a comment or a different function (ai-review [medium]).
-	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;)`)
+	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
 	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+orders\s*\(([^)]*)\)`)
 )
 
