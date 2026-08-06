@@ -134,6 +134,29 @@ nobody. The ledger balances, the upgrade works, and the captures whose split is 
 Those rows are validated by the same deferred balance trigger as everything else, so the backfill
 cannot quietly produce an unbalanced ledger.
 
+### 3e. Known gap: an unresolved retry may carry a different plan
+
+The request fingerprint covers order, buyer, amount, currency and payment token. **It does not cover
+the settlement plan, and the operation does not persist one.** So this sequence is not prevented by
+anything in payments:
+
+1. A charge binds, the PSP captures, the process dies before the journal append.
+2. The 30-second lease expires.
+3. A retry arrives under the same key with the same fingerprint but a **different valid plan**.
+4. The PSP replays its capture idempotently, and the ledger records that money under the new
+   attribution.
+
+**Not reachable through any current caller**, and that is a property of the caller rather than of
+this service: commerce derives the plan from the reservation's persisted, immutable fee snapshot
+(§ "never a fresh catalog read"), so the plan for a given key cannot change. The gap is a missing
+*enforcement*, not a live defect.
+
+Closing it means persisting a canonical plan digest on the operation at bind and refusing a lease
+retry whose digest differs. That is a schema and capture-path state-machine change — the work
+[plan-final A1](../../.sdlc/) deliberately removed as unnecessary — so it is **deliberately not done
+here** and is owned by **TKT-219**. Naming it is the point: an ADR that claimed exact attribution
+without this paragraph would be claiming more than the code enforces.
+
 ### 4. Payee identity is snapshotted
 
 Each entry carries the payee's id, kind, display name and external reference **as they were**, with
