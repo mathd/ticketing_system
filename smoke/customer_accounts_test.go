@@ -242,6 +242,60 @@ func TestClaimIsReachableWithOnlyTheCustomersOwnAssertion(t *testing.T) {
 
 	buyer := register(t)
 
+	// The happy path, end to end through the live stack: buy as a GUEST, sign up
+	// afterwards with a different address, and claim.
+	//
+	// The different address is the point. Reference-only proof exists precisely so
+	// a buyer who signed up later, with whatever address they felt like, is not
+	// locked out of their own history — a fixture that reused the checkout email
+	// would pass against an implementation that required them to match.
+	_, ticketType := setupCheckoutOffer(t, "claim")
+	reservation := reserveCheckout(t, ticketType, "reserve-claim")
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-claim", map[string]any{
+		"reservation_id": reservation["reservation_id"],
+		"name":           "Guest Buyer",
+		"email":          "guest-" + uuid.NewString() + "@example.test",
+		"payment_token":  "fake-ok",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("guest checkout: %d %s", code, body)
+	}
+	var purchase struct {
+		OrderID       string `json:"order_id"`
+		GuestOrderRef string `json:"guest_order_ref"`
+	}
+	if err := json.Unmarshal(body, &purchase); err != nil {
+		t.Fatal(err)
+	}
+
+	status, claimed := claim(t, purchase.GuestOrderRef, buyer.Assertion)
+	if status != http.StatusOK {
+		t.Fatalf("claiming a completed guest order: %d %s", status, claimed)
+	}
+	var result struct {
+		OrderID    string `json:"order_id"`
+		CustomerID string `json:"customer_id"`
+	}
+	if err := json.Unmarshal(claimed, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OrderID != purchase.OrderID || result.CustomerID != buyer.CustomerID {
+		t.Fatalf("claim result = %+v, want order %s for customer %s", result, purchase.OrderID, buyer.CustomerID)
+	}
+
+	// Idempotent: the same customer claiming again succeeds rather than erroring,
+	// so a browser retry is safe.
+	if status, again := claim(t, purchase.GuestOrderRef, buyer.Assertion); status != http.StatusOK {
+		t.Fatalf("claiming twice as the same customer: %d %s", status, again)
+	}
+
+	// And somebody ELSE gets the ordinary refusal — the same 404 an unknown
+	// reference gets, so the two are indistinguishable across the real stack.
+	stranger := register(t)
+	if status, refused := claim(t, purchase.GuestOrderRef, stranger.Assertion); status != http.StatusNotFound {
+		t.Fatalf("a stranger claiming a taken order: %d, want 404: %s", status, refused)
+	}
+
 	// An order reference nobody holds: the generic refusal, and it must be the
 	// SAME answer a real-but-taken order would give.
 	if status, body := claim(t, uuid.NewString(), buyer.Assertion); status != http.StatusNotFound {
