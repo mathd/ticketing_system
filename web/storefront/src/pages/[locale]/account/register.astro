@@ -42,6 +42,9 @@ if (Astro.request.method === 'POST') {
         const token = createSession({
           customerId: result.principal.customer_id,
           email: result.principal.email,
+          // Kept server-side, inside this process's session map. It never
+          // reaches the browser (TKT-221).
+          assertion: result.principal.customer_assertion,
         });
         Astro.cookies.set(
           SESSION_COOKIE,

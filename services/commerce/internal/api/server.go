@@ -42,6 +42,10 @@ type Server struct {
 	catalogURL, inventoryURL, paymentsURL, token string
 	// The back office's commerce credential (TKT-194); see staff_credential.go.
 	staffWriteToken string
+	// The HMAC key for customer checkout assertions (TKT-221); see assertion.go.
+	// Commerce-only, and main.go refuses to start when it equals either other
+	// credential.
+	assertionKey customerAssertionKey
 	// accessURL drives the ticket-voiding half of a refund reversal (TKT-157). Empty
 	// leaves the obligation outstanding rather than failing the refund — the money has
 	// already moved by then.
@@ -854,7 +858,20 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 // Parked is read here rather than re-queried because this is the only place that already
 // holds the row lock, and a replay branch that answers from durable evidence needs to know
 // whether any worker can still act on that evidence (ai-review F2).
-func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string) (uuid.UUID, string, bool, error) {
+// claimOrder takes `customer` — the verified attribution, or an invalid NullUUID
+// for a guest — and writes it on the INSERT that creates the order row.
+//
+// Written HERE and nowhere else, deliberately. The attribution has to survive the
+// request that established it: an order can be completed minutes later by the
+// recovery runner (ADR-016), long after the assertion expired and the storefront
+// session is gone. Carrying it forward from the handler would mean recovery has no
+// idea who bought, and there is no second source to ask.
+//
+// A replay finds the existing row and does NOT update it. That is what makes
+// attribution immutable under idempotency: a second request bearing a different
+// (or absent) assertion cannot repoint a completed purchase at someone else, and
+// cannot promote a guest order into an attributed one. The first claim decides.
+func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string, customer uuid.NullUUID) (uuid.UUID, string, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return uuid.Nil, "", false, err
@@ -875,7 +892,7 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		Scan(&id, &storedKey, &storedFingerprint, &status, &recoveryClaim, &recoveryLease, &recoveryParked)
 	if errors.Is(err, sql.ErrNoRows) {
 		id = uuid.NewSHA1(uuid.NameSpaceOID, []byte("order:"+x.OrganizerID.String()+":"+key))
-		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint) VALUES($1,$2,'created',$3,$4)`, id, x.ID, key, fingerprint)
+		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id) VALUES($1,$2,'created',$3,$4,$5)`, id, x.ID, key, fingerprint, customer)
 		status = "created"
 	} else if err == nil {
 		if storedKey != key || storedFingerprint != fingerprint {
@@ -1085,8 +1102,24 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": "reservation " + message})
 		return
 	}
+	// The attribution, resolved BEFORE any order, payment or inventory work: a
+	// forged assertion must cost nothing and leave nothing behind.
+	//
+	// Deliberately NOT part of the fingerprint below. The fingerprint decides
+	// whether a replay is the same request, and an assertion carries an expiry —
+	// so including it would turn a legitimate retry after a re-sign-in into a 409
+	// conflict, which is not what the buyer changed.
+	customer, err := customerFromRequest(s.assertionKey, r.Header.Get(assertionHeader), time.Now())
+	if err != nil {
+		// 401, and no order. NOT a silent downgrade to a guest checkout: that
+		// would hide a failed attribution from the buyer, who would then not find
+		// the purchase in their account with no error to point at. The message
+		// says nothing about which part failed (assertion.go).
+		write(w, http.StatusUnauthorized, map[string]string{"error": "invalid customer assertion"})
+		return
+	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
-	order, orderStatus, recoveryParked, err := s.claimOrder(r.Context(), x, key, fingerprint)
+	order, orderStatus, recoveryParked, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
 	if err != nil {
 		code, message := checkoutClaimProblem(err)
 		if code == http.StatusInternalServerError {
@@ -1440,7 +1473,8 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var status string
-	e = s.db.QueryRowContext(r.Context(), `SELECT status FROM orders WHERE id=$1`, id).Scan(&status)
+	var customer uuid.NullUUID
+	e = s.db.QueryRowContext(r.Context(), `SELECT status,customer_id FROM orders WHERE id=$1`, id).Scan(&status, &customer)
 	if e != nil {
 		code, message := persistenceReadProblem(e)
 		if code != http.StatusNotFound {
@@ -1449,5 +1483,12 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": message})
 		return
 	}
-	write(w, 200, map[string]any{"order_id": id, "status": status})
+	// `customer_id` is informational, NOT an ownership check: this read is public
+	// and answers for any order id. TKT-222 builds the authenticated,
+	// ownership-scoped read; do not mistake this field's presence for one.
+	out := map[string]any{"order_id": id, "status": status, "customer_id": nil}
+	if customer.Valid {
+		out["customer_id"] = customer.UUID
+	}
+	write(w, 200, out)
 }

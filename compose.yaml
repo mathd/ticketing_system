@@ -211,6 +211,11 @@ services:
       # nothing else. Held by commerce and the back office only — deliberately NOT
       # in the shared &go-env anchor.
       COMMERCE_STAFF_WRITE_TOKEN: ${COMMERCE_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
+      # The HMAC key for customer checkout assertions (TKT-221). Commerce-only:
+      # nothing else mints or verifies them, and the storefront deliberately gets
+      # NO credential (ADR-049 §1) — it forwards an assertion the customer earned
+      # by signing in, which is not the same thing as holding a key.
+      COMMERCE_CUSTOMER_ASSERTION_KEY: ${COMMERCE_CUSTOMER_ASSERTION_KEY:?no default is shipped - run 'make up' once to generate a local credential}
       CATALOG_URL: http://catalog:8080
       INVENTORY_URL: http://inventory:8080
       PAYMENTS_URL: http://payments:8080

@@ -282,8 +282,11 @@ type CustomerCredentials struct {
 
 // CustomerPrincipal A signed-in buyer. `email` is the address in the spelling the buyer registered with, for display; every lookup goes through the normalized form, which is never exposed.
 type CustomerPrincipal struct {
-	CustomerId openapi_types.UUID `json:"customer_id"`
-	Email      string             `json:"email"`
+	// CustomerAssertion A commerce-signed, expiring proof that the holder authenticated as this customer, presented on checkout in `X-Customer-Assertion` (TKT-221, ADR-049).
+	// This is a BEARER CREDENTIAL: anyone holding it can attribute a checkout to this customer until it expires. It is returned only to a caller who has just proven the password, and the storefront keeps it server-side inside its in-process session — never in a cookie, a rendered prop, or a log. Its lifetime is deliberately equal to that session's, so "the session is alive" and "the assertion is valid" cannot disagree and strand a buyer at the payment button.
+	CustomerAssertion string             `json:"customer_assertion"`
+	CustomerId        openapi_types.UUID `json:"customer_id"`
+	Email             string             `json:"email"`
 }
 
 // CustomerRegistration A customer registration attempt (TKT-220). maxLength on both fields bounds the work an unauthenticated caller can ask for. 72 on the password is bcrypt's hard input limit, past which it silently ignores the tail — so a longer password and its 72-byte prefix would authenticate each other.
@@ -404,8 +407,11 @@ type OrderResultStatus string
 
 // OrderState defines model for OrderState.
 type OrderState struct {
-	OrderId openapi_types.UUID `json:"order_id"`
-	Status  string             `json:"status"`
+	// CustomerId The customer account this order belongs to, or null for a guest purchase (TKT-221). REQUIRED and nullable rather than optional: an absent field and an explicit null read the same to a careless client, and "we did not tell you" is not the same fact as "there is no account". Guest is the default and is first-class.
+	// Informational only. This read is PUBLIC and answers for any order id, so the presence of this field is not an ownership check — TKT-222 owns the authenticated, ownership-scoped read.
+	CustomerId *openapi_types.UUID `json:"customer_id"`
+	OrderId    openapi_types.UUID  `json:"order_id"`
+	Status     string              `json:"status"`
 }
 
 // Refund defines model for Refund.
@@ -489,6 +495,9 @@ type ReservationCreate struct {
 // AfterOrderId defines model for AfterOrderId.
 type AfterOrderId = openapi_types.UUID
 
+// CustomerAssertion defines model for CustomerAssertion.
+type CustomerAssertion = string
+
 // Id defines model for Id.
 type Id = openapi_types.UUID
 
@@ -535,7 +544,8 @@ type CreateCancellationRefundRunParams struct {
 
 // CheckoutParams defines parameters for Checkout.
 type CheckoutParams struct {
-	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+	IdempotencyKey     IdempotencyKey     `json:"Idempotency-Key"`
+	XCustomerAssertion *CustomerAssertion `json:"X-Customer-Assertion,omitempty"`
 }
 
 // CreateReservationParams defines parameters for CreateReservation.

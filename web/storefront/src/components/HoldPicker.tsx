@@ -107,7 +107,12 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
     if (!reservation) return;
     setBusy(true); setStatus('');
     try {
-      const response = await fetch('/api/commerce/orders', {
+      // Posts to the storefront's own bridge, not straight to commerce (TKT-221).
+      // The session cookie is httpOnly, so this island cannot know who is signed
+      // in — and must not: the proof of identity is added server-side, where the
+      // browser cannot reach it. Signed out, the bridge forwards the same request
+      // to the same place and the checkout is a guest checkout exactly as before.
+      const response = await fetch('/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ reservation_id: reservation.reservation_id, name, email, payment_token: paymentToken }),
@@ -115,6 +120,18 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       const result = await response.json() as { order_id?: string; guest_order_ref?: string; status?: string };
       if (response.ok && result.status === 'completed' && result.guest_order_ref) { setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.completed); return; }
       if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.declined); return; }
+      // 401 = the customer assertion was refused (expired, or signed with a key
+      // that has since rotated). It is NOT the payment-uncertainty answer, which
+      // is what this fell through to before — a lie in the frightening direction.
+      //
+      // But it is not proof that nothing happened either, and the first version of
+      // this said "your seats are still held" as if it were (ai-review pass 2
+      // [high]). Commerce verifies the assertion BEFORE it resolves an existing
+      // order, so a retry of an already-successful checkout whose assertion has
+      // since died gets this same 401 — with the order completed and the seats
+      // long since confirmed. The copy therefore points at the tickets page rather
+      // than asserting a state this code cannot know.
+      if (response.status === 401) { setStatus(strings.signInAgain); return; }
       setStatus('Payment status is being checked');
     } catch { setStatus('Payment status is being checked'); }
     finally { setBusy(false); }

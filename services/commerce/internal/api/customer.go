@@ -75,7 +75,7 @@ func (s *Server) registerCustomer(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, map[string]string{"error": customerUnavailable})
 		return
 	}
-	write(w, http.StatusCreated, principalResponse(account))
+	write(w, http.StatusCreated, s.principalResponse(account))
 }
 
 func (s *Server) authenticateCustomer(w http.ResponseWriter, r *http.Request) {
@@ -97,14 +97,26 @@ func (s *Server) authenticateCustomer(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusInternalServerError, map[string]string{"error": customerUnavailable})
 		return
 	}
-	write(w, http.StatusOK, principalResponse(account))
+	write(w, http.StatusOK, s.principalResponse(account))
 }
 
 // principalResponse is the only shape either operation returns. `email` is the
 // buyer's original spelling; the normalized lookup key is never exposed, and no
 // password material exists above the store to leak.
-func principalResponse(a commercestore.CustomerAccount) map[string]any {
-	return map[string]any{"customer_id": a.ID, "email": a.Email}
+//
+// `customer_assertion` is a BEARER CREDENTIAL in a public response body, and that
+// is worth saying out loud (ADR-049 § TKT-221): anyone holding it can attribute a
+// checkout to this customer until it expires. It is returned only to a caller who
+// has just proven the password, and the storefront keeps it server-side inside its
+// in-process session — never in the cookie, never in a rendered prop, never in a
+// log. It is empty when no signing key is configured, which is a state startup
+// refuses.
+func (s *Server) principalResponse(a commercestore.CustomerAccount) map[string]any {
+	return map[string]any{
+		"customer_id":        a.ID,
+		"email":              a.Email,
+		"customer_assertion": s.mintForPrincipal(a.ID),
+	}
 }
 
 // logCustomerFailure reports an outage to the operator and carries NOTHING the

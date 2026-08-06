@@ -15,12 +15,19 @@ paths:
   /orders:
     post:
       operationId: checkout
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      # X-Customer-Assertion is OPTIONAL and its absence means GUEST — the default
+      # this system was built around. A header rather than a body field because
+      # `Checkout` is additionalProperties:false and adding a property there would
+      # change the guest request shape (TKT-221).
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/CustomerAssertion'}
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Checkout'}}}}
       responses:
         '200': {description: Completed, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResult'}}}}
         '202': {description: Recovery pending, content: {application/json: {schema: {$ref: '#/components/schemas/OrderPending'}}}}
         '400': {$ref: '#/components/responses/Error'}
+        '401': {description: 'The assertion is absent-but-malformed, forged or expired. NOT downgraded to a guest order: silently dropping a failed attribution would hide it from the buyer, who would then not find the purchase in their account.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '402': {description: Declined, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
         '408': {description: No-side-effect timeout, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
         '409': {description: Checkout conflict or payment in progress, content: {application/json: {schema: {$ref: '#/components/schemas/OrderConflict'}}}}
@@ -238,6 +245,7 @@ components:
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    CustomerAssertion: {name: X-Customer-Assertion, in: header, required: false, schema: {type: string, minLength: 1, maxLength: 512}}
     OrganizerIdQuery: {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
     ReportLimit: {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200}}
     AfterOrderId: {name: after_order_id, in: query, required: false, schema: {type: string, format: uuid}}
@@ -450,11 +458,25 @@ components:
         registered with, for display; every lookup goes through the normalized
         form, which is never exposed.
       type: object
-      required: [customer_id, email]
+      required: [customer_id, email, customer_assertion]
       additionalProperties: false
       properties:
         customer_id: {type: string, format: uuid}
         email: {type: string}
+        customer_assertion:
+          type: string
+          description: >
+            A commerce-signed, expiring proof that the holder authenticated as
+            this customer, presented on checkout in `X-Customer-Assertion`
+            (TKT-221, ADR-049).
+
+            This is a BEARER CREDENTIAL: anyone holding it can attribute a
+            checkout to this customer until it expires. It is returned only to a
+            caller who has just proven the password, and the storefront keeps it
+            server-side inside its in-process session — never in a cookie, a
+            rendered prop, or a log. Its lifetime is deliberately equal to that
+            session's, so "the session is alive" and "the assertion is valid"
+            cannot disagree and strand a buyer at the payment button.
     Checkout:
       type: object
       additionalProperties: false
@@ -498,8 +520,24 @@ components:
     OrderState:
       type: object
       additionalProperties: false
-      required: [order_id, status]
-      properties: {order_id: {type: string, format: uuid}, status: {type: string}}
+      required: [order_id, status, customer_id]
+      properties:
+        order_id: {type: string, format: uuid}
+        status: {type: string}
+        customer_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The customer account this order belongs to, or null for a guest
+            purchase (TKT-221). REQUIRED and nullable rather than optional: an
+            absent field and an explicit null read the same to a careless client,
+            and "we did not tell you" is not the same fact as "there is no
+            account". Guest is the default and is first-class.
+
+            Informational only. This read is PUBLIC and answers for any order id,
+            so the presence of this field is not an ownership check — TKT-222 owns
+            the authenticated, ownership-scoped read.
     RefundCreate:
       type: object
       additionalProperties: false

@@ -545,10 +545,20 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 		ex.Quantity, ex.TargetUnitAmount, gross, ex.TargetTotal, ex.Currency, ex.TargetPriceSnapshot); err != nil {
 		return uuid.Nil, err
 	}
+	// The replacement INHERITS the source order's attribution (TKT-221). An
+	// exchange is the same purchase in a different seat, so a signed-in buyer's
+	// exchanged order has to stay theirs — otherwise it silently disappears from
+	// the account, and the buyer has no way to tell that from a lost order.
+	//
+	// Copied inside the INSERT rather than read first: there is no window where
+	// the source could change (an exchange holds its own order), and a second
+	// round trip to fetch one column is work for nothing. A guest source selects
+	// NULL, which is exactly right.
 	if _, err := s.db.ExecContext(r.Context(), `
-		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint)
-		VALUES($1,$2,'completed',$3,'exchange') ON CONFLICT(id) DO NOTHING`,
-		replacement, reservation, "exchange:"+ex.ID.String()); err != nil {
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id)
+		SELECT $1,$2,'completed',$3,'exchange',customer_id FROM orders WHERE id=$4
+		ON CONFLICT(id) DO NOTHING`,
+		replacement, reservation, "exchange:"+ex.ID.String(), ex.SourceOrderID); err != nil {
 		return uuid.Nil, err
 	}
 	return replacement, nil

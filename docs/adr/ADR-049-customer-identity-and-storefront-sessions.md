@@ -6,6 +6,9 @@ Date: 2026-08-06
 
 Accepted
 
+**Amended by TKT-221 (2026-08-06)** — a signed-in purchase is attributed to its account. Nothing
+above is reversed; the amendment is additive and lives in § *TKT-221 amendment* at the end.
+
 ## Context
 
 TKT-21 needs a *customer*: an optional account a buyer can create, so that purchases hang off an
@@ -229,3 +232,120 @@ response: the bytes are identical and an orphaned server-side session survives. 
   SELECT-then-INSERT is a race two concurrent registrations both win.
 - Rolling migration `0015` back with any account present **fails**. Credentials cannot be recovered
   and a silent drop would lock every customer out with no record of who existed.
+
+---
+
+## TKT-221 amendment — attributing a purchase to an account
+
+### The problem this had to solve
+
+This ADR put customer **accounts** in commerce and the **session** in the storefront process, and
+they never speak about a specific signed-in buyer: the storefront authenticates once, gets a
+principal, and remembers it locally. Commerce has no idea that session exists.
+
+Two facts make the obvious answers unavailable. The checkout is a `fetch` from a **browser-side
+React island** (`HoldPicker`, `client:load`), so the storefront's SSR process is not in the request
+path at all; and `sf_sid` is `httpOnly`, so the island cannot read it. Meanwhile:
+
+- **Putting `customer_id` in the checkout body is forgery.** `/api/commerce/orders` is public through
+  the gateway; anyone could post any UUID and attribute their order to a stranger, or a stranger's to
+  themselves.
+- **Giving the storefront a service credential is the trust boundary §1 refused.** That process
+  serves anonymous internet traffic and holds exactly one environment variable.
+
+### Decision
+
+**Commerce mints a signed, expiring customer assertion; the storefront proxies the checkout and
+attaches it server-side.**
+
+1. **The assertion** is `v1.<customer id>.<unix expiry>.<HMAC-SHA256>`, signed with
+   `COMMERCE_CUSTOMER_ASSERTION_KEY` — a **fourth** credential, commerce-only. Commerce verifies its
+   own signature; nothing is stored. It is returned from `registerCustomer` and
+   `authenticateCustomer`, so the buyer earns it by presenting their password.
+
+   It is a **bearer credential in a public contract response**, said plainly because that is what it
+   is: anyone holding it can attribute a checkout to that customer until it expires. What bounds the
+   damage is where it lives, not what it is.
+
+2. **Its lifetime is exactly the storefront session's** (8h), anchored at the same instant. This is
+   deliberate and it is the part most likely to be "tightened" later by someone who has not read
+   this paragraph. A shorter assertion does not buy security — it lives only inside the in-process
+   session, so it is already unreachable once that session is gone — and it buys a specific, cruel
+   failure: a buyer who signs in, browses, takes a hold on a short TTL and reaches the payment button
+   is refused *there*, with no way back except signing in again while the hold expires. The
+   storefront cannot re-mint one; it holds the principal, not the password. Coupling the two makes
+   "the session is alive" and "the assertion is valid" one statement rather than two that can
+   disagree. Two constants in two languages enforce it, plus a test on each side.
+
+3. **The storefront proxies checkout at `/checkout`.** Not under `/api/` — in this system
+   `/api/<svc>/` means "the gateway proxies this to a service", and a storefront route inside that
+   namespace reads as a service call while depending on the `/` catch-all. The bridge forwards an
+   allowlist of headers, the body verbatim, and commerce's status and response **bytes** unchanged;
+   it never forwards the cookie.
+
+4. **Absent assertion means GUEST; invalid means 401.** Absent is a first-class answer — buying
+   without an account is the default. Invalid is **not** silently downgraded to a guest order: that
+   would hide a failed attribution from the buyer, who would then not find the purchase in their
+   account with no error to point at. But an *expired storefront session* at the bridge **is** a
+   guest checkout rather than a refusal: breaking a working checkout because the buyer had once been
+   signed in is a worse outcome than an unattributed order they can still reach by reference.
+
+5. **Attribution is written once, on the INSERT in `claimOrder`, and never updated.** It has to
+   survive the request that established it — an order can be completed minutes later by the recovery
+   runner (ADR-016), after the assertion expired. A replay finds the existing row and leaves it
+   alone, which is what makes attribution immutable under idempotency: a second request with a
+   different assertion cannot repoint a purchase, and cannot promote a guest order into an attributed
+   one. The assertion is deliberately **not** part of the idempotency fingerprint — it carries an
+   expiry, so including it would turn a legitimate retry into a 409.
+
+6. **An exchange's replacement order inherits the source order's attribution.** An exchange is the
+   same purchase in a different seat; without this a signed-in buyer's exchanged order silently
+   disappears from their account.
+
+7. **`orders.customer_id` is nullable and nothing is backfilled.** NULL means guest, for the domain
+   reason and not as a migration convenience. No index: the read it exists for is TKT-222's, and
+   ADR-019 says an index is justified by the scan it removes.
+
+### The adversary, named (ADR-021)
+
+This stops **an internet caller who can post directly to the public gateway** from attributing an
+order to a customer they have not authenticated as. Tampering with either field of the token fails
+the MAC; the MAC is checked before the expiry is trusted, because until the signature says otherwise
+the expiry is attacker-controlled.
+
+It stops **nothing** against: someone holding the signing key; someone who can read the storefront
+process's memory; someone with commerce database access; or someone who has stolen a live assertion,
+which remains usable until it expires. Commerce refuses to start when the key equals either other
+credential, and all four are generated from independent `/dev/urandom` reads — but that is separation,
+not protection against a holder.
+
+### What the review changed
+
+Three of these were found by the adversarial pass and are worth keeping visible, because each is a
+gap between what the design *said* and what the code did:
+
+- **Equal TTLs are not synchronized lifetimes.** Commerce mints at T1 on its clock; the storefront
+  starts the session at T2 on its own. The session therefore outlived the assertion by a round trip
+  plus any skew, which near the boundary is a live session holding a token commerce refuses. The
+  storefront now **caps the session at the assertion's own expiry**, read out of the token without
+  verifying it — safe, because the only thing that value is used for is shortening this process's own
+  session, and lying about it can only hurt the liar.
+- **A 401 was rendered as payment uncertainty.** The island did not handle it, so an assertion
+  refused *before any order existed* reached the buyer as "payment status is being checked" — a lie
+  in the frightening direction. It now says the sign-in expired and keeps the hold, which makes
+  signing in again a complete recovery.
+- **Key rotation has no overlap.** Every assertion minted under the old key stops verifying at once.
+  With the 401 handling above that is survivable — buyers are told to sign in again — but it is a
+  deliberate operational cost, not a solved problem, and `docs/development.md` says so.
+
+### Consequences
+
+- A fourth credential to generate, distribute and eventually rotate. **Rotation, revocation and
+  multi-key verification do not exist** — changing the key invalidates every live assertion, which
+  signs every customer out of checkout attribution until they sign in again.
+- The checkout now traverses the storefront SSR layer, which means it passes the proxy-aware origin
+  check — **for guests too**. That is a new failure mode on a previously direct path, and it is
+  exactly the class `make check` cannot see, so a browser must complete a guest checkout before this
+  is believed.
+- `GET /orders/{id}` now reports `customer_id`, and it is **informational**: that read is public and
+  answers for any order id. It is not an ownership check, and TKT-222 must not treat it as one.
