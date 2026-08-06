@@ -279,6 +279,7 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 	}
 	boundStatus, boundID, occurredAt, replay, err := s.journal.BindOperation(r.Context(), in.OrganizerID, key, fingerprint, store.OperationRequest{
 		OrderID: in.OrderID, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, PaymentMethodRef: in.PaymentToken,
+		SettlementDigest: store.PlanDigest(plan),
 	})
 	if err != nil {
 		write(w, 409, map[string]string{"error": err.Error()})

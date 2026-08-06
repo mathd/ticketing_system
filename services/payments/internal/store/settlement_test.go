@@ -288,3 +288,50 @@ func TestBuildSettlementEntriesRecordsAZeroUnattributedFee(t *testing.T) {
 			"so nothing else would notice it vanishing")
 	}
 }
+
+// The digest identifies what a plan RESOLVES TO, not how it was written down.
+// A retry that serializes the same attribution in a different order is the same
+// request, and refusing it would strand a caller that is doing nothing wrong.
+func TestPlanDigestIgnoresOrderingButNotAttribution(t *testing.T) {
+	venue := PayeeRef{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Kind: "venue", DisplayName: "V"}
+	artist := PayeeRef{ID: uuid.MustParse("22222222-2222-2222-2222-222222222222"), Kind: "artist", DisplayName: "A"}
+	base := []SettlementEntry{
+		{Kind: EntryFaceValue, Amount: 5000, Currency: "EUR"},
+		{Kind: EntryFee, Payee: &venue, FeeCode: "booking", Incidence: "passed_on", Amount: 360, Currency: "EUR"},
+		{Kind: EntryFee, Payee: &artist, FeeCode: "booking", Incidence: "passed_on", Amount: 240, Currency: "EUR"},
+	}
+	shuffled := []SettlementEntry{base[2], base[0], base[1]}
+	if PlanDigest(base) != PlanDigest(shuffled) {
+		t.Error("reordering the same attribution changed the digest — an identical retry would " +
+			"be refused as a different request")
+	}
+
+	// And every field that decides who is owed what must move it.
+	for name, mutate := range map[string]func([]SettlementEntry) []SettlementEntry{
+		"a different payee": func(e []SettlementEntry) []SettlementEntry {
+			other := PayeeRef{ID: uuid.MustParse("33333333-3333-3333-3333-333333333333"), Kind: "venue", DisplayName: "V"}
+			out := append([]SettlementEntry(nil), e...)
+			out[1].Payee = &other
+			return out
+		},
+		"a different split": func(e []SettlementEntry) []SettlementEntry {
+			out := append([]SettlementEntry(nil), e...)
+			out[1].Amount, out[2].Amount = 240, 360
+			return out
+		},
+		"a different fee code": func(e []SettlementEntry) []SettlementEntry {
+			out := append([]SettlementEntry(nil), e...)
+			out[1].FeeCode = "service"
+			return out
+		},
+		"a different incidence": func(e []SettlementEntry) []SettlementEntry {
+			out := append([]SettlementEntry(nil), e...)
+			out[1].Incidence = "absorbed"
+			return out
+		},
+	} {
+		if PlanDigest(base) == PlanDigest(mutate(base)) {
+			t.Errorf("%s left the digest unchanged — a retry could swap it in unnoticed", name)
+		}
+	}
+}

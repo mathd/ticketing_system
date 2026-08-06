@@ -2,10 +2,14 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -249,6 +253,29 @@ func sumEntries(entries []SettlementEntry) (int64, error) {
 // guarantee of this ticket is that the entries and the captured fact commit
 // together, and a function that could open its own transaction would make that
 // a convention instead of a fact.
+// PlanDigest is a canonical fingerprint of what a settlement plan RESOLVES TO --
+// the entries it produces -- rather than of the wire form it arrived in. Two
+// callers that serialize the same attribution differently must agree, or the
+// digest would refuse retries that are in fact identical.
+//
+// The lines are sorted, so fee ordering and payee ordering within the plan carry
+// no weight. What it does distinguish is every field that decides who is owed
+// what: kind, fee code, incidence, payee, amount and currency.
+func PlanDigest(entries []SettlementEntry) string {
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		payee := ""
+		if e.Payee != nil {
+			payee = e.Payee.ID.String()
+		}
+		lines = append(lines, fmt.Sprintf("%s|%s|%s|%s|%d|%s",
+			e.Kind, e.FeeCode, e.Incidence, payee, e.Amount, e.Currency))
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
 func insertSettlement(ctx context.Context, tx *sql.Tx, f Fact, entries []SettlementEntry) error {
 	if len(entries) == 0 {
 		return nil

@@ -134,11 +134,11 @@ nobody. The ledger balances, the upgrade works, and the captures whose split is 
 Those rows are validated by the same deferred balance trigger as everything else, so the backfill
 cannot quietly produce an unbalanced ledger.
 
-### 3e. Known gap: an unresolved retry may carry a different plan
+### 3e. A plan's identity is bound to the operation
 
-The request fingerprint covers order, buyer, amount, currency and payment token. **It does not cover
-the settlement plan, and the operation does not persist one.** So this sequence is not prevented by
-anything in payments:
+The request fingerprint covers order, buyer, amount, currency and payment token. It deliberately
+does **not** cover the settlement plan — the plan is not part of what the buyer is being charged.
+That left a hole the fourth review pass found:
 
 1. A charge binds, the PSP captures, the process dies before the journal append.
 2. The 30-second lease expires.
@@ -146,16 +146,20 @@ anything in payments:
 4. The PSP replays its capture idempotently, and the ledger records that money under the new
    attribution.
 
-**Not reachable through any current caller**, and that is a property of the caller rather than of
-this service: commerce derives the plan from the reservation's persisted, immutable fee snapshot
-(§ "never a fresh catalog read"), so the plan for a given key cannot change. The gap is a missing
-*enforcement*, not a live defect.
+No current caller could reach it — commerce derives the plan from the reservation's immutable fee
+snapshot — but that made the ledger's correctness a property of the *caller*, not of this service.
 
-Closing it means persisting a canonical plan digest on the operation at bind and refusing a lease
-retry whose digest differs. That is a schema and capture-path state-machine change — the work
-[plan-final A1](../../.sdlc/) deliberately removed as unnecessary — so it is **deliberately not done
-here** and is owned by **TKT-219**. Naming it is the point: an ADR that claimed exact attribution
-without this paragraph would be claiming more than the code enforces.
+So the operation now carries a **canonical digest of the plan it bound with** (`settlement_digest`,
+migration `0005`), and a lease retry whose digest differs is refused with the same disposition as a
+reused key with a different request, because that is what it is. The digest is taken over the
+**resolved entries**, sorted — two callers that serialize the same attribution differently must
+agree, or an identical retry would be refused — and it moves for payee, split, fee code and
+incidence.
+
+Two boundaries worth stating. A **NULL** digest is a row bound before the column existed; there is
+nothing to compare and nothing to recover it from, so such a retry is adopted rather than refused —
+the behaviour that preceded the check, and no worse. And an expired lease carrying the **same** plan
+still succeeds: the rule must not turn a recoverable operation into a stuck one.
 
 ### 4. Payee identity is snapshotted
 

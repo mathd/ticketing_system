@@ -230,3 +230,84 @@ func TestAReusedKeyWithADifferentRequestStillConflicts(t *testing.T) {
 			"conflict, and an unusable plan must not answer in its place", res.Code, res.Body.String())
 	}
 }
+
+// TKT-219, found by the fourth adversarial review pass on TKT-217.
+//
+// The request fingerprint covers order, buyer, amount, currency and token — not
+// the settlement plan. An operation that bound, captured at the provider and
+// died before journalling leaves an unresolved row; once its lease expires, a
+// retry can arrive with a DIFFERENT valid plan and the already-captured money
+// would be recorded under that new attribution.
+//
+// Seeded rather than raced: the state that matters is an unresolved operation
+// with an expired lease and a known plan digest, and provoking it through a real
+// crash would test the crash, not the rule.
+func TestALeaseRetryCannotSwapTheSettlementPlan(t *testing.T) {
+	h, provider := chargeServer(t)
+	db, ctx := refundDB(t)
+	org := uuid.New()
+	order, buyer := uuid.New(), uuid.New()
+
+	// The plan the operation bound with: the whole capture to the organizer.
+	bound, err := store.BuildSettlementEntries(store.SettlementPlan{
+		FaceValue: 5600, TotalAmount: 5600, Currency: "EUR",
+	}, 5600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real charge first, only to obtain the fingerprint the handler computes,
+	// so the fixture cannot drift from the real formula.
+	seedKey := "lease-seed-" + org.String()
+	body := `{"organizer_id":"` + org.String() + `","order_id":"` + order.String() +
+		`","buyer_id":"` + buyer.String() +
+		`","amount":5600,"currency":"EUR","payment_token":"fake-ok",` + feeFreePlan(5600) + `}`
+	if res := postCharge(t, h, seedKey, body); res.Code != http.StatusOK {
+		t.Fatalf("seed charge: status=%d body=%s", res.Code, res.Body.String())
+	}
+	var fingerprint string
+	if err := db.QueryRowContext(ctx,
+		`SELECT request_fingerprint FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`,
+		org, seedKey).Scan(&fingerprint); err != nil {
+		t.Fatal(err)
+	}
+
+	// The stranded operation: same request, no outcome, lease long expired.
+	strandedKey := "lease-stranded-" + org.String()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO payment_operations
+		  (organizer_id,idempotency_key,request_fingerprint,order_id,buyer_id,
+		   request_amount,request_currency,payment_method_ref,lease_until,settlement_digest)
+		VALUES ($1,$2,$3,$4,$5,5600,'EUR','fake-ok',now()-interval '1 hour',$6)`,
+		org, strandedKey, fingerprint, order, buyer, store.PlanDigest(bound)); err != nil {
+		t.Fatal(err)
+	}
+	before := provider.authorizeCount()
+
+	// The retry: same request in every field the fingerprint covers, and a
+	// different attribution.
+	swapped := `{"organizer_id":"` + org.String() + `","order_id":"` + order.String() +
+		`","buyer_id":"` + buyer.String() +
+		`","amount":5600,"currency":"EUR","payment_token":"fake-ok","settlement":{` +
+		`"face_value":5000,"passed_on":600,"absorbed":0,"total_amount":5600,"currency":"EUR",` +
+		`"fees":[{"fee_code":"booking","incidence":"passed_on","amount":600,"currency":"EUR",` +
+		`"parts":[{"payee_id":"` + uuid.New().String() +
+		`","kind":"venue","display_name":"The venue","share_bps":10000}]}]}}`
+	res := postCharge(t, h, strandedKey, swapped)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s, want 409 — a retry may not re-attribute money the "+
+			"operation already bound a plan for", res.Code, res.Body.String())
+	}
+	if n := provider.authorizeCount(); n != before {
+		t.Errorf("provider called %d extra time(s) for a refused retry", n-before)
+	}
+
+	// The control: the SAME plan still gets through after a lease expiry, or the
+	// rule would have turned a recoverable operation into a stuck one.
+	same := `{"organizer_id":"` + org.String() + `","order_id":"` + order.String() +
+		`","buyer_id":"` + buyer.String() +
+		`","amount":5600,"currency":"EUR","payment_token":"fake-ok",` + feeFreePlan(5600) + `}`
+	if res := postCharge(t, h, strandedKey, same); res.Code != http.StatusOK {
+		t.Fatalf("retry with the bound plan: status=%d body=%s, want 200 — an expired lease "+
+			"must still be recoverable", res.Code, res.Body.String())
+	}
+}
