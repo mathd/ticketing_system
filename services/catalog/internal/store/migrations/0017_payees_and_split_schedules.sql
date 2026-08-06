@@ -98,17 +98,18 @@ CREATE INDEX split_schedules_scope ON split_schedules (organizer_id, scope_level
 -- "no unbalanced schedule exists" true of the database rather than of one code
 -- path.
 -- +goose StatementBegin
-CREATE FUNCTION split_schedule_must_balance() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION split_schedule_check_one(target uuid) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-    target uuid;
-    total  integer;
-    parts  integer;
+    total integer;
+    parts integer;
 BEGIN
-    target := COALESCE(NEW.schedule_id, OLD.schedule_id);
+    IF target IS NULL THEN
+        RETURN;
+    END IF;
     -- The schedule may have been deleted in this transaction; then there is
     -- nothing to balance and the cascade has already removed its parts.
     IF NOT EXISTS (SELECT 1 FROM split_schedules WHERE id = target) THEN
-        RETURN NULL;
+        RETURN;
     END IF;
     SELECT COALESCE(sum(share_bps), 0), count(*) INTO total, parts
       FROM split_schedule_parts WHERE schedule_id = target;
@@ -117,6 +118,29 @@ BEGIN
     END IF;
     IF total <> 10000 THEN
         RAISE EXCEPTION 'split schedule % shares sum to %, not 10000', target, total;
+    END IF;
+END $$;
+
+CREATE FUNCTION split_schedule_must_balance() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    -- BOTH sides, and this is the whole point (TKT-216 ai-review, [high]).
+    --
+    -- The first version validated COALESCE(NEW.schedule_id, OLD.schedule_id),
+    -- which on an UPDATE is always the DESTINATION. Moving a part from A to B
+    -- therefore never revalidated A, and one ordinary transaction could commit
+    -- an unbalanced schedule:
+    --
+    --   A={P1:5000,P2:5000}  B={P3:5000,P4:5000}
+    --   move P2 A->B   (validates B, now 15000)
+    --   delete B/P4    (validates B, now 10000 -- passes)
+    --   commit         -> A is 5000 and was never checked
+    --
+    -- Reproduced against a real database before fixing. Every key stayed valid;
+    -- what broke was the guarantee this trigger exists to make, and settlement
+    -- would have been handed a snapshot its allocator refuses.
+    PERFORM split_schedule_check_one(NEW.schedule_id);
+    IF OLD.schedule_id IS DISTINCT FROM NEW.schedule_id THEN
+        PERFORM split_schedule_check_one(OLD.schedule_id);
     END IF;
     RETURN NULL;
 END $$;
@@ -162,6 +186,7 @@ DROP TRIGGER split_schedules_have_parts ON split_schedules;
 DROP FUNCTION split_schedule_header_must_have_parts;
 DROP TRIGGER split_schedule_parts_balance ON split_schedule_parts;
 DROP FUNCTION split_schedule_must_balance;
+DROP FUNCTION split_schedule_check_one;
 DROP INDEX split_schedules_scope;
 DROP TABLE split_schedule_parts;
 DROP TABLE split_schedules;

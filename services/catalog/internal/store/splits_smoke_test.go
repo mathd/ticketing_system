@@ -368,3 +368,58 @@ func assertSplitRollbackRefused(ctx context.Context, t *testing.T, db *sql.DB) {
 		t.Error("the down migration's guard must refuse while payout configuration exists")
 	}
 }
+
+// Moving a part between schedules must validate BOTH of them (ai-review, [high]).
+//
+// The trigger originally validated COALESCE(NEW.schedule_id, OLD.schedule_id),
+// which on an UPDATE is always the destination — so a part moved OUT of a
+// schedule left it unbalanced and unchecked. This exact transaction committed a
+// 5000-bps schedule against a real database before the fix.
+//
+// FIXTURE NOTE: two schedules are required, and the destination must be
+// rebalanced in the same transaction. A single-schedule fixture cannot express
+// the bug at all, and leaving the destination unbalanced would fail on the
+// DESTINATION's check — passing while the source hole stayed open.
+func TestMovingAPartBetweenSchedulesValidatesBothSides(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	_, orgID, venueID, eventID, _, _ := seedPricingChain(ctx, t, db)
+	p := seedPayees(ctx, t, st, orgID, 4)
+
+	source, err := st.CreateSplitSchedule(ctx, SplitSchedule{
+		OrganizerID: orgID, ScopeLevel: ScopeVenue, ScopeID: venueID, FeeCode: "service",
+		Parts: []SplitPart{{Payee: p[0], ShareBps: 5000}, {Payee: p[1], ShareBps: 5000}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest, err := st.CreateSplitSchedule(ctx, SplitSchedule{
+		OrganizerID: orgID, ScopeLevel: ScopeEvent, ScopeID: eventID, FeeCode: "service",
+		Parts: []SplitPart{{Payee: p[2], ShareBps: 5000}, {Payee: p[3], ShareBps: 5000}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Move one part across, then rebalance the DESTINATION so its own check
+	// passes. Only the source is left broken.
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE split_schedule_parts SET schedule_id=$1 WHERE schedule_id=$2 AND payee_id=$3`,
+		dest, source, p[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM split_schedule_parts WHERE schedule_id=$1 AND payee_id=$2`, dest, p[3].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err == nil {
+		var total int
+		_ = db.QueryRowContext(ctx,
+			`SELECT COALESCE(sum(share_bps),0) FROM split_schedule_parts WHERE schedule_id=$1`,
+			source).Scan(&total)
+		t.Fatalf("an unbalanced schedule (%d bps) committed — moving a part out must revalidate "+
+			"the schedule it left, or settlement is handed a snapshot its allocator refuses", total)
+	}
+}
