@@ -1,0 +1,129 @@
+{
+  "key": "TKT-223",
+  "type": "Story",
+  "parent": "TKT-21",
+  "classification": "complex",
+  "summary": "US-A4: Claim a guest order into an account, retroactively",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-222"
+    }
+  ],
+  "description": "**As** a buyer who checked out as a guest and signed up afterwards, **I want** to pull that past\norder into my account, **so that** creating an account later is not punished by losing my history.\n\n**Priority:** P1  **Depends on:** TKT-222 (TKT-221 is the hard dependency - the column; TKT-222 is\nwhere the result is visible)\n\nThis closes TKT-21's first COS: *account creation optional and retroactively claims guest orders*.\n\n**Acceptance Criteria:**\n- [ ] A signed-in customer can claim a completed order by its order reference; on success the order\n  is attributed to them and appears in the wallet.\n- [ ] **The plan states what proves ownership, and what each choice gets wrong.** Holding the order\n  ref is already sufficient to fetch the tickets themselves (ADR-012 - it is a bearer credential), so\n  requiring it alone grants nothing new; requiring the email to match as well refuses a legitimate\n  buyer who signed up with a different address. Pick one, name the adversary (ADR-021), and write\n  down who is refused and who is admitted.\n- [ ] An order already claimed by **another** customer is refused. A repeat claim by the **same**\n  customer succeeds idempotently rather than erroring.\n- [ ] An order that is not completed, or does not exist, is refused - and the refusal does not let a\n  caller distinguish \"no such order\" from \"not yours\" (that difference is an oracle for probing\n  order refs).\n- [ ] The claim is a single atomic transition on the order row - two concurrent claims by different\n  customers cannot both win. Prove it under contention, not by inspection.\n- [ ] A storefront claim form on the existing guest ticket page, shown only when signed in.\n- [ ] Browser-submit verification (AGENTS.md): `make up`, then **submit** the new form(s) in a real browser — the smoke suite only renders, so the whole SSR-rejects-the-write class (origin check, base path, redirect, CSP) is invisible to it. Evidence in the PR. (guest-buy, sign up, claim, see it in the wallet.)\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code (`openapi_gen.go`, `api-types.gen.ts`) committed BEFORE the gate runs (ADR-009).\n\n**Non-goals:** transferring an order between accounts (TKT-9 / TKT-160 - that is a *different*\noperation with a different adversary) - merging duplicate accounts - bulk claim of every order\nmatching an address.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Signing up after buying does not cost the buyer their history."
+    },
+    "scope": {
+      "state": "met",
+      "note": "One guarded transition on an existing order row + one form. No new order state."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "What proves ownership - order ref alone vs order ref + email match. The ACs force the choice to be argued rather than assumed, because both options refuse or admit someone real."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-222 for visibility; the hard dependency is TKT-221's column."
+    },
+    "approach": {
+      "state": "met",
+      "note": "A conditional UPDATE on the order row under the same lock discipline the checkout completion already uses, so the contention property is a database property rather than an application one."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Last of the four - it is the only one that needs all three earlier slices to be demonstrable."
+    },
+    "success": {
+      "state": "met",
+      "note": "Deterministic: claim succeeds, replay succeeds, another customer's claim is refused, concurrent claims produce exactly one winner."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-06."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Money is integer minor units + ISO currency code - floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate - keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "A web-UI ticket isn't verified until a browser has *submitted* its forms. `make check`'s smoke suite exercises the catalog API directly and only *renders* back-office pages - it never submits an Astro form, so the whole class of \"the SSR layer rejects/mangles the request before the handler runs\" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "Cuts the system at five services + a stateless gateway. Customer accounts must land inside an existing service or the deviation is recorded as an ADR - ADR-042 rejected a sixth identity service and rejected giving the gateway a database."
+      },
+      {
+        "id": "ADR-042",
+        "why": "The precedent AND its reasoning: staff accounts in catalog because catalog owns organizers; the SSR app owns the session, not the service; sessions in-process and unpersisted; per-principal session cap is what bounds the map; the cookie is path-scoped because storefront/scanner/admin/api share ONE origin. It also records that Astro's `security.checkOrigin` CANNOT be turned on behind the gateway (the Node adapter compares against the container Host) - a proxy-aware origin check replaces it."
+      },
+      {
+        "id": "ADR-043",
+        "why": "The rule for where a guard lives: declared `security:` guards operations in a service's PUBLIC contract; an inline `X-Internal-Token` check guards its INTERNAL surface. Commerce's 404-on-internal is load-bearing (it matches the gateway edge-deny), not cargo. Whichever surface customer register/authenticate lands on, this decides how it is guarded."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: any new operation is declared in the service's openapi.yaml and the generated code is committed before the gate runs."
+      },
+      {
+        "id": "ADR-012",
+        "why": "`guest_order_ref` is a BEARER credential for the ticket bundle (`/api/access/orders/{ref}/tickets` needs nothing else) and is never logged - TKT-202 is an open bug where the gateway logs it. Anything that surfaces or accepts an order ref inherits both properties."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a security property. 'A customer cannot see another customer's orders' means an unauthenticated or differently-authenticated HTTP caller - it says nothing about anyone with database access."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: a handler whose response does not match the declared schema is refused, so a new operation's schema must actually match what the handler writes."
+      },
+      {
+        "id": "ADR-016",
+        "why": "The checkout recovery state machine. `orders.status='refunded'` already means a compensated FAILED checkout - do not overload order status. Anything added to the checkout path must not perturb the recovery states."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "BLAST RADIUS - `INTERNAL_SERVICE_TOKEN` (compose.yaml `&go-env` anchor) is ONE shared value across all five Go services: whatever holds it can call commerce's /internal/orders/{id}/refunds, inventory's /internal/operational-holds and /internal/slots/{id}/capacity-adjustments, and access's refund surface. The storefront must NEVER receive it.",
+        "link": "compose.yaml:32"
+      },
+      {
+        "summary": "BLAST RADIUS - `COMMERCE_STAFF_WRITE_TOKEN` opens commerce's staff refund (money-moving). Held today only by the back office. The storefront must NEVER receive it.",
+        "link": "compose.yaml:213,380"
+      },
+      {
+        "summary": "The storefront container today has exactly ONE env var: `GATEWAY_URL`. It holds no credential of any kind and serves anonymous internet traffic. Any design that hands it a token is a new trust decision that must be argued, not assumed.",
+        "link": "compose.yaml:336-348"
+      },
+      {
+        "summary": "Precedent to mirror, not to copy blindly: staff sign-in is catalog `staff_accounts` (migration 0015, bcrypt + tripwire CHECK + non-empty-Down refusal), `services/catalog/internal/store/staff.go`, `services/catalog/internal/api/staff.go`; the SESSION lives in the back-office Astro process (`web/backoffice/src/lib/session.ts`, `gate.ts`, `src/middleware.ts`) - opaque 256-bit token, HttpOnly, SameSite=Lax, absolute 8h TTL, per-principal cap of 5, cookie scoped to `/admin` NOT `/`.",
+        "link": "docs/adr/ADR-042-staff-identity-and-backoffice-sessions.md"
+      },
+      {
+        "summary": "`orders.guest_order_ref` is minted at completion in `services/commerce/internal/store/store.go` under a row lock, and is UNIQUE (migration 0002). It is the lookup key a claim would use.",
+        "link": "services/commerce/internal/store/migrations/0002_guest_order_reference.sql"
+      }
+    ]
+  },
+  "comments": []
+}
