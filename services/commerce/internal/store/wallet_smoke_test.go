@@ -218,28 +218,46 @@ func TestWalletReadScanIsScopedNotJustItsResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A body of orders belonging to OTHER customers — and they must really be
-	// other customers.
+	// A realistic body of orders belonging to OTHER customers. Two things have to
+	// be true of this fixture or the assertion below is about the fixture rather
+	// than the index:
 	//
-	// The first version of this bound `other` to `account.ID`, so all forty rows
-	// belonged to the customer being queried (ai-review [medium]). The variable
-	// was named `other` and was not, which is what made it read as correct: the
-	// plan could scan every completed row and the assertion would still pass,
-	// because there was nothing to exclude. A fixture with one customer cannot
-	// prove a per-customer scan is scoped.
+	//  1. The other rows must really belong to OTHER customers. The first version
+	//     bound `other` to `account.ID`, so all forty belonged to the customer
+	//     being queried (ai-review [medium]) — the plan could scan everything and
+	//     still be "correct", because there was nothing to exclude. The variable
+	//     was named `other` and was not, which is what made it read as right.
+	//  2. There must be ENOUGH of them. With forty rows the planner correctly
+	//     prefers a sequential scan and the test fails against code that is fine —
+	//     the same fixture-too-small trap from the other direction (TKT-172/182).
 	//
-	// Without a body of rows at all, the planner may legitimately prefer a
-	// sequential scan on a tiny table and the assertion becomes a statement about
-	// the fixture (TKT-172/182).
-	for range 40 {
+	// Seeded in one statement rather than a loop: 600 round trips would dominate
+	// this test's runtime for no extra coverage.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		SELECT gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),1,1500,1500,1500,'EUR','completed'
+		  FROM generate_series(1, 600)`); err != nil {
+		t.Fatal(err)
+	}
+	// Every stranger's order gets its own customer_id. They reference no
+	// customer_accounts row, which the FK would refuse — so these are seeded with
+	// NULL (guest) plus a smaller set of REAL other customers, which is what makes
+	// customer_id selective without fighting the constraint.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,guest_order_ref,created_at)
+		SELECT gen_random_uuid(),r.id,'completed','bulk-'||r.id,'fingerprint',gen_random_uuid(),now()-interval '1 hour'
+		  FROM reservations r
+		 WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.reservation_id = r.id)`); err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
 		stranger, err := RegisterCustomer(ctx, db, uniqueEmail("wallet-stranger"), "correct horse battery")
 		if err != nil {
 			t.Fatal(err)
 		}
 		seedWalletOrder(t, db, ctx, uuid.NullUUID{UUID: stranger.ID, Valid: true}, "completed", time.Now().Add(-time.Hour))
 	}
-	// And a couple for the customer under test, so the query has something to
-	// find and the plan is not trivially empty.
+	// And a couple for the customer under test, so the query has something to find.
 	for range 2 {
 		seedWalletOrder(t, db, ctx, uuid.NullUUID{UUID: account.ID, Valid: true}, "completed", time.Now().Add(-time.Hour))
 	}
