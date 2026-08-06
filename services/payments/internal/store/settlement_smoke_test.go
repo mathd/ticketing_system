@@ -312,3 +312,72 @@ func TestReadOrderSettlementShowsUnattributedFees(t *testing.T) {
 		t.Error("the unattributed fee must be visible as such — that is the signal to author a schedule")
 	}
 }
+
+// The balance trigger checks a SUM, and a sum cannot see shape. Two face-value
+// lines that add up to the right number are balanced and still wrong about who
+// earned what -- and PostgreSQL's ordinary UNIQUE treats NULLs as distinct, so
+// the table's own uniqueness does not stop them: both rows have a NULL payee and
+// a NULL fee code. Found by adversarial review, not by the gate.
+func TestTwoFaceValueLinesCannotBothCommit(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order)
+
+	split := []SettlementEntry{
+		{Kind: EntryFaceValue, Amount: 3600, Currency: "EUR"},
+		{Kind: EntryFaceValue, Amount: 2000, Currency: "EUR"},
+	}
+	if _, _, err := j.AppendWithSettlement(ctx, f, split); err == nil {
+		t.Fatal("two face-value lines summing to the capture committed — the ledger " +
+			"balances and misstates the organizer's share across two rows")
+	}
+}
+
+// Same shape, one level down: a fee code that DOES have a payee must not also be
+// able to land a second, unattributed line for itself.
+func TestADuplicateUnattributedFeeLineCannotCommit(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order)
+
+	split := []SettlementEntry{
+		{Kind: EntryFaceValue, Amount: 5000, Currency: "EUR"},
+		{Kind: EntryFee, FeeCode: "booking", Incidence: "passed_on", Amount: 300, Currency: "EUR"},
+		{Kind: EntryFee, FeeCode: "booking", Incidence: "passed_on", Amount: 300, Currency: "EUR"},
+	}
+	if _, _, err := j.AppendWithSettlement(ctx, f, split); err == nil {
+		t.Fatal("two unattributed lines for one fee code committed — a fee collected once " +
+			"is owed once")
+	}
+}
+
+// "Settlement iff capture" is the claim. A foreign key to journal_entries does
+// not say that: it admits ANY fact. A balanced ledger hung off an authorization
+// attributes money that has not moved.
+func TestSettlementCannotAttachToANonCaptureFact(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order)
+	f.Type = "payment.authorized"
+
+	if _, _, err := j.AppendWithSettlement(ctx, f, balancedEntries(5000, 600, 0)); err == nil {
+		t.Fatal("an authorization carried a settlement ledger — only a capture moved money")
+	}
+}
+
+// And the ledger must be about the fact it names. A row whose currency disagrees
+// with the captured fact balances numerically against a different unit.
+func TestSettlementCurrencyMustMatchTheCapturedFact(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order) // EUR
+
+	split := []SettlementEntry{{Kind: EntryFaceValue, Amount: 5600, Currency: "USD"}}
+	if _, _, err := j.AppendWithSettlement(ctx, f, split); err == nil {
+		t.Fatal("a USD ledger settled a EUR capture — the sum matched and the money did not")
+	}
+}

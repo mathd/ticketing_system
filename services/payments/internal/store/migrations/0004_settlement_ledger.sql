@@ -15,6 +15,24 @@
 -- is an application bug and an operator mistake. Joining the chain is a real
 -- option and is named as future work in ADR-048; it is not claimed here.
 -- +goose Up
+-- Refuse to apply against a database that already holds captures this ledger
+-- cannot explain. The triggers below only govern INSERTs, so without this the
+-- invariant would be true of every FUTURE capture and false of the table -- and
+-- "every captured cent is attributed" would be a claim about the code rather
+-- than about the data. There is no backfill to offer: the fee composition of a
+-- capture predating this migration is not recoverable from the journal.
+-- +goose StatementBegin
+DO $$
+DECLARE unsettled bigint;
+BEGIN
+    SELECT count(*) INTO unsettled FROM journal_entries WHERE fact_type = 'payment.captured';
+    IF unsettled > 0 THEN
+        RAISE EXCEPTION 'cannot apply 0004: % captured fact(s) predate the settlement ledger '
+            'and cannot be attributed retroactively', unsettled;
+    END IF;
+END $$;
+-- +goose StatementEnd
+
 CREATE TABLE settlement_entries (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     organizer_id    uuid NOT NULL,
@@ -61,7 +79,14 @@ CREATE TABLE settlement_entries (
              AND fee_code IS NULL AND incidence IS NULL)
     ),
     -- One line per payee per fee code per capture. A duplicate would double-pay.
-    UNIQUE (capture_fact_id, entry_kind, payee_id, fee_code)
+    --
+    -- NULLS NOT DISTINCT is load-bearing, not decoration. Ordinary UNIQUE treats
+    -- NULLs as distinct, and the two rows this most needs to stop are exactly the
+    -- ones with NULLs: a second face_value line (NULL payee, NULL fee code), and a
+    -- second UNATTRIBUTED line for one fee code (NULL payee). Both are BALANCED --
+    -- they can sum to the capture perfectly -- so the deferred balance trigger
+    -- below cannot see them. A sum cannot see shape.
+    UNIQUE NULLS NOT DISTINCT (capture_fact_id, entry_kind, payee_id, fee_code)
 );
 
 CREATE INDEX settlement_entries_order ON settlement_entries (organizer_id, order_id);
@@ -94,15 +119,33 @@ FOR EACH STATEMENT EXECUTE FUNCTION reject_settlement_mutation();
 -- +goose StatementBegin
 CREATE FUNCTION settlement_must_balance() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
-    fact     uuid;
-    captured bigint;
-    total    numeric;
-    rows_n   integer;
+    fact       uuid;
+    captured   bigint;
+    total      numeric;
+    rows_n     integer;
+    f_type     text;
+    f_org      uuid;
+    f_currency char(3);
+    f_order    text;
 BEGIN
     fact := NEW.capture_fact_id;
-    SELECT amount INTO captured FROM journal_entries WHERE fact_id = fact;
+    -- The foreign key says the fact EXISTS. It does not say the fact is a capture,
+    -- nor that this ledger is about the same money: a balanced set hung off an
+    -- authorization attributes money that never moved, and one naming another
+    -- organizer, order or currency balances against a different unit entirely.
+    -- "Settlement iff capture" is the claim, so the claim is what gets checked.
+    SELECT amount, fact_type, organizer_id, currency, payload ->> 'order_id'
+      INTO captured, f_type, f_org, f_currency, f_order
+      FROM journal_entries WHERE fact_id = fact;
     IF captured IS NULL THEN
         RAISE EXCEPTION 'settlement % references no journal fact', fact;
+    END IF;
+    IF f_type <> 'payment.captured' THEN
+        RAISE EXCEPTION 'settlement % attaches to a % fact, which moved no money', fact, f_type;
+    END IF;
+    IF NEW.organizer_id <> f_org OR NEW.currency <> f_currency OR NEW.order_id::text IS DISTINCT FROM f_order THEN
+        RAISE EXCEPTION 'settlement % names organizer/order/currency %/%/%, but the fact says %/%/%',
+            fact, NEW.organizer_id, NEW.order_id, NEW.currency, f_org, f_order, f_currency;
     END IF;
     SELECT COALESCE(sum(amount), 0), count(*) INTO total, rows_n
       FROM settlement_entries WHERE capture_fact_id = fact;

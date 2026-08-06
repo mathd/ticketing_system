@@ -31,10 +31,11 @@ const refundCredential = "partial-refund-credential"
 
 type countingPSP struct {
 	psp.PSP
-	mu     sync.Mutex
-	calls  int
-	amount int64
-	key    string
+	mu         sync.Mutex
+	calls      int
+	authorizes int
+	amount     int64
+	key        string
 }
 
 func (c *countingPSP) Refund(_ context.Context, _, idempotencyKey string, amount int64, _ string) (psp.Result, error) {

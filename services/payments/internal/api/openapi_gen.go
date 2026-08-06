@@ -154,8 +154,8 @@ type Charge struct {
 	PaymentToken string             `json:"payment_token"`
 
 	// Settlement How this capture is attributed (TKT-217, ADR-048). Commerce derives it from the fee snapshot it already persisted at reserve time — NEVER from a fresh catalog read, so a schedule edited between the sale and the capture cannot change who gets paid for it.
-	// OPTIONAL in the schema and REQUIRED in practice for a captured outcome: the database refuses a `payment.captured` fact with no settlement entries. It is optional here because a declined or timed-out charge settles nothing, and requiring it would make the contract demand an attribution for money that never moved.
-	Settlement *SettlementPlan `json:"settlement,omitempty"`
+	// REQUIRED, and required BEFORE the outcome is known. A declined or timed-out charge settles nothing, so an attribution for it is never written — but the plan has to be validated before the provider is called, and at that point the outcome does not exist yet. Making it optional meant a charge that could not be settled was discovered only after the money had moved, with no captured fact and no ledger to account for it. This costs nothing: the charge path's only success outcome is a capture, so a plan-less charge could never have succeeded.
+	Settlement SettlementPlan `json:"settlement"`
 }
 
 // ChargeCurrency defines model for Charge.Currency.

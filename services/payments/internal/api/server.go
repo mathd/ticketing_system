@@ -238,6 +238,30 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]any{"status": boundStatus, "payment_id": boundID, "replay": true})
 		return
 	}
+	// Build the ledger BEFORE the provider moves anything. Validating afterwards
+	// means a charge with a missing or unusable plan gets an error back while the
+	// PSP has already taken the money — and no payment.captured fact and no
+	// settlement exist to account for it. The deferred triggers cannot repair
+	// that: they govern journal commits, not the outside world. A capture that
+	// cannot be attributed must never be requested.
+	//
+	// The plan is required unconditionally, before the outcome is known. This
+	// costs nothing: the charge path's only success outcome is a capture, so a
+	// charge with no plan could never have succeeded — it just used to fail after
+	// the money moved instead of before.
+	if in.Settlement == nil {
+		write(w, 400, map[string]string{"error": "a charge must carry a settlement plan"})
+		return
+	}
+	plan, err := store.BuildSettlementEntries(in.Settlement.toStorePlan(), in.Amount)
+	if err != nil {
+		// The plan is our own data being wrong, not the caller's request shape —
+		// the same disposition catalog gives a misconfigured rule. The reason is
+		// deliberately not returned: it names fee codes and payees, and this
+		// response reaches commerce, not an operator.
+		write(w, 500, map[string]string{"error": "settlement plan unusable"})
+		return
+	}
 	result, err := s.psp.Authorize(r.Context(), psp.AuthorizeRequest{
 		OrganizerID:    in.OrganizerID.String(),
 		OrderID:        in.OrderID.String(),
@@ -310,26 +334,11 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 	}
 	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("payment:"+in.OrganizerID.String()+":"+key+":"+factType))
 	// Settlement rides the captured fact's transaction (ADR-048). Only a capture
-	// settles: a decline or a timeout moved no money, so there is nothing to
-	// attribute and the ledger stays silent about it.
+	// settles, and `settlement` is nil for every other outcome: a decline or a
+	// timeout moved no money, so there is nothing to attribute.
 	var settlement []store.SettlementEntry
 	if factType == "payment.captured" {
-		if in.Settlement == nil {
-			// Fail closed. The database would refuse this anyway — the deferred
-			// trigger requires entries for a captured fact — but refusing here
-			// says WHY, and says it before the row lock is taken.
-			write(w, 400, map[string]string{"error": "a captured charge must carry a settlement plan"})
-			return
-		}
-		settlement, err = store.BuildSettlementEntries(in.Settlement.toStorePlan(), in.Amount)
-		if err != nil {
-			// The plan is our own data being wrong, not the caller's request
-			// shape — the same disposition catalog gives a misconfigured rule.
-			// The reason is deliberately not returned: it names fee codes and
-			// payees, and this response reaches commerce, not an operator.
-			write(w, 500, map[string]string{"error": "settlement plan unusable"})
-			return
-		}
+		settlement = plan
 	}
 	e, replay, err := s.journal.AppendWithSettlement(r.Context(), store.Fact{ID: factID, OrganizerID: in.OrganizerID, Type: factType, OccurredAt: occurredAt, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, Payload: map[string]string{"order_id": in.OrderID.String()}}, settlement)
 	if err != nil {

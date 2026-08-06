@@ -73,6 +73,49 @@ wherever it comes from.
 Aggregation is in `numeric`, not `bigint`: the organizer line is signed, and a sum that overflowed
 while checking for imbalance would be the worst possible failure of this constraint.
 
+**"Before the provider is called" is the load-bearing half of the first bullet, and the first
+implementation did not honour it** — it validated the plan after the PSP had captured. Adversarial
+review found it. The failure mode is the one this ADR exists to prevent, arrived at from the other
+side: the buyer is charged, the plan is rejected, and no captured fact and no ledger exist to
+account for the money. The deferred triggers cannot repair it, because they govern journal commits
+and not the outside world. The plan is therefore **required on every charge, validated before the
+provider call**, though only a capture ever writes entries. This costs nothing: the charge path's
+only success outcome is a capture, so a plan-less charge could never have succeeded.
+
+### 3b. A sum cannot see shape
+
+The balance trigger checks a total. A total is blind to how the total was reached, so a **balanced
+but structurally wrong** set passes it: two `face_value` lines that add to the organizer's share,
+or two unattributed lines for one fee code. Both misstate who earned what while summing perfectly.
+
+Uniqueness is what excludes them — but ordinary `UNIQUE` does not, because PostgreSQL treats NULLs
+as distinct and these rows are **exactly the ones with NULLs** (a face-value line has no payee and
+no fee code; an unattributed fee line has no payee). Hence `UNIQUE NULLS NOT DISTINCT`. It is
+load-bearing, not a tidiness constraint.
+
+### 3c. The ledger must be about the fact it names
+
+A foreign key to `journal_entries` says the fact **exists**. It does not say the fact is a capture,
+nor that the ledger concerns the same money. Without more, a balanced set can hang off a
+`payment.authorized` fact — attributing money that never moved — or name a different organizer,
+order, or currency and balance against a different unit entirely.
+
+"Settlement iff capture" is the claim, so the balance trigger checks the claim: it joins the
+referenced journal row and requires `fact_type = 'payment.captured'` and matching organizer, order
+and currency. Named after review pointed out that the guarantee and the constraint were not the
+same statement.
+
+### 3d. The invariant is a property of the table, not of future writes
+
+The triggers govern `INSERT`. Applied to a database already holding captures, they would make the
+invariant true of every future capture and **false of the table** — and "every captured cent is
+attributed" would be a claim about the code rather than about the data.
+
+There is no backfill to offer: the fee composition of a capture predating this migration is not
+recoverable from the journal. So migration `0004` **refuses to apply** when unsettled captures
+exist, naming the count. A migration that fails is an operator's problem; a claim that is quietly
+false is everyone's.
+
 ### 4. Payee identity is snapshotted
 
 Each entry carries the payee's id, kind, display name and external reference **as they were**, with
