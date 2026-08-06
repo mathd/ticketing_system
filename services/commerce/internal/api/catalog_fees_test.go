@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	apispec "ticketing/services/commerce/api"
+	commercestore "ticketing/services/commerce/internal/store"
 )
 
 // The pure fee arithmetic (TKT-215 / ADR-046 §2). No HTTP, no database — the
@@ -593,5 +594,166 @@ func TestReserveRefusesAnUnrepresentableTotalBeforeTheHold(t *testing.T) {
 	if inventoryCalled {
 		t.Error("inventory was called: an arithmetic failure must abort BEFORE the hold, " +
 			"or a refused reserve leaves an orphan hold behind")
+	}
+}
+
+// Which number each exchange money fact carries (ai-review pass 2).
+//
+// The previous evidence for this was a smoke assertion that the gross COLUMN is
+// populated — which proves the column exists, not that the fact uses it. That is
+// a real gap between what a test showed and what a comment claimed, and it is the
+// kind that survives because the two look the same in a diff.
+//
+// FIXTURE NOTE: face and gross MUST differ here, and the target must differ from
+// both. A fixture where any two coincide cannot tell the legs apart.
+func TestExchangeFactLegsReverseTheGrossAndSellTheTarget(t *testing.T) {
+	ex := commercestore.Exchange{
+		ID:               uuid.New(),
+		SourceTotal:      9100, // face
+		SourceGrossTotal: 9400, // what was captured
+	}
+	legs := exchangeFactLegs(ex, 8000)
+	if len(legs) != 2 {
+		t.Fatalf("want two legs, got %d", len(legs))
+	}
+	byType := map[string]int64{}
+	for _, l := range legs {
+		byType[l.typ] = l.amount
+	}
+	if got := byType["order.exchange.reversed"]; got != 9400 {
+		t.Errorf("reversed leg = %d, want the CAPTURED 9400. The face value 9100 leaves the "+
+			"payments journal disagreeing with the original charge by exactly the fee", got)
+	}
+	// The retained fee travels with the order, so the sold leg is the target plus
+	// the fee the buyer keeps paying: 8000 + (9400-9100).
+	if got := byType["order.exchange.sold"]; got != 8300 {
+		t.Errorf("sold leg = %d, want 8300 — the target 8000 plus the 300 fee the buyer "+
+			"retains. Selling the bare target records a refund the provider never made", got)
+	}
+
+	// The invariant that ties the two legs to reality (ai-review pass 2): the
+	// journal's net movement must equal what the provider actually moved. The
+	// delta is computed from FACE values, so this is the check that stops the two
+	// numbers drifting apart again.
+	delta := commercestore.ExchangeDelta(ex.SourceTotal, 8000)
+	if net := byType["order.exchange.sold"] - byType["order.exchange.reversed"]; net != delta {
+		t.Errorf("journal net = %d but the provider delta is %d — the audit trail asserts money "+
+			"movement that did not happen", net, delta)
+	}
+}
+
+// The same invariant on the case that matters most, because it is the one where
+// nothing moves and an inconsistency is therefore invisible in the PSP: an EVEN
+// exchange of a fee-carrying order.
+func TestExchangeFactLegsBalanceAgainstTheProviderDelta(t *testing.T) {
+	for name, tc := range map[string]struct{ face, gross, target int64 }{
+		"even exchange, fee carried": {face: 9100, gross: 9400, target: 9100},
+		"upgrade, fee carried":       {face: 9100, gross: 9400, target: 12000},
+		"downgrade, fee carried":     {face: 9100, gross: 9400, target: 5000},
+		"no fee at all":              {face: 9100, gross: 9100, target: 9100},
+		"a fee-free order upgrading": {face: 9100, gross: 9100, target: 12000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ex := commercestore.Exchange{ID: uuid.New(), SourceTotal: tc.face, SourceGrossTotal: tc.gross}
+			legs := exchangeFactLegs(ex, tc.target)
+			var reversed, sold int64
+			for _, l := range legs {
+				switch l.typ {
+				case "order.exchange.reversed":
+					reversed = l.amount
+				case "order.exchange.sold":
+					sold = l.amount
+				}
+			}
+			delta := commercestore.ExchangeDelta(tc.face, tc.target)
+			if sold-reversed != delta {
+				t.Errorf("reversed=%d sold=%d net=%d, but the provider moves %d",
+					reversed, sold, sold-reversed, delta)
+			}
+		})
+	}
+}
+
+// The decomposition identity, pinned rather than argued (ai-review pass 2 asked
+// whether it is exact for every input).
+//
+//	floor(a×b/10000) == (a/10000)×b + floor((a mod 10000)×b/10000)
+//
+// The right-hand side is what feeFromRate computes, and it exists because the
+// left-hand side forms a product that overflows. This test checks the two agree
+// wherever the left-hand side can be evaluated without overflowing — the
+// boundaries plus a deterministic sweep — and separately checks the intermediates
+// stay inside int64 at the extreme.
+func TestFeeFromRateMatchesTheDirectFormulaWhereverItFits(t *testing.T) {
+	direct := func(a int64, b int32) (int64, bool) {
+		if a != 0 && int64(b) > math.MaxInt64/a {
+			return 0, false // the product would overflow; nothing to compare against
+		}
+		return a * int64(b) / 10000, true
+	}
+	check := func(a int64, b int32) {
+		t.Helper()
+		got, err := feeFromRate(a, b)
+		if err != nil {
+			t.Fatalf("feeFromRate(%d, %d) refused a legal input: %v", a, b, err)
+		}
+		if want, ok := direct(a, b); ok && got != want {
+			t.Errorf("feeFromRate(%d, %d) = %d, want %d", a, b, got, want)
+		}
+	}
+	for _, a := range []int64{0, 1, 9999, 10000, 10001, 100, 150, maxContractAmount,
+		math.MaxInt64 / 2, math.MaxInt64 / 10000 * 10000, math.MaxInt64} {
+		for _, b := range []int32{0, 1, 333, 5000, 9999, 10000} {
+			check(a, b)
+		}
+	}
+	// A deterministic sweep — a fixed generator rather than a random one, so a
+	// failure is reproducible from the test name alone.
+	a := int64(1)
+	for i := 0; i < 4000; i++ {
+		a = (a*6364136223846793005 + 1442695040888963407) & math.MaxInt64
+		check(a, int32(a%10001))
+	}
+}
+
+// sameTerms is the one definition of "the same request", and this is the table
+// that keeps it that way. The channel row is the one the race path was missing.
+func TestSameTermsComparesEveryIdempotencyTerm(t *testing.T) {
+	tt := uuid.New()
+	reseller := "reseller"
+	base := reserveRequest{TicketTypeID: tt, Quantity: 2}
+
+	if !sameTerms(base, 2, tt, nil, nil) {
+		t.Error("an identical GA request must match")
+	}
+	if sameTerms(base, 3, tt, nil, nil) {
+		t.Error("a different quantity is a different request")
+	}
+	if sameTerms(base, 2, uuid.New(), nil, nil) {
+		t.Error("a different ticket type is a different request")
+	}
+	// The row the lost-race path was missing: it compared totals but not this.
+	channelled := base
+	channelled.ChannelCode = &reseller
+	if sameTerms(channelled, 2, tt, nil, nil) {
+		t.Error("a channel request must NOT match a reservation sold with no channel — the " +
+			"channel selects which fees apply, so these are different sales")
+	}
+	if sameTerms(base, 2, tt, &reseller, nil) {
+		t.Error("a channel-less request must NOT match a reservation sold in a channel")
+	}
+	if !sameTerms(channelled, 2, tt, &reseller, nil) {
+		t.Error("the same channel must match")
+	}
+	// Seats compare as a SET, not a count.
+	seated := reserveRequest{TicketTypeID: tt, SeatIdentities: []string{"A/1/1", "A/1/2"}}
+	if !sameTerms(seated, 2, tt, nil, []string{"A/1/1", "A/1/2"}) {
+		t.Error("the same seat set must match")
+	}
+	if sameTerms(seated, 2, tt, nil, []string{"A/1/1", "B/9/9"}) {
+		t.Error("two seats are not the same two seats")
+	}
+	if sameTerms(seated, 2, tt, nil, nil) {
+		t.Error("a seated request must not match a GA reservation")
 	}
 }

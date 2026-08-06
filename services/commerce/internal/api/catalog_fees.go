@@ -514,3 +514,28 @@ func sameChannel(a, b *string) bool {
 		return *a == *b
 	}
 }
+
+// sameTerms is the ONE definition of "this idempotency key names the same
+// request", used by both the replay path and the lost-race path.
+//
+// It exists as a function rather than as two inline comparisons because those
+// two paths answer the same question and previously answered it differently:
+// the replay path compared the channel and the race path did not, so one request
+// could be accepted as a replay once and refused as a conflict afterwards.
+//
+// The seat SET is compared, not its size: [1,2] and [2,3] are both two seats,
+// and matching on count would replay someone else's seats back to a caller who
+// asked for different ones.
+func sameTerms(in reserveRequest, qty int32, ticketType uuid.UUID, channel *string, seats []string) bool {
+	switch {
+	case qty != in.units() || ticketType != in.TicketTypeID:
+		return false
+	case !sameChannel(channel, in.ChannelCode):
+		return false
+	case (len(seats) > 0) != in.seated():
+		return false
+	case in.seated() && !sameSeats(seats, in.canonicalSeatSet()):
+		return false
+	}
+	return true
+}

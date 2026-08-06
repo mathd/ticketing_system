@@ -402,21 +402,45 @@ func (s *Server) settleExchangeDelta(r *http.Request, ex commercestore.Exchange,
 
 // exchangeFacts journals both GROSS legs. Deterministic ids and the exchange row's stable
 // created_at, never the clock — the journal compares the whole canonical fact on replay.
+// exchangeFactLeg is one money fact an exchange publishes.
+type exchangeFactLeg struct {
+	id     uuid.UUID
+	typ    string
+	amount int64
+}
+
+// exchangeFactLegs decides WHICH amount each leg carries, and is a named
+// function so that decision is testable without a database (ai-review pass 2).
+//
+// The reversal leg carries the GROSS — what was actually captured — while the
+// exchange DELTA is computed from face values. Repointing the delta at the face
+// value was correct and silently made this fact wrong: a fee-carrying order
+// reversed the face value against a gross capture, and the payments journal
+// stopped agreeing with the original charge. The delta is a price comparison;
+// the reversal is a money movement. They need different numbers.
+func exchangeFactLegs(ex commercestore.Exchange, targetTotal int64) []exchangeFactLeg {
+	// The retained fee travels with the order. targetTotal is a rule-resolved
+	// price carrying no fee, so selling it bare against a GROSS reversal records
+	// a refund the provider never made:
+	//
+	//	face 9100, gross 9400, target 9100  ->  provider delta 0
+	//	reversed 9400, sold 9100            ->  journal net -300
+	//
+	// Carrying the fee is also the only reading that needs no money to move, and
+	// this ticket deliberately does not decide fee-on-exchange policy — that is
+	// the product question carved out of TKT-6. Carrying preserves the status quo:
+	// the buyer paid 9400, still holds a ticket, and nothing is refunded or
+	// recharged.
+	retainedFee := ex.SourceGrossTotal - ex.SourceTotal
+	return []exchangeFactLeg{
+		{commercestore.ExchangeReversedFactID(ex.ID), "order.exchange.reversed", ex.SourceGrossTotal},
+		{commercestore.ExchangeSoldFactID(ex.ID), "order.exchange.sold", targetTotal + retainedFee},
+	}
+}
+
 func (s *Server) exchangeFacts(r *http.Request, ex commercestore.Exchange, targetTotal int64) error {
 	occurred := ex.CreatedAt.UTC()
-	for _, leg := range []struct {
-		id     uuid.UUID
-		typ    string
-		amount int64
-	}{
-		// The GROSS, not the face value (ai-review [high]): this leg reverses the
-		// money that was actually captured. Repointing the exchange DELTA at the
-		// face value was correct and silently made this fact wrong — the delta is
-		// a price comparison, the reversal is a money movement, and they need
-		// different numbers.
-		{commercestore.ExchangeReversedFactID(ex.ID), "order.exchange.reversed", ex.SourceGrossTotal},
-		{commercestore.ExchangeSoldFactID(ex.ID), "order.exchange.sold", targetTotal},
-	} {
+	for _, leg := range exchangeFactLegs(ex, targetTotal) {
 		if _, err := s.db.ExecContext(r.Context(), `
 			INSERT INTO order_facts(fact_id,order_id,organizer_id,buyer_id,fact_type,amount,currency,occurred_at)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,

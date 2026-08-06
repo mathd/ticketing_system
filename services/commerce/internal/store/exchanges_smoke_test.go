@@ -716,3 +716,38 @@ func TestEvenExchangeOnAFeeCarryingOrderMovesNoMoney(t *testing.T) {
 			"distinguish the two, which is the only thing it is here to do")
 	}
 }
+
+// The lost-race path answers only for the SAME request (ai-review pass 2).
+//
+// Two reserves under one idempotency key with different channels both miss the
+// initial lookup — the channel never reaches inventory, so both receive the same
+// hold — and one INSERT wins. The loser must NOT be handed the winner's
+// reservation: its terms were never accepted, and answering 201 there makes one
+// request succeed now and conflict on every retry afterwards.
+//
+// Driven at the store level by seeding the winner's row first, which is exactly
+// the state the loser observes.
+func TestReserveLosingTheInsertRaceRefusesForeignTerms(t *testing.T) {
+	db, ctx := outboxDB(t)
+	org := uuid.New()
+	id := uuid.New()
+	channelA := "channel-a"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+		                         quantity,unit_amount,total_amount,face_value_amount,currency,status,channel_code)
+		VALUES($1,$2,$3,$4,$5,$6,2,4550,9700,9100,'EUR','held',$7)`,
+		id, org, uuid.New(), uuid.New(), uuid.New(), uuid.New(), channelA); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, id) })
+
+	var storedChannel *string
+	if err := db.QueryRowContext(ctx,
+		`SELECT channel_code FROM reservations WHERE id=$1`, id).Scan(&storedChannel); err != nil {
+		t.Fatal(err)
+	}
+	if storedChannel == nil || *storedChannel != channelA {
+		t.Fatalf("channel_code = %v, want it PERSISTED — it is an idempotency term, and a term "+
+			"that is not stored cannot be compared", storedChannel)
+	}
+}

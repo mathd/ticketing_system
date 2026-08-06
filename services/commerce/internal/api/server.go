@@ -382,10 +382,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			// apply, so the same key in two channels is two different sales, and
 			// answering the second with the first's quote hands back a total
 			// computed under fees that do not apply to it.
-			if pin.qty != in.units() || pin.ticket != in.TicketTypeID ||
-				!sameChannel(pin.channel, in.ChannelCode) ||
-				(len(pinnedSeats) > 0) != in.seated() ||
-				(in.seated() && !sameSeats(pinnedSeats, in.canonicalSeatSet())) {
+			if !sameTerms(in, pin.qty, pin.ticket, pin.channel, pinnedSeats) {
 				write(w, 409, map[string]string{"error": "idempotency key reused with different terms"})
 				return
 			}
@@ -639,22 +636,50 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	// error for a reservation that exists would be worse than telling the caller
 	// what they actually bought.
 	if affected, affErr := res.RowsAffected(); affErr == nil && affected == 0 {
+		// The INSERT lost a race. Answer from what is PERSISTED — but only after
+		// checking the winner's request was the SAME request (ai-review pass 2).
+		//
+		// The first version of this branch re-read the totals and returned 201
+		// unconditionally, which is worse than the bug it fixed: two concurrent
+		// requests under one key with DIFFERENT channels both miss the lookup
+		// above (the channel never reaches inventory, so both get the same hold),
+		// and the loser was handed the winner's reservation as if its own terms
+		// had been accepted. A later retry of that same request then reaches the
+		// replay path, compares the channel, and answers 409 — so one request
+		// succeeded once and conflicted afterwards.
 		var stored struct {
 			total, face int64
+			qty         int32
+			ticket      uuid.UUID
+			channel     *string
 			snapshot    []byte
+			seats       []byte
 		}
 		if err = s.db.QueryRowContext(r.Context(),
-			`SELECT total_amount,face_value_amount,fee_resolution_snapshot
+			`SELECT total_amount,face_value_amount,quantity,ticket_type_id,channel_code,
+			        fee_resolution_snapshot,seat_identities
 			 FROM reservations WHERE id=$1 AND organizer_id=$2`, id, in.OrganizerID).
-			Scan(&stored.total, &stored.face, &stored.snapshot); err != nil {
+			Scan(&stored.total, &stored.face, &stored.qty, &stored.ticket, &stored.channel,
+				&stored.snapshot, &stored.seats); err != nil {
 			write(w, 500, map[string]string{"error": "persist reservation"})
+			return
+		}
+		var storedSeats []string
+		if stored.seats != nil && json.Unmarshal(stored.seats, &storedSeats) != nil {
+			write(w, 500, map[string]string{"error": "persist reservation"})
+			return
+		}
+		// The SAME comparison the replay path uses — one definition of "the same
+		// request", so the two answers cannot disagree about it.
+		if !sameTerms(in, stored.qty, stored.ticket, stored.channel, storedSeats) {
+			write(w, 409, map[string]string{"error": "idempotency key reused with different terms"})
 			return
 		}
 		out := map[string]any{"reservation_id": id, "hold_id": hold.ID, "buyer_id": buyer,
 			"amount": stored.total, "currency": o.Price.Currency,
 			"expires_at": hold.ExpiresAt, "server_time": hold.ServerTime}
-		if in.seated() {
-			out["seats"] = hold.Seats
+		if len(storedSeats) > 0 {
+			out["seats"] = storedSeats
 		}
 		if err = addStoredFeeFields(out, stored.face, stored.snapshot); err != nil {
 			write(w, 500, map[string]string{"error": "persist reservation"})
