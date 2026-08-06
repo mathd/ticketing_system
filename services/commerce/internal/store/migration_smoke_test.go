@@ -52,13 +52,49 @@ func schemaDB(t *testing.T, ctx context.Context) (*sql.DB, *goose.Provider) {
 	return db, provider
 }
 
+// hasFaceValue reports whether migration 0014 has been applied to this schema.
+//
+// seedV4Order is called from tests at TWO different schema versions — one stops
+// at 0004, the other applies everything — so the insert has to fit both. The
+// alternative was giving face_value_amount a column DEFAULT, and that was
+// rejected: there is no honest default (0 violates the bounds CHECK for any
+// non-zero total, and "the total" is not expressible as one), and a default
+// would silently paper over a real insert site that forgot to state the face
+// value, which is the exact bug the column exists to prevent.
+func hasFaceValue(t *testing.T, ctx context.Context, db *sql.DB) bool {
+	t.Helper()
+	var present bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'reservations'
+		  AND column_name = 'face_value_amount')`).Scan(&present); err != nil {
+		t.Fatal(err)
+	}
+	return present
+}
+
+func faceValueColumns(t *testing.T, ctx context.Context, db *sql.DB) string {
+	if hasFaceValue(t, ctx, db) {
+		return ",face_value_amount"
+	}
+	return ""
+}
+
+// A fee-free seed, so the face value IS the total.
+func faceValueValues(t *testing.T, ctx context.Context, db *sql.DB) string {
+	if hasFaceValue(t, ctx, db) {
+		return ",1000"
+	}
+	return ""
+}
+
 // seedV4Order inserts a reservation + order pair against the version-4 schema.
 func seedV4Order(t *testing.T, ctx context.Context, db *sql.DB, status string) uuid.UUID {
 	t.Helper()
 	resID, orderID := uuid.New(), uuid.New()
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status)
-		VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','finalizing')`,
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status`+faceValueColumns(t, ctx, db)+`)
+		VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','finalizing'`+faceValueValues(t, ctx, db)+`)`,
 		resID, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
 		t.Fatal(err)
 	}
@@ -180,9 +216,9 @@ func TestPriceResolutionSnapshotColumns(t *testing.T) {
 	seed := func(snapshot any) error {
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
-			                         quantity,unit_amount,total_amount,currency,status,
+			                         quantity,unit_amount,total_amount,face_value_amount,currency,status,
 			                         price_resolution_snapshot)
-			VALUES($1,$2,$3,$4,$5,$6,1,900,900,'EUR','held',$7)
+			VALUES($1,$2,$3,$4,$5,$6,1,900,900,900,'EUR','held',$7)
 			ON CONFLICT(id) DO UPDATE SET price_resolution_snapshot = EXCLUDED.price_resolution_snapshot`,
 			res, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), snapshot)
 		return err
@@ -272,5 +308,152 @@ func TestMigration0012DownRefusesToDestroyCancellationHistory(t *testing.T) {
 	}
 	if _, err := provider.Down(ctx); err != nil {
 		t.Fatalf("0012 down on an empty history: %v", err)
+	}
+}
+
+// TKT-215 / migration 0014. Two columns, and the second one — face_value_amount —
+// exists because of a defect found at plan review: once total_amount became the
+// GROSS charge, the exchange delta compared it against a price-only target and
+// refunded the service fee on an EVEN exchange.
+func TestMigration0014FeeCompositionColumns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	insert := func(id uuid.UUID, total, face int64, snapshot any) error {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+			                         quantity,unit_amount,total_amount,face_value_amount,currency,status,
+			                         fee_resolution_snapshot)
+			VALUES($1,$2,$3,$4,$5,$6,1,900,$7,$8,'EUR','held',$9)
+			ON CONFLICT(id) DO UPDATE SET fee_resolution_snapshot = EXCLUDED.fee_resolution_snapshot`,
+			id, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), total, face, snapshot)
+		return err
+	}
+
+	// A fee-free sale: the two numbers agree, and the snapshot is NULL — the same
+	// state every pre-migration row is in.
+	if err := insert(uuid.New(), 900, 900, nil); err != nil {
+		t.Fatalf("a fee-free reservation must be accepted: %v", err)
+	}
+	// A sale carrying a passed-on fee: gross above face.
+	env := `{"resolution":{"resolver_version":1,"fees":[]},"breakdown":[],` +
+		`"face_value":900,"passed_on_fees":300,"absorbed_fees":0,"total_amount":1200}`
+	if err := insert(uuid.New(), 1200, 900, []byte(env)); err != nil {
+		t.Fatalf("a fee-carrying reservation must be accepted: %v", err)
+	}
+
+	// face > total is unrepresentable: total = face + passed_on and passed_on is
+	// never negative, so a row claiming otherwise is corrupt.
+	if err := insert(uuid.New(), 900, 1200, nil); err == nil {
+		t.Error("a face value above the total must be rejected")
+	}
+
+	// The envelope must AGREE with the columns it explains. A provenance
+	// document that contradicts the row is worse than none — it is a record that
+	// lies, and TKT-217 settles real money from it.
+	for name, bad := range map[string]string{
+		"a face value disagreeing with the column": `{"resolution":{},"breakdown":[],"face_value":111,"passed_on_fees":300,"total_amount":1200}`,
+		"a total disagreeing with the column":      `{"resolution":{},"breakdown":[],"face_value":900,"passed_on_fees":300,"total_amount":999}`,
+		"no resolution document":                   `{"breakdown":[],"face_value":900,"passed_on_fees":300,"total_amount":1200}`,
+		"a breakdown that is not an array":         `{"resolution":{},"breakdown":{},"face_value":900,"passed_on_fees":300,"total_amount":1200}`,
+		"no totals at all":                         `{"resolution":{},"breakdown":[]}`,
+		// ai-review [medium]: presence was checked, agreement was not. A snapshot
+		// claiming fees the columns do not show is a provenance document that
+		// lies, and TKT-217 settles money from it.
+		"passed-on fees that contradict the columns": `{"resolution":{},"breakdown":[],"face_value":900,"passed_on_fees":999,"total_amount":1200}`,
+		"a non-numeric total":                        `{"resolution":{},"breakdown":[],"face_value":900,"passed_on_fees":"garbage","total_amount":1200}`,
+		"a negative fee total":                       `{"resolution":{},"breakdown":[],"face_value":1500,"passed_on_fees":-300,"total_amount":1200}`,
+		"a null where a number belongs":              `{"resolution":{},"breakdown":[],"face_value":null,"passed_on_fees":300,"total_amount":1200}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := insert(uuid.New(), 1200, 900, []byte(bad)); err == nil {
+				t.Error("the shape CHECK must reject this envelope")
+			}
+		})
+	}
+}
+
+// The backfill is exact rather than approximate, and that is the whole argument
+// for it: before 0014 no reservation carries a fee, so face = total is TRUE for
+// every existing row and exchange behaviour is UNCHANGED rather than newly
+// corrected. This test seeds a row under the old schema and proves it.
+func TestMigration0014BackfillsFaceValueFromTheTotal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	// Stop BELOW 0014 so the row is written by the pre-fee schema, exactly as a
+	// production row would have been.
+	if _, err := provider.UpTo(ctx, 13); err != nil {
+		t.Fatalf("apply migrations up to 0013: %v", err)
+	}
+	legacy := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+		                         quantity,unit_amount,total_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,3,900,2700,'EUR','held')`,
+		legacy, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply 0014: %v", err)
+	}
+	var face, total int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT face_value_amount, total_amount FROM reservations WHERE id=$1`, legacy).
+		Scan(&face, &total); err != nil {
+		t.Fatal(err)
+	}
+	if face != 2700 || total != 2700 {
+		t.Errorf("face=%d total=%d, want both 2700 — a pre-fee row's total IS its face value, "+
+			"so the backfill is exact and the exchange delta it feeds is unchanged", face, total)
+	}
+}
+
+// The Down guard, on both halves. The snapshot half is the obvious one; the
+// face-value half is the one that matters, because dropping that column once a
+// fee has been charged silently re-breaks the exchange delta.
+func TestMigration0014DownRefusesToDestroyFeeComposition(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res := uuid.New()
+	env := `{"resolution":{"fees":[]},"breakdown":[],"face_value":900,"passed_on_fees":300,` +
+		`"absorbed_fees":0,"total_amount":1200}`
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+		                         quantity,unit_amount,total_amount,face_value_amount,currency,status,
+		                         fee_resolution_snapshot)
+		VALUES($1,$2,$3,$4,$5,$6,1,900,1200,900,'EUR','held',$7)`,
+		res, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), []byte(env)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(ctx); err == nil {
+		t.Fatal("0014 rolled back over a stored fee snapshot — the guard is missing")
+	}
+
+	// Clearing the snapshot is not enough while the face value still differs from
+	// the total: that row's exchange delta depends on the column.
+	if _, err := db.ExecContext(ctx, `UPDATE reservations SET fee_resolution_snapshot = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(ctx); err == nil {
+		t.Fatal("0014 rolled back over a reservation whose face value differs from its total — " +
+			"dropping the column there silently re-breaks the exchange delta")
+	}
+
+	// With both cleared it rolls back cleanly, so the guard is a guard rather
+	// than a permanently broken Down.
+	if _, err := db.ExecContext(ctx, `UPDATE reservations SET total_amount = face_value_amount`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(ctx); err != nil {
+		t.Fatalf("0014 down on fee-free data: %v", err)
 	}
 }

@@ -28,8 +28,8 @@ func seedBook(t *testing.T, db *sql.DB, ctx context.Context, key string, org, sl
 	for i := range orders {
 		res, order := uuid.New(), uuid.New()
 		if _, err := db.ExecContext(ctx, `
-			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'EUR','completed')`,
+			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,'EUR','completed')`,
 			res, org, uuid.New(), slot, uuid.New(), uuid.New(), quantity, unit, unit*int64(quantity)); err != nil {
 			t.Fatal(err)
 		}

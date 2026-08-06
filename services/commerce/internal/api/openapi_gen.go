@@ -161,6 +161,45 @@ func (e RefundRefundStatus) Valid() bool {
 	}
 }
 
+// Defines values for ReservationFeeBreakdownBasis.
+const (
+	PerOrderFixed  ReservationFeeBreakdownBasis = "per_order_fixed"
+	PerTicketFixed ReservationFeeBreakdownBasis = "per_ticket_fixed"
+	PercentageBps  ReservationFeeBreakdownBasis = "percentage_bps"
+)
+
+// Valid indicates whether the value is a known member of the ReservationFeeBreakdownBasis enum.
+func (e ReservationFeeBreakdownBasis) Valid() bool {
+	switch e {
+	case PerOrderFixed:
+		return true
+	case PerTicketFixed:
+		return true
+	case PercentageBps:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReservationFeeBreakdownIncidence.
+const (
+	Absorbed ReservationFeeBreakdownIncidence = "absorbed"
+	PassedOn ReservationFeeBreakdownIncidence = "passed_on"
+)
+
+// Valid indicates whether the value is a known member of the ReservationFeeBreakdownIncidence enum.
+func (e ReservationFeeBreakdownIncidence) Valid() bool {
+	switch e {
+	case Absorbed:
+		return true
+	case PassedOn:
+		return true
+	default:
+		return false
+	}
+}
+
 // CancellationRefundCounts defines model for CancellationRefundCounts.
 type CancellationRefundCounts struct {
 	AlreadyRefunded int `json:"already_refunded"`
@@ -378,11 +417,27 @@ type RefundCreate struct {
 
 // Reservation defines model for Reservation.
 type Reservation struct {
-	Amount        int64              `json:"amount"`
-	BuyerId       openapi_types.UUID `json:"buyer_id"`
-	Currency      string             `json:"currency"`
-	ExpiresAt     time.Time          `json:"expires_at"`
-	HoldId        openapi_types.UUID `json:"hold_id"`
+	Amount    int64              `json:"amount"`
+	BuyerId   openapi_types.UUID `json:"buyer_id"`
+	Currency  string             `json:"currency"`
+	ExpiresAt time.Time          `json:"expires_at"`
+
+	// FaceValue The rule-resolved price times quantity, before any fee (TKT-215). `amount` minus `face_value` is exactly the passed-on fee total.
+	// OPTIONAL, like `seats` and for the same reason: every reservation created before this field existed lacks it, and the response validator fails closed (ADR-028), so requiring it would turn those valid responses into runtime 500s. It is absent on a reservation with no fee snapshot -- a pre-TKT-215 row or a staff-created one -- and absence means "this sale had no fee concept", which is a different fact from "its fees totalled nothing".
+	FaceValue *int64 `json:"face_value,omitempty"`
+
+	// FeeBreakdown One entry per fee code that applied, INCLUDING any whose computed amount is zero (ADR-046 §2) -- a code that vanished as a function of price would leave settlement with a payee that is sometimes owed nothing and sometimes absent. A fee code that was considered but had no live rule produces no entry at all.
+	FeeBreakdown *[]struct {
+		Amount    int64                            `json:"amount"`
+		Basis     ReservationFeeBreakdownBasis     `json:"basis"`
+		Currency  string                           `json:"currency"`
+		FeeCode   string                           `json:"fee_code"`
+		Incidence ReservationFeeBreakdownIncidence `json:"incidence"`
+	} `json:"fee_breakdown,omitempty"`
+	HoldId openapi_types.UUID `json:"hold_id"`
+
+	// PassedOnFees The part of `amount` that is fees the buyer pays. Absorbed fees are NOT here and never reach `amount`: they are borne by the organizer out of the face value, and charging them to the buyer would be charging for the organizer's cost. They are recorded in the persisted snapshot because TKT-217 still owes them to a payee.
+	PassedOnFees  *int64             `json:"passed_on_fees,omitempty"`
 	ReservationId openapi_types.UUID `json:"reservation_id"`
 
 	// Seats The seats actually claimed, sorted and de-duplicated — inventory's canonical set, never the request's array (TKT-173). Present on a seated reservation and OMITTED on a general-admission one: absence is the reservation-kind signal, and an empty array would read as a seated claim that holds nothing. It cannot be required, because every existing GA and staff-created reservation response lacks it and the response validator fails closed (ADR-028) — requiring it would turn those valid responses into runtime 500s.
@@ -390,8 +445,18 @@ type Reservation struct {
 	ServerTime time.Time `json:"server_time"`
 }
 
+// ReservationFeeBreakdownBasis defines model for Reservation.FeeBreakdown.Basis.
+type ReservationFeeBreakdownBasis string
+
+// ReservationFeeBreakdownIncidence defines model for Reservation.FeeBreakdown.Incidence.
+type ReservationFeeBreakdownIncidence string
+
 // ReservationCreate Exactly one of `quantity` (general admission) or `seat_identities` (reserved seating, TKT-173) — never both, never neither. That XOR is expressed by the property counts rather than a top-level `oneOf`: with two required properties, two optional ones and no additional properties allowed, `minProperties: 3` / `maxProperties: 3` admits exactly one of the alternatives. `oneOf` would be the obvious spelling and is avoided deliberately — the generator turns a top-level union into a json.RawMessage with As…/From… accessors instead of a usable request struct, which is a worse contract bought with a worse API. The handler enforces the same XOR independently; a caller invoking it directly must not be able to slip past the schema.
 type ReservationCreate struct {
+	// ChannelCode The sales channel this purchase is made through, selecting which fee rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) -- there is no channel registry, and inventing one here would decide TKT-17's story.
+	// OMITTING it is the default/public context, in which only channel-agnostic fee rules are eligible. It is NOT a wildcard: a channel-specific rule never applies to a sale that named no channel.
+	// It reaches catalog's fee resolution and stops there. It is deliberately NOT forwarded to inventory, whose own channel_code is what channel allocations cap consumption against -- propagating it would make a sale start failing with 409 when an allocation is exhausted, on ticket types this change never touched.
+	ChannelCode *string            `json:"channel_code,omitempty"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 
 	// Quantity General admission: how many. Mutually exclusive with seat_identities.

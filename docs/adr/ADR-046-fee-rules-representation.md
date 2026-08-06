@@ -303,9 +303,29 @@ is the booking fee not showing up?"*.
     - Nothing consumes this yet. The whole feature is inert until TKT-215.
 - **Not decided here, and owned elsewhere:** the payee model and split arithmetic (TKT-216), the
   settlement ledger and its integrity claim (TKT-217), and what happens to fees and splits on a
-  refund, an exchange or a cancellation run — carved out of TKT-6 explicitly, and **open**: after
-  this epic a refund returns the buyer's money including passed-on fees, while the settlement
-  entries attributing those fees to payees are not reversed.
+  refund or a cancellation run — carved out of TKT-6 explicitly, and **open**.
+
+  **Corrected at TKT-215 (this paragraph previously said the opposite, and it mattered).** An
+  earlier revision claimed *"a refund returns the buyer's money including passed-on fees, while the
+  settlement entries attributing those fees to payees are not reversed"*. That is wrong, and wrong
+  in the more dangerous direction. `store/refunds.go` computes the refund as
+  `quantity × unit_amount` — deliberately, so the money path carries no division — and
+  `unit_amount` is the **face** price. So once TKT-215 charges face + passed-on fees, a full refund
+  returns **face value only** and the buyer is **under-refunded by the fees they actually paid**.
+  Not a bookkeeping asymmetry between refund and settlement: a buyer-facing shortfall on money
+  collected, which arrives as a chargeback rather than as a reconciliation discrepancy. Cancellation
+  runs inherit it through the same projection.
+
+  It stays deferred because whether a service fee is refundable is a **product** decision — many
+  ticketing platforms deliberately do not refund fees — and neither TKT-215 nor this ADR should
+  answer it by accident in either direction. What is *not* deferred is saying it accurately.
+
+  **Exchanges are a separate case and were NOT deferred.** An exchange compares
+  `targetTotal − sourceTotal` where the target is a rule-resolved price carrying no fee, so reading
+  a fee-inclusive source would have refunded the fee on an *even* exchange. That is arithmetic, not
+  policy, and TKT-215 fixed it by storing the face value explicitly and pointing the delta at it —
+  while the `order.exchange.reversed` money fact continues to reverse the **gross**, because the
+  journal must agree with what was captured.
 
 ## References
 

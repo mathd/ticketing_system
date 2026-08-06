@@ -542,8 +542,8 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 	reservationID, orderID := uuid.NewString(), uuid.NewString()
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO reservations (id, organizer_id, hold_id, slot_id, ticket_type_id, buyer_id,
-			quantity, unit_amount, total_amount, currency, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 1, 1000, 1000, 'CAD', 'completed')`,
+			quantity, unit_amount, total_amount, face_value_amount, currency, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 1, 1000, 1000, 1000, 'CAD', 'completed')`,
 		reservationID, uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()); err != nil {
 		t.Fatalf("seed reservation: %v", err)
 	}

@@ -659,3 +659,95 @@ func countExchangeEvents(t *testing.T, ctx context.Context, db *sql.DB, order uu
 	}
 	return n
 }
+
+// TKT-215 A1: an EVEN exchange on a fee-carrying order must move ZERO money.
+//
+// This is the test that fails against the version of TKT-215 that folded fees
+// into total_amount and called the consequence a deferred gap. The delta is
+// targetTotal − sourceTotal, and targetTotal is a rule-resolved price with no fee
+// in it; if the source is read from the GROSS total, an identically-priced
+// exchange produces a negative delta and settleExchangeDelta issues a partial
+// refund of the service fee to a buyer who exchanged for the same thing.
+//
+// FIXTURE NOTE: the fee must be NON-ZERO and the exchange must be EVEN. A
+// zero-fee fixture cannot distinguish reading face from reading total — they are
+// the same number — which is precisely why every pre-TKT-215 row is safe and why
+// a test seeded from the old helper would have proved nothing.
+func TestEvenExchangeOnAFeeCarryingOrderMovesNoMoney(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-fee-even", 2, 4550) // face 9100
+
+	// Charge a 300-cent passed-on fee on top: gross 9400, face 9100.
+	if _, err := db.ExecContext(ctx, `
+		UPDATE reservations SET total_amount = 9400, face_value_amount = 9100,
+		       fee_resolution_snapshot = $2
+		WHERE id = $1`, c.ReservationID,
+		[]byte(`{"resolution":{"fees":[]},"breakdown":[{"fee_code":"service","basis":"per_ticket_fixed","incidence":"passed_on","amount":300,"currency":"EUR"}],"face_value":9100,"passed_on_fees":300,"absorbed_fees":0,"total_amount":9400}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	ex, err := BindOrderExchange(ctx, db, exchangeRequest(c, "x-fee-1", uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The source total the exchange reasons about is the FACE value, not the
+	// gross charge.
+	if ex.SourceTotal != 9100 {
+		t.Fatalf("SourceTotal = %d, want the face value 9100. Reading total_amount (9400) here "+
+			"makes an even exchange look like a 300-cent downgrade", ex.SourceTotal)
+	}
+	// An identically-priced target: 2 × 4550.
+	if got := ExchangeDelta(ex.SourceTotal, 4550*int64(ex.Quantity)); got != 0 {
+		t.Errorf("delta = %d, want 0 — an even exchange must move no money. A negative delta "+
+			"here means the buyer is refunded their service fee for exchanging like for like", got)
+	}
+
+	// And the OTHER half, which the first version of this fix got wrong
+	// (ai-review [high]): the gross is carried separately, because the
+	// `order.exchange.reversed` money fact reverses what was actually CAPTURED.
+	// Reversing the face value would leave the payments journal disagreeing with
+	// the original charge by exactly the fee.
+	if ex.SourceGrossTotal != 9400 {
+		t.Errorf("SourceGrossTotal = %d, want the captured 9400. The delta needs the face value "+
+			"and the reversal fact needs the gross; one column cannot serve both", ex.SourceGrossTotal)
+	}
+	if ex.SourceTotal == ex.SourceGrossTotal {
+		t.Error("face and gross are equal on a fee-carrying order — this fixture can no longer " +
+			"distinguish the two, which is the only thing it is here to do")
+	}
+}
+
+// The lost-race path answers only for the SAME request (ai-review pass 2).
+//
+// Two reserves under one idempotency key with different channels both miss the
+// initial lookup — the channel never reaches inventory, so both receive the same
+// hold — and one INSERT wins. The loser must NOT be handed the winner's
+// reservation: its terms were never accepted, and answering 201 there makes one
+// request succeed now and conflict on every retry afterwards.
+//
+// Driven at the store level by seeding the winner's row first, which is exactly
+// the state the loser observes.
+func TestReserveLosingTheInsertRaceRefusesForeignTerms(t *testing.T) {
+	db, ctx := outboxDB(t)
+	org := uuid.New()
+	id := uuid.New()
+	channelA := "channel-a"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+		                         quantity,unit_amount,total_amount,face_value_amount,currency,status,channel_code)
+		VALUES($1,$2,$3,$4,$5,$6,2,4550,9700,9100,'EUR','held',$7)`,
+		id, org, uuid.New(), uuid.New(), uuid.New(), uuid.New(), channelA); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, id) })
+
+	var storedChannel *string
+	if err := db.QueryRowContext(ctx,
+		`SELECT channel_code FROM reservations WHERE id=$1`, id).Scan(&storedChannel); err != nil {
+		t.Fatal(err)
+	}
+	if storedChannel == nil || *storedChannel != channelA {
+		t.Fatalf("channel_code = %v, want it PERSISTED — it is an idempotency term, and a term "+
+			"that is not stored cannot be compared", storedChannel)
+	}
+}

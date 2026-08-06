@@ -19,8 +19,8 @@ func TestCompleteOrderReturnsOneCanonicalReferenceConcurrently(t *testing.T) {
 	organizerID, holdID, slotID := uuid.New(), uuid.New(), uuid.New()
 	ticketTypeID, buyerID := uuid.New(), uuid.New()
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status)
-		VALUES($1,$2,$3,$4,$5,$6,2,1250,2500,'EUR','finalizing')`,
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,2,1250,2500,2500,'EUR','finalizing')`,
 		reservationID, organizerID, holdID, slotID, ticketTypeID, buyerID)
 	if err != nil {
 		t.Fatal(err)

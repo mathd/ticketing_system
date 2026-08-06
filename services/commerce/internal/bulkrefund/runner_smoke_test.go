@@ -74,8 +74,8 @@ func TestRunnerDrainsARealBook(t *testing.T) {
 	for range 3 {
 		res, order := uuid.New(), uuid.New()
 		if _, err := db.ExecContext(ctx, `
-			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status)
-			VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','completed')`,
+			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+			VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,1000,'EUR','completed')`,
 			res, org, uuid.New(), slot, uuid.New(), uuid.New()); err != nil {
 			t.Fatal(err)
 		}

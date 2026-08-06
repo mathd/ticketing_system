@@ -837,3 +837,153 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 		t.Fatalf("seated order = %s", orderBody)
 	}
 }
+
+// TKT-215 AC4 + AC8, end to end through the real stack: two reservations that
+// differ ONLY by sales channel are charged different totals while recording the
+// same fee amount, and checkout captures the stored fee-inclusive total.
+//
+// This is the assertion the whole ticket exists for, and it is the one that
+// cannot be made at unit level: it needs catalog resolving real rules, commerce
+// composing them, and payments capturing the result.
+//
+// FIXTURE NOTE: the two rules carry the SAME amount and OPPOSITE incidence. A
+// fixture where the two channels also differed in amount could not tell "the
+// incidence changed what the buyer pays" from "the fee itself was different" —
+// which is precisely the confusion a build that treats incidence as a display
+// flag would produce.
+func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
+	_, ticketType := setupCheckoutOffer(t, "tkt215")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cat, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/catalog", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cat.Close(ctx) }()
+
+	var eventID string
+	if err = cat.QueryRow(ctx, `SELECT p.event_id FROM ticket_types t
+		JOIN performances p ON p.id = t.performance_id WHERE t.id = $1`, ticketType).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	// Same code, same amount, same scope — only the channel and the incidence
+	// differ, so nothing else can explain a difference in the charged total.
+	for _, r := range []struct{ channel, incidence string }{
+		{"tkt215-passed", "passed_on"},
+		{"tkt215-absorbed", "absorbed"},
+	} {
+		if _, err = cat.Exec(ctx, `INSERT INTO fee_rules
+			(organizer_id, scope_level, scope_id, fee_code, basis, amount, currency, incidence, channel_code)
+			VALUES($1,'event',$2,'service','per_ticket_fixed',300,'EUR',$3,$4)`,
+			organizerID, eventID, r.incidence, r.channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reserveIn := func(channel, key string) map[string]any {
+		t.Helper()
+		code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", key,
+			map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType,
+				"quantity": 2, "channel_code": channel})
+		if code != 201 {
+			t.Fatalf("reserve in %s: %d %s", channel, code, body)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(body, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// The fee is 300 per ticket at quantity 2 → 600. Everything below is asserted
+	// RELATIVE to the observed face value rather than against a hard-coded price:
+	// the claim under test is "incidence changes the charged total by exactly the
+	// fee", and pinning the fixture's unit price would test the seed data instead
+	// — which is how the first version of this test failed for the wrong reason.
+	passed := reserveIn("tkt215-passed", "tkt215-passed")
+	absorbed := reserveIn("tkt215-absorbed", "tkt215-absorbed")
+
+	const feeTotal = float64(600)
+	face := passed["face_value"].(float64)
+	if face <= 0 {
+		t.Fatalf("face_value = %v, want the priced face of the reservation", passed["face_value"])
+	}
+	if absorbed["face_value"] != face {
+		t.Errorf("face values differ (%v vs %v) — only the incidence was supposed to change",
+			face, absorbed["face_value"])
+	}
+	if passed["amount"] != face+feeTotal {
+		t.Errorf("passed-on total = %v, want face %v + %v of fees the buyer pays",
+			passed["amount"], face, feeTotal)
+	}
+	if absorbed["amount"] != face {
+		t.Errorf("absorbed total = %v, want the bare face %v — an absorbed fee must NOT reach "+
+			"the buyer's total", absorbed["amount"], face)
+	}
+
+	// The SAME fee amount is recorded on both, which is the half that stops
+	// incidence from being read as "the fee did not apply".
+	feeAmount := func(res map[string]any) float64 {
+		t.Helper()
+		items, ok := res["fee_breakdown"].([]any)
+		if !ok || len(items) != 1 {
+			t.Fatalf("want one fee in the breakdown, got %v", res["fee_breakdown"])
+		}
+		item := items[0].(map[string]any)
+		if item["fee_code"] != "service" {
+			t.Errorf("fee_code = %v", item["fee_code"])
+		}
+		return item["amount"].(float64)
+	}
+	if a, b := feeAmount(passed), feeAmount(absorbed); a != 600 || b != 600 {
+		t.Errorf("fee amounts = %v and %v, want 600 both — the absorbed fee is still OWED to a "+
+			"payee (TKT-217), it is simply not charged to the buyer", a, b)
+	}
+
+	// AC8: checkout captures the STORED total, not a recomputation.
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "tkt215-order",
+		map[string]any{"reservation_id": passed["reservation_id"], "name": "Fee Buyer",
+			"email": "fees@example.test", "payment_token": "fake-ok"})
+	if code != 200 {
+		t.Fatalf("checkout %d %s", code, body)
+	}
+	var order map[string]any
+	if err = json.Unmarshal(body, &order); err != nil {
+		t.Fatal(err)
+	}
+
+	pay, err := pgx.Connect(ctx, fmt.Sprintf("postgres://payments:payments@%s/payments", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pay.Close(context.Background()) }()
+	var captured int64
+	if err = pay.QueryRow(ctx, `SELECT amount FROM journal_entries
+		WHERE fact_type='order.created' AND payload->>'order_id' = $1`,
+		fmt.Sprint(order["order_id"])).Scan(&captured); err != nil {
+		t.Fatalf("the money journal must carry the captured amount: %v", err)
+	}
+	if captured != int64(face+feeTotal) {
+		t.Errorf("captured = %d, want the stored fee-inclusive %v. The bare face %v would mean "+
+			"the buyer was charged without their fees; anything else means checkout recomputed "+
+			"instead of charging what was quoted", captured, face+feeTotal, face)
+	}
+
+	// And the commerce row agrees with what was captured.
+	com, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/commerce", pgHostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = com.Close(context.Background()) }()
+	var total, storedFace, passedOn int64
+	if err = com.QueryRow(ctx, `SELECT total_amount, face_value_amount,
+		(fee_resolution_snapshot->>'passed_on_fees')::bigint
+		FROM reservations WHERE id = $1`, passed["reservation_id"]).Scan(&total, &storedFace, &passedOn); err != nil {
+		t.Fatalf("the reservation must carry its fee composition: %v", err)
+	}
+	if total != int64(face+feeTotal) || storedFace != int64(face) || passedOn != int64(feeTotal) {
+		t.Errorf("stored total=%d face=%d passed_on=%d, want %v/%v/%v",
+			total, storedFace, passedOn, face+feeTotal, face, feeTotal)
+	}
+}

@@ -223,10 +223,36 @@ components:
         not be able to slip past the schema.
       required: [organizer_id, ticket_type_id]
       minProperties: 3
-      maxProperties: 3
+      maxProperties: 4
+      # maxProperties alone STOPS expressing the XOR once a fifth property
+      # exists (TKT-215): {organizer_id, ticket_type_id, quantity,
+      # seat_identities} is four properties and would be admitted. `not` restores
+      # it explicitly. It is invisible to the code generator -- which is what
+      # ruled out a top-level oneOf -- so the request struct is unchanged.
+      not:
+        required: [quantity, seat_identities]
       properties:
         organizer_id: {type: string, format: uuid}
         ticket_type_id: {type: string, format: uuid}
+        channel_code:
+          description: >
+            The sales channel this purchase is made through, selecting which fee
+            rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) --
+            there is no channel registry, and inventing one here would decide
+            TKT-17's story.
+
+            OMITTING it is the default/public context, in which only
+            channel-agnostic fee rules are eligible. It is NOT a wildcard: a
+            channel-specific rule never applies to a sale that named no channel.
+
+            It reaches catalog's fee resolution and stops there. It is
+            deliberately NOT forwarded to inventory, whose own channel_code is
+            what channel allocations cap consumption against -- propagating it
+            would make a sale start failing with 409 when an allocation is
+            exhausted, on ticket types this change never touched.
+          type: string
+          minLength: 1
+          maxLength: 100
         quantity: {type: integer, minimum: 1, maximum: 50, description: 'General admission: how many. Mutually exclusive with seat_identities.'}
         seat_identities:
           type: array
@@ -264,6 +290,52 @@ components:
             response validator fails closed (ADR-028) — requiring it would turn
             those valid responses into runtime 500s.
           items: {type: string, minLength: 1, maxLength: 200}
+        face_value:
+          description: >
+            The rule-resolved price times quantity, before any fee (TKT-215).
+            `amount` minus `face_value` is exactly the passed-on fee total.
+
+            OPTIONAL, like `seats` and for the same reason: every reservation
+            created before this field existed lacks it, and the response
+            validator fails closed (ADR-028), so requiring it would turn those
+            valid responses into runtime 500s. It is absent on a reservation with
+            no fee snapshot -- a pre-TKT-215 row or a staff-created one -- and
+            absence means "this sale had no fee concept", which is a different
+            fact from "its fees totalled nothing".
+          type: integer
+          format: int64
+          minimum: 0
+        passed_on_fees:
+          description: >
+            The part of `amount` that is fees the buyer pays. Absorbed fees are
+            NOT here and never reach `amount`: they are borne by the organizer out
+            of the face value, and charging them to the buyer would be charging
+            for the organizer's cost. They are recorded in the persisted snapshot
+            because TKT-217 still owes them to a payee.
+          type: integer
+          format: int64
+          minimum: 0
+        fee_breakdown:
+          description: >
+            One entry per fee code that applied, INCLUDING any whose computed
+            amount is zero (ADR-046 §2) -- a code that vanished as a function of
+            price would leave settlement with a payee that is sometimes owed
+            nothing and sometimes absent. A fee code that was considered but had
+            no live rule produces no entry at all.
+          type: array
+          items:
+            type: object
+            required: [fee_code, basis, incidence, amount, currency]
+            properties:
+              fee_code: {type: string, minLength: 1, maxLength: 64}
+              basis:
+                type: string
+                enum: [per_ticket_fixed, per_order_fixed, percentage_bps]
+              incidence:
+                type: string
+                enum: [passed_on, absorbed]
+              amount: {type: integer, format: int64, minimum: 0}
+              currency: {type: string, pattern: '^[A-Z]{3}$'}
     OperationalConversionCreate:
       type: object
       additionalProperties: false
