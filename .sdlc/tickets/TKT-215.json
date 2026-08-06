@@ -4,9 +4,11 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F2: The sale charges passed-on fees and records the breakdown, per channel",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -148,5 +150,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-215 (US-F2)\n\n**Selection.** TKT-214 closed, which unblocked exactly two children: this one and TKT-216. Both have\nzero open blockers now. Chose TKT-215 on **unblocking power** — TKT-217 needs both, but TKT-215 is\nalso what makes TKT-214's work reachable at all (nothing consumes fee rules until this ticket), so\nit is the slice that converts a shipped-but-inert feature into a demonstrable one. Tie-break by\nlowest key was not needed.\n\n**Blockers verified:** `blocked-by TKT-214` — **resolved** (Done, merged `0d821677`). No other links.\n\n**Branch:** `TKT-215-sale-charges-fees`, cut from `origin/main` at `d39ac330`.\n\n**Risk verdict — `risk:low` NOT claimed.** This ticket changes **what a buyer is charged**. It is the\nmoney path itself, not a model for it: a new request field on the sale, new arithmetic on the total,\na new persisted snapshot, and a migration in commerce. Three of `risk:low`'s carve-outs apply (money\npath, data migration, >5 files). The plan gate would be mandatory under normal operation; it is\nwaived here only by the owner's blanket waiver for this epic, not because the ticket is small.\n\n**Gates waived — same terms as TKT-214**, recorded again so this ticket's history stands alone:\nGate 1 given by the owner's instruction; Gate 2 replaced by agent judgement after the cross-model\ncritique (prefer the critique's recommendation, else the most reversible option, every decision\nrecorded in `kind=plan-final`); Gate 3 replaced by agent squash-merge after the ai-review converges\nunder the unchanged churn cap, review-guide posted first as the audit record; Gate 4 replaced by\nself-validation of each COS against test evidence on merged code. Cross-model review, TDD with tests\nobserved red, `make check` green before every push and after the merge, and no AI attribution all\napply unchanged.\n\n**Model routing**, re-read from `.claude/sdlc.config.json` at claim time — unchanged from TKT-214:\n`plan` = `gpt-5.6-luna` · `planReview` = `main-agent` · `implement` = `main-agent` ·\n`aiReview` = `gpt-5.6-luna`. Both cross-model pairs hold.\n\n**Context-mémo RE-BAKED at claim, not merely revalidated.** The shaping-time bake was written before\nADR-046 existed, so its `governingAdrs` were a snapshot of a world without the model this ticket\nconsumes. Re-resolved against `docs/adr/` at HEAD:\n\n- **ADR-046 added** — the ticket's direct input, and the source of the rounding rule, the incidence\n  semantics and the nullable-winner case this implementation has to handle.\n- **ADR-043 added** — and this is the TKT-214 retro applied to itself. That ticket's mémo missed\n  ADR-043 because it was resolved *by area* and an auth-guard ADR does not look like \"fee rules\";\n  it turned out to govern the ticket's most consequential decision. The retro's concrete change was\n  *include every ADR dated within the current week regardless of area match*. Doing that here\n  surfaced ADR-043 (2026-08-05) and ADR-032 immediately — ADR-043 is what says commerce may keep\n  using the credential it already holds rather than needing a new one.\n- Twelve governing ADRs in total, each with what it constrains **for this ticket**."
+    }
+  ]
 }
