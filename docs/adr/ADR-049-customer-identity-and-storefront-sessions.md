@@ -502,6 +502,13 @@ allowlisted statement, which must keep its `guest_order_ref` / `completed` / NUL
 A second copy fails even inside the same file, because that is the failure mode an allowlist actually
 has, and `TestTheAllowlistCannotBeWidened` proves the guard rejects each way of widening it.
 
+**Its adversary, named:** the guard stops an **honest omission** — a recovery or compensation path
+written by someone who does not know it exists. It does not stop an author routing around it: a
+predicate hidden in a dollar-quoted string or a subquery can satisfy a source scan while filtering
+nothing. Closing that means parsing SQL instead of reading text, which is disproportionate to a
+threat that is "a colleague deliberately defeating a test in their own commit". Catalog's public-read
+guard draws the same line about itself.
+
 ### One answer for every refusal
 
 Nonexistent, not completed, and already claimed by somebody else are all **404 `{"error":"not

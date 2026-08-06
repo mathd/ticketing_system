@@ -11,6 +11,19 @@ import (
 // Attribution durability, as a property of the SOURCE rather than of one run
 // (TKT-221 ai-review [medium]).
 //
+// **What this does NOT do (ADR-021 — name the adversary): it stops an honest
+// omission. It does not stop an author who is trying to defeat it.** A statement
+// whose predicates live inside a dollar-quoted string, or in a subquery the regex
+// reads as the outer WHERE, can satisfy this check while filtering nothing
+// (ai-review pass 2). Closing that means parsing SQL rather than reading source,
+// and the thing being defended against — a recovery or compensation path quietly
+// rewriting attribution — is written by someone who does not know this guard
+// exists, not by someone routing around it.
+//
+// The same boundary catalog's public-read guard states about itself
+// (public_read_invalidation_test.go): *"it stops an honest omission. It does not
+// stop someone editing this map in the same commit."*
+//
 // The design claim is "customer_id is written once, on the order INSERT, and
 // nothing ever updates it — so it survives completion, recovery, refunds and
 // cancellation runs by not being touched". A runtime test can only demonstrate
@@ -39,8 +52,12 @@ var (
 	// the raw string. The second exists so a predicate check can be bound to the
 	// STATEMENT rather than to the file — searching the file passes when the
 	// predicates live in a comment or a different function (ai-review [medium]).
-	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
-	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+orders\s*\(([^)]*)\)`)
+	// ONLY and a schema qualifier are accepted PostgreSQL spellings, and a form the
+	// scanner cannot SEE is the worst failure it has — a real attribution writer
+	// invisible to the guard, with the exactly-one count still satisfied by the
+	// legitimate one (ai-review pass 2 [high]).
+	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
+	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s*\(([^)]*)\)`)
 )
 
 func commerceProductionSQL(t *testing.T) map[string]string {
@@ -91,26 +108,46 @@ func allowedAttributionUpdates(assignment string) bool {
 	return normalized == "customer_id = $2"
 }
 
+// scanAttributionUpdates is the WHOLE decision — match, recognise, authorize — in
+// one place, so the production check and its regression test run the same code.
+//
+// The regression test used to call the helpers directly, which meant restoring
+// the file-scoped bug left it green: it was asserting the helpers, not the wiring
+// (ai-review pass 2 [medium]). Third time this run that a test could not fail;
+// the fix is always the same shape — make the test call what production calls.
+//
+// Returns: statements seen, allowlisted attribution updates, and the SET clause of
+// every one that is not allowed.
+func scanAttributionUpdates(body string) (statements, allowed int, refused []string) {
+	for _, match := range updateOrders.FindAllStringSubmatch(body, -1) {
+		statements++
+		if !strings.Contains(strings.ToLower(match[1]), "customer_id") {
+			continue
+		}
+		if allowedAttributionUpdates(match[1]) && claimPredicatesIntact(match[2]) {
+			allowed++
+			continue
+		}
+		refused = append(refused, match[1])
+	}
+	return statements, allowed, refused
+}
+
 func TestNoProductionCodeUpdatesOrderAttribution(t *testing.T) {
 	sources := commerceProductionSQL(t)
 
 	var statements, allowed int
 	for path, body := range sources {
-		for _, match := range updateOrders.FindAllStringSubmatch(body, -1) {
-			statements++
-			if !strings.Contains(strings.ToLower(match[1]), "customer_id") {
-				continue
-			}
-			if allowedAttributionUpdates(match[1]) && claimPredicatesIntact(match[2]) {
-				allowed++
-				continue
-			}
+		found, ok, bad := scanAttributionUpdates(body)
+		statements += found
+		allowed += ok
+		for _, assignment := range bad {
 			t.Errorf("%s updates orders.customer_id:\n\tUPDATE orders SET %s\n"+
 				"Attribution is written once, on the INSERT in claimOrder, and must survive "+
 				"completion and recovery untouched — an order can be completed minutes after "+
 				"the request that established it is gone. The ONE exception is the claim "+
 				"(TKT-223), which must keep its guest_order_ref / completed / NULL-or-same "+
-				"predicates.", path, strings.TrimSpace(match[1]))
+				"predicates.", path, strings.TrimSpace(assignment))
 		}
 	}
 	// Exactly one. A second copy — even a correct-looking one — is how an
@@ -300,17 +337,46 @@ func TestPredicatesAreReadFromTheStatementAndNotTheFile(t *testing.T) {
 const sneaky = ` + "`" + `
 	UPDATE orders SET customer_id = $2 WHERE id = $1` + "`" + `
 `
-	matches := updateOrders.FindAllStringSubmatch(withoutLineComments(source), -1)
-	if len(matches) != 1 {
-		t.Fatalf("matched %d statements, want 1 — the regex has stopped seeing this shape", len(matches))
+	// Drives the PRODUCTION scan, not the helpers underneath it. Calling
+	// claimPredicatesIntact directly would leave this green with the file-scoped
+	// bug restored, which is the regression it is named for.
+	statements, allowed, refused := scanAttributionUpdates(withoutLineComments(source))
+	if statements != 1 {
+		t.Fatalf("matched %d statements, want 1 — the regex has stopped seeing this shape", statements)
 	}
-	if claimPredicatesIntact(matches[0][2]) {
-		t.Fatalf("a statement whose only predicate is `id = $1` passed the predicate check; its "+
-			"where-clause was %q. The words are in the file, not the statement.", matches[0][2])
+	if allowed != 0 || len(refused) != 1 {
+		t.Fatalf("a statement whose only predicate is `id = $1` was allowed (allowed=%d refused=%v). "+
+			"The predicate words are in the FILE, not the statement.", allowed, refused)
 	}
-	// And the real statement, read the same way, does pass.
-	real := updateOrders.FindAllStringSubmatch(withoutLineComments("const x = `"+claimGuestOrderStatement+"`"), -1)
-	if len(real) != 1 || !claimPredicatesIntact(real[0][2]) {
-		t.Fatalf("the actual claim statement failed its own predicate check: %+v", real)
+
+	// And the real statement, read the same way, is allowed.
+	_, realAllowed, realRefused := scanAttributionUpdates(withoutLineComments("const x = `" + claimGuestOrderStatement + "`"))
+	if realAllowed != 1 || len(realRefused) != 0 {
+		t.Fatalf("the actual claim statement failed its own check: allowed=%d refused=%v", realAllowed, realRefused)
+	}
+}
+
+// The forms the scanner must not be blind to (ai-review pass 2 [high]).
+//
+// `UPDATE ONLY orders` and `UPDATE public.orders` are ordinary PostgreSQL. A
+// statement the scanner cannot SEE is its worst failure — the exactly-one count
+// is still satisfied by the legitimate claim, so a second real attribution writer
+// is invisible rather than merely unapproved.
+func TestTheScannerSeesQualifiedAndOnlyForms(t *testing.T) {
+	for _, sql := range []string{
+		"UPDATE ONLY orders SET customer_id = NULL WHERE id = $1",
+		"UPDATE public.orders SET customer_id = NULL WHERE id = $1",
+		"UPDATE ONLY public.orders o SET customer_id = NULL WHERE o.id = $1",
+	} {
+		t.Run(sql, func(t *testing.T) {
+			statements, allowed, refused := scanAttributionUpdates(sql)
+			if statements != 1 {
+				t.Fatalf("the scanner did not see this statement at all — a form it cannot see is "+
+					"a writer it cannot guard: %s", sql)
+			}
+			if allowed != 0 || len(refused) != 1 {
+				t.Fatalf("allowed=%d refused=%v, want it refused", allowed, refused)
+			}
+		})
 	}
 }

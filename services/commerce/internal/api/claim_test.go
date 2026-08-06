@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,27 +66,52 @@ func TestClaimAttributesTheOrderToTheAssertedCustomer(t *testing.T) {
 	}
 }
 
-// The three refused cases are ONE answer. Telling them apart hands a caller
-// probing references an oracle for which are real, complete and unclaimed.
+// The three refused cases are ONE answer at the HTTP boundary, which is the only
+// place the claim is about. Telling them apart hands a caller probing references
+// an oracle for which are real, complete and unclaimed.
+//
+// Driven with THREE DISTINCT store outcomes, not one error injected twice
+// (ai-review pass 2 [medium]): the handler maps via errors.Is, so an earlier
+// version that stubbed the same error for both requests proved only that one
+// error maps consistently to itself. A handler could differentiate wrapped
+// variants and stay green.
 func TestClaimRefusesEveryUnclaimableOrderIdentically(t *testing.T) {
-	customer, ref := uuid.New(), uuid.New()
+	customer := uuid.New()
 	assertion := mintCustomerAssertion(walletKey, customer, time.Now().Add(time.Hour))
-	s, _ := claimServer(t, uuid.Nil, commercestore.ErrOrderNotClaimable)
+	ref := uuid.New()
 
-	// The store cannot tell them apart either — it reports one error for all
-	// three — so this asserts the mapping stays a single answer.
-	first := postClaim(s, assertion, `{"guest_order_ref":"`+ref.String()+`"}`)
-	second := postClaim(s, assertion, `{"guest_order_ref":"`+uuid.New().String()+`"}`)
+	// What the three real cases look like coming out of the store: the sentinel
+	// itself, and two wrapped forms a future implementation might plausibly
+	// produce while still satisfying errors.Is.
+	outcomes := []struct {
+		name string
+		err  error
+	}{
+		{"no such order", commercestore.ErrOrderNotClaimable},
+		{"not completed", fmt.Errorf("order is not completed: %w", commercestore.ErrOrderNotClaimable)},
+		{"already claimed by somebody else", fmt.Errorf("order belongs to %s: %w", uuid.New(), commercestore.ErrOrderNotClaimable)},
+	}
 
-	if first.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404: %s", first.Code, first.Body.String())
+	var answers []string
+	for _, tc := range outcomes {
+		s, _ := claimServer(t, uuid.Nil, tc.err)
+		rec := postClaim(s, assertion, `{"guest_order_ref":"`+ref.String()+`"}`)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404: %s", tc.name, rec.Code, rec.Body.String())
+		}
+		// Whatever the store said must not reach the caller.
+		if strings.Contains(rec.Body.String(), ref.String()) || strings.Contains(rec.Body.String(), "belongs to") {
+			t.Fatalf("%s: the refusal leaks the store's reason: %s", tc.name, rec.Body.String())
+		}
+		answers = append(answers, rec.Body.String())
 	}
-	if first.Code != second.Code || first.Body.String() != second.Body.String() {
-		t.Fatalf("two refusals differ:\n %d %s %d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
-	}
-	// And the refusal names nothing.
-	if strings.Contains(first.Body.String(), ref.String()) {
-		t.Fatalf("the refusal echoes the reference: %s", first.Body.String())
+	for i := 1; i < len(answers); i++ {
+		t.Run(outcomes[i].name, func(t *testing.T) {
+			if answers[i] != answers[0] {
+				t.Fatalf("this refusal reads %q where %q reads %q — three answers, not one",
+					answers[i], outcomes[0].name, answers[0])
+			}
+		})
 	}
 }
 
