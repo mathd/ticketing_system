@@ -153,6 +153,16 @@ type FeeCodeSelection struct {
 	FeeCode    string
 	Winner     *FeeRule
 	Candidates []LosingFeeRule
+	// Split is who this fee is owed to (TKT-216). It rides the fee resolution
+	// rather than a second endpoint deliberately: TKT-215 persists this whole
+	// document verbatim as the reservation's snapshot, so carrying the split
+	// here is what captures it AT SALE TIME. A schedule edited afterwards then
+	// cannot change who gets paid for a sale that already happened — the same
+	// snapshot-not-reference discipline migrations 0006 and 0014 argue for.
+	//
+	// Zero value means "not resolved", which only happens on the pure seam's
+	// own tests; the store always fills it.
+	Split SplitSelection
 }
 
 // FeeSelection is the provenance object. Fees is ordered by fee code so the

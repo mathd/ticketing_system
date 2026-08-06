@@ -58,9 +58,11 @@ type fakeStore struct {
 	// seeded against, and runs the REAL pure comparator over them — the point of
 	// the API tests is the handler and the contract mapping, not a second
 	// re-implementation of ADR-036 §4 that could agree with a wrong resolver.
-	priceRules map[uuid.UUID][]store.PriceRule
-	priceScope map[uuid.UUID]store.PricingScopes
-	feeRules   map[uuid.UUID][]store.FeeRule
+	priceRules     map[uuid.UUID][]store.PriceRule
+	priceScope     map[uuid.UUID]store.PricingScopes
+	feeRules       map[uuid.UUID][]store.FeeRule
+	payees         map[uuid.UUID]store.Payee
+	splitSchedules map[uuid.UUID][]store.SplitSchedule
 	// TKT-190 staff sign-in, keyed by normalized identifier.
 	staffAccounts  map[string]staffAuthResult
 	staffAuthErr   error
@@ -789,8 +791,67 @@ func (f *fakeStore) ResolveTicketTypeFees(_ context.Context, ticketTypeID uuid.U
 	if err != nil {
 		return store.FeeSelection{}, err
 	}
+	var schedules []store.SplitSchedule
+	for _, id := range []uuid.UUID{scopes.TicketTypeID, scopes.SlotID, scopes.EventID, scopes.VenueID} {
+		schedules = append(schedules, f.splitSchedules[id]...)
+	}
+	if scopes.SeriesID != nil {
+		schedules = append(schedules, f.splitSchedules[*scopes.SeriesID]...)
+	}
+	// Run the REAL selector, so the handler test cannot disagree with production
+	// about which schedule wins.
+	for i := range sel.Fees {
+		sel.Fees[i].Split = store.SelectSplitSchedule(at, sel.Fees[i].FeeCode, channel, scopes, schedules)
+	}
 	sel.OrganizerID = tt.OrganizerID
 	return sel, nil
+}
+
+// CreatePayee / CreateSplitSchedule mirror the store's contract closely enough
+// for the handler tests: the write gate refuses a scope_id that names no seeded
+// entity, exactly as the SQL gate does.
+func (f *fakeStore) CreatePayee(_ context.Context, in store.Payee) (store.Payee, error) {
+	if f.payees == nil {
+		f.payees = map[uuid.UUID]store.Payee{}
+	}
+	in.ID = uuid.New()
+	f.payees[in.ID] = in
+	return in, nil
+}
+
+func (f *fakeStore) CreateSplitSchedule(_ context.Context, in store.SplitSchedule) (uuid.UUID, error) {
+	known := false
+	switch in.ScopeLevel {
+	case store.ScopeTicketType:
+		_, known = f.ticketTypes[in.ScopeID]
+	case store.ScopeSlot:
+		_, known = f.performances[in.ScopeID]
+	case store.ScopeSeries:
+		_, known = f.series[in.ScopeID]
+	case store.ScopeEvent:
+		_, known = f.events[in.ScopeID]
+	case store.ScopeVenue:
+		_, known = f.venues[in.ScopeID]
+	}
+	if !known {
+		return uuid.Nil, store.ErrNotFound
+	}
+	// The database's deferred trigger is what really enforces this; the fake
+	// enforces it too so a handler test cannot seed a schedule production would
+	// refuse to commit.
+	var total int32
+	for _, p := range in.Parts {
+		total += p.ShareBps
+	}
+	if len(in.Parts) == 0 || total != 10000 {
+		return uuid.Nil, store.ErrNotFound
+	}
+	in.ID = uuid.New()
+	if f.splitSchedules == nil {
+		f.splitSchedules = map[uuid.UUID][]store.SplitSchedule{}
+	}
+	f.splitSchedules[in.ScopeID] = append(f.splitSchedules[in.ScopeID], in)
+	return in.ID, nil
 }
 
 func (f *fakeStore) GetPublishedPerformance(_ context.Context, id uuid.UUID) (store.Performance, error) {

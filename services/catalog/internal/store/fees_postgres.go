@@ -175,6 +175,19 @@ func (p *Postgres) ResolveTicketTypeFees(ctx context.Context, ticketTypeID uuid.
 	if err != nil {
 		return FeeSelection{}, err
 	}
+
+	// Splits are read in the SAME transaction as the fees they split (TKT-216).
+	// A schedule authored between the two reads would otherwise let one
+	// resolution split a fee it was not resolved against -- and this document is
+	// persisted as the sale's provenance, so an internally inconsistent one is
+	// permanent.
+	schedules, err := loadSplitSchedules(ctx, tx, organizerID, scopes)
+	if err != nil {
+		return FeeSelection{}, err
+	}
+	for i := range sel.Fees {
+		sel.Fees[i].Split = SelectSplitSchedule(at, sel.Fees[i].FeeCode, channel, scopes, schedules)
+	}
 	// The pure seam has no idea who owns this; the store does.
 	sel.OrganizerID = organizerID
 	return sel, nil

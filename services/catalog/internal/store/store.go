@@ -603,6 +603,12 @@ type Store interface {
 	// with ErrFeeRuleCurrencyMismatch rather than being skipped, whatever its
 	// channel.
 	ResolveTicketTypeFees(ctx context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (FeeSelection, error)
+	// CreatePayee registers someone a fee can be owed to (TKT-216 / ADR-047).
+	CreatePayee(ctx context.Context, in Payee) (Payee, error)
+	// CreateSplitSchedule writes a schedule and its parts in ONE transaction —
+	// the balance trigger is deferred, so a schedule is unbalanced for the whole
+	// of its own creation and two transactions would commit that state.
+	CreateSplitSchedule(ctx context.Context, in SplitSchedule) (uuid.UUID, error)
 	// AuthenticateStaff verifies a back-office sign-in (TKT-190, staff.go).
 	// Every credential failure is ErrStaffCredentialsInvalid — an unknown
 	// identifier and a wrong password are indistinguishable *by construction*,

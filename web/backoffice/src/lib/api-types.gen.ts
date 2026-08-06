@@ -886,12 +886,76 @@ export interface components {
             /** @enum {string} */
             reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "less_channel_specific" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
         };
-        /** @description One fee code's outcome. candidates holds every rule that competed for this code EXCEPT the winner, ordered by rule id — representation only, carrying no precedence. */
+        /** @description Someone a fee is owed to (TKT-216). `kind` is DESCRIPTIVE metadata for reporting and must never be read as a routing rule — money goes where the share says, not where the kind implies. */
+        Payee: {
+            /** Format: uuid */
+            payee_id: string;
+            kind: string;
+            display_name: string;
+            /** @description The operator's own identifier for this payee in whatever system pays them. Opaque here; payout execution is not in this epic. */
+            external_reference: string | null;
+        };
+        /** @description One payee's share of a fee, in basis points. Parts of a schedule always sum to exactly 10000. */
+        SplitPart: {
+            payee: components["schemas"]["Payee"];
+            /** Format: int32 */
+            share_bps: number;
+        };
+        /** @description One split schedule as reported in provenance. */
+        SplitScheduleProvenance: {
+            /** Format: uuid */
+            schedule_id: string;
+            /** @enum {string} */
+            scope_level: "ticket_type" | "slot" | "series" | "event" | "venue";
+            /** Format: uuid */
+            scope_id: string;
+            fee_code: string;
+            channel_code: string | null;
+            /** Format: date-time */
+            effective_from: string | null;
+            /** Format: date-time */
+            effective_until: string | null;
+            /** Format: int32 */
+            priority: number;
+            forced: boolean;
+            parts: components["schemas"]["SplitPart"][];
+        };
+        /**
+         * @description A schedule that did not win its fee code, and why. The reason vocabulary is the fee resolver's, reused verbatim — the ranking axes are identical, so a parallel vocabulary would be two words for one fact.
+         *     A schedule belonging to another CHANNEL is absent entirely rather than reported: returning it would publish the whole channel payout matrix.
+         */
+        LosingSplitSchedule: {
+            schedule: components["schemas"]["SplitScheduleProvenance"];
+            /** @enum {string} */
+            reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "less_channel_specific" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
+        };
+        /**
+         * @description Who a fee code is owed to (TKT-216 / ADR-047).
+         *     `mode` is `split` when a schedule won, and `unsplit` when the code was CONSIDERED and nothing applies. Those are different facts from each other and from an empty part list: `no_schedule` means nobody ever authored one, while `outside_window` means somebody did and it stopped applying — and only the second is evidence of a configuration that needs attention. The losing schedules ship with it, because they are the answer to "why is this fee not being split?".
+         */
+        SplitResolution: {
+            /** Format: int32 */
+            resolver_version: number;
+            /** @enum {string} */
+            mode: "split" | "unsplit";
+            /**
+             * @description Empty when mode is `split`; otherwise why nothing applies.
+             * @enum {string}
+             */
+            reason: "" | "no_schedule" | "outside_window";
+            winner: components["schemas"]["SplitScheduleProvenance"] | null;
+            candidates: components["schemas"]["LosingSplitSchedule"][];
+        };
+        /**
+         * @description One fee code's outcome. candidates holds every rule that competed for this code EXCEPT the winner, ordered by rule id — representation only, carrying no precedence.
+         *     `split` says who the fee is owed to. It rides this response rather than a second endpoint deliberately: commerce persists this whole document as the reservation's snapshot, so carrying the split here captures it AT SALE TIME, and a schedule edited afterwards cannot change who gets paid for a sale that already happened.
+         */
         FeeCodeResolution: {
             fee_code: string;
             /** @description null when the code was considered and nothing currently applies — every rule for it fell outside its effective window. The candidates then ARE the answer to "why is this fee not showing up?". A code no rule carries produces no entry at all: considered-and-inapplicable and not-present are different states. */
             winner: components["schemas"]["FeeRuleProvenance"] | null;
             candidates: components["schemas"]["LosingFeeRule"][];
+            split: components["schemas"]["SplitResolution"];
         };
         /**
          * @description Every fee that applies to a ticket type in a channel, with provenance (ADR-046). fees is ordered by fee code so the document is stable; the order carries no precedence, because codes do not compete with each other — they are additive.

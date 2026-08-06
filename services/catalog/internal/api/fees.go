@@ -80,6 +80,7 @@ func feeResolutionToAPI(sel store.FeeSelection) FeeResolution {
 			winner := feeRuleToAPI(*f.Winner)
 			code.Winner = &winner
 		}
+		code.Split = splitToAPI(f.Split)
 		for _, c := range f.Candidates {
 			code.Candidates = append(code.Candidates, LosingFeeRule{
 				Rule:   feeRuleToAPI(c.Rule),
@@ -111,5 +112,54 @@ func feeRuleToAPI(r store.FeeRule) FeeRuleProvenance {
 		EffectiveUntil: r.EffectiveUntil,
 		Priority:       r.Priority,
 		Forced:         r.ForceAncestorOverride,
+	}
+}
+
+// splitToAPI maps one fee code's split provenance (TKT-216 / ADR-047).
+func splitToAPI(sel store.SplitSelection) SplitResolution {
+	out := SplitResolution{
+		ResolverVersion: sel.ResolverVersion,
+		Mode:            SplitResolutionMode(sel.Mode),
+		Reason:          SplitResolutionReason(sel.Reason),
+		// Never nil: "no losers" must serialize as [] rather than null.
+		Candidates: []LosingSplitSchedule{},
+	}
+	if sel.Winner != nil {
+		winner := splitScheduleToAPI(*sel.Winner)
+		out.Winner = &winner
+	}
+	for _, c := range sel.Candidates {
+		out.Candidates = append(out.Candidates, LosingSplitSchedule{
+			Schedule: splitScheduleToAPI(c.Schedule),
+			Reason:   LosingSplitScheduleReason(c.Reason),
+		})
+	}
+	return out
+}
+
+func splitScheduleToAPI(s store.SplitSchedule) SplitScheduleProvenance {
+	parts := make([]SplitPart, 0, len(s.Parts))
+	for _, p := range s.Parts {
+		parts = append(parts, SplitPart{
+			ShareBps: p.ShareBps,
+			Payee: Payee{
+				PayeeId:           p.Payee.ID,
+				Kind:              p.Payee.Kind,
+				DisplayName:       p.Payee.DisplayName,
+				ExternalReference: p.Payee.ExternalReference,
+			},
+		})
+	}
+	return SplitScheduleProvenance{
+		ScheduleId:     s.ID,
+		ScopeLevel:     SplitScheduleProvenanceScopeLevel(s.ScopeLevel),
+		ScopeId:        s.ScopeID,
+		FeeCode:        s.FeeCode,
+		ChannelCode:    s.ChannelCode,
+		EffectiveFrom:  s.EffectiveFrom,
+		EffectiveUntil: s.EffectiveUntil,
+		Priority:       s.Priority,
+		Forced:         s.ForceAncestorOverride,
+		Parts:          parts,
 	}
 }
