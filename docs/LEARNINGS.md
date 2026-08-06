@@ -9,6 +9,14 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- **A surviving mutant may be exposing a blind fixture, not equivalent code** — a forced-partition
+  mutant survived because the only forced case in the table gave the same winner whether the
+  partition was a filter or a tie-break. The usual reading of a surviving mutant is "the change is
+  equivalent"; sometimes it means "this fixture cannot observe the property". (TKT-216)
+- **Check how the codebase already solved it before writing a new integrity guard** — payments has
+  guarded TRUNCATE on its append-only journal since the journal existed; a new trigger written from
+  first principles in the same repo shipped the identical hole. Row-level triggers do not fire on
+  TRUNCATE. (TKT-216)
 - **A test can defend the bug it was written to catch** — TKT-215's overflow test asserted that a
   large price at a 100% rate *must be refused*, pinning broken arithmetic as required behaviour.
   Mutation testing does not help: the mutant dies correctly against a wrong oracle. Ask what the
