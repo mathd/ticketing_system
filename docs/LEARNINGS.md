@@ -9,6 +9,14 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- [**Three ways one test could not fail, and "observe it red" caught none of them**](./learnings/2026-08-06-three-ways-one-test-could-not-fail.md) —
+  the assertion was satisfied by a side effect of the code under test; then it asserted only the
+  positive half; then it never ran the production default. Red-then-green proves a test can tell
+  "before" from "after", not "correct" from "a different wrong thing". (TKT-220)
+- [**A cap inherited across a trust boundary is not a bound**](./learnings/2026-08-06-a-cap-inherited-across-a-trust-boundary-is-not-a-bound.md) —
+  a per-principal session cap bounds the map only if principals are bounded. Copied from a staff tool
+  (operator-provisioned) to a storefront (public registration), every fact stayed true and the premise
+  was deleted in transit. (TKT-220)
 - **A surviving mutant may be exposing a blind fixture, not equivalent code** — a forced-partition
   mutant survived because the only forced case in the table gave the same winner whether the
   partition was a filter or a tie-break. The usual reading of a surviving mutant is "the change is
