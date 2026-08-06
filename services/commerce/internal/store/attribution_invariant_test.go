@@ -11,6 +11,19 @@ import (
 // Attribution durability, as a property of the SOURCE rather than of one run
 // (TKT-221 ai-review [medium]).
 //
+// **What this does NOT do (ADR-021 — name the adversary): it stops an honest
+// omission. It does not stop an author who is trying to defeat it.** A statement
+// whose predicates live inside a dollar-quoted string, or in a subquery the regex
+// reads as the outer WHERE, can satisfy this check while filtering nothing
+// (ai-review pass 2). Closing that means parsing SQL rather than reading source,
+// and the thing being defended against — a recovery or compensation path quietly
+// rewriting attribution — is written by someone who does not know this guard
+// exists, not by someone routing around it.
+//
+// The same boundary catalog's public-read guard states about itself
+// (public_read_invalidation_test.go): *"it stops an honest omission. It does not
+// stop someone editing this map in the same commit."*
+//
 // The design claim is "customer_id is written once, on the order INSERT, and
 // nothing ever updates it — so it survives completion, recovery, refunds and
 // cancellation runs by not being touched". A runtime test can only demonstrate
@@ -35,8 +48,16 @@ import (
 // worse than no scanner, so TestTheScannerSeesTheShapesThatExist pins each shape
 // it must recognise.
 var (
-	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\x60|\bWHERE\b|;)`)
-	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+orders\s*\(([^)]*)\)`)
+	// Two captures: $1 is the SET clause, $2 is everything from WHERE to the end of
+	// the raw string. The second exists so a predicate check can be bound to the
+	// STATEMENT rather than to the file — searching the file passes when the
+	// predicates live in a comment or a different function (ai-review [medium]).
+	// ONLY and a schema qualifier are accepted PostgreSQL spellings, and a form the
+	// scanner cannot SEE is the worst failure it has — a real attribution writer
+	// invisible to the guard, with the exactly-one count still satisfied by the
+	// legitimate one (ai-review pass 2 [high]).
+	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
+	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s*\(([^)]*)\)`)
 )
 
 func commerceProductionSQL(t *testing.T) map[string]string {
@@ -67,20 +88,73 @@ func commerceProductionSQL(t *testing.T) map[string]string {
 	return sources
 }
 
+// TKT-223 added the ONE sanctioned exception: the claim, which is the only
+// NULL -> customer transition in the system.
+//
+// Allowlisted by TEXT and by COUNT, not by file. A file-level exemption would let
+// a second attribution update land beside the claim and pass, which is the failure
+// mode an allowlist actually has — and this repo has now been bitten twice by
+// guards whose own bypass nobody tested (TKT-194's hand-maintained inventory,
+// TKT-222's plan assertion matching an unrelated node). TestTheAllowlistCannotBeWidened
+// below is that test.
+//
+// Why the claim may do what recovery must not: recovery and checkout replay are
+// not ownership operations — they finish work that is already attributed and must
+// leave it as they found it. A claim IS the ownership operation. Its predicate,
+// which the allowlist requires to be present, is what keeps that narrow: only an
+// unattributed order, or one already owned by the caller.
+func allowedAttributionUpdates(assignment string) bool {
+	normalized := strings.Join(strings.Fields(assignment), " ")
+	return normalized == "customer_id = $2"
+}
+
+// scanAttributionUpdates is the WHOLE decision — match, recognise, authorize — in
+// one place, so the production check and its regression test run the same code.
+//
+// The regression test used to call the helpers directly, which meant restoring
+// the file-scoped bug left it green: it was asserting the helpers, not the wiring
+// (ai-review pass 2 [medium]). Third time this run that a test could not fail;
+// the fix is always the same shape — make the test call what production calls.
+//
+// Returns: statements seen, allowlisted attribution updates, and the SET clause of
+// every one that is not allowed.
+func scanAttributionUpdates(body string) (statements, allowed int, refused []string) {
+	for _, match := range updateOrders.FindAllStringSubmatch(body, -1) {
+		statements++
+		if !strings.Contains(strings.ToLower(match[1]), "customer_id") {
+			continue
+		}
+		if allowedAttributionUpdates(match[1]) && claimPredicatesIntact(match[2]) {
+			allowed++
+			continue
+		}
+		refused = append(refused, match[1])
+	}
+	return statements, allowed, refused
+}
+
 func TestNoProductionCodeUpdatesOrderAttribution(t *testing.T) {
 	sources := commerceProductionSQL(t)
 
-	var statements int
+	var statements, allowed int
 	for path, body := range sources {
-		for _, match := range updateOrders.FindAllStringSubmatch(body, -1) {
-			statements++
-			if strings.Contains(strings.ToLower(match[1]), "customer_id") {
-				t.Errorf("%s updates orders.customer_id:\n\tUPDATE orders SET %s\n"+
-					"Attribution is written once, on the INSERT in claimOrder, and must survive "+
-					"completion and recovery untouched — an order can be completed minutes after "+
-					"the request that established it is gone.", path, strings.TrimSpace(match[1]))
-			}
+		found, ok, bad := scanAttributionUpdates(body)
+		statements += found
+		allowed += ok
+		for _, assignment := range bad {
+			t.Errorf("%s updates orders.customer_id:\n\tUPDATE orders SET %s\n"+
+				"Attribution is written once, on the INSERT in claimOrder, and must survive "+
+				"completion and recovery untouched — an order can be completed minutes after "+
+				"the request that established it is gone. The ONE exception is the claim "+
+				"(TKT-223), which must keep its guest_order_ref / completed / NULL-or-same "+
+				"predicates.", path, strings.TrimSpace(assignment))
 		}
+	}
+	// Exactly one. A second copy — even a correct-looking one — is how an
+	// allowlist stops being a list of one thing.
+	if allowed != 1 {
+		t.Errorf("allowlisted attribution updates = %d, want exactly 1 (the TKT-223 claim). "+
+			"A second one is not covered by anything that reviewed the first.", allowed)
 	}
 	// A scan that matched nothing would pass silently while proving nothing —
 	// exactly the failure this style of test exists to avoid.
@@ -171,5 +245,138 @@ func TestOrderSQLIsWrittenAsLiterals(t *testing.T) {
 					path, suspicious)
 			}
 		}
+	}
+}
+
+// claimPredicatesIntact requires the claim statement to keep the three predicates
+// that make it narrow. Without them the allowlisted statement would be a blanket
+// "set any order's customer to anyone".
+//
+// Takes the statement's OWN where-clause, not the file it lives in. The first
+// version searched the whole file, so predicates sitting in a comment — or in a
+// different function entirely — would authorize a statement that had none of them
+// (ai-review [medium]).
+func claimPredicatesIntact(where string) bool {
+	for _, predicate := range []string{
+		"guest_order_ref = $1",
+		"status = 'completed'",
+		"customer_id IS NULL OR customer_id = $2",
+	} {
+		if !strings.Contains(where, predicate) {
+			return false
+		}
+	}
+	return true
+}
+
+// The guard on the guard (TKT-223 plan-review F3).
+//
+// An allowlist whose own bypasses are untested is not a guard. These are the three
+// ways this one can be widened without anybody noticing, and each must be rejected
+// by the same machinery that permits the real statement.
+func TestTheAllowlistCannotBeWidened(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		assignment string
+		body       string
+		want       bool
+	}{
+		{
+			name:       "the real claim statement",
+			assignment: "customer_id = $2",
+			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
+			want:       true,
+		},
+		{
+			name:       "the claim with its ownership predicate removed",
+			assignment: "customer_id = $2",
+			body:       "guest_order_ref = $1 status = 'completed'",
+			want:       false,
+		},
+		{
+			name:       "the claim with its completed predicate removed",
+			assignment: "customer_id = $2",
+			body:       "guest_order_ref = $1 customer_id IS NULL OR customer_id = $2",
+			want:       false,
+		},
+		{
+			name:       "a recovery-shaped clearing of attribution",
+			assignment: "customer_id = NULL, status = 'refunded'",
+			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
+			want:       false,
+		},
+		{
+			name:       "an update that sets attribution from a different parameter",
+			assignment: "customer_id = $3",
+			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
+			want:       false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := allowedAttributionUpdates(tc.assignment) && claimPredicatesIntact(tc.body)
+			if got != tc.want {
+				t.Fatalf("allowed = %v, want %v — the allowlist %s", got, tc.want,
+					map[bool]string{true: "refuses the one statement it exists to permit",
+						false: "admits a statement nobody reviewed"}[tc.want])
+			}
+		})
+	}
+}
+
+// The bypass the file-scoped version admitted (ai-review [medium]).
+//
+// `claimPredicatesIntact` is only as good as what it is handed. The first version
+// was handed the whole FILE, so a statement with no predicates at all passed as
+// long as the words appeared *somewhere* — in a comment, or in a different
+// function. This drives the real regex over synthetic source and asserts the
+// where-clause it extracts belongs to the statement it matched.
+func TestPredicatesAreReadFromTheStatementAndNotTheFile(t *testing.T) {
+	source := `
+// A comment that mentions guest_order_ref = $1 and status = 'completed' and
+// customer_id IS NULL OR customer_id = $2 — none of which is in the statement.
+const sneaky = ` + "`" + `
+	UPDATE orders SET customer_id = $2 WHERE id = $1` + "`" + `
+`
+	// Drives the PRODUCTION scan, not the helpers underneath it. Calling
+	// claimPredicatesIntact directly would leave this green with the file-scoped
+	// bug restored, which is the regression it is named for.
+	statements, allowed, refused := scanAttributionUpdates(withoutLineComments(source))
+	if statements != 1 {
+		t.Fatalf("matched %d statements, want 1 — the regex has stopped seeing this shape", statements)
+	}
+	if allowed != 0 || len(refused) != 1 {
+		t.Fatalf("a statement whose only predicate is `id = $1` was allowed (allowed=%d refused=%v). "+
+			"The predicate words are in the FILE, not the statement.", allowed, refused)
+	}
+
+	// And the real statement, read the same way, is allowed.
+	_, realAllowed, realRefused := scanAttributionUpdates(withoutLineComments("const x = `" + claimGuestOrderStatement + "`"))
+	if realAllowed != 1 || len(realRefused) != 0 {
+		t.Fatalf("the actual claim statement failed its own check: allowed=%d refused=%v", realAllowed, realRefused)
+	}
+}
+
+// The forms the scanner must not be blind to (ai-review pass 2 [high]).
+//
+// `UPDATE ONLY orders` and `UPDATE public.orders` are ordinary PostgreSQL. A
+// statement the scanner cannot SEE is its worst failure — the exactly-one count
+// is still satisfied by the legitimate claim, so a second real attribution writer
+// is invisible rather than merely unapproved.
+func TestTheScannerSeesQualifiedAndOnlyForms(t *testing.T) {
+	for _, sql := range []string{
+		"UPDATE ONLY orders SET customer_id = NULL WHERE id = $1",
+		"UPDATE public.orders SET customer_id = NULL WHERE id = $1",
+		"UPDATE ONLY public.orders o SET customer_id = NULL WHERE o.id = $1",
+	} {
+		t.Run(sql, func(t *testing.T) {
+			statements, allowed, refused := scanAttributionUpdates(sql)
+			if statements != 1 {
+				t.Fatalf("the scanner did not see this statement at all — a form it cannot see is "+
+					"a writer it cannot guard: %s", sql)
+			}
+			if allowed != 0 || len(refused) != 1 {
+				t.Fatalf("allowed=%d refused=%v, want it refused", allowed, refused)
+			}
+		})
 	}
 }

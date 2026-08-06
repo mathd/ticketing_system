@@ -189,3 +189,125 @@ func TestWalletIsReachableWithOnlyTheCustomersOwnAssertion(t *testing.T) {
 		t.Fatalf("no assertion at all: status %d, want 401: %s", status, body)
 	}
 }
+
+// Claiming a guest order through the live gateway (TKT-223 / US-A4).
+//
+// What only the live stack proves: the claim is reachable with the customer's own
+// assertion and NO service credential, and one customer's assertion cannot take
+// another's order — across the real gateway, not a handler under test.
+func TestClaimIsReachableWithOnlyTheCustomersOwnAssertion(t *testing.T) {
+	type principal struct {
+		CustomerID string `json:"customer_id"`
+		Assertion  string `json:"customer_assertion"`
+	}
+	register := func(t *testing.T) principal {
+		t.Helper()
+		status, body := customerPost(t, "/api/commerce/customers", map[string]string{
+			"email": "claim-" + uuid.NewString() + "@example.test", "password": "correct horse battery",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("register: %d %s", status, body)
+		}
+		var p principal
+		if err := json.Unmarshal(body, &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	claim := func(t *testing.T, ref, assertion string) (int, []byte) {
+		t.Helper()
+		encoded, err := json.Marshal(map[string]string{"guest_order_ref": ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPost, gatewayURL+"/api/commerce/orders/claim", bytes.NewReader(encoded))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		// No X-Internal-Token and no staff-write token. That is the assertion.
+		if assertion != "" {
+			req.Header.Set("X-Customer-Assertion", assertion)
+		}
+		resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("POST claim: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, body)
+		return resp.StatusCode, body
+	}
+
+	buyer := register(t)
+
+	// The happy path, end to end through the live stack: buy as a GUEST, sign up
+	// afterwards with a different address, and claim.
+	//
+	// The different address is the point. Reference-only proof exists precisely so
+	// a buyer who signed up later, with whatever address they felt like, is not
+	// locked out of their own history — a fixture that reused the checkout email
+	// would pass against an implementation that required them to match.
+	_, ticketType := setupCheckoutOffer(t, "claim")
+	reservation := reserveCheckout(t, ticketType, "reserve-claim")
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-claim", map[string]any{
+		"reservation_id": reservation["reservation_id"],
+		"name":           "Guest Buyer",
+		"email":          "guest-" + uuid.NewString() + "@example.test",
+		"payment_token":  "fake-ok",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("guest checkout: %d %s", code, body)
+	}
+	var purchase struct {
+		OrderID       string `json:"order_id"`
+		GuestOrderRef string `json:"guest_order_ref"`
+	}
+	if err := json.Unmarshal(body, &purchase); err != nil {
+		t.Fatal(err)
+	}
+
+	status, claimed := claim(t, purchase.GuestOrderRef, buyer.Assertion)
+	if status != http.StatusOK {
+		t.Fatalf("claiming a completed guest order: %d %s", status, claimed)
+	}
+	var result struct {
+		OrderID    string `json:"order_id"`
+		CustomerID string `json:"customer_id"`
+	}
+	if err := json.Unmarshal(claimed, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OrderID != purchase.OrderID || result.CustomerID != buyer.CustomerID {
+		t.Fatalf("claim result = %+v, want order %s for customer %s", result, purchase.OrderID, buyer.CustomerID)
+	}
+
+	// Idempotent: the same customer claiming again succeeds rather than erroring,
+	// so a browser retry is safe.
+	if status, again := claim(t, purchase.GuestOrderRef, buyer.Assertion); status != http.StatusOK {
+		t.Fatalf("claiming twice as the same customer: %d %s", status, again)
+	}
+
+	// And somebody ELSE gets the ordinary refusal — the same 404 an unknown
+	// reference gets, so the two are indistinguishable across the real stack.
+	stranger := register(t)
+	if status, refused := claim(t, purchase.GuestOrderRef, stranger.Assertion); status != http.StatusNotFound {
+		t.Fatalf("a stranger claiming a taken order: %d, want 404: %s", status, refused)
+	}
+
+	// An order reference nobody holds: the generic refusal, and it must be the
+	// SAME answer a real-but-taken order would give.
+	if status, body := claim(t, uuid.NewString(), buyer.Assertion); status != http.StatusNotFound {
+		t.Fatalf("claiming an unknown reference: status %d, want 404: %s", status, body)
+	}
+	// No assertion at all.
+	if status, body := claim(t, uuid.NewString(), ""); status != http.StatusUnauthorized {
+		t.Fatalf("claiming with no assertion: status %d, want 401: %s", status, body)
+	}
+	// A malformed reference is request validation, NOT an answer about the order
+	// book — the one place the two are deliberately distinguishable.
+	if status, body := claim(t, "not-a-uuid", buyer.Assertion); status != http.StatusBadRequest {
+		t.Fatalf("claiming a malformed reference: status %d, want 400: %s", status, body)
+	}
+}

@@ -1,6 +1,7 @@
 ---
 import Layout from '../../../layouts/Layout.astro';
 import { isLocale, UI_STRINGS } from '../../../lib/locales';
+import { SESSION_COOKIE, lookupSession } from '../../../lib/session';
 
 const locale = Astro.params.locale;
 if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404 });
@@ -35,12 +36,50 @@ const voidedReason = (history: Array<{ type: string }>) => {
   }
   return undefined;
 };
+// TKT-223: the claim form, shown only when this browser has a live session.
+//
+// The page stays PUBLIC — `requiresSession` is unchanged and guest retrieval must
+// keep working, which is most of this page's traffic. It simply looks the session
+// up itself, and does nothing when there is none. The cookie reaches here because
+// TKT-220 scoped it to `/` rather than an account subtree (ADR-049 §5), which is
+// exactly the case that decision was made for.
+//
+// Nothing about the session is rendered: no address, no principal, and above all
+// no assertion. The form carries the order reference — which is already in the URL
+// the buyer is looking at — and the locale.
+const signedIn = Boolean(lookupSession(Astro.cookies.get(SESSION_COOKIE)?.value ?? ''));
+const claimOutcome = Astro.url.searchParams.get('claim');
+const claimMessage =
+  claimOutcome === 'refused'
+    ? t.claimRefused
+    : claimOutcome === 'unavailable'
+      ? t.claimUnavailable
+      : null;
+
 Astro.response.headers.set('Cache-Control', 'no-store');
 ---
 
 <Layout locale={locale} title={t.myTickets}>
   <h1>{t.myTickets}</h1>
   <p>{t.ticketDeliveryNotice}</p>
+
+  {claimMessage && <p class="claim claim--error" role="alert">{claimMessage}</p>}
+
+  {
+    signedIn ? (
+      <form class="claim" method="post" action="/claim">
+        <h2>{t.claimTitle}</h2>
+        <p>{t.claimBody}</p>
+        <input type="hidden" name="guest_order_ref" value={orderRef} />
+        <input type="hidden" name="locale" value={locale} />
+        <button type="submit">{t.claimAction}</button>
+      </form>
+    ) : (
+      <p class="claim">
+        <a href={`/${locale}/account/sign-in`}>{t.claimSignedOut}</a>
+      </p>
+    )
+  }
   {bundle.tickets.map((ticket, index) => {
     const voided = voidedReason(ticket.history);
     return (
@@ -64,4 +103,9 @@ Astro.response.headers.set('Cache-Control', 'no-store');
   img { display: block; background: white; max-width: 100%; }
   .ticket--voided { opacity: .72; }
   .voided { border-left: 3px solid var(--line); margin: 0 0 .75rem; padding-left: .75rem; }
+  .claim { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .claim h2 { margin: 0 0 .25rem; font-size: 1.02rem; }
+  .claim p { margin: 0 0 .75rem; color: var(--muted); }
+  .claim--error { border-left: 3px solid #a11; }
+  .claim button { padding: .5rem .9rem; border: 0; border-radius: .3rem; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
 </style>

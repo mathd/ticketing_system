@@ -100,6 +100,14 @@ func verifyCustomerAssertion(key customerAssertionKey, token string, now time.Ti
 	if err != nil {
 		return uuid.Nil, ErrCustomerAssertionInvalid
 	}
+	// The nil uuid is not an identity (ai-review [low]). It is what a zero value
+	// looks like, so accepting it means a construction bug upstream arrives here
+	// as an authenticated principal — and downstream it either trips a foreign key
+	// as a 503 or, worse, attaches to a sentinel account if one ever exists.
+	// Nothing legitimate ever mints one; refusing costs nothing.
+	if customerID == uuid.Nil {
+		return uuid.Nil, ErrCustomerAssertionInvalid
+	}
 	expiry, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil {
 		return uuid.Nil, ErrCustomerAssertionInvalid

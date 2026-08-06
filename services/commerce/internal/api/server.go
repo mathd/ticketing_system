@@ -100,6 +100,10 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// The wallet (TKT-222). Public surface, identified by the assertion — the
 	// storefront still holds no service credential.
 	r.Get("/customers/{id}/orders", s.listCustomerOrders)
+	// TKT-223. A STATIC segment under the same prefix as `GET /orders/{id}` — chi
+	// prefers static over a parameter, so this is not read as an order id, and a
+	// test asserts it rather than assuming it.
+	r.Post("/orders/claim", s.claimGuestOrder)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)

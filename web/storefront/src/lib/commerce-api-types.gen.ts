@@ -101,6 +101,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orders/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attach a past guest order to the signed-in customer (TKT-223)
+         * @description Claims a completed guest order by its reference, attributing it to the customer the `X-Customer-Assertion` header authenticates as. It closes TKT-21's first COS: creating an account later must not cost a buyer their history.
+         *     **What proves ownership is the reference, and nothing else.** That is a deliberate choice with a real cost, recorded in ADR-049 § TKT-223. The alternative — also requiring the address to match `buyer_pii` — refuses a buyer who signed up with a different address, which is common and which they cannot fix. Reference-only admits anyone holding a leaked reference.
+         *     Be precise about what that grants, because it is more than it looks: holding the reference already returns the tickets themselves (ADR-012), so reading is unchanged. What is new is that a claim is **destructive, exclusive, permanent and unrecoverable** — the first claimant takes the order away from its buyer, and there is no un-claim path.
+         *     **Nonexistent, not completed, and already claimed by somebody else are one answer: 404.** Telling them apart would hand a caller probing references an oracle for which are real, complete and unclaimed. The cost is that a buyer who mistypes gets no help.
+         *     **Idempotent by predicate**, not by replay detection: the same customer claiming twice takes the same branch and gets the same answer, so a browser retry is safe. No `Idempotency-Key`.
+         *     No order status changes. `orders.status` keeps ADR-016's vocabulary and `updated_at` is not touched — it means "when did this order's checkout last move", and a claim months later is not checkout activity.
+         */
+        post: operations["claimGuestOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/customers/authenticate": {
         parameters: {
             query?: never;
@@ -365,6 +390,19 @@ export interface components {
         CustomerCredentials: {
             email: string;
             password: string;
+        };
+        OrderClaim: {
+            /** Format: uuid */
+            guest_order_ref: string;
+        };
+        /** @description Returns the attribution itself rather than a word like "claimed". There is no order status called claimed — `orders.status` is a vocabulary ADR-016 owns and this operation adds nothing to it — and a `status` field here would send the next reader looking for a state that does not exist. The customer id lets the caller confirm the outcome instead of trusting an adjective. */
+        OrderClaimResult: {
+            /** Format: uuid */
+            order_id: string;
+            /** Format: uuid */
+            guest_order_ref: string;
+            /** Format: uuid */
+            customer_id: string;
         };
         CustomerOrderPage: {
             orders: components["schemas"]["CustomerOrderSummary"][];
@@ -803,6 +841,53 @@ export interface operations {
                 };
             };
             /** @description No such customer — or the assertion names a different one. Deliberately the same answer. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    claimGuestOrder: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Customer-Assertion"?: components["parameters"]["CustomerAssertion"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrderClaim"];
+            };
+        };
+        responses: {
+            /** @description Claimed, or already claimed by this same customer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderClaimResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+            /** @description The assertion is absent, forged or expired. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such order, not completed, or claimed by somebody else. Deliberately one answer. */
             404: {
                 headers: {
                     [name: string]: unknown;

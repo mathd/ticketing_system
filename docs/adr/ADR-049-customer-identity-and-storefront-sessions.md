@@ -12,6 +12,9 @@ above is reversed; the amendment is additive and lives in § *TKT-221 amendment*
 **Amended by TKT-222 (2026-08-06)** — the wallet: a customer reads their own purchases. See
 § *TKT-222 amendment*.
 
+**Amended by TKT-223 (2026-08-06)** — claiming a past guest order, which is the **one** exception to
+the TKT-221 rule that attribution never changes. See § *TKT-223 amendment*.
+
 ## Context
 
 TKT-21 needs a *customer*: an optional account a buyer can create, so that purchases hang off an
@@ -449,3 +452,118 @@ marked as such.
   no new credential — but a wallet page's latency now includes a catalog round trip.
 - The read is public-surface and unrate-limited, like every other customer operation. **TKT-224**.
 - One page is 20 orders. A customer with more pages; nothing aggregates a lifetime total.
+
+---
+
+## TKT-223 amendment — claiming a past guest order
+
+Closes TKT-21's first COS: creating an account later must not cost a buyer their history.
+
+### The proof of ownership is the order reference, and nothing else
+
+`POST /orders/claim` takes a `guest_order_ref` and the `X-Customer-Assertion` header. It does **not**
+compare the address against `buyer_pii`, and that was the decision this ticket existed to make.
+
+- **Email matching refuses a real buyer** who signed up with a different address — common, and
+  unfixable by them. A certain harm to many.
+- **Reference-only admits anyone holding a leaked reference.** An uncertain harm to few.
+
+### What a claim actually grants, said plainly
+
+Holding the reference **already** returns the tickets (ADR-012), so reading is unchanged. The new
+capability is not "also sees it in a wallet":
+
+> **A claim is destructive, exclusive, permanent and unrecoverable.** The first holder to claim takes
+> the order away from its buyer, and **there is no un-claim path** — no endpoint, no CLI, no support
+> tool. The buyer's recourse is nothing.
+
+That is a bigger statement than "the bearer trade-off ADR-012 already accepted", and it is obtained
+with a credential this repo **knowingly logs today**: **TKT-202** (the gateway logs the reference via
+the URL path) is therefore not logging hygiene here, it is a **prerequisite for this feature's
+safety**. **TKT-225** is filed for an operator un-claim path.
+
+The calculus above depends on references not leaking. Those two tickets are what makes it true.
+
+### The one exception to "attribution never changes"
+
+The TKT-221 amendment says a replay "cannot repoint a purchase, and cannot promote a guest order into
+an attributed one". A claim is exactly that promotion, so the exception has to be stated rather than
+implied:
+
+**Recovery and checkout replay are not ownership operations.** They finish work that is already
+attributed and must leave that attribution as they found it — an order can be completed minutes after
+the request that established it is gone. **A claim IS the ownership operation**, and it is the only
+`NULL → customer` transition in the system. Once `customer_id` is non-NULL nothing can repoint it,
+claiming included: the predicate admits only an unattributed order, or one already owned by the
+caller.
+
+`TestNoProductionCodeUpdatesOrderAttribution` enforces this by **text and by count** — exactly one
+allowlisted statement, which must keep its `guest_order_ref` / `completed` / NULL-or-same predicates.
+A second copy fails even inside the same file, because that is the failure mode an allowlist actually
+has, and `TestTheAllowlistCannotBeWidened` proves the guard rejects each way of widening it.
+
+**Its adversary, named:** the guard stops an **honest omission** — a recovery or compensation path
+written by someone who does not know it exists. It does not stop an author routing around it: a
+predicate hidden in a dollar-quoted string or a subquery can satisfy a source scan while filtering
+nothing. Closing that means parsing SQL instead of reading text, which is disproportionate to a
+threat that is "a colleague deliberately defeating a test in their own commit". Catalog's public-read
+guard draws the same line about itself.
+
+### One answer for every refusal
+
+Nonexistent, not completed, and already claimed by somebody else are all **404 `{"error":"not
+found"}`**. Telling them apart hands a caller probing references an oracle for which are real,
+complete and unclaimed. The cost is real and is accepted: a buyer who mistypes gets no help.
+
+**The claim is "one answer", not "one cost", and the difference is worth stating** (ai-review): the
+three cases take different database paths — a row found and locked, versus no row — so they are not
+equalized in *time*. Closing that would mean a dummy row lock on every miss, which is
+disproportionate to what it buys: the attacker still has to hold a v4 uuid to time anything, and
+volume is what makes timing measurable, which is **TKT-224**'s subject rather than this one's.
+
+A **malformed** reference is 400. That distinction is deliberate and discloses nothing about the
+order book — a caller who cannot spell a uuid has learned only that they cannot spell a uuid.
+
+A **malformed** reference is 400 — that is request validation, and a caller who cannot spell a uuid
+has learned nothing about the order book.
+
+### Atomicity, idempotency, and what is not touched
+
+One conditional `UPDATE` with **no preflight SELECT**: a select-then-update is both a race two
+claimants can both win and a second place to disclose whether an order exists. Under READ COMMITTED
+the loser blocks on the row lock, re-evaluates the predicate against the winner's committed row, and
+reports zero rows — which is the ordinary refusal.
+
+Idempotent **by predicate**, not by replay detection: the same customer claiming twice takes the same
+branch, so a browser retry is safe and there is no replay state. No `Idempotency-Key`.
+
+`orders.status` gains nothing (ADR-016), and **`updated_at` is not touched** — it means "when did
+this order's checkout last move", recovery reads it to decide what is stale, and a claim months later
+is not checkout activity.
+
+The response returns the **attribution** (`order_id`, `guest_order_ref`, `customer_id`) and no
+`status` field: there is no order status called "claimed", and a field of that name would send the
+next reader looking for a state that does not exist.
+
+### The storefront
+
+The form lives on the **public** guest ticket page. `requiresSession` is unchanged — guest retrieval
+is most of that page's traffic and must keep working — and the page simply looks the session up
+itself, showing the form only when there is one. Nothing about the session is rendered.
+
+The cookie reaches that page because TKT-220 scoped it to `/` rather than an account subtree (§5).
+This is the case that decision was made for.
+
+The POST goes to **`/claim`**, alongside `/checkout` and for the same reasons: the session cookie is
+`httpOnly` so nothing in the browser can prove who is claiming, and commerce cannot resolve a
+storefront session. Not locale-scoped and not under `/api/`, matching the bridge that already exists.
+
+### The adversary (ADR-021)
+
+- **Refused:** an HTTP caller without a valid assertion, or without the reference.
+- **Admitted by design:** anyone holding the reference and *any* valid customer assertion. Registering
+  an account is free.
+- **No protection claimed against:** the assertion-signing key, the storefront's memory, or commerce
+  database access.
+- The one-winner guarantee covers **concurrent honest HTTP callers**, not a writer who can update
+  rows directly.
