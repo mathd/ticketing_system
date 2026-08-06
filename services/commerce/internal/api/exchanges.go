@@ -409,7 +409,12 @@ func (s *Server) exchangeFacts(r *http.Request, ex commercestore.Exchange, targe
 		typ    string
 		amount int64
 	}{
-		{commercestore.ExchangeReversedFactID(ex.ID), "order.exchange.reversed", ex.SourceTotal},
+		// The GROSS, not the face value (ai-review [high]): this leg reverses the
+		// money that was actually captured. Repointing the exchange DELTA at the
+		// face value was correct and silently made this fact wrong — the delta is
+		// a price comparison, the reversal is a money movement, and they need
+		// different numbers.
+		{commercestore.ExchangeReversedFactID(ex.ID), "order.exchange.reversed", ex.SourceGrossTotal},
 		{commercestore.ExchangeSoldFactID(ex.ID), "order.exchange.sold", targetTotal},
 	} {
 		if _, err := s.db.ExecContext(r.Context(), `

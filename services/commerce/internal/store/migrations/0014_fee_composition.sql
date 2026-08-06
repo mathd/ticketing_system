@@ -83,16 +83,65 @@ ALTER TABLE reservations
             -- migration's own test rather than in review.
             AND coalesce(jsonb_typeof(fee_resolution_snapshot -> 'resolution'), 'absent') = 'object'
             AND coalesce(jsonb_typeof(fee_resolution_snapshot -> 'breakdown'), 'absent') = 'array'
-            AND (fee_resolution_snapshot ->> 'face_value') IS NOT NULL
-            AND (fee_resolution_snapshot ->> 'passed_on_fees') IS NOT NULL
-            AND (fee_resolution_snapshot ->> 'total_amount') IS NOT NULL
+            -- jsonb_typeof, not merely IS NOT NULL: `->>` renders a JSON string
+            -- and a JSON number identically, so a presence check accepts
+            -- "garbage" and then the cast below fails at INSERT time with a
+            -- type error instead of a constraint violation -- or, for a numeric
+            -- string, silently succeeds. Require the JSON type.
+            -- coalesce on EVERY jsonb_typeof, without exception. The first
+            -- version of this constraint coalesced two of them and not these
+            -- three, and the same UNKNOWN-passes-a-CHECK hole reopened
+            -- immediately -- a fix composing into the defect it had just
+            -- removed. Caught by this migration's own test, twice.
+            AND coalesce(jsonb_typeof(fee_resolution_snapshot -> 'face_value'), 'absent') = 'number'
+            AND coalesce(jsonb_typeof(fee_resolution_snapshot -> 'passed_on_fees'), 'absent') = 'number'
+            AND coalesce(jsonb_typeof(fee_resolution_snapshot -> 'total_amount'), 'absent') = 'number'
             -- The stored envelope must agree with the columns it explains. A
             -- snapshot that says one thing while the row charges another is
-            -- worse than no snapshot: it is a provenance document that lies.
+            -- worse than no snapshot: it is a provenance document that lies, and
+            -- TKT-217 settles real money from it.
             AND (fee_resolution_snapshot ->> 'face_value')::bigint = face_value_amount
             AND (fee_resolution_snapshot ->> 'total_amount')::bigint = total_amount
+            -- And it must be internally consistent: the fees the buyer paid are
+            -- exactly the difference between what they were charged and the face
+            -- value. Without this a snapshot claiming 999 in fees on a row whose
+            -- columns differ by 300 is accepted, and a settlement run reading the
+            -- snapshot would attribute money the buyer never paid.
+            AND (fee_resolution_snapshot ->> 'passed_on_fees')::bigint
+                = total_amount - face_value_amount
+            AND (fee_resolution_snapshot ->> 'passed_on_fees')::bigint >= 0
         )
     );
+
+-- channel_code is an idempotency TERM, not a decoration (TKT-215 ai-review).
+-- The replay path refuses a key reused "with different terms" by comparing
+-- quantity, ticket type and the seat set. Channel selects which fee rules apply,
+-- so two requests under one key differing only by channel are different sales --
+-- and without this column the second silently receives the first one's quote.
+ALTER TABLE reservations
+    ADD COLUMN channel_code text
+        CHECK (channel_code IS NULL OR length(channel_code) BETWEEN 1 AND 100);
+-- Nullable and not backfilled: NULL is the default/public context, which is
+-- exactly what every pre-existing reservation was sold through.
+
+-- The exchange source needs BOTH numbers, and this column is why (TKT-215
+-- ai-review, [high]). Repointing the exchange at the face value fixed the delta
+-- and BROKE the money facts: exchangeFacts publishes SourceTotal as the gross
+-- `order.exchange.reversed` leg, so a fee-carrying order reversed 9100 against
+-- an original charge of 9400 and the payments journal stopped agreeing with the
+-- money that actually moved. Two correct-looking fixes composing into a new
+-- defect.
+--
+-- Face drives the delta (0010's CHECK ties delta_amount to source_total);
+-- gross drives the reversal fact. Backfilled from source_total, which is exact:
+-- no exchange before this migration involved a fee.
+ALTER TABLE order_exchanges
+    ADD COLUMN source_gross_total bigint;
+UPDATE order_exchanges SET source_gross_total = source_total WHERE source_gross_total IS NULL;
+ALTER TABLE order_exchanges
+    ALTER COLUMN source_gross_total SET NOT NULL;
+ALTER TABLE order_exchanges
+    ADD CONSTRAINT order_exchanges_gross_at_least_face CHECK (source_gross_total >= source_total);
 
 -- No index on the snapshot. The trace starts from a reservation or order
 -- identity, and no subset query over fee provenance has a requirement yet; an
@@ -116,8 +165,16 @@ BEGIN
     IF EXISTS (SELECT 1 FROM reservations WHERE face_value_amount <> total_amount) THEN
         RAISE EXCEPTION 'cannot roll back 0014: reservations exist whose face value differs from their total';
     END IF;
+    IF EXISTS (SELECT 1 FROM order_exchanges WHERE source_gross_total <> source_total) THEN
+        RAISE EXCEPTION 'cannot roll back 0014: exchanges exist whose gross differs from their face value';
+    END IF;
 END $$;
 -- +goose StatementEnd
+ALTER TABLE order_exchanges
+    DROP CONSTRAINT order_exchanges_gross_at_least_face,
+    DROP COLUMN source_gross_total;
+ALTER TABLE reservations
+    DROP COLUMN channel_code;
 ALTER TABLE reservations
     DROP CONSTRAINT reservations_fee_snapshot_shape,
     DROP COLUMN fee_resolution_snapshot,

@@ -68,6 +68,15 @@ type Exchange struct {
 	SlotID             uuid.UUID
 	Quantity           int32
 	SourceTotal        int64
+	// SourceGrossTotal is what the buyer was actually CHARGED for the source
+	// order: face plus passed-on fees. SourceTotal is the face value alone.
+	//
+	// Both are needed and they are not interchangeable: the delta is a
+	// price-to-price comparison and must use face (0010's CHECK ties
+	// delta_amount to source_total), while the `order.exchange.reversed` money
+	// fact must reverse the gross or the payments journal stops agreeing with
+	// the original charge.
+	SourceGrossTotal int64
 	TargetTotal        int64
 	DeltaAmount        int64
 	Currency           string
@@ -154,8 +163,11 @@ func ValidateExchangeTarget(ex Exchange, targetTotal int64, currency string) err
 type ExchangeSource struct {
 	ReservationID, HoldID, BuyerID, SlotID uuid.UUID
 	Quantity                               int32
-	Total                                  int64
-	Currency, PaymentSourceKey             string
+	// Total is the FACE value; GrossTotal is what the buyer was charged. See
+	// Exchange.SourceGrossTotal for why both exist.
+	Total                      int64
+	GrossTotal                 int64
+	Currency, PaymentSourceKey string
 }
 
 // LoadExchangeSource reads the source order's line for eligibility checks.
@@ -169,11 +181,11 @@ func LoadExchangeSource(ctx context.Context, db *sql.DB, org, order uuid.UUID) (
 	var out ExchangeSource
 	var status string
 	err := db.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.face_value_amount, r.currency
+		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.face_value_amount, r.total_amount, r.currency
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
 		Scan(&status, &out.PaymentSourceKey, &out.ReservationID, &out.HoldID, &out.BuyerID, &out.SlotID,
-			&out.Quantity, &out.Total, &out.Currency)
+			&out.Quantity, &out.Total, &out.GrossTotal, &out.Currency)
 	if err != nil {
 		return ExchangeSource{}, err
 	}
@@ -202,12 +214,12 @@ func BindOrderExchange(ctx context.Context, db *sql.DB, in ExchangeRequest) (Exc
 	var status, chargeKey, currency string
 	var reservation, buyer, hold, slot uuid.UUID
 	var quantity int32
-	var total int64
+	var total, gross int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.id, r.buyer_id, r.hold_id, r.slot_id, r.quantity, r.face_value_amount, r.currency
+		SELECT o.status, o.idempotency_key, r.id, r.buyer_id, r.hold_id, r.slot_id, r.quantity, r.face_value_amount, r.total_amount, r.currency
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2 FOR UPDATE OF o`, in.SourceOrderID, in.OrganizerID).
-		Scan(&status, &chargeKey, &reservation, &buyer, &hold, &slot, &quantity, &total, &currency)
+		Scan(&status, &chargeKey, &reservation, &buyer, &hold, &slot, &quantity, &total, &gross, &currency)
 	if err != nil {
 		return Exchange{}, err
 	}
@@ -242,10 +254,10 @@ func BindOrderExchange(ctx context.Context, db *sql.DB, in ExchangeRequest) (Exc
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,idempotency_key,request_fingerprint,quantity,source_total,currency,actor,reason)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,idempotency_key,request_fingerprint,quantity,source_total,source_gross_total,currency,actor,reason)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		in.OrganizerID, id, in.SourceOrderID, in.TargetTicketTypeID, in.IdempotencyKey, fingerprint,
-		quantity, total, currency, in.Actor, in.Reason); err != nil {
+		quantity, total, gross, currency, in.Actor, in.Reason); err != nil {
 		if isUniqueViolation(err) {
 			// The one-per-source index: another exchange already owns this order.
 			return Exchange{}, ErrOrderNotExchangeable
@@ -284,11 +296,11 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	var createdAt time.Time
 	err := q.QueryRowContext(ctx, `
 		SELECT id,source_order_id,replacement_order_id,target_ticket_type_id,request_fingerprint,quantity,
-		       source_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,capacity_returned_at,
+		       source_total,source_gross_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,capacity_returned_at,
 		       target_hold_id,replacement_reservation_id,basis_at,target_unit_amount,target_slot_id,target_price_snapshot
 		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.exchange.ID, &s.exchange.SourceOrderID, &replacement, &s.exchange.TargetTicketTypeID,
-			&s.fingerprint, &s.exchange.Quantity, &s.exchange.SourceTotal, &target, &delta,
+			&s.fingerprint, &s.exchange.Quantity, &s.exchange.SourceTotal, &s.exchange.SourceGrossTotal, &target, &delta,
 			&s.exchange.Currency, &createdAt, &settled, &switched, &returned, &targetHold, &replacementReservation, &basis,
 			&targetUnit, &targetSlot, &s.exchange.TargetPriceSnapshot)
 	if errors.Is(err, sql.ErrNoRows) {

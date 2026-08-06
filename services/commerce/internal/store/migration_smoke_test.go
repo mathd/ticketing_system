@@ -361,6 +361,13 @@ func TestMigration0014FeeCompositionColumns(t *testing.T) {
 		"no resolution document":                   `{"breakdown":[],"face_value":900,"passed_on_fees":300,"total_amount":1200}`,
 		"a breakdown that is not an array":         `{"resolution":{},"breakdown":{},"face_value":900,"passed_on_fees":300,"total_amount":1200}`,
 		"no totals at all":                         `{"resolution":{},"breakdown":[]}`,
+		// ai-review [medium]: presence was checked, agreement was not. A snapshot
+		// claiming fees the columns do not show is a provenance document that
+		// lies, and TKT-217 settles money from it.
+		"passed-on fees that contradict the columns": `{"resolution":{},"breakdown":[],"face_value":900,"passed_on_fees":999,"total_amount":1200}`,
+		"a non-numeric total":                        `{"resolution":{},"breakdown":[],"face_value":900,"passed_on_fees":"garbage","total_amount":1200}`,
+		"a negative fee total":                       `{"resolution":{},"breakdown":[],"face_value":1500,"passed_on_fees":-300,"total_amount":1200}`,
+		"a null where a number belongs":              `{"resolution":{},"breakdown":[],"face_value":null,"passed_on_fees":300,"total_amount":1200}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := insert(uuid.New(), 1200, 900, []byte(bad)); err == nil {

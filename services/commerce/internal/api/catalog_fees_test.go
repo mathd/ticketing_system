@@ -3,10 +3,12 @@ package api
 import (
 	"bytes"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
@@ -177,18 +179,21 @@ func TestComputeFeeBreakdownRefusesOverflow(t *testing.T) {
 		unit     int64
 		quantity int32
 	}{
+		// The bound is int64 OVERFLOW, not the contract's Money cap: a composed
+		// total is commerce's own number and its contract declares a bare int64.
+		// maxContractAmount × 50 still fits, and must still sell.
 		"fixed fee × quantity": {
-			fees: []resolvedFeeCode{code("s", feeRule("s", basisPerTicketFixed, incidencePassedOn, amt(maxContractAmount), nil))},
-			unit: 1, quantity: 2,
+			fees: []resolvedFeeCode{code("s", feeRule("s", basisPerTicketFixed, incidencePassedOn, amt(math.MaxInt64/2), nil))},
+			unit: 1, quantity: 3,
 		},
-		"percentage product before the divide": {
+		"a percentage fee multiplied past int64 by quantity": {
 			fees: []resolvedFeeCode{code("s", feeRule("s", basisPercentageBps, incidencePassedOn, nil, bps(10000)))},
-			unit: maxContractAmount, quantity: 1,
+			unit: math.MaxInt64 / 2, quantity: 3,
 		},
 		"the sum of two fees": {
 			fees: []resolvedFeeCode{
-				code("a", feeRule("a", basisPerOrderFixed, incidencePassedOn, amt(maxContractAmount), nil)),
-				code("b", feeRule("b", basisPerOrderFixed, incidencePassedOn, amt(maxContractAmount), nil)),
+				code("a", feeRule("a", basisPerOrderFixed, incidencePassedOn, amt(math.MaxInt64-1), nil)),
+				code("b", feeRule("b", basisPerOrderFixed, incidencePassedOn, amt(math.MaxInt64-1), nil)),
 			},
 			unit: 1, quantity: 1,
 		},
@@ -239,8 +244,13 @@ func TestComposedTotalAddsOnlyPassedOnFees(t *testing.T) {
 		t.Errorf("charged total = %d, want 9700 (face 9100 + passed-on 600). "+
 			"9-hundred more means the absorbed fee leaked into the buyer's total", total)
 	}
-	if _, err := composedTotal(maxContractAmount, 1); !errors.Is(err, errFeeTotalOverflow) {
-		t.Errorf("a total above the contract's Money cap must be refused, got %v", err)
+	// Overflow is refused; merely LARGE is not. A quantity of 2 at the maximum
+	// contract price is a legitimate sale the system has always allowed.
+	if _, err := composedTotal(maxContractAmount*2, 0); err != nil {
+		t.Errorf("a large but representable total must be allowed: %v", err)
+	}
+	if _, err := composedTotal(math.MaxInt64, 1); !errors.Is(err, errFeeTotalOverflow) {
+		t.Errorf("a total that overflows int64 must be refused, got %v", err)
 	}
 }
 
@@ -375,13 +385,13 @@ func feeResolutionBodyFor(channel string) string {
 func feeBodyWith(field, org string) string {
 	_ = org
 	return `{"resolver_version":1,"evaluated_at":"2026-08-05T12:00:00Z",` + field +
-		`,"performance_id":"11111111-1111-1111-1111-111111111111",` +
+		`,"performance_id":"` + pricingSlot + `",` +
 		`"currency":"EUR","channel_code":null,"fees":[]}`
 }
 
 func feeBodyWithFee(winner string) string {
 	return `{"resolver_version":1,"evaluated_at":"2026-08-05T12:00:00Z",` +
-		`"organizer_id":"` + pricingOrg + `","performance_id":"11111111-1111-1111-1111-111111111111",` +
+		`"organizer_id":"` + pricingOrg + `","performance_id":"` + pricingSlot + `",` +
 		`"currency":"EUR","channel_code":null,"fees":[{"fee_code":"s","winner":` + winner + `}]}`
 }
 
@@ -455,5 +465,133 @@ func TestTheContractRefusesBothQuantityAndSeats(t *testing.T) {
 					"in play, minProperties/maxProperties alone no longer expresses the XOR")
 			}
 		})
+	}
+}
+
+// The correction to a test that pinned a BUG (ai-review, [high]).
+//
+// The first implementation formed unitFace × rateBps and checked that product
+// against the contract's Money cap. That rejects legitimate fees — at a large
+// unit price and a 100% rate the intermediate exceeds the cap while the ANSWER
+// does not — and the overflow test asserted the rejection as required
+// behaviour, so the bug was locked in rather than caught. A test can be wrong
+// about what it wants, and then it defends the defect.
+//
+// The identity floor(a×b/10000) = (a/10000)×b + floor((a mod 10000)×b/10000)
+// never forms the full product, so these all resolve exactly.
+func TestFeeFromRateAcceptsTheWholeContractRange(t *testing.T) {
+	for name, tc := range map[string]struct {
+		unit int64
+		rate int32
+		want int64
+	}{
+		"100% of the largest contract price":     {unit: maxContractAmount, rate: 10000, want: maxContractAmount},
+		"50% of the largest representable price": {unit: maxContractAmount, rate: 5000, want: maxContractAmount / 2},
+		"a large price at a small rate":          {unit: 1_000_000_000_000, rate: 1, want: 100_000_000},
+		"the case the old code wrongly refused":  {unit: 1_000_000_000_000, rate: 10000, want: 1_000_000_000_000},
+		"floors rather than rounds":              {unit: 150, rate: 333, want: 4},
+		"a rate of zero costs nothing":           {unit: maxContractAmount, rate: 0, want: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := feeFromRate(tc.unit, tc.rate)
+			if err != nil {
+				t.Fatalf("a rate within 0..10000 of a price within the Money cap can never "+
+					"overflow — the result is bounded above by the price itself: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("feeFromRate(%d, %d) = %d, want %d", tc.unit, tc.rate, got, tc.want)
+			}
+		})
+	}
+}
+
+// The fee identity check (ai-review, [high]): a resolution describing another
+// performance must not be applied to this sale. Organizer alone does not catch
+// it — two performances of one organizer is the common case.
+func TestFeeResolutionMustDescribeTheSamePerformance(t *testing.T) {
+	org, perf := uuid.New(), uuid.New()
+	base := feeResolution{
+		ResolverVersion: 1, EvaluatedAt: feeEvalAt(), OrganizerID: org,
+		PerformanceID: perf, Currency: "EUR", Fees: []resolvedFeeCode{},
+	}
+	if err := base.validate(org, perf, nil); err != nil {
+		t.Fatalf("a matching resolution must be accepted: %v", err)
+	}
+	other := base
+	other.PerformanceID = uuid.New()
+	if err := other.validate(org, perf, nil); !errors.Is(err, errResolveUnusable) {
+		t.Errorf("a resolution for another performance must be refused, got %v", err)
+	}
+	none := base
+	none.PerformanceID = uuid.Nil
+	if err := none.validate(org, perf, nil); !errors.Is(err, errResolveUnusable) {
+		t.Errorf("a resolution naming no performance must be refused, got %v", err)
+	}
+}
+
+func feeEvalAt() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }
+
+// F2 (ai-review, [high]): a composition that cannot be represented must be
+// refused BEFORE the hold, not after.
+//
+// The reachable shape is a large RESOLVED PRICE, not a large fee. Commerce
+// deliberately allows prices far above catalog's Money cap on the total — the
+// existing TestReserveOverflowGuardAppliesToResolvedAmount pins that: "the guard
+// is about overflow, not about large prices". So a face value near int64's
+// ceiling is legitimate, and then ANY passed-on fee overflows the sum.
+//
+// Before this fix that check ran after the hold: 400 with a hold left behind — an
+// orphan, and a buyer told their own request was malformed. The inventory
+// recorder is the whole point of the test; a status assertion alone passes
+// whether or not a hold was placed and abandoned.
+func TestReserveRefusesAnUnrepresentableTotalBeforeTheHold(t *testing.T) {
+	// The largest price the EXISTING price guard admits at quantity 2:
+	// resolved <= MaxInt64/quantity. Face value is then MaxInt64-1, and any
+	// passed-on fee at all overflows the sum. One above this and the price path
+	// refuses it first, which would test a different guard.
+	huge := int64(math.MaxInt64) / 2
+	price := `{"resolver_version":2,"evaluated_at":"2026-07-31T00:00:00Z",` +
+		`"organizer_id":"` + pricingOrg + `","performance_id":"` + pricingSlot + `",` +
+		`"base_price":{"amount":2500,"currency":"EUR"},` +
+		`"resolved_price":{"amount":` + itoa(huge) + `,"currency":"EUR"},` +
+		`"winner":{"rule_id":"` + pricingRule + `","scope_level":"event",` +
+		`"scope_id":"00000000-0000-0000-0000-0000000000e1","action_kind":"absolute",` +
+		`"amount":` + itoa(huge) + `,"currency":"EUR","effective_from":null,` +
+		`"effective_until":null,"priority":0,"forced":false},"candidates":[]}`
+	fees := feeBodyWithFee(`{"rule_id":"22222222-2222-2222-2222-222222222222","fee_code":"s",` +
+		`"basis":"per_ticket_fixed","amount":9007199254740991,"rate_bps":null,` +
+		`"currency":"EUR","incidence":"passed_on"}`)
+
+	inventoryCalled := false
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(r.URL.Path, "/fee-resolution") {
+			_, _ = w.Write([]byte(fees))
+			return
+		}
+		_, _ = w.Write([]byte(price))
+	}))
+	defer catalog.Close()
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		inventoryCalled = true
+		w.WriteHeader(409)
+	}))
+	defer inventory.Close()
+
+	srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	body := `{"organizer_id":"` + pricingOrg + `","ticket_type_id":"` + pricingTT + `","quantity":2}`
+	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "overflow-before-hold")
+	res := httptest.NewRecorder()
+	srv.Router(nil, true).ServeHTTP(res, req)
+
+	if res.Code != 400 {
+		t.Fatalf("status = %d, want 400 (body %s)", res.Code, res.Body)
+	}
+	if inventoryCalled {
+		t.Error("inventory was called: an arithmetic failure must abort BEFORE the hold, " +
+			"or a refused reserve leaves an orphan hold behind")
 	}
 }

@@ -354,11 +354,12 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			currency                  string
 			seats                     []byte // jsonb: NULL for a GA reservation
 			feeSnapshot               []byte // jsonb: NULL for a fee-free reservation
+			channel                   *string
 		}
 		err := s.db.QueryRowContext(r.Context(),
-			`SELECT hold_id,buyer_id,slot_id,ticket_type_id,quantity,unit_amount,total_amount,face_value_amount,currency,seat_identities,fee_resolution_snapshot
+			`SELECT hold_id,buyer_id,slot_id,ticket_type_id,quantity,unit_amount,total_amount,face_value_amount,currency,seat_identities,fee_resolution_snapshot,channel_code
 			 FROM reservations WHERE id=$1 AND organizer_id=$2`, id, in.OrganizerID).
-			Scan(&pin.hold, &pin.buyer, &pin.slot, &pin.ticket, &pin.qty, &pin.unit, &pin.total, &pin.face, &pin.currency, &pin.seats, &pin.feeSnapshot)
+			Scan(&pin.hold, &pin.buyer, &pin.slot, &pin.ticket, &pin.qty, &pin.unit, &pin.total, &pin.face, &pin.currency, &pin.seats, &pin.feeSnapshot, &pin.channel)
 		switch {
 		case err == nil:
 			var pinnedSeats []string
@@ -377,7 +378,12 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			// caller who asked for different ones — a 201 that looks like success and
 			// hands over seats nobody requested. The kind is compared too: a GA↔seated
 			// switch under one key is the same reuse and the counts would often match.
+			// The CHANNEL is a term too (ai-review): it selects which fee rules
+			// apply, so the same key in two channels is two different sales, and
+			// answering the second with the first's quote hands back a total
+			// computed under fees that do not apply to it.
 			if pin.qty != in.units() || pin.ticket != in.TicketTypeID ||
+				!sameChannel(pin.channel, in.ChannelCode) ||
 				(len(pinnedSeats) > 0) != in.seated() ||
 				(in.seated() && !sameSeats(pinnedSeats, in.canonicalSeatSet())) {
 				write(w, 409, map[string]string{"error": "idempotency key reused with different terms"})
@@ -484,7 +490,8 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	// aborts while there is nothing to orphan -- the lesson TKT-153 encoded for
 	// the price snapshot. "No rule matched" is a successful resolution with an
 	// empty fee set; it is not a failure and must never be conflated with one.
-	fees, err := s.resolveTicketTypeFees(r.Context(), in.TicketTypeID, in.OrganizerID, in.ChannelCode)
+	fees, err := s.resolveTicketTypeFees(r.Context(), in.TicketTypeID, in.OrganizerID,
+		resolution.PerformanceID, in.ChannelCode)
 	if err != nil {
 		if errors.Is(err, errResolveUnavailable) {
 			write(w, 502, map[string]string{"error": "catalog unavailable"})
@@ -502,6 +509,23 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	}
 	o := offer{OrganizerID: resolution.OrganizerID, PerformanceID: resolution.PerformanceID,
 		Price: price{Amount: resolution.ResolvedPrice.Amount, Currency: resolution.ResolvedPrice.Currency}}
+	// Prove the ARITHMETIC fits before the hold, not just the document
+	// (TKT-215 ai-review, [high]). A perfectly valid rule — catalog bounds a fee
+	// amount at the same Money cap a price uses — can still overflow when
+	// multiplied by quantity, and doing that check after the hold answered 400
+	// with a hold left behind: an orphan, and a buyer told their order was
+	// malformed by their own request.
+	//
+	// The REQUESTED quantity is the right basis to check, and that is not an
+	// approximation: every fee basis is non-decreasing in quantity, and inventory
+	// can only ever REDUCE the count (seated canonicalisation de-duplicates, it
+	// never invents a seat). So a composition that fits at the requested quantity
+	// fits at the canonical one, and this check is a sound upper bound rather
+	// than a guess.
+	if err := checkCompositionFits(fees.Fees, o.Price, resolution.total(in.units()), in.units()); err != nil {
+		write(w, 400, map[string]string{"error": "order total out of range"})
+		return
+	}
 	holdURL, holdBody := s.inventoryURL+"/holds", map[string]any{"organizer_id": in.OrganizerID,
 		"slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity,
 		"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
@@ -562,15 +586,17 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	faceValue := resolution.total(quantity)
 	composition, err := computeFeeBreakdown(fees.Fees, o.Price.Amount, quantity, o.Price.Currency)
 	if err != nil {
-		// The hold exists by now, which is why every document-level failure was
-		// already refused above: what can still fail here is arithmetic, and it
-		// fails on values the caller chose (quantity) rather than on our data.
-		write(w, 400, map[string]string{"error": "order total out of range"})
+		// Unreachable by the monotonicity argument above: this same computation
+		// already succeeded at a quantity >= this one, before the hold. Kept
+		// because "unreachable" is a claim about today's bases, and a future
+		// basis that is not monotonic in quantity would make it false — at which
+		// point failing here beats charging a wrong total.
+		write(w, 500, map[string]string{"error": "fee composition failed after the hold"})
 		return
 	}
 	total, err := composedTotal(faceValue, composition.PassedOnTotal)
 	if err != nil {
-		write(w, 400, map[string]string{"error": "order total out of range"})
+		write(w, 500, map[string]string{"error": "fee composition failed after the hold"})
 		return
 	}
 	feeSnapshot, err := feeSnapshotEnvelope(fees, composition, faceValue, total)
@@ -596,10 +622,45 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		}
 		seatsColumn = encoded
 	}
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,seat_identities,fee_resolution_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'held',$12,$13,$14) ON CONFLICT(id) DO NOTHING`,
-		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, quantity, o.Price.Amount, total, faceValue, o.Price.Currency, []byte(resolution.raw), seatsColumn, feeSnapshot)
+	res, err := s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,seat_identities,fee_resolution_snapshot,channel_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'held',$12,$13,$14,$15) ON CONFLICT(id) DO NOTHING`,
+		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, quantity, o.Price.Amount, total, faceValue, o.Price.Currency, []byte(resolution.raw), seatsColumn, feeSnapshot, in.ChannelCode)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist reservation"})
+		return
+	}
+	// ON CONFLICT DO NOTHING can LOSE, and the loser must not answer with the
+	// total it computed locally (ai-review, [high]). Two concurrent reserves
+	// under one key both miss the lookup above; if catalog's fees changed between
+	// their resolutions they compute different totals, inventory returns the same
+	// hold to both, and one INSERT wins. The loser would otherwise quote a total
+	// the database does not hold — and checkout charges what the database holds.
+	//
+	// Re-read rather than fail: the winner's row IS the answer, and a retry-shaped
+	// error for a reservation that exists would be worse than telling the caller
+	// what they actually bought.
+	if affected, affErr := res.RowsAffected(); affErr == nil && affected == 0 {
+		var stored struct {
+			total, face int64
+			snapshot    []byte
+		}
+		if err = s.db.QueryRowContext(r.Context(),
+			`SELECT total_amount,face_value_amount,fee_resolution_snapshot
+			 FROM reservations WHERE id=$1 AND organizer_id=$2`, id, in.OrganizerID).
+			Scan(&stored.total, &stored.face, &stored.snapshot); err != nil {
+			write(w, 500, map[string]string{"error": "persist reservation"})
+			return
+		}
+		out := map[string]any{"reservation_id": id, "hold_id": hold.ID, "buyer_id": buyer,
+			"amount": stored.total, "currency": o.Price.Currency,
+			"expires_at": hold.ExpiresAt, "server_time": hold.ServerTime}
+		if in.seated() {
+			out["seats"] = hold.Seats
+		}
+		if err = addStoredFeeFields(out, stored.face, stored.snapshot); err != nil {
+			write(w, 500, map[string]string{"error": "persist reservation"})
+			return
+		}
+		write(w, 201, out)
 		return
 	}
 	out := map[string]any{"reservation_id": id, "hold_id": hold.ID, "buyer_id": buyer, "amount": total, "currency": o.Price.Currency, "expires_at": hold.ExpiresAt, "server_time": hold.ServerTime}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"time"
@@ -147,15 +148,10 @@ func computeFeeBreakdown(fees []resolvedFeeCode, unitFace int64, quantity int32,
 			if w.RateBps == nil {
 				return feeComposition{}, fmt.Errorf("%w: %s carries no rate", errResolveUnusable, w.Basis)
 			}
-			// Checked BEFORE the divide: unitFace is bounded by the contract's
-			// Money cap and rate_bps by 10000, so the product fits comfortably —
-			// but "fits comfortably" is an argument about today's bounds, and the
-			// check is what keeps it true if either bound moves.
-			product, err := checkedMul(unitFace, int64(*w.RateBps))
+			perTicket, err := feeFromRate(unitFace, *w.RateBps)
 			if err != nil {
 				return feeComposition{}, err
 			}
-			perTicket := product / 10000 // floor: both operands are non-negative
 			if amount, err = checkedMul(perTicket, q); err != nil {
 				return feeComposition{}, err
 			}
@@ -195,15 +191,58 @@ func computeFeeBreakdown(fees []resolvedFeeCode, unitFace int64, quantity int32,
 	return out, nil
 }
 
-// checkedMul refuses a product that would exceed the contract's Money range.
-// The bound is maxContractAmount rather than MaxInt64 deliberately: a value
-// above it is storable and then fails response validation as a 500 (ADR-028),
-// which is a money path failing at read time because of a write we allowed.
+// feeFromRate is floor(unitFace × rateBps / 10000) computed WITHOUT ever forming
+// the full product (TKT-215 ai-review, [high]).
+//
+// The first version multiplied first and checked the product against the
+// contract's Money cap. That rejected legitimate fees: at unitFace = 10^12 and
+// rateBps = 10000 the correct fee is 10^12, but the intermediate 10^16 exceeds
+// the cap and the sale was refused. Worse, a test asserted that refusal as
+// REQUIRED behaviour, so the bug was pinned rather than caught.
+//
+// Quotient/remainder decomposition is exact and cannot overflow for any input
+// the contract admits:
+//
+//	floor(a×b/10000) = (a/10000)×b + floor((a mod 10000)×b/10000)
+//
+// with a ≤ 2^53-1 and b ≤ 10000, the left term is at most a and the right at
+// most 10^8. Note the result is bounded ABOVE by unitFace whenever b ≤ 10000, so
+// a per-ticket percentage fee can never itself exceed the Money cap — only the
+// later multiplication by quantity can, and that is checked where it happens.
+func feeFromRate(unitFace int64, rateBps int32) (int64, error) {
+	if unitFace < 0 || rateBps < 0 {
+		return 0, fmt.Errorf("%w: negative operand", errFeeTotalOverflow)
+	}
+	r := int64(rateBps)
+	hi, err := checkedMul(unitFace/10000, r)
+	if err != nil {
+		return 0, err
+	}
+	// (unitFace mod 10000) < 10000 and r <= 10000, so this product is at most
+	// 10^8 — it cannot overflow and needs no check.
+	lo := (unitFace % 10000) * r / 10000
+	return checkedAdd(hi, lo)
+}
+
+// checkedMul and checkedAdd bound at int64, NOT at the contract's Money cap.
+//
+// The distinction is load-bearing and an existing test caught me getting it
+// wrong. Catalog's Money schema caps a RULE's amount at 2^53-1, and
+// checkFeeValue enforces that on every rule commerce accepts — that is about the
+// rule, which crosses the contract. A composed ORDER TOTAL is commerce's own
+// number: its contract declares a bare int64 with no maximum, and
+// TestReserveOverflowGuardAppliesToResolvedAmount pins the existing rule
+// explicitly — "the guard is about overflow, not about large prices", and a
+// quantity of 2 at the maximum unit price must still sell.
+//
+// Bounding these at maxContractAmount silently narrowed what the system accepts,
+// refusing sales it had always allowed. Overflow is the real failure; a large
+// number is not.
 func checkedMul(a, b int64) (int64, error) {
 	if a < 0 || b < 0 {
 		return 0, fmt.Errorf("%w: negative operand", errFeeTotalOverflow)
 	}
-	if a != 0 && b > maxContractAmount/a {
+	if a != 0 && b > math.MaxInt64/a {
 		return 0, fmt.Errorf("%w: %d × %d", errFeeTotalOverflow, a, b)
 	}
 	return a * b, nil
@@ -213,7 +252,7 @@ func checkedAdd(a, b int64) (int64, error) {
 	if a < 0 || b < 0 {
 		return 0, fmt.Errorf("%w: negative operand", errFeeTotalOverflow)
 	}
-	if a > maxContractAmount-b {
+	if a > math.MaxInt64-b {
 		return 0, fmt.Errorf("%w: %d + %d", errFeeTotalOverflow, a, b)
 	}
 	return a + b, nil
@@ -226,7 +265,7 @@ func checkedAdd(a, b int64) (int64, error) {
 // are the organizer's cost structure. Commerce already holds that credential and
 // already uses it for /internal/ticket-types/{id}, so this adds no blast radius
 // (ADR-043).
-func (s *Server) resolveTicketTypeFees(ctx context.Context, ticketTypeID, organizerID uuid.UUID, channel *string) (feeResolution, error) {
+func (s *Server) resolveTicketTypeFees(ctx context.Context, ticketTypeID, organizerID, performanceID uuid.UUID, channel *string) (feeResolution, error) {
 	endpoint := s.catalogURL + "/internal/ticket-types/" + ticketTypeID.String() + "/fee-resolution"
 	if channel != nil {
 		// Omitting the parameter is the default/public context, NOT a wildcard
@@ -257,14 +296,14 @@ func (s *Server) resolveTicketTypeFees(ctx context.Context, ticketTypeID, organi
 		return feeResolution{}, err
 	}
 	f.raw = canonical
-	if err := f.validate(organizerID, channel); err != nil {
+	if err := f.validate(organizerID, performanceID, channel); err != nil {
 		return feeResolution{}, err
 	}
 	return f, nil
 }
 
 // validate refuses any document the sale cannot be built on.
-func (f feeResolution) validate(organizerID uuid.UUID, channel *string) error {
+func (f feeResolution) validate(organizerID, performanceID uuid.UUID, channel *string) error {
 	bad := func(why string) error { return fmt.Errorf("%w: %s", errResolveUnusable, why) }
 
 	if f.ResolverVersion < 1 {
@@ -276,6 +315,17 @@ func (f feeResolution) validate(organizerID uuid.UUID, channel *string) error {
 	// Answering for a different tenant is a tenancy breach, not a pricing error.
 	if f.OrganizerID != organizerID {
 		return bad("fee resolution is for a different organizer")
+	}
+	// And it must describe the SAME slot the price resolution did. Without this
+	// a schema-valid answer about another performance would be applied to this
+	// sale — charging one show's fee schedule against another's hold. Checking
+	// organizer alone does not catch it: both performances can belong to the same
+	// organizer, which is the common case rather than the exotic one.
+	if f.PerformanceID == uuid.Nil {
+		return bad("fee resolution names no performance")
+	}
+	if f.PerformanceID != performanceID {
+		return bad("fee resolution is for a different performance")
 	}
 	if !isISO4217(f.Currency) {
 		return bad("fee resolution carries a malformed currency")
@@ -434,4 +484,33 @@ func addStoredFeeFields(out map[string]any, faceValue int64, snapshot []byte) er
 	out["passed_on_fees"] = env.PassedOnFees
 	out["fee_breakdown"] = env.Breakdown
 	return nil
+}
+
+// checkCompositionFits proves the whole composition is representable at a given
+// quantity, before anything is held.
+//
+// It exists as a separate function rather than as a call to computeFeeBreakdown
+// with a discarded result so that the pre-hold check and the real computation
+// cannot drift apart: this one IS that computation, run for its error.
+func checkCompositionFits(fees []resolvedFeeCode, p price, faceValue int64, quantity int32) error {
+	composition, err := computeFeeBreakdown(fees, p.Amount, quantity, p.Currency)
+	if err != nil {
+		return err
+	}
+	_, err = composedTotal(faceValue, composition.PassedOnTotal)
+	return err
+}
+
+// sameChannel compares two optional channel codes, treating nil (the
+// default/public context) as distinct from any named channel — which it is:
+// omitting the channel is not a wildcard (ADR-046 §4).
+func sameChannel(a, b *string) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return *a == *b
+	}
 }

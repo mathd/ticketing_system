@@ -701,4 +701,18 @@ func TestEvenExchangeOnAFeeCarryingOrderMovesNoMoney(t *testing.T) {
 		t.Errorf("delta = %d, want 0 — an even exchange must move no money. A negative delta "+
 			"here means the buyer is refunded their service fee for exchanging like for like", got)
 	}
+
+	// And the OTHER half, which the first version of this fix got wrong
+	// (ai-review [high]): the gross is carried separately, because the
+	// `order.exchange.reversed` money fact reverses what was actually CAPTURED.
+	// Reversing the face value would leave the payments journal disagreeing with
+	// the original charge by exactly the fee.
+	if ex.SourceGrossTotal != 9400 {
+		t.Errorf("SourceGrossTotal = %d, want the captured 9400. The delta needs the face value "+
+			"and the reversal fact needs the gross; one column cannot serve both", ex.SourceGrossTotal)
+	}
+	if ex.SourceTotal == ex.SourceGrossTotal {
+		t.Error("face and gross are equal on a fee-carrying order — this fixture can no longer " +
+			"distinguish the two, which is the only thing it is here to do")
+	}
 }

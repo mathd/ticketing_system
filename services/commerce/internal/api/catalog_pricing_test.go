@@ -51,7 +51,7 @@ func emptyFeeResolutionBody(channel *string) string {
 		ch = `"` + *channel + `"`
 	}
 	return `{"resolver_version":1,"evaluated_at":"2026-08-05T12:00:00Z",` +
-		`"organizer_id":"` + pricingOrg + `","performance_id":"11111111-1111-1111-1111-111111111111",` +
+		`"organizer_id":"` + pricingOrg + `","performance_id":"` + pricingSlot + `",` +
 		`"currency":"EUR","channel_code":` + ch + `,"fees":[]}`
 }
 
