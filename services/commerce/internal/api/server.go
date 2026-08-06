@@ -174,6 +174,17 @@ type reserveRequest struct {
 	// computed over the canonical form and a second canonicaliser here would be a
 	// second definition of "the same request".
 	SeatIdentities []string `json:"seat_identities,omitempty"`
+	// ChannelCode selects which fee rules apply (TKT-215 / ADR-046 §4). A
+	// POINTER, not a string: nil is the default/public context in which only
+	// channel-agnostic rules are eligible, and that is NOT the same as a caller
+	// sending an empty channel. Omitting it is not a wildcard.
+	//
+	// It reaches catalog's fee resolution and stops there. It is deliberately
+	// NOT forwarded to inventory: inventory's channel_code is what
+	// channel_allocations cap consumption against (ADR-024), so propagating it
+	// would make a sale start failing with 409 when an allocation is exhausted,
+	// on ticket types this ticket never touched. TKT-176 owns that question.
+	ChannelCode *string `json:"channel_code,omitempty"`
 }
 
 // seated reports whether this request is for named seats. The XOR itself is checked
@@ -339,14 +350,15 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		var pin struct {
 			hold, buyer, slot, ticket uuid.UUID
 			qty                       int32
-			unit, total               int64
+			unit, total, face         int64
 			currency                  string
 			seats                     []byte // jsonb: NULL for a GA reservation
+			feeSnapshot               []byte // jsonb: NULL for a fee-free reservation
 		}
 		err := s.db.QueryRowContext(r.Context(),
-			`SELECT hold_id,buyer_id,slot_id,ticket_type_id,quantity,unit_amount,total_amount,currency,seat_identities
+			`SELECT hold_id,buyer_id,slot_id,ticket_type_id,quantity,unit_amount,total_amount,face_value_amount,currency,seat_identities,fee_resolution_snapshot
 			 FROM reservations WHERE id=$1 AND organizer_id=$2`, id, in.OrganizerID).
-			Scan(&pin.hold, &pin.buyer, &pin.slot, &pin.ticket, &pin.qty, &pin.unit, &pin.total, &pin.currency, &pin.seats)
+			Scan(&pin.hold, &pin.buyer, &pin.slot, &pin.ticket, &pin.qty, &pin.unit, &pin.total, &pin.face, &pin.currency, &pin.seats, &pin.feeSnapshot)
 		switch {
 		case err == nil:
 			var pinnedSeats []string
@@ -429,6 +441,16 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			if len(pinnedSeats) > 0 {
 				out["seats"] = pinnedSeats
 			}
+			// The breakdown comes from the PERSISTED snapshot, never from a
+			// re-resolution. Same reasoning as the amount itself: a rule change
+			// between the original reserve and the retry must not alter what the
+			// caller is told they are buying. A reservation written before this
+			// ticket has no snapshot, and then the fee fields are simply absent —
+			// which is why they are optional in the contract.
+			if err := addStoredFeeFields(out, pin.face, pin.feeSnapshot); err != nil {
+				write(w, 500, map[string]string{"error": "persist reservation"})
+				return
+			}
 			write(w, 201, out)
 			return
 		case !errors.Is(err, sql.ErrNoRows):
@@ -455,6 +477,27 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		write(w, 500, map[string]string{"error": "price resolution unusable"})
+		return
+	}
+	// Fees, on the same terms and for the same reasons (TKT-215 / ADR-046). This
+	// read happens BEFORE the hold so that a document we cannot store or trust
+	// aborts while there is nothing to orphan -- the lesson TKT-153 encoded for
+	// the price snapshot. "No rule matched" is a successful resolution with an
+	// empty fee set; it is not a failure and must never be conflated with one.
+	fees, err := s.resolveTicketTypeFees(r.Context(), in.TicketTypeID, in.OrganizerID, in.ChannelCode)
+	if err != nil {
+		if errors.Is(err, errResolveUnavailable) {
+			write(w, 502, map[string]string{"error": "catalog unavailable"})
+			return
+		}
+		write(w, 500, map[string]string{"error": "fee resolution unusable"})
+		return
+	}
+	if fees.Currency != resolution.ResolvedPrice.Currency {
+		// A fee in a different currency from the thing it is a fee on cannot be
+		// added to it. Catalog validates this against the ticket type; commerce
+		// checks it against the price it is actually charging.
+		write(w, 500, map[string]string{"error": "fee resolution unusable"})
 		return
 	}
 	o := offer{OrganizerID: resolution.OrganizerID, PerformanceID: resolution.PerformanceID,
@@ -512,7 +555,29 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		}
 		quantity = int32(len(hold.Seats))
 	}
-	total := resolution.total(quantity)
+	// The face value is the rule-resolved price times the CLAIMED quantity, and
+	// the fees are composed on that same canonical number -- inventory
+	// canonicalises a seated claim, so a request naming one seat twice claims one
+	// seat and must be charged one fee.
+	faceValue := resolution.total(quantity)
+	composition, err := computeFeeBreakdown(fees.Fees, o.Price.Amount, quantity, o.Price.Currency)
+	if err != nil {
+		// The hold exists by now, which is why every document-level failure was
+		// already refused above: what can still fail here is arithmetic, and it
+		// fails on values the caller chose (quantity) rather than on our data.
+		write(w, 400, map[string]string{"error": "order total out of range"})
+		return
+	}
+	total, err := composedTotal(faceValue, composition.PassedOnTotal)
+	if err != nil {
+		write(w, 400, map[string]string{"error": "order total out of range"})
+		return
+	}
+	feeSnapshot, err := feeSnapshotEnvelope(fees, composition, faceValue, total)
+	if err != nil {
+		write(w, 500, map[string]string{"error": "persist reservation"})
+		return
+	}
 	buyer := uuid.NewSHA1(uuid.NameSpaceOID, []byte("buyer:"+id.String()))
 	// The provenance snapshot is stored as a document, not as a rule reference: a
 	// rule can later be closed or superseded, and a foreign key would let that
@@ -531,8 +596,8 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		}
 		seatsColumn = encoded
 	}
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status,price_resolution_snapshot,seat_identities) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held',$11,$12) ON CONFLICT(id) DO NOTHING`,
-		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, quantity, o.Price.Amount, total, o.Price.Currency, []byte(resolution.raw), seatsColumn)
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,seat_identities,fee_resolution_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'held',$12,$13,$14) ON CONFLICT(id) DO NOTHING`,
+		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, quantity, o.Price.Amount, total, faceValue, o.Price.Currency, []byte(resolution.raw), seatsColumn, feeSnapshot)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist reservation"})
 		return
@@ -541,6 +606,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	if in.seated() {
 		out["seats"] = hold.Seats
 	}
+	addFeeFields(out, faceValue, composition)
 	write(w, 201, out)
 }
 
@@ -1228,7 +1294,10 @@ func (s *Server) staffSale(w http.ResponseWriter, r *http.Request, invPrefix, in
 	// two staff families can never collide with each other.
 	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(ns+in.OrganizerID.String()+":"+key))
 	buyer := uuid.NewSHA1(uuid.NameSpaceOID, []byte("buyer:"+id.String()))
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'held') ON CONFLICT(id) DO NOTHING`,
+	// face_value_amount = total: the staff paths are deliberately fee-free (they
+	// keep writing a NULL fee snapshot for the same reason they write a NULL
+	// price snapshot), so the two numbers are equal by construction here.
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,'held') ON CONFLICT(id) DO NOTHING`,
 		id, in.OrganizerID, conv.Hold.ID, o.PerformanceID, in.TicketTypeID, buyer, in.Quantity, o.Price.Amount, total, o.Price.Currency)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist reservation"})

@@ -1,0 +1,459 @@
+package api
+
+import (
+	"bytes"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/google/uuid"
+
+	apispec "ticketing/services/commerce/api"
+)
+
+// The pure fee arithmetic (TKT-215 / ADR-046 §2). No HTTP, no database — the
+// seam where rounding and overflow are provable.
+
+func feeRule(code, basis, incidence string, amount *int64, rate *int32) *resolvedFeeRule {
+	return &resolvedFeeRule{
+		RuleID: uuid.New(), FeeCode: code, Basis: basis, Amount: amount,
+		RateBps: rate, Currency: "EUR", Incidence: incidence,
+	}
+}
+
+func amt(v int64) *int64 { return &v }
+func bps(v int32) *int32 { return &v }
+func code(c string, w *resolvedFeeRule) resolvedFeeCode {
+	return resolvedFeeCode{FeeCode: c, Winner: w}
+}
+
+// ADR-046 §2's worked example, which is the whole reason the rounding UNIT is
+// specified rather than left to the implementer.
+//
+// FIXTURE NOTE: the example needs two DIFFERENT unit prices (150 and 100) to
+// separate the three candidate units. A fixture at one repeated price cannot —
+// per-ticket, per-line and per-order all agree there, so it would pass against
+// every wrong implementation.
+func TestComputeFeeBreakdownRoundsPerTicket(t *testing.T) {
+	// 2 tickets at 150¢, 333 bps: floor(150×333/10000) = 4 each → 8.
+	two, err := computeFeeBreakdown(
+		[]resolvedFeeCode{code("service", feeRule("service", basisPercentageBps, incidencePassedOn, nil, bps(333)))},
+		150, 2, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 1 ticket at 100¢, 333 bps: floor(100×333/10000) = 3.
+	one, err := computeFeeBreakdown(
+		[]resolvedFeeCode{code("service", feeRule("service", basisPercentageBps, incidencePassedOn, nil, bps(333)))},
+		100, 1, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := two.PassedOnTotal + one.PassedOnTotal
+	if got != 11 {
+		t.Errorf("total = %d¢, want 11¢ (ADR-046 §2). 12¢ means the fee was rounded per LINE, "+
+			"13¢ per ORDER — both make the fee depend on how a cart groups its lines", got)
+	}
+	if two.PassedOnTotal != 8 {
+		t.Errorf("2×150¢ = %d, want 8 (floor per ticket, then multiplied)", two.PassedOnTotal)
+	}
+}
+
+// Rounding happens BEFORE the multiply, not after. This is the mutation that
+// the worked example alone does not always catch, so it gets its own case:
+// floor(150×333/10000)×2 = 8, while floor(150×2×333/10000) = 9.
+func TestComputeFeeBreakdownFloorsBeforeMultiplying(t *testing.T) {
+	got, err := computeFeeBreakdown(
+		[]resolvedFeeCode{code("service", feeRule("service", basisPercentageBps, incidencePassedOn, nil, bps(333)))},
+		150, 2, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PassedOnTotal != 8 {
+		t.Errorf("passed-on = %d, want 8 — 9 means the rate was applied to the LINE total", got.PassedOnTotal)
+	}
+}
+
+func TestComputeFeeBreakdownByBasis(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rule     *resolvedFeeRule
+		unit     int64
+		quantity int32
+		want     int64
+	}{
+		"per ticket fixed multiplies by quantity": {
+			rule: feeRule("service", basisPerTicketFixed, incidencePassedOn, amt(250), nil),
+			unit: 1000, quantity: 3, want: 750,
+		},
+		"per order fixed is charged once": {
+			rule: feeRule("booking", basisPerOrderFixed, incidencePassedOn, amt(250), nil),
+			unit: 1000, quantity: 3, want: 250,
+		},
+		"percentage of the unit price, per ticket": {
+			rule: feeRule("service", basisPercentageBps, incidencePassedOn, nil, bps(1000)),
+			unit: 1000, quantity: 3, want: 300,
+		},
+		"a percentage that floors to zero is still charged as zero": {
+			rule: feeRule("service", basisPercentageBps, incidencePassedOn, nil, bps(333)),
+			unit: 1, quantity: 1, want: 0,
+		},
+		"a zero-quantity multiplier is impossible; quantity 1 is the floor": {
+			rule: feeRule("service", basisPerTicketFixed, incidencePassedOn, amt(0), nil),
+			unit: 1000, quantity: 1, want: 0,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := computeFeeBreakdown([]resolvedFeeCode{code(tc.rule.FeeCode, tc.rule)},
+				tc.unit, tc.quantity, "EUR")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.PassedOnTotal != tc.want {
+				t.Errorf("passed-on = %d, want %d", got.PassedOnTotal, tc.want)
+			}
+			if len(got.Items) != 1 {
+				t.Fatalf("want one breakdown item, got %+v", got.Items)
+			}
+			if got.Items[0].Amount != tc.want {
+				t.Errorf("item amount = %d, want %d", got.Items[0].Amount, tc.want)
+			}
+		})
+	}
+}
+
+// The heart of the ticket: incidence decides what the BUYER pays, and both kinds
+// are recorded either way. A build that treats it as a display flag passes every
+// other test in this file.
+func TestComputeFeeBreakdownSeparatesIncidence(t *testing.T) {
+	got, err := computeFeeBreakdown([]resolvedFeeCode{
+		code("service", feeRule("service", basisPerTicketFixed, incidencePassedOn, amt(300), nil)),
+		code("facility", feeRule("facility", basisPerTicketFixed, incidenceAbsorbed, amt(200), nil)),
+	}, 4550, 2, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PassedOnTotal != 600 {
+		t.Errorf("passed-on = %d, want 600 — only the passed_on fee may reach the buyer", got.PassedOnTotal)
+	}
+	if got.AbsorbedTotal != 400 {
+		t.Errorf("absorbed = %d, want 400 — an absorbed fee must still be RECORDED, "+
+			"because TKT-217 pays it to a payee out of money the buyer already paid", got.AbsorbedTotal)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("both fees must appear in the breakdown, got %+v", got.Items)
+	}
+}
+
+// A considered code with no live rule (ADR-046 §9) is not a fee of zero: it
+// contributes nothing AND produces no breakdown item. A zero-amount winner does
+// the opposite. The fixture carries both so the two cannot be conflated.
+func TestComputeFeeBreakdownDistinguishesNullWinnerFromZeroFee(t *testing.T) {
+	got, err := computeFeeBreakdown([]resolvedFeeCode{
+		code("booking", nil),
+		code("service", feeRule("service", basisPercentageBps, incidencePassedOn, nil, bps(333))),
+	}, 1, 1, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PassedOnTotal != 0 {
+		t.Errorf("passed-on = %d, want 0", got.PassedOnTotal)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("want exactly one item — the zero-amount winner, not the null one; got %+v", got.Items)
+	}
+	if got.Items[0].FeeCode != "service" || got.Items[0].Amount != 0 {
+		t.Errorf("item = %+v, want the zero-amount service fee", got.Items[0])
+	}
+}
+
+// Overflow is refused, not wrapped. A wrapped int64 on a money path is
+// indistinguishable from a legitimate small number.
+func TestComputeFeeBreakdownRefusesOverflow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fees     []resolvedFeeCode
+		unit     int64
+		quantity int32
+	}{
+		"fixed fee × quantity": {
+			fees: []resolvedFeeCode{code("s", feeRule("s", basisPerTicketFixed, incidencePassedOn, amt(maxContractAmount), nil))},
+			unit: 1, quantity: 2,
+		},
+		"percentage product before the divide": {
+			fees: []resolvedFeeCode{code("s", feeRule("s", basisPercentageBps, incidencePassedOn, nil, bps(10000)))},
+			unit: maxContractAmount, quantity: 1,
+		},
+		"the sum of two fees": {
+			fees: []resolvedFeeCode{
+				code("a", feeRule("a", basisPerOrderFixed, incidencePassedOn, amt(maxContractAmount), nil)),
+				code("b", feeRule("b", basisPerOrderFixed, incidencePassedOn, amt(maxContractAmount), nil)),
+			},
+			unit: 1, quantity: 1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := computeFeeBreakdown(tc.fees, tc.unit, tc.quantity, "EUR"); !errors.Is(err, errFeeTotalOverflow) {
+				t.Errorf("want errFeeTotalOverflow, got %v", err)
+			}
+		})
+	}
+}
+
+// A document this build cannot honour is refused rather than guessed at — the
+// discipline catalog_pricing.go applies to an unknown action_kind.
+func TestComputeFeeBreakdownRefusesUnusableRules(t *testing.T) {
+	for name, r := range map[string]*resolvedFeeRule{
+		"unknown basis":              feeRule("s", "per_seat", incidencePassedOn, amt(100), nil),
+		"unknown incidence":          feeRule("s", basisPerTicketFixed, "shared", amt(100), nil),
+		"fixed basis with no amount": feeRule("s", basisPerTicketFixed, incidencePassedOn, nil, nil),
+		"percentage with no rate":    feeRule("s", basisPercentageBps, incidencePassedOn, nil, nil),
+		"a fee in another currency": {RuleID: uuid.New(), FeeCode: "s", Basis: basisPerTicketFixed,
+			Amount: amt(100), Currency: "USD", Incidence: incidencePassedOn},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := computeFeeBreakdown([]resolvedFeeCode{code("s", r)}, 1000, 1, "EUR"); !errors.Is(err, errResolveUnusable) {
+				t.Errorf("want errResolveUnusable, got %v", err)
+			}
+		})
+	}
+}
+
+// composedTotal is what the card is charged. Absorbed fees must not appear in
+// it — that would charge the buyer for the organizer's cost.
+func TestComposedTotalAddsOnlyPassedOnFees(t *testing.T) {
+	fees, err := computeFeeBreakdown([]resolvedFeeCode{
+		code("service", feeRule("service", basisPerTicketFixed, incidencePassedOn, amt(300), nil)),
+		code("facility", feeRule("facility", basisPerTicketFixed, incidenceAbsorbed, amt(200), nil)),
+	}, 4550, 2, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	face := int64(4550 * 2)
+	total, err := composedTotal(face, fees.PassedOnTotal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 9700 {
+		t.Errorf("charged total = %d, want 9700 (face 9100 + passed-on 600). "+
+			"9-hundred more means the absorbed fee leaked into the buyer's total", total)
+	}
+	if _, err := composedTotal(maxContractAmount, 1); !errors.Is(err, errFeeTotalOverflow) {
+		t.Errorf("a total above the contract's Money cap must be refused, got %v", err)
+	}
+}
+
+// --- consumer tests: the read, the channel, and failing closed ---
+
+// feeStack wires a catalog that answers the price read normally and the fee read
+// with whatever the test wants, and an inventory that RECORDS whether it was
+// called. That last part is the point of several tests below: a fee failure must
+// abort before anything is held.
+func feeStack(t *testing.T, feeStatus int, feeBody string) (*Server, *string, *bool, func()) {
+	t.Helper()
+	var askedFor string
+	inventoryCalled := false
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(r.URL.Path, "/fee-resolution") {
+			askedFor = r.URL.RawQuery
+			if r.Header.Get("X-Internal-Token") == "" {
+				t.Error("the fee route is internal (ADR-046 §6); the credential must be sent")
+			}
+			w.WriteHeader(feeStatus)
+			_, _ = w.Write([]byte(feeBody))
+			return
+		}
+		_, _ = w.Write([]byte(resolutionBody(900, true)))
+	}))
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		inventoryCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"stop"}`))
+	}))
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	return s, &askedFor, &inventoryCalled, func() { catalog.Close(); inventory.Close() }
+}
+
+func reserveInChannel(t *testing.T, s *Server, key, channel string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"organizer_id":"` + pricingOrg + `","ticket_type_id":"` + pricingTT + `","quantity":2`
+	if channel != "" {
+		body += `,"channel_code":"` + channel + `"`
+	}
+	body += `}`
+	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	res := httptest.NewRecorder()
+	s.Router(nil, true).ServeHTTP(res, req)
+	return res
+}
+
+// The channel reaches catalog exactly as the buyer named it.
+func TestReserveSendsTheChannelToFeeResolution(t *testing.T) {
+	s, asked, _, done := feeStack(t, 200, feeResolutionBodyFor("reseller"))
+	defer done()
+	reserveInChannel(t, s, "chan-1", "reseller")
+	if *asked != "channel_code=reseller" {
+		t.Errorf("catalog was asked %q, want channel_code=reseller", *asked)
+	}
+}
+
+// Omitting the channel sends NO parameter — it is the default/public context,
+// not a wildcard (ADR-046 §4). Sending an empty parameter would be a different
+// request, and catalog's minLength would reject it.
+func TestReserveWithoutAChannelSendsNoParameter(t *testing.T) {
+	s, asked, _, done := feeStack(t, 200, emptyFeeResolutionBody(nil))
+	defer done()
+	reserveInChannel(t, s, "chan-2", "")
+	if *asked != "" {
+		t.Errorf("catalog was asked %q, want no query at all", *asked)
+	}
+}
+
+// Fail closed, and fail BEFORE the hold. Every row is a document commerce cannot
+// honour; none of them may degrade to "no fees", and none may leave a hold
+// behind. The inventory recorder is what proves the second half — an assertion on
+// the status code alone would pass even if a hold had been placed and abandoned.
+func TestReserveFailsClosedOnUnusableFeeResolution(t *testing.T) {
+	org := pricingOrg
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+	}{
+		"catalog is down":              {status: 503, body: `{}`},
+		"not a fee resolution":         {status: 200, body: `{"nope":true`},
+		"another organizer":            {status: 200, body: feeBodyWith(`"organizer_id":"11111111-2222-3333-4444-555555555555"`, org)},
+		"a channel we did not ask for": {status: 200, body: feeResolutionBodyFor("presale")},
+		"an unknown basis": {status: 200, body: feeBodyWithFee(
+			`{"rule_id":"22222222-2222-2222-2222-222222222222","fee_code":"s","basis":"per_seat","amount":100,"rate_bps":null,"currency":"EUR","incidence":"passed_on"}`)},
+		"a fixed fee carrying a rate too": {status: 200, body: feeBodyWithFee(
+			`{"rule_id":"22222222-2222-2222-2222-222222222222","fee_code":"s","basis":"per_ticket_fixed","amount":100,"rate_bps":500,"currency":"EUR","incidence":"passed_on"}`)},
+		"a rate outside 0..10000": {status: 200, body: feeBodyWithFee(
+			`{"rule_id":"22222222-2222-2222-2222-222222222222","fee_code":"s","basis":"percentage_bps","amount":null,"rate_bps":10001,"currency":"EUR","incidence":"passed_on"}`)},
+		"an unknown incidence": {status: 200, body: feeBodyWithFee(
+			`{"rule_id":"22222222-2222-2222-2222-222222222222","fee_code":"s","basis":"per_ticket_fixed","amount":100,"rate_bps":null,"currency":"EUR","incidence":"shared"}`)},
+		"a winner whose code disagrees with its entry": {status: 200, body: feeBodyWithFee(
+			`{"rule_id":"22222222-2222-2222-2222-222222222222","fee_code":"other","basis":"per_ticket_fixed","amount":100,"rate_bps":null,"currency":"EUR","incidence":"passed_on"}`)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, called, done := feeStack(t, tc.status, tc.body)
+			defer done()
+			res := reserveInChannel(t, s, "closed-"+name, "")
+			if res.Code != 500 && res.Code != 502 {
+				t.Errorf("status = %d, want 500 or 502 — a fee resolution we cannot trust must "+
+					"never degrade to selling with no fees", res.Code)
+			}
+			if *called {
+				t.Error("inventory was called: the sale must abort BEFORE a hold exists, or a " +
+					"failed reserve leaves an orphan hold and the buyer gets a 500")
+			}
+		})
+	}
+}
+
+// An empty fee set is a SUCCESSFUL resolution — the distinction the whole
+// fail-closed rule rests on. It must reach inventory, unlike every row above.
+func TestReserveAcceptsAnEmptyFeeSet(t *testing.T) {
+	s, _, called, done := feeStack(t, 200, emptyFeeResolutionBody(nil))
+	defer done()
+	reserveInChannel(t, s, "empty-fees", "")
+	if !*called {
+		t.Error("an empty fee set is 'no rules matched', not a failure — the sale must proceed")
+	}
+}
+
+func feeResolutionBodyFor(channel string) string {
+	c := channel
+	return emptyFeeResolutionBody(&c)
+}
+
+func feeBodyWith(field, org string) string {
+	_ = org
+	return `{"resolver_version":1,"evaluated_at":"2026-08-05T12:00:00Z",` + field +
+		`,"performance_id":"11111111-1111-1111-1111-111111111111",` +
+		`"currency":"EUR","channel_code":null,"fees":[]}`
+}
+
+func feeBodyWithFee(winner string) string {
+	return `{"resolver_version":1,"evaluated_at":"2026-08-05T12:00:00Z",` +
+		`"organizer_id":"` + pricingOrg + `","performance_id":"11111111-1111-1111-1111-111111111111",` +
+		`"currency":"EUR","channel_code":null,"fees":[{"fee_code":"s","winner":` + winner + `}]}`
+}
+
+// The XOR the ReservationCreate schema exists to express, asserted against the
+// CONTRACT rather than the handler (TKT-215 plan-review A2).
+//
+// It used to be expressed by property COUNT alone — two required, two optional,
+// minProperties 3 / maxProperties 3 admits exactly one of quantity and
+// seat_identities. Adding channel_code raises the ceiling to 4, and
+// {organizer_id, ticket_type_id, quantity, seat_identities} is also four. The
+// count stops carrying the invariant at exactly that moment, which is why `not`
+// was added alongside it.
+//
+// The handler enforces the XOR independently, so this is not an exploitable
+// hole; the schema's own description is what says a direct caller "must not be
+// able to slip past the schema", and this test is what keeps that true.
+func TestTheContractRefusesBothQuantityAndSeats(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(apispec.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, ok := doc.Components.Schemas["ReservationCreate"]
+	if !ok {
+		t.Fatal("no ReservationCreate schema")
+	}
+	for name, tc := range map[string]struct {
+		body  map[string]any
+		valid bool
+	}{
+		"general admission": {
+			body:  map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT, "quantity": 2},
+			valid: true,
+		},
+		"seated": {
+			body:  map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT, "seat_identities": []any{"A/1/1"}},
+			valid: true,
+		},
+		"general admission in a channel": {
+			body:  map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT, "quantity": 2, "channel_code": "reseller"},
+			valid: true,
+		},
+		"seated in a channel": {
+			body: map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT,
+				"seat_identities": []any{"A/1/1"}, "channel_code": "reseller"},
+			valid: true,
+		},
+		// The row this test exists for. Four properties, so the count alone
+		// admits it.
+		"both quantity and seats": {
+			body: map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT,
+				"quantity": 2, "seat_identities": []any{"A/1/1"}},
+			valid: false,
+		},
+		"neither quantity nor seats": {
+			body:  map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT},
+			valid: false,
+		},
+		"an empty channel code": {
+			body: map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT,
+				"quantity": 2, "channel_code": ""},
+			valid: false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := schema.Value.VisitJSON(tc.body)
+			if tc.valid && err != nil {
+				t.Errorf("the contract rejected a legitimate request: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("the contract ACCEPTED a request it must refuse — with a fifth property " +
+					"in play, minProperties/maxProperties alone no longer expresses the XOR")
+			}
+		})
+	}
+}

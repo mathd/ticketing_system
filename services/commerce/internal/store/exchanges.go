@@ -123,6 +123,19 @@ func ExchangeSoldFactID(id uuid.UUID) uuid.UUID {
 // buyer pays, negative a downgrade refunded to them, zero settles nothing. Both inputs are
 // persisted integer minor units — the source total comes from the reservation, never from
 // a re-read of a mutable catalog row.
+// ExchangeDelta compares FACE VALUES, and both sides must be face for the
+// subtraction to mean anything (TKT-215).
+//
+// targetTotal is resolution.total(quantity) -- a rule-resolved unit price times
+// quantity, with no fee in it. So sourceTotal is read from
+// reservations.face_value_amount rather than total_amount: once TKT-215 made
+// total_amount the GROSS charge (face + passed-on fees), comparing it against a
+// price-only target made an EVEN exchange produce a negative delta and refund
+// the buyer their service fee. Face-to-face keeps the subtraction honest.
+//
+// What an exchange does about the fees themselves -- re-resolve them for the new
+// ticket, carry them over, or refund them -- is deliberately NOT decided here.
+// It is a product question carved out of TKT-6 with its own ticket.
 func ExchangeDelta(sourceTotal, targetTotal int64) int64 { return targetTotal - sourceTotal }
 
 // ValidateExchangeTarget refuses a target the exchange cannot settle against. Currency is
@@ -156,7 +169,7 @@ func LoadExchangeSource(ctx context.Context, db *sql.DB, org, order uuid.UUID) (
 	var out ExchangeSource
 	var status string
 	err := db.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.total_amount, r.currency
+		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.face_value_amount, r.currency
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
 		Scan(&status, &out.PaymentSourceKey, &out.ReservationID, &out.HoldID, &out.BuyerID, &out.SlotID,
@@ -191,7 +204,7 @@ func BindOrderExchange(ctx context.Context, db *sql.DB, in ExchangeRequest) (Exc
 	var quantity int32
 	var total int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.id, r.buyer_id, r.hold_id, r.slot_id, r.quantity, r.total_amount, r.currency
+		SELECT o.status, o.idempotency_key, r.id, r.buyer_id, r.hold_id, r.slot_id, r.quantity, r.face_value_amount, r.currency
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2 FOR UPDATE OF o`, in.SourceOrderID, in.OrganizerID).
 		Scan(&status, &chargeKey, &reservation, &buyer, &hold, &slot, &quantity, &total, &currency)

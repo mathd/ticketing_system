@@ -42,6 +42,19 @@ func resolutionBody(resolved int64, winner bool) string {
 		`"winner":` + w + `,"candidates":[]` + fallback + `}`
 }
 
+// emptyFeeResolutionBody is a successful resolution with NO applicable fees —
+// which is a different thing from a failed resolution, and the distinction the
+// whole fail-closed rule rests on.
+func emptyFeeResolutionBody(channel *string) string {
+	ch := "null"
+	if channel != nil {
+		ch = `"` + *channel + `"`
+	}
+	return `{"resolver_version":1,"evaluated_at":"2026-08-05T12:00:00Z",` +
+		`"organizer_id":"` + pricingOrg + `","performance_id":"11111111-1111-1111-1111-111111111111",` +
+		`"currency":"EUR","channel_code":` + ch + `,"fees":[]}`
+}
+
 func itoa(v int64) string {
 	if v == 0 {
 		return "0"
@@ -74,7 +87,25 @@ func pricingStack(t *testing.T, status int, body string) (*Server, *int64, func(
 			_, _ = w.Write([]byte(body))
 			return
 		}
-		t.Errorf("unexpected catalog path %q — the reserve path takes ONE read", r.URL.Path)
+		// TKT-215: the reserve path now takes TWO catalog reads — the public
+		// price resolution above and this internal fee resolution. Serving an
+		// empty fee set here keeps every pre-existing assertion about PRICE
+		// unchanged: no fee applies, so the composed total is the face value and
+		// these tests still measure exactly what they measured before.
+		if strings.HasSuffix(r.URL.Path, "/fee-resolution") {
+			// The mirror of the assertion above: this route IS internal
+			// (ADR-046 §6), so the credential must be present. A fee resolution
+			// fetched without one would mean commerce had stopped authenticating
+			// to catalog's internal surface.
+			if r.Header.Get("X-Internal-Token") == "" {
+				t.Errorf("the internal credential must be sent to the fee-resolution route")
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(emptyFeeResolutionBody(nil)))
+			return
+		}
+		t.Errorf("unexpected catalog path %q", r.URL.Path)
 	}))
 	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -323,6 +354,12 @@ func seatedStack(t *testing.T, invStatus int, invBody string) (*Server, *string,
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
+		// Empty fee set (TKT-215), so every seated assertion below still measures
+		// the price and the route rather than the composition.
+		if strings.HasSuffix(r.URL.Path, "/fee-resolution") {
+			_, _ = w.Write([]byte(emptyFeeResolutionBody(nil)))
+			return
+		}
 		_, _ = w.Write([]byte(resolutionBody(900, true)))
 	}))
 	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

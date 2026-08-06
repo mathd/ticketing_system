@@ -447,8 +447,8 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 	reservation := ex.ReplacementReservationID
 	replacement := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-order:"+ex.ID.String()))
 	if _, err := s.db.ExecContext(r.Context(), `
-		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status,price_resolution_snapshot)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed',$11) ON CONFLICT(id) DO NOTHING`,
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,'completed',$11) ON CONFLICT(id) DO NOTHING`,
 		reservation, ex.OrganizerID, ex.TargetHoldID, ex.TargetSlotID, ex.TargetTicketTypeID, ex.BuyerID,
 		ex.Quantity, ex.TargetUnitAmount, ex.TargetTotal, ex.Currency, ex.TargetPriceSnapshot); err != nil {
 		return uuid.Nil, err
