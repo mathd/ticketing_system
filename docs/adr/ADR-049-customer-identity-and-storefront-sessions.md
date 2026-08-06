@@ -319,6 +319,25 @@ which remains usable until it expires. Commerce refuses to start when the key eq
 credential, and all four are generated from independent `/dev/urandom` reads — but that is separation,
 not protection against a holder.
 
+### What the review changed
+
+Three of these were found by the adversarial pass and are worth keeping visible, because each is a
+gap between what the design *said* and what the code did:
+
+- **Equal TTLs are not synchronized lifetimes.** Commerce mints at T1 on its clock; the storefront
+  starts the session at T2 on its own. The session therefore outlived the assertion by a round trip
+  plus any skew, which near the boundary is a live session holding a token commerce refuses. The
+  storefront now **caps the session at the assertion's own expiry**, read out of the token without
+  verifying it — safe, because the only thing that value is used for is shortening this process's own
+  session, and lying about it can only hurt the liar.
+- **A 401 was rendered as payment uncertainty.** The island did not handle it, so an assertion
+  refused *before any order existed* reached the buyer as "payment status is being checked" — a lie
+  in the frightening direction. It now says the sign-in expired and keeps the hold, which makes
+  signing in again a complete recovery.
+- **Key rotation has no overlap.** Every assertion minted under the old key stops verifying at once.
+  With the 401 handling above that is survivable — buyers are told to sign in again — but it is a
+  deliberate operational cost, not a solved problem, and `docs/development.md` says so.
+
 ### Consequences
 
 - A fourth credential to generate, distribute and eventually rotate. **Rotation, revocation and

@@ -48,11 +48,31 @@ export const POST: APIRoute = async ({ request, cookies }) => {
   const principal = lookupSession(cookies.get(SESSION_COOKIE)?.value ?? '');
   if (principal) headers.set('X-Customer-Assertion', principal.assertion);
 
-  const upstream = await fetch(`${GATEWAY_URL}/api/commerce/orders`, {
-    method: 'POST',
-    headers,
-    body: await request.text(),
-  });
+  // Bounded, and the failure is a declared JSON answer rather than Astro's error
+  // page (ai-review [medium]). Without this a hung gateway holds this SSR request
+  // for ever, and a transport error reaches the island as HTML that it tries to
+  // parse as JSON — which it reports to the buyer as "payment status is being
+  // checked", i.e. as payment uncertainty about a request that never arrived.
+  //
+  // 20s is above commerce's own checkout budget, so this fires only when the hop
+  // itself is broken, never on a slow-but-working payment.
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${GATEWAY_URL}/api/commerce/orders`, {
+      method: 'POST',
+      headers,
+      body: await request.text(),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    // 503 and NOT a payment verdict: nothing was submitted, so a retry is safe
+    // and the buyer should be told to retry rather than left wondering whether
+    // they were charged.
+    return new Response(JSON.stringify({ error: 'checkout is temporarily unavailable' }), {
+      status: 503,
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    });
+  }
 
   // Commerce's status and body, verbatim. The island already understands every
   // status the checkout can answer with (200, 202, 400, 402, 408, 409, 500, 503),

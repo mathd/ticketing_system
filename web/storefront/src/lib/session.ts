@@ -166,6 +166,31 @@ export function sessionCountForTest(): number {
 
 // `now` is a MONOTONIC reading (see monotonicNow), not a wall-clock timestamp.
 // Callers never pass it; tests do, to drive expiry deterministically.
+/**
+ * The expiry commerce stamped into an assertion, in milliseconds from `now`.
+ *
+ * The token is `v1.<customer id>.<unix expiry>.<mac>` and this reads the expiry
+ * WITHOUT verifying the signature — which is safe because of what it is used for:
+ * shortening this process's own session. The worst an attacker can do by lying
+ * here is give themselves a shorter session. Nothing is authorized on it, ever.
+ *
+ * Why it is needed at all: commerce mints the assertion at T1 on its clock and
+ * this process starts the session at T2 > T1 on its own, so an 8h session paired
+ * with an 8h assertion outlives it by the round trip plus any clock skew. Near the
+ * boundary that produces exactly the failure the equal TTLs exist to prevent — a
+ * live session holding an assertion commerce refuses, surfacing as a 401 at the
+ * payment button (ai-review [medium]).
+ *
+ * Returns undefined when the token is unreadable, which falls back to the plain
+ * TTL rather than refusing: an unparseable assertion is commerce's problem to
+ * reject, not a reason to deny someone a session.
+ */
+function assertionLifetimeMs(assertion: string, wallClockNow = Date.now()): number | undefined {
+  const seconds = Number(assertion.split('.')[2]);
+  if (!Number.isFinite(seconds)) return undefined;
+  return seconds * 1000 - wallClockNow;
+}
+
 export function createSession(principal: CustomerPrincipal, now = monotonicNow()): string {
   // One pass over the map does both jobs, because both need the same walk:
   // reclaim expired entries (expiry-on-read alone only collects a token that is
@@ -214,7 +239,12 @@ export function createSession(principal: CustomerPrincipal, now = monotonicNow()
 
   // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
   const token = randomBytes(32).toString('base64url');
-  sessions.set(token, { principal, expiresAt: now + SESSION_TTL_MS });
+  // The session never outlives the assertion it carries. Equal TTLs are not
+  // enough on their own — see assertionLifetimeMs.
+  const assertionMs = assertionLifetimeMs(principal.assertion);
+  const lifetime =
+    assertionMs === undefined ? SESSION_TTL_MS : Math.min(SESSION_TTL_MS, assertionMs);
+  sessions.set(token, { principal, expiresAt: now + lifetime });
   return token;
 }
 

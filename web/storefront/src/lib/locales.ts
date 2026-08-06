@@ -45,6 +45,7 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatsWouldStrand: 'This would leave {seats} on its own. Add it, or pick a different seat.',
     seatMapStale: 'Showing the last known seat availability — reconnecting.',
     reserveSeats: 'Reserve seats',
+    signInAgain: 'Your sign-in has expired. Sign in again in another tab, then press pay — your seats are still held.',
     // Customer accounts (TKT-220). An account is OPTIONAL everywhere: the copy
     // must never imply that buying requires one.
     account: 'Account',
@@ -107,6 +108,7 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatsWouldStrand: 'Cela isolerait {seats}. Ajoutez cette place, ou choisissez-en une autre.',
     seatMapStale: 'Affichage de la dernière disponibilité connue — reconnexion en cours.',
     reserveSeats: 'Réserver les places',
+    signInAgain: 'Votre connexion a expiré. Reconnectez-vous dans un autre onglet, puis appuyez sur payer — vos places sont toujours réservées.',
     account: 'Compte',
     accountOptionalNotice:
       'Le compte est facultatif — vous pouvez toujours acheter en tant qu’invité et conserver votre référence de commande.',

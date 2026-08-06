@@ -120,6 +120,12 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       const result = await response.json() as { order_id?: string; guest_order_ref?: string; status?: string };
       if (response.ok && result.status === 'completed' && result.guest_order_ref) { setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.completed); return; }
       if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.declined); return; }
+      // 401 = the customer assertion was refused (expired, or signed with a key
+      // that has since rotated). NO order exists and no money moved, so calling
+      // this "payment status is being checked" would be a lie in the frightening
+      // direction (ai-review [high]). The hold is deliberately KEPT: signing in
+      // again in another tab and pressing pay is a complete recovery.
+      if (response.status === 401) { setStatus(strings.signInAgain); return; }
       setStatus('Payment status is being checked');
     } catch { setStatus('Payment status is being checked'); }
     finally { setBusy(false); }

@@ -15,8 +15,17 @@ import {
   sessionCountForTest,
 } from '../src/lib/session';
 
-const alice = { customerId: 'cust-a', email: 'Alice@Example.TEST', assertion: 'v1.assertion-a' };
-const bob = { customerId: 'cust-b', email: 'bob@example.test', assertion: 'v1.assertion-b' };
+// A realistic assertion expiry. createSession caps the session at whatever the
+// assertion says, so a fixture with a stale one produces a session that is dead on
+// arrival — correct behaviour, useless fixture.
+//
+// Deliberately FURTHER out than SESSION_TTL_MS, so the cap is not the binding
+// constraint here and the TTL tests measure the TTL. The cap's own behaviour is
+// tested separately, where it is the point.
+const FUTURE = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+
+const alice = { customerId: 'cust-a', email: 'Alice@Example.TEST', assertion: `v1.cust-a.${FUTURE}.mac` };
+const bob = { customerId: 'cust-b', email: 'bob@example.test', assertion: `v1.cust-b.${FUTURE}.mac` };
 
 beforeEach(() => {
   resetSessionsForTest();
@@ -110,7 +119,7 @@ describe('customer sessions', () => {
     let refused = 0;
     for (let i = 0; i < MAX_SESSIONS_TOTAL + 50; i++) {
       try {
-        createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
+        createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
       } catch (cause) {
         if (!(cause instanceof SessionCapacityError)) throw cause;
         refused++;
@@ -133,7 +142,7 @@ describe('customer sessions', () => {
   it('refuses a new session at capacity rather than evicting a live one', () => {
     const victim = createSession(alice);
     for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
-      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
 
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
@@ -154,7 +163,7 @@ describe('customer sessions', () => {
   it('lets a customer at their own cap rotate a session even when the map is full', () => {
     const mine = Array.from({ length: MAX_SESSIONS_PER_CUSTOMER }, () => createSession(alice));
     for (let i = 0; i < MAX_SESSIONS_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
-      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
     expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
 
@@ -173,7 +182,7 @@ describe('customer sessions', () => {
   it('accepts new sessions again once capacity frees up', () => {
     const doomed = createSession(alice);
     for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
-      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
 
@@ -282,5 +291,37 @@ describe('the session cookie', () => {
     expect(isSecureRequest(http)).toBe(false);
     expect(isSecureRequest(none)).toBe(false);
     expect(sessionCookieOptions({ secure: isSecureRequest(https) }).secure).toBe(true);
+  });
+});
+
+describe('the session never outlives its assertion', () => {
+  // ai-review [medium]: commerce mints the assertion at T1 on its clock and this
+  // process starts the session at T2 > T1 on its own, so equal TTLs are not
+  // enough — the session outlives the assertion by the round trip plus any skew.
+  // Near the boundary that is a live session holding a token commerce refuses,
+  // surfacing as a 401 at the payment button.
+  it('caps the session at the assertion expiry when that is sooner', () => {
+    const soon = Math.floor(Date.now() / 1000) + 60; // one minute, far inside the 8h TTL
+    const token = createSession({ ...alice, assertion: `v1.cust-a.${soon}.mac` });
+
+    expect(lookupSession(token)).toEqual(expect.objectContaining({ customerId: 'cust-a' }));
+    // A monotonic reading two minutes on — past the assertion, nowhere near the TTL.
+    expect(lookupSession(token, performance.now() + 120_000)).toBeUndefined();
+  });
+
+  // An assertion that is already dead must not mint a usable session at all.
+  it('refuses to hand out a session backed by an expired assertion', () => {
+    const past = Math.floor(Date.now() / 1000) - 60;
+    const token = createSession({ ...alice, assertion: `v1.cust-a.${past}.mac` });
+
+    expect(lookupSession(token)).toBeUndefined();
+  });
+
+  // An unreadable assertion is commerce's problem to reject, not a reason to deny
+  // someone a session here — it falls back to the plain TTL.
+  it('falls back to the full TTL when the assertion is unreadable', () => {
+    const token = createSession({ ...alice, assertion: 'not-a-token' });
+
+    expect(lookupSession(token)).toEqual(expect.objectContaining({ customerId: 'cust-a' }));
   });
 });
