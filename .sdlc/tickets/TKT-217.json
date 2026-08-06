@@ -4,7 +4,7 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F4: The settlement ledger attributes every fee cent to a payee",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
