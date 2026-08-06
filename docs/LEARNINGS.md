@@ -9,6 +9,10 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- **A test that copies the code under test cannot fail** — a rollback-guard test that ran a `DO`
+  block *copied out of* the migration would have passed with the migration's entire `Down` guard
+  deleted; expectations naming production *constants* likewise survive aliasing one to another's
+  value. Run the real migration; pin enum values as literals. (TKT-214)
 - [**A fixture too small cannot show the negative**](./learnings/2026-08-03-a-fixture-too-small-cannot-show-the-negative.md) —
   a 3-seat row where *every* pair strands the third; an EXPLAIN proof with 2 distinct values where
   a seq scan is correct. Code right, fixture blind. Ask what the fixture can distinguish *before*
@@ -116,6 +120,10 @@ exists are in *Historical* at the bottom; their files are kept.
 - [**"At startup" is a claim about a runtime**](./learnings/2026-08-05-at-startup-is-a-claim-about-a-runtime.md) —
   a credential check at module scope in Astro middleware runs on the first REQUEST, not at boot: the
   framework lazily imports its own hooks. Name the runtime event, and test the process. (TKT-194)
+- [**A guard inside a generated handler is not first**](./learnings/2026-08-05-a-guard-inside-a-generated-handler-is-not-first.md) —
+  oapi-codegen binds and validates parameters *before* HandlerMiddlewares, so an in-handler
+  credential check answers 400-with-detail to a caller holding none. Guard outside the generated
+  handler; the guard and the router must read the same path. (TKT-214)
 
 ## Historical — the repo instance is gone, the lesson is kept
 
