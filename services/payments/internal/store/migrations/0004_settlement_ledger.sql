@@ -188,11 +188,36 @@ CREATE CONSTRAINT TRIGGER journal_capture_must_settle
 -- These rows are validated by the SAME deferred balance trigger as everything
 -- else -- one line per capture, for the full captured amount -- so the backfill
 -- cannot quietly produce an unbalanced ledger.
-INSERT INTO settlement_entries
-      (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
-SELECT organizer_id, (payload ->> 'order_id')::uuid, fact_id, 'legacy_unattributed', amount, currency
-  FROM journal_entries
- WHERE fact_type = 'payment.captured';
+-- The order_id is read from a jsonb payload, and 0001 never constrained payloads
+-- to carry one. A capture written by /internal/facts, or by direct SQL, can have
+-- it missing or malformed -- and an unguarded cast would abort the whole
+-- migration with an opaque error, which is the bricking failure again wearing a
+-- different hat. Backfill what is interpretable, then say precisely what was not.
+-- +goose StatementBegin
+DO $$
+DECLARE unmappable bigint;
+BEGIN
+    INSERT INTO settlement_entries
+          (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
+    SELECT organizer_id, (payload ->> 'order_id')::uuid, fact_id, 'legacy_unattributed', amount, currency
+      FROM journal_entries
+     WHERE fact_type = 'payment.captured'
+       AND payload ->> 'order_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+
+    -- Anything left is a captured fact this ledger cannot describe. That is a
+    -- broken journal row, not a normal upgrade, so it stops the migration and
+    -- names itself -- unlike the earlier blanket refusal, which stopped upgrades
+    -- that were merely ordinary.
+    SELECT count(*) INTO unmappable
+      FROM journal_entries je
+     WHERE je.fact_type = 'payment.captured'
+       AND NOT EXISTS (SELECT 1 FROM settlement_entries se WHERE se.capture_fact_id = je.fact_id);
+    IF unmappable > 0 THEN
+        RAISE EXCEPTION 'cannot apply 0004: % captured fact(s) carry no usable order_id in their '
+            'payload and cannot be attributed; inspect them before migrating', unmappable;
+    END IF;
+END $$;
+-- +goose StatementEnd
 
 -- +goose Down
 LOCK TABLE settlement_entries IN ACCESS EXCLUSIVE MODE;

@@ -348,6 +348,11 @@ type Operation struct {
 	// charge was bound and is still in flight, or the process driving it died. Callers
 	// must not read that as "no side effect" — it is the payment_unknown case.
 	Resolved bool
+	// The fingerprint of the request that bound this operation. The charge path
+	// compares it BEFORE validating a settlement plan, so a reused key with a
+	// different request is still answered with the documented 409 rather than a
+	// plan error (TKT-217, third review pass).
+	RequestFingerprint string
 	// The durable original request (TKT-114/S2). Zero values on rows bound before
 	// migration 0002 — a compensation cannot be built from such a row.
 	OrderID          uuid.UUID
@@ -388,8 +393,9 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	var occurredAt time.Time
 	var reqAmount, authAmount, capAmount sql.NullInt64
 	var reqCurrency, pmRef, provPayRef, provChRef, provState sql.NullString
-	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount)
+	var fingerprint string
+	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount,request_fingerprint FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount, &fingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, false, nil
 	}
@@ -397,6 +403,7 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 		return Operation{}, false, err
 	}
 	op.Resolved = status.Valid
+	op.RequestFingerprint = fingerprint
 	op.Status = status.String
 	op.FactID = factID.UUID
 	op.OccurredAt = occurredAt.UTC().Truncate(time.Microsecond)

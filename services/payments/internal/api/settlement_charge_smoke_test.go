@@ -5,6 +5,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -138,9 +139,94 @@ func TestAnUnsettleableChargeLeavesNoOperationBehind(t *testing.T) {
 		org, key).Scan(&operations); err != nil {
 		t.Fatal(err)
 	}
+	// Positive control. Without it this query could be observing nothing at all —
+	// a wrong table, a wrong column, a scope that matches no row — and would read
+	// as "no operation survived" no matter what the handler did.
+	var settleable int
+	good := `{"organizer_id":"` + org.String() + `","order_id":"` + uuid.New().String() +
+		`","buyer_id":"` + uuid.New().String() +
+		`","amount":5600,"currency":"EUR","payment_token":"fake-ok",` + feeFreePlan(5600) + `}`
+	goodKey := "control-" + org.String()
+	if res := postCharge(t, h, goodKey, good); res.Code != http.StatusOK {
+		t.Fatalf("control charge: status=%d body=%s", res.Code, res.Body.String())
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`,
+		org, goodKey).Scan(&settleable); err != nil {
+		t.Fatal(err)
+	}
+	if settleable != 1 {
+		t.Fatalf("the control charge left %d operation(s), want 1 — this query cannot see "+
+			"what it claims to be checking", settleable)
+	}
 	if operations != 0 {
 		t.Fatalf("%d payment operation(s) survive a charge that can never be settled — "+
 			"recovery can resolve a pending operation against the provider, so this one is "+
 			"a capture waiting to happen with no ledger to record it", operations)
+	}
+}
+
+// A settlement plan that attributes the whole capture to the organizer and owes
+// nobody a fee. Enough to make a charge settleable without involving payees.
+func feeFreePlan(amount int64) string {
+	return fmt.Sprintf(`"settlement":{"face_value":%d,"passed_on":0,"absorbed":0,`+
+		`"total_amount":%d,"currency":"EUR","fees":[]}`, amount, amount)
+}
+
+// Idempotency must not depend on the settlement plan travelling with every retry.
+// The plan is not part of the request fingerprint, and a replay of a captured
+// charge has to return that capture — not a plan error from validation that now
+// runs earlier than the operation lookup.
+func TestAReplayedCaptureIsAnsweredFromTheRecord(t *testing.T) {
+	h, provider := chargeServer(t)
+	org := uuid.New()
+	key := "replay-" + org.String()
+	order, buyer := uuid.New().String(), uuid.New().String()
+	base := `{"organizer_id":"` + org.String() + `","order_id":"` + order +
+		`","buyer_id":"` + buyer + `","amount":5600,"currency":"EUR","payment_token":"fake-ok",`
+
+	first := postCharge(t, h, key, base+feeFreePlan(5600)+`}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first charge: status=%d body=%s", first.Code, first.Body.String())
+	}
+	// The same charge again, this time carrying a plan that cannot be allocated.
+	unusable := base + `"settlement":{"face_value":5000,"passed_on":600,"absorbed":0,` +
+		`"total_amount":5600,"currency":"EUR","fees":[{"fee_code":"booking",` +
+		`"incidence":"passed_on","amount":600,"currency":"EUR","parts":[{"payee_id":"` +
+		uuid.New().String() + `","kind":"venue","display_name":"The venue","share_bps":4000}]}]}}`
+	second := postCharge(t, h, key, unusable)
+	if second.Code != http.StatusOK {
+		t.Fatalf("replay: status=%d body=%s, want the stored 200 — a decided operation is "+
+			"answered from the record, not re-validated", second.Code, second.Body.String())
+	}
+	if n := provider.authorizeCount(); n != 1 {
+		t.Errorf("provider called %d time(s) across a charge and its replay, want 1", n)
+	}
+}
+
+// And the reused-key 409 must survive the same reordering: a different request
+// under an existing key is a conflict whatever its plan looks like.
+func TestAReusedKeyWithADifferentRequestStillConflicts(t *testing.T) {
+	h, _ := chargeServer(t)
+	org := uuid.New()
+	key := "conflict-" + org.String()
+	buyer := uuid.New().String()
+	first := `{"organizer_id":"` + org.String() + `","order_id":"` + uuid.New().String() +
+		`","buyer_id":"` + buyer + `","amount":5600,"currency":"EUR","payment_token":"fake-ok",` +
+		feeFreePlan(5600) + `}`
+	if res := postCharge(t, h, key, first); res.Code != http.StatusOK {
+		t.Fatalf("first charge: status=%d body=%s", res.Code, res.Body.String())
+	}
+	// Different order and amount, same key, and a plan that cannot be allocated.
+	other := `{"organizer_id":"` + org.String() + `","order_id":"` + uuid.New().String() +
+		`","buyer_id":"` + buyer + `","amount":9900,"currency":"EUR","payment_token":"fake-ok",` +
+		`"settlement":{"face_value":9000,"passed_on":900,"absorbed":0,"total_amount":9900,` +
+		`"currency":"EUR","fees":[{"fee_code":"booking","incidence":"passed_on","amount":900,` +
+		`"currency":"EUR","parts":[{"payee_id":"` + uuid.New().String() +
+		`","kind":"venue","display_name":"The venue","share_bps":4000}]}]}}`
+	res := postCharge(t, h, key, other)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s, want 409 — a reused key with a different request is a "+
+			"conflict, and an unusable plan must not answer in its place", res.Code, res.Body.String())
 	}
 }

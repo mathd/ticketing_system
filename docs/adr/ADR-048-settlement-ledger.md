@@ -82,6 +82,15 @@ and not the outside world. The plan is therefore **required on every charge, val
 provider call**, though only a capture ever writes entries. This costs nothing: the charge path's
 only success outcome is a capture, so a plan-less charge could never have succeeded.
 
+**The ordering the charge path settled on, after three passes:** fingerprint → *decided-operation
+lookup* → plan validation → `BindOperation` → provider. Each step moved earlier for a reason the
+previous ordering got wrong. Validation after the provider loses money; validation after `Bind`
+leaves a recoverable operation with no usable ledger; validation *before* the operation lookup makes
+**idempotency depend on the plan** — the plan is not part of the request fingerprint, so a replay
+that arrives without one, or with a stale one, would get a plan error instead of the capture it
+already has. A decided operation is therefore answered from the record before the plan is looked at,
+and the reused-key `409` with it.
+
 ### 3b. A sum cannot see shape
 
 The balance trigger checks a total. A total is blind to how the total was reached, so a **balanced

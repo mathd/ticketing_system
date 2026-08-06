@@ -219,6 +219,31 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "invalid charge"})
 		return
 	}
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s", in.OrderID, in.BuyerID, in.Amount, in.Currency, in.PaymentToken))))
+	// An ALREADY-DECIDED operation is answered from the record, before the plan is
+	// looked at. Validating first would make idempotency depend on the settlement
+	// plan travelling with every retry, when the plan is not part of the request
+	// fingerprint and the stored result is the whole point: a replay of a captured
+	// charge must return that capture, not a plan error. The reused-key 409 is
+	// checked here too, for the same reason — a different request under the same
+	// key is a 409 whatever its plan looks like.
+	if prior, found, err := s.journal.LookupOperation(r.Context(), in.OrganizerID, key); err == nil && found {
+		if prior.RequestFingerprint != fingerprint {
+			write(w, 409, map[string]string{"error": "idempotency key reused with different request"})
+			return
+		}
+		if prior.Resolved {
+			code := 200
+			if prior.Status == "declined" {
+				code = 402
+			}
+			if prior.Status == "timeout" {
+				code = 408
+			}
+			write(w, code, map[string]any{"status": prior.Status, "payment_id": prior.FactID, "replay": true})
+			return
+		}
+	}
 	// Build the ledger BEFORE anything durable happens — before the provider is
 	// called AND before the operation is bound.
 	//
@@ -252,7 +277,6 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "settlement plan unusable"})
 		return
 	}
-	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s", in.OrderID, in.BuyerID, in.Amount, in.Currency, in.PaymentToken))))
 	boundStatus, boundID, occurredAt, replay, err := s.journal.BindOperation(r.Context(), in.OrganizerID, key, fingerprint, store.OperationRequest{
 		OrderID: in.OrderID, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, PaymentMethodRef: in.PaymentToken,
 	})

@@ -164,8 +164,11 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 # applies 0004. It cannot share a database with suites that expect a fully migrated one.
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS payments_legacy_smoke" \
-  -c "CREATE DATABASE payments_legacy_smoke OWNER payments" >/dev/null
+  -c "CREATE DATABASE payments_legacy_smoke OWNER payments" \
+  -c "DROP DATABASE IF EXISTS payments_legacy_malformed_smoke" \
+  -c "CREATE DATABASE payments_legacy_malformed_smoke OWNER payments" >/dev/null
 PAYMENTS_LEGACY_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_legacy_smoke" \
+PAYMENTS_LEGACY_MALFORMED_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_legacy_malformed_smoke" \
 PAYMENTS_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_store_smoke" \
 PAYMENTS_API_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_api_smoke" \
 go test -tags smoke -count=1 ./internal/...
