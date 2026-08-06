@@ -33,6 +33,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-193's plan-review as **incidental**: real, pre-existing, and a logging-contract decision rather than a back-office one. Not shaped — needs the 8-item DoR before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Annotated by TKT-223 — this is now a safety prerequisite, not logging hygiene\n\nTKT-223 shipped guest-order claiming, and its proof of ownership is the **order reference alone**\n(matching the email would refuse a buyer who signed up with a different address). ADR-049 § TKT-223\nrecords what that grants:\n\n> A claim is **destructive, exclusive, permanent and unrecoverable**. The first holder to claim takes\n> the order away from its buyer, and there is no un-claim path.\n\nThis ticket is where those references leak. Before TKT-223 a logged reference let a reader see\nsomeone's tickets; now it lets them **take the order**. The two follow-ups are related and neither\nsubstitutes for the other — **TKT-225** adds an operator un-claim path (recovery after the fact),\nthis one stops the leak (prevention).\n\nNothing about the defect changed. Its consequence did."
     }
   ]
 }
