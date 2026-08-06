@@ -1,0 +1,32 @@
+{
+  "key": "TKT-218",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "summary": "Flaky: storefront call-budget tests fail under load, and one fails OPEN (TKT-216 gate incidental)",
+  "description": "**Flaky under load, found while gating TKT-216.**\n\n`web/storefront/test/page-call-budget.test.ts` (TKT-208's call-budget proof) fails three of its six\ncases when the machine is busy:\n\n```\n× event list renders on exactly one upstream call      (timeout at 5000ms)\n× event detail renders on exactly one upstream call    (timeout at 5000ms)\n× festival detail renders on exactly one upstream call (expected length 1, got 2)\n```\n\n**It is not a regression.** Verified by checking out the parent commit (`a05d5cc6`, a docs-only\nchange sitting on a gate that was green) and reproducing all three failures there. Verified further\nby re-running with `--testTimeout=30000`: **6 passed, twice.** The transform step alone takes ~9.7s\nin these runs, against a 5s per-test default.\n\n**Why it matters beyond the noise.** The third failure is the interesting one: it does not time out,\nit counts **two** upstream calls where the budget allows one. That is the assertion TKT-208 exists to\nmake, and if load can make it report two calls, then the test cannot distinguish \"the page made a\nsecond call\" from \"the machine was busy\". A call-budget proof that fails open under load is not\nproving the budget.\n\n**Suggested direction (not a decision):**\n- Raise the per-test timeout for this file so a slow transform cannot be read as a budget violation.\n- Separately, work out whether the 2-call observation is a genuine second fetch triggered by a\n  timeout/retry path, or an artefact of the stub counting a cancelled request. Those need different\n  fixes, and only the second is harmless.\n\nDo not simply raise the timeout and close it: that hides the second question.",
+  "context": {
+    "capturedAt": "2026-08-05",
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-004",
+        "why": "Rule 3 (frontends are call-frugal) is what this test proves; TKT-208 built it."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The failing file and the budget it asserts",
+        "link": "web/storefront/test/page-call-budget.test.ts"
+      },
+      {
+        "summary": "Found while gating TKT-216; reproduced at the parent commit, so not caused by it",
+        "link": "board:TKT-216"
+      }
+    ]
+  },
+  "comments": []
+}
