@@ -43,8 +43,13 @@ func TestPerformanceDisplayNamesResolveAgainstRealPostgres(t *testing.T) {
 	if got[0].EventName["en"] == "" {
 		t.Fatalf("the localized name did not survive the scan: %+v", got[0].EventName)
 	}
-	if got[0].StartsAt.IsZero() {
-		t.Fatal("starts_at did not survive the scan")
+	// A FESTIVAL DAY has no single instant — an operating date and opening hours
+	// instead (ADR-014) — so this fixture's starts_at is legitimately NULL. That
+	// is exactly why the fixture is a festival day: a plain time.Time destination
+	// fails on precisely the purchases a festival wallet contains, and a fixture
+	// with a start time would never have shown it.
+	if got[0].StartsAt != nil {
+		t.Fatalf("a festival day reported a start instant: %v", *got[0].StartsAt)
 	}
 }
 

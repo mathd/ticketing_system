@@ -760,8 +760,11 @@ export interface components {
             /** Format: uuid */
             performance_id: string;
             event_name: string;
-            /** Format: date-time */
-            starts_at: string;
+            /**
+             * Format: date-time
+             * @description Null for a performance that has no single instant — a FESTIVAL DAY has an operating date and opening hours instead (ADR-014). Required and nullable rather than optional: "this kind of performance has no start time" is a different fact from "we did not say".
+             */
+            starts_at: string | null;
         };
         Error: {
             error: string;

@@ -128,7 +128,10 @@ type LocalizedText map[string]string
 type PerformanceDisplayName struct {
 	PerformanceID uuid.UUID
 	EventName     LocalizedText
-	StartsAt      time.Time
+	// Nullable, like Performance.StartsAt: a FESTIVAL DAY has an operating_date
+	// and opening hours instead of an instant (ADR-014). A plain time.Time here
+	// makes the resolver fail on exactly the purchases a festival wallet contains.
+	StartsAt *time.Time
 }
 
 type Venue struct {

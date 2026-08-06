@@ -1444,7 +1444,15 @@ components:
       properties:
         performance_id: {type: string, format: uuid}
         event_name: {type: string}
-        starts_at: {type: string, format: date-time}
+        starts_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Null for a performance that has no single instant — a FESTIVAL DAY has
+            an operating date and opening hours instead (ADR-014). Required and
+            nullable rather than optional: "this kind of performance has no start
+            time" is a different fact from "we did not say".
     Error:
       type: object
       required: [error]

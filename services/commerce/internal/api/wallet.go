@@ -121,7 +121,9 @@ func (s *Server) listCustomerOrders(w http.ResponseWriter, r *http.Request) {
 		}
 		if n, ok := names[o.SlotID]; ok {
 			row["event_name"] = n.name
-			row["starts_at"] = n.startsAt.UTC()
+			if n.startsAt != nil {
+				row["starts_at"] = n.startsAt.UTC()
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -135,7 +137,7 @@ func (s *Server) listCustomerOrders(w http.ResponseWriter, r *http.Request) {
 
 type performanceName struct {
 	name     string
-	startsAt time.Time
+	startsAt *time.Time
 }
 
 // performanceNames resolves this page's performances in ONE catalog call.
@@ -173,9 +175,11 @@ func (s *Server) performanceNames(ctx context.Context, orders []commercestore.Wa
 	}
 	var resolved struct {
 		Performances []struct {
-			PerformanceID uuid.UUID `json:"performance_id"`
-			EventName     string    `json:"event_name"`
-			StartsAt      time.Time `json:"starts_at"`
+			PerformanceID uuid.UUID  `json:"performance_id"`
+			EventName     string     `json:"event_name"`
+			// Nullable: a festival day has an operating date and opening hours
+			// rather than an instant (ADR-014).
+			StartsAt *time.Time `json:"starts_at"`
 		} `json:"performances"`
 	}
 	if err := json.Unmarshal(body, &resolved); err != nil {

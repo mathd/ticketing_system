@@ -869,14 +869,10 @@ func (f *fakeStore) PerformanceDisplayNames(_ context.Context, ids []uuid.UUID) 
 		if !ok {
 			continue // an unknown id is absent, not an error
 		}
-		var startsAt time.Time
-		if p.StartsAt != nil {
-			startsAt = *p.StartsAt
-		}
 		out = append(out, store.PerformanceDisplayName{
 			PerformanceID: id,
 			EventName:     f.events[p.EventID].Name,
-			StartsAt:      startsAt,
+			StartsAt:      p.StartsAt,
 		})
 	}
 	return out, nil

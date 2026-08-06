@@ -2333,11 +2333,16 @@ func (p *Postgres) PerformanceDisplayNames(ctx context.Context, ids []uuid.UUID)
 		// compiles and fails at runtime with "unsupported Scan, storing driver
 		// .Value type []uint8", which no fake-store test can reach.
 		var name []byte
-		if err := rows.Scan(&d.PerformanceID, &name, &d.StartsAt); err != nil {
+		var startsAt sql.NullTime
+		if err := rows.Scan(&d.PerformanceID, &name, &startsAt); err != nil {
 			return nil, fmt.Errorf("scan performance display name: %w", err)
 		}
 		if err := json.Unmarshal(name, &d.EventName); err != nil {
 			return nil, fmt.Errorf("performance display name jsonb: %w", err)
+		}
+		if startsAt.Valid {
+			at := startsAt.Time
+			d.StartsAt = &at
 		}
 		out = append(out, d)
 	}

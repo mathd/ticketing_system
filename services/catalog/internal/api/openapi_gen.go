@@ -742,7 +742,9 @@ type PerformanceCreate struct {
 type PerformanceDisplayName struct {
 	EventName     string             `json:"event_name"`
 	PerformanceId openapi_types.UUID `json:"performance_id"`
-	StartsAt      time.Time          `json:"starts_at"`
+
+	// StartsAt Null for a performance that has no single instant — a FESTIVAL DAY has an operating date and opening hours instead (ADR-014). Required and nullable rather than optional: "this kind of performance has no start time" is a different fact from "we did not say".
+	StartsAt *time.Time `json:"starts_at"`
 }
 
 // PerformanceDisplayNames defines model for PerformanceDisplayNames.
