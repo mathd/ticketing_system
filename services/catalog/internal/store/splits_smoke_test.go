@@ -423,3 +423,37 @@ func TestMovingAPartBetweenSchedulesValidatesBothSides(t *testing.T) {
 			"the schedule it left, or settlement is handed a snapshot its allocator refuses", total)
 	}
 }
+
+// TRUNCATE fires no row-level trigger, so it bypasses the balance rule entirely
+// (ai-review pass 2, [high]). Before the guard, one statement left every header
+// with zero parts and committed — verified against a real database.
+//
+// The same shape payments already guards on its append-only journal
+// (0001_journal.sql). The point is not that an operator is likely to truncate
+// this table; it is that when they do, the resolver would go on snapshotting
+// schedules the allocator refuses, and nothing would have said no.
+func TestSplitSchedulePartsCannotBeTruncated(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	_, orgID, venueID, _, _, _ := seedPricingChain(ctx, t, db)
+	p := seedPayees(ctx, t, st, orgID, 2)
+	if _, err := st.CreateSplitSchedule(ctx, SplitSchedule{
+		OrganizerID: orgID, ScopeLevel: ScopeVenue, ScopeID: venueID, FeeCode: "service",
+		Parts: []SplitPart{{Payee: p[0], ShareBps: 5000}, {Payee: p[1], ShareBps: 5000}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `TRUNCATE split_schedule_parts`); err == nil {
+		var headers, parts int
+		_ = db.QueryRowContext(ctx, `SELECT count(*) FROM split_schedules`).Scan(&headers)
+		_ = db.QueryRowContext(ctx, `SELECT count(*) FROM split_schedule_parts`).Scan(&parts)
+		t.Fatalf("TRUNCATE succeeded: %d headers left with %d parts — every schedule is now "+
+			"unbalanced and nothing refused it", headers, parts)
+	}
+	// And the rows are untouched.
+	var parts int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM split_schedule_parts`).Scan(&parts); err != nil {
+		t.Fatal(err)
+	}
+	if parts != 2 {
+		t.Errorf("the refused TRUNCATE still removed rows: %d left, want 2", parts)
+	}
+}

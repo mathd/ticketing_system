@@ -151,6 +151,30 @@ CREATE CONSTRAINT TRIGGER split_schedule_parts_balance
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION split_schedule_must_balance();
 
+-- TRUNCATE fires NO row-level trigger, so everything above is bypassed by one
+-- statement: `TRUNCATE split_schedule_parts` leaves every header with zero parts
+-- and commits (verified against a real database before this guard existed).
+--
+-- The repo already learned this once -- payments guards its append-only journal
+-- with exactly this pattern (0001_journal.sql, journal_no_truncate) -- and the
+-- reasoning carries: a statement-level BEFORE TRUNCATE trigger is the only thing
+-- that sees the operation at all.
+--
+-- It is still honest-writer consistency (ADR-021), not tamper-evidence: the same
+-- writer can drop the trigger. What it removes is the case where an ordinary
+-- destructive statement silently produces a state the resolver will happily
+-- snapshot and the allocator will then refuse.
+-- +goose StatementBegin
+CREATE FUNCTION split_schedule_parts_reject_truncate() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'split_schedule_parts cannot be truncated while schedules exist; delete the schedules instead';
+END $$;
+-- +goose StatementEnd
+
+CREATE TRIGGER split_schedule_parts_no_truncate
+    BEFORE TRUNCATE ON split_schedule_parts
+    FOR EACH STATEMENT EXECUTE FUNCTION split_schedule_parts_reject_truncate();
+
 -- A header with NO parts at all would never fire the row trigger above, so it
 -- gets its own: an empty schedule is not "unsplit", it is a schedule that
 -- resolves to nothing while looking authored.
@@ -184,6 +208,8 @@ END $$;
 -- +goose StatementEnd
 DROP TRIGGER split_schedules_have_parts ON split_schedules;
 DROP FUNCTION split_schedule_header_must_have_parts;
+DROP TRIGGER split_schedule_parts_no_truncate ON split_schedule_parts;
+DROP FUNCTION split_schedule_parts_reject_truncate;
 DROP TRIGGER split_schedule_parts_balance ON split_schedule_parts;
 DROP FUNCTION split_schedule_must_balance;
 DROP FUNCTION split_schedule_check_one;

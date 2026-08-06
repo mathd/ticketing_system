@@ -91,6 +91,21 @@ who sets `session_replication_role = replica`, or runs `ALTER TABLE … DISABLE 
 whatever they like. What it stops is an operator mistake and a buggy write path — which is the
 realistic way an unbalanced schedule would otherwise appear.
 
+Two escapes were found by review and closed, and both are worth recording because both looked like
+the guarantee held:
+
+- **A part MOVED between schedules** validated only its destination, so moving a part out left the
+  source unbalanced and unchecked. One ordinary transaction committed a 5000-bps schedule. The
+  trigger now validates both sides whenever `schedule_id` changes.
+- **`TRUNCATE` fires no row-level trigger at all**, so one statement emptied every schedule and
+  committed. A statement-level `BEFORE TRUNCATE` guard now refuses it — the same pattern payments
+  already uses on its append-only journal (`0001_journal.sql`).
+
+Neither was a foreign-key violation, and neither would have been caught by reading the constraint:
+both were found by adversarial review and then reproduced against a real database before being
+fixed. That is the honest measure of what "the database enforces it" was worth before those two
+changes.
+
 Tenant integrity is enforced by **composite** foreign keys carrying `organizer_id` into both the
 schedule and the payee reference, so a schedule cannot name another organizer's payee. The tenant is
 part of the reference rather than a field somebody remembers to check.
