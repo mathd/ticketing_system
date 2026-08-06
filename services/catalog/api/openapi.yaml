@@ -846,6 +846,11 @@ paths:
       responses:
         '200': {description: Resolved names, content: {application/json: {schema: {$ref: '#/components/schemas/PerformanceDisplayNames'}}}}
         '400': { $ref: '#/components/responses/BadRequest' }
+        # Declared because ADR-028 fails CLOSED: an undeclared status is rewritten
+        # into a generic 500 and logged as "response violates OpenAPI contract",
+        # so a store failure would surface as contract drift rather than as
+        # itself. Every status the handler can produce has to be here.
+        '500': { $ref: '#/components/responses/InternalError' }
   /internal/ticket-types/{id}/fee-resolution:
     get:
       operationId: resolveTicketTypeFees
