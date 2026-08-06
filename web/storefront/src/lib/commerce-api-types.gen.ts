@@ -791,7 +791,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
-            /** @description The assertion is absent */
+            /** @description The assertion is absent, forged or expired. */
             401: {
                 headers: {
                     [name: string]: unknown;
