@@ -46,6 +46,15 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatMapStale: 'Showing the last known seat availability — reconnecting.',
     reserveSeats: 'Reserve seats',
     signInAgain: 'Your sign-in has expired. Sign in again, then try once more — and check your tickets first in case this purchase already went through.',
+    // The wallet (TKT-222).
+    wallet: 'My purchases',
+    walletEmpty: 'Nothing here yet. Anything you buy will show up on this page.',
+    walletBrowseEvents: 'Browse events',
+    walletUnavailable: 'Your purchases could not be loaded just now. Try again shortly.',
+    walletViewTickets: 'View tickets',
+    walletPurchasedOn: 'Bought',
+    walletMore: 'Show more',
+    walletUnnamedEvent: 'Purchase',
     // Customer accounts (TKT-220). An account is OPTIONAL everywhere: the copy
     // must never imply that buying requires one.
     account: 'Account',
@@ -109,6 +118,14 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     seatMapStale: 'Affichage de la dernière disponibilité connue — reconnexion en cours.',
     reserveSeats: 'Réserver les places',
     signInAgain: 'Votre connexion a expiré. Reconnectez-vous, puis réessayez — et vérifiez d’abord vos billets au cas où cet achat serait déjà passé.',
+    wallet: 'Mes achats',
+    walletEmpty: 'Rien pour l’instant. Vos achats apparaîtront sur cette page.',
+    walletBrowseEvents: 'Voir les événements',
+    walletUnavailable: 'Vos achats n’ont pas pu être chargés. Réessayez sous peu.',
+    walletViewTickets: 'Voir les billets',
+    walletPurchasedOn: 'Acheté le',
+    walletMore: 'Afficher plus',
+    walletUnnamedEvent: 'Achat',
     account: 'Compte',
     accountOptionalNotice:
       'Le compte est facultatif — vous pouvez toujours acheter en tant qu’invité et conserver votre référence de commande.',

@@ -75,6 +75,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/customers/{id}/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The signed-in customer's completed purchases, newest first (TKT-222)
+         * @description The wallet read. Returns the COMPLETED orders belonging to the customer the `X-Customer-Assertion` header authenticates as, newest first, keyset-paged.
+         *     **The path id is a selector, not authority.** The handler compares it with the customer the assertion resolves to and refuses when they differ — the assertion is the only identity commerce has (ADR-049 § TKT-221). A mismatch answers **404** rather than 403, because a 403 would confirm that the named customer exists. Commerce already answers 404 rather than 401 on its internal surface for the same non-disclosure reason (ADR-043).
+         *     The 404 is a MISMATCH answer and NOT an existence check: there is no lookup against `customer_accounts`, so a valid assertion naming an id with no account answers 200 with an empty page. That is unreachable in practice — an assertion is only minted for an account that authenticated, and there is no delete path — and defending it would put a database round trip on every wallet read.
+         *     The `after` cursor is bound to the customer it was issued for and a foreign one is refused. It could never read another customer's rows (the query filters on the assertion regardless), but applied to the wrong customer it silently suppresses their own.
+         *     Paged on `(created_at, id)` DESC, NOT `updated_at`: that column is rewritten by checkout retries, the payment_unknown and confirmation_pending transitions, recovery and the cancellation-refund runner, and a keyset cursor on a mutable key makes rows jump pages. `created_at` also means the thing a buyer expects a purchase list to be sorted by.
+         *     Each row carries `guest_order_ref`, which is a BEARER credential for the ticket bundle (ADR-012) — it is here because the wallet's job is to link to the existing ticket page rather than render tickets a second time. The response is `no-store` and the reference must not reach a log.
+         *     Naming the adversary (ADR-021): this stops an HTTP caller from reading another customer's purchases. It says nothing about anyone who can read the commerce database.
+         */
+        get: operations["listCustomerOrders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/customers/authenticate": {
         parameters: {
             query?: never;
@@ -340,6 +366,30 @@ export interface components {
             email: string;
             password: string;
         };
+        CustomerOrderPage: {
+            orders: components["schemas"]["CustomerOrderSummary"][];
+            /** @description The cursor for the next page, or null when this page is the last. REQUIRED and nullable rather than optional: an absent field and an explicit null read the same to a careless client, and "there is no more" is a different fact from "we did not say". */
+            next_cursor: string | null;
+        };
+        CustomerOrderSummary: {
+            /** Format: uuid */
+            order_id: string;
+            /**
+             * Format: uuid
+             * @description A bearer credential for the ticket bundle (ADR-012). Present so the wallet can LINK to the existing ticket page; never log it.
+             */
+            guest_order_ref: string;
+            /** Format: date-time */
+            purchased_at: string;
+            quantity: number;
+            /** @description Integer minor units (ADR-001). Never a float, never divided here. */
+            total_amount: number;
+            currency: string;
+            /** @description Resolved from catalog in one call per page. Null when catalog cannot name the performance — a row the buyer can still open beats a wallet that will not load. */
+            event_name: string | null;
+            /** Format: date-time */
+            starts_at: string | null;
+        };
         /** @description A signed-in buyer. `email` is the address in the spelling the buyer registered with, for display; every lookup goes through the normalized form, which is never exposed. */
         CustomerPrincipal: {
             /** Format: uuid */
@@ -538,6 +588,8 @@ export interface components {
         Id: string;
         IdempotencyKey: string;
         CustomerAssertion: string;
+        /** @description BCP-47 primary subtag; the supported set is data, not schema (TKT-36) */
+        Locale: string;
         OrganizerIdQuery: string;
         ReportLimit: number;
         AfterOrderId: string;
@@ -711,6 +763,56 @@ export interface operations {
                 };
             };
             500: components["responses"]["Error"];
+        };
+    };
+    listCustomerOrders: {
+        parameters: {
+            query: {
+                /** @description BCP-47 primary subtag; the supported set is data, not schema (TKT-36) */
+                locale: components["parameters"]["Locale"];
+                /** @description The opaque cursor from the previous page. Absent means the first page. */
+                after?: string;
+            };
+            header?: {
+                "X-Customer-Assertion"?: components["parameters"]["CustomerAssertion"];
+            };
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of the wallet */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerOrderPage"];
+                };
+            };
+            400: components["responses"]["Error"];
+            /** @description The assertion is absent, forged or expired. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such customer — or the assertion names a different one. Deliberately the same answer. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
     authenticateCustomer: {

@@ -1,16 +1,16 @@
 ---
-// The signed-in account page (TKT-220 / US-A1).
-//
-// Deliberately almost empty. This slice creates an identity and nothing else:
-// listing a customer's orders is TKT-222 and claiming a past guest order is
-// TKT-223. What it does have to do is make the ticket demonstrable — a sign-in
-// with nowhere to land proves nothing.
+// The signed-in account page and the wallet (TKT-220 / TKT-222).
 //
 // The gate has already resolved the session by the time this renders
 // (src/lib/gate.ts): reaching here without `Astro.locals.customer` is impossible
-// through the middleware, and the fallback below is a fail-closed backstop rather
-// than an expected path.
+// through the middleware, and the fallback below is a fail-closed backstop.
+//
+// `Astro.locals.customer` carries the customer's ASSERTION — a bearer credential.
+// It is used to make the read and is never rendered into the page. Do not add a
+// debug dump of `customer` to this template.
 import Layout from '../../../layouts/Layout.astro';
+import { listCustomerOrders } from '../../../lib/customer-api';
+import { formatMoney } from '../../../lib/format';
 import { UI_STRINGS, isLocale } from '../../../lib/locales';
 
 const locale = Astro.params.locale;
@@ -19,17 +19,102 @@ const t = UI_STRINGS[locale];
 
 const customer = Astro.locals.customer;
 if (!customer) return Astro.redirect(`/${locale}/account/sign-in`, 302);
+
+const after = Astro.url.searchParams.get('after') ?? undefined;
+// undefined means the read FAILED; an empty list means the buyer has bought
+// nothing. Those are different things and the page says different things about
+// them — "you have nothing" when the truth is "we could not look" is the version
+// that gets a support call.
+const page = await listCustomerOrders(customer.customerId, customer.assertion, locale, after);
+
+const dates = new Intl.DateTimeFormat(locale, { dateStyle: 'long' });
 ---
 
-<Layout locale={locale} title={t.account}>
-  <h1>{t.account}</h1>
-  <p>{t.signedInAs} <strong>{customer.email}</strong></p>
+<Layout locale={locale} title={t.wallet}>
+  <h1>{t.wallet}</h1>
+  <p class="signed-in">{t.signedInAs} <strong>{customer.email}</strong></p>
+
+  {!page && <p class="notice" role="status">{t.walletUnavailable}</p>}
+
+  {
+    page && page.orders.length === 0 && (
+      <p class="notice" role="status">
+        {t.walletEmpty} <a href={`/${locale}/events`}>{t.walletBrowseEvents}</a>
+      </p>
+    )
+  }
+
+  {
+    page && page.orders.length > 0 && (
+      <ul class="orders">
+        {page.orders.map((order) => (
+          <li class="order">
+            <h2>{order.event_name ?? t.walletUnnamedEvent}</h2>
+            <p class="meta">
+              {t.walletPurchasedOn} {dates.format(new Date(order.purchased_at))}
+              {' · '}
+              {order.quantity} {t.tickets.toLowerCase()}
+              {' · '}
+              {formatMoney(order.total_amount, order.currency, locale)}
+            </p>
+            {/*
+              Links to the EXISTING ticket page rather than rendering QR codes a
+              second time: one place decides what a valid credential looks like
+              (TKT-166 taught that lesson on the voided-ticket path).
+            */}
+            <a href={`/${locale}/tickets/${order.guest_order_ref}`}>{t.walletViewTickets}</a>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+
+  {
+    page?.next_cursor && (
+      <p>
+        <a href={`/${locale}/account?after=${encodeURIComponent(page.next_cursor)}`}>{t.walletMore}</a>
+      </p>
+    )
+  }
+
   <form method="post" action={`/${locale}/account/sign-out`}>
     <button type="submit">{t.signOut}</button>
   </form>
 </Layout>
 
 <style>
+  .signed-in {
+    color: var(--muted);
+  }
+  .notice {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    max-width: 32rem;
+  }
+  .orders {
+    list-style: none;
+    padding: 0;
+    margin: 1.5rem 0;
+    display: grid;
+    gap: 0.75rem;
+  }
+  .order {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+  }
+  .order h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1.05rem;
+  }
+  .meta {
+    color: var(--muted);
+    margin: 0 0 0.6rem;
+    font-size: 0.92rem;
+  }
   button {
     padding: 0.5rem 0.9rem;
     border: 1px solid var(--line);

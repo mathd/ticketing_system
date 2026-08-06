@@ -500,6 +500,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/performances/display-names": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve event display names for a set of performances, in one call (TKT-222)
+         * @description Answers "what are these performances called, in this locale" for a bounded set of ids at once. It exists for commerce's wallet read (TKT-222): a purchase carries a slot id, and the name a buyer would recognise lives here.
+         *     A GET with the ids in the query string, NOT a POST with a body — and the difference is not stylistic. Catalog's contract invariant (write_credential_test.go) reads the spec and requires every UNSAFE method to demand the staff-write credential; a read shaped as a POST fights that rule rather than fitting it. Length is not a problem (twenty uuids is under 800 characters) and neither is disclosure: the request logger records `r.URL.Path` and not the query, and a performance id is not a secret.
+         *     It deliberately does NOT filter on published state. A wallet is mostly PAST purchases, so a resolver that only sees on-sale performances goes blank exactly where it is needed — the buyer looking up what they bought last year. Publication controls what may be SOLD, not what may be named.
+         *     INTERNAL because it takes no organizer scope and answers for any id its caller names. Nothing here is a secret — an event name is on the public site — but an unscoped bulk read is not something to publish.
+         */
+        get: operations["resolvePerformanceDisplayNames"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/ticket-types/{id}/fee-resolution": {
         parameters: {
             query?: never;
@@ -729,6 +752,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        PerformanceDisplayNames: {
+            /** @description One entry per id that RESOLVED. An id that names nothing is simply absent rather than an error — the caller holds a set and one unknown member should not fail the other nineteen, and a wallet with one unnameable row is better than a wallet that will not load. */
+            performances: components["schemas"]["PerformanceDisplayName"][];
+        };
+        PerformanceDisplayName: {
+            /** Format: uuid */
+            performance_id: string;
+            event_name: string;
+            /**
+             * Format: date-time
+             * @description Null for a performance that has no single instant — a FESTIVAL DAY has an operating date and opening hours instead (ADR-014). Required and nullable rather than optional: "this kind of performance has no start time" is a different fact from "we did not say".
+             */
+            starts_at: string | null;
+        };
         Error: {
             error: string;
         };
@@ -2447,6 +2484,32 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    resolvePerformanceDisplayNames: {
+        parameters: {
+            query: {
+                ids: string[];
+                /** @description BCP-47 primary subtag; supported set is data, not schema (TKT-36) */
+                locale: components["parameters"]["Locale"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resolved names */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceDisplayNames"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
             500: components["responses"]["InternalError"];
         };
     };

@@ -9,6 +9,9 @@ Accepted
 **Amended by TKT-221 (2026-08-06)** — a signed-in purchase is attributed to its account. Nothing
 above is reversed; the amendment is additive and lives in § *TKT-221 amendment* at the end.
 
+**Amended by TKT-222 (2026-08-06)** — the wallet: a customer reads their own purchases. See
+§ *TKT-222 amendment*.
+
 ## Context
 
 TKT-21 needs a *customer*: an optional account a buyer can create, so that purchases hang off an
@@ -349,3 +352,100 @@ gap between what the design *said* and what the code did:
   is believed.
 - `GET /orders/{id}` now reports `customer_id`, and it is **informational**: that read is public and
   answers for any order id. It is not an ownership check, and TKT-222 must not treat it as one.
+
+---
+
+## TKT-222 amendment — the wallet
+
+### The read
+
+`GET /customers/{id}/orders`, on commerce's **public** contract, identified by the
+`X-Customer-Assertion` header TKT-221 introduced. There is no other identity available: the
+storefront still holds no service credential, and giving it one to reach an `/internal/` route is the
+trade §1 refused.
+
+**The path id is a selector, not authority.** The handler compares it with the customer the assertion
+resolves to. That comparison is three lines, and it is what the acceptance criterion's required
+"customer B asks for customer A's data" test exercises — under a `/me`-shaped route that test could
+not exist, because the bug would be impossible to express. Defence in depth plus the test was
+preferred to impossibility plus a weaker test.
+
+**A mismatch answers 404, not 403**, identical to an id that does not exist. A 403 confirms that the
+named customer exists — an account-existence oracle anyone who can register once could walk, and free
+to avoid. Commerce already prefers 404 over 401 on its internal surface for the same reason
+(ADR-043).
+
+### Paging on `created_at`, not `updated_at`
+
+The cursor is keyset on `(created_at, id) DESC`, opaque, base64.
+
+`updated_at` looked like the completion time and is not: it is rewritten by every checkout retry, by
+the `payment_unknown` and `confirmation_pending` transitions, by recovery and by the
+cancellation-refund runner. **A keyset cursor on a mutable key makes rows jump pages** — returned
+twice, or skipped, when a refund months later touches the row. `created_at` is set by the INSERT
+default, no production statement updates it, and it means the thing a buyer expects a purchase list
+to be sorted by.
+
+`id` breaks ties, because `created_at` is not unique and the row that lost an unbroken tie is the row
+that disappears at a page boundary.
+
+### The index, and why it arrives now
+
+Migration `0016` shipped `orders.customer_id` **without** an index and said why: ADR-019's rule is
+that an index is justified by the scan it removes. `0017` adds
+`orders (customer_id, created_at DESC, id DESC) WHERE status = 'completed'` — partial, because a
+wallet lists purchases and the failed and in-flight rows are noise the index should not carry.
+
+Plain `CREATE INDEX`. **ADR-020** records that `CONCURRENTLY` is still not adopted here.
+
+ADR-019's two proofs are both present and they are not the same proof: the result is scoped, *and*
+the scan is. The plan assertion duplicates catalog's `explainGenericPlan` technique because commerce
+is a different Go module and cannot import a test helper across it — the duplication is forced, not
+chosen, and the two parts that carry the value (PREPARE + `SET LOCAL plan_cache_mode` + EXECUTE in
+one transaction; the check that `$1` survives rather than being substituted) are kept verbatim.
+
+### Display names: one call, and it may fail
+
+A purchase carries a slot id; the name a buyer recognises lives in catalog. Commerce resolves a whole
+page in **one** internal call (`GET /internal/performances/display-names`) rather than one per order.
+
+Two properties of that resolver are deliberate:
+
+- **It does not filter on publication state.** A wallet is mostly *past* purchases, so a resolver
+  that only sees on-sale performances goes blank exactly where it is needed. Publication controls
+  what may be **sold**, not what may be **named**.
+- **Its failure is not the wallet's failure.** If catalog is unreachable the rows render with a null
+  name and still link to the tickets. The wallet's job is to get a buyer to their tickets; a row
+  without a title still does that, and a 503 does not.
+
+It is a **GET**, not a POST with a body. Catalog's contract invariant reads the spec and requires
+every unsafe method to demand the staff-write credential — a read shaped as a POST fights that rule
+rather than fitting it. Length is not an issue (twenty uuids is under 800 characters) and neither is
+disclosure: the request logger records `r.URL.Path`, not the query.
+
+### `guest_order_ref` in the response
+
+Each row carries it, because the wallet's job is to **link** to the existing ticket page rather than
+render tickets a second time — one place decides what a valid credential looks like. It is a bearer
+credential (ADR-012): the response is `no-store` and it must not reach a log.
+
+**TKT-202 is not fixed here.** The gateway logs `guest_order_ref` via the URL path when anyone opens
+a ticket page — already true from the guest flow, not made worse by this ticket, and belonging to the
+ticket that owns it. Redacting path shapes means changing a logging component every service uses, and
+that is not a change to make from a wallet ticket.
+
+### Scope, stated because the epic's COS is wider
+
+TKT-21 says the wallet lists "tickets, passes, lodging and wristbands". Passes (TKT-12), lodging
+(TKT-13) and wristbands (TKT-15) are un-started epics with no schema anywhere. **This lists orders and
+their tickets** — everything that exists to list. The epic's COS-2 is not fully met and should not be
+marked as such.
+
+### Consequences
+
+- The wallet renders without event names when catalog is down. Degraded, not broken, and silent —
+  the only signal is a `WARN` in commerce's log.
+- Commerce now calls catalog on a read path. It already held `CATALOG_URL` and the internal token, so
+  no new credential — but a wallet page's latency now includes a catalog round trip.
+- The read is public-surface and unrate-limited, like every other customer operation. **TKT-224**.
+- One page is 20 orders. A customer with more pages; nothing aggregates a lifetime total.

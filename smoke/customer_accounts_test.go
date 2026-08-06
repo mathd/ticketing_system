@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +111,81 @@ func TestCustomerAccountPathsAreNotEdgeDenied(t *testing.T) {
 		if status != http.StatusBadRequest {
 			t.Fatalf("%s: status = %d, want 400 from commerce's own validator: %s", path, status, body)
 		}
+	}
+}
+
+// The wallet through the live gateway (TKT-222 / US-A3).
+//
+// Only what a unit test structurally cannot reach: that the read is served
+// through the gateway with **no service credential** — only the assertion the
+// buyer earned — and that one customer's assertion cannot open another's wallet
+// across the real stack.
+func TestWalletIsReachableWithOnlyTheCustomersOwnAssertion(t *testing.T) {
+	type principal struct {
+		CustomerID string `json:"customer_id"`
+		Assertion  string `json:"customer_assertion"`
+	}
+	register := func(t *testing.T) principal {
+		t.Helper()
+		status, body := customerPost(t, "/api/commerce/customers", map[string]string{
+			"email": "wallet-" + uuid.NewString() + "@example.test", "password": "correct horse battery",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("register: %d %s", status, body)
+		}
+		var p principal
+		if err := json.Unmarshal(body, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Assertion == "" {
+			t.Fatal("registration returned no assertion; the wallet has no way to identify anyone")
+		}
+		return p
+	}
+
+	wallet := func(t *testing.T, customerID, assertion string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet,
+			gatewayURL+"/api/commerce/customers/"+customerID+"/orders?locale=en", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// No X-Internal-Token, no staff-write token. That is the assertion.
+		if assertion != "" {
+			req.Header.Set("X-Customer-Assertion", assertion)
+		}
+		resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("GET wallet: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, body)
+		if resp.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("Cache-Control = %q, want no-store — a wallet is per-customer",
+				resp.Header.Get("Cache-Control"))
+		}
+		return resp.StatusCode, body
+	}
+
+	alice, bob := register(t), register(t)
+
+	status, body := wallet(t, alice.CustomerID, alice.Assertion)
+	if status != http.StatusOK {
+		t.Fatalf("alice reading her own wallet: %d %s", status, body)
+	}
+	// A brand-new account: the empty page, which is an acceptance criterion and
+	// the case every other fixture skips.
+	if !strings.Contains(string(body), `"orders":[]`) {
+		t.Fatalf("a new customer's wallet should be an empty ARRAY, got %s", body)
+	}
+
+	// The whole point. Bob holds a perfectly valid assertion — his own.
+	if status, body = wallet(t, alice.CustomerID, bob.Assertion); status != http.StatusNotFound {
+		t.Fatalf("bob reading alice's wallet: status %d, want 404 (and NOT 403, which would confirm "+
+			"she exists): %s", status, body)
+	}
+	if status, body = wallet(t, alice.CustomerID, ""); status != http.StatusUnauthorized {
+		t.Fatalf("no assertion at all: status %d, want 401: %s", status, body)
 	}
 }

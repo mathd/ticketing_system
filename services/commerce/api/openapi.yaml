@@ -76,6 +76,63 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '409': {description: The address already holds an account, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '500': {$ref: '#/components/responses/Error'}
+  /customers/{id}/orders:
+    get:
+      operationId: listCustomerOrders
+      summary: The signed-in customer's completed purchases, newest first (TKT-222)
+      description: >
+        The wallet read. Returns the COMPLETED orders belonging to the customer the
+        `X-Customer-Assertion` header authenticates as, newest first, keyset-paged.
+
+        **The path id is a selector, not authority.** The handler compares it with
+        the customer the assertion resolves to and refuses when they differ — the
+        assertion is the only identity commerce has (ADR-049 § TKT-221). A mismatch
+        answers **404** rather than 403, because a 403 would confirm that the named
+        customer exists. Commerce already answers 404 rather than 401 on its
+        internal surface for the same non-disclosure reason (ADR-043).
+
+        The 404 is a MISMATCH answer and NOT an existence check: there is no lookup
+        against `customer_accounts`, so a valid assertion naming an id with no
+        account answers 200 with an empty page. That is unreachable in practice —
+        an assertion is only minted for an account that authenticated, and there is
+        no delete path — and defending it would put a database round trip on every
+        wallet read.
+
+        The `after` cursor is bound to the customer it was issued for and a foreign
+        one is refused. It could never read another customer's rows (the query
+        filters on the assertion regardless), but applied to the wrong customer it
+        silently suppresses their own.
+
+        Paged on `(created_at, id)` DESC, NOT `updated_at`: that column is
+        rewritten by checkout retries, the payment_unknown and confirmation_pending
+        transitions, recovery and the cancellation-refund runner, and a keyset
+        cursor on a mutable key makes rows jump pages. `created_at` also means the
+        thing a buyer expects a purchase list to be sorted by.
+
+        Each row carries `guest_order_ref`, which is a BEARER credential for the
+        ticket bundle (ADR-012) — it is here because the wallet's job is to link to
+        the existing ticket page rather than render tickets a second time. The
+        response is `no-store` and the reference must not reach a log.
+
+        Naming the adversary (ADR-021): this stops an HTTP caller from reading
+        another customer's purchases. It says nothing about anyone who can read the
+        commerce database.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/CustomerAssertion'}
+        - {$ref: '#/components/parameters/Locale'}
+        - name: after
+          in: query
+          required: false
+          description: The opaque cursor from the previous page. Absent means the first page.
+          schema: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        '200': {description: One page of the wallet, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerOrderPage'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {description: 'The assertion is absent, forged or expired.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: 'No such customer — or the assertion names a different one. Deliberately the same answer.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /customers/authenticate:
     post:
       operationId: authenticateCustomer
@@ -246,6 +303,7 @@ components:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     CustomerAssertion: {name: X-Customer-Assertion, in: header, required: false, schema: {type: string, minLength: 1, maxLength: 512}}
+    Locale: {name: locale, in: query, required: true, description: 'BCP-47 primary subtag; the supported set is data, not schema (TKT-36)', schema: {type: string, minLength: 2, maxLength: 8}}
     OrganizerIdQuery: {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
     ReportLimit: {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200}}
     AfterOrderId: {name: after_order_id, in: query, required: false, schema: {type: string, format: uuid}}
@@ -452,6 +510,42 @@ components:
         # which is a distinction an enumerator can read. Registration is where the
         # policy is enforced; sign-in only verifies.
         password: {type: string, minLength: 1, maxLength: 72}
+    CustomerOrderPage:
+      type: object
+      additionalProperties: false
+      required: [orders, next_cursor]
+      properties:
+        orders: {type: array, items: {$ref: '#/components/schemas/CustomerOrderSummary'}}
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            The cursor for the next page, or null when this page is the last.
+            REQUIRED and nullable rather than optional: an absent field and an
+            explicit null read the same to a careless client, and "there is no more"
+            is a different fact from "we did not say".
+    CustomerOrderSummary:
+      type: object
+      additionalProperties: false
+      required: [order_id, guest_order_ref, purchased_at, quantity, total_amount, currency, event_name, starts_at]
+      properties:
+        order_id: {type: string, format: uuid}
+        guest_order_ref:
+          type: string
+          format: uuid
+          description: 'A bearer credential for the ticket bundle (ADR-012). Present so the wallet can LINK to the existing ticket page; never log it.'
+        purchased_at: {type: string, format: date-time}
+        quantity: {type: integer, minimum: 1}
+        total_amount: {type: integer, description: 'Integer minor units (ADR-001). Never a float, never divided here.'}
+        currency: {type: string, minLength: 3, maxLength: 3}
+        event_name:
+          type: string
+          nullable: true
+          description: >
+            Resolved from catalog in one call per page. Null when catalog cannot
+            name the performance — a row the buyer can still open beats a wallet
+            that will not load.
+        starts_at: {type: string, format: date-time, nullable: true}
     CustomerPrincipal:
       description: >
         A signed-in buyer. `email` is the address in the spelling the buyer

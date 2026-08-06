@@ -120,6 +120,20 @@ type PoolOfferState struct {
 // LocalizedText is locale-keyed text; adding a locale is data, not schema (TKT-36).
 type LocalizedText map[string]string
 
+// PerformanceDisplayName is the minimum a wallet row needs to say which show a
+// purchase was for (TKT-222). Not a Performance: this read deliberately carries
+// no venue, capacity, pricing or publication state — a caller that needs those
+// has GetPublishedPerformance, and a bulk read is not the place to widen what an
+// internal caller can pull in one request.
+type PerformanceDisplayName struct {
+	PerformanceID uuid.UUID
+	EventName     LocalizedText
+	// Nullable, like Performance.StartsAt: a FESTIVAL DAY has an operating_date
+	// and opening hours instead of an instant (ADR-014). A plain time.Time here
+	// makes the resolver fail on exactly the purchases a festival wallet contains.
+	StartsAt *time.Time
+}
+
 type Venue struct {
 	ID          uuid.UUID
 	OrganizerID uuid.UUID
@@ -616,6 +630,14 @@ type Store interface {
 	// accounts exist. Any other error is a lookup failure, not a verdict.
 	AuthenticateStaff(ctx context.Context, identifier, password string) (StaffAccount, error)
 	GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error)
+	// PerformanceDisplayNames resolves a bounded SET of performances to the name
+	// a buyer would recognise (TKT-222). Deliberately unfiltered by publication
+	// state: a wallet is mostly PAST purchases, and a resolver that only sees
+	// on-sale performances goes blank exactly where it is needed. Publication
+	// controls what may be SOLD, not what may be named.
+	//
+	// An id that names nothing is absent from the result rather than an error.
+	PerformanceDisplayNames(ctx context.Context, ids []uuid.UUID) ([]PerformanceDisplayName, error)
 	// GetPoolOfferState answers for an inventory pool id whatever it is — a
 	// performance in ANY lifecycle or a festival capacity group — so the
 	// reconciliation pass (TKT-90) only ever acts on positive assertions.

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -277,4 +278,129 @@ func RegisterCustomer(ctx context.Context, db *sql.DB, email, password string) (
 func isCustomerUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.SQLState() == "23505"
+}
+
+// --- the wallet read (TKT-222 / US-A3) ---
+
+// WalletOrder is one completed purchase, as the wallet lists it.
+//
+// Money stays integer minor units + ISO currency (ADR-001); nothing here divides
+// or formats. GuestOrderRef is the bearer credential the ticket page takes
+// (ADR-012) — it is in this struct because the wallet's whole job is to link
+// there, and it must never reach a log.
+type WalletOrder struct {
+	OrderID       uuid.UUID
+	GuestOrderRef uuid.UUID
+	CreatedAt     time.Time
+	SlotID        uuid.UUID
+	Quantity      int32
+	TotalAmount   int64
+	Currency      string
+}
+
+// WalletCursor is the keyset position between pages.
+//
+// (created_at, id), because created_at alone is not unique — two purchases in the
+// same millisecond would make a page boundary ambiguous, and the row that lost the
+// tie would be skipped. `id` breaks it deterministically.
+type WalletCursor struct {
+	CreatedAt time.Time
+	OrderID   uuid.UUID
+	// CustomerID is the customer the cursor was ISSUED for (ai-review [medium]).
+	//
+	// A cursor is only a position, so it cannot read another customer's rows —
+	// the query filters on the asserted customer regardless. What it CAN do
+	// unbound is suppress: a cursor copied from someone else's page, or one
+	// forged with a future timestamp, makes the holder's own next page skip rows
+	// or come back empty, with no error anywhere. Binding it makes that a 400
+	// instead of silence.
+	CustomerID uuid.UUID
+}
+
+// walletPageQuery is a const so the ADR-019 scan-scope proof can EXPLAIN the exact
+// statement production executes, rather than a lookalike.
+//
+// `guest_order_ref IS NOT NULL` is not defensive tidying — it excludes EXCHANGE
+// REPLACEMENT orders (ai-review [high]). An exchange inserts a second completed
+// order that inherits the buyer's `customer_id` and has NO reference of its own,
+// deliberately: ADR-039/TKT-166 has the replacement tickets share the SOURCE
+// order's link, so both credentials sit under one reference. Without this
+// predicate the wallet either renders a row linking to the zero uuid, or fails
+// the row scan and 503s — hiding the customer's ENTIRE wallet because one of
+// their purchases was exchanged.
+//
+// Excluding it is also the right answer for the buyer: the replacement is the
+// same purchase in a different seat, and its tickets are already reachable from
+// the source order's row.
+//
+// The keyset predicate is the row-value form `(created_at, id) < ($2, $3)`, which
+// Postgres can drive straight off the index — writing it as
+// `created_at < $2 OR (created_at = $2 AND id < $3)` is the same rows and a worse
+// plan.
+//
+// $2/$3 are always bound: the first page passes a sentinel far in the future
+// rather than switching to a second SQL string, because two statements mean the
+// plan proof covers one of them.
+const walletPageQuery = `
+	SELECT o.id, o.guest_order_ref, o.created_at, r.slot_id, r.quantity, r.total_amount, r.currency
+	  FROM orders o
+	  JOIN reservations r ON r.id = o.reservation_id
+	 WHERE o.customer_id = $1
+	   AND o.status = 'completed'
+	   AND o.guest_order_ref IS NOT NULL
+	   AND (o.created_at, o.id) < ($2, $3)
+	 ORDER BY o.created_at DESC, o.id DESC
+	 LIMIT $4`
+
+// WalletPageLimit bounds one page. A wallet is read by a person; a limit an order
+// of magnitude larger would only ever serve a scraper.
+const WalletPageLimit = 20
+
+// CustomerOrders returns one page of a customer's completed orders, newest first.
+//
+// `customer` comes from the verified assertion and nowhere else — see the handler.
+// This function has no opinion about who is allowed to ask; it answers for the id
+// it is given, which is why the authorization check must not live here.
+//
+// Returns the page and the cursor for the next one, or a zero cursor when the page
+// is the last. It fetches limit+1 to know that without a second count query, and
+// a count would be a second scan of the same index for information the extra row
+// already carries.
+func CustomerOrders(ctx context.Context, db *sql.DB, customer uuid.UUID, after WalletCursor, limit int) ([]WalletOrder, WalletCursor, error) {
+	if limit <= 0 || limit > WalletPageLimit {
+		limit = WalletPageLimit
+	}
+	// The first page's sentinel: a timestamp no order can have. Not time.Now(),
+	// which would race an order completed during the request and silently drop it
+	// from its own buyer's first page.
+	if after.CreatedAt.IsZero() {
+		after = WalletCursor{CreatedAt: time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), OrderID: uuid.Max}
+	}
+
+	rows, err := db.QueryContext(ctx, walletPageQuery, customer, after.CreatedAt, after.OrderID, limit+1)
+	if err != nil {
+		return nil, WalletCursor{}, fmt.Errorf("read customer orders: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	page := make([]WalletOrder, 0, limit)
+	var next WalletCursor
+	for rows.Next() {
+		var o WalletOrder
+		if err := rows.Scan(&o.OrderID, &o.GuestOrderRef, &o.CreatedAt, &o.SlotID, &o.Quantity, &o.TotalAmount, &o.Currency); err != nil {
+			return nil, WalletCursor{}, fmt.Errorf("scan customer order: %w", err)
+		}
+		if len(page) == limit {
+			// The limit+1'th row is not returned; it only proves there is more,
+			// and the cursor is the LAST EMITTED row so the next page resumes
+			// exactly where this one stopped.
+			next = WalletCursor{CreatedAt: page[limit-1].CreatedAt, OrderID: page[limit-1].OrderID, CustomerID: customer}
+			break
+		}
+		page = append(page, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, WalletCursor{}, fmt.Errorf("iterate customer orders: %w", err)
+	}
+	return page, next, nil
 }

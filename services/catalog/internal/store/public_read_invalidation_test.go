@@ -94,6 +94,9 @@ var readOnlyStoreMethods = map[string]bool{
 	"ListPublishedEvents": true, "GetPublishedEvent": true,
 	"GetPublishedSeason": true, "GetPublishedFestival": true,
 	"RegisterPublicReadInvalidator": true,
+	// TKT-222. A pure read, and one that deliberately IGNORES publication state —
+	// so it neither invalidates a public read nor participates in one.
+	"PerformanceDisplayNames": true,
 }
 
 // TestEveryStoreMethodIsClassifiedForPublicReads is the anti-rot guard.

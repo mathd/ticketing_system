@@ -35,6 +35,7 @@ import (
 func (f *fakeStore) RegisterPublicReadInvalidator(func(store.PublicReadScope)) {}
 
 type fakeStore struct {
+	displayNamesErr error
 	venues         map[uuid.UUID]store.Venue
 	events         map[uuid.UUID]store.Event
 	performances   map[uuid.UUID]store.Performance
@@ -852,6 +853,29 @@ func (f *fakeStore) CreateSplitSchedule(_ context.Context, in store.SplitSchedul
 	}
 	f.splitSchedules[in.ScopeID] = append(f.splitSchedules[in.ScopeID], in)
 	return in.ID, nil
+}
+
+// TKT-222. Deliberately ignores publication state, matching the real
+// implementation: a wallet is mostly PAST purchases, so a resolver that only sees
+// on-sale performances goes blank exactly where it is needed. A fake that filtered
+// would hide that.
+func (f *fakeStore) PerformanceDisplayNames(_ context.Context, ids []uuid.UUID) ([]store.PerformanceDisplayName, error) {
+	if f.displayNamesErr != nil {
+		return nil, f.displayNamesErr
+	}
+	out := make([]store.PerformanceDisplayName, 0, len(ids))
+	for _, id := range ids {
+		p, ok := f.performances[id]
+		if !ok {
+			continue // an unknown id is absent, not an error
+		}
+		out = append(out, store.PerformanceDisplayName{
+			PerformanceID: id,
+			EventName:     f.events[p.EventID].Name,
+			StartsAt:      p.StartsAt,
+		})
+	}
+	return out, nil
 }
 
 func (f *fakeStore) GetPublishedPerformance(_ context.Context, id uuid.UUID) (store.Performance, error) {
