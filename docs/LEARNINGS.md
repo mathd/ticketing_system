@@ -9,6 +9,12 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- [**A fake store cannot see the driver**](./learnings/2026-08-06-a-fake-store-cannot-see-the-driver.md) —
+  three defects in one query, all compile-clean and all fatal against real Postgres: an uninferable
+  array parameter, a jsonb column with no Scanner, and a NULL scanned into a value type. A fake
+  returns Go values; a driver returns driver.Value, so the whole class lives below the seam. A new
+  query gets a real-Postgres test that SCANS A ROW before it gets a fake-store test — and each test
+  written to catch one of these was blind to the next until the fixture grew. (TKT-222)
 - [**A fix can be correct and still lie about itself**](./learnings/2026-08-06-a-fix-can-be-correct-and-still-lie-about-itself.md) —
   two [high] findings on a money path were both about a code comment and a line of UI copy, not
   behaviour: "nothing was submitted, so a retry is safe" (a disconnect can land after the charge) and
