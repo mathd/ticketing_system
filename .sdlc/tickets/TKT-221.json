@@ -4,9 +4,11 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "US-A2: A signed-in purchase belongs to the account",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent (orchestrator: main-agent / Claude Opus 5)",
   "pr": null,
   "links": [
     {
@@ -129,5 +131,11 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-221\n\n**Branch:** `TKT-221-order-attribution` off `origin/main` @ `c3d11f84` (TKT-220 merged as `3f215d69`).\n**Routing (config.models):** plan = `gpt-5.6-luna` · planReview = `main-agent` · implement =\n`main-agent` · aiReview = `gpt-5.6-luna`. Cross-model invariant checked both ways. No substitution.\n\n**Blockers:** TKT-220 — **resolved** (merged, Done). Zero open blockers.\n\n**Selection reason:** the only claimable child of TKT-21. TKT-222 is blocked by this ticket and\nTKT-223 by TKT-222, so there is no choice to make.\n\n**Gate waiver:** the same owner waiver recorded in full on TKT-220 applies to this run — all four\nhuman gates replaced by agent judgement, everything else in the skill unchanged. The `overrides:`\nlist in this ticket's closeout is the audit record for it.\n\n### Risk verdict: **`risk:low` NOT claimed**\n\nStated explicitly even though it is obvious (TKT-190's lesson: the carve-outs are exactly the tickets\nwhose risk is obvious to the claimer and invisible in the thread afterwards). This one hits:\n\n1. **A data migration** — a new column on `orders`, the table the checkout path writes under a row\n   lock.\n2. **The money path** — attribution happens during checkout. Nothing about the amounts changes, but\n   the code that changes is the code that completes a paid order.\n3. **Auth** — \"the caller cannot attribute an order to a customer they have not authenticated as\" is\n   an authentication claim, and proving it is most of this ticket.\n4. Likely **>5 files**.\n\nThe owner's stop conditions name auth, money paths and data migrations. All three are **anticipated\nby the ticket** — they are the ticket — so this proceeds under the waiver. Flagged so every\ndownstream reader applies the right lens.\n\n### Context-mémo re-resolved at claim\n\nRe-resolved against `docs/adr/` at HEAD rather than trusted from shaping. **One ADR has landed since\nthe bake and it is the most important one here: [ADR-049](docs/adr/ADR-049-customer-identity-and-storefront-sessions.md)**\n(TKT-220) — customer identity lives in commerce, the storefront owns an in-process session, and the\nstorefront holds **no service credential**. That last point is the constraint this ticket runs into\nhead-first: the storefront knows who the customer is and commerce does not, and the obvious fix\n(hand the storefront a token, or let it name a `customer_id` in the checkout body) is either the\ntrust boundary ADR-049 §1 refused or a forgery anyone can perform against the public gateway.\n\nGoverning set: **ADR-049** (above), **ADR-016** (checkout recovery states — `orders.status='refunded'`\nalready means a compensated FAILED checkout; do not overload it), **ADR-002**, **ADR-009**,\n**ADR-022**, **ADR-043**, **ADR-021** (name the adversary), **ADR-028** (response drift fails\nclosed), **ADR-012** (`guest_order_ref` is a bearer credential, never logged).\n\nCredential blast radius, unchanged and re-stated because this ticket will be tempted:\n`INTERNAL_SERVICE_TOKEN` is one shared value opening every service's internal surface;\n`COMMERCE_STAFF_WRITE_TOKEN` opens a money-moving refund; the storefront holds **only**\n`GATEWAY_URL`. Neither may reach it.\n\n**Schema trap carried forward from the last ticket:** commerce's `Checkout` schema is\n`additionalProperties: false` with four required fields, and `ReservationCreate` next to it uses\n`minProperties`/`maxProperties`/`not` to express an XOR — a new optional field on the wrong schema\nsilently breaks a constraint that is doing real work. Check which schema is being extended.\n"
+    }
+  ]
 }
