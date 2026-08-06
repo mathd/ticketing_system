@@ -280,19 +280,25 @@ expect_verify_failure() {
     exit 1
   fi
 }
-psql_payments "CREATE TABLE journal_entries_smoke_backup AS TABLE journal_entries; CREATE TABLE journal_heads_smoke_backup AS TABLE journal_heads; ALTER TABLE journal_entries DISABLE TRIGGER USER;"
+# TKT-217: settlement_entries carries a foreign key to journal_entries, so the
+# restores below use DELETE rather than TRUNCATE -- TRUNCATE is refused outright
+# on a referenced table, and CASCADE would take the settlement ledger with it
+# (and be refused in turn by its own append-only trigger). DISABLE TRIGGER ALL,
+# not USER: the append-only triggers are user triggers, but the referential
+# integrity that makes the DELETE illegal is enforced by system triggers.
+psql_payments "CREATE TABLE journal_entries_smoke_backup AS TABLE journal_entries; CREATE TABLE journal_heads_smoke_backup AS TABLE journal_heads; ALTER TABLE journal_entries DISABLE TRIGGER ALL;"
 
 psql_payments "UPDATE journal_entries SET entry_hash=decode(repeat('00',32),'hex') WHERE fact_id=(SELECT fact_id FROM journal_entries ORDER BY organizer_id,sequence LIMIT 1);"
 expect_verify_failure "hash"
-psql_payments "TRUNCATE journal_entries; INSERT INTO journal_entries SELECT * FROM journal_entries_smoke_backup;"
+psql_payments "DELETE FROM journal_entries; INSERT INTO journal_entries SELECT * FROM journal_entries_smoke_backup;"
 
 psql_payments "DELETE FROM journal_entries WHERE fact_id=(SELECT fact_id FROM journal_entries ORDER BY organizer_id,sequence OFFSET 1 LIMIT 1);"
 expect_verify_failure "sequence gap"
-psql_payments "TRUNCATE journal_entries; INSERT INTO journal_entries SELECT * FROM journal_entries_smoke_backup;"
+psql_payments "DELETE FROM journal_entries; INSERT INTO journal_entries SELECT * FROM journal_entries_smoke_backup;"
 
 psql_payments "UPDATE journal_heads SET last_hash=decode(repeat('00',32),'hex');"
 expect_verify_failure "chain head"
-psql_payments "TRUNCATE journal_heads; INSERT INTO journal_heads SELECT * FROM journal_heads_smoke_backup; ALTER TABLE journal_entries ENABLE TRIGGER USER; DROP TABLE journal_entries_smoke_backup; DROP TABLE journal_heads_smoke_backup;"
+psql_payments "TRUNCATE journal_heads; INSERT INTO journal_heads SELECT * FROM journal_heads_smoke_backup; ALTER TABLE journal_entries ENABLE TRIGGER ALL; DROP TABLE journal_entries_smoke_backup; DROP TABLE journal_heads_smoke_backup;"
 compose exec -T payments /app verify-journal
 
 # ADR-021: the ticket lifecycle trail gets the same treatment as the money
