@@ -1,0 +1,133 @@
+{
+  "key": "TKT-221",
+  "type": "Story",
+  "parent": "TKT-21",
+  "classification": "complex",
+  "summary": "US-A2: A signed-in purchase belongs to the account",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-220"
+    }
+  ],
+  "description": "**As** a signed-in buyer, **I want** my purchase attached to my account at the moment I make it,\n**so that** I never have to quote an order reference to find it again.\n\n**Priority:** P0  **Depends on:** TKT-220\n\nThis is the slice that makes an account worth having, and it is the one that touches the **checkout\npath** - so it is also the slice where a mistake is expensive. The rule it must not break: a guest\ncheckout stays byte-for-byte what it is today.\n\n**Acceptance Criteria:**\n- [ ] `orders` gains a **nullable** customer reference. NULL means guest, guest stays the default,\n  and nothing is backfilled. The column is nullable *because* the guest path is first-class, not as\n  a migration convenience - say so in the migration comment.\n- [ ] Checkout attributes the order to the authenticated customer. **The plan states how the caller\n  proves it is that customer** and why that proof cannot be forged by a caller who simply names\n  someone else's id. Attribution to a customer the caller has not authenticated as is **refused** -\n  with a test that attempts exactly that.\n- [ ] A **guest checkout is unchanged**: same request shape (no new required field), same response,\n  same status codes, same recovery behaviour. A test pins that the guest path still stores NULL.\n- [ ] The attribution does not perturb ADR-016's recovery states: `orders.status` gains no new value\n  and `refunded` keeps meaning what it means (a compensated FAILED checkout).\n- [ ] The order read exposes the attribution (contract-declared; regen committed).\n- [ ] Replay/idempotency: re-submitting the same checkout with the same Idempotency-Key does not\n  change or duplicate the attribution.\n- [ ] Browser-submit verification (AGENTS.md): `make up`, then **submit** the new form(s) in a real browser — the smoke suite only renders, so the whole SSR-rejects-the-write class (origin check, base path, redirect, CSP) is invisible to it. Evidence in the PR. (buy while signed in, and buy while signed out.)\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code (`openapi_gen.go`, `api-types.gen.ts`) committed BEFORE the gate runs (ADR-009).\n\n**Non-goals:** listing a customer's orders (TKT-222) - claiming a past guest order (TKT-223) -\npurchase limits keyed on the customer (TKT-20) - transfers (TKT-9/TKT-160).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "An order made while signed in carries a stable customer identity; a guest order still carries none."
+    },
+    "scope": {
+      "state": "met",
+      "note": "One nullable column, one attribution path through checkout, one contract field. No read surface."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "How the storefront proves the customer to commerce - session token exchanged for an assertion, a signed value, or a storefront-held credential. The ACs require the answer to be stated and to be unforgeable by a caller naming another id; the choice depends on TKT-220's ADR."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-220 - there is no customer to attribute to until it lands."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Follow the existing checkout write in services/commerce/internal/store/store.go, which already sets guest_order_ref under the same row lock. Attribution belongs in that same transaction, not a second write."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Attributing at purchase time is strictly simpler than reconstructing attribution later, and TKT-222 has nothing to list without it."
+    },
+    "success": {
+      "state": "met",
+      "note": "Deterministic: signed-in checkout stores the customer, guest checkout stores NULL, a forged attribution is refused."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-06."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Money is integer minor units + ISO currency code - floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate - keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "A web-UI ticket isn't verified until a browser has *submitted* its forms. `make check`'s smoke suite exercises the catalog API directly and only *renders* back-office pages - it never submits an Astro form, so the whole class of \"the SSR layer rejects/mangles the request before the handler runs\" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "Cuts the system at five services + a stateless gateway. Customer accounts must land inside an existing service or the deviation is recorded as an ADR - ADR-042 rejected a sixth identity service and rejected giving the gateway a database."
+      },
+      {
+        "id": "ADR-042",
+        "why": "The precedent AND its reasoning: staff accounts in catalog because catalog owns organizers; the SSR app owns the session, not the service; sessions in-process and unpersisted; per-principal session cap is what bounds the map; the cookie is path-scoped because storefront/scanner/admin/api share ONE origin. It also records that Astro's `security.checkOrigin` CANNOT be turned on behind the gateway (the Node adapter compares against the container Host) - a proxy-aware origin check replaces it."
+      },
+      {
+        "id": "ADR-043",
+        "why": "The rule for where a guard lives: declared `security:` guards operations in a service's PUBLIC contract; an inline `X-Internal-Token` check guards its INTERNAL surface. Commerce's 404-on-internal is load-bearing (it matches the gateway edge-deny), not cargo. Whichever surface customer register/authenticate lands on, this decides how it is guarded."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: any new operation is declared in the service's openapi.yaml and the generated code is committed before the gate runs."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run OUT-OF-BAND - the binary's `migrate` subcommand as a one-shot Compose job the service waits on. The server path never migrates. Any new table follows this."
+      },
+      {
+        "id": "ADR-016",
+        "why": "The checkout recovery state machine. `orders.status='refunded'` already means a compensated FAILED checkout - do not overload order status. Anything added to the checkout path must not perturb the recovery states."
+      },
+      {
+        "id": "ADR-012",
+        "why": "`guest_order_ref` is a BEARER credential for the ticket bundle (`/api/access/orders/{ref}/tickets` needs nothing else) and is never logged - TKT-202 is an open bug where the gateway logs it. Anything that surfaces or accepts an order ref inherits both properties."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a security property. 'A customer cannot see another customer's orders' means an unauthenticated or differently-authenticated HTTP caller - it says nothing about anyone with database access."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: a handler whose response does not match the declared schema is refused, so a new operation's schema must actually match what the handler writes."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "BLAST RADIUS - `INTERNAL_SERVICE_TOKEN` (compose.yaml `&go-env` anchor) is ONE shared value across all five Go services: whatever holds it can call commerce's /internal/orders/{id}/refunds, inventory's /internal/operational-holds and /internal/slots/{id}/capacity-adjustments, and access's refund surface. The storefront must NEVER receive it.",
+        "link": "compose.yaml:32"
+      },
+      {
+        "summary": "BLAST RADIUS - `COMMERCE_STAFF_WRITE_TOKEN` opens commerce's staff refund (money-moving). Held today only by the back office. The storefront must NEVER receive it.",
+        "link": "compose.yaml:213,380"
+      },
+      {
+        "summary": "The storefront container today has exactly ONE env var: `GATEWAY_URL`. It holds no credential of any kind and serves anonymous internet traffic. Any design that hands it a token is a new trust decision that must be argued, not assumed.",
+        "link": "compose.yaml:336-348"
+      },
+      {
+        "summary": "Precedent to mirror, not to copy blindly: staff sign-in is catalog `staff_accounts` (migration 0015, bcrypt + tripwire CHECK + non-empty-Down refusal), `services/catalog/internal/store/staff.go`, `services/catalog/internal/api/staff.go`; the SESSION lives in the back-office Astro process (`web/backoffice/src/lib/session.ts`, `gate.ts`, `src/middleware.ts`) - opaque 256-bit token, HttpOnly, SameSite=Lax, absolute 8h TTL, per-principal cap of 5, cookie scoped to `/admin` NOT `/`.",
+        "link": "docs/adr/ADR-042-staff-identity-and-backoffice-sessions.md"
+      },
+      {
+        "summary": "The checkout write that already exists and that this ticket extends: `services/commerce/internal/store/store.go` sets `orders.status='completed'` and mints `guest_order_ref` under a `SELECT ... FOR UPDATE` on the order row. Attribution goes in that transaction.",
+        "link": "services/commerce/internal/store/store.go:105-132"
+      }
+    ]
+  },
+  "comments": []
+}
