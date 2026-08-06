@@ -2327,8 +2327,17 @@ func (p *Postgres) PerformanceDisplayNames(ctx context.Context, ids []uuid.UUID)
 	out := make([]PerformanceDisplayName, 0, len(ids))
 	for rows.Next() {
 		var d PerformanceDisplayName
-		if err := rows.Scan(&d.PerformanceID, &d.EventName, &d.StartsAt); err != nil {
+		// `events.name` is jsonb and LocalizedText is a plain map — it implements
+		// no sql.Scanner, so it must be scanned as bytes and unmarshalled. Every
+		// other read in this file does the same; scanning straight into the map
+		// compiles and fails at runtime with "unsupported Scan, storing driver
+		// .Value type []uint8", which no fake-store test can reach.
+		var name []byte
+		if err := rows.Scan(&d.PerformanceID, &name, &d.StartsAt); err != nil {
 			return nil, fmt.Errorf("scan performance display name: %w", err)
+		}
+		if err := json.Unmarshal(name, &d.EventName); err != nil {
+			return nil, fmt.Errorf("performance display name jsonb: %w", err)
 		}
 		out = append(out, d)
 	}
