@@ -4,7 +4,7 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "US-A4: Claim a guest order into an account, retroactively",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
