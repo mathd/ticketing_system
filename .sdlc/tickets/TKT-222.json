@@ -1,0 +1,137 @@
+{
+  "key": "TKT-222",
+  "type": "Story",
+  "parent": "TKT-21",
+  "classification": "complex",
+  "summary": "US-A3: The wallet - a signed-in customer sees their orders and reaches their tickets",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-221"
+    }
+  ],
+  "description": "**As** a signed-in buyer, **I want** a page listing everything I have bought,\n**so that** I can reach my tickets without hunting for the confirmation email.\n\n**Priority:** P0  **Depends on:** TKT-221\n\n**Scope narrowed against the epic, deliberately.** TKT-21's COS says the wallet lists \"tickets,\npasses, lodging and wristbands\". Passes (TKT-12), lodging (TKT-13) and wristbands (TKT-15) are\nBacklog epics - none of them exist. This ticket lists **orders and their tickets**, which is\neverything that exists to list. Building shelves for three things that have no schema is speculative\nby definition.\n\n**Acceptance Criteria:**\n- [ ] A contract-declared read returns the **completed orders of the authenticated customer**,\n  newest first, with a stable cursor for paging (declared, regen committed).\n- [ ] **It never returns another customer's orders**, and the test that proves it asks as customer B\n  for customer A's data rather than only asserting A sees A's. State the adversary per ADR-021: this\n  is an HTTP-caller property, not a claim about anyone with database access.\n- [ ] The scan is scoped, not just the result (ADR-019): the filter is index-backed, proven by a\n  test on the plan and not only on the rows returned.\n- [ ] The response carries what the page needs to link to the **existing** ticket page\n  (`/[locale]/tickets/[orderRef]`) - no second ticket-rendering path is built. Note that the order\n  ref is a bearer credential (ADR-012): the response is `no-store` and the ref must not reach a log.\n- [ ] A storefront wallet page: signed-in only, listing each order with its date, what it is for and\n  its total, linking to the tickets; a real empty state for a customer who has bought nothing;\n  `Cache-Control: no-store` and **not** in `page-tier.ts`'s cached set.\n- [ ] Signed out, the wallet page does not 500 and does not leak - it invites sign-in.\n- [ ] Browser-submit verification (AGENTS.md): `make up`, then **submit** the new form(s) in a real browser — the smoke suite only renders, so the whole SSR-rejects-the-write class (origin check, base path, redirect, CSP) is invisible to it. Evidence in the PR. (sign in, buy, see it in the wallet, follow the link to the tickets.)\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code (`openapi_gen.go`, `api-types.gen.ts`) committed BEFORE the gate runs (ADR-009).\n\n**Non-goals:** passes / lodging / wristbands (TKT-12, TKT-13, TKT-15 - none exist) - claiming a past\nguest order (TKT-223) - re-delivery (TKT-203) - order detail beyond what the list needs (TKT-201).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A signed-in customer sees their purchases and reaches their tickets from one page."
+    },
+    "scope": {
+      "state": "met",
+      "note": "One scoped read + one page. Narrowed from the epic COS because passes/lodging/wristbands have no schema anywhere in the repo."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "What 'what it is for' resolves to - commerce holds reservations (slot_id, ticket_type_id) but the human-readable event name lives in catalog. Whether the wallet joins across services or shows only what commerce holds is a plan decision; ADR-004's one-aggregated-call-per-page rule constrains it."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-221 - there is no attribution to filter on until it lands."
+    },
+    "approach": {
+      "state": "met",
+      "note": "A keyset-paged read in commerce scoped by the customer column TKT-221 adds, plus an index for exactly that scan; the page reuses the existing ticket route rather than rendering QRs again."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "This is the COS the epic is judged on - it is the first user-visible payoff of the two slices before it."
+    },
+    "success": {
+      "state": "met",
+      "note": "Deterministic: A sees A's orders, B is refused A's, the query plan uses the index, the page renders and links."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-06."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Money is integer minor units + ISO currency code - floats are banned on money paths."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite; run `make deps` first on a clean clone). CI runs the same gate - keep them mirrored. Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate - `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "A web-UI ticket isn't verified until a browser has *submitted* its forms. `make check`'s smoke suite exercises the catalog API directly and only *renders* back-office pages - it never submits an Astro form, so the whole class of \"the SSR layer rejects/mangles the request before the handler runs\" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "Cuts the system at five services + a stateless gateway. Customer accounts must land inside an existing service or the deviation is recorded as an ADR - ADR-042 rejected a sixth identity service and rejected giving the gateway a database."
+      },
+      {
+        "id": "ADR-042",
+        "why": "The precedent AND its reasoning: staff accounts in catalog because catalog owns organizers; the SSR app owns the session, not the service; sessions in-process and unpersisted; per-principal session cap is what bounds the map; the cookie is path-scoped because storefront/scanner/admin/api share ONE origin. It also records that Astro's `security.checkOrigin` CANNOT be turned on behind the gateway (the Node adapter compares against the container Host) - a proxy-aware origin check replaces it."
+      },
+      {
+        "id": "ADR-043",
+        "why": "The rule for where a guard lives: declared `security:` guards operations in a service's PUBLIC contract; an inline `X-Internal-Token` check guards its INTERNAL surface. Commerce's 404-on-internal is load-bearing (it matches the gateway edge-deny), not cargo. Whichever surface customer register/authenticate lands on, this decides how it is guarded."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: any new operation is declared in the service's openapi.yaml and the generated code is committed before the gate runs."
+      },
+      {
+        "id": "ADR-019",
+        "why": "A scoped read is only scoped if an INDEX backs the filter; proving it takes two tests - the result is scoped AND the scan is."
+      },
+      {
+        "id": "ADR-012",
+        "why": "`guest_order_ref` is a BEARER credential for the ticket bundle (`/api/access/orders/{ref}/tickets` needs nothing else) and is never logged - TKT-202 is an open bug where the gateway logs it. Anything that surfaces or accepts an order ref inherits both properties."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before claiming a security property. 'A customer cannot see another customer's orders' means an unauthenticated or differently-authenticated HTTP caller - it says nothing about anyone with database access."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response drift fails closed: a handler whose response does not match the declared schema is refused, so a new operation's schema must actually match what the handler writes."
+      },
+      {
+        "id": "ADR-045",
+        "why": "Catalog public read cache / the minutes tier. Per-customer HTML is never cacheable: signed-in pages must answer `Cache-Control: no-store` and must not enter `web/storefront/src/lib/page-tier.ts`'s CACHED_PAGE set."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "BLAST RADIUS - `INTERNAL_SERVICE_TOKEN` (compose.yaml `&go-env` anchor) is ONE shared value across all five Go services: whatever holds it can call commerce's /internal/orders/{id}/refunds, inventory's /internal/operational-holds and /internal/slots/{id}/capacity-adjustments, and access's refund surface. The storefront must NEVER receive it.",
+        "link": "compose.yaml:32"
+      },
+      {
+        "summary": "BLAST RADIUS - `COMMERCE_STAFF_WRITE_TOKEN` opens commerce's staff refund (money-moving). Held today only by the back office. The storefront must NEVER receive it.",
+        "link": "compose.yaml:213,380"
+      },
+      {
+        "summary": "The storefront container today has exactly ONE env var: `GATEWAY_URL`. It holds no credential of any kind and serves anonymous internet traffic. Any design that hands it a token is a new trust decision that must be argued, not assumed.",
+        "link": "compose.yaml:336-348"
+      },
+      {
+        "summary": "Precedent to mirror, not to copy blindly: staff sign-in is catalog `staff_accounts` (migration 0015, bcrypt + tripwire CHECK + non-empty-Down refusal), `services/catalog/internal/store/staff.go`, `services/catalog/internal/api/staff.go`; the SESSION lives in the back-office Astro process (`web/backoffice/src/lib/session.ts`, `gate.ts`, `src/middleware.ts`) - opaque 256-bit token, HttpOnly, SameSite=Lax, absolute 8h TTL, per-principal cap of 5, cookie scoped to `/admin` NOT `/`.",
+        "link": "docs/adr/ADR-042-staff-identity-and-backoffice-sessions.md"
+      },
+      {
+        "summary": "The ticket page this wallet links to already exists and already handles voided/exchanged tickets: `web/storefront/src/pages/[locale]/tickets/[orderRef].astro` reads `/api/access/orders/{ref}/tickets`. Do not build a second one.",
+        "link": "web/storefront/src/pages/[locale]/tickets/[orderRef].astro"
+      },
+      {
+        "summary": "OPEN BUG, same credential class: TKT-202 - the gateway logs `guest_order_ref`, which ADR-012 says is never logged. Do not add a second logging site for it.",
+        "link": "TKT-202"
+      }
+    ]
+  },
+  "comments": []
+}
