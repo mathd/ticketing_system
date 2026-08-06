@@ -15,24 +15,6 @@
 -- is an application bug and an operator mistake. Joining the chain is a real
 -- option and is named as future work in ADR-048; it is not claimed here.
 -- +goose Up
--- Refuse to apply against a database that already holds captures this ledger
--- cannot explain. The triggers below only govern INSERTs, so without this the
--- invariant would be true of every FUTURE capture and false of the table -- and
--- "every captured cent is attributed" would be a claim about the code rather
--- than about the data. There is no backfill to offer: the fee composition of a
--- capture predating this migration is not recoverable from the journal.
--- +goose StatementBegin
-DO $$
-DECLARE unsettled bigint;
-BEGIN
-    SELECT count(*) INTO unsettled FROM journal_entries WHERE fact_type = 'payment.captured';
-    IF unsettled > 0 THEN
-        RAISE EXCEPTION 'cannot apply 0004: % captured fact(s) predate the settlement ledger '
-            'and cannot be attributed retroactively', unsettled;
-    END IF;
-END $$;
--- +goose StatementEnd
-
 CREATE TABLE settlement_entries (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     organizer_id    uuid NOT NULL,
@@ -40,7 +22,13 @@ CREATE TABLE settlement_entries (
     -- The captured journal fact this settles. The ledger explains ONE money
     -- movement, and this is which one.
     capture_fact_id uuid NOT NULL REFERENCES journal_entries (fact_id),
-    entry_kind      text NOT NULL CHECK (entry_kind IN ('face_value', 'fee')),
+    -- 'legacy_unattributed' exists only for captures that predate this migration.
+    -- Their composition is not recoverable -- the journal records the amount, not
+    -- which part was face value and which was owed to whom -- so the backfill at
+    -- the bottom records what IS true: the whole amount, attributed to nobody.
+    -- Guessing would be worse than admitting, and omitting them would make the
+    -- invariant a claim about future writes rather than about the table.
+    entry_kind      text NOT NULL CHECK (entry_kind IN ('face_value', 'fee', 'legacy_unattributed')),
     -- Payee identity is SNAPSHOTTED, not referenced. A payee's display name or
     -- external reference is editable in catalog, and a settlement row must keep
     -- saying who was paid at the time they were paid -- the same discipline the
@@ -73,7 +61,7 @@ CREATE TABLE settlement_entries (
              AND ((payee_id IS NOT NULL AND payee_kind IS NOT NULL AND payee_display_name IS NOT NULL)
                   OR (payee_id IS NULL AND payee_kind IS NULL AND payee_display_name IS NULL
                       AND payee_external_ref IS NULL)))
-        OR (entry_kind = 'face_value'
+        OR (entry_kind IN ('face_value', 'legacy_unattributed')
              AND payee_id IS NULL AND payee_kind IS NULL
              AND payee_display_name IS NULL AND payee_external_ref IS NULL
              AND fee_code IS NULL AND incidence IS NULL)
@@ -187,6 +175,24 @@ CREATE CONSTRAINT TRIGGER journal_capture_must_settle
     AFTER INSERT ON journal_entries
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION capture_must_settle();
+
+-- Captures that predate this ledger. The triggers above govern INSERT only, so
+-- without this the invariant would hold for every future capture and be FALSE of
+-- the table -- and "every captured cent is attributed" would be a claim about the
+-- code rather than about the data.
+--
+-- Refusing to apply instead was the first attempt and it was wrong: any database
+-- that has ever completed a checkout holds such facts, so the migration bricked
+-- every real upgrade. Adversarial review caught it.
+--
+-- These rows are validated by the SAME deferred balance trigger as everything
+-- else -- one line per capture, for the full captured amount -- so the backfill
+-- cannot quietly produce an unbalanced ledger.
+INSERT INTO settlement_entries
+      (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
+SELECT organizer_id, (payload ->> 'order_id')::uuid, fact_id, 'legacy_unattributed', amount, currency
+  FROM journal_entries
+ WHERE fact_type = 'payment.captured';
 
 -- +goose Down
 LOCK TABLE settlement_entries IN ACCESS EXCLUSIVE MODE;

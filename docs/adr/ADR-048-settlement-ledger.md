@@ -111,10 +111,19 @@ The triggers govern `INSERT`. Applied to a database already holding captures, th
 invariant true of every future capture and **false of the table** — and "every captured cent is
 attributed" would be a claim about the code rather than about the data.
 
-There is no backfill to offer: the fee composition of a capture predating this migration is not
-recoverable from the journal. So migration `0004` **refuses to apply** when unsettled captures
-exist, naming the count. A migration that fails is an operator's problem; a claim that is quietly
-false is everyone's.
+The first attempt made `0004` **refuse to apply** when such captures existed. That was wrong, and
+the second review pass caught it: any database that has ever completed a checkout holds captured
+facts, so the refusal bricked every real upgrade. Trading availability for a true claim is not a
+trade this ADR gets to make silently.
+
+The composition of an old capture genuinely is unrecoverable — the journal records the amount, not
+which part was face value and which was owed to whom. So the migration **backfills what is true**:
+one `legacy_unattributed` line per pre-existing capture, for the full captured amount, owed to
+nobody. The ledger balances, the upgrade works, and the captures whose split is unknown are
+**queryable** rather than absent. Guessing a split would be worse than admitting there isn't one.
+
+Those rows are validated by the same deferred balance trigger as everything else, so the backfill
+cannot quietly produce an unbalanced ledger.
 
 ### 4. Payee identity is snapshotted
 

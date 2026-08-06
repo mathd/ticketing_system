@@ -110,8 +110,9 @@ func (e SettlementFeeIncidence) Valid() bool {
 
 // Defines values for SettlementLedgerEntryEntryKind.
 const (
-	FaceValue SettlementLedgerEntryEntryKind = "face_value"
-	Fee       SettlementLedgerEntryEntryKind = "fee"
+	FaceValue          SettlementLedgerEntryEntryKind = "face_value"
+	Fee                SettlementLedgerEntryEntryKind = "fee"
+	LegacyUnattributed SettlementLedgerEntryEntryKind = "legacy_unattributed"
 )
 
 // Valid indicates whether the value is a known member of the SettlementLedgerEntryEntryKind enum.
@@ -120,6 +121,8 @@ func (e SettlementLedgerEntryEntryKind) Valid() bool {
 	case FaceValue:
 		return true
 	case Fee:
+		return true
+	case LegacyUnattributed:
 		return true
 	default:
 		return false
@@ -280,8 +283,10 @@ type SettlementFeeIncidence string
 // SettlementLedgerEntry defines model for SettlementLedgerEntry.
 type SettlementLedgerEntry struct {
 	// Amount SIGNED. The organizer's line goes negative when they absorbed more in fees than the face value — a real, if misconfigured, sale.
-	Amount           int64                           `json:"amount"`
-	Currency         string                          `json:"currency"`
+	Amount   int64  `json:"amount"`
+	Currency string `json:"currency"`
+
+	// EntryKind `legacy_unattributed` marks a capture that predates the settlement ledger: the amount is known and its split is not, so it is recorded whole and owed to nobody rather than guessed at.
 	EntryKind        SettlementLedgerEntryEntryKind  `json:"entry_kind"`
 	FeeCode          *string                         `json:"fee_code"`
 	Incidence        *SettlementLedgerEntryIncidence `json:"incidence"`
@@ -290,7 +295,7 @@ type SettlementLedgerEntry struct {
 	PayeeKind        *string                         `json:"payee_kind"`
 }
 
-// SettlementLedgerEntryEntryKind defines model for SettlementLedgerEntry.EntryKind.
+// SettlementLedgerEntryEntryKind `legacy_unattributed` marks a capture that predates the settlement ledger: the amount is known and its split is not, so it is recorded whole and owed to nobody rather than guessed at.
 type SettlementLedgerEntryEntryKind string
 
 // SettlementLedgerEntryIncidence defines model for SettlementLedgerEntry.Incidence.

@@ -219,6 +219,39 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "invalid charge"})
 		return
 	}
+	// Build the ledger BEFORE anything durable happens — before the provider is
+	// called AND before the operation is bound.
+	//
+	// Before the provider, because validating afterwards means a charge with an
+	// unusable plan gets an error back while the PSP has already taken the money,
+	// with no payment.captured fact and no settlement to account for it. The
+	// deferred triggers cannot repair that: they govern journal commits, not the
+	// outside world.
+	//
+	// Before BindOperation, because a bound operation is NOT inert. It carries no
+	// terminal status, which is the payment_unknown case: commerce's recovery path
+	// resolves such an operation against the provider and can complete the order
+	// from it. An operation whose plan was rejected is then a capture waiting to
+	// happen with no ledger able to record it. The first fix for this finding
+	// moved validation ahead of the provider only, and left exactly that hole —
+	// two correct-looking orderings, one still wrong.
+	//
+	// The plan is required unconditionally, before the outcome is known. This
+	// costs nothing: the charge path's only success outcome is a capture, so a
+	// charge with no usable plan could never have succeeded.
+	if in.Settlement == nil {
+		write(w, 400, map[string]string{"error": "a charge must carry a settlement plan"})
+		return
+	}
+	plan, err := store.BuildSettlementEntries(in.Settlement.toStorePlan(), in.Amount)
+	if err != nil {
+		// The plan is our own data being wrong, not the caller's request shape —
+		// the same disposition catalog gives a misconfigured rule. The reason is
+		// deliberately not returned: it names fee codes and payees, and this
+		// response reaches commerce, not an operator.
+		write(w, 500, map[string]string{"error": "settlement plan unusable"})
+		return
+	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s", in.OrderID, in.BuyerID, in.Amount, in.Currency, in.PaymentToken))))
 	boundStatus, boundID, occurredAt, replay, err := s.journal.BindOperation(r.Context(), in.OrganizerID, key, fingerprint, store.OperationRequest{
 		OrderID: in.OrderID, BuyerID: in.BuyerID, Amount: in.Amount, Currency: in.Currency, PaymentMethodRef: in.PaymentToken,
@@ -236,30 +269,6 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 			code = 408
 		}
 		write(w, code, map[string]any{"status": boundStatus, "payment_id": boundID, "replay": true})
-		return
-	}
-	// Build the ledger BEFORE the provider moves anything. Validating afterwards
-	// means a charge with a missing or unusable plan gets an error back while the
-	// PSP has already taken the money — and no payment.captured fact and no
-	// settlement exist to account for it. The deferred triggers cannot repair
-	// that: they govern journal commits, not the outside world. A capture that
-	// cannot be attributed must never be requested.
-	//
-	// The plan is required unconditionally, before the outcome is known. This
-	// costs nothing: the charge path's only success outcome is a capture, so a
-	// charge with no plan could never have succeeded — it just used to fail after
-	// the money moved instead of before.
-	if in.Settlement == nil {
-		write(w, 400, map[string]string{"error": "a charge must carry a settlement plan"})
-		return
-	}
-	plan, err := store.BuildSettlementEntries(in.Settlement.toStorePlan(), in.Amount)
-	if err != nil {
-		// The plan is our own data being wrong, not the caller's request shape —
-		// the same disposition catalog gives a misconfigured rule. The reason is
-		// deliberately not returned: it names fee codes and payees, and this
-		// response reaches commerce, not an operator.
-		write(w, 500, map[string]string{"error": "settlement plan unusable"})
 		return
 	}
 	result, err := s.psp.Authorize(r.Context(), psp.AuthorizeRequest{

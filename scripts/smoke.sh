@@ -159,6 +159,13 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS payments_api_smoke" \
   -c "CREATE DATABASE payments_api_smoke OWNER payments" >/dev/null
+# A THIRD database, migrated only part-way on purpose (TKT-217): the legacy-capture
+# backfill test stops at 0003, writes a capture under the pre-ledger schema, then
+# applies 0004. It cannot share a database with suites that expect a fully migrated one.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS payments_legacy_smoke" \
+  -c "CREATE DATABASE payments_legacy_smoke OWNER payments" >/dev/null
+PAYMENTS_LEGACY_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_legacy_smoke" \
 PAYMENTS_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_store_smoke" \
 PAYMENTS_API_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_api_smoke" \
 go test -tags smoke -count=1 ./internal/...

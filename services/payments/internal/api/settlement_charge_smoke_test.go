@@ -99,3 +99,48 @@ func TestAnUnusableSettlementPlanNeverReachesTheProvider(t *testing.T) {
 		t.Fatalf("provider called %d time(s) for an unusable plan", n)
 	}
 }
+
+// Second review pass, and a defect the FIRST pass's fix created: moving plan
+// validation ahead of the provider left it behind BindOperation. A charge that
+// cannot be settled then persisted a pending operation before failing — and a
+// pending operation is not inert. Commerce's recovery path treats one as
+// payment-unknown and resolves it against the provider, so an operation that
+// never had a usable ledger could be confirmed as captured.
+//
+// Asserting "the provider was not called" was too weak to see this. The state
+// that matters is the durable one.
+func TestAnUnsettleableChargeLeavesNoOperationBehind(t *testing.T) {
+	h, provider := chargeServer(t)
+	db, ctx := refundDB(t)
+	org := uuid.New()
+	key := "no-operation-" + org.String()
+	// The UNUSABLE plan, not the absent one. A plan-less charge is now refused by
+	// the contract validator before the handler runs, so it proves nothing about
+	// the handler's own ordering. A well-formed plan that cannot be allocated is
+	// the case that actually reaches BindOperation.
+	body := `{"organizer_id":"` + org.String() + `","order_id":"` + uuid.New().String() +
+		`","buyer_id":"` + uuid.New().String() +
+		`","amount":5600,"currency":"EUR","payment_token":"fake-ok","settlement":{` +
+		`"face_value":5000,"passed_on":600,"absorbed":0,"total_amount":5600,"currency":"EUR",` +
+		`"fees":[{"fee_code":"booking","incidence":"passed_on","amount":600,"currency":"EUR",` +
+		`"parts":[{"payee_id":"` + uuid.New().String() +
+		`","kind":"venue","display_name":"The venue","share_bps":4000}]}]}}`
+
+	if res := postCharge(t, h, key, body); res.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s, want 500", res.Code, res.Body.String())
+	}
+	if n := provider.authorizeCount(); n != 0 {
+		t.Errorf("provider called %d time(s)", n)
+	}
+	var operations int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`,
+		org, key).Scan(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 0 {
+		t.Fatalf("%d payment operation(s) survive a charge that can never be settled — "+
+			"recovery can resolve a pending operation against the provider, so this one is "+
+			"a capture waiting to happen with no ledger to record it", operations)
+	}
+}

@@ -273,7 +273,13 @@ components:
       additionalProperties: false
       required: [entry_kind, amount, currency, payee_id, payee_kind, payee_display_name, fee_code, incidence]
       properties:
-        entry_kind: {type: string, enum: [face_value, fee]}
+        entry_kind:
+          description: >
+            `legacy_unattributed` marks a capture that predates the settlement
+            ledger: the amount is known and its split is not, so it is recorded
+            whole and owed to nobody rather than guessed at.
+          type: string
+          enum: [face_value, fee, legacy_unattributed]
         amount:
           description: >
             SIGNED. The organizer's line goes negative when they absorbed more in
