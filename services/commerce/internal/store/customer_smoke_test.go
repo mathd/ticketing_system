@@ -101,22 +101,43 @@ func TestCustomerPasswordHashColumnRefusesPlaintext(t *testing.T) {
 	}
 }
 
-// email_key must already be normalized when it is written: the CHECK is what
-// stops a direct writer inserting a mixed-case key that no sign-in can ever
-// resolve. Adversary named per ADR-021 — this constrains a careless writer with
-// database access, not a hostile one, who can drop the constraint.
-func TestCustomerEmailKeyColumnRefusesAnUnnormalizedKey(t *testing.T) {
+// email_key must be the normalized form OF ITS OWN email — not merely something
+// normalized. Two cases, and the second is the one that matters:
+//
+//   - an unnormalized key (mixed case, padded): no sign-in could ever resolve it;
+//   - a key that is perfectly normalized but belongs to a DIFFERENT address.
+//
+// The second is what an `email_key = lower(trim(email_key))` self-check accepts:
+// a row displaying one buyer while reserving another's unique key, invisible to
+// every application lookup (ai-review, TKT-220 [medium]). A fixture that only
+// tries the first cannot fail on it.
+//
+// Adversary named per ADR-021: this constrains a careless writer with database
+// access. It says nothing about a hostile one, who can drop the constraint.
+func TestCustomerEmailKeyColumnRefusesAKeyThatIsNotItsEmail(t *testing.T) {
 	db, ctx := outboxDB(t)
 
-	email := uniqueEmail("Unnormalized")
-	_, err := db.ExecContext(ctx, `
-		INSERT INTO customer_accounts (email, email_key, password_hash) VALUES ($1, $2, $3)`,
-		email, "  "+strings.ToUpper(email)+"  ", customerDummyHash)
-	if err == nil {
-		t.Fatal("the database accepted an unnormalized email_key")
-	}
-	if !strings.Contains(err.Error(), "customer_accounts_email_key_check") {
-		t.Fatalf("refused, but not by the email_key CHECK: %v", err)
+	mine := uniqueEmail("Mine")
+	someoneElse := uniqueEmail("someone-else")
+
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{"unnormalized", "  " + strings.ToUpper(mine) + "  "},
+		{"normalized, but another address entirely", someoneElse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := db.ExecContext(ctx, `
+				INSERT INTO customer_accounts (email, email_key, password_hash) VALUES ($1, $2, $3)`,
+				mine, tc.key, customerDummyHash)
+			if err == nil {
+				t.Fatalf("the database accepted email=%q with email_key=%q", mine, tc.key)
+			}
+			if !strings.Contains(err.Error(), "customer_accounts_email_key_check") {
+				t.Fatalf("refused, but not by the email_key CHECK: %v", err)
+			}
+		})
 	}
 }
 

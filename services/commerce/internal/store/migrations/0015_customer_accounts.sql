@@ -22,7 +22,21 @@ CREATE TABLE customer_accounts (
     -- UNIQUE across the whole table, not per organizer: a customer buys across
     -- organizers, so "which organizer are you signing in to?" has no answer at
     -- the storefront's sign-in form.
-    email_key     text NOT NULL UNIQUE CHECK (email_key = lower(trim(email_key))),
+    --
+    -- The CHECK ties the key to ITS OWN email, not merely to a normalized shape.
+    -- `email_key = lower(trim(email_key))` — which is what this was first written
+    -- as — accepts email='alice@example.test' beside email_key='bob@example.test':
+    -- normalized, self-consistent, and a row that displays one buyer while
+    -- reserving another's unique key and being unreachable from every application
+    -- lookup (ai-review, TKT-220 [medium]).
+    --
+    -- Two normalizers must now agree — Go's strings.ToLower(strings.TrimSpace(x))
+    -- and Postgres's lower(btrim(x)). They reduce to the same thing here because
+    -- RegisterCustomer trims before inserting, so btrim is a no-op on what
+    -- arrives and only case-mapping is left. If they ever diverge on some exotic
+    -- input, this fails LOUDLY at registration rather than storing a row nobody
+    -- can sign in to, which is what a tripwire is for.
+    email_key     text NOT NULL UNIQUE CHECK (email_key = lower(btrim(email))),
     -- A bcrypt modular-crypt string. The CHECK is a tripwire, not security: it
     -- makes a plaintext password written straight into this column fail loudly
     -- instead of becoming a credential that silently never matches.

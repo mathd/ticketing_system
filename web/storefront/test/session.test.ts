@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   MAX_SESSIONS_PER_CUSTOMER,
+  MAX_SESSIONS_TOTAL,
   SESSION_COOKIE_PATH,
   SESSION_TTL_MS,
   createSession,
@@ -94,6 +95,60 @@ describe('customer sessions', () => {
 
     expect(lookupSession(first, 9_000_005)).toBeUndefined();
     expect(rest.every((t) => lookupSession(t, 9_000_005))).toBe(true);
+  });
+
+  // ai-review [high]: the per-principal cap bounds the map only if the number of
+  // principals is bounded, and registration is PUBLIC — so one actor mints
+  // unlimited accounts, each entitled to five sessions. The back office's cap
+  // reasoning was inherited here with its premise (an operator-provisioned
+  // headcount) removed.
+  //
+  // Deliberately many DISTINCT principals: a fixture with two customers, which is
+  // what the per-principal test uses, cannot observe a global bound at all.
+  it('bounds the map globally, across unlimited distinct principals', () => {
+    for (let i = 0; i < MAX_SESSIONS_TOTAL + 50; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+    }
+
+    expect(sessionCountForTest()).toBeLessThanOrEqual(MAX_SESSIONS_TOTAL);
+  });
+
+  it('evicts the oldest issued when the global bound is reached', () => {
+    const first = createSession(alice);
+    for (let i = 0; i < MAX_SESSIONS_TOTAL; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+    }
+
+    expect(lookupSession(first)).toBeUndefined();
+    expect(sessionCountForTest()).toBeLessThanOrEqual(MAX_SESSIONS_TOTAL);
+  });
+
+  // ai-review [medium]: Date.now() is not monotonic. If the wall clock passes an
+  // entry's expiry with nothing reading it, then steps BACKWARDS — NTP, a VM
+  // snapshot resume, an operator setting the date — a Date.now() comparison
+  // starts resolving the dead token again.
+  //
+  // Asserting that through the injected `now` parameter proves nothing: a lookup
+  // at the expired time DELETES the entry, so the second call would return
+  // undefined whatever the clock did. That version of this test passed against a
+  // fix that did not work, and the mutation check is what exposed it.
+  //
+  // What actually has to hold is that expiry does not consult the wall clock AT
+  // ALL. So: move Date.now() far past the TTL and require the session to survive.
+  // Against a Date.now()-based expiry this fails; against a monotonic one it
+  // cannot.
+  it('expires on a monotonic clock, so the wall clock cannot move expiry', () => {
+    const token = createSession(alice);
+    const realDateNow = Date.now;
+    try {
+      Date.now = () => realDateNow() + SESSION_TTL_MS * 10;
+      expect(lookupSession(token)).toEqual(alice);
+
+      Date.now = () => realDateNow() - SESSION_TTL_MS * 10;
+      expect(lookupSession(token)).toEqual(alice);
+    } finally {
+      Date.now = realDateNow;
+    }
   });
 
   it('reclaims expired entries rather than letting the map grow', () => {

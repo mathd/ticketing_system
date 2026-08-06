@@ -116,6 +116,17 @@ that arrives an order of magnitude sooner is still an oracle. The dummy hash is 
 out of band, never produced by the hashing function under test: a fixture derived from the code it
 tests would track a regression in the cost constant instead of failing on it.
 
+**The claim is "masked", not "identical", and the distinction is the honest one.** An adversarial
+review pass correctly pointed out that the two paths are not the same work: a known address takes a
+successful `QueryRow`/`Scan`, an unknown one takes `sql.ErrNoRows`. What the design asserts is that
+the *remaining* difference — one indexed single-row lookup, hit versus miss — sits underneath a
+bcrypt comparison two to three orders of magnitude larger, and that the tests prove the KDF is
+always paid rather than proving the two paths are cycle-identical. Removing the residue entirely
+would mean the database returning a dummy row on a miss, which pushes the same branch into SQL and
+buys very little. Naming the adversary (ADR-021): this defends against someone timing responses
+across a network. It does not defend against someone who can measure the database directly, and it
+is not claimed to.
+
 Two consequences that look like details and are not:
 
 - An over-long password is refused **before the lookup**. Past 72 bytes bcrypt returns

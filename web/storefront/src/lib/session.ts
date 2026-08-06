@@ -38,20 +38,44 @@ export const SESSION_COOKIE = 'sf_sid';
 export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
 /**
- * How many concurrent sessions one customer may hold. Signing in on a sixth
+ * How many concurrent sessions ONE customer may hold. Signing in on a sixth
  * device ends the first.
  *
- * This is what actually BOUNDS the session map. Sweeping expired entries is not a
- * bound: every sign-in mints a new token while the old ones live out their full
- * TTL, so one valid credential could accumulate entries without limit — and the
- * sweep degrades with them. ADR-042 records that a review pass caught exactly
- * this claim in the back office.
+ * Sweeping expired entries is not a bound on its own: every sign-in mints a new
+ * token while the old ones live out their full TTL, so one valid credential could
+ * accumulate entries without limit — and the sweep degrades with them. ADR-042
+ * records that a review pass caught exactly this claim in the back office.
  *
- * Per principal, never global. A global cap would let one busy account evict a
- * different customer's live session, turning a safety limit into a denial of
+ * Per principal, never global. A global-only cap would let one busy account evict
+ * a different customer's live session, turning a safety limit into a denial of
  * service against strangers.
+ *
+ * This cap alone does NOT bound the map — see MAX_SESSIONS_TOTAL.
  */
 export const MAX_SESSIONS_PER_CUSTOMER = 5;
+
+/**
+ * How many sessions this process holds in total, across every customer.
+ *
+ * The per-principal cap bounds the map only if the number of principals is
+ * bounded, and here it is not: **registration is public and unauthenticated**, so
+ * one actor can mint unlimited distinct accounts and therefore unlimited distinct
+ * principals, each entitled to five sessions that live out the full TTL. That is
+ * the back office's reasoning failing to transplant — there, principals are
+ * provisioned by an operator, so headcount is the bound. It was inherited here
+ * with its premise removed (ai-review, TKT-220 [high]).
+ *
+ * Eviction is oldest-issued-first. Under the flood this exists for, that means
+ * real customers get signed out — which is a bad day, and strictly better than
+ * the SSR process dying and taking the whole storefront with it. The signature of
+ * hitting it is customers being signed out for no reason, and the actual fix for
+ * the cause is rate limiting (TKT-224), not a larger number here.
+ *
+ * 20 000 tokens is ~2 MB of map at this entry size — far above any real
+ * concurrent-buyer count for a single-replica stack, and far below anything that
+ * threatens the process.
+ */
+export const MAX_SESSIONS_TOTAL = 20_000;
 
 interface Entry {
   principal: CustomerPrincipal;
@@ -59,6 +83,34 @@ interface Entry {
 }
 
 const sessions = new Map<string, Entry>();
+
+/**
+ * The clock sessions expire on — **monotonic, not wall-clock**.
+ *
+ * `Date.now()` is not monotonic. If the host clock advances past an entry's
+ * expiry with nothing reading it, then steps BACKWARDS — an NTP correction, a VM
+ * snapshot resume, an operator setting the date — a `Date.now()` comparison
+ * starts resolving the dead token again. Nothing collected it in the meantime,
+ * because expiry-on-read only collects a token that is presented (ai-review,
+ * TKT-220 [medium]).
+ *
+ * `performance.now()` counts milliseconds since process start and is unaffected
+ * by system clock changes in either direction, so the resurrection is not
+ * expressible rather than merely defended against.
+ *
+ * A first attempt at this fix clamped `Date.now()` to a non-decreasing floor.
+ * That does not work, and the mutation check is what showed it: the floor only
+ * rises when something calls in at the higher time — and every such call
+ * (`createSession`'s sweep, `lookupSession`'s delete-on-read) has already removed
+ * the entry. In the one scenario that matters, where nothing calls in at all, the
+ * floor never learns the higher time and the clamp is a no-op.
+ *
+ * Sessions do not survive a restart, so a clock that resets to 0 with the process
+ * costs nothing: there is nothing left to compare against.
+ */
+function monotonicNow(): number {
+  return performance.now();
+}
 
 /** Test-only: sessions are module state, so suites must not leak into each other. */
 export function resetSessionsForTest(): void {
@@ -70,7 +122,9 @@ export function sessionCountForTest(): number {
   return sessions.size;
 }
 
-export function createSession(principal: CustomerPrincipal, now = Date.now()): string {
+// `now` is a MONOTONIC reading (see monotonicNow), not a wall-clock timestamp.
+// Callers never pass it; tests do, to drive expiry deterministically.
+export function createSession(principal: CustomerPrincipal, now = monotonicNow()): string {
   // One pass over the map does both jobs, because both need the same walk:
   // reclaim expired entries (expiry-on-read alone only collects a token that is
   // presented again, and the ones that never come back — the tab someone closed —
@@ -96,13 +150,25 @@ export function createSession(principal: CustomerPrincipal, now = Date.now()): s
     sessions.delete(mine[i]!);
   }
 
+  // Then the global bound. Runs AFTER the sweep and the per-principal eviction so
+  // it only ever fires on genuinely live sessions belonging to distinct
+  // principals — the flood case — and never on entries the two cheaper rules were
+  // about to reclaim anyway. Oldest issued goes first; Map iteration is insertion
+  // order, which no clock can move.
+  if (sessions.size >= MAX_SESSIONS_TOTAL) {
+    for (const token of sessions.keys()) {
+      if (sessions.size < MAX_SESSIONS_TOTAL) break;
+      sessions.delete(token);
+    }
+  }
+
   // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
   const token = randomBytes(32).toString('base64url');
   sessions.set(token, { principal, expiresAt: now + SESSION_TTL_MS });
   return token;
 }
 
-export function lookupSession(token: string, now = Date.now()): CustomerPrincipal | undefined {
+export function lookupSession(token: string, now = monotonicNow()): CustomerPrincipal | undefined {
   if (!token) return undefined;
   const entry = sessions.get(token);
   if (!entry) return undefined;

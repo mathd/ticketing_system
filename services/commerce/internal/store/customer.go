@@ -137,6 +137,14 @@ const bcryptMaxPasswordBytes = 72
 // either way. The unknown-address branch compares against customerDummyHash and
 // then discards the result — even a caller who submits customerDummyPassword is
 // refused, because `found` gates the answer, not the comparison's verdict.
+//
+// "Constant shape" means MASKED, not identical, and the difference is worth being
+// precise about (ai-review, TKT-220 [medium]): a hit takes a successful Scan and a
+// miss takes sql.ErrNoRows, so the two paths do differ by one indexed single-row
+// lookup. What the KDF buys is that the difference sits underneath a bcrypt
+// comparison two to three orders of magnitude larger. That defends against
+// someone timing responses over a network; it does not defend against someone
+// measuring the database, and ADR-049 §3 says so rather than implying otherwise.
 func authenticateCustomer(ctx context.Context, s customerLookup, email, password string) (CustomerAccount, error) {
 	// Refuse an over-long password BEFORE the lookup, and without touching the
 	// database. bcrypt returns ErrPasswordTooLong *without doing the work* past
