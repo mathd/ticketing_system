@@ -27,10 +27,9 @@ func (s *Server) ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, Error{Error: "between 1 and 20 performance ids are required"})
 		return
 	}
-	ids := make([]uuid.UUID, 0, len(params.Ids))
-	for _, id := range params.Ids {
-		ids = append(ids, id)
-	}
+	// openapi_types.UUID IS uuid.UUID, so this is a copy rather than a
+	// conversion — kept explicit so the store port keeps its own type.
+	ids := append(make([]uuid.UUID, 0, len(params.Ids)), params.Ids...)
 
 	found, err := s.store.PerformanceDisplayNames(r.Context(), ids)
 	if err != nil {
