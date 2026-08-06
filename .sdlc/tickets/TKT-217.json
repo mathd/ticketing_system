@@ -4,7 +4,7 @@
   "parent": "TKT-6",
   "classification": "complex",
   "summary": "US-F4: The settlement ledger attributes every fee cent to a payee",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -54,7 +54,7 @@
     }
   },
   "context": {
-    "capturedAt": "2026-08-05",
+    "capturedAt": "2026-08-05 (re-baked at claim)",
     "binding": [
       {
         "id": "AGENTS.md",
@@ -69,32 +69,16 @@
     ],
     "governingAdrs": [
       {
-        "id": "ADR-002",
-        "why": "The ownership line: catalog owns rule definitions, commerce owns 'pricing/fee/promo evaluation', payments owns the settlement ledger. ADR-036 §6 already amended this row once for price RESOLUTION; any further move of the line for fees must be an explicit amendment, not an assertion that the boundary did not really change."
+        "id": "ADR-047",
+        "why": "SHIPPED BY TKT-216 AND THIS TICKET'S DIRECT INPUT. The allocator (services/payments/internal/splits.Allocate) is already written and tested: largest remainder, exact sum, ties on payee id, never forms amount*share_bps, and VALIDATES ITS OWN INPUT because this ticket hands it persisted snapshots. §5 records two integrity escapes review found in the balance triggers - a moved part validating only its destination, and TRUNCATE firing no row trigger - so do not assume a stored schedule is balanced; the allocator re-checks and so must you."
       },
       {
-        "id": "ADR-001",
-        "why": "Money is integer minor units + ISO-4217. Every fee arithmetic path is integer-only: no float, no big.Float, no decimal-as-string round trip."
-      },
-      {
-        "id": "ADR-009",
-        "why": "Contract-first: a new operation or field must be declared in the service's openapi.yaml, and openapi_gen.go / api-types.gen.ts regenerated and COMMITTED before the gate (check-generate diffs against HEAD)."
-      },
-      {
-        "id": "ADR-028",
-        "why": "Responses are validated against the contract and fail closed - an undeclared field or an out-of-enum header becomes a 500 with the payload withheld. A money amount above the contract's Money cap is the classic instance (ADR-036 records it as TKT-154's residue)."
-      },
-      {
-        "id": "ADR-021",
-        "why": "Name the adversary before writing 'tamper-evident' or 'guaranteed'. State inside the database cannot constrain an adversary who writes to the database; only a hash chain over data they cannot re-sign does."
-      },
-      {
-        "id": "ADR-022",
-        "why": "Migrations run out-of-band as each binary's `migrate` subcommand, a one-shot Compose job the service waits on. The server path never migrates."
+        "id": "ADR-046",
+        "why": "The fee model. §2: a resolved fee of amount 0 is STILL a fee and must appear - so a payee can legitimately be owed zero, and that is different from absent. §3: incidence decides who bears it, and an ABSORBED fee is still owed to a payee out of money the buyer already paid, which is the case most likely to be got wrong here."
       },
       {
         "id": "ADR-003",
-        "why": "Every money mutation flows through the append-only journal. The settlement ledger is money state and inherits the append-only discipline - the journal_entries trigger is the pattern, not an inspiration."
+        "why": "Every money mutation flows through the append-only journal. Settlement entries are money state and inherit that discipline - journal_entries' trigger refusing UPDATE/DELETE/TRUNCATE is the pattern to COPY, not to reinvent (TKT-216 shipped that exact hole by writing a new guard from first principles)."
       },
       {
         "id": "ADR-011",
@@ -102,11 +86,31 @@
       },
       {
         "id": "ADR-016",
-        "why": "Checkout recovery replays a capture whose outcome is unknown. Entry writing must be idempotent under that replay, and the recovery runner is the fixture that proves it."
+        "why": "Checkout recovery REPLAYS a capture whose outcome is unknown. Entry writing must be idempotent under that replay, and the recovery runner is the fixture that proves it - not a hand-rolled second call."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before writing 'tamper-evident'. State inside the database cannot constrain an adversary who writes to the database. Either the entries join the journal's hash chain and the claim is tamper-evidence, or they do not and it is honest-writer consistency. Say which."
+      },
+      {
+        "id": "ADR-002",
+        "why": "payments owns the settlement ledger. catalog owns the rules; commerce composes the money. This ticket must not move that line."
       },
       {
         "id": "ADR-032",
-        "why": "The PSP port boundary: the captured amount is what the provider confirmed, and the ledger settles that number - not a recomputed one."
+        "why": "The PSP port: the captured amount is what the provider confirmed. The ledger settles THAT number, never a recomputation."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first; regen committed before the gate."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response validation fails closed."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's migrate subcommand."
       }
     ],
     "reference": [
@@ -115,16 +119,28 @@
         "link": "board:TKT-6"
       },
       {
-        "summary": "The append-only pattern to follow verbatim: heads table, hash chain, trigger refusing UPDATE/DELETE/TRUNCATE",
+        "summary": "THE ALLOCATOR IS ALREADY BUILT - use it, do not rewrite it",
+        "link": "services/payments/internal/splits/splits.go"
+      },
+      {
+        "summary": "The append-only pattern to copy verbatim, including the TRUNCATE guard",
         "link": "services/payments/internal/store/migrations/0001_journal.sql"
       },
       {
-        "summary": "The capture path and its idempotency registry (payment_operations, lease-based)",
-        "link": "services/payments/internal/store, services/commerce/internal/recovery/runner.go"
+        "summary": "What commerce persists and this ticket settles from: {resolution, breakdown, face_value, passed_on_fees, absorbed_fees, total_amount}; breakdown items are {fee_code, basis, incidence, amount, currency}; the resolution carries each code's split with payee parts",
+        "link": "services/commerce/internal/store/migrations/0014_fee_composition.sql, services/commerce/internal/api/catalog_fees.go"
       },
       {
-        "summary": "ADR-042 records that the settlement surface does not exist and that TKT-23 must add its route to the role matrix - do not add a back-office page here",
-        "link": "docs/adr/ADR-042-staff-identity-and-backoffice-sessions.md:284"
+        "summary": "The capture path and its idempotency registry",
+        "link": "services/commerce/internal/api/server.go (checkout), services/commerce/internal/recovery/runner.go"
+      },
+      {
+        "summary": "TKT-215 closeout: refunds under-refund by the passed-on fee, and the fee-on-exchange policy was decided by an agent as 'carried'. Both are things this ledger will eventually have to reverse and neither is decided",
+        "link": "board:TKT-215"
+      },
+      {
+        "summary": "TKT-216 closeout: two integrity escapes got through a deferred-trigger design; distrust 'the database enforces it' without reading how far it goes",
+        "link": "board:TKT-216"
       }
     ]
   },
