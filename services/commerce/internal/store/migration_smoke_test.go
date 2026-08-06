@@ -52,13 +52,49 @@ func schemaDB(t *testing.T, ctx context.Context) (*sql.DB, *goose.Provider) {
 	return db, provider
 }
 
+// hasFaceValue reports whether migration 0014 has been applied to this schema.
+//
+// seedV4Order is called from tests at TWO different schema versions — one stops
+// at 0004, the other applies everything — so the insert has to fit both. The
+// alternative was giving face_value_amount a column DEFAULT, and that was
+// rejected: there is no honest default (0 violates the bounds CHECK for any
+// non-zero total, and "the total" is not expressible as one), and a default
+// would silently paper over a real insert site that forgot to state the face
+// value, which is the exact bug the column exists to prevent.
+func hasFaceValue(t *testing.T, ctx context.Context, db *sql.DB) bool {
+	t.Helper()
+	var present bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'reservations'
+		  AND column_name = 'face_value_amount')`).Scan(&present); err != nil {
+		t.Fatal(err)
+	}
+	return present
+}
+
+func faceValueColumns(t *testing.T, ctx context.Context, db *sql.DB) string {
+	if hasFaceValue(t, ctx, db) {
+		return ",face_value_amount"
+	}
+	return ""
+}
+
+// A fee-free seed, so the face value IS the total.
+func faceValueValues(t *testing.T, ctx context.Context, db *sql.DB) string {
+	if hasFaceValue(t, ctx, db) {
+		return ",1000"
+	}
+	return ""
+}
+
 // seedV4Order inserts a reservation + order pair against the version-4 schema.
 func seedV4Order(t *testing.T, ctx context.Context, db *sql.DB, status string) uuid.UUID {
 	t.Helper()
 	resID, orderID := uuid.New(), uuid.New()
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status)
-		VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','finalizing')`,
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status`+faceValueColumns(t, ctx, db)+`)
+		VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','finalizing'`+faceValueValues(t, ctx, db)+`)`,
 		resID, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
 		t.Fatal(err)
 	}
@@ -180,9 +216,9 @@ func TestPriceResolutionSnapshotColumns(t *testing.T) {
 	seed := func(snapshot any) error {
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
-			                         quantity,unit_amount,total_amount,currency,status,
+			                         quantity,unit_amount,total_amount,face_value_amount,currency,status,
 			                         price_resolution_snapshot)
-			VALUES($1,$2,$3,$4,$5,$6,1,900,900,'EUR','held',$7)
+			VALUES($1,$2,$3,$4,$5,$6,1,900,900,900,'EUR','held',$7)
 			ON CONFLICT(id) DO UPDATE SET price_resolution_snapshot = EXCLUDED.price_resolution_snapshot`,
 			res, uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), snapshot)
 		return err

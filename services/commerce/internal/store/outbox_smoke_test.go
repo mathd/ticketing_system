@@ -65,8 +65,8 @@ func seedCompletable(t *testing.T, db *sql.DB, ctx context.Context, key string) 
 		Quantity:      2,
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status)
-		VALUES($1,$2,$3,$4,$5,$6,$7,1250,2500,'EUR','finalizing')`,
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,$7,1250,2500,2500,'EUR','finalizing')`,
 		c.ReservationID, c.OrganizerID, uuid.New(), c.SlotID, c.TicketTypeID, c.BuyerID, c.Quantity); err != nil {
 		t.Fatal(err)
 	}
