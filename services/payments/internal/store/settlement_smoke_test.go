@@ -14,6 +14,12 @@ import (
 // DB-backed tests for TKT-217. The entry arithmetic is proved without a database
 // by settlement_test.go; what needs one is the two deferred triggers, the
 // append-only guard, and the claim that a capture and its ledger commit together.
+//
+// Every journal write here uses fullRing, and journal_smoke_test.go already
+// explains why: Verify scans the WHOLE table across all organizers, so entries
+// signed with a ring nothing else knows break some OTHER test — and the smoke
+// stack's own `verify-journal` step, which is how the first run of this file
+// failed with `unknown key id "k1"`.
 
 func capturedFact(org, order uuid.UUID) Fact {
 	return Fact{
@@ -43,7 +49,7 @@ func balancedEntries(amountFace, passedOn, absorbed int64) []SettlementEntry {
 // money that moved.
 func TestCaptureAndSettlementCommitTogether(t *testing.T) {
 	db, ctx := journalDB(t)
-	j := New(db, mustRing(t, "k1", "0123456789abcdef0123456789abcdef", ""))
+	j := New(db, fullRing(t))
 	org, order := uuid.New(), uuid.New()
 
 	f := capturedFact(org, order)
@@ -73,7 +79,7 @@ func TestCaptureAndSettlementCommitTogether(t *testing.T) {
 // trigger. A malformed fact would be rejected by validate() and prove nothing.
 func TestCapturedFactWithoutSettlementCannotCommit(t *testing.T) {
 	db, ctx := journalDB(t)
-	j := New(db, mustRing(t, "k1", "0123456789abcdef0123456789abcdef", ""))
+	j := New(db, fullRing(t))
 	org, order := uuid.New(), uuid.New()
 
 	f := capturedFact(org, order)
@@ -95,7 +101,7 @@ func TestCapturedFactWithoutSettlementCannotCommit(t *testing.T) {
 // journal append into a settlement requirement.
 func TestNonCaptureFactsNeedNoSettlement(t *testing.T) {
 	db, ctx := journalDB(t)
-	j := New(db, mustRing(t, "k1", "0123456789abcdef0123456789abcdef", ""))
+	j := New(db, fullRing(t))
 	f := Fact{ID: uuid.New(), OrganizerID: uuid.New(), Type: "order.created",
 		OccurredAt: time.Now().UTC(), BuyerID: uuid.New(), Amount: 100, Currency: "EUR",
 		Payload: map[string]string{"order_id": uuid.NewString()}}
@@ -113,7 +119,7 @@ func TestNonCaptureFactsNeedNoSettlement(t *testing.T) {
 // pass against a build with no balance trigger at all.
 func TestUnbalancedSettlementSetIsRefusedAtCommit(t *testing.T) {
 	db, ctx := journalDB(t)
-	j := New(db, mustRing(t, "k1", "0123456789abcdef0123456789abcdef", ""))
+	j := New(db, fullRing(t))
 	org, order := uuid.New(), uuid.New()
 
 	f := capturedFact(org, order) // captured 5600
@@ -136,7 +142,7 @@ func TestUnbalancedSettlementSetIsRefusedAtCommit(t *testing.T) {
 // the same capture takes the existing-fact branch before reaching either write.
 func TestReplayedCaptureWritesNoSecondLedger(t *testing.T) {
 	db, ctx := journalDB(t)
-	j := New(db, mustRing(t, "k1", "0123456789abcdef0123456789abcdef", ""))
+	j := New(db, fullRing(t))
 	org, order := uuid.New(), uuid.New()
 
 	f := capturedFact(org, order)
@@ -169,7 +175,7 @@ func TestReplayedCaptureWritesNoSecondLedger(t *testing.T) {
 // including TRUNCATE, which fires no row-level trigger.
 func TestSettlementEntriesAreAppendOnly(t *testing.T) {
 	db, ctx := journalDB(t)
-	j := New(db, mustRing(t, "k1", "0123456789abcdef0123456789abcdef", ""))
+	j := New(db, fullRing(t))
 	org, order := uuid.New(), uuid.New()
 	f := capturedFact(org, order)
 	if _, _, err := j.AppendWithSettlement(ctx, f, balancedEntries(5000, 600, 400)); err != nil {
@@ -207,7 +213,7 @@ func TestSettlementEntriesAreAppendOnly(t *testing.T) {
 // arithmetic and the database agree about the same sale.
 func TestSettleFromAPlanBalances(t *testing.T) {
 	db, ctx := journalDB(t)
-	j := New(db, mustRing(t, "k1", "0123456789abcdef0123456789abcdef", ""))
+	j := New(db, fullRing(t))
 	org, order := uuid.New(), uuid.New()
 
 	payee := uuid.New()
