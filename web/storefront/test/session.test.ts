@@ -15,8 +15,8 @@ import {
   sessionCountForTest,
 } from '../src/lib/session';
 
-const alice = { customerId: 'cust-a', email: 'Alice@Example.TEST' };
-const bob = { customerId: 'cust-b', email: 'bob@example.test' };
+const alice = { customerId: 'cust-a', email: 'Alice@Example.TEST', assertion: 'v1.assertion-a' };
+const bob = { customerId: 'cust-b', email: 'bob@example.test', assertion: 'v1.assertion-b' };
 
 beforeEach(() => {
   resetSessionsForTest();
@@ -110,7 +110,7 @@ describe('customer sessions', () => {
     let refused = 0;
     for (let i = 0; i < MAX_SESSIONS_TOTAL + 50; i++) {
       try {
-        createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+        createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
       } catch (cause) {
         if (!(cause instanceof SessionCapacityError)) throw cause;
         refused++;
@@ -133,7 +133,7 @@ describe('customer sessions', () => {
   it('refuses a new session at capacity rather than evicting a live one', () => {
     const victim = createSession(alice);
     for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
-      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
     }
 
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
@@ -154,7 +154,7 @@ describe('customer sessions', () => {
   it('lets a customer at their own cap rotate a session even when the map is full', () => {
     const mine = Array.from({ length: MAX_SESSIONS_PER_CUSTOMER }, () => createSession(alice));
     for (let i = 0; i < MAX_SESSIONS_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
-      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
     }
     expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
 
@@ -173,7 +173,7 @@ describe('customer sessions', () => {
   it('accepts new sessions again once capacity frees up', () => {
     const doomed = createSession(alice);
     for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
-      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test` });
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}` });
     }
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
 

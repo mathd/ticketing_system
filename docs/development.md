@@ -622,6 +622,32 @@ it, because it had no form until this ticket. `make check` renders storefront pa
 submits one, so the whole "SSR rejects the write before the handler runs" class is invisible to it.
 Drive `make up` and submit register, sign-in and sign-out.
 
+### Attributing a purchase to an account (TKT-221)
+
+A checkout made while signed in is attached to the account; a guest checkout is not, and guest stays
+the default. See ADR-049 § *TKT-221 amendment*.
+
+**The checkout no longer goes straight to commerce.** It posts to the storefront's own bridge at
+**`/checkout`**, which attaches a commerce-signed assertion server-side when a session is live and
+forwards everything else untouched. The session cookie is `httpOnly` and the checkout runs in a
+browser island, so nothing else could have done it. If checkout starts failing, `/checkout` is the
+first place to look — and note it passes the storefront's origin check, **including for guests**.
+
+**There is now a fourth credential**, `COMMERCE_CUSTOMER_ASSERTION_KEY`, held only by commerce and
+generated independently by `make up` alongside the other three. **Commerce refuses to start if any
+two of its three credentials are equal** — the error names the pair and never echoes a value.
+
+**Rotating that key signs everyone out of attribution.** There is no multi-key verification: every
+assertion minted under the old key stops verifying immediately, so signed-in buyers get guest orders
+until they sign in again. Rotate deliberately.
+
+**An expired session at checkout is a guest checkout, not an error.** That is on purpose: breaking a
+working checkout because the buyer had once been signed in is worse than an unattributed order they
+can still reach by order reference.
+
+**`GET /orders/{id}` reports `customer_id` and it is informational only** — that read is public and
+answers for any order id. It is not an ownership check.
+
 ## Cache kill-switch (TKT-210)
 
 Both in-memory read caches — inventory's availability cache (ADR-044) and catalog's public-read

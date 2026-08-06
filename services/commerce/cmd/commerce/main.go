@@ -98,6 +98,11 @@ func port() string {
 // INTERNAL_SERVICE_TOKEN opens every service's internal surface.
 const staffWriteTokenEnv = "COMMERCE_STAFF_WRITE_TOKEN"
 
+// assertionKeyEnv names the HMAC key for customer checkout assertions (TKT-221).
+// A third credential with a third blast radius: it lets a holder attribute a
+// checkout to any customer, and nothing else.
+const assertionKeyEnv = "COMMERCE_CUSTOMER_ASSERTION_KEY"
+
 func run() error {
 	token, err := runtimecfg.InternalTokenFromEnv()
 	if err != nil {
@@ -123,10 +128,26 @@ func run() error {
 	// that, " secret " and "secret" would be one credential on the wire while
 	// differing here (TKT-191 ai-review pass 2). The narrow claim is the true
 	// one — no two DISTINCT accepted values arrive identical at a server.
-	if staffWriteToken == token {
-		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
-			"so the back office cannot reach other services' internal surfaces, and identical values "+
-			"remove that boundary while looking configured", staffWriteTokenEnv)
+	assertionKey, err := runtimecfg.RequiredCredential(assertionKeyEnv, "")
+	if err != nil {
+		return err
+	}
+	// Three credentials with three blast radii are only three credentials if they
+	// hold three different values, and nothing else in the system compares them.
+	//
+	// The pairs are checked EXHAUSTIVELY rather than each new one against the
+	// first: a third credential added to the wiring but not to this check is the
+	// one credential whose separation is never verified, and identical values look
+	// configured (TKT-221 plan-review F2). Adding a fourth means adding its pairs
+	// here — the loop makes that obvious instead of easy to forget.
+	//
+	// Comparing raw strings is sound because RequiredCredential has already
+	// refused every value HTTP would normalize, notably edge whitespace: without
+	// that, " secret " and "secret" would be one credential on the wire while
+	// differing here (TKT-191 ai-review pass 2). The narrow claim is the true
+	// one — no two DISTINCT accepted values arrive identical at a server.
+	if err := credentialsAreDistinct(token, staffWriteToken, assertionKey); err != nil {
+		return err
 	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
@@ -199,6 +220,7 @@ func run() error {
 	// refunds through this server's own refund unit, so both callers share one money path.
 	srvHandler := commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
 		WithStaffWriteCredential(staffWriteToken).
+		WithCustomerAssertionKey(assertionKey).
 		WithAccess(os.Getenv("ACCESS_URL"))
 	r.Mount("/", srvHandler.Router(log, validateResponses))
 
@@ -375,4 +397,25 @@ func cancellationBatch() int {
 		}
 	}
 	return 8
+}
+
+// credentialsAreDistinct refuses a deployment where any two of commerce's three
+// credentials hold the same value.
+//
+// Extracted from run() so it can actually be tested: a fail-closed startup check
+// that nothing exercises is a check nobody knows is broken. run() opens databases
+// and listens, so it is not a unit-test seam.
+func credentialsAreDistinct(internal, staffWrite, assertion string) error {
+	for _, pair := range []struct{ aName, a, bName, b string }{
+		{staffWriteTokenEnv, staffWrite, "INTERNAL_SERVICE_TOKEN", internal},
+		{assertionKeyEnv, assertion, "INTERNAL_SERVICE_TOKEN", internal},
+		{assertionKeyEnv, assertion, staffWriteTokenEnv, staffWrite},
+	} {
+		if pair.a == pair.b {
+			return fmt.Errorf("%s must not equal %s: the separate credentials exist so one leaking "+
+				"does not imply the others, and identical values remove that boundary while looking "+
+				"configured", pair.aName, pair.bName)
+		}
+	}
+	return nil
 }

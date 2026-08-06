@@ -65,6 +65,13 @@ export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
 SMOKE_COMMERCE_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_COMMERCE_STAFF_WRITE_TOKEN
 export COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN"
+# TKT-221: the customer checkout assertion key. A FOURTH independent /dev/urandom
+# read, not a copy — commerce refuses to start when it equals either other
+# credential, and a run where one value served two would pass while proving
+# nothing about the separation those refusals exist to enforce.
+SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY
+export COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"
 
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }

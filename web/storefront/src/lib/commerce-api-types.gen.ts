@@ -345,6 +345,11 @@ export interface components {
             /** Format: uuid */
             customer_id: string;
             email: string;
+            /**
+             * @description A commerce-signed, expiring proof that the holder authenticated as this customer, presented on checkout in `X-Customer-Assertion` (TKT-221, ADR-049).
+             *     This is a BEARER CREDENTIAL: anyone holding it can attribute a checkout to this customer until it expires. It is returned only to a caller who has just proven the password, and the storefront keeps it server-side inside its in-process session — never in a cookie, a rendered prop, or a log. Its lifetime is deliberately equal to that session's, so "the session is alive" and "the assertion is valid" cannot disagree and strand a buyer at the payment button.
+             */
+            customer_assertion: string;
         };
         Checkout: {
             /** Format: uuid */
@@ -384,6 +389,12 @@ export interface components {
             /** Format: uuid */
             order_id: string;
             status: string;
+            /**
+             * Format: uuid
+             * @description The customer account this order belongs to, or null for a guest purchase (TKT-221). REQUIRED and nullable rather than optional: an absent field and an explicit null read the same to a careless client, and "we did not tell you" is not the same fact as "there is no account". Guest is the default and is first-class.
+             *     Informational only. This read is PUBLIC and answers for any order id, so the presence of this field is not an ownership check — TKT-222 owns the authenticated, ownership-scoped read.
+             */
+            customer_id: string | null;
         };
         RefundCreate: {
             /** Format: uuid */
@@ -526,6 +537,7 @@ export interface components {
     parameters: {
         Id: string;
         IdempotencyKey: string;
+        CustomerAssertion: string;
         OrganizerIdQuery: string;
         ReportLimit: number;
         AfterOrderId: string;
@@ -571,6 +583,7 @@ export interface operations {
             query?: never;
             header: {
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                "X-Customer-Assertion"?: components["parameters"]["CustomerAssertion"];
             };
             path?: never;
             cookie?: never;
@@ -600,6 +613,15 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            /** @description The assertion is absent-but-malformed, forged or expired. NOT downgraded to a guest order: silently dropping a failed attribution would hide it from the buyer, who would then not find the purchase in their account. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Declined */
             402: {
                 headers: {

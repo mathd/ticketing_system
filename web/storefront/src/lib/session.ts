@@ -20,6 +20,20 @@ export interface CustomerPrincipal {
   customerId: string;
   /** The address in the spelling the buyer registered with, for display only. */
   email: string;
+  /**
+   * Commerce's signed proof that this buyer authenticated (TKT-221). Presented on
+   * the checkout this process proxies, in `X-Customer-Assertion`.
+   *
+   * A BEARER CREDENTIAL, and it stays on this side of the wire: never in the
+   * cookie (which is why the cookie value is an opaque token and not this), never
+   * in a prop a page renders, never in a log. The browser must not be able to
+   * obtain it — an XSS that could read it would be able to attribute purchases to
+   * this customer for the rest of the session.
+   *
+   * Its expiry is deliberately the same as this session's, so the two cannot
+   * disagree and strand a buyer at the payment button (ADR-049 § TKT-221).
+   */
+  assertion: string;
 }
 
 /** Deliberately unremarkable: a cookie named `customer_token` advertises its worth. */

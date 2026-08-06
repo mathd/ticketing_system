@@ -139,16 +139,18 @@ onsale-load-full: build-gate-linux build-ts
 # Preserves unrelated .env entries, replaces only a missing/retired token,
 # never prints the value. Compose reads .env natively, so bare
 # `docker compose up` keeps working after the first `make up`.
-# TKT-191 added a second, independent credential; TKT-194 a third. Each is
-# generated separately so no two ever share a value: CATALOG_STAFF_WRITE_TOKEN
-# opens catalog writes, COMMERCE_STAFF_WRITE_TOKEN opens exactly one commerce
-# operation (the staff refund), INTERNAL_SERVICE_TOKEN opens every service's
-# internal surface — and one leaking must not imply any other. Generating them
-# in one loop from separate /dev/urandom reads is what keeps that true without
-# anyone having to remember it.
+# TKT-191 added a second, independent credential; TKT-194 a third; TKT-221 a
+# fourth. Each is generated separately so no two ever share a value:
+# CATALOG_STAFF_WRITE_TOKEN opens catalog writes, COMMERCE_STAFF_WRITE_TOKEN opens
+# exactly one commerce operation (the staff refund), COMMERCE_CUSTOMER_ASSERTION_KEY
+# signs proofs that a checkout belongs to a customer, INTERNAL_SERVICE_TOKEN opens
+# every service's internal surface — and one leaking must not imply any other.
+# Generating them in one loop from separate /dev/urandom reads is what keeps that
+# true without anyone having to remember it; commerce refuses to start if any two
+# of its three arrive equal.
 env-bootstrap:
 	@set -e; umask 077; \
-	for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN COMMERCE_STAFF_WRITE_TOKEN; do \
+	for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY; do \
 		token=$$(grep -E "^$$var[[:space:]]*=" .env 2>/dev/null | tail -n1 \
 			| sed -e 's/^[^=]*=[[:space:]]*//' | tr -d '\r' \
 			| sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//"); \
