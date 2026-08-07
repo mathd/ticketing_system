@@ -23,10 +23,12 @@ import (
 	commerceapi "ticketing/services/commerce/internal/api"
 	"ticketing/services/commerce/internal/bulkrefund"
 	commerceevents "ticketing/services/commerce/internal/events"
+	"ticketing/services/commerce/internal/mailer"
 	"ticketing/services/commerce/internal/outbox"
 	"ticketing/services/commerce/internal/recovery"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/httpx"
+	"ticketing/shared/mail"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
 )
@@ -218,10 +220,13 @@ func run() error {
 	//
 	// Bound to a variable rather than inlined: the cancellation refund runner (TKT-159)
 	// refunds through this server's own refund unit, so both callers share one money path.
+	publicURL := os.Getenv("PUBLIC_BASE_URL")
 	srvHandler := commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
 		WithStaffWriteCredential(staffWriteToken).
 		WithCustomerAssertionKey(assertionKey).
-		WithAccess(os.Getenv("ACCESS_URL"))
+		WithAccess(os.Getenv("ACCESS_URL")).
+		WithPublicURL(publicURL)
+	commerceapi.WarnIfResetMailUnconfigured(log, publicURL)
 	r.Mount("/", srvHandler.Router(log, validateResponses))
 
 	srv := &http.Server{
@@ -250,6 +255,19 @@ func run() error {
 			return commercestore.BackfillCompletionOutbox(bctx, db)
 		}, log)
 	stopDrainer := start(log, "outbox drainer", drainer.Run)
+
+	// The mail drainer (TKT-226 / ADR-050). Commerce's second outbox and the same
+	// protocol as the first, over a different table.
+	//
+	// THE FAKE IS THE DEFAULT AND IT IS PRODUCTION WIRING, not test scaffolding: this
+	// repo has no provider account, so `make up`, the smoke stack and the gate all run
+	// against it. ADR-032's rule — a configured provider selects the real adapter, and
+	// its absence selects the fake — is what keeps the gate offline and deterministic.
+	// When a provider lands it is selected here, beside this comment, and nothing else
+	// about the reset path changes.
+	mailSender := mail.NewFake()
+	mailDrainer := mailer.New(db, mailSender, drainInterval(), drainBatch(), log)
+	stopMailDrainer := start(log, "mail drainer", mailDrainer.Run)
 
 	// The second background worker (ADR-016 §Decision 1): recovery is driven, not
 	// awaited. Without it an order that lost its request stays parked forever and its
@@ -296,6 +314,11 @@ func run() error {
 		// drainer first would strand a row this pass just owed until the next boot.
 		stopRecovery()
 		stopDrainer()
+		// The mail drainer last and independently: nothing else enqueues through it on
+		// shutdown, and a row still leased is re-claimed once the lease lapses. Stopping
+		// it earlier would only shorten the window in which a reset already committed
+		// gets delivered before exit.
+		stopMailDrainer()
 	}
 
 	select {

@@ -148,6 +148,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/customers/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask for a password-reset link (TKT-226)
+         * @description Mints a single-use time-bounded token for the address and enqueues the message that carries it. Public and unauthenticated, for the same reason registerCustomer is: the form in front of it belongs to someone who cannot sign in, so no credential is available by construction.
+         *     THE ANSWER IS 202 WHETHER OR NOT THE ADDRESS HOLDS AN ACCOUNT, and that is the point of the operation's shape. Telling a caller that an address is unknown would rebuild the membership oracle ADR-049 §2 already regrets on registration. There is no 404 here and adding one would be a security regression, not a usability fix.
+         *     The response is identical in STATUS and BYTES. It is not identical in COST — a known address commits two rows and an unknown address commits none. That defends against a caller reading responses, not one timing them, and ADR-050 records it rather than implying otherwise. Volume is what makes timing measurable, which is TKT-224.
+         *     Sending is ENQUEUED, never inline. That is what makes the two answers the same: neither has attempted delivery when the response is written, so a provider failure cannot become an existence oracle. See ADR-050 §3.
+         */
+        post: operations["requestPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/customers/password-reset/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Redeem a reset token and set a new password (TKT-226)
+         * @description Redeems the token from the mailed link and replaces the credential. The token arrives in the BODY, never in the path — the request logger records r.URL.Path on every service and the gateway, so a token in a path segment would be written to a log the way TKT-202 records guest_order_ref being written today.
+         *     Single-use and time-bounded, enforced by one conditional UPDATE rather than a SELECT then an UPDATE: a read-then-write is a race two redemptions both win, and the loser would silently overwrite the winner's new password.
+         *     Unknown, expired and already-redeemed are ONE answer (400), for the reason authenticateCustomer has one answer: distinguishing them tells a prober which tokens were ever real.
+         *     The response carries customer_id so the caller can destroy that customer's sessions. Commerce cannot do it — sessions live in the storefront process (ADR-049 §4) — so a reset completed by calling commerce directly signs nobody out. ADR-050 names that as an open gap rather than implying the criterion is fully met.
+         */
+        post: operations["completePasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/operational-holds/{id}/convert": {
         parameters: {
             query?: never;
@@ -390,6 +436,27 @@ export interface components {
         CustomerCredentials: {
             email: string;
             password: string;
+        };
+        /** @description An address to send a reset link to (TKT-226). minLength 1, deliberately — not 3 as on registration. A floor that refuses a short address BEFORE the lookup would answer differently from one that reaches it, which is the same oracle CustomerCredentials avoids by using 1 instead of 8 on the password. */
+        PasswordResetRequest: {
+            email: string;
+        };
+        /**
+         * @description A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.
+         *     The password floor is 8 here and not 1, unlike sign-in. Sign-in verifies an existing credential and must not refuse a short one differently from a wrong one; this operation SETS a credential, so it is where the policy belongs — the same place registration puts it.
+         */
+        PasswordResetCompletion: {
+            token: string;
+            password: string;
+        };
+        /** @description The customer whose password was replaced. Returned so the caller can destroy that customer's storefront sessions; it is not a principal and carries no assertion — completing a reset is not signing in. */
+        PasswordResetResult: {
+            /** Format: uuid */
+            customer_id: string;
+        };
+        /** @description A deliberately contentless acknowledgement. It says nothing about whether anything was enqueued, because saying so is the disclosure the operation exists to avoid. */
+        Accepted: {
+            status: string;
         };
         OrderClaim: {
             /** Format: uuid */
@@ -932,6 +999,58 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            500: components["responses"]["Error"];
+        };
+    };
+    requestPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted; a message is enqueued if and only if the address holds an account */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted"];
+                };
+            };
+            400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    completePasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetCompletion"];
+            };
+        };
+        responses: {
+            /** @description The password was replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordResetResult"];
+                };
+            };
+            400: components["responses"]["Error"];
             500: components["responses"]["Error"];
         };
     };

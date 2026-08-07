@@ -15,6 +15,10 @@ above is reversed; the amendment is additive and lives in § *TKT-221 amendment*
 **Amended by TKT-223 (2026-08-06)** — claiming a past guest order, which is the **one** exception to
 the TKT-221 rule that attribution never changes. See § *TKT-223 amendment*.
 
+**Amended by TKT-226 (2026-08-06)** — a mail path exists, so **§2's premise and the Consequences'
+"no recovery path at all" have stopped being true**. See § *TKT-226 amendment* and
+[ADR-050](ADR-050-transactional-mail-and-password-recovery.md).
+
 ## Context
 
 TKT-21 needs a *customer*: an optional account a buyer can create, so that purchases hang off an
@@ -567,3 +571,60 @@ storefront session. Not locale-scoped and not under `/api/`, matching the bridge
   database access.
 - The one-winner guarantee covers **concurrent honest HTTP callers**, not a writer who can update
   rows directly.
+
+---
+
+## TKT-226 amendment — there is a mail path, and two statements above are now false
+
+Full design in [ADR-050](ADR-050-transactional-mail-and-password-recovery.md). This section exists
+because an ADR whose stated facts are false is worse than no ADR, and two of this one's are.
+
+### What stopped being true
+
+**1. The Consequences said "A customer who forgets their password has **no recovery path at all**."**
+They have one: `POST /customers/password-reset` mails a single-use, one-hour token, and
+`POST /customers/password-reset/complete` redeems it. Both are public contract operations, placed by
+§1's reasoning unchanged — the caller is by definition someone who cannot sign in, so no credential
+exists to present, and the storefront still holds no service token.
+
+**2. The Context said "This repo has no mail path. No SMTP, no queue, no provider."** That was exactly
+true about **senders** and was read — by TKT-226's own plan draft — as true about **ports**.
+`services/access/internal/consumer.Mailer` has existed since ticket issuance shipped, with one
+implementation (`LogMailer`) that logs a hash of the recipient and returns nil. The accurate
+statement was always: **one port, zero senders.** It is now two ports and still zero senders, because
+the only implementation is an offline fake that captures rather than sends. ADR-050 §1 says why
+`access` is not migrated onto the shared port yet.
+
+### What §2's 409 becomes
+
+§2 accepted registration's 409 as an unauthenticated membership oracle **because** the standard
+mitigation — answer 201 and mail the owner — needed mail that did not exist. That premise is gone, so
+**§2 is now revisitable, and it is deliberately not revised here.**
+
+Removing the 409 forces registration to stop returning a principal (a caller who did not create the
+account must not be handed one), which breaks the register→signed-in flow TKT-220 shipped and TKT-221
+attaches attribution to. That is a second ticket, filed as the follow-up, not a stretch of this one.
+
+**TKT-224 shrinks but does not disappear**, and it also gains a surface: an unauthenticated caller can
+now make commerce enqueue a message per request. Rate limiting is still needed for credential grinding
+and now for reset-mail volume.
+
+### What §4's session model still costs
+
+§4's sessions are in-process, and that is unchanged. A reset **does** destroy every session that
+customer holds — `destroyAllSessionsForCustomer` in the storefront, called with the id commerce
+returns — which is what makes an owner's reset evict an attacker's stolen session. Naming the limits
+rather than letting the criterion stand unqualified (ADR-021):
+
+- **Closed:** a stolen live session, when the owner resets **through the storefront**.
+- **Open:** a reset completed by calling commerce directly. The operation is public contract, so
+  bypassing the UI signs nobody out. Making it `/internal/` would close this and is refused for §1's
+  reason.
+- **Open and unchanged:** cross-replica and cross-restart, by §4's design.
+
+### What §3's equal-cost discipline does NOT cover
+
+§3's mask is the **KDF**. It does not transplant to the reset-request path, because that request
+submits no password — there is nothing to hide underneath. The reset request is identical in status
+and bytes and **not** in cost: a known address commits two rows, an unknown address commits none.
+ADR-050 records the residual and why it is accepted rather than closed.

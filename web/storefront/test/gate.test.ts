@@ -69,15 +69,31 @@ describe('which paths need a session', () => {
     },
   );
 
-  // A buyer cannot sign in through a page that requires a session.
+  // A buyer cannot sign in through a page that requires a session — and cannot
+  // RECOVER through one either (TKT-226). The recovery pages' entire audience is
+  // people who are locked out, so gating them would redirect a locked-out buyer to
+  // the form they are locked out of.
   it.each([
     '/en/account/sign-in',
     '/en/account/register',
     '/fr/account/sign-in/',
     '/fr/account/register',
+    '/en/account/forgot-password',
+    '/en/account/reset-password',
+    '/fr/account/forgot-password/',
+    '/fr/account/reset-password/',
   ])('leaves %s anonymous', (path) => {
     expect(requiresSession(path)).toBe(false);
   });
+
+  // The anonymous list is a prefix-free allowlist, not a substring match: a path that
+  // merely STARTS with an anonymous page's name is still gated.
+  it.each(['/en/account/reset-password/extra', '/en/account/forgot-password-x'])(
+    'still gates %s',
+    (path) => {
+      expect(requiresSession(path)).toBe(true);
+    },
+  );
 
   it('sends a signed-out visitor to sign-in in their own locale', () => {
     expect(signInPath('/fr/account')).toBe('/fr/account/sign-in');

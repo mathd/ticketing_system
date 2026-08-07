@@ -590,13 +590,17 @@ not "fix" that by giving it one.
 and (POST only) `/{locale}/account/sign-out`. There is no provisioning CLI and no seeded account —
 registration is public, unlike staff.
 
-**There is no password recovery.** No reset, no email verification, no magic link: this repo has no
-mail path. A customer who forgets their password cannot get back in, and their existing orders stay
-reachable only by order reference. That is why the guest retrieval page matters.
+**Password recovery exists (TKT-226).** `/{locale}/account/forgot-password` mails a link;
+`/{locale}/account/reset-password?token=…` redeems it. See § *Password recovery* below. There is
+still **no email verification and no magic link** — an account can register an address it does not
+own.
 
 **Registering an address that already exists answers 409 and says so.** That is a deliberate,
 recorded disclosure — an unauthenticated membership oracle over the customer base (ADR-049 §2).
-Rate limiting it is **TKT-224**.
+Rate limiting it is **TKT-224**. Now that mail exists the standard mitigation (answer 201, mail the
+owner) has become available and **§2 is revisitable** — deliberately not done in TKT-226, because it
+forces registration to stop returning a principal and breaks the register→signed-in flow. See
+ADR-049 § *TKT-226 amendment*.
 
 **A wrong password and an unknown address are the same answer and the same cost.** If you are
 debugging a sign-in and want to know which it was, the answer is deliberately unavailable from
@@ -684,6 +688,66 @@ in `orders` — check `status` and `customer_id` for that `guest_order_ref`.
 **Paging is keyset on `created_at`, never `updated_at`.** `updated_at` is rewritten by checkout
 retries, recovery and the refund runner, and a cursor on a mutable key makes rows jump pages. If
 someone "optimizes" the sort key, that is the bug to look for.
+
+### Password recovery and the mail path (TKT-226)
+
+`/{locale}/account/forgot-password` asks for a link; the mailed link opens
+`/{locale}/account/reset-password?token=…`. See ADR-050.
+
+> **Nothing in this system has ever sent an email.** The only `mail.Sender` is
+> `shared/go/mail.Fake`, which validates a message, keeps it in memory and returns success.
+> `make up`, the smoke stack and `make check` all run against it, deliberately — the gate must not
+> need a network or a provider account. **A buyer on a local stack will never receive anything.**
+> To see what *would* have been sent, read the row (below).
+
+**Where a message actually is.** `mail_outbox` in the commerce database. One row per message,
+`sent_at IS NULL` until the drainer's sender accepted it:
+
+```sql
+SELECT id, recipient, subject, sent_at, attempts, last_error, dead_lettered_at
+  FROM mail_outbox ORDER BY created_at DESC LIMIT 20;
+-- the reset link itself, when you need to follow it locally:
+SELECT body FROM mail_outbox WHERE recipient = 'buyer@example.test' ORDER BY created_at DESC LIMIT 1;
+```
+
+> **That table holds PII and live credentials in plaintext.** The body of a reset message *is* a
+> working reset link until it is redeemed or expires. Nothing prunes the table — retention is
+> **TKT-33**. Treat a dump of it as you would a password file.
+
+**"The reset link never arrived."** In order: is there a row? Is `sent_at` set? Is
+`dead_lettered_at` set — that row is quarantined and will never be retried, and `last_error` says
+why. A row that is present and unsent with rising `attempts` means the sender is refusing; a row
+that never appears means the address has no account, and **that is indistinguishable from the
+outside on purpose**.
+
+**The drainer logs nothing from the message** — not the recipient, not the subject, not the body,
+on any path including failure. The `message_id` is the operator's handle. Do not "improve" those log
+lines: for a reset the body is a credential and the recipient is the fact the endpoint refuses to
+disclose.
+
+**A reset request answers 202 for every address**, known or not. There is no 404 and adding one
+would be a security regression, not a usability fix. The answer is identical in status and bytes; it
+is **not** identical in cost (a known address commits two rows), and ADR-050 records that residual
+rather than claiming otherwise.
+
+**`PUBLIC_BASE_URL` is what reset links are built from** — the same variable and meaning access
+already uses for ticket delivery. Commerce **never** derives it from the request: a link base taken
+from the `Host` header lets a caller mail a victim a genuine reset link pointing at the attacker's
+site. Unset degrades to a startup WARN and undeliverable mail; every other operation still serves.
+
+**Tokens are single-use, one hour, and SHA-256 in the database.** Not bcrypt — a salted hash cannot
+be looked up, only verified, so finding the row would be a full-table scan of KDF operations.
+Requesting a new link invalidates the previous one, and redeeming one invalidates the customer's
+others.
+
+**A completed reset signs that customer out everywhere — in the storefront process.** That is the
+half that makes a reset meaningful: changing the credential does not touch the session map. It works
+because the storefront route calls `destroyAllSessionsForCustomer`. **A reset completed by calling
+commerce directly signs nobody out**, and a storefront restart or a second replica is outside it
+either way (ADR-049 §4).
+
+**Verifying a change here needs a real browser**, for the reason the rest of this section's features
+do: `make check` renders storefront pages and never submits one. Submit both reset forms.
 
 ## Cache kill-switch (TKT-210)
 

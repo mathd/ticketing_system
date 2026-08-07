@@ -7,6 +7,7 @@ import {
   SESSION_TTL_MS,
   SessionCapacityError,
   createSession,
+  destroyAllSessionsForCustomer,
   destroySession,
   isSecureRequest,
   lookupSession,
@@ -339,4 +340,61 @@ describe('the assertion expiry is parsed strictly', () => {
       expect(lookupSession(token, performance.now() + SESSION_TTL_MS - 1000)).toBeDefined();
     },
   );
+});
+
+// Password recovery invalidates the customer's sessions (TKT-226).
+//
+// This is the half that makes a reset mean anything. Changing the credential does not
+// touch this map — it never re-checks a password — so an attacker holding a stolen
+// live session keeps it until something ends it explicitly.
+describe('destroying every session for one customer', () => {
+  it('ends all of that customer’s sessions and reports how many', () => {
+    const first = createSession(alice);
+    const second = createSession(alice);
+
+    expect(destroyAllSessionsForCustomer(alice.customerId)).toBe(2);
+
+    expect(lookupSession(first)).toBeUndefined();
+    expect(lookupSession(second)).toBeUndefined();
+  });
+
+  // The threat this closes, written as a test: the owner resets, the thief is out.
+  it('signs out a stolen session when the owner resets', () => {
+    const stolen = createSession(alice);
+    expect(lookupSession(stolen)).toBeDefined();
+
+    destroyAllSessionsForCustomer(alice.customerId);
+
+    expect(lookupSession(stolen)).toBeUndefined();
+  });
+
+  // Scoped, never global. A reset must not sign out strangers.
+  it('leaves other customers alone', () => {
+    const hers = createSession(alice);
+    const his = createSession(bob);
+
+    expect(destroyAllSessionsForCustomer(alice.customerId)).toBe(1);
+
+    expect(lookupSession(hers)).toBeUndefined();
+    expect(lookupSession(his)).toEqual(bob);
+  });
+
+  // Reclaimed, not merely unresolvable: an entry left in the map is memory the caps
+  // still count and a clock adjustment could resurrect.
+  it('reclaims the entries rather than hiding them', () => {
+    createSession(alice);
+    createSession(alice);
+    createSession(bob);
+
+    destroyAllSessionsForCustomer(alice.customerId);
+
+    expect(sessionCountForTest()).toBe(1);
+  });
+
+  it('is a no-op for a customer with no sessions', () => {
+    createSession(bob);
+
+    expect(destroyAllSessionsForCustomer('cust-nobody')).toBe(0);
+    expect(sessionCountForTest()).toBe(1);
+  });
 });

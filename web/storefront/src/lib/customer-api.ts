@@ -148,3 +148,60 @@ export async function claimGuestOrder(
     return { ok: false, reason: 'unavailable' };
   }
 }
+
+/**
+ * Ask commerce to mail a reset link (TKT-226).
+ *
+ * ONE result, deliberately not a discriminated union: commerce answers 202 whether
+ * or not the address holds an account, so this layer has nothing to discriminate on
+ * and must not invent something. A `reason: 'unknown'` here would be a distinction
+ * the page could render — the enumeration oracle the endpoint is shaped to avoid.
+ *
+ * `ok: false` is a genuine outage and is the only thing a caller may branch on.
+ */
+export async function requestPasswordReset(email: string): Promise<{ ok: boolean }> {
+  try {
+    const response = await post('/customers/password-reset', { email });
+    return { ok: response.status === 202 };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export type ResetCompletionResult =
+  | { ok: true; customerId: string }
+  | { ok: false; reason: 'refused' | 'invalid' | 'unavailable' };
+
+/**
+ * Redeem a mailed token and set a new password (TKT-226).
+ *
+ * `refused` is unknown, expired and already-used together, because commerce answers
+ * all three identically and this layer must not invent a distinction it was not
+ * given — the rule claimGuestOrder follows for the same reason.
+ *
+ * `customerId` is returned so the caller can destroy that customer's sessions. It is
+ * NOT a credential, and completing a reset does not sign anyone in: the buyer signs
+ * in afterwards with the password they just chose.
+ */
+export async function completePasswordReset(
+  token: string,
+  password: string,
+): Promise<ResetCompletionResult> {
+  try {
+    const response = await post('/customers/password-reset/complete', { token, password });
+    if (response.status === 200) {
+      const body = (await response.json()) as { customer_id: string };
+      return { ok: true, customerId: body.customer_id };
+    }
+    if (response.status === 400) {
+      // Commerce distinguishes exactly two 400s and they must not be merged here: a
+      // dead link sends the buyer back to request another, a rejected password keeps
+      // them on this form with their still-valid token.
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, reason: body.error === 'invalid request' ? 'invalid' : 'refused' };
+    }
+    return { ok: false, reason: 'unavailable' };
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
+}
