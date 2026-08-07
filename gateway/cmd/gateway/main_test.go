@@ -121,3 +121,57 @@ func TestBackofficeRoute(t *testing.T) {
 		t.Fatalf("/ must remain the storefront catch-all, got %q", routes["/"])
 	}
 }
+
+// A caller cannot forge the client IP that commerce rate-limits on (TKT-224).
+//
+// commerce keys its per-source budget on X-Forwarded-For (services/commerce/internal/api/ratelimit.go),
+// which is only safe because of what this proxy does with the header: the Rewrite
+// hook receives an outbound request with the inbound X-Forwarded-* already
+// STRIPPED, and SetXForwarded then writes the connecting peer. A forged chain is
+// discarded, not appended to — so there is no attacker-controlled prefix for the
+// limiter to mistake for the client.
+//
+// This is asserted against the REAL proxy rather than reasoned about from the
+// httputil docs, because the difference between "replaces" and "appends" is the
+// difference between a limiter and a bypass, and Director (the older hook) does
+// append. If a future change swaps Rewrite for Director, this test is what says
+// so — and commerce's "take the last element" would then become load-bearing
+// rather than belt-and-braces.
+func TestAForgedXForwardedForDoesNotReachTheUpstream(t *testing.T) {
+	var got []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header["X-Forwarded-For"]
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/commerce/", apiProxy(upstreamURL, "/api/commerce/", true))
+
+	const peer = "203.0.113.9"
+	for name, forged := range map[string]string{
+		"no header at all":     "",
+		"one forged hop":       "1.2.3.4",
+		"a whole forged chain": "1.2.3.4, 5.6.7.8",
+		"a forged private hop": "10.0.0.1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got = nil
+			req := httptest.NewRequest(http.MethodPost, "/api/commerce/customers", nil)
+			req.RemoteAddr = peer + ":44444"
+			if forged != "" {
+				req.Header.Set("X-Forwarded-For", forged)
+			}
+			mux.ServeHTTP(httptest.NewRecorder(), req)
+
+			if len(got) != 1 || got[0] != peer {
+				t.Fatalf("upstream saw X-Forwarded-For %#v, want exactly [%q] — a forged hop survived, "+
+					"so commerce's per-source rate limit is forgeable", got, peer)
+			}
+		})
+	}
+}

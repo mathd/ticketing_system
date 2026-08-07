@@ -21,7 +21,20 @@ const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 /** What the caller needs to know, without leaking commerce's wire shape upward. */
 export type CustomerResult =
   | { ok: true; principal: CustomerPrincipalResponse }
-  | { ok: false; reason: 'invalid' | 'taken' | 'unavailable' };
+  | { ok: false; reason: 'invalid' | 'taken' | 'unavailable' | 'throttled' };
+
+/**
+ * Commerce rate-limits the public customer surface (TKT-224, ADR-051).
+ *
+ * A 429 is its own reason and must not collapse into `unavailable`: that word
+ * tells a buyer something is broken and to escalate, when in fact they only have
+ * to wait. It must not collapse into a credential verdict either — that would be
+ * false, and it would leak, because the limiter refuses BEFORE commerce looks the
+ * address up and so answers identically for an address that exists and one that
+ * does not. Preserving that indistinguishability up here is what stops the UI
+ * reopening the oracle the handler closed.
+ */
+const THROTTLED = 429;
 
 async function post(path: string, body: unknown): Promise<Response> {
   return fetch(`${GATEWAY_URL}/api/commerce${path}`, {
@@ -36,6 +49,7 @@ export async function registerCustomer(email: string, password: string): Promise
   if (response.status === 201) {
     return { ok: true, principal: (await response.json()) as CustomerPrincipalResponse };
   }
+  if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
   if (response.status === 409) return { ok: false, reason: 'taken' };
   // 400 lands here too. The contract has already bounded the input, so a 400
   // means the form and the schema disagree — an outage-shaped answer is the
@@ -58,6 +72,7 @@ export async function authenticateCustomer(
   // close. Anything else is an outage, which is NOT a credential verdict: telling
   // a buyer their correct password is wrong sends them to reset it — which this
   // system cannot do — while the real fault goes unreported.
+  if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
   if (response.status === 401 || response.status === 400) return { ok: false, reason: 'invalid' };
   return { ok: false, reason: 'unavailable' };
 }
@@ -111,7 +126,9 @@ export async function listCustomerOrders(
 
 // --- claiming a past guest order (TKT-223) ---
 
-export type ClaimResult = { ok: true; orderId: string } | { ok: false; reason: 'refused' | 'unavailable' };
+export type ClaimResult =
+  | { ok: true; orderId: string }
+  | { ok: false; reason: 'refused' | 'unavailable' | 'throttled' };
 
 /**
  * Attach a completed guest order to the signed-in customer.
@@ -142,6 +159,7 @@ export async function claimGuestOrder(
       const body = (await response.json()) as { order_id: string };
       return { ok: true, orderId: body.order_id };
     }
+    if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
     if (response.status === 404 || response.status === 400) return { ok: false, reason: 'refused' };
     return { ok: false, reason: 'unavailable' };
   } catch {
@@ -159,9 +177,17 @@ export async function claimGuestOrder(
  *
  * `ok: false` is a genuine outage and is the only thing a caller may branch on.
  */
-export async function requestPasswordReset(email: string): Promise<{ ok: boolean }> {
+export async function requestPasswordReset(
+  email: string,
+): Promise<{ ok: boolean; throttled?: boolean }> {
   try {
     const response = await post('/customers/password-reset', { email });
+    // `throttled` is the ONE branch added to this otherwise deliberately
+    // undiscriminated result, and it is safe for the reason the others are not:
+    // it is decided before commerce looks the address up, so it says nothing
+    // about whether an account exists. Without it a buyer who asked twice would
+    // be told the link is on its way when nothing was enqueued.
+    if (response.status === THROTTLED) return { ok: false, throttled: true };
     return { ok: response.status === 202 };
   } catch {
     return { ok: false };
@@ -170,7 +196,7 @@ export async function requestPasswordReset(email: string): Promise<{ ok: boolean
 
 export type ResetCompletionResult =
   | { ok: true; customerId: string }
-  | { ok: false; reason: 'refused' | 'invalid' | 'unavailable' };
+  | { ok: false; reason: 'refused' | 'invalid' | 'unavailable' | 'throttled' };
 
 /**
  * Redeem a mailed token and set a new password (TKT-226).
@@ -193,6 +219,7 @@ export async function completePasswordReset(
       const body = (await response.json()) as { customer_id: string };
       return { ok: true, customerId: body.customer_id };
     }
+    if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
     if (response.status === 400) {
       // Commerce distinguishes exactly two 400s and they must not be merged here: a
       // dead link sends the buyer back to request another, a rejected password keeps

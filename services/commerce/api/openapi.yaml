@@ -75,6 +75,7 @@ paths:
         '201': {description: Registered, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerPrincipal'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '409': {description: The address already holds an account, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
   /customers/{id}/orders:
     get:
@@ -175,6 +176,7 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {description: 'The assertion is absent, forged or expired.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: 'No such order, not completed, or claimed by somebody else. Deliberately one answer.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
   /customers/authenticate:
@@ -198,6 +200,7 @@ paths:
         '200': {description: Authenticated, content: {application/json: {schema: {$ref: '#/components/schemas/CustomerPrincipal'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '401': {description: Invalid credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
   /customers/password-reset:
     post:
@@ -228,6 +231,7 @@ paths:
       responses:
         '202': {description: Accepted; a message is enqueued if and only if the address holds an account, content: {application/json: {schema: {$ref: '#/components/schemas/Accepted'}}}}
         '400': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
   /customers/password-reset/complete:
     post:
@@ -257,6 +261,7 @@ paths:
       responses:
         '200': {description: The password was replaced, content: {application/json: {schema: {$ref: '#/components/schemas/PasswordResetResult'}}}}
         '400': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
   /internal/operational-holds/{id}/convert:
     post:
@@ -412,6 +417,19 @@ components:
     AfterOrderId: {name: after_order_id, in: query, required: false, schema: {type: string, format: uuid}}
   responses:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    # TKT-224 / ADR-051. Declared on every operation the limiter guards, and ONLY
+    # those — an undeclared status is rewritten to 500 by the response validator,
+    # which is how this was found: the limiter worked and the buyer saw an outage.
+    # The description is deliberately uniform; a 429 says nothing about whether the
+    # subject exists, because the limiter refuses before commerce looks it up.
+    TooManyRequests:
+      description: >
+        Rate limited (ADR-051). Discloses nothing about the submitted address,
+        order reference or token: the budget is spent before any lookup, so the
+        answer is identical for a subject that exists and one that does not.
+      headers:
+        Retry-After: {description: Seconds to wait before retrying, schema: {type: string}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   schemas:
     Error:
       type: object

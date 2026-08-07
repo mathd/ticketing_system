@@ -57,6 +57,12 @@ func (s *Server) registerCustomer(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	// BEFORE the store call, so the bucket fills identically whether or not the
+	// address exists. Refusing after the lookup would make a 429 mean "this address
+	// is real" — a sharper oracle than the 409 this limiter exists to blunt.
+	if !s.allowSubject(w, customerEmailSubject(subjectScopeCredential, in.Email)) {
+		return
+	}
 
 	account, err := registerCustomerFn(r.Context(), s.db, in.Email, in.Password)
 	switch {
@@ -81,6 +87,13 @@ func (s *Server) registerCustomer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authenticateCustomer(w http.ResponseWriter, r *http.Request) {
 	var in customerAccountRequest
 	if !decode(w, r, &in) {
+		return
+	}
+	// Before the store call, for the reason registerCustomer states — and here it
+	// also keeps the bcrypt comparison behind the limit, which is what makes
+	// unbounded attempts a CPU-exhaustion vector and not only a guessing one
+	// (ADR-049 §3 makes that cost deliberate on BOTH paths).
+	if !s.allowSubject(w, customerEmailSubject(subjectScopeCredential, in.Email)) {
 		return
 	}
 

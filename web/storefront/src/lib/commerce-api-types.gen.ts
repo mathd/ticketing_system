@@ -688,6 +688,17 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Rate limited (ADR-051). Discloses nothing about the submitted address, order reference or token: the budget is spent before any lookup, so the answer is identical for a subject that exists and one that does not. */
+        TooManyRequests: {
+            headers: {
+                /** @description Seconds to wait before retrying */
+                "Retry-After"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
         Id: string;
@@ -867,6 +878,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
         };
     };
@@ -963,6 +975,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };
@@ -999,6 +1012,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
         };
     };
@@ -1025,6 +1039,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
         };
     };
@@ -1051,6 +1066,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
         };
     };

@@ -141,6 +141,13 @@ type customerLookup interface {
 // whitespace byte, and none can be modified here.
 const asciiWhitespace = " \t\n\r\v\f"
 
+// NormalizeCustomerEmail exposes the lookup key to the API layer, which needs to
+// rate-limit per address (TKT-224). It delegates rather than duplicating, and that
+// is the point: a limiter keyed on its OWN idea of normalization would give
+// "Bob@example.test" and "bob@example.test" separate budgets, so an attacker
+// grinding one account would simply vary the case. Two normalizers is the bypass.
+func NormalizeCustomerEmail(email string) string { return customerEmailKey(email) }
+
 func customerEmailKey(email string) string {
 	out := []byte(strings.Trim(email, asciiWhitespace))
 	for i := 0; i < len(out); i++ {

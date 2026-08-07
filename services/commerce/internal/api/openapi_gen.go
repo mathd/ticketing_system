@@ -572,6 +572,9 @@ type OrganizerIdQuery = openapi_types.UUID
 // ReportLimit defines model for ReportLimit.
 type ReportLimit = int
 
+// TooManyRequests defines model for TooManyRequests.
+type TooManyRequests = Error
+
 // ListCustomerOrdersParams defines parameters for ListCustomerOrders.
 type ListCustomerOrdersParams struct {
 	// Locale BCP-47 primary subtag; the supported set is data, not schema (TKT-36)

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,6 +61,17 @@ type Server struct {
 	// event-cancellation bulk runner (TKT-159). Rebuilt by WithAccess because the access
 	// URL arrives after New.
 	refunds *refunds.Service
+	// limiters bound the public, credential-free customer surface (TKT-224,
+	// ADR-051). In-process and per-replica — see shared/go/ratelimit's package doc
+	// for exactly what that does and does not bound.
+	//
+	// Reached through lim(), never directly. Plenty of tests build `&Server{}` as a
+	// literal, and a nil check that treated "no limiter" as "allow" would make every
+	// such construction silently unlimited — a guard that cannot see, which is the
+	// failure mode this repo has already written down twice. lim() builds the real
+	// thing instead, so the default is enforcement.
+	limiters *customerLimiters
+	limOnce  sync.Once
 }
 
 func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token string, publishers ...commerceevents.Publisher) *Server {
@@ -69,6 +81,29 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 	}
 	s := &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
 	s.refunds = refunds.New(db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
+	s.limiters = newCustomerLimiters(nil)
+	return s
+}
+
+// lim returns the rate limiters, building the real ones on first use if the
+// Server was constructed as a literal rather than through New. Never returns nil —
+// see the field comment for why "nil means allow" is not an option.
+func (s *Server) lim() *customerLimiters {
+	s.limOnce.Do(func() {
+		if s.limiters == nil {
+			s.limiters = newCustomerLimiters(nil)
+		}
+	})
+	return s.limiters
+}
+
+// WithClock replaces the limiters' time source. Tests only — production passes
+// nil to New and gets time.Now. It rebuilds rather than mutates, so a test always
+// starts from empty buckets, and it consumes limOnce so a later lim() cannot
+// discard the injected clock.
+func (s *Server) WithClock(now func() time.Time) *Server {
+	s.limiters = newCustomerLimiters(now)
+	s.limOnce.Do(func() {})
 	return s
 }
 
@@ -100,21 +135,35 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// Public, credential-free, and deliberately NOT under /internal/ (TKT-220,
 	// ADR-049): the storefront that renders these forms holds no service token,
 	// and the gateway edge-denies /api/commerce/internal/ by construction.
-	r.Post("/customers", s.registerCustomer)
-	r.Post("/customers/authenticate", s.authenticateCustomer)
-	// Password recovery (TKT-226). Public for the same reason the two above are: the
-	// caller is by definition someone who cannot sign in, so no credential exists to
-	// present. STATIC segments under /customers — chi prefers static over a parameter,
-	// so neither is read as a customer id, and a routing test asserts it.
-	r.Post("/customers/password-reset", s.requestPasswordReset)
-	r.Post("/customers/password-reset/complete", s.completePasswordReset)
+	//
+	// Grouped so the per-source limiter (TKT-224, ADR-051) wraps ALL of them at
+	// once. A limiter attached route-by-route is a list someone has to remember to
+	// extend, and the next public customer operation would silently be the
+	// unlimited one — the hand-maintained-inventory defect this file already
+	// carries a note about at registerRoutes. The per-SUBJECT half cannot live
+	// here: it needs the decoded body, so it runs inside each handler.
+	r.Group(func(r chi.Router) {
+		r.Use(s.limitSource)
+		r.Post("/customers", s.registerCustomer)
+		r.Post("/customers/authenticate", s.authenticateCustomer)
+		// Password recovery (TKT-226). Public for the same reason the two above are: the
+		// caller is by definition someone who cannot sign in, so no credential exists to
+		// present. STATIC segments under /customers — chi prefers static over a parameter,
+		// so neither is read as a customer id, and a routing test asserts it.
+		r.Post("/customers/password-reset", s.requestPasswordReset)
+		r.Post("/customers/password-reset/complete", s.completePasswordReset)
+		// TKT-223's claim. In scope for TKT-224 because the ONLY proof of ownership it
+		// takes is an order reference (ADR-049 § TKT-223 amendment), so unbounded
+		// attempts are a guessing surface. It moved into this group for that reason
+		// alone; it is still a STATIC segment under the same prefix as
+		// `GET /orders/{id}` above, chi still prefers static over a parameter, and the
+		// routing test that asserts so — rather than assuming it — still covers it
+		// from here.
+		r.Post("/orders/claim", s.claimGuestOrder)
+	})
 	// The wallet (TKT-222). Public surface, identified by the assertion — the
 	// storefront still holds no service credential.
 	r.Get("/customers/{id}/orders", s.listCustomerOrders)
-	// TKT-223. A STATIC segment under the same prefix as `GET /orders/{id}` — chi
-	// prefers static over a parameter, so this is not read as an order id, and a
-	// test asserts it rather than assuming it.
-	r.Post("/orders/claim", s.claimGuestOrder)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)

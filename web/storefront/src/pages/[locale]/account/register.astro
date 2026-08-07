@@ -67,12 +67,17 @@ if (Astro.request.method === 'POST') {
       // address holds an account and accepts it: with no mail path in this repo,
       // the alternative is telling a legitimate buyer their account was created
       // when it was not.
+      // `throttled` is checked FIRST and says nothing about the address (TKT-224).
+      // Folding it into `taken` would be an oracle by another name; folding it
+      // into `unavailable` would tell a buyer to escalate when they need a clock.
       error =
-        result.reason === 'taken'
-          ? t.accountTaken
-          : result.reason === 'unavailable'
-            ? t.accountUnavailable
-            : t.credentialsInvalid;
+        result.reason === 'throttled'
+          ? t.tooManyAttempts
+          : result.reason === 'taken'
+            ? t.accountTaken
+            : result.reason === 'unavailable'
+              ? t.accountUnavailable
+              : t.credentialsInvalid;
     }
   }
 }

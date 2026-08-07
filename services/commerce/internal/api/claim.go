@@ -48,6 +48,19 @@ func (s *Server) claimGuestOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keyed on the CALLER, not on the order reference (TKT-224). A guesser varies
+	// the reference and keeps one identity, so a per-reference bucket would hand
+	// every guess a fresh budget — no bound at all — while filling the key map.
+	// The caller is the one thing that stays fixed across an attempt sequence.
+	//
+	// After the assertion check because it needs the caller, and that ordering is
+	// safe here in a way it would not be for the address-keyed operations: this
+	// refusal is about who is asking, not about whether the order exists, so a 429
+	// discloses nothing about the order book.
+	if !s.allowSubject(w, "customer:"+caller.UUID.String()) {
+		return
+	}
+
 	order, err := claimGuestOrderFn(r.Context(), s.db, ref, caller.UUID)
 	switch {
 	case errors.Is(err, commercestore.ErrOrderNotClaimable):

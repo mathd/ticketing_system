@@ -107,6 +107,13 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     // password is wrong sends them to reset it while the real fault goes
     // unreported.
     accountUnavailable: 'Accounts are temporarily unavailable. Try again shortly.',
+    // A rate limit is NOT an outage and NOT a credential verdict (TKT-224,
+    // ADR-051). Rendering it as `accountUnavailable` would tell a buyer to
+    // escalate when all they have to do is wait, and rendering it as
+    // `credentialsInvalid` would be false. It says nothing about whether the
+    // address holds an account — the wording is identical either way, which is
+    // the whole point of refusing before commerce looks.
+    tooManyAttempts: 'Too many attempts. Wait a minute and try again.',
     // Registration commits in commerce BEFORE the session is minted, so at
     // capacity the account genuinely EXISTS and only sign-in failed. Saying
     // "unavailable" there reads as "registration failed", and the buyer's retry
@@ -190,6 +197,7 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     resetSignedOutEverywhere:
       'Les autres appareils connectés à ce compte ont été déconnectés.',
     accountUnavailable: 'Les comptes sont temporairement indisponibles. Réessayez sous peu.',
+    tooManyAttempts: 'Trop de tentatives. Attendez une minute et réessayez.',
     accountCreatedSignInLater:
       'Votre compte a été créé, mais la connexion est temporairement indisponible. Réessayez de vous connecter sous peu.',
   },

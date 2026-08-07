@@ -54,6 +54,13 @@ func (s *Server) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	// Before the store call, for the reason registerCustomer states. This is also
+	// the operation with an OUTBOUND cost — every accepted request enqueues a
+	// message — so the subject budget here is what stops one address being mail
+	// bombed (ADR-050 § Consequences names this as the surface TKT-226 added).
+	if !s.allowSubject(w, customerEmailSubject(subjectScopeRecovery, in.Email)) {
+		return
+	}
 
 	if _, err := requestPasswordResetFn(r.Context(), s.db, in.Email, s.composeResetMail); err != nil {
 		// An outage is NOT reported as a refusal, and it is not reported as success
@@ -72,7 +79,14 @@ func (s *Server) completePasswordReset(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-
+	// NO per-subject limit here, deliberately (TKT-224). The only candidate key is
+	// the submitted token, and keying on it would be worse than nothing twice over:
+	// a grinder varies the token, so every guess would land in a FRESH bucket and
+	// the budget would never bind — and each guess would insert a map entry, which
+	// turns the limiter into the key-exhaustion vector its cap exists to prevent.
+	// The per-source limiter on this route is the real bound. Grinding the token
+	// itself is not the threat the limiter answers: it is 32 random bytes (ADR-050
+	// §4), so the search space, not the rate, is what makes it infeasible.
 	customer, err := completePasswordResetFn(r.Context(), s.db, in.Token, in.Password)
 	switch {
 	case errors.Is(err, commercestore.ErrResetTokenUnusable):

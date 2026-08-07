@@ -58,7 +58,15 @@ if (Astro.request.method === 'POST') {
         error = t.accountUnavailable;
       }
     } else {
-      error = result.reason === 'unavailable' ? t.accountUnavailable : t.credentialsInvalid;
+      // `throttled` is its own branch, never folded into either neighbour: it is
+      // not a credential verdict (that would be false) and not an outage (that
+      // would send the buyer to support instead of the clock). TKT-224.
+      error =
+        result.reason === 'throttled'
+          ? t.tooManyAttempts
+          : result.reason === 'unavailable'
+            ? t.accountUnavailable
+            : t.credentialsInvalid;
     }
   }
 }
