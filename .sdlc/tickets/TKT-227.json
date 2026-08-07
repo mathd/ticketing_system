@@ -1,0 +1,84 @@
+{
+  "key": "TKT-227",
+  "type": "Task",
+  "classification": "simple",
+  "summary": "`make up` fails on the in-Docker scanner build (typescript@7.0.2), and four tickets have worked around it",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "`make up` does not work on at least one developer machine. The scanner image's build step fails:\n\n```\n> [scanner build 6/6] RUN pnpm install --frozen-lockfile && pnpm --filter scanner build\n  at getExePath (…/typescript@7.0.2/node_modules/typescript/lib/getExePath.js:53:19)\n[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 build: `tsc -b && vite build`\ntarget scanner: failed to solve: … exit code: 1\n```\n\nIt looks like TypeScript 7's native binary failing to resolve inside the container, but that is a\nguess from the stack — **diagnosis is the first half of this ticket.**\n\n**Why it matters more than it looks.** `make up` is what AGENTS.md names for the browser-submit gate:\n*\"drive the real stack (`make up`) in a browser and submit the write path.\"* With it broken, four\ntickets (TKT-220 through TKT-223) each verified against a **smoke-shaped stack** built from host\nartifacts (`compose.smoke.yaml`) instead. That worked and it is not the same thing: the smoke path\nships host-built binaries, so the in-Docker build is exactly the surface nobody is exercising.\n\n`make check` passes throughout, because its smoke stage uses the same fast path.\n\n**Acceptance Criteria:**\n- [ ] `make up` completes on a clean checkout, or the failure is diagnosed and the fix is applied\n  wherever it belongs (scanner's Dockerfile, the pinned TypeScript, or the pnpm workspace).\n- [ ] The finding says whether this is **host-local or real** — if it only reproduces on arm64 macOS,\n  say so, because that changes who is affected and whether CI would ever have caught it.\n- [ ] If the fix is not obvious, the ticket may land as a **documented workaround plus a diagnosis**\n  rather than a repair — but it must not land as silence.\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code committed BEFORE the gate runs (ADR-009).\n\n**Non-goals:** replacing the smoke fast path (`compose.smoke.yaml` is deliberate and stays) ·\nTKT-196's browser harness, which is a different problem that this one makes harder.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "`make up` works, or its failure is understood and written down."
+    },
+    "scope": {
+      "state": "met",
+      "note": "One build step in one image. It does not touch the smoke fast path."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "The cause is a guess from a stack trace; diagnosis is the ticket's first half. It may turn out to be host-local, which is a legitimate outcome and changes the fix."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Reproduce, read the container build log, bisect between the pinned TypeScript, the Dockerfile's node base and the pnpm workspace resolution."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole thing is one slice; it is small."
+    },
+    "success": {
+      "state": "met",
+      "note": "`make up` exits 0 and the stack becomes healthy — or a written diagnosis with a reproducer."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-06."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "A web-UI ticket isn't verified until a browser has *submitted* its forms. ... For any back-office/storefront/scanner ticket that adds or changes a write form, drive the real stack (`make up`) in a browser and submit the write path, not just the render."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). CI runs the same gate - keep them mirrored."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-035",
+        "why": "One version per shared dependency declaration. If the fix is a TypeScript version change it has to move everywhere at once, and check-dep-drift enforces that."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The workaround four tickets used, and why it is not equivalent: scripts/smoke.sh's fast path builds artifacts on the HOST and mounts them (compose.smoke.yaml), so the in-Docker build path is exactly what stops being exercised.",
+        "link": "scripts/smoke.sh"
+      },
+      {
+        "summary": "The gate this breaks is named in AGENTS.md and in TKT-196; it is the one that caught guest checkout 403ing behind a new bridge and three driver-level SQL defects during TKT-220..223.",
+        "link": "TKT-196"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — PASS\n\nSmall, isolated, no product risk, and the one uncertainty (the cause) is the work rather than a\nblocker. `risk:low` is **not** claimed: the fix may touch a pinned dependency, and ADR-035 makes that\na repo-wide change rather than a local one.\n\n**Verdict:** PASS."
+    }
+  ]
+}
