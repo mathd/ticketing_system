@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# The browser-submit gate (AGENTS.md): drive real Chrome against the real stack
+# and SUBMIT the storefront's forms.
+#
+# `make check`'s smoke suite exercises the catalog API directly and only *renders*
+# back-office and storefront pages — it never submits an Astro form. So the whole
+# class of "the SSR layer rejects or mangles the write before the handler runs"
+# (checkOrigin, base-path rewrites, redirects, cookie paths, cache headers,
+# referrer policy) is invisible to it. Two tickets found real defects here that
+# nothing else could see: TKT-105's proxy-aware origin check, and TKT-226's
+# `Referrer-Policy: no-referrer`, which made Chrome send `Origin: null` and 403 every
+# password reset.
+#
+# NOT part of `make check`: it needs a real Chrome on the host, so CI cannot run it
+# and a developer without one must still be able to pass the gate. It is the
+# separate, deliberate step AGENTS.md requires for any ticket that adds or changes
+# a write form.
+#
+#   make browser              # up, run every spec, tear down
+#   ./scripts/browser.sh up   # leave the stack up for iterating
+#   ./scripts/browser.sh run  # run the specs against a stack left up
+#   ./scripts/browser.sh down
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Project name, ports and credentials — the same isolation smoke.sh gets, under
+# its own slot so the two stacks can be up at once in one worktree (TKT-228).
+. "$ROOT/scripts/stack-env.sh" browser
+
+# Fast path only (host-built artifacts, compose.smoke.yaml), deliberately not
+# `make up`: the in-Docker scanner build is broken (TKT-227), and this gate must
+# not be blocked on it. Same images, same wiring, same gateway — only the build
+# source differs, and none of what this gate checks lives in the build.
+COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.onsale-load.yaml" -f "$ROOT/compose.smoke.yaml")
+compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
+
+require_artifacts() {
+  for b in catalog inventory commerce payments access gateway; do
+    [ -x "$ROOT/bin/gate/$b" ] || { echo "browser: missing bin/gate/$b — run 'make build-gate-linux'" >&2; exit 1; }
+  done
+  [ -f "$ROOT/web/scanner/dist/index.html" ] || { echo "browser: missing web/scanner/dist — run 'make build-ts'" >&2; exit 1; }
+  [ -f "$ROOT/web/storefront/dist/server/entry.mjs" ] || { echo "browser: missing web/storefront/dist — run 'make build-ts'" >&2; exit 1; }
+}
+
+up() {
+  require_artifacts
+  # Pre-clean for the same reason smoke.sh does: a hard-killed previous run leaves
+  # migrated pgdata and Exited-0 one-shot migrate jobs behind, and a plain `up`
+  # would reuse both.
+  compose down -v --remove-orphans >/dev/null 2>&1 || true
+  if ! compose up -d --build --wait; then
+    echo "--- compose up failed; recent logs: ---" >&2
+    compose logs --tail 50 >&2
+    exit 1
+  fi
+  echo "browser: gateway=http://localhost:${GATEWAY_PORT}"
+}
+
+# The specs query the database the way an operator does — through psql in the
+# running container — rather than pulling in a node postgres driver for two
+# SELECTs. They get the container id, not a connection string.
+run_specs() {
+  local pg
+  pg="$(compose ps -q postgres)"
+  [ -n "$pg" ] || { echo "browser: no stack is up — run './scripts/browser.sh up' first" >&2; exit 1; }
+
+  # No nullglob: an unmatched glob stays literal, so `-f` on the first element is
+  # false and this fails loudly. Loud, not skipped — a run that silently executes
+  # nothing is a green gate that proved nothing, the defect scripts/smoke.sh
+  # records four times over -run filters. (It also sidesteps `${#arr[@]}` on an
+  # empty array, which is an unbound-variable error under `set -u` on bash 3.2.)
+  local specs=("$ROOT"/test/browser/*.mjs)
+  [ -f "${specs[0]}" ] || { echo "browser: no specs in test/browser" >&2; exit 1; }
+
+  local failed=0
+  for spec in "${specs[@]}"; do
+    echo "=== $(basename "$spec")"
+    BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" \
+      node "$spec" || failed=1
+  done
+  return $failed
+}
+
+case "${1:-all}" in
+all)
+  # Trap BEFORE `up`, as smoke.sh does: a stack that half-starts must not be left
+  # behind for the next run's pre-clean to find.
+  trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT INT TERM
+  up
+  run_specs
+  ;;
+up)   up ;;
+run)  run_specs ;;
+down) compose down -v --remove-orphans ;;
+logs) compose logs --tail 60 "${2:-storefront}" ;;
+*)    echo "usage: browser.sh [all|up|run|down|logs [service]]" >&2; exit 2 ;;
+esac

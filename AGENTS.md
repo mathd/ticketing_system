@@ -39,9 +39,12 @@ experiment stays valid.
   smoke suite exercises the catalog API directly and only *renders* back-office pages — it never
   submits an Astro form, so the whole class of "the SSR layer rejects/mangles the request before
   the handler runs" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it.
-  For any back-office/storefront/scanner ticket that adds or changes a write form, drive the real
-  stack (`make up`) in a browser and submit the write path, not just the render. There is no
-  Playwright/e2e harness in-repo yet. (Why: [browser-submit is the only checkOrigin catch](docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md), TKT-105.)
+  For any back-office/storefront/scanner ticket that adds or changes a write form, run
+  **`make browser`** and add a spec to `test/browser/` that submits the write path, not just the
+  render. It is not part of `make check` — it needs the host's real Chrome, so CI cannot run it.
+  (Why: [browser-submit is the only checkOrigin catch](docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md), TKT-105;
+  TKT-226 caught a `no-referrer` that 403'd every reset. Promoted from per-ticket throwaway
+  scripts in TKT-228.)
 - **A round of review fixes needs a review of the fixes' *interaction*, not each in isolation.**
   Four tickets in TKT-35 had a pass find a defect created by the previous pass's fix, every fix
   correct on its own; a bounded or optimized replacement is a new implementation, so ask what the

@@ -30,7 +30,10 @@ invisible to API-level smoke, because the SSR layer is exactly what API smoke by
 **A back-office / web-UI ticket is not verified until a real browser has submitted its forms.**
 API smoke proves the backend contract; it says nothing about whether the SSR framework will accept
 the request the browser actually sends (CSRF/origin checks, base-path rewrites, redirects,
-CSP). Drive the real stack (`make up`) in a browser and submit the form — the write path, not just
-the render. TKT-105 added this ad hoc; there is no Playwright/e2e harness in-repo yet.
+CSP). Drive the real stack in a browser and submit the form — the write path, not just the render.
+
+TKT-105 added this ad hoc, and so did TKT-220 and TKT-226; the third throwaway copy is what
+promoted it into `make browser` / `test/browser/` (TKT-228). It is not in `make check`: it needs
+the host's real Chrome.
 
 See `AGENTS.md` → Quality gates (web-UI browser-submit expectation).

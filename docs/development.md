@@ -570,9 +570,28 @@ either.
 
 **Verifying a change here needs a real browser.** The smoke suite submits the login and logout
 forms through the real gateway and Astro SSR layer, but it sets `Origin` itself — it cannot
-prove a browser sends it on a same-origin POST, nor that a browser honours `SameSite`. Drive
-`make up` and submit the forms (see the ticket DoD and
+prove a browser sends it on a same-origin POST, nor that a browser honours `SameSite`. Run
+`make browser` and add a spec to `test/browser/` (see the ticket DoD and
 `learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md`).
+
+## The browser-submit gate (TKT-228)
+
+`make browser` brings up a smoke-shaped stack on its own ports, runs every `test/browser/*.mjs`
+spec against it through real Chrome, and tears it down. It is **not** part of `make check` — it
+drives the host's browser, so CI cannot run it and a developer without Chrome must still be able
+to pass the gate.
+
+```
+make browser              # up, run every spec, tear down
+./scripts/browser.sh up   # leave the stack up for iterating
+./scripts/browser.sh run  # re-run the specs against it
+./scripts/browser.sh down
+```
+
+A spec gets `BASE` (the gateway URL) and `POSTGRES_CONTAINER` (for the operator-style `psql`
+reads a mailbox or an audit check needs) from the script; it must never hardcode a port. Ports and
+the compose project name come from `scripts/stack-env.sh`, shared with `scripts/smoke.sh` so the
+two stacks can be up at once and cannot collide.
 
 ## Customer accounts (TKT-220)
 

@@ -12,7 +12,7 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift up down clean
 
 check: deps check-generate check-dep-drift lint test build smoke
 
@@ -124,6 +124,16 @@ smoke: build-gate-linux build-ts
 
 smoke-hermetic:
 	SMOKE_HERMETIC=1 ./scripts/smoke.sh
+
+## ---- browser-submit gate (AGENTS.md) ----
+# Deliberately NOT part of `make check`: it drives the host's real Chrome, so CI
+# cannot run it and a developer without one must still be able to pass the gate.
+# Run it for any ticket that adds or changes a storefront/back-office write form —
+# the smoke suite only RENDERS those pages, so everything between the browser and
+# the handler (checkOrigin, base-path rewrites, redirects, cookie paths, cache and
+# referrer headers) is invisible to it. See scripts/browser.sh (TKT-228).
+browser: build-gate-linux build-ts
+	./scripts/browser.sh
 
 # Full festival-NFR load profile (TKT-82) — on-demand, not part of `make check`.
 # Runs the whole smoke suite with the on-sale profile switched to full and

@@ -140,8 +140,8 @@ exists are in *Historical* at the bottom; their files are kept.
 ## HTTP, contracts and the web layer
 
 - [**API smoke can't see the SSR layer — a browser-submit test is the only checkOrigin catch**](./learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md) —
-  promoted into `AGENTS.md`; a web-UI ticket is not verified until a browser has *submitted* its
-  forms. (TKT-105)
+  promoted into `AGENTS.md`, and since TKT-228 into `make browser` / `test/browser/`; a web-UI
+  ticket is not verified until a browser has *submitted* its forms. (TKT-105, TKT-220, TKT-226)
 - [**A component can be correct and the page still wrong**](./learnings/2026-08-03-storefront-island-styling-and-fetch-gotchas.md) —
   global-stylesheet specificity beat a correct component. Scope an island's rules under a container
   class. Plus: `fetch()` resolves on headers, not the body; `DOMException` is an `Error`. (TKT-174)
@@ -154,6 +154,11 @@ exists are in *Historical* at the bottom; their files are kept.
   the Go port exports no JS compiler API, so `astro check`/Volar and `openapi-typescript` die on
   import. Source needed no changes; `.astro` frontmatter is now unchecked. pnpm `overrides` cannot
   pin a peer.
+- [**A failed optional dependency is skipped silently**](./learnings/2026-08-07-a-failed-optional-dependency-is-skipped-silently.md) —
+  TypeScript 7 ships its compiler as one optionalDependency per platform, and pnpm does not fail an
+  install when one fails to fetch. So a transient hiccup yields a green `pnpm install` and a
+  confusing "your platform is unsupported" from `tsc` minutes later — which sent TKT-227 after musl
+  and the lockfile, neither of which was involved. Does not reproduce; landed as a diagnosis.
 
 ## Security
 

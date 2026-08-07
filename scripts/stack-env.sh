@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Sourced, not executed: the isolated-stack preamble shared by scripts/smoke.sh
+# (the gate) and scripts/browser.sh (the browser-submit gate). Usage:
+#
+#   ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+#   . "$ROOT/scripts/stack-env.sh" <stack-name>
+#
+# Sets PROJECT, every *_PORT, and the four service credentials. This lives in one
+# file because the two stacks must agree: browser.sh started life as a per-ticket
+# copy of these lines with the ports hardcoded, and 18099 — the gateway port that
+# copy picked — is smoke's own gateway port at slot 19. Two tickets' worth of
+# copies is what promoted this into a shared file (TKT-228).
+
+STACK="${1:?stack-env.sh needs a stack name}"
+: "${ROOT:?stack-env.sh needs ROOT}"
+
+# Isolate the stack per checkout AND per stack kind — project name AND ports,
+# derived from the checkout path plus the stack name.
+#
+# This repo is routinely worked on in sibling worktrees, and both halves of the isolation are
+# load-bearing. A shared project name is worse than a port clash: smoke.sh's `cleanup` runs
+# `compose down -v` on EXIT, so a second run tears the first one's stack down *mid-run* — and the
+# wreckage reads like a broken change rather than a collision ("network ... not found",
+# "nats-1 exited (0)", "dead or marked for removal"). That cost real debugging time on TKT-61.
+# Fixing only the name would trade silent mutual destruction for a port clash, which is at least
+# honest; moving the ports too lets the runs actually coexist.
+#
+# The slot is a stable hash of the checkout path and the stack name: same worktree and stack →
+# same ports every run (greppable, debuggable); different worktrees, or the browser stack
+# alongside the smoke stack in one worktree, → different ports. Distinct hosts/ranges keep the
+# six services from colliding with each other. A hash collision just fails loudly on "port
+# already allocated" — the honest failure this replaces the silent one with.
+SLOT=$(( $(printf '%s/%s' "$ROOT" "$STACK" | cksum | cut -d' ' -f1) % 40 ))
+PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-${STACK}-${SLOT}}"
+export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=$((14222 + SLOT)) \
+       GRAFANA_PORT=$((13000 + SLOT)) PROM_PORT=$((19090 + SLOT)) OTLP_PORT=$((14318 + SLOT)) \
+       CATALOG_PORT=$((15080 + SLOT)) INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) PAYMENTS_PORT=$((17580 + SLOT)) \
+       ACCESS_PORT=$((18580 + SLOT)) \
+       ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s \
+       ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
+echo "$STACK: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
+
+# One credential per invocation (TKT-83): generated here so the isolated
+# stack never depends on a developer's .env or shell (the export takes
+# precedence over compose's .env lookup) and CI needs no secret.
+SMOKE_INTERNAL_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_INTERNAL_TOKEN
+export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
+# TKT-191: catalog's staff-write credential. Generated INDEPENDENTLY of the
+# internal token — they authorize different things, and a run where one value
+# served both would pass while proving nothing about the separation.
+SMOKE_CATALOG_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_CATALOG_STAFF_WRITE_TOKEN
+export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
+# TKT-194. A separate /dev/urandom read, not a copy: commerce refuses to start
+# when this equals INTERNAL_SERVICE_TOKEN, and the back office refuses to refund
+# when it equals CATALOG_STAFF_WRITE_TOKEN. Deriving one from another here would
+# make the smoke suite the one place those guards are never exercised honestly.
+SMOKE_COMMERCE_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_COMMERCE_STAFF_WRITE_TOKEN
+export COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN"
+# TKT-221: the customer checkout assertion key. A FOURTH independent /dev/urandom
+# read, not a copy — commerce refuses to start when it equals either other
+# credential, and a run where one value served two would pass while proving
+# nothing about the separation those refusals exist to enforce.
+SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY
+export COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"

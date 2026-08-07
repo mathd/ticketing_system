@@ -9,29 +9,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Isolate the stack per checkout — project name AND ports, derived from the checkout path.
-#
-# This repo is routinely worked on in sibling worktrees, and both halves of the isolation are
-# load-bearing. A shared project name is worse than a port clash: `cleanup` below runs
-# `compose down -v` on EXIT, so a second run tears the first one's stack down *mid-run* — and the
-# wreckage reads like a broken change rather than a collision ("network ... not found",
-# "nats-1 exited (0)", "dead or marked for removal"). That cost real debugging time on TKT-61.
-# Fixing only the name would trade silent mutual destruction for a port clash, which is at least
-# honest; moving the ports too lets the runs actually coexist.
-#
-# The slot is a stable hash of the checkout path: same worktree → same ports every run (greppable,
-# debuggable), different worktrees → different ports. Distinct hosts/ranges keep the six services
-# from colliding with each other. A hash collision between two worktrees just fails loudly on
-# "port already allocated" — the honest failure this replaces the silent one with.
-SLOT=$(( $(printf '%s' "$ROOT" | cksum | cut -d' ' -f1) % 40 ))
-PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-smoke-${SLOT}}"
-export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=$((14222 + SLOT)) \
-       GRAFANA_PORT=$((13000 + SLOT)) PROM_PORT=$((19090 + SLOT)) OTLP_PORT=$((14318 + SLOT)) \
-       CATALOG_PORT=$((15080 + SLOT)) INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) PAYMENTS_PORT=$((17580 + SLOT)) \
-       ACCESS_PORT=$((18580 + SLOT)) \
-       ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s \
-       ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
-echo "smoke: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
+# Project name, ports and the four service credentials, isolated per checkout.
+# Shared with scripts/browser.sh so the two stacks cannot pick the same ports —
+# the browser gate's first, per-ticket copy of these lines hardcoded 18099,
+# which is this stack's own gateway port at slot 19 (TKT-228). The reasoning
+# behind each half of the isolation lives in that file.
+. "$ROOT/scripts/stack-env.sh" smoke
 
 # The load-proof override (pg_stat_statements preload, TKT-82) applies to every
 # smoke stack — hermetic or fast path — so the gate's on-sale profile can always
@@ -45,33 +28,6 @@ if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
   [ -f "$ROOT/web/storefront/dist/server/entry.mjs" ] || { echo "smoke: missing web/storefront/dist — run 'make build-ts'" >&2; exit 1; }
   COMPOSE_FILES+=(-f "$ROOT/compose.smoke.yaml")
 fi
-
-# One credential per smoke invocation (TKT-83): generated here so the isolated
-# stack never depends on a developer's .env or shell (the export takes
-# precedence over compose's .env lookup) and CI needs no secret.
-SMOKE_INTERNAL_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-export SMOKE_INTERNAL_TOKEN
-export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
-# TKT-191: catalog's staff-write credential. Generated INDEPENDENTLY of the
-# internal token — they authorize different things, and a run where one value
-# served both would pass while proving nothing about the separation.
-SMOKE_CATALOG_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-export SMOKE_CATALOG_STAFF_WRITE_TOKEN
-export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
-# TKT-194. A separate /dev/urandom read, not a copy: commerce refuses to start
-# when this equals INTERNAL_SERVICE_TOKEN, and the back office refuses to refund
-# when it equals CATALOG_STAFF_WRITE_TOKEN. Deriving one from another here would
-# make the smoke suite the one place those guards are never exercised honestly.
-SMOKE_COMMERCE_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-export SMOKE_COMMERCE_STAFF_WRITE_TOKEN
-export COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN"
-# TKT-221: the customer checkout assertion key. A FOURTH independent /dev/urandom
-# read, not a copy — commerce refuses to start when it equals either other
-# credential, and a run where one value served two would pass while proving
-# nothing about the separation those refusals exist to enforce.
-SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-export SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY
-export COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"
 
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
