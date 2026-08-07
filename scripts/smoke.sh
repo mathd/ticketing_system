@@ -107,6 +107,16 @@ cd "$ROOT/services/commerce"
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS commerce_store_smoke" \
   -c "CREATE DATABASE commerce_store_smoke OWNER commerce" >/dev/null
+# A SECOND database, for ./internal/mailer (TKT-226). The reason payments needed one for
+# ./internal/api applies here and is now load-bearing rather than theoretical:
+# `go test ./internal/...` runs packages CONCURRENTLY, and ./internal/mailer is the second
+# package that calls store.Migrate. Two goose runs against one database race, and the
+# loser dies on "column ... already exists" mid-migration. Sharing would also let the
+# mailer's drainer — which claims the whole claimable set, not rows it seeded — retire
+# mail_outbox rows a store test just enqueued.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS commerce_mailer_smoke" \
+  -c "CREATE DATABASE commerce_mailer_smoke OWNER commerce" >/dev/null
 # No -run filter: every smoke test in this package is part of the gate. An allowlist
 # means a newly added test silently never runs and the gate still passes green — which
 # is exactly what happened to this file's first six tests.
@@ -116,6 +126,7 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 # times. Nothing lives there for commerce yet; the widening closes the hole before it is
 # dug (TKT-156).
 COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_store_smoke" \
+COMMERCE_MAILER_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_mailer_smoke" \
 COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/...
 

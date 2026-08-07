@@ -720,6 +720,12 @@ why. A row that is present and unsent with rising `attempts` means the sender is
 that never appears means the address has no account, and **that is indistinguishable from the
 outside on purpose**.
 
+> **`last_error` starting with `DELIVERED-BUT-UNCONFIRMED` means the opposite of what the row
+> looks like.** That row has `sent_at IS NULL` and is dead-lettered, but the sender *accepted* the
+> message — possibly on every attempt — and only the database write recording that failed. **Do not
+> tell a customer nothing was sent, and do not resend by hand without asking them first.** Every
+> other dead-lettered row means what it says: nothing left.
+
 **The drainer logs nothing from the message** — not the recipient, not the subject, not the body,
 on any path including failure. The `message_id` is the operator's handle. Do not "improve" those log
 lines: for a reset the body is a credential and the recipient is the fact the endpoint refuses to

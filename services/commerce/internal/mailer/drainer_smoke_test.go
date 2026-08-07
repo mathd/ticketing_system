@@ -28,11 +28,20 @@ import (
 // stops a poison row starving the queue, and the claim_id guard that stops a superseded
 // claimant retiring someone else's row. A fake cannot see any of it.
 
+// drainerDB opens this package's OWN database, not the store package's.
+//
+// Its own, for two reasons that only appear when `go test ./internal/...` runs packages
+// concurrently — which is how the gate runs them. This is the second package that calls
+// store.Migrate, and two goose runs against one database race until the loser dies on
+// "column ... already exists" mid-migration. And the drainer under test claims the whole
+// claimable set rather than rows it seeded, so it would retire mail_outbox rows a store
+// test had just enqueued. payments took the same route for ./internal/api; scripts/smoke.sh
+// creates commerce_mailer_smoke.
 func drainerDB(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("COMMERCE_TEST_DATABASE_URL")
+	dsn := os.Getenv("COMMERCE_MAILER_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("COMMERCE_TEST_DATABASE_URL is not set")
+		t.Skip("COMMERCE_MAILER_TEST_DATABASE_URL is not set")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {

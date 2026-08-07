@@ -191,22 +191,64 @@ func CompletePasswordReset(ctx context.Context, db *sql.DB, rawToken, newPasswor
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Redeem and resolve in one conditional statement. `used_at IS NULL` is what makes
-	// it single-use; `expires_at > now()` uses the DATABASE clock, never the caller's.
+	tokenHash := hashResetToken(rawToken)
+
+	// LOCK ORDER: customer first, then tokens — the SAME order RequestPasswordReset
+	// takes them, and that is the whole point of these three statements
+	// (ai-review pass 2 [high]).
+	//
+	// This function used to redeem the token first and update customer_accounts second,
+	// which inverted the order against issuance and made a deadlock reachable whenever a
+	// customer with a live token had a request and a redemption in flight at once:
+	// issuance held the customer row and waited for the token, redemption held the token
+	// and waited for the customer. Postgres breaks the cycle by aborting one — a 500 on a
+	// recovery path, and on the request side a 500 is also the one status that differs
+	// from the unknown-address answer. The fix for a race had created a deadlock; it was
+	// found by reviewing the fix diff rather than the feature.
+	//
+	// The lookup below is deliberately UNLOCKED and its result is used for one thing:
+	// deciding which customer row to lock. It is not authority. Everything that decides
+	// whether the token may be spent stays in the conditional UPDATE further down, which
+	// still runs its own `used_at IS NULL AND expires_at > now()` predicate — so a
+	// concurrent issuance or redemption that invalidates the token between this read and
+	// that write produces the ordinary refusal, not a wrongly-granted reset.
 	var customerID uuid.UUID
+	err = tx.QueryRowContext(ctx, `
+		SELECT customer_id FROM password_reset_tokens WHERE token_hash = $1`, tokenHash).
+		Scan(&customerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, ErrResetTokenUnusable
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve reset token: %w", err)
+	}
+
+	if _, err = tx.ExecContext(ctx, `
+		SELECT id FROM customer_accounts WHERE id = $1 FOR UPDATE`, customerID); err != nil {
+		return uuid.Nil, fmt.Errorf("lock customer for reset completion: %w", err)
+	}
+
+	// Now redeem. `used_at IS NULL` is what makes it single-use; `expires_at > now()`
+	// uses the DATABASE clock, never the caller's. Still one conditional statement: two
+	// concurrent redemptions of the same token now serialize on the customer lock above,
+	// and the loser still re-evaluates this predicate and reports zero rows.
+	var redeemed uuid.UUID
 	err = tx.QueryRowContext(ctx, `
 		UPDATE password_reset_tokens
 		   SET used_at = now()
 		 WHERE token_hash = $1
 		   AND used_at IS NULL
 		   AND expires_at > now()
-		RETURNING customer_id`, hashResetToken(rawToken)).Scan(&customerID)
+		RETURNING customer_id`, tokenHash).Scan(&redeemed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.Nil, ErrResetTokenUnusable
 	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("redeem reset token: %w", err)
 	}
+	// The redeeming statement remains the authority on WHOSE token this is; the unlocked
+	// lookup above only chose a lock target.
+	customerID = redeemed
 
 	if _, err = tx.ExecContext(ctx, `
 		UPDATE customer_accounts SET password_hash = $2 WHERE id = $1`,

@@ -13,22 +13,27 @@ import { describe, expect, it } from 'vitest';
 // — resolves to the DOCUMENT's URL, so the POST would carry the token in a request URL
 // too. Putting it in the hidden body field does not remove it from the URL.
 //
-// This cannot prove what the browser actually posts. That needs a real submission, and it
-// is on the manual browser checklist. What it CAN do is fail the moment someone
-// "simplifies" this form back to the pattern the sibling pages use.
+// WHAT THIS CANNOT DO, said plainly because a green source scan reads like a proof: it
+// does not render the page, does not submit anything, and therefore establishes nothing
+// about the URL a browser actually posts to or about the trusted-origin path. Only a real
+// submission does that, and it is on the manual browser checklist for this ticket
+// (AGENTS.md: a web-UI change is not verified until a browser has submitted its forms).
+// What this CAN do is fail the moment someone "simplifies" this form back to the
+// `action=""` pattern its sibling pages correctly use.
 const source = readFileSync(
   fileURLToPath(new URL('../src/pages/[locale]/account/reset-password.astro', import.meta.url)),
   'utf8',
 );
 
 describe('the reset form does not post to a URL carrying the token', () => {
-  it('has exactly one form, and its action is not empty', () => {
+  // Asserts the form uses THIS constant, not merely that some expression is present and
+  // the constant exists somewhere (ai-review pass 2 [medium]). The looser pair of checks
+  // this replaces would have passed on `action={somethingElse}` with the safe constant
+  // sitting unused three lines above.
+  it('has exactly one form, and it posts to formAction', () => {
     const forms = source.match(/<form\b[^>]*>/g) ?? [];
     expect(forms).toHaveLength(1);
-
-    // `action=""` and a missing action both resolve to the document URL.
-    expect(forms[0]).not.toMatch(/action=""/);
-    expect(forms[0]).toMatch(/action=\{/);
+    expect(forms[0]).toMatch(/\baction=\{formAction\}/);
   });
 
   it('builds that action from the locale with no query string', () => {

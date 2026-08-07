@@ -16,6 +16,7 @@ package mailer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -23,6 +24,16 @@ import (
 
 	"ticketing/services/commerce/internal/store"
 )
+
+// DeliveredButUnconfirmed prefixes `mail_outbox.last_error` when the sender ACCEPTED a
+// message and the database then refused to record that it had.
+//
+// Such a row ends up looking exactly like one that never left — `sent_at IS NULL`,
+// `dead_lettered_at` set — and the difference matters to the only two people who read it:
+// an operator deciding whether to resend, and support telling a customer whether anything
+// was sent. Exported so a test can assert on the wording rather than duplicating a string
+// that would then be free to drift.
+const DeliveredButUnconfirmed = "DELIVERED-BUT-UNCONFIRMED"
 
 type Drainer struct {
 	db       store.OutboxDB
@@ -125,12 +136,20 @@ func (d *Drainer) DrainOnce(ctx context.Context) int {
 			// failure mails the same reset link forever, to a person.
 			//
 			// The cost is that a dead-lettered row here may have been delivered every
-			// time, so `last_error` on a quarantined message is not proof it never
-			// arrived. That trade is deliberate: ten duplicates and a loud ERROR beats an
+			// time. That trade is deliberate: ten duplicates and a loud ERROR beats an
 			// unbounded loop. The completion outbox takes the opposite branch and is
 			// right to — a republished event is deduped by access on `consumed_events`,
 			// while a re-sent email lands in a human's inbox.
-			if relErr := store.ReleaseMail(ctx, d.db, m.ID, m.ClaimID, err); relErr != nil {
+			//
+			// The cause is PREFIXED, because otherwise this row is indistinguishable from
+			// one that never left (ai-review pass 2 [high]): both end with
+			// `sent_at IS NULL` and `dead_lettered_at` set, and an operator reading
+			// `last_error` would tell a customer no mail was sent when it may have gone
+			// ten times. A marker in the column both a query and a human already read
+			// beats a new column and a new terminal state for a failure that needs writes
+			// to fail while reads succeed. `docs/development.md` carries the wording.
+			cause := fmt.Errorf("%s: %w", DeliveredButUnconfirmed, err)
+			if relErr := store.ReleaseMail(ctx, d.db, m.ID, m.ClaimID, cause); relErr != nil {
 				d.log.ErrorContext(ctx, "release after failing to mark sent", "message_id", m.ID, "err", relErr)
 			}
 			d.log.ErrorContext(ctx, "message was sent but could not be marked sent; it may be delivered again",

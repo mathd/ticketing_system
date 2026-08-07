@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -241,27 +242,66 @@ func TestRequestingTwiceInvalidatesTheFirstToken(t *testing.T) {
 // Concurrent issuance leaves exactly one live token (ai-review [high]).
 //
 // TestRequestingTwiceInvalidatesTheFirstToken is SEQUENTIAL and cannot fail on this:
-// without the FOR UPDATE in RequestPasswordReset, two transactions both see no live
-// token — neither has committed its INSERT — so both invalidate nothing and both
-// insert, and the customer ends up with two live links in two mailboxes.
+// without the FOR UPDATE in RequestPasswordReset, two transactions both see no live token
+// — neither has committed its INSERT — so both invalidate nothing and both insert, and the
+// customer ends up with two live links in two mailboxes.
+//
+// THE OVERLAP IS FORCED, not hoped for (ai-review pass 2 [medium]). A first version just
+// released two goroutines from a channel, and pass 2 was right that this only makes them
+// ELIGIBLE to run: one can finish and commit before the other starts its lookup, so the
+// test could pass against the buggy code. It happened to catch it, which is worse than
+// failing — a probabilistic guard on a credential invariant reads as a proof.
+//
+// The barrier is a row lock held by the test itself. Both implementations — with and
+// without FOR UPDATE — must pass through `UPDATE password_reset_tokens … WHERE
+// customer_id = $1 AND used_at IS NULL`, so locking a live token row of that customer
+// blocks both of them at the same statement. Releasing it lets them proceed genuinely
+// interleaved.
 func TestConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 	db, ctx := outboxDB(t)
 	customer, email := seedCustomer(t, db, ctx, "correct horse battery")
 
-	const racers = 6
+	// A live token to lock. Seeded directly: the barrier needs a row to exist before
+	// either racer runs, which the request path by definition cannot provide.
+	barrierToken := "barrier-" + uuid.NewString()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO password_reset_tokens (token_hash, customer_id, expires_at)
+		VALUES ($1, $2, now() + interval '1 hour')`,
+		hashResetToken(barrierToken), customer); err != nil {
+		t.Fatalf("seed the barrier token: %v", err)
+	}
+
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	if _, err := blocker.ExecContext(ctx,
+		`SELECT token_hash FROM password_reset_tokens WHERE customer_id = $1 AND used_at IS NULL FOR UPDATE`,
+		customer); err != nil {
+		_ = blocker.Rollback()
+		t.Fatalf("hold the barrier: %v", err)
+	}
+
+	const racers = 2
 	var wg sync.WaitGroup
 	tokens := make([]string, racers)
 	errs := make([]error, racers)
-	start := make(chan struct{})
 	for i := range racers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			<-start
 			_, errs[i] = RequestPasswordReset(ctx, db, email, composeFor(&tokens[i]))
 		}(i)
 	}
-	close(start)
+
+	// Both racers are now blocked: with the fix, one holds the customer row and waits on
+	// the token row while the other waits on the customer row; without it, both wait on
+	// the token row. Either way neither can commit until this releases, which is what
+	// makes the overlap real rather than likely.
+	waitForBlockedOn(t, db, ctx, racers)
+	if err := blocker.Rollback(); err != nil {
+		t.Fatalf("release the barrier: %v", err)
+	}
 	wg.Wait()
 
 	for i, err := range errs {
@@ -270,11 +310,11 @@ func TestConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 		}
 	}
 	if n := liveTokenCount(t, db, ctx, customer); n != 1 {
-		t.Fatalf("live tokens = %d after %d concurrent requests, want 1", n, racers)
+		t.Fatalf("live tokens = %d after %d genuinely overlapped requests, want 1", n, racers)
 	}
-	// And exactly one of the minted tokens is the live one — the rest are dead, so a
-	// buyer who opens an earlier mail gets the ordinary refusal rather than a working
-	// link to an account whose password someone else may already be changing.
+	// And exactly one of the minted tokens is the live one, so a buyer opening the earlier
+	// mail gets the ordinary refusal rather than a working link to an account whose
+	// password someone else may already be changing.
 	var usable int
 	for _, tok := range tokens {
 		if tok == "" {
@@ -288,6 +328,107 @@ func TestConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
 	}
 	if usable != 1 {
 		t.Fatalf("%d of the concurrently minted tokens were redeemable, want exactly 1", usable)
+	}
+}
+
+// waitForBlockedOn blocks until `want` backends are waiting on a lock, so the barrier is
+// released only once every racer has genuinely arrived at it. Polling pg_stat_activity is
+// what turns "probably overlapped" into "observed overlapped"; a sleep would just move the
+// guess somewhere less visible.
+func waitForBlockedOn(t *testing.T, db *sql.DB, ctx context.Context, want int) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var blocked int
+		if err := db.QueryRowContext(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active'`).
+			Scan(&blocked); err != nil {
+			t.Fatalf("inspect lock waits: %v", err)
+		}
+		if blocked >= want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("only saw fewer than %d backends blocked on a lock; the barrier never engaged and this test would prove nothing", want)
+}
+
+// Issuance and redemption must take their locks in the SAME order (ai-review pass 2
+// [high]). This is a regression test for a deadlock the FIRST fix introduced.
+//
+// Issuance locks the customer row and then updates that customer's token rows. Redemption
+// originally did the reverse — redeemed the token, then updated customer_accounts — so a
+// customer with a live token could have a request and a redemption form a cycle: issuance
+// holding the customer and waiting for the token, redemption holding the token and waiting
+// for the customer. Postgres breaks the cycle by aborting one, which is a 500 on a recovery
+// path.
+//
+// FORCING IT, rather than looping and hoping: the test holds the customer row, starts
+// issuance (which blocks on it), waits until that is observed, then starts redemption
+// (which under the old order grabs the token first, then queues behind issuance for the
+// customer). Releasing lets issuance take the customer and reach for a token redemption
+// already holds — the cycle, deterministically. Under the corrected order redemption holds
+// nothing while it waits, so there is no cycle to form and it simply finds the token
+// invalidated.
+func TestIssuanceAndRedemptionDoNotDeadlock(t *testing.T) {
+	db, ctx := outboxDB(t)
+	customer, email := seedCustomer(t, db, ctx, "correct horse battery")
+
+	var live string
+	if _, err := RequestPasswordReset(ctx, db, email, composeFor(&live)); err != nil {
+		t.Fatalf("seed a live token: %v", err)
+	}
+
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	if _, err := blocker.ExecContext(ctx,
+		`SELECT id FROM customer_accounts WHERE id = $1 FOR UPDATE`, customer); err != nil {
+		_ = blocker.Rollback()
+		t.Fatalf("hold the customer row: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var issueErr, redeemErr error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, issueErr = RequestPasswordReset(ctx, db, email, composeFor(nil))
+	}()
+	// Issuance must be queued for the customer row BEFORE redemption starts, or the
+	// waiters line up in the order that cannot deadlock and the test proves nothing.
+	waitForBlockedOn(t, db, ctx, 1)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, redeemErr = CompletePasswordReset(ctx, db, live, "a new password")
+	}()
+	waitForBlockedOn(t, db, ctx, 2)
+
+	if err := blocker.Rollback(); err != nil {
+		t.Fatalf("release the barrier: %v", err)
+	}
+	wg.Wait()
+
+	// SQLSTATE 40P01. Neither operation may report it — a deadlock here is a 500 for a
+	// buyer who is trying to get back into their account.
+	for label, err := range map[string]error{"issuance": issueErr, "redemption": redeemErr} {
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, ErrResetTokenUnusable) {
+			// Redemption losing its token to a concurrent issuance is the ORDINARY
+			// outcome of this interleaving, not a failure.
+			continue
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.SQLState() == "40P01" {
+			t.Fatalf("%s deadlocked: issuance and redemption take their locks in different orders", label)
+		}
+		t.Fatalf("%s failed unexpectedly: %v", label, err)
 	}
 }
 
