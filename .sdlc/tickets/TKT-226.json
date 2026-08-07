@@ -1,0 +1,96 @@
+{
+  "key": "TKT-226",
+  "type": "Story",
+  "parent": "TKT-21",
+  "classification": "complex",
+  "summary": "A mail path — the missing capability three TKT-21 decisions were shaped around",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "description": "**As** a buyer who forgot their password, **I want** a way back into my account,\n**so that** creating one is not a trap.\n\nFiled after TKT-21 closed, because the epic kept running into the same wall. ADR-049 states it\nplainly: *\"This repo has no mail path. No SMTP, no queue, no provider. Every design that depends on\nsending mail — email verification, password reset, 'we sent the owner a note' on a duplicate\nregistration — is unavailable, not merely unbuilt.\"*\n\n**Three separate decisions were shaped by that absence, and two of them are worse than they need to\nbe:**\n\n1. **Registration answers 409 on a duplicate** — an unauthenticated, unrate-limited membership oracle\n   over the whole customer base (ADR-049 §2). The standard mitigation is *answer 201 and mail the\n   owner*. **TKT-224** exists to rate-limit a disclosure that mail would remove outright.\n2. **There is no password recovery of any kind.** `docs/development.md` § Customer accounts: *\"A\n   customer who forgets their password cannot get back in.\"* That is the largest hole in what TKT-21\n   shipped, and it has no ticket until this one.\n3. **No email verification**, so an account can register any address it does not own.\n\n**This is a prerequisite, not a follow-up.** Two of the epic's three filed follow-ups exist to work\naround it.\n\n**Acceptance Criteria:**\n- [ ] The service can send a transactional message, and **the plan states which service owns that\n  capability and why** (ADR-002 cuts at five services; a mail sender belongs to one of them or the\n  deviation is an ADR). Note that `access` already owns ticket *delivery* — say whether this is the\n  same concern or a different one.\n- [ ] A **local, offline sender** for `make up` and the smoke suite that captures messages instead of\n  sending them — the gate must not depend on a network or a provider account, and a test must be able\n  to assert what would have been sent.\n- [ ] The plan states what happens when sending **fails**. A password reset that silently does not\n  arrive is worse than one that refuses, and this is a queue-vs-inline decision with an ADR-016-shaped\n  recovery question behind it.\n- [ ] **Password reset** end to end: request, a single-use time-bounded token, set a new password,\n  and every existing session for that customer invalidated (ADR-049 §4's session map is in-process —\n  say how, or say it cannot and why that is acceptable).\n- [ ] The reset flow does **not** reintroduce an enumeration oracle: requesting a reset for an\n  unknown address answers the same as for a known one.\n- [ ] The plan says whether TKT-224's **409 disclosure is now narrowed** (ADR-049 §2 becomes\n  revisitable once mail exists) — decided either way, with the reason.\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code committed BEFORE the gate runs (ADR-009).\n\n**Non-goals:** marketing email, templates or branding · a provider integration beyond one port with\none fake (ADR-032's PSP-port shape is the precedent) · rate limiting (TKT-224) · GDPR retention of\nmessage logs (TKT-33).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A buyer who forgets their password can get back in, and the system can send a transactional message without a network."
+    },
+    "scope": {
+      "state": "met",
+      "note": "One sending port, one offline fake, one reset flow. Not templates, not marketing, not a provider account."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "(a) which of the five services owns sending — access already owns ticket delivery, which may or may not be the same concern; (b) queue vs inline and what a send failure does; (c) whether reset invalidates in-process sessions or admits it cannot. All three are plan decisions with the constraints written down; none blocks starting."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. TKT-220..223 are Done and this depends on nothing they left open."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror ADR-032's PSP port: one interface, one fake used by make up and the smoke suite, one real implementation behind config. The fake is what makes the gate hermetic."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The port plus the offline fake plus password reset. Verification and the 409 narrowing are separable and come after."
+    },
+    "success": {
+      "state": "met",
+      "note": "Deterministic: a captured message asserted by a test, a reset that works end to end, and an unknown-address request that is indistinguishable from a known one."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked 2026-08-06 (post-epic)."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-06",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-06",
+        "rule": "Local gate: `make check` (lint + test + build, Go & TS, plus the gateway smoke suite). CI runs the same gate - keep them mirrored. Commit regenerated code before running the gate."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-049",
+        "why": "States the absence this ticket closes, and the three decisions shaped around it: the 409 oracle (§2), no recovery path (Consequences), and the in-process session map (§4) that a reset would have to invalidate."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Five services. A mail sender lands inside one or the deviation is an ADR - and `access` already owns ticket DELIVERY, which is the closest existing concern."
+      },
+      {
+        "id": "ADR-032",
+        "why": "The shape to copy: a provider behind a port with a fake, so the gate never needs a real account or a network."
+      },
+      {
+        "id": "ADR-016",
+        "why": "A send that can fail and be retried is a recovery-state question, and this repo has an opinion about those."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary. 'The reset link is single-use' means what, against whom - someone reading a mailbox, or someone with database access?"
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The disclosure this would let us close: ADR-049 §2 accepts registration's 409 as an unauthenticated membership oracle explicitly BECAUSE no mail path exists. TKT-224 is the mitigation built around it.",
+        "link": "docs/adr/ADR-049-customer-identity-and-storefront-sessions.md"
+      },
+      {
+        "summary": "The operator-facing statement of the gap, already written: docs/development.md, 'There is no password recovery.'",
+        "link": "docs/development.md"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | A buyer locked out of their own account can get back in |\n| Scope | OK | One port, one fake, one reset flow |\n| Uncertainties | WARN | Three, all deferred to plan time with their constraints written down |\n| Dependencies | OK | None |\n| AC verifiable | OK | Every criterion is a test or a stated decision |\n| Context-mémo | OK | Baked, with the ADR-049 sections that constrain it |\n\n**Concerns:**\n\n1. **Ownership is genuinely undecided.** `access` owns ticket delivery today, which is either the\n   same concern (one sender, two callers) or a different one (transactional identity mail is not\n   fulfilment). Getting it wrong is a service-boundary mistake that costs a migration.\n2. **This ticket makes TKT-224 partly redundant, and that is the point.** Rate limiting was designed\n   around a disclosure mail removes. Whoever plans this should read TKT-224 first and say whether it\n   shrinks.\n\n**Verdict:** CONCERNS — proceedable. Nothing structural; the uncertainties are decisions, not\nunknowns."
+    }
+  ]
+}
