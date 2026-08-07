@@ -81,6 +81,28 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     // store and the handler go to some trouble to prevent.
     credentialsInvalid: 'Those credentials are not valid.',
     accountTaken: 'An account already exists for that address.',
+    // Password recovery (TKT-226).
+    forgotPassword: 'Forgot your password?',
+    forgotPasswordCta: 'Forgotten your password?',
+    forgotPasswordIntro:
+      'Enter the address you registered with and we will send you a link to choose a new password.',
+    sendResetLink: 'Send a reset link',
+    // The ONE answer, for a known and an unknown address alike. It says what was
+    // done, not what was found — "if that address has an account" is what keeps the
+    // page from being the membership oracle the endpoint refuses to be. Wording it
+    // as a promise ("we sent you an email") would be a lie for the unknown case.
+    resetRequested:
+      'If that address has an account, a reset link is on its way. The link works once and expires in an hour.',
+    chooseNewPassword: 'Choose a new password',
+    newPassword: 'New password',
+    setNewPassword: 'Set the new password',
+    // A dead link is not a credential verdict and not an outage. It sends the buyer
+    // back to ask for another one, which is the only thing that helps them.
+    resetLinkDead: 'That reset link is invalid or has expired. Ask for a new one.',
+    resetDone: 'Your password has been changed. Sign in with it.',
+    // Every other session for this customer ended, which is the point rather than a
+    // side effect: a reset the owner performs must sign out whoever else was in.
+    resetSignedOutEverywhere: 'Any other devices signed in to this account have been signed out.',
     // An outage is NOT a credential verdict: telling someone their correct
     // password is wrong sends them to reset it while the real fault goes
     // unreported.
@@ -153,6 +175,20 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     signedInAs: 'Connecté en tant que',
     credentialsInvalid: 'Ces identifiants ne sont pas valides.',
     accountTaken: 'Un compte existe déjà pour cette adresse.',
+    forgotPassword: 'Mot de passe oublié ?',
+    forgotPasswordCta: 'Mot de passe oublié ?',
+    forgotPasswordIntro:
+      'Saisissez l’adresse utilisée à l’inscription et nous vous enverrons un lien pour choisir un nouveau mot de passe.',
+    sendResetLink: 'Envoyer un lien',
+    resetRequested:
+      'Si cette adresse a un compte, un lien est en route. Il ne fonctionne qu’une fois et expire dans une heure.',
+    chooseNewPassword: 'Choisissez un nouveau mot de passe',
+    newPassword: 'Nouveau mot de passe',
+    setNewPassword: 'Enregistrer le mot de passe',
+    resetLinkDead: 'Ce lien est invalide ou a expiré. Demandez-en un nouveau.',
+    resetDone: 'Votre mot de passe a été modifié. Connectez-vous avec celui-ci.',
+    resetSignedOutEverywhere:
+      'Les autres appareils connectés à ce compte ont été déconnectés.',
     accountUnavailable: 'Les comptes sont temporairement indisponibles. Réessayez sous peu.',
     accountCreatedSignInLater:
       'Votre compte a été créé, mais la connexion est temporairement indisponible. Réessayez de vous connecter sous peu.',

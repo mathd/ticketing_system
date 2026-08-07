@@ -289,6 +289,38 @@ export function destroySession(token: string): void {
 }
 
 /**
+ * Every session belonging to one customer, ended (TKT-226).
+ *
+ * This is what a password reset calls, and the threat it closes is the one that
+ * makes "reset your password" mean anything: an attacker holding a stolen live
+ * session is signed out when the real owner recovers the account. Changing the
+ * credential alone would not do it — the session map never re-checks a password.
+ *
+ * Scoped to ONE customer, never global. A reset must not sign out strangers.
+ *
+ * Returns how many were destroyed, for the caller's log and because a function
+ * whose only evidence is absence is a function a test cannot distinguish from a
+ * no-op.
+ *
+ * WHAT THIS CANNOT DO, said here rather than implied (ADR-050 names it too): it
+ * ends sessions in THIS process. Sessions are in-process by ADR-049 §4, so a
+ * second replica keeps its own, and a reset completed by calling commerce
+ * directly — the operation is public contract — never reaches this function at
+ * all. The storefront route is the path that closes the gap; it is not closed by
+ * commerce.
+ */
+export function destroyAllSessionsForCustomer(customerId: string): number {
+  let destroyed = 0;
+  for (const [token, entry] of sessions) {
+    if (entry.principal.customerId === customerId) {
+      sessions.delete(token);
+      destroyed++;
+    }
+  }
+  return destroyed;
+}
+
+/**
  * The cookie is scoped to the whole origin, and that is a DEPARTURE from the back
  * office's `/admin`-scoped cookie. ADR-049 argues it; the short version:
  *

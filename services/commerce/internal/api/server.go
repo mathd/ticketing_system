@@ -50,6 +50,11 @@ type Server struct {
 	// leaves the obligation outstanding rather than failing the refund — the money has
 	// already moved by then.
 	accessURL string
+	// publicURL is the buyer-facing origin password-reset links are built from
+	// (TKT-226). Server-configured and never derived from a request: a link base taken
+	// from the Host header lets a caller mail a victim a genuine reset link pointing at
+	// the attacker's site. Mirrors access's PUBLIC_BASE_URL.
+	publicURL string
 	publisher commerceevents.Publisher
 	// refunds is the one unit of work for refunding an order, shared with the
 	// event-cancellation bulk runner (TKT-159). Rebuilt by WithAccess because the access
@@ -97,6 +102,12 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// and the gateway edge-denies /api/commerce/internal/ by construction.
 	r.Post("/customers", s.registerCustomer)
 	r.Post("/customers/authenticate", s.authenticateCustomer)
+	// Password recovery (TKT-226). Public for the same reason the two above are: the
+	// caller is by definition someone who cannot sign in, so no credential exists to
+	// present. STATIC segments under /customers — chi prefers static over a parameter,
+	// so neither is read as a customer id, and a routing test asserts it.
+	r.Post("/customers/password-reset", s.requestPasswordReset)
+	r.Post("/customers/password-reset/complete", s.completePasswordReset)
 	// The wallet (TKT-222). Public surface, identified by the assertion — the
 	// storefront still holds no service credential.
 	r.Get("/customers/{id}/orders", s.listCustomerOrders)

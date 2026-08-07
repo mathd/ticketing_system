@@ -223,6 +223,13 @@ services:
       # returns the money and leaves the reversal outstanding rather than refusing to
       # start.
       ACCESS_URL: http://access:8080
+      # The buyer-facing origin password-reset links are built from (TKT-226). Same
+      # variable and same meaning as access's, which already builds ticket-delivery
+      # links from it. Commerce NEVER derives this from a request: a link base taken
+      # from the Host header lets a caller mail a victim a genuine reset link pointing
+      # at the attacker's site. Unset degrades to a WARN at startup and undeliverable
+      # reset mail — every other operation still serves.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
 
   payments-migrate:
     <<: *migrate-job

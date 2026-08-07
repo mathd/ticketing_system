@@ -200,6 +200,11 @@ func (e ReservationFeeBreakdownIncidence) Valid() bool {
 	}
 }
 
+// Accepted A deliberately contentless acknowledgement. It says nothing about whether anything was enqueued, because saying so is the disclosure the operation exists to avoid.
+type Accepted struct {
+	Status string `json:"status"`
+}
+
 // CancellationRefundCounts defines model for CancellationRefundCounts.
 type CancellationRefundCounts struct {
 	AlreadyRefunded int `json:"already_refunded"`
@@ -451,6 +456,23 @@ type OrderState struct {
 	Status     string              `json:"status"`
 }
 
+// PasswordResetCompletion A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.
+// The password floor is 8 here and not 1, unlike sign-in. Sign-in verifies an existing credential and must not refuse a short one differently from a wrong one; this operation SETS a credential, so it is where the policy belongs — the same place registration puts it.
+type PasswordResetCompletion struct {
+	Password string `json:"password"`
+	Token    string `json:"token"`
+}
+
+// PasswordResetRequest An address to send a reset link to (TKT-226). minLength 1, deliberately — not 3 as on registration. A floor that refuses a short address BEFORE the lookup would answer differently from one that reaches it, which is the same oracle CustomerCredentials avoids by using 1 instead of 8 on the password.
+type PasswordResetRequest struct {
+	Email string `json:"email"`
+}
+
+// PasswordResetResult The customer whose password was replaced. Returned so the caller can destroy that customer's storefront sessions; it is not a principal and carries no assertion — completing a reset is not signing in.
+type PasswordResetResult struct {
+	CustomerId openapi_types.UUID `json:"customer_id"`
+}
+
 // Refund defines model for Refund.
 type Refund struct {
 	Amount           int64              `json:"amount"`
@@ -613,6 +635,12 @@ type RegisterCustomerJSONRequestBody = CustomerRegistration
 
 // AuthenticateCustomerJSONRequestBody defines body for AuthenticateCustomer for application/json ContentType.
 type AuthenticateCustomerJSONRequestBody = CustomerCredentials
+
+// RequestPasswordResetJSONRequestBody defines body for RequestPasswordReset for application/json ContentType.
+type RequestPasswordResetJSONRequestBody = PasswordResetRequest
+
+// CompletePasswordResetJSONRequestBody defines body for CompletePasswordReset for application/json ContentType.
+type CompletePasswordResetJSONRequestBody = PasswordResetCompletion
 
 // ExchangeTicketsSwitchedJSONRequestBody defines body for ExchangeTicketsSwitched for application/json ContentType.
 type ExchangeTicketsSwitchedJSONRequestBody = ExchangeSwitched

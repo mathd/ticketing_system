@@ -15,9 +15,16 @@ import { LOCALES } from './locales';
 /** `/en/account`, `/fr/account/…` — and nothing else. */
 const ACCOUNT_PATH = new RegExp(`^/(?:${LOCALES.join('|')})/account(?:/|$)`);
 
-/** The two account pages a signed-out buyer must be able to reach. */
+/**
+ * The account pages a signed-out buyer must be able to reach.
+ *
+ * The two recovery pages (TKT-226) belong here for a reason worth stating: their
+ * entire audience is people who CANNOT sign in. Gating them would redirect a
+ * locked-out buyer to the sign-in form they are locked out of — the trap this
+ * feature exists to remove, rebuilt one layer up.
+ */
 const ANONYMOUS_ACCOUNT_PATH = new RegExp(
-  `^/(?:${LOCALES.join('|')})/account/(?:register|sign-in)/?$`,
+  `^/(?:${LOCALES.join('|')})/account/(?:register|sign-in|forgot-password|reset-password)/?$`,
 );
 
 /**
