@@ -189,3 +189,10 @@ exists are in *Historical* at the bottom; their files are kept.
   — TKT-217. A mutant survived because the test database was migrated from an earlier revision of
   the same unreleased migration; goose does not re-run a changed file. Recreate the database before
   mutation-checking anything schema-adjacent. And a gate result only describes the tree it ran on.
+- [`Referrer-Policy: no-referrer` nulls the `Origin` header](learnings/2026-08-07-no-referrer-nulls-the-origin-header.md)
+  — TKT-226. Chrome sends `Origin: null` on a form POST from a `no-referrer` page, so the
+  storefront's origin check 403'd **every password reset before the handler ran** — past four green
+  gates, two adversarial passes and 166 unit tests. `Referrer-Policy: origin` keeps `Origin` intact
+  and still strips path and query. A header that changes what the browser *sends next* cannot be
+  judged from either file alone. Third instance of render-is-not-submit (TKT-105, TKT-220); the
+  evidence for **TKT-196**.
