@@ -231,60 +231,92 @@ func TestAPoisonMessageIsDeadLetteredAndStopsBeingClaimed(t *testing.T) {
 	}
 }
 
+// retirementFailsDB fails EXACTLY the mark-sent statement and passes everything else to
+// the real database.
+//
+// The seam is `store.OutboxDB`, which the Drainer already takes — no production code is
+// reshaped for this test. Matching on `sent_at=now()` is precise: MarkMailSent SETs it,
+// while ReleaseMail only mentions `sent_at IS NULL` in its WHERE, so the release path
+// this test exists to exercise still reaches Postgres for real.
+//
+// The first version of this test tried to induce the failure by stealing the row's
+// claim_id after DrainOnce returned. It could not fail: MarkMailSent runs INSIDE
+// DrainOnce, so the steal landed after the row was already retired and the loop only ever
+// completed one attempt. Asking what a fixture can distinguish before debugging a red
+// test is the rule that catches this (AGENTS.md).
+type retirementFailsDB struct {
+	store.OutboxDB
+	err error
+}
+
+func (d retirementFailsDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if strings.Contains(query, "sent_at=now()") {
+		return nil, d.err
+	}
+	return d.OutboxDB.ExecContext(ctx, query, args...)
+}
+
 // A send that succeeded but could not be retired must not resend forever
 // (ai-review [high]).
 //
-// Driven by taking the row's claim away between Send and MarkMailSent, which is the
-// same observable state a failed retirement leaves: sent_at NULL and this drainer no
-// longer able to retire it. Without the ReleaseMail call on that branch the row keeps
-// its lease, lapses, is re-claimed, sends again — unbounded, to a human's inbox.
+// Without the ReleaseMail call on that branch the row keeps its lease, lapses, is
+// re-claimed, sends again, fails to retire again — unbounded, to a human's inbox.
 //
 // What is asserted is BOUNDEDNESS, not absence of duplicates: the port accepts
-// at-least-once, so a duplicate email is the accepted cost. Ten of them is not.
+// at-least-once, so a duplicate email is the accepted cost. An unbounded stream is not.
+//
+// Precisely what this observes, since the name promises more than one test can watch: it
+// asserts the row reaches QUARANTINE, and that deliveries stop there. It does not sit and
+// count an unbounded resend — that needs the lease to lapse, and the lease is minutes
+// long. Run against the pre-fix code the failure is `attempts=1` with no quarantine,
+// because the row is stuck holding a lease nothing ever clears; the resend is what happens
+// to that row in production once the lease expires.
 func TestASendThatCannotBeRetiredIsBoundedRatherThanRepeatedForever(t *testing.T) {
 	db, ctx := drainerDB(t)
 	to := uniqueRecipient()
 	id := enqueue(t, db, ctx, to, "Reset your password", "https://x.test/r?token=abc")
 
 	f := mail.NewFake()
-	d := New(db, f, time.Second, 32, quiet())
+	d := New(retirementFailsDB{OutboxDB: db, err: errors.New("connection reset")}, f, time.Second, 32, quiet())
 
-	// Each pass: clear the backoff so the loop drives attempts rather than the clock,
-	// and steal the claim so retirement cannot succeed.
+	// Clear the backoff each pass so the loop drives attempts rather than the clock.
 	for range store.MaxMailAttempts + 1 {
 		if _, err := db.ExecContext(ctx,
-			`UPDATE mail_outbox SET next_attempt_at=now(), lease_until=NULL WHERE id=$1`, id); err != nil {
-			t.Fatalf("reset row for pass: %v", err)
+			`UPDATE mail_outbox SET next_attempt_at=now() WHERE id=$1`, id); err != nil {
+			t.Fatalf("clear backoff: %v", err)
 		}
-		// Claim it away from under the drainer mid-pass by rewriting claim_id after the
-		// drainer's own claim: MarkMailSent is conditional on claim_id, so this is the
-		// retirement failure without needing a broken database.
 		d.DrainOnce(ctx)
-		if _, err := db.ExecContext(ctx,
-			`UPDATE mail_outbox SET claim_id=gen_random_uuid() WHERE id=$1 AND sent_at IS NULL`, id); err != nil {
-			t.Fatalf("steal claim: %v", err)
-		}
 	}
 
-	_, deadAt, attempts, _ := rowState(t, db, ctx, id)
+	sentAt, deadAt, attempts, lastErr := rowState(t, db, ctx, id)
+	if sentAt.Valid {
+		t.Fatal("the row was retired even though the mark-sent statement always failed")
+	}
 	if !deadAt.Valid {
 		t.Fatalf("a row that keeps failing to retire must be quarantined, not retried forever (attempts=%d)", attempts)
 	}
-	// Bounded: the fake recorded a delivery per attempt, and the attempts stopped.
+	if !lastErr.Valid || lastErr.String == "" {
+		t.Fatal("an operator needs the cause on a quarantined row")
+	}
+
+	// Bounded: one delivery per attempt, and the attempts stopped.
 	sentCount := 0
 	for _, m := range f.Sent() {
 		if m.To == to {
 			sentCount++
 		}
 	}
+	if sentCount == 0 {
+		t.Fatal("nothing was delivered at all; this test would pass vacuously")
+	}
 	if sentCount > store.MaxMailAttempts+1 {
 		t.Fatalf("the message was delivered %d times, want at most %d", sentCount, store.MaxMailAttempts+1)
 	}
-	// And it stops entirely once quarantined.
-	if _, err := db.ExecContext(ctx, `UPDATE mail_outbox SET next_attempt_at=now(), lease_until=NULL WHERE id=$1`, id); err != nil {
+
+	// And it stops entirely once quarantined, even with the backoff cleared.
+	if _, err := db.ExecContext(ctx, `UPDATE mail_outbox SET next_attempt_at=now() WHERE id=$1`, id); err != nil {
 		t.Fatalf("clear backoff: %v", err)
 	}
-	before := sentCount
 	d.DrainOnce(ctx)
 	after := 0
 	for _, m := range f.Sent() {
@@ -292,8 +324,8 @@ func TestASendThatCannotBeRetiredIsBoundedRatherThanRepeatedForever(t *testing.T
 			after++
 		}
 	}
-	if after != before {
-		t.Fatal("a dead-lettered row was sent again")
+	if after != sentCount {
+		t.Fatalf("a dead-lettered row was sent again (%d → %d)", sentCount, after)
 	}
 }
 
