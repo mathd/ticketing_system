@@ -88,10 +88,20 @@ func TestRequestPasswordResetCommitsOneTokenAndOneMessage(t *testing.T) {
 	}
 }
 
-// The database must never hold a usable token. This is the one property the SHA-256
-// column buys (migration 0018 says so), and it is worth proving rather than assuming:
-// a refactor that stored the raw value would break nothing else in this file.
-func TestTheRawTokenIsNeverStored(t *testing.T) {
+// `password_reset_tokens` never holds a usable token — and the name of this test says
+// exactly that much and no more (ai-review [high]).
+//
+// It was first written as `TestTheRawTokenIsNeverStored`, which is FALSE: the composed
+// message in `mail_outbox` contains the live reset link until the row is sent, and the
+// scan below would have passed anyway because it only looks at one table. A test whose
+// name claims more than it checks is worse than no test — it is the thing someone cites
+// later to argue the credential is not at rest.
+//
+// The outbox exposure is real, deliberate and documented (ADR-050 §"the adversary",
+// development.md, and 0018's own comment): something has to hold the message until it is
+// sent. TestTheOutboxDoesHoldTheLiveLink below pins it as a KNOWN state rather than
+// leaving it to be discovered.
+func TestThePasswordResetTokenTableStoresOnlyAHash(t *testing.T) {
 	db, ctx := outboxDB(t)
 	_, email := seedCustomer(t, db, ctx, "correct horse battery")
 
@@ -118,6 +128,38 @@ func TestTheRawTokenIsNeverStored(t *testing.T) {
 	}
 	if found != 0 {
 		t.Fatal("the raw token appears in password_reset_tokens")
+	}
+}
+
+// The outbox DOES hold the live link, and this pins it as a known accepted state rather
+// than an undiscovered one (ai-review [high]).
+//
+// If this test ever fails, something started encrypting or externalising the message
+// body — which would be an improvement, and the right response is to update ADR-050's
+// adversary section and development.md's warning, NOT to delete this test.
+func TestTheOutboxDoesHoldTheLiveLinkUntilItIsSent(t *testing.T) {
+	db, ctx := outboxDB(t)
+	_, email := seedCustomer(t, db, ctx, "correct horse battery")
+
+	var raw string
+	if _, err := RequestPasswordReset(ctx, db, email, composeFor(&raw)); err != nil {
+		t.Fatalf("request: %v", err)
+	}
+
+	var body string
+	if err := db.QueryRowContext(ctx,
+		`SELECT body FROM mail_outbox WHERE recipient=$1 ORDER BY created_at DESC LIMIT 1`,
+		email).Scan(&body); err != nil {
+		t.Fatalf("read the enqueued message: %v", err)
+	}
+	if !strings.Contains(body, raw) {
+		t.Fatal("the enqueued message does not contain the token — the buyer would receive a dead link")
+	}
+	// Said out loud: a database reader can redeem this until it expires or is used.
+	// That is the documented cost of holding a message before sending it (TKT-33 owns
+	// retention).
+	if _, err := CompletePasswordReset(ctx, db, raw, "read from the outbox"); err != nil {
+		t.Fatalf("a token read out of mail_outbox is redeemable, and that is the point being pinned: %v", err)
 	}
 }
 
@@ -193,6 +235,59 @@ func TestRequestingTwiceInvalidatesTheFirstToken(t *testing.T) {
 	}
 	if _, err := CompletePasswordReset(ctx, db, second, "a new password"); err != nil {
 		t.Fatalf("the current token must work, got %v", err)
+	}
+}
+
+// Concurrent issuance leaves exactly one live token (ai-review [high]).
+//
+// TestRequestingTwiceInvalidatesTheFirstToken is SEQUENTIAL and cannot fail on this:
+// without the FOR UPDATE in RequestPasswordReset, two transactions both see no live
+// token — neither has committed its INSERT — so both invalidate nothing and both
+// insert, and the customer ends up with two live links in two mailboxes.
+func TestConcurrentIssuanceLeavesOneLiveToken(t *testing.T) {
+	db, ctx := outboxDB(t)
+	customer, email := seedCustomer(t, db, ctx, "correct horse battery")
+
+	const racers = 6
+	var wg sync.WaitGroup
+	tokens := make([]string, racers)
+	errs := make([]error, racers)
+	start := make(chan struct{})
+	for i := range racers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = RequestPasswordReset(ctx, db, email, composeFor(&tokens[i]))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("racer %d: %v", i, err)
+		}
+	}
+	if n := liveTokenCount(t, db, ctx, customer); n != 1 {
+		t.Fatalf("live tokens = %d after %d concurrent requests, want 1", n, racers)
+	}
+	// And exactly one of the minted tokens is the live one — the rest are dead, so a
+	// buyer who opens an earlier mail gets the ordinary refusal rather than a working
+	// link to an account whose password someone else may already be changing.
+	var usable int
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		if _, err := CompletePasswordReset(ctx, db, tok, "a new password"); err == nil {
+			usable++
+		} else if !errors.Is(err, ErrResetTokenUnusable) {
+			t.Fatalf("unexpected error redeeming a raced token: %v", err)
+		}
+	}
+	if usable != 1 {
+		t.Fatalf("%d of the concurrently minted tokens were redeemable, want exactly 1", usable)
 	}
 }
 

@@ -266,6 +266,18 @@ func run() error {
 	// When a provider lands it is selected here, beside this comment, and nothing else
 	// about the reset path changes.
 	mailSender := mail.NewFake()
+	// Say so at startup, at WARN, every boot (ai-review [critical], partly upheld).
+	//
+	// The review pass called the fake-by-default wiring a critical defect. As a design
+	// judgement that is refused — it is ADR-032's rule and TKT-226's stated non-goal —
+	// but the risk underneath it is real and was not addressed: a row reaches `sent_at`
+	// and LOOKS delivered while nobody received anything, so an operator can believe
+	// mail works. A running process must not be silent about that.
+	//
+	// WARN and not INFO: this is a state to escalate out of, not a configuration to
+	// settle into.
+	log.WarnContext(ctx, "transactional mail sender is the offline fake; messages are captured and NEVER delivered",
+		"sender", "fake", "read_them_in", "mail_outbox")
 	mailDrainer := mailer.New(db, mailSender, drainInterval(), drainBatch(), log)
 	stopMailDrainer := start(log, "mail drainer", mailDrainer.Run)
 

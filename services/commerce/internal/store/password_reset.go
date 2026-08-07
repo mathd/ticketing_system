@@ -103,10 +103,23 @@ func RequestPasswordReset(
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// FOR UPDATE, and it is load-bearing rather than defensive (ai-review [high]).
+	//
+	// Without it, two concurrent requests for the same address BOTH see no live token
+	// — neither has committed its INSERT yet — so both invalidate nothing, both insert,
+	// and the customer ends up with two live tokens in two mailboxes. The "issuing
+	// invalidates the outstanding ones" rule below would silently be a rule about
+	// sequential requests only, and the test that covers it is sequential.
+	//
+	// The CUSTOMER row is the right lock identity: both transactions resolve the same
+	// account, so the second blocks here, and once it proceeds the invalidating UPDATE
+	// sees the first's committed token. This is NOT ADR-029's trap, where a row lock
+	// fails because the conflicting write INSERTs a different row — there, the locked
+	// row was not the one both writers contended on. Here it is.
 	var customerID uuid.UUID
 	var display string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, email FROM customer_accounts WHERE email_key = $1`, key).
+		SELECT id, email FROM customer_accounts WHERE email_key = $1 FOR UPDATE`, key).
 		Scan(&customerID, &display)
 	if errors.Is(err, sql.ErrNoRows) {
 		// No account. Commit nothing, report nothing, and let the caller answer

@@ -115,7 +115,26 @@ func (d *Drainer) DrainOnce(ctx context.Context) int {
 		// retiring here would mask its outcome.
 		retired, err := store.MarkMailSent(ctx, d.db, m.ID, m.ClaimID)
 		if err != nil {
-			d.log.ErrorContext(ctx, "mark message sent", "message_id", m.ID, "err", err)
+			// The message WAS sent and the row still says it was not, so it will be
+			// claimed and sent again once the lease lapses. That is at-least-once, which
+			// the port accepts — but only if it is BOUNDED (ai-review [high]).
+			//
+			// Releasing is what bounds it: it applies the backoff and, after
+			// MaxMailAttempts, dead-letters. Without it the row keeps its lease, expires,
+			// is re-claimed, sends again, fails to retire again — a persistent write
+			// failure mails the same reset link forever, to a person.
+			//
+			// The cost is that a dead-lettered row here may have been delivered every
+			// time, so `last_error` on a quarantined message is not proof it never
+			// arrived. That trade is deliberate: ten duplicates and a loud ERROR beats an
+			// unbounded loop. The completion outbox takes the opposite branch and is
+			// right to — a republished event is deduped by access on `consumed_events`,
+			// while a re-sent email lands in a human's inbox.
+			if relErr := store.ReleaseMail(ctx, d.db, m.ID, m.ClaimID, err); relErr != nil {
+				d.log.ErrorContext(ctx, "release after failing to mark sent", "message_id", m.ID, "err", relErr)
+			}
+			d.log.ErrorContext(ctx, "message was sent but could not be marked sent; it may be delivered again",
+				"message_id", m.ID, "attempts", m.Attempts, "err", err)
 			continue
 		}
 		if !retired {

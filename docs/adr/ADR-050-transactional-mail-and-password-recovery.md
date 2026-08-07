@@ -206,6 +206,18 @@ Scoped to one customer, never global: a reset must not sign out strangers.
   exist. Accepted because the residual is **smaller than what already ships** — registration's
   409 (ADR-049 §2) is an explicit, unmasked oracle over the same table — and because volume is
   what makes timing measurable, which is **TKT-224**.
+- **A partially-broken database.** The parity holds while commerce is healthy and while it is
+  wholly down (the customer lookup is the first statement, so both cases fail alike). It does
+  **not** hold in between: a failure *after* the lookup succeeds — the token insert, the outbox
+  insert, the commit — turns a known address into a 500 while an unknown address is still a 202.
+  A caller who can observe commerce in a reads-work-writes-fail state can enumerate.
+
+  Named rather than closed, because both ways of closing it are worse. Answering 202 on a write
+  failure makes an outage silent, which is the "the reset never arrived and nobody was told"
+  outcome the queue exists to prevent. Writing rows for addresses with no account is the option
+  §3's cost paragraph already rejects. This is the narrowest residual of the three and it is the
+  one **most likely to be forgotten**, so it is written down rather than left to a future reader
+  to rediscover (ai-review [high], upheld as a gap and accepted as a trade).
 - **A reset completed by calling commerce directly.** The operation is public contract, so a
   caller can bypass the storefront and change a password with the session map untouched. §7's
   guarantee is the storefront route's, not commerce's.

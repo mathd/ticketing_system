@@ -231,6 +231,72 @@ func TestAPoisonMessageIsDeadLetteredAndStopsBeingClaimed(t *testing.T) {
 	}
 }
 
+// A send that succeeded but could not be retired must not resend forever
+// (ai-review [high]).
+//
+// Driven by taking the row's claim away between Send and MarkMailSent, which is the
+// same observable state a failed retirement leaves: sent_at NULL and this drainer no
+// longer able to retire it. Without the ReleaseMail call on that branch the row keeps
+// its lease, lapses, is re-claimed, sends again — unbounded, to a human's inbox.
+//
+// What is asserted is BOUNDEDNESS, not absence of duplicates: the port accepts
+// at-least-once, so a duplicate email is the accepted cost. Ten of them is not.
+func TestASendThatCannotBeRetiredIsBoundedRatherThanRepeatedForever(t *testing.T) {
+	db, ctx := drainerDB(t)
+	to := uniqueRecipient()
+	id := enqueue(t, db, ctx, to, "Reset your password", "https://x.test/r?token=abc")
+
+	f := mail.NewFake()
+	d := New(db, f, time.Second, 32, quiet())
+
+	// Each pass: clear the backoff so the loop drives attempts rather than the clock,
+	// and steal the claim so retirement cannot succeed.
+	for range store.MaxMailAttempts + 1 {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE mail_outbox SET next_attempt_at=now(), lease_until=NULL WHERE id=$1`, id); err != nil {
+			t.Fatalf("reset row for pass: %v", err)
+		}
+		// Claim it away from under the drainer mid-pass by rewriting claim_id after the
+		// drainer's own claim: MarkMailSent is conditional on claim_id, so this is the
+		// retirement failure without needing a broken database.
+		d.DrainOnce(ctx)
+		if _, err := db.ExecContext(ctx,
+			`UPDATE mail_outbox SET claim_id=gen_random_uuid() WHERE id=$1 AND sent_at IS NULL`, id); err != nil {
+			t.Fatalf("steal claim: %v", err)
+		}
+	}
+
+	_, deadAt, attempts, _ := rowState(t, db, ctx, id)
+	if !deadAt.Valid {
+		t.Fatalf("a row that keeps failing to retire must be quarantined, not retried forever (attempts=%d)", attempts)
+	}
+	// Bounded: the fake recorded a delivery per attempt, and the attempts stopped.
+	sentCount := 0
+	for _, m := range f.Sent() {
+		if m.To == to {
+			sentCount++
+		}
+	}
+	if sentCount > store.MaxMailAttempts+1 {
+		t.Fatalf("the message was delivered %d times, want at most %d", sentCount, store.MaxMailAttempts+1)
+	}
+	// And it stops entirely once quarantined.
+	if _, err := db.ExecContext(ctx, `UPDATE mail_outbox SET next_attempt_at=now(), lease_until=NULL WHERE id=$1`, id); err != nil {
+		t.Fatalf("clear backoff: %v", err)
+	}
+	before := sentCount
+	d.DrainOnce(ctx)
+	after := 0
+	for _, m := range f.Sent() {
+		if m.To == to {
+			after++
+		}
+	}
+	if after != before {
+		t.Fatal("a dead-lettered row was sent again")
+	}
+}
+
 // The claim_id guard. A drainer whose lease lapsed mid-send must not retire a row
 // another drainer has since claimed, or it would mask a send that never happened.
 func TestAStaleClaimantCannotRetireAnotherClaimantsRow(t *testing.T) {
