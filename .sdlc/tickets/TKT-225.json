@@ -4,7 +4,7 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "An operator path to undo a guest-order claim (TKT-223 follow-up)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -17,36 +17,36 @@
   "description": "Filed by TKT-223, whose ACs required the ownership decision to be argued rather than assumed. It was\nargued, and this is the part the argument left open.\n\n**The problem, in ADR-049 § TKT-223's own words:** *\"A claim is destructive, exclusive, permanent and\nunrecoverable. The first holder to claim takes the order away from its buyer, and there is no\nun-claim path — no endpoint, no CLI, no support tool. The buyer's recourse is nothing.\"*\n\nThe proof of ownership is the order reference alone, deliberately: matching the email would refuse a\nbuyer who signed up with a different address. The cost of that choice is that anyone holding a leaked\nreference can permanently take an order — and references **do** leak, because the gateway logs them\nvia the URL path (**TKT-202**, open).\n\nToday the only remedy is a manual `UPDATE` against the commerce database.\n\n**Acceptance Criteria:**\n- [ ] An operator can detach an order from the customer it is attributed to, restoring it to\n  unattributed so the real buyer can claim it.\n- [ ] The plan states **who may do this and how they are authenticated**. It is a support action on\n  someone else's purchase, so \"an internal endpoint\" is the start of the answer and not the whole of\n  it — ADR-043 decides the guard, and the back office already has a staff credential and a role\n  matrix (ADR-042/TKT-197).\n- [ ] The action is **recorded**, with who did it and why. An un-claim that leaves no trace turns a\n  support tool into a way to move purchases quietly.\n- [ ] It does **not** become a transfer. Detaching restores NULL; it never repoints an order at a\n  different customer in one step. (Transfers are TKT-9/TKT-160 and have a different adversary.)\n- [ ] `TestNoProductionCodeUpdatesOrderAttribution`'s allowlist grows to **exactly two** statements,\n  and `TestTheAllowlistCannotBeWidened` covers the new one. That invariant is the thing keeping\n  attribution honest; widening it is part of the work, not a side effect.\n- [ ] The plan says whether an un-claimed order should be re-claimable by the same attacker\n  immediately, and if not, what stops it.\n- [ ] `make check` green.\n\n**Non-goals:** transfers between accounts (TKT-9/TKT-160) · rate limiting the claim (TKT-224) ·\nfixing the reference leak (TKT-202).",
   "readiness": {
     "objective": {
-      "state": "open",
-      "note": "Clear in outline; the authentication and audit questions are unshaped."
+      "state": "met",
+      "note": "A wrongly-claimed order can be detached, so 'someone else claimed my order' stops being a support request with no answer."
     },
     "scope": {
-      "state": "open",
-      "note": "Whether this is a back-office surface or a CLI is undecided."
+      "state": "met",
+      "note": "Detach only — restore NULL. Never repoint at another customer in one step; that is a transfer (TKT-9/TKT-160) with a different adversary."
     },
     "uncertainties": {
-      "state": "open",
-      "note": "Who may un-claim; what is recorded and where; whether an un-claimed order needs protection from immediate re-claim."
+      "state": "deferred",
+      "note": "One genuinely open: whether an un-claimed order needs protecting from immediate re-claim by the same actor. Detaching restores it to the exact state the attacker claimed it from, so 'undo' without more is a loop. Options the plan must weigh: accept it (the operator can repeat), a cooldown, or a short-lived reservation for the rightful buyer. Deferred rather than open because it does not block starting and the ADR-021 framing is already written down."
     },
     "dependencies": {
       "state": "met",
-      "note": "Blocked by TKT-223, which creates the state this undoes."
+      "note": "TKT-223 is Done - it creates the state this undoes. TKT-202 (references leak into gateway logs) is the CAUSE and is neither a blocker nor a substitute: this is recovery, that is prevention."
     },
     "approach": {
-      "state": "open",
-      "note": "Unshaped."
+      "state": "met",
+      "note": "Narrowed during shaping: a commerce /internal/ operation, reached by the back office with COMMERCE_STAFF_WRITE_TOKEN - the precedent is TKT-194's staff refund, which is the same shape (a support action on somebody else's order, guarded by an inline check per ADR-043, edge-denied at the gateway by construction). Authorization by role is ADR-042/TKT-197's matrix; the plan says which roles, and `finance` is probably not one of them."
     },
     "first_slice": {
-      "state": "open",
-      "note": "Unshaped."
+      "state": "met",
+      "note": "Detach + its audit record + the invariant amendment. The back-office surface can follow, or the first slice can be the internal operation alone if the plan argues it is demonstrable."
     },
     "success": {
-      "state": "open",
-      "note": "Unshaped."
+      "state": "met",
+      "note": "Deterministic: an attributed order becomes unattributed, the rightful buyer can then claim it, the action leaves a record, and TestTheAllowlistCannotBeWidened covers the SECOND allowlisted statement."
     },
     "context_memo": {
       "state": "met",
-      "note": "Minimal memo baked at creation (born mid-implementation, per decomposition.md)."
+      "note": "Baked at creation; re-resolved 2026-08-06 when the ticket was shaped."
     }
   },
   "context": {
@@ -96,6 +96,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by TKT-223 (ai-review stage, gateless run 2026-08-06). Not shaped: `readiness` is mostly `open` and it must go through `shaping.md` before Gate 1. The three open questions are who may un-claim, what is recorded, and whether an un-claimed order needs protection from immediate re-claim by the same actor."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS\n\nShaped 2026-08-06, after TKT-21 closed. Gate 1 granted by the owner in the same instruction.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | \"Someone else claimed my order\" gets an answer |\n| Scope | OK | Detach only — never a transfer |\n| Uncertainties | WARN | Re-claim protection, deferred to the plan |\n| Dependencies | OK | TKT-223 Done; TKT-202 is the cause, not a blocker |\n| Approach | OK | **Narrowed during shaping** — see below |\n| AC verifiable | OK | Including the allowlist growing to exactly two |\n| Context-mémo | OK | Re-resolved today |\n\n**What shaping decided:** a commerce `/internal/` operation reached by the back office with\n`COMMERCE_STAFF_WRITE_TOKEN`. The precedent is **TKT-194's staff refund** — the same shape exactly: a\nsupport action on somebody else's order, guarded by an inline check (ADR-043), edge-denied at the\ngateway by construction, and driven from a back office that already holds that credential and has a\nrole matrix (ADR-042/TKT-197). This is not a new pattern; it is an existing one applied again.\n\n**Concerns:**\n\n1. **Undo without more is a loop.** Detaching restores the order to precisely the state the attacker\n   claimed it from, so they can claim it again a second later. The plan must decide between accepting\n   that, a cooldown, or a short-lived reservation for the rightful buyer — and each has a different\n   adversary story (ADR-021).\n2. **The audit record's adversary needs naming.** A row in the same database the operator can write\n   constrains a *careless* operator, not a hostile one. ADR-021 is explicit that state inside the\n   database cannot constrain someone who writes to the database — say which is meant before writing\n   \"audited\".\n3. **TKT-202 is the cause and is still open.** This ticket is recovery; that one is prevention.\n   Shipping only this leaves the leak; shipping only that leaves today's wrongly-claimed orders stuck.\n   They are complementary and neither substitutes.\n\n**Verdict:** CONCERNS — proceedable. The mechanism is decided from precedent; what is left is one\ngenuine product question and one honesty question about the audit claim."
     }
   ]
 }
