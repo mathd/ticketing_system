@@ -42,10 +42,19 @@ describe('the reset form does not post to a URL carrying the token', () => {
     expect(source).not.toMatch(/const formAction = [^;]*\?/);
   });
 
-  // The GET's own URL is where the token legitimately lives, and these two headers are
-  // what bound how far that one request's URL travels. Deleting either is silent.
+  // The GET's own URL is where the token legitimately lives, and these two headers bound
+  // how far that one request's URL travels. Deleting either is silent.
   it('keeps the headers that bound where the GET URL can travel', () => {
-    expect(source).toContain("Astro.response.headers.set('Referrer-Policy', 'no-referrer')");
+    expect(source).toContain("Astro.response.headers.set('Referrer-Policy', 'origin')");
     expect(source).toContain("Astro.response.headers.set('Cache-Control', 'no-store')");
+  });
+
+  // `no-referrer` looks like the strictest and correct choice and it BREAKS THE FEATURE:
+  // Chrome sends `Origin: null` on a form POST from a no-referrer page, and gate.ts
+  // refuses that, so every reset completion 403s before the handler runs. Found only by
+  // submitting the form in a real browser. This test is the cheap tripwire that stops the
+  // next reader from "hardening" it back.
+  it('does not use no-referrer, which would null the Origin header and 403 every submit', () => {
+    expect(source).not.toContain("'no-referrer'");
   });
 });
