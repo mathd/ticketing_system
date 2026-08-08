@@ -83,5 +83,6 @@
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
     }
-  ]
+  ],
+  "parent": "TKT-4"
 }
