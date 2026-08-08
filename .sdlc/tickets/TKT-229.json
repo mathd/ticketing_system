@@ -1,0 +1,23 @@
+{
+  "key": "TKT-229",
+  "type": "Task",
+  "summary": "Flaky/RED: web/storefront session-cap tests time out — 20,050 sessions against vitest's 5s default",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-198"
+    }
+  ],
+  "description": "Found on 2026-08-08 while gating **TKT-198**, and **confirmed pre-existing and unrelated** to it.\n\n`web/storefront/test/session.test.ts` — four cases in the `customer sessions` describe block fail\nunder `make check`:\n\n```\n× bounds the map globally, across unlimited distinct principals   14945ms\n× refuses a new session at capacity rather than evicting a live one 8668ms\n× lets a customer at their own cap rotate a session even when the map is full 12440ms\n× accepts new sessions again once capacity frees up                8060ms\nError: Test timed out in 5000ms.\n```\n\n**Proof it is not TKT-198's:** TKT-198's diff is Go and shell only — it touches no TypeScript\n(`scripts/smoke.sh`, `services/commerce/internal/bulkrefund/runner_smoke_test.go`, and a new Go\ntest). With those changes **stashed**, on a tree identical to `origin/main` for all code paths,\n`npx vitest run test/session.test.ts` reported **4 failed | 25 passed** in 51s. The gate is red on\n`main` for this too.\n\n**Mechanism.** `MAX_SESSIONS_TOTAL` is **20,000** (`web/storefront/src/lib/session.ts:105`) and\nthese cases create `MAX_SESSIONS_TOTAL + 50` sessions each. Every `createSession` does real\nper-session token hashing, so a single case does ~20k hashes. `web/storefront` sets **no\n`testTimeout`**, so all four run against vitest's **5s default**, and the file needs 15–50s\ndepending on machine load. Alone on an idle machine the file can pass (observed: 29 passed in\n15.6s); under the gate's parallel load it does not.\n\n**Why this is a real defect, not just slow tests.** It fails **open in the other direction** from\nTKT-218: a timeout is reported as a failure, so the gate stays honest — but it makes `make check`\nnon-deterministic on machine load, which means **no ticket can be certified green reliably**. That\nis the same blocking property TKT-198 was raised for.\n\n**Conditions of Success:**\n- [ ] The four cases pass deterministically under a loaded `make check`, three consecutive runs.\n- [ ] The fix does NOT weaken what they prove — the global bound, the refusal at capacity, the\n      rotate-at-own-cap path, and recovery after capacity frees. `MAX_SESSIONS_TOTAL` must still be\n      exercised as a real bound, or the reduction argued explicitly.\n- [ ] Whether the right fix is a per-file `testTimeout`, a smaller injectable cap for the test, or a\n      faster hash in the test path is a plan decision — but note **a smaller cap is a fixture\n      change**: ask what the reduced fixture can still distinguish (`AGENTS.md`, \"a fixture too\n      small cannot show the negative\").\n\n**Suggested direction (not a decision):** an injectable cap is the most honest — it keeps the\nassertion about the real boundary while making the boundary cheap. Raising the timeout alone hides\nthat the suite takes ~50s for four cases.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by **TKT-198**'s `agent:coding` stage (gateless run, 2026-08-08) as an incidental: it blocked that ticket's gate but is not its defect. Per the triage rule, incidentals become new backlog tickets rather than scope creep. Not shaped — needs `shaping.md` before Gate 1."
+    }
+  ]
+}
