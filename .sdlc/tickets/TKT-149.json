@@ -13,5 +13,45 @@
     }
   ],
   "description": "Observed during TKT-134's gate runs, on a tree whose only change was a test file in a different Go module (`services/inventory/internal/store`), so it cannot have been caused by that work.\n\n```\nonsale_load_test.go:283: stage sustained  offered=250 started=250 dropped=0 ok=249 rejected=0\n                         client-err=0 server-err=1 inflight max/peak=64/1\n                         hold p50/p95/p99=2.7/3.9/4.5ms lifecycle p50/p95/p99=5.8/8.1/10.4ms\n                         lag p99=2.2ms achieved=25.0 ok/s\nonsale_load_test.go:385: 1 attempts hit server-side errors before the fill (5xx/unexpected status/malformed body)\n--- FAIL: TestOnsaleLoadProof (11.81s)\n```\n\nPassed on an immediate re-run of the identical tree (`EXIT=0`, `PASS: TestOnsaleLoadProof (12.80s)`).\n\n**What to establish:**\n- [ ] What the single 5xx actually was. The assertion reports a count, not the response — so the test proves \"something 5xx'd\" and cannot say what, which is the first thing to fix regardless of the outcome.\n- [ ] Whether a lone server error in 250 attempts should fail the proof at all. TKT-92/93 set this harness's error taxonomy; a zero-tolerance threshold on a load test that shares a machine with the rest of the gate may be the wrong bar — or may be exactly right, in which case the 5xx is a real defect and this is not a flake ticket.\n- [ ] Same discipline as TKT-132/134: no `-count=N`. Either capture the failing response to identify it, or force the condition deterministically.\n\n**Note the pattern.** This is the third flake in this area (TKT-132 recovery sweep, TKT-134 lazy release, this). All three are timing-sensitive assertions over a shared, loaded stack. Worth asking once whether the gate's smoke stage needs isolation guarantees it does not currently have, rather than fixing them one at a time.",
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS (shaped 2026-08-08)\n\nFiled unshaped; Gate 1 was hard-blocking it. Shaped now.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | No gate failure on one transient 5xx; still catches a real regression |\n| Scope | OK | The load proof's error accounting only |\n| Uncertainties | **WARN** | The 5xx is unexplained — it may be the finding, not the noise |\n| Dependencies | OK | None |\n| Approach | **WARN** | Diagnose before tolerating |\n| AC verifiable | OK | Must prove the proof can still fail |\n| Context-mémo | OK | Re-resolved today |\n\n**Concern:** the tempting fix — allow 1 error in 250 — is exactly the move `AGENTS.md` warns about\nwith bounded replacements: *a bounded or optimized replacement is a new implementation, so ask what\nthe version it replaced would have caught*. A proof that tolerates an unexplained 5xx has quietly\nlowered the NFR TKT-82 established. Diagnose first; tolerate only with a stated rationale.\n\n**Lowest urgency of the three test-integrity tickets** (TKT-198 red now, TKT-218 fails open, this one\nfails closed and rarely) — but it is also the cheapest to make diagnosable, which is the first slice."
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "TestOnsaleLoadProof does not fail the gate for a single transient 5xx in 250 requests, without becoming unable to detect a real server-error regression."
+    },
+    "scope": {
+      "state": "met",
+      "note": "services/.../onsale_load_test.go and its error accounting. Not the on-sale NFR targets themselves (TKT-82)."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "OPEN: what produced the single 5xx? Until that is known, any tolerance is a guess. A load proof that tolerates errors it cannot explain is weaker than one that fails - the 5xx may be the finding."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None."
+    },
+    "approach": {
+      "state": "open",
+      "note": "OPEN. Explain the 5xx first (capture the response body/status on failure if it is not already captured); only then decide whether a bounded tolerance is honest or whether the error is a real defect to fix."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Make the failure diagnosable: record what the failing request actually returned, so the next occurrence answers the question instead of re-raising it."
+    },
+    "success": {
+      "state": "met",
+      "note": "Either the 5xx is explained and fixed, or a tolerance is introduced WITH its rationale and a test proving the proof still fails on a sustained error rate."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Re-resolved 2026-08-08."
+    }
+  }
 }
