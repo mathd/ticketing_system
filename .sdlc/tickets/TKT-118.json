@@ -1,10 +1,8 @@
 {
   "key": "TKT-118",
   "type": "Task",
-  "status": "Backlog",
-  "labels": [
-    "risk:low"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": null,
   "pr": null,
   "comments": [
@@ -17,6 +15,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Merged into TKT-117 — do not claim\n\nThis ticket's scope now lives in **TKT-117** (Journal keyring operability: startup key fingerprint + link the smoke key literals to their Go constants), which carries it verbatim under an *Absorbed TKT-118* section. Moved out of Ready so it cannot be picked up in parallel. Nothing was dropped — reopen this only if the merge is reversed at plan time."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closed as merged into TKT-117\n\nBoard validation 2026-08-08. This ticket's own summary has said `[MERGED into TKT-117]` since it was\nfolded in, but it was never transitioned — so it kept occupying Backlog and inflating the count of\noutstanding work. **TKT-117 is Done**, verified before closing this.\n\nNo stage durations: the work was carried out under TKT-117 and its metrics belong there. This closure\nis bookkeeping, not delivery.\n\n**retro:** merging ticket B into ticket A needs to *close* B, not just retitle it. Six tickets\ncarried a `[MERGED into …]` marker in Backlog; the marker was written for a human reader and no\nstep ever acted on it. A summary prefix is not a state transition."
     }
   ],
   "summary": "[MERGED into TKT-117] Link the smoke journal key literals to their Go constants (TKT-56/S4 ai-review)",
