@@ -14,7 +14,27 @@ import {
   resetSessionsForTest,
   sessionCookieOptions,
   sessionCountForTest,
+  setMaxSessionsTotalForTest,
 } from '../src/lib/session';
+
+// The capacity cases below run against a LOWERED global bound, not the production
+// 20 000 (TKT-229).
+//
+// Why: createSession walks the whole map on every call, so filling it to N costs
+// O(N²). At 20 000 each of these four cases did ~200M iterations, took 15-50s against
+// vitest's 5s default, and failed `make check` whenever the machine was busy — a gate
+// that fails on load certifies nothing.
+//
+// What this does NOT cost: every rule these tests pin — refusal rather than eviction,
+// a bound across distinct principals, own-cap rotation, recovery after a slot frees —
+// is a property of the RULE, not of the bound's magnitude. What is no longer covered
+// is the production NUMBER: nothing here proves 20 000 specifically, and nothing here
+// measures createSession's cost at that size (it is still quadratic in production —
+// see the follow-up on TKT-229).
+//
+// 40, not the floor of 6: enough headroom that a fixture needing "the cap minus a
+// handful" still has room, cheap enough to be instant.
+const TEST_TOTAL = 40;
 
 // A realistic assertion expiry. createSession caps the session at whatever the
 // assertion says, so a fixture with a stale one produces a session that is dead on
@@ -116,9 +136,24 @@ describe('customer sessions', () => {
   //
   // Deliberately many DISTINCT principals: a fixture with two customers, which is
   // what the per-principal test uses, cannot observe a global bound at all.
+  // Guards the seam itself (TKT-229). The four cases below run at TEST_TOTAL, so
+  // nothing else here would notice if the production default were changed — or if a
+  // future edit made the module start at the test value. This is the one assertion
+  // that still concerns the real number.
+  it('enforces the production bound by default, and refuses a test cap that cannot discriminate', () => {
+    expect(MAX_SESSIONS_TOTAL).toBe(20_000);
+    // Below MAX_SESSIONS_PER_CUSTOMER + 1 there is no room for a stranger alongside
+    // one customer at their own cap, so the precedence test would silently stop
+    // proving anything. The seam refuses rather than allowing a fixture too small.
+    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER)).toThrow(RangeError);
+    expect(() => setMaxSessionsTotalForTest(1.5)).toThrow(RangeError);
+    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER + 1)).not.toThrow();
+  });
+
   it('bounds the map globally, across unlimited distinct principals', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     let refused = 0;
-    for (let i = 0; i < MAX_SESSIONS_TOTAL + 50; i++) {
+    for (let i = 0; i < TEST_TOTAL + 50; i++) {
       try {
         createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
       } catch (cause) {
@@ -127,7 +162,7 @@ describe('customer sessions', () => {
       }
     }
 
-    expect(sessionCountForTest()).toBeLessThanOrEqual(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBeLessThanOrEqual(TEST_TOTAL);
     expect(refused).toBeGreaterThan(0);
   });
 
@@ -141,15 +176,16 @@ describe('customer sessions', () => {
   // failure the code chooses, because it is the kind of thing a later "cleanup"
   // reverses without noticing.
   it('refuses a new session at capacity rather than evicting a live one', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     const victim = createSession(alice);
-    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
+    for (let i = 0; i < TEST_TOTAL - 1; i++) {
       createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
 
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
     // The buyer who was already signed in is untouched.
     expect(lookupSession(victim)).toEqual(alice);
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBe(TEST_TOTAL);
   });
 
   // ai-review pass 3 [medium]: the two caps interact, and the interaction is
@@ -162,11 +198,12 @@ describe('customer sessions', () => {
   // takes nothing from anyone. Pinned because the previous test used a victim
   // with ONE session and could not observe this case at all.
   it('lets a customer at their own cap rotate a session even when the map is full', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     const mine = Array.from({ length: MAX_SESSIONS_PER_CUSTOMER }, () => createSession(alice));
-    for (let i = 0; i < MAX_SESSIONS_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
+    for (let i = 0; i < TEST_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
       createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBe(TEST_TOTAL);
 
     // A stranger is refused...
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
@@ -175,14 +212,15 @@ describe('customer sessions', () => {
     expect(lookupSession(rotated)).toEqual(alice);
     expect(lookupSession(mine[0]!)).toBeUndefined();
     expect(lookupSession(mine[1]!)).toEqual(alice);
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBe(TEST_TOTAL);
   });
 
   // The bound must not be a permanent wedge: capacity freed by expiry or sign-out
   // has to become usable again, or one flood ends sign-in for the process's life.
   it('accepts new sessions again once capacity frees up', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     const doomed = createSession(alice);
-    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
+    for (let i = 0; i < TEST_TOTAL - 1; i++) {
       createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
