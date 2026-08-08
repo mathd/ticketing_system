@@ -154,9 +154,51 @@ function monotonicNow(): number {
   return performance.now();
 }
 
+/**
+ * The global bound actually enforced, which is MAX_SESSIONS_TOTAL everywhere except
+ * under the capacity tests. See setMaxSessionsTotalForTest.
+ */
+let maxSessionsTotal: number = MAX_SESSIONS_TOTAL;
+
 /** Test-only: sessions are module state, so suites must not leak into each other. */
 export function resetSessionsForTest(): void {
   sessions.clear();
+  // Restores the production bound too, so a test that lowered it cannot leak into
+  // the next one. The suite's beforeEach already calls this, which makes the reset
+  // structural rather than something each test has to remember (TKT-229).
+  maxSessionsTotal = MAX_SESSIONS_TOTAL;
+}
+
+/**
+ * Test-only: run the capacity rules against a small bound.
+ *
+ * createSession walks the WHOLE map on every call — it sweeps expired entries and
+ * collects the caller's own tokens in one pass — so filling the map to a cap of N
+ * costs O(N²). At the production 20 000 that is ~200M iterations per test, and the
+ * four capacity cases each did it: they took 15-50s against vitest's 5s default and
+ * failed the gate whenever the machine was busy (TKT-229).
+ *
+ * Lowering the bound removes the quadratic term while leaving every RULE intact —
+ * the tests prove refusal-not-eviction, the global bound across distinct principals,
+ * own-cap rotation and recovery, none of which depend on the bound's magnitude.
+ *
+ * Guarded by NAME, not by a runtime environment check, matching the two ForTest
+ * exports above: nothing in src/lib/ branches on NODE_ENV, and resetSessionsForTest
+ * is already a more dangerous export than this one — it wipes every live session.
+ * A bundler-dependent branch in a security path would buy nothing.
+ *
+ * The floor is real: MAX_SESSIONS_PER_CUSTOMER + 1. Five slots are needed to reach
+ * one customer's own cap and one more for a stranger, or the test that pins the
+ * precedence between the two caps has no stranger to be refused and silently stops
+ * proving anything.
+ */
+export function setMaxSessionsTotalForTest(limit: number): void {
+  if (!Number.isInteger(limit) || limit < MAX_SESSIONS_PER_CUSTOMER + 1) {
+    throw new RangeError(
+      `session cap for tests must be an integer >= ${MAX_SESSIONS_PER_CUSTOMER + 1}, got ${limit}`,
+    );
+  }
+  maxSessionsTotal = limit;
 }
 
 /** Test-only: proves a sweep actually reclaimed entries rather than hiding them. */
@@ -250,7 +292,7 @@ export function createSession(principal: CustomerPrincipal, now = monotonicNow()
   // make room for a STRANGER", and rotating your own sixth device takes nothing
   // from anyone. Reversing the order would refuse a returning customer during a
   // flood they have no part in, while freeing nothing.
-  if (sessions.size >= MAX_SESSIONS_TOTAL) {
+  if (sessions.size >= maxSessionsTotal) {
     throw new SessionCapacityError();
   }
 
