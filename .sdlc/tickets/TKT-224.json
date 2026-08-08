@@ -4,9 +4,9 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "Rate-limit the public customer registration and sign-in surface (TKT-220 follow-up)",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:planning"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
@@ -104,6 +104,11 @@
       "stage": "ready",
       "kind": "claim",
       "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Reconstructed retroactively on 2026-08-08: the run happened on 2026-08-07 and landed as `ab9920b`, but no transition was ever committed to `sdlc-state`, so the board still showed `Ready` while the code was on `main`. The stage comments below are recovered from the commit and its contents, not re-imagined — where a duration is unknown it says so rather than inventing one."
+    },
+    {
+      "stage": "planning",
+      "kind": "plan-final",
+      "body": "<!-- sdlc:stage=planning kind=plan-final -->\n### Plan (recovered from the shipped implementation)\n\nShaping had already fixed the placement: **the limiter lives in commerce**, not the storefront\n(bypassable — the operations are public through the gateway) and not the gateway (owns no\ndatabase, ADR-002). The plan's own decisions, as the commit records them:\n\n1. **Scope widened from two operations to five.** The ticket was written against\n   `POST /customers` and `POST /customers/authenticate`. Password recovery (TKT-226) landed\n   *after* this ticket was shaped and adds two more credential-free public operations, and\n   `/orders/claim` proves ownership with a guessable reference alone. Covering the two named\n   operations while leaving three siblings open would have been a half-measure.\n2. **A shared package, `shared/go/ratelimit`**, rather than a commerce-local limiter —\n   because TKT-195 needs the same mechanism in a different process. One package, two wirings.\n3. **In-process counters, not Postgres-backed.** A database-backed counter makes every\n   *refused* request cost a write, handing an attacker write amplification against the\n   money-path database. What that bounds — and what it does not, across replicas — is stated\n   in ADR-051 §2 rather than implied.\n4. **Two keys: per subject and per source.** The key is what stays FIXED across an attempt\n   sequence, never what is being attempted. Keying `/orders/claim` on the order reference, or\n   reset-completion on the token, would hand every guess a fresh budget.\n\nThe uncertainties the shaping left `deferred` — the limit key, and what a refusal looks like —\nwere both resolved here rather than deferred again."
     }
   ]
 }
