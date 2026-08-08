@@ -2,9 +2,9 @@
   "key": "TKT-228",
   "type": "Story",
   "summary": "Promote the browser-submit gate out of per-ticket throwaways into `make browser`",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:planning"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
