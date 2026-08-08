@@ -207,19 +207,21 @@ export function sessionCountForTest(): number {
 }
 
 /**
- * Test-only: the bound createSession will ACTUALLY enforce on its next call.
+ * Whether a map of `size` is full. **The single capacity decision** — createSession
+ * calls exactly this, and so do the tests.
  *
- * Distinct from reading MAX_SESSIONS_TOTAL, and the distinction is the point
- * (ai-review [high], TKT-229). Asserting the exported constant proves only that
- * nobody edited a number; it says nothing about which value the capacity check
- * reads. A regression that initialized the effective bound to the test's 40 — or
- * left a test's override in place after a reset — would keep the constant at
- * 20 000 and pass every capacity test, because those set the bound themselves.
- * On a public unauthenticated surface that is a 40-session flood away from
- * denying every sign-in.
+ * One function rather than a value tests observe alongside the one createSession
+ * reads (ai-review pass 2 [high], TKT-229). A parallel accessor proves nothing: with
+ * one, a capacity check hard-coded to 40 — or an initializer set to 40 — kept the
+ * accessor honest and passed the whole suite, verified by making both edits. The
+ * only assertion that cannot be fooled is one that calls the decision the
+ * production path calls.
+ *
+ * Exported for tests, but not test-only in the way the ForTest helpers are: it is
+ * the real rule, and it is why it carries no ForTest suffix.
  */
-export function effectiveMaxSessionsForTest(): number {
-  return maxSessionsTotal;
+export function isAtSessionCapacity(size: number): boolean {
+  return size >= maxSessionsTotal;
 }
 
 // `now` is a MONOTONIC reading (see monotonicNow), not a wall-clock timestamp.
@@ -308,7 +310,7 @@ export function createSession(principal: CustomerPrincipal, now = monotonicNow()
   // make room for a STRANGER", and rotating your own sixth device takes nothing
   // from anyone. Reversing the order would refuse a returning customer during a
   // flood they have no part in, while freeing nothing.
-  if (sessions.size >= maxSessionsTotal) {
+  if (isAtSessionCapacity(sessions.size)) {
     throw new SessionCapacityError();
   }
 
