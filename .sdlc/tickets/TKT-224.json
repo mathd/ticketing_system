@@ -4,9 +4,9 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "Rate-limit the public customer registration and sign-in surface (TKT-220 follow-up)",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:coding"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": null,
@@ -109,6 +109,11 @@
       "stage": "planning",
       "kind": "plan-final",
       "body": "<!-- sdlc:stage=planning kind=plan-final -->\n### Plan (recovered from the shipped implementation)\n\nShaping had already fixed the placement: **the limiter lives in commerce**, not the storefront\n(bypassable — the operations are public through the gateway) and not the gateway (owns no\ndatabase, ADR-002). The plan's own decisions, as the commit records them:\n\n1. **Scope widened from two operations to five.** The ticket was written against\n   `POST /customers` and `POST /customers/authenticate`. Password recovery (TKT-226) landed\n   *after* this ticket was shaped and adds two more credential-free public operations, and\n   `/orders/claim` proves ownership with a guessable reference alone. Covering the two named\n   operations while leaving three siblings open would have been a half-measure.\n2. **A shared package, `shared/go/ratelimit`**, rather than a commerce-local limiter —\n   because TKT-195 needs the same mechanism in a different process. One package, two wirings.\n3. **In-process counters, not Postgres-backed.** A database-backed counter makes every\n   *refused* request cost a write, handing an attacker write amplification against the\n   money-path database. What that bounds — and what it does not, across replicas — is stated\n   in ADR-051 §2 rather than implied.\n4. **Two keys: per subject and per source.** The key is what stays FIXED across an attempt\n   sequence, never what is being attempted. Keying `/orders/claim` on the order reference, or\n   reset-completion on the token, would hand every guess a fresh budget.\n\nThe uncertainties the shaping left `deferred` — the limit key, and what a refusal looks like —\nwere both resolved here rather than deferred again."
+    },
+    {
+      "stage": "building",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=building kind=summary -->\n### Implementation — `ab9920b` (2026-08-07)\n\n`+1,615 / −23` across 22 files. Committed directly to `main`; no PR was opened for this ticket,\nso there is no `pr` to record.\n\n**Shipped surface**\n- `shared/go/ratelimit/` — the mechanism (+ its own test file), reusable by TKT-195.\n- `services/commerce/internal/api/ratelimit.go` and its wiring in `server.go`.\n- Five public credential-free operations covered: register, authenticate, the two password-recovery\n  operations, and `/orders/claim`.\n- `ADR-051-public-customer-surface-rate-limiting.md`.\n- `test/browser/rate-limit.mjs` — a browser-submit spec, per the working agreement.\n- Storefront form wiring for the four account pages.\n\n**Three defects found and corrected on evidence during the run** (recorded because each one is a\ntrap the next limiter would fall into):\n\n1. **The refusal must be spent BEFORE the store call.** Otherwise a 429 means \"this address is\n   real\" — a *sharper* oracle than the 409 the limiter was added to blunt. A mutation that moves\n   the check after the lookup fails the test that pins it.\n2. **429 was not declared in the OpenAPI document**, so the response validator rewrote it to 500\n   (ADR-009). The limiter worked; the buyer saw an outage. **No handler test could see this** —\n   handler tests never cross the contract middleware. `make browser` caught it, which is the\n   working agreement's claim about browser-submit earning its keep.\n3. **Credential probing and recovery shared one bucket per address** — a lockout: the buyer who\n   mistypes until the budget is gone is exactly the buyer who then needs the reset link. Now\n   separately scoped.\n\n**Stated limitation, not hidden** (ADR-051 §3): the per-source key is worth less than it looks.\nThe storefront calls commerce server-side, so the gateway rewrites `X-Forwarded-For` to the\nstorefront container and every buyer shares one key. It cannot be repaired by forwarding the\nbuyer's address — commerce would then be trusting a header any caller can set, and the storefront\ndeliberately holds no credential to distinguish it. The budget is therefore sized for aggregate\ntraffic, and a test fails if anyone tightens it toward a per-person figure.\n\n**Verified at the time:** `make check` exit 0, `make browser` exit 0, nine mutations killed\n(including the oracle inversion, the key-rotation cap bypass, a proxy appending rather than\nreplacing a forged `X-Forwarded-For`, and the recovery lockout)."
     }
   ]
 }
