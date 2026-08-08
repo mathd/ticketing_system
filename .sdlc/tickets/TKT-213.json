@@ -15,6 +15,45 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "### Not yet shaped — created from a TKT-210 CI observation\n\nRaised 2026-08-05 while TKT-210 was in ai-review. Deliberately **not** fixed there: it is in the PSP-recovery area, which that ticket does not touch, and folding it in would have meant an unrelated fix inside a cache ticket.\n\n`risk:low` NOT claimable on its face: the answer might be a money-path response shape (the replay deadline on an unresolved PSP operation), which is exactly where a hasty fix is expensive.\n\n**Evidence already gathered, so the next session does not repeat it:**\n- Fails on `main` @ `46fc41fa` under `make smoke-hermetic`, identical message. Not caused by TKT-210.\n- Passes under `make check` (host-built path).\n- The workflow runs weekly on main and on PRs touching build files — `.github/workflows/hermetic.yaml`.\n- Test and assertion: `smoke/psp_recovery_test.go:260`."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS (shaped 2026-08-08)\n\nFiled unshaped; Gate 1 was hard-blocking it. Shaped now.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | Hermetic smoke green, without weakening the assertion |\n| Scope | OK | One test and the status-read path it drives |\n| Uncertainties | **WARN** | Response wrong vs test wrong — unresolved, opposite fixes |\n| Dependencies | OK | None; independent of TKT-210 |\n| Approach | **WARN** | Must be settled against ADR-048 first |\n| AC verifiable | OK | Green hermetic run + the assertion still discriminates |\n| Context-mémo | OK | Re-resolved today |\n\n**Concern:** the failure is only visible on a **weekly** main run or a PR touching `compose.yaml`.\nIt has therefore been red on main without blocking anyone, and will stay that way until someone\ntrips the path filter again. That makes it low-urgency and high-staleness — the worst combination\nfor a ticket that will eventually be diagnosed by whoever is unlucky, with no context.\n\n**Before debugging, apply the `AGENTS.md` rule:** ask what the fixture can distinguish. A test\ndemanding a field for a state the contract never promised it in will fail while the code is correct."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "`make smoke-hermetic` passes on main; an unresolved ref-less payment operation exposes the replay deadline the test requires, or the test's expectation is corrected with the reason stated."
+    },
+    "scope": {
+      "state": "met",
+      "note": "smoke/psp_recovery_test.go and the payments status-read path it exercises. Not the recovery state machine at large."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "OPEN: is the response wrong (the deadline should be exposed and is not) or is the test wrong (it demands a field the contract never promised for this state)? The ticket says it is pre-existing, so both readings are still live and they have opposite fixes."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Confirmed unrelated to TKT-210, which merely triggered the workflow path filter that surfaced it."
+    },
+    "approach": {
+      "state": "open",
+      "note": "OPEN, and downstream of the uncertainty. Read ADR-048 on what a ref-less unresolved operation is contractually required to expose before changing either side."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Settle from the contract which side is wrong, then fix that side only."
+    },
+    "success": {
+      "state": "met",
+      "note": "`make smoke-hermetic` green on main, and the assertion still distinguishes an exposed deadline from an absent one."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Re-resolved 2026-08-08. Note hermetic-smoke runs weekly on main plus on PRs touching compose.yaml, so this can lie dormant between triggers."
+    }
+  }
 }
