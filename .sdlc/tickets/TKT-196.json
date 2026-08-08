@@ -76,6 +76,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from **TKT-190**'s retro (owner approved 2026-08-03). The working script from that run is the\nstarting point — it drove real Google Chrome against `make up` and passed 13/13, including the\ncookie-scope check that confirmed a review finding's fix from the browser's own behaviour rather\nthan from an assertion about it.\n\nOne `uncertainties` item is deliberately **open** with `owner: human`: whether this should ever gate\nCI. The ticket is useful without answering it, and Gate 1 is hard-blocked while the item is open, so\nthe question gets asked rather than assumed."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Delivered by TKT-228 — recommend closing without separate work\n\nBoard validation on 2026-08-08 found this ticket still in Backlog while its substance had shipped\non 2026-08-06 as `a9b81de`, under the un-created key TKT-228.\n\nChecked against this ticket's own asks, not merely by title:\n\n| This ticket asked for | Shipped in `a9b81de` |\n|---|---|\n| browser-submit as \"a command anyone can run\" | `make browser` → `scripts/browser.sh` |\n| specs committed, not per-ticket throwaways | `test/browser/reset-password.mjs`, now joined by `rate-limit.mjs` |\n| the `AGENTS.md` \"no Playwright/e2e harness in-repo yet\" claim retired | rewritten to the `make browser` working agreement |\n| the dev-dependency + gate decision taken deliberately | `package.json` / `pnpm-lock.yaml`, with a learning recording the failure mode |\n\n**Not carried over:** this ticket's framing listed the three TKT-190 browser-only security\nbehaviours (`Origin` on same-origin POST, `SameSite=Lax`, cookie `Path=/admin` scoping) as the\nmotivating cases. The harness now exists, but the committed specs cover password reset and rate\nlimiting — **there is still no committed spec asserting those three staff-session behaviours.**\nThat is the only residue of this ticket, and it belongs to TKT-195 (back-office login) or a small\nfollow-up, not to re-opening the harness work.\n\nLeft in Backlog for the owner to close or re-scope to that residue — closing a ticket someone else\nfiled is a call for its filer."
     }
   ]
 }
