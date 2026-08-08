@@ -2,7 +2,7 @@
   "key": "TKT-2",
   "type": "Epic",
   "summary": "Epic: Catalog & event structure",
-  "status": "Backlog",
+  "status": "Done",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -32,6 +32,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Admin-UI boundary (owner decision 2026-07-14):** TKT-2 ships the catalog **API + storefront (buyer-facing) reads** only — no organizer/back-office authoring UI, matching the M1 precedent (TKT-26/US-002: \"creation via API only\"). The organizer-facing **catalog builder UI** (authoring events, series, seasons, festivals and the US-009 slot kinds) is owned by **TKT-22 — Back office & staff RBAC**, whose COS is \"organizer builds a sellable event end-to-end in the UI without API calls.\" Rationale: build one coherent builder surface over a stable catalog API, behind the staff identity/RBAC that TKT-22 owns, rather than front-running RBAC with a throwaway admin screen here. Consequence: at PO Review, TKT-2 children are validated via API + storefront output, not a click-through admin flow. TKT-22 is therefore a downstream consumer of this epic's API — cross-referenced there."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout — TKT-2 (Catalog & event structure)\n\nClosed on 2026-08-08 during board validation, which found every child Done while the epic itself\nstill sat in Backlog. Epics carry no stage durations of their own — the work is in the children.\n\n**19 / 19 children Done:** TKT-49, 50, 51, 52, 53, 58, 59, 60, 61, 62, 63, 64, 65, 66, 68, 69, 70,\n71, 94.\n\n**learnings:**\n- The epic-closing step has no owner in this pipeline. Four epics (TKT-1, 5, 6, 35) were closed as\n  their children finished; this one was not, and nothing detected the difference for as long as it\n  sat there. The board's rollup makes the condition visible but nothing acts on it.\n- This epic produced the densest ADR cluster in the repo — ADR-017 through ADR-020 (event schema\n  evolution, slot transition concurrency, read-path scoping, index build concurrency) all trace to\n  children here, and all four are now cited as required reading in `AGENTS.md`. TKT-61 in particular\n  shipped an ordering bug twice, past a mutation-checked suite and a full review pass, which is why\n  ADR-017 §5b′ exists.\n\n**retro:** an all-children-Done epic that is not itself Done is mechanically detectable from the\nboard data. Worth a check in the skill's validation step rather than waiting for a human to notice\n— the same check would have caught TKT-4's missing parent links, which hid that epic's real state\nin the opposite direction."
     }
   ]
 }
