@@ -4,9 +4,11 @@
   "parent": "TKT-21",
   "classification": "complex",
   "summary": "Rate-limit the public customer registration and sign-in surface (TKT-220 follow-up)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [
     {
@@ -97,6 +99,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS\n\nShaped 2026-08-06, after TKT-21 closed. Gate 1 granted by the owner in the same instruction.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | Volume, not disclosure — the 409 stays what it is here |\n| Scope | OK | Two commerce operations and the forms in front of them |\n| Uncertainties | WARN | Limit key and refusal shape, both plan decisions |\n| Dependencies | OK | TKT-220 Done. TKT-226 would shrink this, not block it |\n| Approach | OK | **Narrowed during shaping: the limiter lives in commerce** — see below |\n| AC verifiable | OK | Refused under volume; a normal buyer never refused |\n| Context-mémo | OK | Re-resolved today |\n\n**What shaping decided, so the plan does not have to re-open it:** the limiter belongs in\n**commerce**, not the storefront and not the gateway. A storefront-side limiter protects nothing —\n`POST /api/commerce/customers` is public through the gateway and a caller can skip the form entirely.\nThe gateway owns no database and its `go.mod` has no requires at all (ADR-002); putting counters\nthere is a deviation that needs an argument, not a default. Commerce is where the operations live and\nwhere ADR-043 puts the guard.\n\n**Concerns:**\n\n1. **The limit key is a real trade with no free option** — per-IP punishes shared NAT and is trivially\n   rotated; per-address protects one account while leaving enumeration open. Both, at different\n   thresholds, is the usual answer and the plan should say so explicitly rather than pick one quietly.\n2. **TKT-195 has been open since TKT-190** and is the same problem on the back-office form. Whether\n   one mechanism serves both is the first thing to settle; two half-solutions would be the bad outcome.\n3. **TKT-226 (mail) changes the shape of this ticket if it lands first**, because the 409 disclosure\n   becomes narrowable. Not a blocker — this is still needed for credential grinding — but a planner\n   should check which exists.\n\n**Verdict:** CONCERNS — proceedable, with the placement decided and the key deliberately left to the plan."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Reconstructed retroactively on 2026-08-08: the run happened on 2026-08-07 and landed as `ab9920b`, but no transition was ever committed to `sdlc-state`, so the board still showed `Ready` while the code was on `main`. The stage comments below are recovered from the commit and its contents, not re-imagined — where a duration is unknown it says so rather than inventing one."
     }
   ]
 }
