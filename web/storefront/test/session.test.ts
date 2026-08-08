@@ -9,7 +9,7 @@ import {
   createSession,
   destroyAllSessionsForCustomer,
   destroySession,
-  effectiveMaxSessionsForTest,
+  isAtSessionCapacity,
   isSecureRequest,
   lookupSession,
   resetSessionsForTest,
@@ -139,18 +139,37 @@ describe('customer sessions', () => {
   // So these two assert the effective bound, which is what createSession actually
   // consumes, in both states that matter: at rest, and after a reset has undone a
   // test's override.
-  it('enforces the production bound by default, not the test bound', () => {
-    expect(MAX_SESSIONS_TOTAL).toBe(20_000);
-    expect(effectiveMaxSessionsForTest()).toBe(MAX_SESSIONS_TOTAL);
+  // A FRESH module, read before any reset touches it (ai-review pass 2 [high]).
+  //
+  // The suite's beforeEach calls resetSessionsForTest before every test, and that
+  // restores the bound — so asserting the default from inside a normal test proves
+  // only the POST-RESET state. Production never calls the reset. Verified: an
+  // initializer of 40 whose reset restored 20 000 passed the whole suite.
+  //
+  // isAtSessionCapacity, not a value read alongside the one createSession uses:
+  // a capacity check hard-coded to 40 also passed the whole suite when the test
+  // observed a parallel accessor instead of the real decision.
+  it('enforces the production bound on a freshly loaded module, before any reset', async () => {
+    vi.resetModules();
+    const fresh = await import('../src/lib/session');
+
+    expect(fresh.MAX_SESSIONS_TOTAL).toBe(20_000);
+    // One below the production bound is not full; at it, it is. Neither needs the
+    // map filled — the decision is asked directly.
+    expect(fresh.isAtSessionCapacity(fresh.MAX_SESSIONS_TOTAL - 1)).toBe(false);
+    expect(fresh.isAtSessionCapacity(fresh.MAX_SESSIONS_TOTAL)).toBe(true);
+    // And the test cap is NOT what a fresh module enforces.
+    expect(fresh.isAtSessionCapacity(TEST_TOTAL)).toBe(false);
   });
 
   it('restores the production bound on reset, so a test cap cannot leak', () => {
     setMaxSessionsTotalForTest(TEST_TOTAL);
-    expect(effectiveMaxSessionsForTest()).toBe(TEST_TOTAL);
+    expect(isAtSessionCapacity(TEST_TOTAL)).toBe(true);
 
     resetSessionsForTest();
 
-    expect(effectiveMaxSessionsForTest()).toBe(MAX_SESSIONS_TOTAL);
+    expect(isAtSessionCapacity(TEST_TOTAL)).toBe(false);
+    expect(isAtSessionCapacity(MAX_SESSIONS_TOTAL)).toBe(true);
   });
 
   // The seam's floor. Below MAX_SESSIONS_PER_CUSTOMER + 1 there is no room for a
