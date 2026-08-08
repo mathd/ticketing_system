@@ -1,0 +1,23 @@
+{
+  "key": "TKT-228",
+  "type": "Story",
+  "summary": "Promote the browser-submit gate out of per-ticket throwaways into `make browser`",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": "agent",
+  "pr": null,
+  "links": [
+    {
+      "type": "blocks",
+      "key": "TKT-196"
+    }
+  ],
+  "description": "Shipped as `a9b81de` (2026-08-06) and **never created on the board** — the key was used in a\ncommit without a ticket file ever existing. Reconstructed 2026-08-08 during a board validation.\n\nMakes the one quality gate this repo cannot automate into a command anyone can run:\n`make browser`, backed by `scripts/browser.sh`, with specs committed under `test/browser/`\nrather than written from scratch per ticket and thrown away.\n\n**This is the substance of TKT-196**, which was still sitting in Backlog when this landed under a\ndifferent key. See the disposition comment on TKT-196.\n\n**Why it could not be part of `make check`:** it needs the host's real Chrome, so CI cannot run it.\nThat is a property of the gate, not a gap in it — `AGENTS.md` now says so explicitly.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated retroactively on 2026-08-08. The work was already on `main`; this ticket exists so the board's history is not missing a key that its own commits reference."
+    }
+  ]
+}
