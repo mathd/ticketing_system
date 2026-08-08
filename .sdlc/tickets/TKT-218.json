@@ -28,5 +28,45 @@
       }
     ]
   },
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS (shaped 2026-08-08)\n\nFiled with a good description and never shaped, so Gate 1 has been hard-blocking it. Shaped now.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | The assertion must fail closed, not open |\n| Scope | OK | The budget test and the fetch path behind it |\n| Uncertainties | **WARN** | Genuine second fetch vs stub artefact — unanswered, and it IS the ticket |\n| Dependencies | OK | None; the TKT-216 timeout bump already isolated the signal |\n| Approach | **WARN** | Follows from the uncertainty; cannot be settled in shaping |\n| AC verifiable | OK | Must demonstrate the test can still fail |\n| Context-mémo | OK | Re-resolved today |\n\n**Concern worth stating plainly:** two `open` items would normally block Gate 1, and they are left\nopen deliberately — this is an *investigation* ticket whose product is an answer, not a diff. If the\nowner prefers, it should be re-typed as a **Spike** with the fix as a follow-up; that is a cleaner\nfit for the pipeline than a Story carrying two open uncertainties.\n\n**The reason to prioritize it anyway:** this is the only known assertion in the repo that can pass\nwhile the property it proves is false. Per `AGENTS.md`, a fixture that cannot show the negative is a\nrecurring defect class here (TKT-61, and the \"fixture too small\" learning). This is that class,\ncaught in the act."
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The call-budget assertion cannot report a violation that machine load caused, and cannot pass while a genuine second fetch happens. It must fail CLOSED."
+    },
+    "scope": {
+      "state": "met",
+      "note": "web/storefront/test/page-call-budget.test.ts and whatever in the storefront fetch path explains a second call. Not a re-litigation of TKT-208's budget itself."
+    },
+    "uncertainties": {
+      "state": "open",
+      "note": "OPEN and this is the ticket: is the observed 2-call count a genuine second fetch (a retry or revalidation path) or an artefact of the stub counting a cancelled request? Different fixes, and only the artefact is harmless. Nobody has yet determined which."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. The 30s timeout raised during TKT-216's gate already removed the load-induced noise, so the remaining signal can be studied in isolation."
+    },
+    "approach": {
+      "state": "open",
+      "note": "OPEN, and depends on the answer above. If genuine: the budget or the page is wrong. If artefact: the stub's counting is wrong. Do NOT raise the timeout again and close - a comment in the test already warns against exactly that."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Reproduce the 2-call observation deliberately (load the machine, or drive the stub directly) so the question can be answered from evidence rather than inference."
+    },
+    "success": {
+      "state": "met",
+      "note": "A test that fails when a second upstream call genuinely happens, and passes under load. Prove the failing direction works - a budget proof that cannot fail is the defect being fixed."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Re-resolved 2026-08-08. The TKT-216 timeout change and its in-test warning comment are on main."
+    }
+  }
 }
