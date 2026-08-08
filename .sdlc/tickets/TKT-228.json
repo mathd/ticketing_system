@@ -2,9 +2,9 @@
   "key": "TKT-228",
   "type": "Story",
   "summary": "Promote the browser-submit gate out of per-ticket throwaways into `make browser`",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:coding"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": null,
@@ -20,6 +20,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated retroactively on 2026-08-08. The work was already on `main`; this ticket exists so the board's history is not missing a key that its own commits reference."
+    },
+    {
+      "stage": "building",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=building kind=summary -->\n### Implementation — `a9b81de` (2026-08-06)\n\n`+545 / −79` across 13 files.\n\n- **`make browser`** → `scripts/browser.sh` (98 lines), with `scripts/stack-env.sh` (68 lines)\n  factored out so the browser gate and `scripts/smoke.sh` share one stack-environment derivation\n  instead of duplicating it — `smoke.sh` shrank by 56 lines in the process.\n- **`test/browser/reset-password.mjs`** (234 lines) — the first committed spec, submitting a real\n  write path rather than only rendering it.\n- **`AGENTS.md`** rewritten: the standing claim *\"There is no Playwright/e2e harness in-repo yet\"*\n  is gone, replaced by the working agreement that a web-UI ticket which adds or changes a write\n  form runs `make browser` and adds a spec.\n- **A new learning**, `a-failed-optional-dependency-is-skipped-silently.md` (58 lines), plus an\n  update to the existing browser-submit learning and `docs/development.md`.\n\n**It immediately earned its keep:** TKT-226 used it to catch a `no-referrer` policy that nulled the\n`Origin` header and 403'd every password reset, and TKT-224 used it to catch an undeclared 429 being\nrewritten to 500 by the response validator — a defect no handler test could see, because handler\ntests never cross the contract middleware."
     }
   ]
 }
