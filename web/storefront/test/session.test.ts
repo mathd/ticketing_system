@@ -9,6 +9,7 @@ import {
   createSession,
   destroyAllSessionsForCustomer,
   destroySession,
+  effectiveMaxSessionsForTest,
   isSecureRequest,
   lookupSession,
   resetSessionsForTest,
@@ -128,6 +129,39 @@ describe('customer sessions', () => {
     expect(rest.every((t) => lookupSession(t, 9_000_005))).toBe(true);
   });
 
+  // ai-review [high] on TKT-229 itself: asserting `MAX_SESSIONS_TOTAL === 20_000`
+  // proves only that nobody edited a number. It does NOT prove createSession reads
+  // that number — and since the four capacity cases below each set the bound
+  // themselves, a regression that defaulted the EFFECTIVE bound to 40 while leaving
+  // the constant at 20 000 would pass all of them. On a public unauthenticated
+  // surface that is a 40-session flood away from denying every sign-in.
+  //
+  // So these two assert the effective bound, which is what createSession actually
+  // consumes, in both states that matter: at rest, and after a reset has undone a
+  // test's override.
+  it('enforces the production bound by default, not the test bound', () => {
+    expect(MAX_SESSIONS_TOTAL).toBe(20_000);
+    expect(effectiveMaxSessionsForTest()).toBe(MAX_SESSIONS_TOTAL);
+  });
+
+  it('restores the production bound on reset, so a test cap cannot leak', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
+    expect(effectiveMaxSessionsForTest()).toBe(TEST_TOTAL);
+
+    resetSessionsForTest();
+
+    expect(effectiveMaxSessionsForTest()).toBe(MAX_SESSIONS_TOTAL);
+  });
+
+  // The seam's floor. Below MAX_SESSIONS_PER_CUSTOMER + 1 there is no room for a
+  // stranger alongside one customer at their own cap, so the precedence test would
+  // silently stop proving anything — a fixture too small to show the negative.
+  it('refuses a test cap that could not discriminate', () => {
+    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER)).toThrow(RangeError);
+    expect(() => setMaxSessionsTotalForTest(1.5)).toThrow(RangeError);
+    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER + 1)).not.toThrow();
+  });
+
   // ai-review [high]: the per-principal cap bounds the map only if the number of
   // principals is bounded, and registration is PUBLIC — so one actor mints
   // unlimited accounts, each entitled to five sessions. The back office's cap
@@ -136,20 +170,6 @@ describe('customer sessions', () => {
   //
   // Deliberately many DISTINCT principals: a fixture with two customers, which is
   // what the per-principal test uses, cannot observe a global bound at all.
-  // Guards the seam itself (TKT-229). The four cases below run at TEST_TOTAL, so
-  // nothing else here would notice if the production default were changed — or if a
-  // future edit made the module start at the test value. This is the one assertion
-  // that still concerns the real number.
-  it('enforces the production bound by default, and refuses a test cap that cannot discriminate', () => {
-    expect(MAX_SESSIONS_TOTAL).toBe(20_000);
-    // Below MAX_SESSIONS_PER_CUSTOMER + 1 there is no room for a stranger alongside
-    // one customer at their own cap, so the precedence test would silently stop
-    // proving anything. The seam refuses rather than allowing a fixture too small.
-    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER)).toThrow(RangeError);
-    expect(() => setMaxSessionsTotalForTest(1.5)).toThrow(RangeError);
-    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER + 1)).not.toThrow();
-  });
-
   it('bounds the map globally, across unlimited distinct principals', () => {
     setMaxSessionsTotalForTest(TEST_TOTAL);
     let refused = 0;

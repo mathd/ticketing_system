@@ -206,6 +206,22 @@ export function sessionCountForTest(): number {
   return sessions.size;
 }
 
+/**
+ * Test-only: the bound createSession will ACTUALLY enforce on its next call.
+ *
+ * Distinct from reading MAX_SESSIONS_TOTAL, and the distinction is the point
+ * (ai-review [high], TKT-229). Asserting the exported constant proves only that
+ * nobody edited a number; it says nothing about which value the capacity check
+ * reads. A regression that initialized the effective bound to the test's 40 — or
+ * left a test's override in place after a reset — would keep the constant at
+ * 20 000 and pass every capacity test, because those set the bound themselves.
+ * On a public unauthenticated surface that is a 40-session flood away from
+ * denying every sign-in.
+ */
+export function effectiveMaxSessionsForTest(): number {
+  return maxSessionsTotal;
+}
+
 // `now` is a MONOTONIC reading (see monotonicNow), not a wall-clock timestamp.
 // Callers never pass it; tests do, to drive expiry deterministically.
 /**
