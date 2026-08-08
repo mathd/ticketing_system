@@ -1,8 +1,8 @@
 {
   "key": "TKT-198",
   "type": "Story",
-  "summary": "Flaky: TestRunnerDrainsARealBook reports AlreadyRefunded where it expects Refunded",
-  "status": "Backlog",
+  "summary": "Flaky/RED: commerce smoke packages race store.Migrate on one database (TestRunnerDrainsARealBook and ~30 others)",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -37,6 +37,50 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-192'''s gate rather than absorbed as a re-run. An intermittent failure nobody records is\none the next person rediscovers from scratch, and this repo already carries three tickets of the same\nshape (TKT-132, TKT-134, TKT-149).\n\nNot shaped: needs the 8-item DoR before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Reproduced on `main` 2026-08-08 — and the gate is currently RED, not merely flaky\n\nRan `make check` twice on `ab9920b` (clean tree, no leftover smoke containers or volumes). **Both\nruns failed**, each with a *different* set of ~30 commerce store tests, all with the same error:\n\n```\nmigrate store-test database: partial migration error (type:sql,version:1):\nERROR: relation \"reservations\" already exists (SQLSTATE 42P07)\n```\n\nDifferent failing sets across runs on an unchanged commit ⇒ nondeterministic, and the \"already\nexists at version 1\" shape means the schema was created while goose had not yet recorded version 1.\n\n**Mechanism — two packages race `store.Migrate` against one database.**\n`scripts/smoke.sh` creates `commerce_store_smoke` and exports it as `COMMERCE_TEST_DATABASE_URL`,\nthen runs `go test ./internal/...`, which runs packages **concurrently**. Two packages read that\nsame variable and each call `store.Migrate` behind their own package-local `sync.Once`:\n\n| Package | Helper | Env var |\n|---|---|---|\n| `internal/store` | `outboxDB` (`outbox_smoke_test.go:42`) | `COMMERCE_TEST_DATABASE_URL` |\n| `internal/bulkrefund` | `runnerDB` (`runner_smoke_test.go:47`) | `COMMERCE_TEST_DATABASE_URL` |\n\nA `sync.Once` is per-process-per-package; it cannot serialize two test binaries. Whichever loses\nthe race dies mid-migration on an object the winner already created.\n\n**This exact failure mode is already documented in the repo — and already solved once.** The\ncomment above the `commerce_mailer_smoke` creation in `scripts/smoke.sh` says it outright:\n\n> `go test ./internal/...` runs packages CONCURRENTLY, and `./internal/mailer` is the second\n> package that calls `store.Migrate`. Two goose runs against one database race, and the loser dies\n> on \"column ... already exists\" mid-migration.\n\nTKT-226 fixed that by giving the mailer **its own database**. `internal/bulkrefund` is the *third*\nsuch package — it predates the fix (TKT-159, `1883a4e`) and was never given the same treatment, so\nthe fix did not generalize.\n\n**Why this probably explains the original symptom too.** This ticket was filed for\n`TestRunnerDrainsARealBook` reporting `AlreadyRefunded:3` where it expected `Refunded:3` — that test\nis in `internal/bulkrefund`, exactly the racing package. A run whose migration partially applied, or\nwhose tables were concurrently created by the other binary, can leave order rows in a state the\nrunner reads as already-refunded. **This is a hypothesis, not a proven link** — the two runs today\ndid not reproduce the count assertion, they failed earlier at migration. Whoever plans this should\nconfirm rather than assume, because if the count symptom survives the isolation fix there is a second\ndefect underneath.\n\n**Suggested direction (not a decision — the plan owns it):** the shape of the existing fix is to\ncreate `commerce_bulkrefund_smoke` in `scripts/smoke.sh` and give `runnerDB` its own env var. But\nnote the generalization is the real ticket: **any** future package under `services/commerce/internal/`\nthat calls `store.Migrate` reintroduces this. A per-package database convention, or a single\nmigrate-before-`go test` step with the test helpers no longer migrating, would close the class rather\nthan the instance.\n\n**Impact right now:** `make check` does not pass on `main`, so the gate cannot certify any subsequent\nticket. This blocks the pipeline rather than merely annoying it — which is why the ticket is raised to\nReady rather than left in Backlog.\n\n**Environment note:** `make browser` and the smoke stages need Docker Desktop running on this WSL box;\nwith it stopped, `/usr/bin/docker` is a dangling symlink into `/mnt/wsl/docker-desktop` and the gate\nfails at `smoke` with `docker: command not found` — a different failure from this one, and not a code\ndefect."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — READY (re-shaped 2026-08-08)\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | `make check` passes reliably on `main`; the commerce smoke packages stop racing |\n| Scope | OK | Test-database isolation for `services/commerce/internal/...`. Not a product change |\n| Uncertainties | WARN | Whether the original `AlreadyRefunded` count symptom is the same defect — must be confirmed, not assumed |\n| Dependencies | OK | None. The precedent fix (TKT-226, mailer) is already on `main` to copy |\n| Approach | WARN | Deliberately left open: instance fix (one more database) vs class fix (per-package convention) is the plan's call |\n| AC verifiable | OK | Three consecutive green `make check` runs, plus a test that fails if a new package shares the database |\n| Context-mémo | OK | Resolved today against `main` at `ab9920b` |\n\n**Verdict: READY.** The mechanism is identified with evidence, which was this ticket's first\ncondition of success. What remains is a design choice between closing the instance and closing the\nclass — a plan decision, not a shaping gap."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "`make check` passes reliably on main; the commerce smoke packages stop racing store.Migrate."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Test-database isolation for services/commerce/internal/... . Not a product change, no contract change."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Whether the original AlreadyRefunded/Refunded count symptom shares this root cause. Must be CONFIRMED during the run, not assumed - if it survives the isolation fix there is a second defect underneath."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. TKT-226 already shipped the precedent fix (a separate database for internal/mailer) and it is on main to copy."
+    },
+    "approach": {
+      "state": "deferred",
+      "note": "Deliberately left to the plan: close the INSTANCE (one more database for internal/bulkrefund) or close the CLASS (per-package convention, or migrate once before `go test` with helpers no longer migrating). The class fix is the better ticket but the larger change."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Whatever the approach, the first slice is a green `make check` with internal/store and internal/bulkrefund no longer sharing one database."
+    },
+    "success": {
+      "state": "met",
+      "note": "Deterministic: three consecutive green `make check` runs, plus a test that fails if a new package starts sharing the store-test database."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Resolved 2026-08-08 against main at ab9920b, with the failing output and the racing helpers named."
+    }
+  }
 }
