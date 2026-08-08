@@ -73,6 +73,16 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS commerce_mailer_smoke" \
   -c "CREATE DATABASE commerce_mailer_smoke OWNER commerce" >/dev/null
+# A THIRD database, for ./internal/bulkrefund (TKT-198). The block above fixed the mailer
+# and did NOT generalize: ./internal/bulkrefund (TKT-159) was already the third package
+# calling store.Migrate and kept sharing commerce_store_smoke, so the two raced on every
+# gate run — a different ~30-test subset failing each time on "relation ... already
+# exists", which reads as flakiness rather than as one cause. The package-local sync.Once
+# in each helper serializes nothing: these are separate, concurrent test binaries.
+# TestCommerceSmokeDatabasesAreIsolated now fails if a fourth package starts sharing.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS commerce_bulkrefund_smoke" \
+  -c "CREATE DATABASE commerce_bulkrefund_smoke OWNER commerce" >/dev/null
 # No -run filter: every smoke test in this package is part of the gate. An allowlist
 # means a newly added test silently never runs and the gate still passes green — which
 # is exactly what happened to this file's first six tests.
@@ -82,6 +92,7 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 # times. Nothing lives there for commerce yet; the widening closes the hole before it is
 # dug (TKT-156).
 COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_store_smoke" \
+COMMERCE_BULKREFUND_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_bulkrefund_smoke" \
 COMMERCE_MAILER_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_mailer_smoke" \
 COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/...
