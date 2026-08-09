@@ -17,7 +17,7 @@ SPIDR slicing (first sprint-sized slice).
 | `scope` | First delivery scope defined — what's in AND out |
 | `uncertainties` | Key unknowns/assumptions/risks identified and acknowledged |
 | `dependencies` | Major dependencies and blockers visible (as `blocked-by` links) |
-| `approach` | Enough technical direction to start safely |
+| `approach` | Enough technical direction to start safely — **any remedy the ticket text already proposes is verified against the code before it is inherited** |
 | `first_slice` | A meaningful increment that fits one sprint is identified |
 | `success` | COS defined — we know what "done" looks like |
 | `context_memo` | Context-mémo baked onto the ticket, **`governingAdrs` included** (`decomposition.md` § context-mémo) |
@@ -52,11 +52,26 @@ TKT-22 hit this twice in one epic: TKT-193's approach assumed an order read that
 contract forbids, and TKT-194's refund action turned out to be unreachable from the back office at
 all — both discovered at claim time, both money- or auth-adjacent, both costing a rescope.
 
+**A remedy proposed in the ticket text is a hypothesis, not a finding — verify it against the code
+before `approach` inherits it.** Tickets are usually filed by whoever hit the problem, often citing a
+precedent ("fix it the way TKT-N did"). That citation is the most trusted sentence in the ticket and
+the least checked: it arrives with a ticket number attached, so shaping copies it into `approach` and
+the plan brief carries it to the drafter as settled direction. The drafter reads code, not ticket
+history, and cannot tell a verified remedy from a filed guess. TKT-233 was filed as "make expiry
+deterministic (inject the clock, as TKT-229 did)" — but that test's expiry is decided entirely in
+SQL (`expires_at` written as `now()+$interval`, swept by `expires_at<=now()`), so there is no Go-side
+clock to inject and the precedent could not transfer. Reading the two call sites took a minute;
+inheriting the suggestion would have spent a drafting run designing an interface that cannot exist.
+If the proposed remedy does not survive the read, say so in `note` and record what replaces it — the
+correction is worth more to the drafter than the original suggestion was.
+
 ## The shaping pass (agent, in Backlog)
 
 1. **Read the real code first** — most items resolve by reading, not asking (integration point,
    existing patterns, feasibility). Fill what you can yourself: draft objective, scope, COS,
    first slice (SPIDR: split by Spike/Path/Interface/Data/Rules until one slice fits a sprint).
+   This read is also where a **remedy the ticket proposes** gets checked rather than inherited
+   (above) — including, and especially, one that cites a precedent ticket.
 2. **Surface the rest, Example-Mapping style** — for each COS/rule, try a concrete example; what
    you can't exemplify is an unknown. Sort unknowns into:
    - **investigations** (answerable by work) → spawn a **spike** (below);

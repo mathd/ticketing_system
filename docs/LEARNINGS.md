@@ -213,3 +213,21 @@ exists are in *Historical* at the bottom; their files are kept.
   **`ADD CONSTRAINT … NOT VALID`** enforces a predicate for new rows without the full-table scan
   that would blow ADR-008's 30s migration bound. When a plan claims something about database or
   runtime semantics, run it — a database was available the whole time.
+- [An assertion over a `min()` only tests the winning arm](learnings/2026-08-09-an-assertion-over-a-min-only-tests-the-winning-arm.md)
+  — TKT-233. A test asserted channel availability was 3 after a hold expired and called that proof
+  the expired hold had left the live-claims accounting. `Available` is
+  `min(pool remaining, cap − consumed)` over **two independent predicates**, so a regression in the
+  pool-level one left `min(7,3)` still equal to 3 and the test passed straight through it — verified
+  by mutating that arm alone. **A single assertion over a `min()`/`max()`/clamp of N predicates can
+  only discriminate the winning arm**; proving all N means asserting the components, not the
+  aggregate. Hard to spot because the expected value is arithmetically *correct* — nothing about a
+  green test says the number would be 3 anyway if the code were broken. Sibling of
+  [a fixture too small](learnings/2026-08-03-a-fixture-too-small-cannot-show-the-negative.md): there
+  the fixture admitted no failing input, here the assertion cannot express the failure.
+- [pgx returns `infinity` timestamps as a string](learnings/2026-08-09-pgx-returns-infinity-timestamps-as-a-string.md)
+  — TKT-233. `'infinity'::timestamptz` is the cleanest way to pin a row live in a fixture (it
+  satisfies `liveClaims` and the non-NULL buyer-expiry CHECK, so nothing can expire out from under
+  the next statement), but Go's `time.Time` cannot represent it and pgx hands it back as a string:
+  scanning it fails with `unsupported Scan, storing driver.Value type string`. Fine to write, fine
+  for SQL to compare — never scan it into Go. Keep such a pin short-lived, restore a finite value
+  before anything reads the row, and comment the pin, because the error surfaces far from its cause.
