@@ -287,11 +287,11 @@ func TestExpiredChannelHoldFreesItsCap(t *testing.T) {
 	// (expires_at > now()) and the claims_kind_shape CHECK (buyer expiry is non-NULL),
 	// so the hold cannot expire out from under the next statement.
 	//
-	// Do not add a claim-READING call (History, Transition, anything scanning ExpiresAt)
-	// between here and the backdate below: pgx hands 'infinity' back as a string, and
-	// scanning it into Claim.ExpiresAt's *time.Time fails with "unsupported Scan, storing
-	// driver.Value type string" (ai-review, verified). Reads are safe after the backdate,
-	// which restores a finite timestamp.
+	// Do not add anything that scans this claim's expires_at between here and the backdate
+	// below: pgx hands 'infinity' back as a string, and scanning it into Claim.ExpiresAt's
+	// *time.Time fails with "unsupported Scan, storing driver.Value type string" (verified
+	// against the driver). Transition is the trap — it loads the claim before mutating it.
+	// History is safe: it reads claim_history columns only (operational.go:346-347).
 	mustAgeClaim(t, ctx, db, exp1.ID, "'infinity'::timestamptz")
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "exp-2"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("cap full: got %v want ErrUnavailable", err)
