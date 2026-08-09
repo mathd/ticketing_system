@@ -416,22 +416,59 @@ func dependsOnRequired(t *testing.T, c, svc, dep string) bool {
 	project := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project"}}`)
 	files := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project.config_files"}}`)
 	workdir := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project.working_dir"}}`)
-	if project == "" || files == "" {
-		t.Fatalf("%s: compose project/config-file labels are missing (%q/%q) — cannot "+
-			"re-read the merged configuration this stack was created from", c, project, files)
+	if project == "" || files == "" || workdir == "" {
+		t.Fatalf("%s: compose project/config-file/working-dir labels are missing (%q/%q/%q) — "+
+			"cannot re-read the configuration this stack was created from",
+			c, project, files, workdir)
 	}
 
-	args := []string{"compose", "-p", project}
+	// The file list must be passed explicitly: `docker compose -p <project>
+	// config` alone re-discovers the default compose.yaml and SILENTLY DROPS
+	// the -f overrides the stack was created with, which would report the base
+	// file's edge and miss an override that weakened it.
+	//
+	// Compose joins the paths with "," in this label, and a directory name may
+	// legitimately contain a comma, so a naive split can invent nonexistent
+	// paths. Rejoin any fragment that is not an existing file with the next one
+	// before giving up — the paths are absolute and must exist, so the
+	// filesystem resolves the ambiguity the label cannot.
+	var paths []string
 	for _, f := range strings.Split(files, ",") {
-		args = append(args, "-f", f)
+		if n := len(paths); n > 0 {
+			if _, err := os.Stat(paths[n-1]); err != nil {
+				paths[n-1] += "," + f
+				continue
+			}
+		}
+		paths = append(paths, f)
+	}
+	args := []string{"compose", "-p", project}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("%s: compose config file %q from the %s label does not exist: %v",
+				c, p, "com.docker.compose.project.config_files", err)
+		}
+		args = append(args, "-f", p)
 	}
 	args = append(args, "config", "--format", "json")
 
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = workdir
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("%s: docker compose config: %v", c, err)
+		// Almost always interpolation: compose.yaml declares required
+		// variables with ${VAR:?...}, and `config` re-interpolates them, so
+		// this fails unless the caller's environment carries them. It does
+		// today — scripts/smoke.sh sources scripts/stack-env.sh, which exports
+		// every such variable precisely so the stack never depends on a
+		// developer's .env (and so CI needs no secret) — but the coupling is
+		// implicit, so name it rather than leaving a bare exit status.
+		t.Fatalf("%s: docker compose config failed: %v\n%s\n"+
+			"If this is an interpolation error, the required credentials are not in this "+
+			"process's environment; run the suite through scripts/smoke.sh, which exports them.",
+			c, err, strings.TrimSpace(stderr.String()))
 	}
 
 	var cfg struct {

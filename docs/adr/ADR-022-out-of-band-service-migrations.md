@@ -147,8 +147,17 @@ never before; this is not that change.
            this as a dependency condition and promises nothing about elapsed time, so a wall-clock
            comparison could invert under load while the condition held (TKT-232), and could equally
            pass on an idle box with the condition removed.
-           **Scope, stated precisely:** the label records the configuration the container was
-           created under — not proof that this service process was gated by this job run. `docker
+           **Scope, stated precisely.** Two sources, and they are not equally strong. The
+           *condition* comes from the container's own create-time label, so it describes the
+           running container. `required` cannot: Compose does not encode it anywhere on the
+           container, so it is re-read from the compose files on disk, which is evidence about the
+           **repository**, not about the running stack — an edit between `up` and the assertion
+           would be read as if it had been there at creation. That is an acceptable trade here
+           because the gate creates the stack and asserts against it seconds later, within one
+           `make check`, and because the alternative is not checking `required` at all. (The
+           container's `config-hash` does **not** close this gap: it is byte-identical with and
+           without `required: false` — verified — so it cannot detect this particular drift.)
+           Neither source proves this service process was gated by this job run: `docker
            start` on an existing container bypasses `depends_on` and leaves the label intact. That
            is the same boundary drawn below: the condition "gates at stack *creation*". The gate
            only ever observes freshly created containers (`scripts/smoke.sh` pre-cleans with
