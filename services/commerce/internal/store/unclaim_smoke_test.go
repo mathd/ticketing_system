@@ -54,14 +54,8 @@ func detachmentsFor(t *testing.T, db *sql.DB, order uuid.UUID) []struct {
 	return out
 }
 
-func attributionOf(t *testing.T, db *sql.DB, order uuid.UUID) uuid.NullUUID {
-	t.Helper()
-	var got uuid.NullUUID
-	if err := db.QueryRow(`SELECT customer_id FROM orders WHERE id = $1`, order).Scan(&got); err != nil {
-		t.Fatal(err)
-	}
-	return got
-}
+// attributionOf lives in attribution_smoke_test.go — same package, and the read
+// it does is the same one this file needs.
 
 func TestDetachRestoresTheOrderToUnattributedAndRecordsIt(t *testing.T) {
 	db, ctx := outboxDB(t)
@@ -75,7 +69,7 @@ func TestDetachRestoresTheOrderToUnattributedAndRecordsIt(t *testing.T) {
 	if detached != customer {
 		t.Fatalf("detached from %s, want %s — the audit trail would name the wrong account", detached, customer)
 	}
-	if got := attributionOf(t, db, order); got.Valid {
+	if got := attributionOf(t, db, ctx, order); got.Valid {
 		t.Fatalf("order still attributed to %s after a detach", got.UUID)
 	}
 
@@ -140,16 +134,31 @@ func TestDetachingAnUnattributedOrderIsRefusedAndRecordsNothing(t *testing.T) {
 	}
 }
 
+// `status = 'completed'` mirrors the claim's own predicate: the two operations
+// bracket the same window, and an order that was never claimable is not one to
+// un-claim.
+//
+// Both directions of "not completed" are covered — an order still in flight
+// (`confirmation_pending`) and one whose life has moved past a purchase
+// (`refunded`) — because a single fixture on one side would pass against a
+// predicate that tested the wrong bound.
 func TestDetachRefusesAnOrderThatIsNotCompleted(t *testing.T) {
 	db, ctx := outboxDB(t)
-	customer := registerClaimant(t, db, ctx, "detach-pending")
-	order, _ := seedClaimable(t, db, ctx, "payment_pending", uuid.NullUUID{UUID: customer, Valid: true})
+	for _, status := range []string{"confirmation_pending", "refunded"} {
+		t.Run(status, func(t *testing.T) {
+			customer := registerClaimant(t, db, ctx, "detach-"+status)
+			order, _ := seedClaimable(t, db, ctx, status, uuid.NullUUID{UUID: customer, Valid: true})
 
-	if _, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "too early"); err != ErrOrderNotDetachable {
-		t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
-	}
-	if got := attributionOf(t, db, order); !got.Valid || got.UUID != customer {
-		t.Fatal("attribution changed on an order that is not completed")
+			if _, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "wrong state"); err != ErrOrderNotDetachable {
+				t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
+			}
+			if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != customer {
+				t.Fatalf("attribution changed on an order whose status is %q", status)
+			}
+			if records := detachmentsFor(t, db, order); len(records) != 0 {
+				t.Fatalf("a refused detach wrote %d audit rows", len(records))
+			}
+		})
 	}
 }
 
@@ -181,7 +190,7 @@ func TestDetachRefusesABlankActorOrReason(t *testing.T) {
 		})
 	}
 	// And the order is untouched by any of them.
-	if got := attributionOf(t, db, order); !got.Valid || got.UUID != customer {
+	if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != customer {
 		t.Fatal("a refused detach still changed the attribution")
 	}
 	if records := detachmentsFor(t, db, order); len(records) != 0 {
@@ -211,7 +220,7 @@ func TestADetachedOrderCanBeClaimedAgain(t *testing.T) {
 	if _, err := ClaimGuestOrder(ctx, db, ref, rightful); err != nil {
 		t.Fatalf("the rightful buyer cannot claim a detached order: %v", err)
 	}
-	if got := attributionOf(t, db, order); !got.Valid || got.UUID != rightful {
+	if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != rightful {
 		t.Fatalf("attribution = %+v, want %s", got, rightful)
 	}
 }

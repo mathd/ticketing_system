@@ -53,9 +53,23 @@ var ErrDetachmentNotDescribed = errors.New("detachment needs a non-empty actor a
 // becoming a transfer (TKT-9 / TKT-160), which has a different adversary and needs
 // a different argument.
 //
-// RETURNING customer_id gives the audit row the account the order was taken FROM,
-// read from the same locked row in the same statement — not from a preflight
-// SELECT that a concurrent claim could invalidate between read and write.
+// `RETURNING OLD.customer_id`, and the OLD is load-bearing.
+//
+// In an UPDATE's RETURNING clause, a column name is the NEW value — and so is a
+// TABLE-QUALIFIED one. `RETURNING customer_id` and `RETURNING orders.customer_id`
+// both come back NULL here, which would make every audit row record a detachment
+// from nobody. Verified against the real engine rather than assumed: the first
+// version of this statement shipped the bare form, and the second the qualified
+// form, and both failed the same way.
+//
+// `OLD.column` is PostgreSQL **18**, which is what this stack runs
+// (compose.yaml pins postgres:18.4). On an older server this statement is a syntax
+// error at first execution rather than a silent wrong answer — a loud failure, and
+// the smoke suite runs against the pinned image, so a downgrade cannot pass
+// unnoticed.
+//
+// It reads from the same locked row in the same statement, rather than from a
+// preflight SELECT that a concurrent claim could invalidate between read and write.
 //
 // updated_at is deliberately NOT touched, matching the claim: it means "when did
 // this order's CHECKOUT last move" and recovery reads it to decide what is stale.
@@ -66,7 +80,7 @@ const detachOrderStatement = `
 	 WHERE id = $1
 	   AND status = 'completed'
 	   AND customer_id IS NOT NULL
-	 RETURNING customer_id`
+	 RETURNING OLD.customer_id`
 
 // DetachOrderAttribution restores a claimed order to unattributed, and records
 // who did it and why.
