@@ -75,23 +75,41 @@ func TestValidateServiceResponseCoversCatalog(t *testing.T) {
 	// that skips the false case leaves this synthetic response's bit in the map, and it
 	// would be credited as gate coverage the moment catalog joins
 	// smokeCoverageGatedServices.
+	// It asserts BOTH directions — leaked (present when it should be absent) and
+	// over-deleted (absent when it should be present) — because "restores the exact prior
+	// state" is a two-way claim and a guard that only checks one of them cannot see the
+	// other regression.
 	//
-	// The guard is observable in a FOCUSED run (`-run TestValidateServiceResponseCoversCatalog`),
-	// where the coverage map starts empty so prior is false and a one-way restore leaks.
-	// In an unfiltered run it is inert: backoffice_venue_list_test.go exercises
-	// GET /api/catalog/public/venues and sorts earlier, so prior is already true and both
-	// the correct and the one-way restore leave the key present. That is accepted rather
-	// than engineered around — forcing observability in a full run would mean perturbing
-	// suite-wide ordering or shared state for a documentation benefit. The reference guard
-	// in TestConcurrentPostValidatesAndRecordsCoverage has the same limitation.
+	// Which direction is *observable* depends on suite order, so be precise about it:
+	//   - Focused run (`-run TestValidateServiceResponseCoversCatalog`): the coverage map
+	//     starts empty, so prior is false and the leak arm is live — this is the arm that
+	//     catches a revert to the one-way "if prior" restore.
+	//   - Unfiltered run: backoffice_venue_list_test.go exercises
+	//     GET /api/catalog/public/venues and sorts earlier (file order), so prior is
+	//     already true and the over-deletion arm is the live one instead.
+	// Every run therefore exercises exactly one arm, and between the focused and full runs
+	// in `make check` both arms are covered.
+	//
+	// Note this differs from the reference guard in
+	// TestConcurrentPostValidatesAndRecordsCoverage: its operation is inventory createHold,
+	// whose real drivers live in group_reservations_test.go, happy_path_coverage_test.go and
+	// inventory_contention_test.go — all of which sort AFTER contract_validation_test.go —
+	// so its prior is false and its leak arm is live even in a full run. Do not assume the
+	// two tests have the same observability; catalog's earlier driver is what shifts which
+	// arm fires here (found by ai-review).
 	t.Cleanup(func() {
 		smokeCoverageMu.Lock()
-		leaked := smokeCoverage[op] && !prior
+		got := smokeCoverage[op]
 		smokeCoverageMu.Unlock()
-		if leaked {
+		switch {
+		case got && !prior:
 			t.Errorf("this test leaked %q into smokeCoverage: a synthetic response must never "+
 				"satisfy the real-stack coverage gate if catalog is later added to "+
 				"smokeCoverageGatedServices (ADR-030)", op)
+		case !got && prior:
+			t.Errorf("this test dropped %q from smokeCoverage: it was recorded by an earlier "+
+				"real-stack driver and must survive this test's save/restore, or a later "+
+				"coverage gate would report a genuinely exercised operation as uncovered", op)
 		}
 	})
 
