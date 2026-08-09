@@ -127,8 +127,9 @@ func (p *Postgres) CapacityHistory(ctx context.Context, org, slot uuid.UUID) ([]
 	if err != nil {
 		return nil, err
 	}
-	rows, err := p.db.QueryContext(ctx, `SELECT action,actor,reason,quantity,quantity_after,status_after,target_capacity,occurred_at
-		FROM claim_history WHERE organizer_id=$1 AND pool_id=$2 ORDER BY occurred_at, id`, org, slot)
+	rows, err := p.db.QueryContext(ctx, `SELECT id,action,actor,reason,quantity,quantity_after,status_after,target_capacity,occurred_at
+		FROM claim_history WHERE organizer_id=$1 AND pool_id=$2
+		ORDER BY occurred_at, append_order NULLS FIRST, id`, org, slot)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +137,7 @@ func (p *Postgres) CapacityHistory(ctx context.Context, org, slot uuid.UUID) ([]
 	out := []HistoryEntry{}
 	for rows.Next() {
 		var e HistoryEntry
-		if err = rows.Scan(&e.Action, &e.Actor, &e.Reason, &e.Quantity, &e.QuantityAfter, &e.StatusAfter, &e.TargetCapacity, &e.OccurredAt); err != nil {
+		if err = rows.Scan(&e.HistoryID, &e.Action, &e.Actor, &e.Reason, &e.Quantity, &e.QuantityAfter, &e.StatusAfter, &e.TargetCapacity, &e.OccurredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
