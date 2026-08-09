@@ -2,7 +2,7 @@
   "key": "TKT-233",
   "type": "Task",
   "summary": "Flaky: TestExpiredChannelHoldFreesItsCap races its own 50ms TTL under load",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
