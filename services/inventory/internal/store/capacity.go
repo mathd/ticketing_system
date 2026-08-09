@@ -128,7 +128,8 @@ func (p *Postgres) CapacityHistory(ctx context.Context, org, slot uuid.UUID) ([]
 		return nil, err
 	}
 	rows, err := p.db.QueryContext(ctx, `SELECT action,actor,reason,quantity,quantity_after,status_after,target_capacity,occurred_at
-		FROM claim_history WHERE organizer_id=$1 AND pool_id=$2 ORDER BY occurred_at, id`, org, slot)
+		FROM claim_history WHERE organizer_id=$1 AND pool_id=$2
+		ORDER BY occurred_at, append_order NULLS FIRST, id`, org, slot)
 	if err != nil {
 		return nil, err
 	}

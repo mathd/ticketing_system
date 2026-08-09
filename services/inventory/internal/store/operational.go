@@ -333,7 +333,8 @@ func (p *Postgres) History(ctx context.Context, org, id uuid.UUID) ([]HistoryEnt
 		return nil, err
 	}
 	rows, err := p.db.QueryContext(ctx, `SELECT action,actor,reason,quantity,quantity_after,status_after,related_claim_id,occurred_at
-		FROM claim_history WHERE organizer_id=$1 AND claim_id=$2 ORDER BY occurred_at, id`, org, id)
+		FROM claim_history WHERE organizer_id=$1 AND claim_id=$2
+		ORDER BY occurred_at, append_order NULLS FIRST, id`, org, id)
 	if err != nil {
 		return nil, err
 	}
