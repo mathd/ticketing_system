@@ -9,6 +9,15 @@ exists are in *Historical* at the bottom; their files are kept.
 
 ## Testing — what a test can and cannot prove
 
+- [**A proxy can fail while the guarantee holds — and pass while it is gone**](./learnings/2026-08-09-a-proxy-can-fail-while-the-guarantee-holds.md) —
+  a smoke test measured Compose's `depends_on` guarantee by comparing container timestamps; it
+  inverted by 519ms under load with nothing wrong, and would equally have passed on an idle box with
+  the condition deleted. Assert the mechanism, not a symptom of it — then check the encoding you
+  read carries every field the mechanism honours: `depends_on.required` is absent from the label,
+  and `required: false` lets Compose skip a *failed* migrate job and start the service anyway.
+  Also: `docker compose -p <p> config` without `-f` silently drops the overrides the stack was
+  created with, and `go test` will serve a **cached** pass for a mutation run against external
+  state. (TKT-232)
 - [**A guard's worst failure is not seeing**](./learnings/2026-08-06-a-guards-worst-failure-is-not-seeing.md) —
   a source-scanning invariant matched neither `UPDATE ONLY orders` nor `UPDATE public.orders`, so a
   real attribution writer would have been invisible while the allowlist count stayed satisfied. A
