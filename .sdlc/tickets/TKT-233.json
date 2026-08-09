@@ -1,0 +1,22 @@
+{
+  "key": "TKT-233",
+  "type": "Task",
+  "summary": "Flaky: TestExpiredChannelHoldFreesItsCap races its own 50ms TTL under load",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-230"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Found 2026-08-09 while gating TKT-230**, and confirmed unrelated to it: TKT-230 changes `claim_history` READ ordering only, and this test asserts nothing about history order.\n\n```\n--- FAIL: TestExpiredChannelHoldFreesItsCap\nchannel_allocations_smoke_test.go:279: cap full: got <nil> want ErrUnavailable\n```\n\n**The mechanism is visible in the fixture** (`services/inventory/internal/store/channel_allocations_smoke_test.go:271-279`):\n\n```go\nctx, st, _ := storeForTest(t, 50*time.Millisecond)   // 50ms TTL\n// ... CreateHold(qty 3) fills a cap-3 channel\n// ... CreateHold(qty 1) must be refused with ErrUnavailable\n```\n\nThe second `CreateHold` must run **within 50ms** of the first, or the first hold has already expired, `sweepExpired` frees its headroom, and the second call legitimately succeeds — returning `<nil>` where the test wants `ErrUnavailable`. Under CPU contention that window closes easily.\n\n**Evidence it is load, not a regression:**\n- Failed once during a full-suite run while the machine was busy.\n- Passes in isolation, immediately, on the same tree.\n- `origin/main` @ `4c995e8`: 3 consecutive full-suite runs, 0 failures.\n- TKT-230's branch: 3 consecutive full-suite runs, 0 failures.\n\nSo it is rare and pre-existing, not introduced. It is the **fifth** member of the family TKT-230 was opened for — an assertion with a small timing margin that flips under load — alongside TKT-231 and TKT-232.\n\n**Do not** fix by lengthening the TTL and re-running: that widens the window without removing the race, and the next slower machine reopens it. The honest fixes are to make expiry deterministic (inject the clock, as TKT-229 did for the session cap) or to drive the sweep explicitly rather than sleeping. Needs shaping before Gate 1."
+    }
+  ]
+}
