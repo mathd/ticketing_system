@@ -333,6 +333,13 @@ const migrateGateCondition = "service_completed_successfully"
 // indistinguishable from a container that declares no dependencies — and
 // treating it as "no edge" would let this assertion pass vacuously against a
 // container Compose never labelled.
+//
+// Every entry is validated before the lookup, deliberately: returning on the
+// first match would make "is the rest of this label well-formed?" depend on
+// where Compose happened to place the target entry, and the order is not the
+// compose file's. A format change that appears only after the match would then
+// be invisible — which is the opposite of failing closed on an unrecognised
+// label.
 func dependsOnCondition(t *testing.T, c, dep string) (string, bool) {
 	t.Helper()
 
@@ -343,32 +350,48 @@ func dependsOnCondition(t *testing.T, c, dep string) (string, bool) {
 			"do not weaken this assertion to compensate", c, dependsOnLabel)
 	}
 
+	found := ""
+	ok := false
+	seen := make(map[string]bool)
 	for _, entry := range strings.Split(label, ",") {
-		// "<service>:<condition>:<restart-bool>" — split from the right would
-		// be wrong if a service name ever contained ':', so cut twice forward.
-		name, rest, ok := strings.Cut(entry, ":")
-		if !ok {
+		// "<service>:<condition>:<restart-bool>" — cut twice forward rather
+		// than splitting, so a ':' inside a service name cannot silently
+		// re-align the fields.
+		name, rest, cut := strings.Cut(entry, ":")
+		if !cut {
 			t.Fatalf("%s: malformed %s entry %q (want <service>:<condition>:<restart>)",
 				c, dependsOnLabel, entry)
 		}
-		condition, restart, ok := strings.Cut(rest, ":")
-		if !ok {
+		condition, restart, cut := strings.Cut(rest, ":")
+		if !cut {
 			t.Fatalf("%s: malformed %s entry %q (want <service>:<condition>:<restart>)",
 				c, dependsOnLabel, entry)
 		}
-		// The restart flag is parsed to validate the entry's shape but is
-		// deliberately not asserted: it governs whether Compose restarts this
-		// container when the dependency restarts, which is unrelated to
-		// startup gating. Asserting it would fail on unrelated compose edits.
-		if _, err := strconv.ParseBool(restart); err != nil {
-			t.Fatalf("%s: %s entry %q has non-boolean restart field: %v",
-				c, dependsOnLabel, entry, err)
+		if name == "" || condition == "" {
+			t.Fatalf("%s: %s entry %q has an empty service or condition field",
+				c, dependsOnLabel, entry)
 		}
+		// The restart flag is parsed to validate the entry's shape but its
+		// value is deliberately not asserted: it governs whether Compose
+		// restarts this container when the dependency restarts, which is
+		// unrelated to startup gating. Asserting it would fail on unrelated
+		// compose edits. ParseBool is too permissive for a format check
+		// ("1", "T" would pass), so require the canonical spelling — anything
+		// else means the format moved and this parser should be re-read.
+		if restart != "true" && restart != "false" {
+			t.Fatalf("%s: %s entry %q has restart field %q, want %q or %q",
+				c, dependsOnLabel, entry, restart, "true", "false")
+		}
+		if seen[name] {
+			t.Fatalf("%s: %s lists %q more than once (%q) — the format is not what "+
+				"this parser assumes", c, dependsOnLabel, name, label)
+		}
+		seen[name] = true
 		if name == dep {
-			return condition, true
+			found, ok = condition, true
 		}
 	}
-	return "", false
+	return found, ok
 }
 
 // TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
@@ -389,11 +412,28 @@ func dependsOnCondition(t *testing.T, c, dep string) (string, bool) {
 // Do not "fix" a red here by widening a tolerance or retrying: there is no
 // timing left to be flaky, so a failure means the gating is actually broken.
 //
-// What this does and does not prove. It catches the job being absent, failing,
-// or not gating the service — i.e. the depends_on edge being wrong. It does NOT
-// prove the server never migrates: a job that exits 0 first and a server that
-// also migrates satisfies it. TestServerModeDoesNotMigrate is what closes that;
-// the two are complementary and neither is sufficient alone.
+// What this does and does not prove. It reads the edge Compose *resolved* and
+// recorded at container-create time, so it proves the declaration the stack was
+// created under — an absent, failing, or wrongly-conditioned migrate job. It is
+// not historical evidence that this particular service process was gated by
+// this particular job run: `docker start` on an existing container bypasses
+// depends_on entirely and leaves the label untouched. That is deliberate, and
+// it is the same scope ADR-022 itself claims — `service_completed_successfully`
+// "gates at stack creation" (§Consequences), and a restarted container re-runs
+// run() without re-running its completed one-shot job. The gate only ever
+// observes freshly created containers: scripts/smoke.sh pre-cleans with
+// `down -v` and then `up -d --wait`, and never issues docker start/restart.
+//
+// The wall-clock form this replaced did not close that gap either — an ungated
+// `docker start` of the service, long after its job finished, satisfies
+// finished < started just as happily. It detected only the narrow case where a
+// job's re-run happened to land after the service's start, at the cost of
+// failing on a busy machine when nothing was wrong (TKT-232).
+//
+// It also does NOT prove the server never migrates: a job that exits 0 and a
+// server that also migrates satisfies it. TestServerModeDoesNotMigrate is what
+// closes that; the three assertions are complementary and none is sufficient
+// alone.
 func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 	for _, service := range migratedServices {
 		t.Run(service, func(t *testing.T) {

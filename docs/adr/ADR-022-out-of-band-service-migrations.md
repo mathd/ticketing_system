@@ -135,14 +135,26 @@ never before; this is not that change.
         1. `TestMigrationsAppliedOutOfBand` — each database is at its latest checked-in version.
            Proves *migratedness*. It was equally true under ADR-008, so it passes unchanged on the
            code this ADR replaces and proves nothing about placement on its own.
-        2. `TestMigrationsRanBeforeServicesStarted` — each job exited 0, and its service's resolved
-           Compose dependency edge requires that job to have completed successfully. Catches an
-           absent, failing, or ungated job. Still not placement: a job that exits 0 first and a
-           server that *also* migrates satisfies it. It asserts the **edge**, read back from the
-           container's `com.docker.compose.depends_on` label, rather than comparing container
-           timestamps: Compose enforces this as a dependency condition and promises nothing about
-           elapsed time, so a wall-clock comparison could invert under load while the condition held
-           (TKT-232), and could equally pass on an idle box with the condition removed.
+        2. `TestMigrationsRanBeforeServicesStarted` — each job exited 0, and its service was
+           **created** declaring `service_completed_successfully` on that job. Catches an absent or
+           failing job, and an edge that is missing or weakened. It asserts the **resolved
+           declaration**, read back from the container's `com.docker.compose.depends_on` label,
+           rather than comparing container timestamps: Compose enforces this as a dependency
+           condition and promises nothing about elapsed time, so a wall-clock comparison could
+           invert under load while the condition held (TKT-232), and could equally pass on an idle
+           box with the condition removed.
+           **Scope, stated precisely:** the label records the configuration the container was
+           created under — not proof that this service process was gated by this job run. `docker
+           start` on an existing container bypasses `depends_on` and leaves the label intact. That
+           is the same boundary drawn below: the condition "gates at stack *creation*". The gate
+           only ever observes freshly created containers (`scripts/smoke.sh` pre-cleans with
+           `down -v`, then `up -d --wait`, and never restarts one), so within the gate the
+           declaration and the enforcement coincide. Proving *runtime* enforcement would take a
+           different test — a deliberately blocked job, asserting the service stays unstarted until
+           it completes — which is **not** written; nothing here should be read as claiming it. The
+           wall-clock form this replaced did not prove it either: an ungated restart of the service
+           long after its job finished satisfies `finished < started` just as happily.
+           Still not placement: a job that exits 0 and a server that *also* migrates satisfies it.
         3. `TestServerModeDoesNotMigrate` — catalog in server mode against an empty database never
            creates `goose_db_version`. **This is the one that fails if `store.Migrate` returns to
            `run()`**, which the other two would let through as a silent no-op. A passing healthcheck
