@@ -427,28 +427,30 @@ func dependsOnRequired(t *testing.T, c, svc, dep string) bool {
 	// the -f overrides the stack was created with, which would report the base
 	// file's edge and miss an override that weakened it.
 	//
-	// Compose joins the paths with "," in this label, and a directory name may
-	// legitimately contain a comma, so a naive split can invent nonexistent
-	// paths. Rejoin any fragment that is not an existing file with the next one
-	// before giving up — the paths are absolute and must exist, so the
-	// filesystem resolves the ambiguity the label cannot.
-	var paths []string
-	for _, f := range strings.Split(files, ",") {
-		if n := len(paths); n > 0 {
-			if _, err := os.Stat(paths[n-1]); err != nil {
-				paths[n-1] += "," + f
-				continue
-			}
-		}
-		paths = append(paths, f)
-	}
+	// Compose joins the paths with "," in this label, and that encoding is
+	// LOSSY: a directory name may legitimately contain a comma, and no amount
+	// of filesystem probing can recover the intended split in general — a
+	// prefix that happens to exist would be accepted as a complete entry and
+	// silently produce a different -f list, which is the one failure this
+	// helper must never have. So refuse the ambiguous case outright instead of
+	// guessing: every fragment must be an existing regular file, and a comma in
+	// a checkout path is simply unsupported here (it is a checkout-location
+	// problem, and the message says so).
 	args := []string{"compose", "-p", project}
-	for _, p := range paths {
-		if _, err := os.Stat(p); err != nil {
-			t.Fatalf("%s: compose config file %q from the %s label does not exist: %v",
-				c, p, "com.docker.compose.project.config_files", err)
+	for _, f := range strings.Split(files, ",") {
+		st, err := os.Stat(f)
+		if err != nil {
+			t.Fatalf("%s: compose config file %q (from the %s label) is not readable: %v.\n"+
+				"If a directory in this checkout's path contains a comma, that label is "+
+				"ambiguous and this assertion cannot recover the file list — move the "+
+				"checkout somewhere without one.",
+				c, f, "com.docker.compose.project.config_files", err)
 		}
-		args = append(args, "-f", p)
+		if !st.Mode().IsRegular() {
+			t.Fatalf("%s: compose config path %q (from the %s label) is not a regular file",
+				c, f, "com.docker.compose.project.config_files")
+		}
+		args = append(args, "-f", f)
 	}
 	args = append(args, "config", "--format", "json")
 

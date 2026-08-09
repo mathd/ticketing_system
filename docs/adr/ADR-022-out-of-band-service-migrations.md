@@ -152,9 +152,13 @@ never before; this is not that change.
            running container. `required` cannot: Compose does not encode it anywhere on the
            container, so it is re-read from the compose files on disk, which is evidence about the
            **repository**, not about the running stack — an edit between `up` and the assertion
-           would be read as if it had been there at creation. That is an acceptable trade here
-           because the gate creates the stack and asserts against it seconds later, within one
-           `make check`, and because the alternative is not checking `required` at all. (The
+           would be read as if it had been there at creation. The window is **not** momentary:
+           `scripts/smoke.sh` brings the stack up, then runs the per-service store/mailer/bulkrefund
+           suites and the staff provisioning before reaching the package holding this assertion —
+           minutes, on one unattended `make check`. It is accepted rather than closed because the
+           alternative is not checking `required` at all, and nothing in the gate edits compose
+           files mid-run; a human editing one while the gate runs gets an answer about the file
+           they now have. (The
            container's `config-hash` does **not** close this gap: it is byte-identical with and
            without `required: false` — verified — so it cannot detect this particular drift.)
            Neither source proves this service process was gated by this job run: `docker
