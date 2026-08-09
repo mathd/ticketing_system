@@ -27,11 +27,21 @@ var (
 	migrateErr  error
 )
 
+// runnerDB opens this package's OWN database, not the store package's.
+//
+// Its own because this is the third package that calls store.Migrate, and
+// `go test ./internal/...` runs packages as separate, CONCURRENT test binaries: the
+// sync.Once below serializes migration within this binary and nothing at all across
+// them. Sharing commerce_store_smoke meant two goose runs against one database, the
+// loser dying mid-migration on "relation ... already exists" and taking a different
+// ~30-test subset down each run (TKT-198). ./internal/mailer took this same route in
+// TKT-226, and payments before it for ./internal/api; scripts/smoke.sh creates
+// commerce_bulkrefund_smoke.
 func runnerDB(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("COMMERCE_TEST_DATABASE_URL")
+	dsn := os.Getenv("COMMERCE_BULKREFUND_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("COMMERCE_TEST_DATABASE_URL is not set")
+		t.Skip("COMMERCE_BULKREFUND_TEST_DATABASE_URL is not set")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
