@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -268,20 +269,62 @@ func TestAllocationSumValidationDoesNotWrapInt32(t *testing.T) {
 	}
 }
 
+// Expiry is an explicit database-state transition here, never an elapsed duration: the
+// original version built the store with a 50ms TTL and raced it, so under load exp-1
+// expired before exp-2 ran, sweepExpired freed its headroom, and the cap-full assertion
+// inverted while the production code was correct (TKT-233). The constructor TTL below is
+// deliberately irrelevant — exp-1's expiry is pinned to 'infinity' and then backdated by
+// hand, so no delay between any two statements can change the outcome.
 func TestExpiredChannelHoldFreesItsCap(t *testing.T) {
-	ctx, st, _ := storeForTest(t, 50*time.Millisecond)
+	ctx, st, db := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 10)
 	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 3}})
-	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 3, 0, "", "presale", "exp-1"); err != nil {
+	exp1, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 3, 0, "", "presale", "exp-1")
+	if err != nil {
 		t.Fatal(err)
 	}
+	// Pin exp-1 live for the cap-full assertion. 'infinity' satisfies liveClaims
+	// (expires_at > now()) and the claims_kind_shape CHECK (buyer expiry is non-NULL),
+	// so the hold cannot expire out from under the next statement.
+	mustAgeClaim(t, ctx, db, exp1.ID, "'infinity'::timestamptz")
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "exp-2"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("cap full: got %v want ErrUnavailable", err)
 	}
-	time.Sleep(80 * time.Millisecond)
+	// Expire exp-1 explicitly. Status stays 'held' — only the sweep may flip it, and
+	// that is the behaviour under test.
+	mustAgeClaim(t, ctx, db, exp1.ID, "now() - interval '1 second'")
+	// Read availability BEFORE anything sweeps. This is the assertion that actually pins
+	// the shared predicate: CreateHold sweeps before it counts, so if this read were
+	// skipped, exp-3 would still succeed even with a broken liveClaims — the sweep would
+	// flip exp-1 to 'expired' first and mask the regression.
+	ch, err := st.Availability(ctx, org, slot, "presale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Available != 3 {
+		t.Fatalf("channel after explicit expiry: available=%d want 3 (expired hold must not consume the cap)", ch.Available)
+	}
 	// The expired hold frees channel headroom through the shared live-claims predicate.
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 3, 0, "", "presale", "exp-3"); err != nil {
 		t.Fatalf("after expiry: %v", err)
+	}
+}
+
+// mustAgeClaim rewrites a claim's expires_at to the given SQL timestamp expression,
+// leaving status untouched. It asserts exactly one row changed: a silent zero-row update
+// would make the caller's fixture vacuously green.
+func mustAgeClaim(t *testing.T, ctx context.Context, db *sql.DB, claim uuid.UUID, expiresAt string) {
+	t.Helper()
+	res, err := db.ExecContext(ctx, `UPDATE claims SET expires_at=`+expiresAt+` WHERE id=$1 AND status='held'`, claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("aging claim to %s: %d rows affected, want 1", expiresAt, n)
 	}
 }
 
