@@ -21,6 +21,74 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Filed from TKT-95's ai-review triage (incidental)\n\nVerified at HEAD before filing: the one-way restore is at\n`smoke/contract_validation_catalog_test.go`, and `smokeCoverageGatedServices` in\n`smoke/coverage_test.go` is `[\"inventory\",\"commerce\",\"payments\",\"access\"]` — catalog absent,\nwhich is exactly why the leak is currently inert.\n\nNot fixed inside TKT-95: that PR's diff is the helper unification plus the five catalog\nhappy-paths, and fixing an adjacent test's dormant defect there would have been scope\ncreep on a PR the review pass had already converged on. Filing rather than fixing is the\ntriage rule (`quality-practices.md` §2 — incidental findings become Backlog issues, never\nsilent drops).\n"
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness - PASS\n\nShaped at claim time rather than earlier: this ticket was born from TKT-95's ai-review triage and\nfiled straight to Backlog with a description but no `readiness` object and no context-memo. Both are\nnow on the ticket. Verified against HEAD `61629eae`, not against the filing comment.\n\n| DoR item | State | Note |\n|---|---|---|\n| objective | met | One-way restore leaks a stub-satisfied coverage bit; inert today, live at the ADR-030 flip. |\n| scope | met | One test function in one file. No production code, no change to the gate's scope. |\n| uncertainties | met | None material - the pattern to copy is committed in-repo. |\n| dependencies | met | Zero open blockers; `found-in TKT-95` is informational. |\n| approach | met | Mirror the committed TKT-95 shape: both-ways restore + self-asserting `t.Cleanup`. |\n| first_slice | met | The ticket *is* the slice. |\n| success | met | The three COS as written on the description. |\n| context_memo | met | Baked; `governingAdrs` = ADR-030, ADR-028, both `git cat-file -e` verified at HEAD. |\n\n**Re-verified at HEAD (not taken from the filing comment):**\n- `smoke/contract_validation_catalog_test.go:56-62` still carries the one-way `if prior` defer.\n- `smokeCoverageGatedServices` is still `[\"inventory\",\"commerce\",\"payments\",\"access\"]`\n  (`smoke/coverage_test.go:90`) - catalog absent, so the leaked bit is still unconsumed.\n- The reference implementation exists at `smoke/contract_validation_test.go:318-343`, both-ways\n  restore plus the `t.Cleanup` leak assertion.\n- No ADR-030-amendment / catalog-gate-flip ticket exists on the board yet, so the `blocks` link the\n  description asks for cannot be wired now. Recorded here instead: whoever files that ticket should\n  link it `blocked-by TKT-140`.\n\n**Concerns:** none.\n\n**Verdict: PASS.** Scope is one test function, the target pattern is committed and reviewed, and the\ngoverning ADR (ADR-030) constrains the fix *away* from the tempting wrong answer (adding catalog to\nthe gate) rather than leaving it open."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "TestValidateServiceResponseCoversCatalog restores its smokeCoverage bit only when prior was true, so a false-prior run leaks a stub-satisfied bit into the global map. Inert today (catalog absent from smokeCoverageGatedServices, ADR-030) but live the moment catalog enters the gate."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: smoke/contract_validation_catalog_test.go only - two-way restore + self-asserting t.Cleanup guard mirroring TestConcurrentPostValidatesAndRecordsCoverage. OUT: any change to smokeCoverageGatedServices, ADR-030's scope, or the catalog gate flip itself; no production code."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None material. The pattern to copy is committed in-repo at smoke/contract_validation_test.go:318-343; the sequential-execution assumption (no t.Parallel in smoke) is already documented in the test's own header comment and unchanged."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Zero open blockers. Only link is found-in TKT-95 (merged, informational, not a blocker). The ADR-030 catalog-gate-flip ticket does not exist yet, so no blocks link can be wired; the description records that this must land first."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Copy the committed TKT-95 shape: replace the `if prior` defer with a both-ways restore (set when prior, delete when not) and add a t.Cleanup that asserts the restore happened. Test-only; not auth/money/migration/CI, so the deferred-exception rule does not apply."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice - a single test function in a single file. Nothing to split."
+    },
+    "success": {
+      "state": "met",
+      "note": "The three COS on the description: two-way restore, self-asserting cleanup guard matching the TKT-95 reference, make check green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below on the ticket's context object; governingAdrs re-resolved against docs/adr/ at HEAD 61629eae (ADR-030 and ADR-028 both cat-file verified)."
+    }
+  },
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-030",
+        "why": "Catalog is deliberately OUT of the smoke happy-path coverage gate (smokeCoverageGatedServices = inventory, commerce, payments, access). This is what makes the leak inert today and what must NOT be changed by this ticket - do not 'fix' the leak by adding catalog to the gate, and do not weaken TestCatalogCoverageGateIsDeliberatelyUnitScoped, which pins that list exactly and in order."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response-contract drift fails closed - validateServiceResponse Fatals on a body that does not match the committed contract, which is why the synthetic {\"venues\":[]} fixture must stay spec-valid. Any change to the fixture body is a contract question, not a test-style question."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The exact pattern to mirror: both-ways restore + self-asserting t.Cleanup, as landed by TKT-95 for the gated-service twin of this test.",
+        "link": "smoke/contract_validation_test.go:295-343 (TestConcurrentPostValidatesAndRecordsCoverage)"
+      },
+      {
+        "summary": "The test under repair, with the one-way `if prior` defer.",
+        "link": "smoke/contract_validation_catalog_test.go:35-75"
+      },
+      {
+        "summary": "The gate that would consume a leaked bit once catalog is added, and the pin that currently forbids adding it.",
+        "link": "smoke/coverage_test.go:55-64, 86-95"
+      }
+    ],
+    "sourceTicket": "TKT-95 (ai-review incidental finding, deferred there)",
+    "capturedAt": "2026-08-09"
+  }
 }
