@@ -13,6 +13,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by **TKT-229**'s `agent:ai-review`/merge stage (gateless run, 2026-08-08) as an incidental. Not shaped — needs `shaping.md` before Gate 1. Evidence logs were at /tmp/g229_8.log, /tmp/g229_9.log, /tmp/gmain.log and /tmp/gctrl.log at the time of filing; the failing test names and the control-run result are transcribed above because those files are temporary."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### A fourth instance, on `main` after both fixes merged (2026-08-08)\n\nA confirmation run of `make check` on `main` at `a0a596d` — TKT-198 and TKT-229 both merged — failed\nthe smoke stage on a **fourth distinct test**:\n\n```\n--- FAIL: TestMigrationsRanBeforeServicesStarted/payments\nsmoke_test.go:346: ticketing-smoke-0-payments-migrate-1 finished at 00:48:25.681558716,\nbut ticketing-smoke-0-payments-1 started at 00:48:25.162768220\n— the service started before its migrations completed\n```\n\n**519 milliseconds.** Four of the five services passed; only `payments` inverted.\n\nThis strengthens the diagnosis: the failing tests share no code, but they all assert an **ordering or\ntiming relation with a small margin** — history row order, container start order. Under CPU\ncontention the margins close and the assertion flips. Zero `already exists` errors in this run, so\nTKT-198's fix continues to hold.\n\n**Note this one is about ADR-022's core guarantee** (`service_completed_successfully` gating), so the\nright fix is probably to assert the *Compose dependency condition* rather than to compare wall-clock\ntimestamps — a test that measures a guarantee by timing can fail while the guarantee holds. That is a\nhypothesis for the plan, not a decision.\n\n**Running tally, all on unrelated code:** `TestGroupReservationRepeatedDrawDownIsQuantityNeutral`,\n`TestFullSeatedReturnReleasesEverySeat`, `TestBackfillOwesEventsForPreExistingCompletedOrders`,\n`TestMigrationsRanBeforeServicesStarted`. CI passes all of them on an unloaded runner."
     }
   ]
 }
