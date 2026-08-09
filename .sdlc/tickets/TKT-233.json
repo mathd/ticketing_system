@@ -17,6 +17,79 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Found 2026-08-09 while gating TKT-230**, and confirmed unrelated to it: TKT-230 changes `claim_history` READ ordering only, and this test asserts nothing about history order.\n\n```\n--- FAIL: TestExpiredChannelHoldFreesItsCap\nchannel_allocations_smoke_test.go:279: cap full: got <nil> want ErrUnavailable\n```\n\n**The mechanism is visible in the fixture** (`services/inventory/internal/store/channel_allocations_smoke_test.go:271-279`):\n\n```go\nctx, st, _ := storeForTest(t, 50*time.Millisecond)   // 50ms TTL\n// ... CreateHold(qty 3) fills a cap-3 channel\n// ... CreateHold(qty 1) must be refused with ErrUnavailable\n```\n\nThe second `CreateHold` must run **within 50ms** of the first, or the first hold has already expired, `sweepExpired` frees its headroom, and the second call legitimately succeeds — returning `<nil>` where the test wants `ErrUnavailable`. Under CPU contention that window closes easily.\n\n**Evidence it is load, not a regression:**\n- Failed once during a full-suite run while the machine was busy.\n- Passes in isolation, immediately, on the same tree.\n- `origin/main` @ `4c995e8`: 3 consecutive full-suite runs, 0 failures.\n- TKT-230's branch: 3 consecutive full-suite runs, 0 failures.\n\nSo it is rare and pre-existing, not introduced. It is the **fifth** member of the family TKT-230 was opened for — an assertion with a small timing margin that flips under load — alongside TKT-231 and TKT-232.\n\n**Do not** fix by lengthening the TTL and re-running: that widens the window without removing the race, and the next slower machine reopens it. The honest fixes are to make expiry deterministic (inject the clock, as TKT-229 did for the session cap) or to drive the sweep explicitly rather than sleeping. Needs shaping before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n## Scope and COS\n\n**Problem.** `TestExpiredChannelHoldFreesItsCap`\n(`services/inventory/internal/store/channel_allocations_smoke_test.go:271-286`) builds a store with a\n**50ms TTL** and then asserts, on line 278, that a second `CreateHold` is refused with\n`ErrUnavailable` because the cap is full. That assertion is only true while the *first* hold is still\nlive. Under CPU contention the two `CreateHold` calls can be more than 50ms apart, at which point the\nfirst hold has legitimately expired, `sweepExpired` frees its headroom, and the second call correctly\nsucceeds. The test then fails with `got <nil> want ErrUnavailable` while the production code is\nbehaving exactly as specified.\n\n**The test races its own fixture, not the system under test.**\n\n### Conditions of Success\n\n1. `TestExpiredChannelHoldFreesItsCap` still proves what it was written to prove: a channel hold that\n   has expired frees its channel-level cap headroom, through the shared `liveClaims` predicate.\n2. The cap-full assertion (currently line 278) no longer depends on how much wall-clock time elapses\n   between two statements. Delaying the test process arbitrarily between any two lines must not be\n   able to turn the pass into a failure.\n3. No `time.Sleep` remains as the mechanism that makes the expiry half of the test true.\n4. The TTL is not merely lengthened. Widening the window is explicitly rejected as a fix: it leaves\n   the race in place for a slower machine.\n5. The test still fails if the behaviour it covers regresses -- verified by mutation: break the\n   channel-cap accounting, observe red, restore.\n6. `make check` is green.\n\n### Explicitly out of scope\n\n- TKT-231 and TKT-232, the two remaining open members of this flaky family. Same class, different\n  mechanisms; each is its own ticket.\n- Any change to production code in `store.go` / `capacity.go`. The defect is in the fixture. If the\n  work turns out to require a production change, that is a finding to report, not to absorb.\n\n### Note on the suggested approach\n\nThe backlog note proposed \"inject the clock, as TKT-229 did for the session cap.\" **That precedent\ndoes not transfer.** Expiry here is decided entirely by the *database* clock: `expires_at` is written\nas `now()+$8::interval` (`store.go:289`) and `sweepExpired` compares `expires_at<=now()`\n(`store.go:70-77`), both server-side. There is no Go-side clock in this path to inject. The\ndeterministic idiom that already exists in this package is a **non-positive TTL** -- `storeForTest(t,\n-time.Second)`, used at `operational_smoke_test.go:60` and `seat_claims_smoke_test.go:200` (\"every\nhold is born expired\"). Planning should start there rather than from the clock-injection framing."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n## Readiness verdict: READY\n\nAll 8 DoR items closed. No open blockers (the one link is `relates` to TKT-230, which is Done).\n\n| # | Item | State | Note |\n|---|---|---|---|\n| 1 | Problem statement | closed | Fixture races its own 50ms TTL; mechanism traced to `store.go:289` + `store.go:70`. |\n| 2 | COS written | closed | 6 COS above, incl. an explicit anti-goal (do not lengthen the TTL). |\n| 3 | Scope bounded | closed | One test function, one file. Sibling flakies excluded by name. |\n| 4 | Test seam identified | closed | Non-positive TTL via `storeForTest`; precedent at `operational_smoke_test.go:60`. |\n| 5 | Governing ADRs resolved | closed | ADR-010 (expiry precedes capacity accounting) constrains the sweep order the test exercises. |\n| 6 | Dependencies / blockers | closed | None open. |\n| 7 | Sizing | closed | Small: single test file, no production change expected. |\n| 8 | context_memo | closed | Baked -- see the ticket's `context` object. |\n\n**Risk verdict:** deferred to the claim comment, where the skill requires it stated explicitly.\n\n**Gate 1 note:** the repo owner waived the four human gates for this run as a documented process\nexperiment and directed the agent to promote this ticket to Ready itself. Recorded here so the board\nhistory shows the promotion was agent-made under an explicit waiver, not a missed gate."
     }
-  ]
+  ],
+  "context": {
+    "summary": "TestExpiredChannelHoldFreesItsCap asserts cap-full within a 50ms TTL window; under load the first hold expires before the second CreateHold runs and the assertion legitimately inverts.",
+    "touchedAreas": [
+      "services/inventory/internal/store/channel_allocations_smoke_test.go"
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-010",
+        "constrains": "Expiry precedes capacity accounting inside the caller's pool-locked transaction. sweepExpired runs before the cap check, which is exactly the ordering this test exercises; a fix must not reorder or bypass it."
+      }
+    ],
+    "keyFacts": [
+      "expires_at is computed server-side: now()+$8::interval (store.go:289).",
+      "sweepExpired compares expires_at<=now() server-side (store.go:70-77). Both ends are DB time, so there is no Go clock to inject -- TKT-229's precedent does not transfer.",
+      "liveClaims (store.go:62) is the shared predicate; every sweep must derive from it or its complement.",
+      "Existing deterministic idiom in this package: storeForTest(t, -time.Second) = every hold born expired (operational_smoke_test.go:60, seat_claims_smoke_test.go:200).",
+      "These are smoke tests: //go:build smoke, and they skip unless INVENTORY_MIGRATION_TEST_DATABASE_URL is set."
+    ],
+    "traps": [
+      "Lengthening the TTL looks like a fix and is not -- it widens the window and leaves the race.",
+      "The test has TWO halves. The cap-full assertion needs the first hold LIVE; the frees-its-cap assertion needs it EXPIRED. A single fixture TTL cannot serve both if the fix is naive -- that tension is the actual design problem.",
+      "A fixture that can no longer distinguish pass from fail is the failure mode this repo has hit before (docs/learnings/2026-08-03-a-fixture-too-small-cannot-show-the-negative.md). Mutation-check the result."
+    ],
+    "family": [
+      "TKT-230 (done)",
+      "TKT-231 (open)",
+      "TKT-232 (open)"
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Make TestExpiredChannelHoldFreesItsCap deterministic without weakening what it proves: an expired channel hold frees its channel-level cap headroom."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: services/inventory/internal/store/channel_allocations_smoke_test.go, TestExpiredChannelHoldFreesItsCap only. OUT: TKT-231 and TKT-232 (same family, different mechanisms); production code in store.go/capacity.go -- if a production change proves necessary, report it rather than absorbing it."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "One real design question, resolvable in Planning with no product call: the test's two halves want OPPOSITE fixture states -- the cap-full assertion (line 278) needs the first hold LIVE, the frees-its-cap assertion (line 283) needs it EXPIRED. So the package's existing born-expired idiom (storeForTest(t, -time.Second)) cannot be applied wholesale; the planner must find a seam that makes expiry an explicit event rather than an elapsed duration."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Zero open blockers. The single link is `relates` to TKT-230, which is Done."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Start from the package's deterministic idiom (non-positive TTL, operational_smoke_test.go:60 / seat_claims_smoke_test.go:200), not from clock injection -- expiry is decided in SQL by the DB clock at store.go:289 and store.go:70, so there is no Go clock to inject and TKT-229's precedent does not transfer."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Single test function; the whole ticket is one slice."
+    },
+    "success": {
+      "state": "met",
+      "note": "The 6 COS in the kind=summary comment, plus: make check green, and a mutation check proving the repaired test can still fail."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked into the ticket's `context` object: governing ADR-010, the two DB-clock facts, the existing idiom, and the three traps."
+    }
+  }
 }
