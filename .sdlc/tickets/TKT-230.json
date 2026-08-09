@@ -18,6 +18,93 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n### A fourth instance, on `main` after both fixes merged (2026-08-08)\n\nA confirmation run of `make check` on `main` at `a0a596d` — TKT-198 and TKT-229 both merged — failed\nthe smoke stage on a **fourth distinct test**:\n\n```\n--- FAIL: TestMigrationsRanBeforeServicesStarted/payments\nsmoke_test.go:346: ticketing-smoke-0-payments-migrate-1 finished at 00:48:25.681558716,\nbut ticketing-smoke-0-payments-1 started at 00:48:25.162768220\n— the service started before its migrations completed\n```\n\n**519 milliseconds.** Four of the five services passed; only `payments` inverted.\n\nThis strengthens the diagnosis: the failing tests share no code, but they all assert an **ordering or\ntiming relation with a small margin** — history row order, container start order. Under CPU\ncontention the margins close and the assertion flips. Zero `already exists` errors in this run, so\nTKT-198's fix continues to hold.\n\n**Note this one is about ADR-022's core guarantee** (`service_completed_successfully` gating), so the\nright fix is probably to assert the *Compose dependency condition* rather than to compare wall-clock\ntimestamps — a test that measures a guarantee by timing can fail while the guarantee holds. That is a\nhypothesis for the plan, not a decision.\n\n**Running tally, all on unrelated code:** `TestGroupReservationRepeatedDrawDownIsQuantityNeutral`,\n`TestFullSeatedReturnReleasesEverySeat`, `TestBackfillOwesEventsForPreExistingCompletedOrders`,\n`TestMigrationsRanBeforeServicesStarted`. CI passes all of them on an unloaded runner."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness verdict: **READY** (8/8 met) — scope narrowed, two failures split out\n\nShaped 2026-08-09 against `main` @ `4c995e8`. The `uncertainties` and `approach` items were\nresolved **by measurement**, not by assumption, because the ticket's own COS forbids widening an\nassertion to pass and that only makes sense once the mechanism is known.\n\n#### The mechanism, proven\n\n`claim_history` is read with `ORDER BY occurred_at, id` (`operational.go:336`, `capacity.go:131`).\n`occurred_at` is `timestamptz DEFAULT now()`; `id` is `uuid.New()` — **UUIDv4, random, no time\ncomponent** (`store.go:102`). So the order is *total but not meaningful*: rows that tie on\n`occurred_at` are ordered by a coin flip. That is why it survived review.\n\nMeasured against a real PostgreSQL (throwaway container, since torn down):\n\n| Scenario | Rows | Distinct `occurred_at` | Collisions |\n|---|---|---|---|\n| 2000 inserts, one transaction | 2000 | 1 | 1999 |\n| 300 inserts, separate transactions, serial | 300 | 300 | **0** |\n| 1200 inserts, 8 concurrent writers, separate transactions | 1200 | 1199 | **1** |\n\nThe colliding pair was `{w4_35, w2_32}` — two *different* writers at\n`2026-08-09 04:30:49.058874+00`, identical to the microsecond.\n\nSerial → no collisions (passes on an idle machine). Concurrent → collisions appear (fails under\ngate load). The observed `history[0].Action = draw_down, want reserve` is precisely a tie\nresolved the wrong way. Note this is **not** the familiar \"`now()` is transaction-start\" intra-\ntransaction tie: `reserve` and each `draw_down` are written in *separate* transactions\n(`reservations.go:132` and `:235`), and separate transactions still collide under concurrency.\n\n#### Scope narrowed — and why\n\nThe ticket's COS says the mechanism must be identified for **each** observed failure. Two of the\nfour are **not** explained by the above and are being split out rather than carried:\n\n- `TestBackfillOwesEventsForPreExistingCompletedOrders` (commerce) — uninvestigated.\n- `TestMigrationsRanBeforeServicesStarted/payments` — a 519ms container-start inversion; a\n  different assertion class entirely, and per the ticket's own note the right fix is probably to\n  assert the Compose dependency condition rather than compare wall-clock timestamps.\n\nBundling unexplained failures into a ticket whose COS demands explained ones guarantees it cannot\nclose honestly. Also named as a deliberate exclusion: `access.lifecycle_events` uses the same\n`ORDER BY occurred_at,id` shape (`migration_smoke_test.go:130`) and may share the latent\nambiguity — out of scope here, flagged so it is a choice and not an oversight.\n\n#### Approach constraint the plan must solve\n\n`claim_history` is append-only with a `BEFORE UPDATE OR DELETE` trigger\n(`0003_operational_holds.sql:42-50`). The trigger does not fire on INSERT, but **any backfill of\nexisting rows is an UPDATE and is refused by the database**. Adding a `NOT NULL` monotonic column\nto a table whose existing rows cannot be rewritten is the real design question — the in-repo\nprecedent is `bigserial` (`access/.../0003_lifecycle_integrity.sql:87,128`).\n\n`risk:low` **not** claimed: this adds a data migration, which the label's own carve-outs exclude.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "make check is non-deterministic: DB-backed smoke tests fail under machine load, a different test each run. A gate that fails on load cannot certify anything. This ticket closes the ONE mechanism that has been proven; the other observed failures are split out (see scope)."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: claim_history ordering in inventory — the ORDER BY occurred_at, id pattern at operational.go:336 and capacity.go:131, and whatever total order replaces it. OUT, split to their own tickets because their mechanism is NOT established: TestBackfillOwesEventsForPreExistingCompletedOrders (commerce) and TestMigrationsRanBeforeServicesStarted/payments (a 519ms container-start inversion, a different assertion class). OUT: access.lifecycle_events, which uses the same ORDER BY occurred_at,id shape and may share the latent ambiguity — named here so it is a deliberate exclusion rather than an oversight."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "RESOLVED at shaping by measurement against a real PostgreSQL. claim_history orders by (occurred_at, id): occurred_at is timestamptz DEFAULT now(), id is uuid.New() = UUIDv4, random, no time component. Measured: 300 inserts in separate serial transactions -> 300 distinct timestamps, 0 collisions. 1200 inserts across 8 CONCURRENT writers in separate transactions -> 1199 distinct, 1 collision ({w4_35, w2_32}, two different writers, identical to the microsecond). A tie is then broken by a random UUID, so History() returns an arbitrary order. That is exactly the observed 'history[0].Action = draw_down, want reserve'. Serial passes, concurrent fails: the idle/loaded split the flake reports. NOTE the order is already TOTAL but not MEANINGFUL, which is why it survived review."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None open. TKT-198 (migration race) and TKT-229 (quadratic TS fixture) are merged; neither is implicated — zero 'already exists' errors in every observed run."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Give claim_history a monotonic tie-break and order by it. Precedent in-repo: access lifecycle_event_integrity.sequence and lifecycle_checkpoints.checkpoint_id are bigserial for exactly this reason (0003_lifecycle_integrity.sql:87,128). Constraint from ADR-003/ADR-023: claim_history is append-only and carries a BEFORE UPDATE OR DELETE trigger (0003_operational_holds.sql:42-50) — the trigger does not fire on INSERT, but any backfill of existing rows would be an UPDATE and is therefore refused by construction. A new NOT NULL column with a sequence default on a table whose existing rows must not be rewritten is the actual design question for the plan. COS forbids widening the assertion instead."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, one PR: migration adding the monotonic column + switch both ORDER BY sites + a test that FAILS on the current code. The test must force the tie deterministically (insert two history rows with an identical occurred_at and assert the returned order), not rely on -count=N or on load — same discipline as TKT-132/134."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS already on the ticket, narrowed to the in-scope half: (1) mechanism identified for the inventory history failures — done at shaping, evidence above; (2) the failure reproduces deterministically before the fix; (3) no assertion widened — a total order in the query, not a laxer test; (4) make check green three consecutive times on a loaded machine."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below at shaping time, governingAdrs resolved against docs/adr/ at HEAD 4c995e8."
+    }
+  },
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-003",
+        "why": "claim_history is one of the append-only trails. Its ordering is a RECONSTRUCTION guarantee — 'any ticket's authoritative history is reconstructible from its trace' — so an ambiguous order is a defect against this ADR, not merely a flaky test. It also forbids fixing the flake by rewriting or reordering existing rows."
+      },
+      {
+        "id": "ADR-023",
+        "why": "Defines claim_history as append-only with action/actor/reason/quantities per mutation, and puts staff idempotency keys in it under a unique partial index. The append-only trigger it introduced (BEFORE UPDATE OR DELETE) means a backfill of a new ordering column on existing rows is refused by the database."
+      },
+      {
+        "id": "ADR-027",
+        "why": "Group reservations register staff keys in claim_history with actions reserve/draw_down — the exact rows whose order the failing assertion checks. Its staff-op shape is 'pool lock -> claim_history registry replay -> ...', so history order participates in idempotency replay, not just in reporting."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's migrate subcommand as a one-shot Compose job. A new inventory migration must work under that path; the server path never migrates."
+      },
+      {
+        "id": "ADR-008",
+        "why": "Still governs everything ADR-022 did not supersede: goose-as-library, embedded SQL, per-service ownership, fail-fast, 30s bound. The new migration is inventory's."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Failing assertion: reservations_smoke_test.go:167, wants [reserve, draw_down x3]",
+        "link": "services/inventory/internal/store/reservations_smoke_test.go"
+      },
+      {
+        "summary": "Ordering sites to change: operational.go:336 and capacity.go:131",
+        "link": "services/inventory/internal/store/operational.go"
+      },
+      {
+        "summary": "appendHistory supplies uuid.New() (UUIDv4) as the tie-break",
+        "link": "services/inventory/internal/store/store.go"
+      },
+      {
+        "summary": "Append-only trigger + schema",
+        "link": "services/inventory/internal/store/migrations/0003_operational_holds.sql"
+      },
+      {
+        "summary": "In-repo bigserial precedent for an append-only trail's order",
+        "link": "services/access/internal/store/migrations/0003_lifecycle_integrity.sql"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  }
 }
