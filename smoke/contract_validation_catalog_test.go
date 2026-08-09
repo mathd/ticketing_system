@@ -53,13 +53,47 @@ func TestValidateServiceResponseCoversCatalog(t *testing.T) {
 	prior := smokeCoverage[op]
 	delete(smokeCoverage, op)
 	smokeCoverageMu.Unlock()
+	// Restore the EXACT prior state, both ways. Setting it back only when prior was true
+	// would leave this synthetic response's bit in the map when it was false. That is
+	// inert today — catalog is deliberately absent from smokeCoverageGatedServices
+	// (ADR-030), so uncovered2xxOps never reads a catalog key — but it would become gate
+	// credit the moment catalog joins that list, and a stub-satisfied bit is
+	// indistinguishable from a genuine real-stack one. Mirrors
+	// TestConcurrentPostValidatesAndRecordsCoverage, where the same shape is live because
+	// inventory IS gated (TKT-95).
 	defer func() {
+		smokeCoverageMu.Lock()
 		if prior {
-			smokeCoverageMu.Lock()
 			smokeCoverage[op] = true
-			smokeCoverageMu.Unlock()
+		} else {
+			delete(smokeCoverage, op)
 		}
+		smokeCoverageMu.Unlock()
 	}()
+	// Cleanup runs after this function's defers, so it can check the restore actually
+	// happened. This is the regression guard for the leak itself: an "if prior" restore
+	// that skips the false case leaves this synthetic response's bit in the map, and it
+	// would be credited as gate coverage the moment catalog joins
+	// smokeCoverageGatedServices.
+	//
+	// The guard is observable in a FOCUSED run (`-run TestValidateServiceResponseCoversCatalog`),
+	// where the coverage map starts empty so prior is false and a one-way restore leaks.
+	// In an unfiltered run it is inert: backoffice_venue_list_test.go exercises
+	// GET /api/catalog/public/venues and sorts earlier, so prior is already true and both
+	// the correct and the one-way restore leave the key present. That is accepted rather
+	// than engineered around — forcing observability in a full run would mean perturbing
+	// suite-wide ordering or shared state for a documentation benefit. The reference guard
+	// in TestConcurrentPostValidatesAndRecordsCoverage has the same limitation.
+	t.Cleanup(func() {
+		smokeCoverageMu.Lock()
+		leaked := smokeCoverage[op] && !prior
+		smokeCoverageMu.Unlock()
+		if leaked {
+			t.Errorf("this test leaked %q into smokeCoverage: a synthetic response must never "+
+				"satisfy the real-stack coverage gate if catalog is later added to "+
+				"smokeCoverageGatedServices (ADR-030)", op)
+		}
+	})
 
 	// A validateServiceResponse that reaches the contract also Fatals if the
 	// body drifts, so a spec-valid fixture keeps a green run green.
