@@ -90,17 +90,123 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The fixture's own PlaceOperationalHold wrote a 'create'/'place' row first; the two
-	// rows under test are the last two. Assert on the tail so the fixture's own history
-	// does not have to be enumerated here.
-	if len(hist) < 2 {
-		t.Fatalf("history too short: %+v", hist)
+	// Assert the WHOLE history, by row identity, not by action name on a slice of it.
+	//
+	// Asserting `tail == [place release]` would have been too weak in a way the fixture
+	// makes concrete: PlaceOperationalHold writes its own `place` row, so the history is
+	// [place(fixture), place(under test), release(under test)]. If the row under test
+	// vanished, the fixture's own `place` would slide into the tail and the assertion
+	// would still read [place release] — passing while the thing it exists to check was
+	// gone (ai-review finding 1; the `fixture too small` trap in AGENTS.md).
+	//
+	// Row identity also pins WHICH row is where, which action names cannot.
+	var ids []uuid.UUID
+	for _, h := range hist {
+		ids = append(ids, h.HistoryID)
 	}
-	tail := hist[len(hist)-2:]
-	if tail[0].Action != "place" || tail[1].Action != "release" {
-		t.Fatalf("tied rows returned in append order = [%s %s], want [place release] — "+
-			"a tie on occurred_at is being broken by the random uuid, not by append order",
-			tail[0].Action, tail[1].Action)
+	if len(ids) != 3 {
+		t.Fatalf("history = %d rows, want exactly 3 (fixture place + the two under test): %+v", len(ids), hist)
+	}
+	if ids[1] != first || ids[2] != second {
+		t.Fatalf("tied rows returned as [%s %s], want [%s %s] — a tie on occurred_at is being "+
+			"broken by the random uuid, not by append order", ids[1], ids[2], first, second)
+	}
+	if hist[1].Action != "place" || hist[2].Action != "release" {
+		t.Fatalf("actions = [%s %s], want [place release]", hist[1].Action, hist[2].Action)
+	}
+}
+
+// TestHistoryOrdersDistinctTimestampsByOccurredAt pins the other direction: append_order
+// is a TIE-BREAK, not the primary key of the order. A row with a LATER occurred_at but a
+// LOWER append_order must still sort last.
+//
+// Without this, an implementation that ordered by append_order first would pass the tie
+// test above while silently reordering every history that has distinct timestamps — which
+// is all of them, almost all of the time (ai-review finding 1).
+func TestHistoryOrdersDistinctTimestampsByOccurredAt(t *testing.T) {
+	f := historyFixture(t)
+
+	var base time.Time
+	if err := f.db.QueryRowContext(f.ctx, `SELECT now()`).Scan(&base); err != nil {
+		t.Fatal(err)
+	}
+
+	insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
+		VALUES($1,$2,$3,$4,'staff:a','r',1,1,'held',$5,$6)`
+	// Appended with the LOWER append_order but the LATER timestamp.
+	later := uuid.New()
+	if _, err := f.db.ExecContext(f.ctx, insert, later, f.org, f.claim, "release", base.Add(time.Second), 1_000_001); err != nil {
+		t.Fatal(err)
+	}
+	// HIGHER append_order, EARLIER timestamp: must come first.
+	earlier := uuid.New()
+	if _, err := f.db.ExecContext(f.ctx, insert, earlier, f.org, f.claim, "place", base, 1_000_002); err != nil {
+		t.Fatal(err)
+	}
+
+	hist, err := f.st.History(f.ctx, f.org, f.claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 3 {
+		t.Fatalf("history = %d rows, want 3: %+v", len(hist), hist)
+	}
+	if hist[1].HistoryID != earlier || hist[2].HistoryID != later {
+		t.Fatalf("distinct timestamps ordered as [%s %s], want [%s %s] — occurred_at must "+
+			"remain the primary key of the order; append_order only breaks ties",
+			hist[1].HistoryID, hist[2].HistoryID, earlier, later)
+	}
+}
+
+// TestHistoryOrdersLegacyRowsBeforeTiedNewRows pins the legacy boundary.
+//
+// A pre-migration row has append_order IS NULL and cannot be given a true position. When
+// it ties with a new row, NULLS FIRST puts it first. That is a DELIBERATE, documented
+// choice — a legacy row is by definition older than any row written after the migration —
+// and this test exists so that changing it is a decision rather than an accident.
+func TestHistoryOrdersLegacyRowsBeforeTiedNewRows(t *testing.T) {
+	f := historyFixture(t)
+
+	var tied time.Time
+	if err := f.db.QueryRowContext(f.ctx, `SELECT now()`).Scan(&tied); err != nil {
+		t.Fatal(err)
+	}
+
+	// A "legacy" row: explicitly NULL append_order. The BEFORE INSERT trigger would
+	// normally assign one, so it is disabled for this statement only — the point is to
+	// materialize a row shaped like one written before the migration existed.
+	legacy := uuid.New()
+	if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE claim_history DISABLE TRIGGER claim_history_set_append_order`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.ExecContext(f.ctx,
+		`INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
+		 VALUES($1,$2,$3,'place','staff:a','r',1,1,'held',$4,NULL)`, legacy, f.org, f.claim, tied); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE claim_history ENABLE TRIGGER claim_history_set_append_order`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new row sharing the legacy row's timestamp.
+	fresh := uuid.New()
+	if _, err := f.db.ExecContext(f.ctx,
+		`INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at)
+		 VALUES($1,$2,$3,'release','staff:a','r',1,1,'held',$4)`, fresh, f.org, f.claim, tied); err != nil {
+		t.Fatal(err)
+	}
+
+	hist, err := f.st.History(f.ctx, f.org, f.claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 3 {
+		t.Fatalf("history = %d rows, want 3: %+v", len(hist), hist)
+	}
+	if hist[1].HistoryID != legacy || hist[2].HistoryID != fresh {
+		t.Fatalf("legacy/new tie ordered as [%s %s], want legacy %s first then %s — "+
+			"NULLS FIRST places an unordered legacy row before a row written after the migration",
+			hist[1].HistoryID, hist[2].HistoryID, legacy, fresh)
 	}
 }
 

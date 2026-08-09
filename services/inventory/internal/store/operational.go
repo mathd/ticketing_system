@@ -49,6 +49,11 @@ type StaffAvailability struct {
 }
 
 type HistoryEntry struct {
+	// HistoryID is the row's own identity. Exposed so a caller — and the ordering tests
+	// (TKT-230) — can pin WHICH row is at a position, which action names cannot: a claim's
+	// history routinely repeats an action, so an assertion over names alone passes when a
+	// row is displaced or dropped.
+	HistoryID      uuid.UUID  `json:"history_id"`
 	Action         string     `json:"action"`
 	Actor          string     `json:"actor"`
 	Reason         string     `json:"reason"`
@@ -332,7 +337,7 @@ func (p *Postgres) History(ctx context.Context, org, id uuid.UUID) ([]HistoryEnt
 	if _, err := p.poolOf(ctx, org, id); err != nil {
 		return nil, err
 	}
-	rows, err := p.db.QueryContext(ctx, `SELECT action,actor,reason,quantity,quantity_after,status_after,related_claim_id,occurred_at
+	rows, err := p.db.QueryContext(ctx, `SELECT id,action,actor,reason,quantity,quantity_after,status_after,related_claim_id,occurred_at
 		FROM claim_history WHERE organizer_id=$1 AND claim_id=$2
 		ORDER BY occurred_at, append_order NULLS FIRST, id`, org, id)
 	if err != nil {
@@ -342,7 +347,7 @@ func (p *Postgres) History(ctx context.Context, org, id uuid.UUID) ([]HistoryEnt
 	out := []HistoryEntry{}
 	for rows.Next() {
 		var e HistoryEntry
-		if err = rows.Scan(&e.Action, &e.Actor, &e.Reason, &e.Quantity, &e.QuantityAfter, &e.StatusAfter, &e.RelatedClaimID, &e.OccurredAt); err != nil {
+		if err = rows.Scan(&e.HistoryID, &e.Action, &e.Actor, &e.Reason, &e.Quantity, &e.QuantityAfter, &e.StatusAfter, &e.RelatedClaimID, &e.OccurredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

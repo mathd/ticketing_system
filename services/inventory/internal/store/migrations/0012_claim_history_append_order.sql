@@ -12,6 +12,22 @@
 -- history is reconstructible from its trace"), so an ambiguous order is a defect against
 -- that ADR, not merely a flaky test.
 
+-- Why occurred_at stays PRIMARY and append_order is only the tie-break.
+--
+-- A sequence value is allocated at INSERT, not at commit, so in the general case a lower
+-- append_order can commit after a higher one and the pair would be ordered by allocation
+-- rather than by what actually happened. That would matter if two transactions could
+-- interleave their history writes for the same claim -- and they cannot: EVERY path that
+-- appends to claim_history holds `SELECT ... FROM inventory_pools ... FOR UPDATE` on the
+-- pool row for the duration (ADR-010's pool-then-claim lock order; operational.go:121,217,
+-- 283, store.go:162,201,313, capacity.go:40, refund_returns.go:74, reservations.go:47,161).
+-- A claim belongs to exactly one pool, so the rows any one History() call returns were
+-- written under one lock, strictly serialized: allocation order IS commit order for them.
+--
+-- So append_order is not load-bearing for cross-transaction chronology, and making it
+-- primary would be WRONG -- it would reorder histories whose timestamps differ, which is
+-- almost all of them. occurred_at remains the chronology; append_order only decides the
+-- coin flips. Both directions are pinned by tests (TKT-230).
 CREATE SEQUENCE claim_history_append_order_seq AS bigint;
 
 -- NULLABLE on purpose, and this is the crux of the design.
@@ -25,10 +41,21 @@ CREATE SEQUENCE claim_history_append_order_seq AS bigint;
 -- Pre-existing rows therefore keep append_order IS NULL and fall back to the old uuid
 -- order among themselves. That order is a STABLE LEGACY TIE-BREAK, not reconstructed
 -- chronology, and must not be described as one.
-ALTER TABLE claim_history
-  ADD COLUMN append_order bigint
-    CONSTRAINT claim_history_append_order_positive
-    CHECK (append_order IS NULL OR append_order > 0);
+-- No CHECK constraint and no unique index on this column, deliberately (ai-review
+-- finding 2). Both would scan the whole table, and goose runs the migration in one
+-- transaction, so the ACCESS EXCLUSIVE lock ALTER TABLE takes is held for the duration of
+-- every scan that follows. On a realistically populated audit table that can exceed the
+-- 30s migration bound (ADR-008, kept by ADR-022) -- and a migration job that times out
+-- stops the service from starting at all (ADR-022 gates the service on it).
+--
+-- Neither would buy anything a scan-free rule does not already give:
+--   * positivity -- `nextval` on a sequence starting at 1 and never reset cannot emit
+--     zero or a negative, and the trigger below is the only writer;
+--   * uniqueness -- `nextval` does not repeat, and no writer supplies the value.
+-- A constraint that restates what the only writer already guarantees is not defence in
+-- depth here; it is a full-table scan under an exclusive lock in exchange for nothing.
+-- ADD COLUMN with no default and no constraint is metadata-only in PostgreSQL 11+.
+ALTER TABLE claim_history ADD COLUMN append_order bigint;
 
 ALTER SEQUENCE claim_history_append_order_seq OWNED BY claim_history.append_order;
 
@@ -56,10 +83,6 @@ CREATE TRIGGER claim_history_set_append_order
   BEFORE INSERT ON claim_history
   FOR EACH ROW EXECUTE FUNCTION claim_history_assign_append_order();
 
--- Partial: legacy rows are NULL and must stay exempt.
-CREATE UNIQUE INDEX claim_history_append_order_uidx
-  ON claim_history (append_order) WHERE append_order IS NOT NULL;
-
 -- The two lookup indexes (claim_history_claim, claim_history_pool) are deliberately NOT
 -- rebuilt to include append_order. Both queries filter to a single claim_id / pool_id, so
 -- the rows per key are few and sorting them is free; rebuilding two indexes inside the 30s
@@ -67,7 +90,6 @@ CREATE UNIQUE INDEX claim_history_append_order_uidx
 -- benefit. Adding an index later if a plan regression appears is the cheap direction.
 
 -- +goose Down
-DROP INDEX claim_history_append_order_uidx;
 DROP TRIGGER claim_history_set_append_order ON claim_history;
 DROP FUNCTION claim_history_assign_append_order();
 ALTER TABLE claim_history DROP COLUMN append_order;
