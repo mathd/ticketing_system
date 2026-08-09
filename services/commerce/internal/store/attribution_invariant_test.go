@@ -47,6 +47,11 @@ import (
 // (ai-review pass 2 [medium]). A scanner that silently skips a real statement is
 // worse than no scanner, so TestTheScannerSeesTheShapesThatExist pins each shape
 // it must recognise.
+// ordersTable matches every spelling of the table these guards protect: bare,
+// schema-qualified, and either part double-quoted. `"orders"` and `orders` are the
+// same table to PostgreSQL and must be the same table to this scanner.
+const ordersTable = `(?:"?[a-z_][a-z0-9_]*"?\.)?"?orders"?`
+
 var (
 	// Two captures: $1 is the SET clause, $2 is everything from WHERE to the end of
 	// the raw string. The second exists so a predicate check can be bound to the
@@ -56,8 +61,14 @@ var (
 	// scanner cannot SEE is the worst failure it has — a real attribution writer
 	// invisible to the guard, with the exactly-one count still satisfied by the
 	// legitimate one (ai-review pass 2 [high]).
-	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
-	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s*\(([^)]*)\)`)
+	// The table may be written `orders`, `public.orders`, `"orders"` or
+	// `"public"."orders"` — all valid PostgreSQL for the same table, and a scanner
+	// that sees only the bare form is blind to the rest (ai-review pass 2
+	// [medium]). Verified: an `UPDATE "orders" SET customer_id = $9 WHERE 1 = 1`
+	// was neither refused NOR counted, so the exactly-two assertion stayed green
+	// while a blanket attribution write sat in the tree.
+	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+(?:ONLY\s+)?` + ordersTable + `\s+(?:(?:AS\s+)?"?[a-z_][a-z0-9_]*"?\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
+	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+(?:ONLY\s+)?` + ordersTable + `\s*\(([^)]*)\)`)
 )
 
 func commerceProductionSQL(t *testing.T) map[string]string {
@@ -103,9 +114,92 @@ func commerceProductionSQL(t *testing.T) map[string]string {
 // leave it as they found it. A claim IS the ownership operation. Its predicate,
 // which the allowlist requires to be present, is what keeps that narrow: only an
 // unattributed order, or one already owned by the caller.
-func allowedAttributionUpdates(assignment string) bool {
-	normalized := strings.Join(strings.Fields(assignment), " ")
-	return normalized == "customer_id = $2"
+// Two statements now, each bound to its OWN predicates (TKT-225).
+//
+// Not one relaxed rule covering both: a check that admitted "customer_id = $2 or
+// customer_id = NULL" with either statement's predicates would let a detach borrow
+// the claim's where-clause and vice versa, which is how a two-entry allowlist
+// becomes a blanket one. Each entry names the assignment AND the predicates that
+// make that particular write narrow, and neither set authorizes the other.
+//
+// Why a SECOND exception is sanctioned where a third would not be: a claim is the
+// only NULL -> customer transition and a detach is the only customer -> NULL one
+// (ADR-052). Together they are the whole of attribution's mutable life. A third
+// statement is by construction something else — a repoint, a recovery path, a
+// compensation — and is exactly what this guard exists to refuse.
+// Matched WHOLE, not by required substrings (ai-review [high], TKT-225).
+//
+// A `strings.Contains` check per predicate authorizes anything that *also*
+// contains them, and SQL boolean precedence makes that catastrophic:
+//
+//	WHERE id = $1 AND status = 'completed' AND customer_id IS NOT NULL OR $1 = $1
+//
+// contains every required predicate, passes a substring guard, keeps the count at
+// exactly two — and clears attribution from EVERY ROW IN THE TABLE, because the
+// trailing disjunct is always true. The same append weakens the claim.
+//
+// This bypass was NOT introduced by TKT-225; the one-statement version on main had
+// it too, and the same `OR $1 = $1` passes there. What TKT-225 changes is that
+// there are now two statements to append to, so it is fixed here rather than
+// filed. Verified both ways before and after.
+//
+// So the whole normalized assignment and the whole normalized where-clause are
+// compared for EQUALITY against the sanctioned text. Appending anything — a
+// disjunct, a nested OR, a dead branch — changes the string and is refused. The
+// cost is that editing either statement's formatting means editing this list, and
+// that is the intended cost: these two statements are the entire mutable life of
+// attribution, and changing one should require saying so here.
+var sanctionedAttributionWrites = []struct {
+	what       string
+	assignment string
+	where      string
+}{
+	{
+		// The claim (TKT-223): the only NULL -> customer transition.
+		what:       "the TKT-223 claim",
+		assignment: "customer_id = $2",
+		where:      "guest_order_ref = $1 AND status = 'completed' AND (customer_id IS NULL OR customer_id = $2) RETURNING id",
+	},
+	{
+		// The detach (TKT-225): the only customer -> NULL transition.
+		// `customer_id IS NOT NULL` is load-bearing, not defensive: without it a
+		// detach of an unattributed order reports success and writes an audit row
+		// for something that did not happen.
+		what:       "the TKT-225 detach",
+		assignment: "customer_id = NULL",
+		where:      "id = $1 AND status = 'completed' AND customer_id IS NOT NULL RETURNING OLD.customer_id",
+	},
+}
+
+// The captured "where" runs to the end of the statement, so it carries the
+// RETURNING clause too. That is kept rather than stripped: the detach's
+// `RETURNING OLD.customer_id` is the difference between an audit row naming the
+// account that lost the order and one naming nobody (a bare or table-qualified
+// column returns the NEW value — NULL — which is how the first two versions of
+// this statement shipped broken). Pinning it here means a "simplification" back to
+// `RETURNING customer_id` fails this guard rather than silently writing false
+// audit rows.
+
+// allowedAttributionUpdate reports whether a statement is, in full, one of the two
+// sanctioned writes.
+//
+// Both halves must match the SAME entry. Checking them independently — "is this a
+// known assignment" and "is this a known where-clause" — is the bypass that lets a
+// detach's SET ride the claim's WHERE.
+func allowedAttributionUpdate(assignment, where string) bool {
+	a, w := normalizeSQL(assignment), normalizeSQL(where)
+	for _, sanctioned := range sanctionedAttributionWrites {
+		if a == normalizeSQL(sanctioned.assignment) && w == normalizeSQL(sanctioned.where) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeSQL collapses whitespace so the guard is indifferent to how the
+// statement is wrapped across lines, and to nothing else.
+func normalizeSQL(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // scanAttributionUpdates is the WHOLE decision — match, recognise, authorize — in
@@ -124,7 +218,7 @@ func scanAttributionUpdates(body string) (statements, allowed int, refused []str
 		if !strings.Contains(strings.ToLower(match[1]), "customer_id") {
 			continue
 		}
-		if allowedAttributionUpdates(match[1]) && claimPredicatesIntact(match[2]) {
+		if allowedAttributionUpdate(match[1], match[2]) {
 			allowed++
 			continue
 		}
@@ -150,11 +244,16 @@ func TestNoProductionCodeUpdatesOrderAttribution(t *testing.T) {
 				"predicates.", path, strings.TrimSpace(assignment))
 		}
 	}
-	// Exactly one. A second copy — even a correct-looking one — is how an
-	// allowlist stops being a list of one thing.
-	if allowed != 1 {
-		t.Errorf("allowlisted attribution updates = %d, want exactly 1 (the TKT-223 claim). "+
-			"A second one is not covered by anything that reviewed the first.", allowed)
+	// Exactly two: the claim (TKT-223) and the detach (TKT-225). A THIRD copy —
+	// even a correct-looking one — is how an allowlist stops being a list.
+	//
+	// The count is asserted separately from the per-statement check because they
+	// fail differently: a wrong count means someone added a statement that happens
+	// to match a sanctioned shape, which the shape check by definition cannot see.
+	if allowed != 2 {
+		t.Errorf("allowlisted attribution updates = %d, want exactly 2 "+
+			"(the TKT-223 claim and the TKT-225 detach). "+
+			"A third is not covered by anything that reviewed these two.", allowed)
 	}
 	// A scan that matched nothing would pass silently while proving nothing —
 	// exactly the failure this style of test exists to avoid.
@@ -215,7 +314,17 @@ func TestTheScannerSeesTheShapesThatExist(t *testing.T) {
 		{"AS-aliased update", "UPDATE orders AS o SET customer_id=NULL WHERE o.id=$1", true},
 		{"lowercase", "update orders set customer_id=null where id=$1", true},
 		{"multi-line", "UPDATE orders\n\t\tSET customer_id=NULL\n\t\tWHERE id=$1", true},
+		// Quoted and schema-qualified spellings (ai-review pass 2 [medium]). All of
+		// these are the SAME table to PostgreSQL, and a scanner blind to any of them
+		// leaves an attribution writer invisible — neither refused nor counted, so
+		// the exactly-two assertion stays green beside it.
+		{"quoted table", `UPDATE "orders" SET customer_id=NULL WHERE id=$1`, true},
+		{"schema-qualified", "UPDATE public.orders SET customer_id=NULL WHERE id=$1", true},
+		{"quoted schema and table", `UPDATE "public"."orders" SET customer_id=NULL WHERE id=$1`, true},
+		{"quoted table with quoted alias", `UPDATE "orders" "o" SET customer_id=NULL WHERE "o".id=$1`, true},
+		{"ONLY qualified", "UPDATE ONLY orders SET customer_id=NULL WHERE id=$1", true},
 		{"plain insert", "INSERT INTO orders(id,status) VALUES($1,$2)", false},
+		{"quoted insert", `INSERT INTO "orders"(id,status,customer_id) VALUES($1,$2,$3)`, false},
 		{"insert select", "INSERT INTO orders(id,status)\n\t\tSELECT $1,'x' FROM orders WHERE id=$2", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,75 +357,73 @@ func TestOrderSQLIsWrittenAsLiterals(t *testing.T) {
 	}
 }
 
-// claimPredicatesIntact requires the claim statement to keep the three predicates
-// that make it narrow. Without them the allowlisted statement would be a blanket
-// "set any order's customer to anyone".
-//
-// Takes the statement's OWN where-clause, not the file it lives in. The first
-// version searched the whole file, so predicates sitting in a comment — or in a
-// different function entirely — would authorize a statement that had none of them
-// (ai-review [medium]).
-func claimPredicatesIntact(where string) bool {
-	for _, predicate := range []string{
-		"guest_order_ref = $1",
-		"status = 'completed'",
-		"customer_id IS NULL OR customer_id = $2",
-	} {
-		if !strings.Contains(where, predicate) {
-			return false
-		}
-	}
-	return true
-}
-
 // The guard on the guard (TKT-223 plan-review F3).
 //
 // An allowlist whose own bypasses are untested is not a guard. These are the three
 // ways this one can be widened without anybody noticing, and each must be rejected
 // by the same machinery that permits the real statement.
 func TestTheAllowlistCannotBeWidened(t *testing.T) {
+	claimWhere := "guest_order_ref = $1 AND status = 'completed' AND (customer_id IS NULL OR customer_id = $2) RETURNING id"
+	detachWhere := "id = $1 AND status = 'completed' AND customer_id IS NOT NULL RETURNING OLD.customer_id"
+
 	for _, tc := range []struct {
 		name       string
 		assignment string
 		body       string
 		want       bool
 	}{
-		{
-			name:       "the real claim statement",
-			assignment: "customer_id = $2",
-			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
-			want:       true,
-		},
-		{
-			name:       "the claim with its ownership predicate removed",
-			assignment: "customer_id = $2",
-			body:       "guest_order_ref = $1 status = 'completed'",
-			want:       false,
-		},
-		{
-			name:       "the claim with its completed predicate removed",
-			assignment: "customer_id = $2",
-			body:       "guest_order_ref = $1 customer_id IS NULL OR customer_id = $2",
-			want:       false,
-		},
-		{
-			name:       "a recovery-shaped clearing of attribution",
-			assignment: "customer_id = NULL, status = 'refunded'",
-			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
-			want:       false,
-		},
-		{
-			name:       "an update that sets attribution from a different parameter",
-			assignment: "customer_id = $3",
-			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
-			want:       false,
-		},
+		{"the real claim statement", "customer_id = $2", claimWhere, true},
+		{"the real detach statement", "customer_id = NULL", detachWhere, true},
+
+		// --- predicates REMOVED --------------------------------------------------
+		{"the claim with its ownership predicate removed", "customer_id = $2",
+			"guest_order_ref = $1 AND status = 'completed' RETURNING id", false},
+		{"the claim with its completed predicate removed", "customer_id = $2",
+			"guest_order_ref = $1 AND (customer_id IS NULL OR customer_id = $2) RETURNING id", false},
+		{"the detach with its IS NOT NULL predicate removed", "customer_id = NULL",
+			"id = $1 AND status = 'completed' RETURNING OLD.customer_id", false},
+		{"the detach with its completed predicate removed", "customer_id = NULL",
+			"id = $1 AND customer_id IS NOT NULL RETURNING OLD.customer_id", false},
+		{"the detach with no order identity — every attributed order at once", "customer_id = NULL",
+			"status = 'completed' AND customer_id IS NOT NULL RETURNING OLD.customer_id", false},
+
+		// --- predicates present but NEUTRALISED (ai-review pass 1 [high]) ---------
+		//
+		// The bypass a substring guard has, and the reason this check compares the
+		// WHOLE clause. Every required predicate is present in each of these; SQL
+		// boolean precedence makes the statement match every row anyway.
+		{"the detach with a trailing OR that is always true", "customer_id = NULL",
+			detachWhere[:len(detachWhere)-len(" RETURNING OLD.customer_id")] + " OR $1 = $1 RETURNING OLD.customer_id", false},
+		{"the claim with a trailing OR that is always true", "customer_id = $2",
+			claimWhere[:len(claimWhere)-len(" RETURNING id")] + " OR $1 = $1 RETURNING id", false},
+		{"the detach with OR TRUE appended", "customer_id = NULL",
+			detachWhere[:len(detachWhere)-len(" RETURNING OLD.customer_id")] + " OR TRUE RETURNING OLD.customer_id", false},
+		{"the detach with its predicates inside a dead AND branch", "customer_id = NULL",
+			"(id = $1 AND status = 'completed' AND customer_id IS NOT NULL) OR 1 = 1 RETURNING OLD.customer_id", false},
+
+		// --- the two statements BORROWING each other's predicates ----------------
+		{"a detach borrowing the CLAIM's predicates", "customer_id = NULL", claimWhere, false},
+		{"a claim borrowing the DETACH's predicates", "customer_id = $2", detachWhere, false},
+
+		// --- a THIRD statement ---------------------------------------------------
+		{"an update that sets attribution from a different parameter", "customer_id = $3", claimWhere, false},
+		{"a repoint that looks like a transfer", "customer_id = $2",
+			"id = $1 AND status = 'completed' AND customer_id IS NOT NULL AND customer_id <> $2 RETURNING id", false},
+		{"a recovery-shaped clearing of attribution", "customer_id = NULL, status = 'refunded'", detachWhere, false},
+
+		// --- the RETURNING clause is part of the sanctioned text -----------------
+		//
+		// A bare or table-qualified column returns the NEW value, so this spelling
+		// makes every audit row name nobody. It shipped twice before a smoke test
+		// caught it; the guard now refuses it outright.
+		{"the detach returning the NEW customer_id", "customer_id = NULL",
+			"id = $1 AND status = 'completed' AND customer_id IS NOT NULL RETURNING customer_id", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := allowedAttributionUpdates(tc.assignment) && claimPredicatesIntact(tc.body)
+			got := allowedAttributionUpdate(tc.assignment, tc.body)
 			if got != tc.want {
 				t.Fatalf("allowed = %v, want %v — the allowlist %s", got, tc.want,
-					map[bool]string{true: "refuses the one statement it exists to permit",
+					map[bool]string{true: "refuses a statement it exists to permit",
 						false: "admits a statement nobody reviewed"}[tc.want])
 			}
 		})
@@ -325,11 +432,11 @@ func TestTheAllowlistCannotBeWidened(t *testing.T) {
 
 // The bypass the file-scoped version admitted (ai-review [medium]).
 //
-// `claimPredicatesIntact` is only as good as what it is handed. The first version
-// was handed the whole FILE, so a statement with no predicates at all passed as
-// long as the words appeared *somewhere* — in a comment, or in a different
-// function. This drives the real regex over synthetic source and asserts the
-// where-clause it extracts belongs to the statement it matched.
+// The predicate check is only as good as what it is handed. The first version was
+// handed the whole FILE, so a statement with no predicates at all passed as long
+// as the words appeared *somewhere* — in a comment, or in a different function.
+// This drives the real regex over synthetic source and asserts the where-clause it
+// extracts belongs to the statement it matched.
 func TestPredicatesAreReadFromTheStatementAndNotTheFile(t *testing.T) {
 	source := `
 // A comment that mentions guest_order_ref = $1 and status = 'completed' and
@@ -337,9 +444,9 @@ func TestPredicatesAreReadFromTheStatementAndNotTheFile(t *testing.T) {
 const sneaky = ` + "`" + `
 	UPDATE orders SET customer_id = $2 WHERE id = $1` + "`" + `
 `
-	// Drives the PRODUCTION scan, not the helpers underneath it. Calling
-	// claimPredicatesIntact directly would leave this green with the file-scoped
-	// bug restored, which is the regression it is named for.
+	// Drives the PRODUCTION scan, not the helpers underneath it. Calling the
+	// predicate check directly would leave this green with the file-scoped bug
+	// restored, which is the regression it is named for.
 	statements, allowed, refused := scanAttributionUpdates(withoutLineComments(source))
 	if statements != 1 {
 		t.Fatalf("matched %d statements, want 1 — the regex has stopped seeing this shape", statements)

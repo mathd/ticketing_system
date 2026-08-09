@@ -456,6 +456,18 @@ type OrderState struct {
 	Status     string              `json:"status"`
 }
 
+// OrderUnclaim defines model for OrderUnclaim.
+type OrderUnclaim struct {
+	Actor  string `json:"actor"`
+	Reason string `json:"reason"`
+}
+
+// OrderUnclaimed defines model for OrderUnclaimed.
+type OrderUnclaimed struct {
+	DetachedCustomerId openapi_types.UUID `json:"detached_customer_id"`
+	OrderId            openapi_types.UUID `json:"order_id"`
+}
+
 // PasswordResetCompletion A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.
 // The password floor is 8 here and not 1, unlike sign-in. Sign-in verifies an existing credential and must not refuse a short one differently from a wrong one; this operation SETS a credential, so it is where the policy belongs — the same place registration puts it.
 type PasswordResetCompletion struct {
@@ -612,6 +624,11 @@ type RefundOrderParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// UnclaimOrderParams defines parameters for UnclaimOrder.
+type UnclaimOrderParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CreateCancellationRefundRunParams defines parameters for CreateCancellationRefundRun.
 type CreateCancellationRefundRunParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -659,6 +676,9 @@ type ExchangeOrderJSONRequestBody = ExchangeCreate
 
 // RefundOrderJSONRequestBody defines body for RefundOrder for application/json ContentType.
 type RefundOrderJSONRequestBody = RefundCreate
+
+// UnclaimOrderJSONRequestBody defines body for UnclaimOrder for application/json ContentType.
+type UnclaimOrderJSONRequestBody = OrderUnclaim
 
 // CreateCancellationRefundRunJSONRequestBody defines body for CreateCancellationRefundRun for application/json ContentType.
 type CreateCancellationRefundRunJSONRequestBody = CancellationRefundCreate

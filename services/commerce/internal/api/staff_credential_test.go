@@ -61,6 +61,13 @@ func everyInternalOperationExceptRefund() []internalOp {
 		// validator answers 400 and the credential check never runs.
 		{"getCancellationRefundReport", http.MethodGet, "/internal/cancellation-refunds/{id}", "/internal/cancellation-refunds/" + someUUID + "?organizer_id=" + someUUID, "", false},
 		{"getDeliveryEmail", http.MethodGet, "/internal/buyers/{id}/delivery-email", "/internal/buyers/" + someUUID + "/delivery-email", "", false},
+		// The un-claim (TKT-225). Deliberately on THIS side of the list: it is a
+		// support action on someone else's purchase, and this slice ships no
+		// back-office surface to reach it from, so the staff credential must not
+		// open it. Whoever adds that surface moves this line and argues for it —
+		// which is the whole reason this enumeration exists.
+		{"unclaimOrder", http.MethodPost, "/internal/orders/{id}/unclaim", "/internal/orders/" + someUUID + "/unclaim",
+			`{"actor":"staff:amy","reason":"claimed by the wrong account"}`, true},
 	}
 }
 

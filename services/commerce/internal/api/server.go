@@ -167,6 +167,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)
+	r.Post("/internal/orders/{id}/unclaim", s.unclaimOrder)
 	r.Post("/internal/orders/{id}/exchanges", s.exchangeOrder)
 	r.Post("/internal/exchanges/{id}/tickets-switched", s.exchangeTicketsSwitched)
 	r.Get("/internal/buyers/{id}/delivery-email", s.deliveryEmail)

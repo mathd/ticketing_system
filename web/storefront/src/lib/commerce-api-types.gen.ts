@@ -262,6 +262,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/orders/{id}/unclaim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Detach a completed order from the customer account it was claimed by */
+        post: operations["unclaimOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/exchanges/{id}/tickets-switched": {
         parameters: {
             query?: never;
@@ -575,6 +592,16 @@ export interface components {
             replay: boolean;
             tickets_voided: boolean;
             capacity_returned: boolean;
+        };
+        OrderUnclaim: {
+            actor: string;
+            reason: string;
+        };
+        OrderUnclaimed: {
+            /** Format: uuid */
+            order_id: string;
+            /** Format: uuid */
+            detached_customer_id: string;
         };
         ExchangeCreate: {
             /** Format: uuid */
@@ -1220,6 +1247,37 @@ export interface operations {
             500: components["responses"]["Error"];
             502: components["responses"]["Error"];
             503: components["responses"]["Error"];
+        };
+    };
+    unclaimOrder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrderUnclaim"];
+            };
+        };
+        responses: {
+            /** @description Detached */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderUnclaimed"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     exchangeTicketsSwitched: {

@@ -691,9 +691,8 @@ does not exist. That is deliberate non-disclosure, not a bug: 403 would confirm 
 A signed-in buyer can attach a completed guest order to their account from the ticket page. See
 ADR-049 § *TKT-223 amendment*.
 
-> **A claim cannot be undone.** There is no un-claim endpoint, CLI or support tool — the first
-> claimant keeps the order. **TKT-225** is the ticket for an operator path; until it lands, a
-> mistaken or hostile claim is permanent, and the only remedy is a manual `UPDATE`.
+> **A claim can be undone since TKT-225** — see *Undoing a claim* below. It is an operator action,
+> not something the buyer can do, and it is recorded.
 
 **The proof is the order reference alone**, deliberately — matching the email would refuse a buyer
 who signed up with a different address. That means anyone holding a leaked reference can claim the
@@ -707,6 +706,52 @@ in `orders` — check `status` and `customer_id` for that `guest_order_ref`.
 **Paging is keyset on `created_at`, never `updated_at`.** `updated_at` is rewritten by checkout
 retries, recovery and the refund runner, and a cursor on a mutable key makes rows jump pages. If
 someone "optimizes" the sort key, that is the bug to look for.
+
+### Undoing a claim (TKT-225)
+
+The recourse for "someone else claimed my order". See ADR-052.
+
+```bash
+curl -sS -X POST "$COMMERCE_URL/internal/orders/$ORDER_ID/unclaim" \
+  -H "X-Internal-Token: $COMMERCE_INTERNAL_TOKEN" \
+  -H "Idempotency-Key: support-4471" \
+  -H 'Content-Type: application/json' \
+  -d '{"actor":"staff:amy","reason":"claimed by the wrong account, buyer confirmed by phone"}'
+```
+
+It answers `200` with the order id and **the customer it was detached from** — record that value.
+It is gone from `orders` the moment the call succeeds, and it is the only way to know who to hand
+the order back to if you detached the wrong one.
+
+**Direct to commerce, not through the gateway.** `/api/commerce/internal/` is edge-denied by
+construction, and a smoke test pins that for this route.
+
+**`Idempotency-Key` is required, and it is not ceremony.** Because a detached order is immediately
+claimable again, a retry without a key could detach whoever claimed it in between — someone you
+never reviewed, recorded under your reason. Reuse the same key when retrying; use a NEW key when you
+genuinely mean to detach again (a second mis-claim on the same order).
+
+**`actor` and `reason` are required and are recorded** in `order_attribution_detachments`. Blank or
+whitespace-only values are refused by the handler *and* by a database `CHECK` — an un-claim that
+says nothing about itself is a failed record, not a permitted one.
+
+> **What the record is worth.** These rows live in the commerce database, so anyone who can write it
+> can alter or delete them: **accountability against a careless operator, not tamper evidence
+> against a hostile one** (ADR-021). And `actor` is a label the caller supplies — the internal token
+> carries no individual identity. Do not describe this trail as tamper-evident.
+
+**Every refusal is `404 "order is not detachable"`** — no such order, not completed, or already
+unattributed. As with the claim, the answer is in `orders`: check `status` and `customer_id`. A
+malformed request (blank actor/reason, bad uuid) is `400`, which is a different problem.
+
+**A detached order is immediately claimable again, by anyone holding the reference.** That is
+deliberate (ADR-052 § 4): blocking re-claim would block the rightful buyer, and would not stop an
+attacker who can register another account. Tell the buyer to claim it promptly. What bounds abuse is
+ADR-051's rate limiting on the claim path — and the real fix for the underlying exposure is TKT-202.
+
+**Detaching is not transferring.** It restores `NULL` and stops. There is no operation that moves an
+order from one account to another in one step (TKT-9/TKT-160). If you need to move an order, detach
+it and have the correct buyer claim it.
 
 ### Password recovery and the mail path (TKT-226)
 
