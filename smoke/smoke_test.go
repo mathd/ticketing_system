@@ -394,6 +394,69 @@ func dependsOnCondition(t *testing.T, c, dep string) (string, bool) {
 	return found, ok
 }
 
+// dependsOnRequired reports whether compose service `svc` declares its `dep`
+// dependency as required, in the merged configuration the running stack was
+// created from.
+//
+// This exists because `required` is NOT encoded in the depends_on label:
+// `required: false` and the default `required: true` serialize identically to
+// "<dep>:<condition>:<restart>". A migrate edge marked optional still carries
+// condition service_completed_successfully, so the label check alone cannot see
+// it — and an optional edge is exactly the weakening that matters: Compose
+// SKIPS a failed optional dependency and starts the service anyway, which is
+// the ADR-022 violation this test is for.
+//
+// The merged config is reconstructed from the labels Compose wrote onto the
+// container itself (project, config files, working dir), not from an assumption
+// about how scripts/smoke.sh was invoked — so this reads the same file set that
+// actually produced the stack, whatever overrides were in play.
+func dependsOnRequired(t *testing.T, c, svc, dep string) bool {
+	t.Helper()
+
+	project := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project"}}`)
+	files := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project.config_files"}}`)
+	workdir := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project.working_dir"}}`)
+	if project == "" || files == "" {
+		t.Fatalf("%s: compose project/config-file labels are missing (%q/%q) — cannot "+
+			"re-read the merged configuration this stack was created from", c, project, files)
+	}
+
+	args := []string{"compose", "-p", project}
+	for _, f := range strings.Split(files, ",") {
+		args = append(args, "-f", f)
+	}
+	args = append(args, "config", "--format", "json")
+
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = workdir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%s: docker compose config: %v", c, err)
+	}
+
+	var cfg struct {
+		Services map[string]struct {
+			DependsOn map[string]struct {
+				Condition string `json:"condition"`
+				// Pointer so an absent key is distinguishable from an explicit
+				// false: Compose's default is true, and defaulting a missing
+				// key to false would fail every correct stack.
+				Required *bool `json:"required"`
+			} `json:"depends_on"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		t.Fatalf("%s: parse docker compose config: %v", c, err)
+	}
+
+	edge, ok := cfg.Services[svc].DependsOn[dep]
+	if !ok {
+		t.Fatalf("%s: merged compose config has no %s -> %s dependency, but the container "+
+			"label declares one — the config and the running stack disagree", c, svc, dep)
+	}
+	return edge.Required == nil || *edge.Required
+}
+
 // TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
 // exited 0, and the service is gated on that job completing successfully
 // (ADR-022).
@@ -413,8 +476,9 @@ func dependsOnCondition(t *testing.T, c, dep string) (string, bool) {
 // timing left to be flaky, so a failure means the gating is actually broken.
 //
 // What this does and does not prove. It reads the edge Compose *resolved* and
-// recorded at container-create time, so it proves the declaration the stack was
-// created under — an absent, failing, or wrongly-conditioned migrate job. It is
+// recorded at container-create time, plus the `required` flag the label does
+// not encode, so it proves the declaration the stack was created under — an
+// absent, failing, wrongly-conditioned, or optional migrate job. It is
 // not historical evidence that this particular service process was gated by
 // this particular job run: `docker start` on an existing container bypasses
 // depends_on entirely and leaves the label untouched. That is deliberate, and
@@ -461,6 +525,16 @@ func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 			if condition != migrateGateCondition {
 				t.Fatalf("%s depends on %s with condition %q, want %q — the service may start "+
 					"before its migrations complete (ADR-022)", srv, dep, condition, migrateGateCondition)
+			}
+			// An OPTIONAL edge carries the right condition and is invisible in
+			// the label, but Compose skips a failed optional dependency and
+			// starts the service regardless — so the gate would hold only for
+			// as long as migrations happen to succeed.
+			if !dependsOnRequired(t, srv, service, dep) {
+				t.Fatalf("%s depends on %s with required:false — Compose will SKIP the job if it "+
+					"fails and start %s against an unmigrated schema (ADR-022). The condition is "+
+					"correct, which is why the container label alone does not show this",
+					srv, dep, service)
 			}
 		})
 	}

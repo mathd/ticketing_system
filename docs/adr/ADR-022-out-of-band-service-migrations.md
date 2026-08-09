@@ -136,13 +136,17 @@ never before; this is not that change.
            Proves *migratedness*. It was equally true under ADR-008, so it passes unchanged on the
            code this ADR replaces and proves nothing about placement on its own.
         2. `TestMigrationsRanBeforeServicesStarted` — each job exited 0, and its service was
-           **created** declaring `service_completed_successfully` on that job. Catches an absent or
-           failing job, and an edge that is missing or weakened. It asserts the **resolved
-           declaration**, read back from the container's `com.docker.compose.depends_on` label,
-           rather than comparing container timestamps: Compose enforces this as a dependency
-           condition and promises nothing about elapsed time, so a wall-clock comparison could
-           invert under load while the condition held (TKT-232), and could equally pass on an idle
-           box with the condition removed.
+           **created** declaring `service_completed_successfully` on that job, **required**.
+           Catches an absent or failing job, and an edge that is missing, weakened, or optional.
+           It asserts the **resolved declaration**: the condition from the container's
+           `com.docker.compose.depends_on` label, and `required` from the merged configuration,
+           because Compose does **not** encode `required` in that label — `required: false`
+           serializes identically to the correct edge, and Compose *skips* a failed optional
+           dependency and starts the service anyway; reading the condition alone would miss it.
+           It asserts that declaration rather than comparing container timestamps: Compose enforces
+           this as a dependency condition and promises nothing about elapsed time, so a wall-clock
+           comparison could invert under load while the condition held (TKT-232), and could equally
+           pass on an idle box with the condition removed.
            **Scope, stated precisely:** the label records the configuration the container was
            created under — not proof that this service process was gated by this job run. `docker
            start` on an existing container bypasses `depends_on` and leaves the label intact. That
