@@ -152,6 +152,15 @@ func DetachOrderAttribution(ctx context.Context, db *sql.DB, order uuid.UUID, ke
 		//
 		// Re-checked on a fresh connection, because this transaction's snapshot
 		// predates the winner's commit and would miss the row again.
+		//
+		// **This branch is NOT covered by a test, and no sequential test can cover
+		// it** (ai-review pass 3 [medium], honestly). Reaching it requires two
+		// transactions to both pass the replay read before either commits; a
+		// sequential retry takes the fast path above and never arrives here.
+		// Deleting this branch leaves the whole gate green — verified twice. The
+		// unique-violation branch below has the same property. They are written
+		// from the READ COMMITTED semantics rather than from a red test, and that
+		// is a weaker warrant than everything else in this file.
 		_ = tx.Rollback()
 		if winner, found, lookupErr := lookupDetachment(ctx, db, order, key); lookupErr != nil {
 			return uuid.Nil, lookupErr

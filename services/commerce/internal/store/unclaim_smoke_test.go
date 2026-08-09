@@ -359,6 +359,100 @@ func TestDetachRefusesABlankIdempotencyKey(t *testing.T) {
 	}
 }
 
+// The two recovery branches, forced deterministically (ai-review pass 3 [medium]).
+//
+// The first version of this test just started two goroutines and hoped. It passed
+// with the ErrNoRows recovery DELETED — verified — because a scheduler that
+// serializes the two calls takes the ordinary fast-replay path and proves nothing
+// about either branch. That is the fixture-too-small trap, one level up: the test
+// exercised the happy path and was named for the race.
+//
+// So these drive real transactions by hand, in a fixed order, so each branch is
+// entered by construction rather than by timing.
+
+// Branch 1: both attempts miss the replay read; the winner commits; the loser's
+// UPDATE finds an already-NULL row. It must report the winner's customer, not
+// ErrOrderNotDetachable — the caller's KEY succeeded even though this attempt did
+// no work.
+func TestALoserWhoseUpdateFindsNothingReplaysTheWinner(t *testing.T) {
+	db, ctx := outboxDB(t)
+	customer := registerClaimant(t, db, ctx, "loser-norows")
+	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: customer, Valid: true})
+	const key = "support-norows"
+
+	// The "loser" opens its transaction and performs the replay read FIRST, while
+	// the row is still attributed — so it misses, exactly as it would in the race.
+	loser, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = loser.Rollback() }()
+	if _, found, err := lookupDetachment(ctx, loser, order, key); err != nil || found {
+		t.Fatalf("the loser's replay read should miss: found=%v err=%v", found, err)
+	}
+
+	// The winner completes the whole operation and commits.
+	if _, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "winner"); err != nil {
+		t.Fatal(err)
+	}
+	_ = loser.Rollback()
+
+	// Now the loser's request proceeds. Its UPDATE finds nothing to detach.
+	replayed, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "winner")
+	if err != nil {
+		t.Fatalf("the loser reported failure for a key whose operation succeeded: %v", err)
+	}
+	if replayed != customer {
+		t.Fatalf("the loser reported %s, want the winner's customer %s", replayed, customer)
+	}
+	if records := detachmentsFor(t, db, order); len(records) != 1 {
+		t.Fatalf("recorded %d detachments, want exactly 1", len(records))
+	}
+}
+
+// Branch 2: the loser's UPDATE SUCCEEDS — because the order was re-claimed in
+// between — and it then collides on the unique index. Its whole transaction must
+// roll back, leaving the new claimant's attribution intact, and it must report the
+// winner's customer.
+//
+// This is the branch the goroutine test could not reach at all: without an
+// intervening claim the loser's UPDATE finds NULL and takes branch 1.
+func TestALoserWhoCollidesOnTheKeyRollsBackAndReplays(t *testing.T) {
+	db, ctx := outboxDB(t)
+	first := registerClaimant(t, db, ctx, "collide-first")
+	second := registerClaimant(t, db, ctx, "collide-second")
+	order, ref := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: first, Valid: true})
+	const key = "support-collide"
+
+	// The winner detaches and commits.
+	if _, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "winner"); err != nil {
+		t.Fatal(err)
+	}
+	// Somebody claims the freed order.
+	if _, err := ClaimGuestOrder(ctx, db, ref, second); err != nil {
+		t.Fatal(err)
+	}
+
+	// The stale attempt arrives with the SAME key. Its UPDATE now succeeds — the
+	// order is attributed again — and the INSERT collides.
+	replayed, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "winner")
+	if err != nil {
+		t.Fatalf("the colliding attempt errored instead of replaying: %v", err)
+	}
+	if replayed != first {
+		t.Fatalf("reported %s, want the customer the FIRST call detached (%s)", replayed, first)
+	}
+
+	// The rollback is the point: the new claimant must still hold the order.
+	if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != second {
+		t.Fatalf("attribution = %+v; the colliding attempt took the order from a customer "+
+			"the operator never reviewed", got)
+	}
+	if records := detachmentsFor(t, db, order); len(records) != 1 {
+		t.Fatalf("recorded %d detachments for this key, want exactly 1", len(records))
+	}
+}
+
 // Two concurrent FIRST attempts with the same key (ai-review pass 2).
 //
 // The replay SELECT is a fast path, not the authority: under READ COMMITTED both
