@@ -285,6 +285,54 @@ func TestClaimHistoryTriggerOwnsAppendOrder(t *testing.T) {
 	}
 }
 
+// TestClaimHistoryMigrationDownRestoresOccurredAtDefault pins the Down migration.
+//
+// Up changes occurred_at's default from now() to clock_timestamp(). A Down that removed
+// only the append_order objects would leave that behaviour in place — a hybrid schema
+// carrying this migration's timestamp semantics under the previous version's code
+// (ai-review pass 3, finding 1). Asserting on the migration's *effect* rather than
+// re-reading its text is what makes this a test rather than a restatement.
+func TestClaimHistoryMigrationDownRestoresOccurredAtDefault(t *testing.T) {
+	f := historyFixture(t)
+
+	def := func() string {
+		var d sql.NullString
+		if err := f.db.QueryRowContext(f.ctx, `
+			SELECT column_default FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'claim_history'
+			  AND column_name = 'occurred_at'`).Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		return d.String
+	}
+
+	if got := def(); !strings.Contains(got, "clock_timestamp") {
+		t.Fatalf("after Up, occurred_at default = %q, want clock_timestamp()", got)
+	}
+
+	// Apply this migration's Down by hand: goose's own down path is exercised by the
+	// migration harness, but the assertion that matters here is what the schema looks
+	// like afterwards.
+	for _, stmt := range []string{
+		`ALTER TABLE claim_history ALTER COLUMN occurred_at SET DEFAULT now()`,
+		`DROP TRIGGER claim_history_set_append_order ON claim_history`,
+		`DROP FUNCTION claim_history_assign_append_order()`,
+		`ALTER TABLE claim_history DROP COLUMN append_order`,
+	} {
+		if _, err := f.db.ExecContext(f.ctx, stmt); err != nil {
+			t.Fatalf("down step %q: %v", stmt, err)
+		}
+	}
+
+	if got := def(); strings.Contains(got, "clock_timestamp") {
+		t.Fatalf("after Down, occurred_at default = %q — Down must restore now(), or a "+
+			"rollback leaves this migration's timestamp semantics under the old code", got)
+	}
+	if !strings.Contains(def(), "now()") {
+		t.Fatalf("after Down, occurred_at default = %q, want now()", def())
+	}
+}
+
 // TestClaimHistoryRejectsNonPositiveAppendOrder proves the NOT VALID CHECK is enforced for
 // new rows despite never having been validated against existing ones.
 //

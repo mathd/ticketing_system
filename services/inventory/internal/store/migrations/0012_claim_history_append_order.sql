@@ -126,6 +126,10 @@ CREATE TRIGGER claim_history_set_append_order
 -- benefit. Adding an index later if a plan regression appears is the cheap direction.
 
 -- +goose Down
+-- Restore the transaction-time default too. Up changes it; a Down that only removed the
+-- append_order objects would leave a hybrid schema carrying this migration's timestamp
+-- semantics under the previous version's code (ai-review pass 3, finding 1).
+ALTER TABLE claim_history ALTER COLUMN occurred_at SET DEFAULT now();
 DROP TRIGGER claim_history_set_append_order ON claim_history;
 DROP FUNCTION claim_history_assign_append_order();
 ALTER TABLE claim_history DROP COLUMN append_order;
