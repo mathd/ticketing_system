@@ -286,6 +286,12 @@ func TestExpiredChannelHoldFreesItsCap(t *testing.T) {
 	// Pin exp-1 live for the cap-full assertion. 'infinity' satisfies liveClaims
 	// (expires_at > now()) and the claims_kind_shape CHECK (buyer expiry is non-NULL),
 	// so the hold cannot expire out from under the next statement.
+	//
+	// Do not add a claim-READING call (History, Transition, anything scanning ExpiresAt)
+	// between here and the backdate below: pgx hands 'infinity' back as a string, and
+	// scanning it into Claim.ExpiresAt's *time.Time fails with "unsupported Scan, storing
+	// driver.Value type string" (ai-review, verified). Reads are safe after the backdate,
+	// which restores a finite timestamp.
 	mustAgeClaim(t, ctx, db, exp1.ID, "'infinity'::timestamptz")
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "exp-2"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("cap full: got %v want ErrUnavailable", err)
@@ -293,13 +299,23 @@ func TestExpiredChannelHoldFreesItsCap(t *testing.T) {
 	// Expire exp-1 explicitly. Status stays 'held' — only the sweep may flip it, and
 	// that is the behaviour under test.
 	mustAgeClaim(t, ctx, db, exp1.ID, "now() - interval '1 second'")
-	// Read availability BEFORE anything sweeps. This is the assertion that actually pins
-	// the shared predicate: CreateHold sweeps before it counts, so if this read were
-	// skipped, exp-3 would still succeed even with a broken liveClaims — the sweep would
-	// flip exp-1 to 'expired' first and mask the regression.
+	// Read availability BEFORE anything sweeps. Without this read the test would prove far
+	// less than it looks: CreateHold sweeps before it counts, so exp-3 alone still succeeds
+	// with a broken predicate — the sweep flips exp-1 to 'expired' first and masks the
+	// regression. Only a pre-sweep read sees the due-but-unswept row that liveClaims exists
+	// to classify.
 	ch, err := st.Availability(ctx, org, slot, "presale")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Held is asserted separately from Available on purpose. Available alone is
+	// under-discriminating here: it is min(pool remaining, cap - consumed), so with pool
+	// capacity 10 a regression that still counted the expired hold pool-side would leave
+	// remaining at 7, and min(7,3) is still 3 — the channel arm dominates and hides it
+	// (ai-review finding 1). Held reads the pool-level liveClaims sum directly, so the two
+	// predicates now fail independently.
+	if ch.Held != 0 {
+		t.Fatalf("pool after explicit expiry: held=%d want 0 (expired hold must leave the pool-level live sum)", ch.Held)
 	}
 	if ch.Available != 3 {
 		t.Fatalf("channel after explicit expiry: available=%d want 3 (expired hold must not consume the cap)", ch.Available)
