@@ -313,8 +313,81 @@ func inspect(t *testing.T, container, format string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// dependsOnLabel is where Compose records a container's resolved dependency
+// edges: a comma-separated list of "<service>:<condition>:<restart-bool>".
+// It is written from the merged compose files at container-create time, so it
+// reports the edge the container actually ran under rather than what any single
+// file says.
+const dependsOnLabel = "com.docker.compose.depends_on"
+
+// migrateGateCondition is the depends_on condition ADR-022 requires between a
+// service and its one-shot migrate job.
+const migrateGateCondition = "service_completed_successfully"
+
+// dependsOnCondition returns the condition container `c` declares on compose
+// service `dep`, and whether such an edge exists at all.
+//
+// It fails the test when the label is absent or empty rather than reporting
+// "no edge": `docker inspect -f '{{index .Config.Labels "..."}}'` prints an
+// empty string and exits 0 for a missing label, so an empty value is
+// indistinguishable from a container that declares no dependencies — and
+// treating it as "no edge" would let this assertion pass vacuously against a
+// container Compose never labelled.
+func dependsOnCondition(t *testing.T, c, dep string) (string, bool) {
+	t.Helper()
+
+	label := inspect(t, c, fmt.Sprintf("{{index .Config.Labels %q}}", dependsOnLabel))
+	if label == "" {
+		t.Fatalf("%s has no %s label — cannot tell whether it is gated on anything. "+
+			"Either Compose did not create this container or the label format changed; "+
+			"do not weaken this assertion to compensate", c, dependsOnLabel)
+	}
+
+	for _, entry := range strings.Split(label, ",") {
+		// "<service>:<condition>:<restart-bool>" — split from the right would
+		// be wrong if a service name ever contained ':', so cut twice forward.
+		name, rest, ok := strings.Cut(entry, ":")
+		if !ok {
+			t.Fatalf("%s: malformed %s entry %q (want <service>:<condition>:<restart>)",
+				c, dependsOnLabel, entry)
+		}
+		condition, restart, ok := strings.Cut(rest, ":")
+		if !ok {
+			t.Fatalf("%s: malformed %s entry %q (want <service>:<condition>:<restart>)",
+				c, dependsOnLabel, entry)
+		}
+		// The restart flag is parsed to validate the entry's shape but is
+		// deliberately not asserted: it governs whether Compose restarts this
+		// container when the dependency restarts, which is unrelated to
+		// startup gating. Asserting it would fail on unrelated compose edits.
+		if _, err := strconv.ParseBool(restart); err != nil {
+			t.Fatalf("%s: %s entry %q has non-boolean restart field: %v",
+				c, dependsOnLabel, entry, err)
+		}
+		if name == dep {
+			return condition, true
+		}
+	}
+	return "", false
+}
+
 // TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
-// exited 0 before the service process started (ADR-022).
+// exited 0, and the service is gated on that job completing successfully
+// (ADR-022).
+//
+// Why the dependency edge and not a clock. Compose enforces the guarantee as a
+// depends_on *condition*; it does not promise anything about elapsed time. This
+// test used to compare the job's FinishedAt against the service's StartedAt,
+// which is a different claim: under CPU contention those recorded timestamps
+// can invert while the condition held perfectly (TKT-232 — payments inverted by
+// 519ms on a loaded gate). The proxy was weak in the other direction too, which
+// mattered more: with the condition removed, an unloaded box would usually
+// still record the job finishing first, so the old form could pass while the
+// guarantee was gone. Reading the resolved edge fails in exactly one case — the
+// edge is missing or weakened — which is the case ADR-022 wants caught.
+//
+// Do not "fix" a red here by widening a tolerance or retrying: there is no
+// timing left to be flaky, so a failure means the gating is actually broken.
 //
 // What this does and does not prove. It catches the job being absent, failing,
 // or not gating the service — i.e. the depends_on edge being wrong. It does NOT
@@ -334,17 +407,20 @@ func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 				t.Fatalf("%s still running — it must be one-shot", job)
 			}
 
-			finished, err := time.Parse(time.RFC3339Nano, inspect(t, job, "{{.State.FinishedAt}}"))
-			if err != nil {
-				t.Fatalf("%s FinishedAt: %v", job, err)
+			// The compose service name, not the container name: the label holds
+			// service names. Matching the specific <service>-migrate edge is
+			// what makes this assertion real — nats-init carries the same
+			// condition, so searching the label for service_completed_successfully
+			// would pass with the migrate edge deleted outright.
+			dep := service + "-migrate"
+			condition, ok := dependsOnCondition(t, srv, dep)
+			if !ok {
+				t.Fatalf("%s declares no dependency on %s — its migrations are not gating "+
+					"startup at all (ADR-022)", srv, dep)
 			}
-			started, err := time.Parse(time.RFC3339Nano, inspect(t, srv, "{{.State.StartedAt}}"))
-			if err != nil {
-				t.Fatalf("%s StartedAt: %v", srv, err)
-			}
-			if !finished.Before(started) {
-				t.Fatalf("%s finished at %s, but %s started at %s — the service started before "+
-					"its migrations completed", job, finished, srv, started)
+			if condition != migrateGateCondition {
+				t.Fatalf("%s depends on %s with condition %q, want %q — the service may start "+
+					"before its migrations complete (ADR-022)", srv, dep, condition, migrateGateCondition)
 			}
 		})
 	}
