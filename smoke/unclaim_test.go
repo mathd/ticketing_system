@@ -115,7 +115,7 @@ func TestAClaimedOrderCanBeDetachedAndClaimedAgain(t *testing.T) {
 
 	// Directly on commerce, with the service credential.
 	unclaimURL := fmt.Sprintf("%s/internal/orders/%s/unclaim", commerceURL, purchase.OrderID)
-	status, detached := internalJSON(t, http.MethodPost, unclaimURL, "", map[string]string{
+	status, detached := internalJSON(t, http.MethodPost, unclaimURL, "unclaim-first", map[string]string{
 		"actor": "staff:amy", "reason": "claimed by the wrong account",
 	})
 	if status != http.StatusOK {
@@ -136,6 +136,15 @@ func TestAClaimedOrderCanBeDetachedAndClaimedAgain(t *testing.T) {
 			result, purchase.OrderID, wrong.CustomerID)
 	}
 
+	// The replay, across the real stack: the SAME key returns the SAME answer and
+	// does not touch the order again. Sent here, before the rightful buyer claims,
+	// so a failure to replay would be visible as a second detachment.
+	if status, again := internalJSON(t, http.MethodPost, unclaimURL, "unclaim-first", map[string]string{
+		"actor": "staff:amy", "reason": "claimed by the wrong account",
+	}); status != http.StatusOK {
+		t.Fatalf("replaying the un-claim: %d %s", status, again)
+	}
+
 	// The recourse the ticket exists to restore.
 	if status, reclaimed := claim(t, purchase.GuestOrderRef, rightful.Assertion); status != http.StatusOK {
 		t.Fatalf("the rightful buyer claiming after a detach: %d %s", status, reclaimed)
@@ -146,7 +155,7 @@ func TestAClaimedOrderCanBeDetachedAndClaimedAgain(t *testing.T) {
 	// (It IS detachable again — from its new owner — which is correct; what would
 	// be wrong is the FIRST request's effect being repeatable without a new
 	// decision. So this asserts the second one detaches the NEW owner, naming them.)
-	status, second := internalJSON(t, http.MethodPost, unclaimURL, "", map[string]string{
+	status, second := internalJSON(t, http.MethodPost, unclaimURL, "unclaim-second", map[string]string{
 		"actor": "staff:bo", "reason": "second detach, now from the rightful buyer",
 	})
 	if status != http.StatusOK {
@@ -165,7 +174,7 @@ func TestAClaimedOrderCanBeDetachedAndClaimedAgain(t *testing.T) {
 	}
 
 	// A third finds nothing to detach.
-	if status, third := internalJSON(t, http.MethodPost, unclaimURL, "", map[string]string{
+	if status, third := internalJSON(t, http.MethodPost, unclaimURL, "unclaim-third", map[string]string{
 		"actor": "staff:bo", "reason": "nothing left",
 	}); status != http.StatusNotFound {
 		t.Fatalf("detaching an unattributed order: %d, want 404: %s", status, third)

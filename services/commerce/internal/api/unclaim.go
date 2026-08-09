@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -37,6 +38,15 @@ func (s *Server) unclaimOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Required, and load-bearing rather than ceremony: a detached order is
+	// immediately re-claimable, so a retried request without a key could detach
+	// whoever claimed it in between (ai-review [high]).
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > 200 {
+		write(w, http.StatusBadRequest, map[string]string{"error": "Idempotency-Key required"})
+		return
+	}
+
 	var body struct {
 		Actor  string `json:"actor"`
 		Reason string `json:"reason"`
@@ -46,7 +56,7 @@ func (s *Server) unclaimOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detached, err := commercestore.DetachOrderAttribution(r.Context(), s.db, order, body.Actor, body.Reason)
+	detached, err := commercestore.DetachOrderAttribution(r.Context(), s.db, order, key, body.Actor, body.Reason)
 	switch {
 	case errors.Is(err, commercestore.ErrDetachmentNotDescribed):
 		// 400, not 404: the caller's request is malformed, and saying so discloses

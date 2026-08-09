@@ -354,7 +354,13 @@ paths:
       # A detached order becomes immediately re-claimable, deliberately (ADR-052): the most
       # likely detach is support fixing a mistake, and blocking re-claim would block the
       # rightful buyer. The claim path is rate limited by ADR-051.
-      parameters: [{$ref: '#/components/parameters/Id'}]
+      #
+      # Idempotency-Key is REQUIRED, and it is not ceremony (ai-review [high]). Because a
+      # detached order is immediately re-claimable, a lost response plus a retry would
+      # otherwise detach whoever claimed it in between — a customer the operator never
+      # reviewed, recorded under the original reason. The key makes a replay return the
+      # first result without touching the order again.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OrderUnclaim'}}}}
       responses:
         '200': {description: Detached, content: {application/json: {schema: {$ref: '#/components/schemas/OrderUnclaimed'}}}}

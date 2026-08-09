@@ -62,7 +62,7 @@ func TestDetachRestoresTheOrderToUnattributedAndRecordsIt(t *testing.T) {
 	customer := registerClaimant(t, db, ctx, "detach-owner")
 	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: customer, Valid: true})
 
-	detached, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "claimed by the wrong account")
+	detached, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "claimed by the wrong account")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestDetachTouchesNothingButAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "wrong account"); err != nil {
+	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "wrong account"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,7 +126,7 @@ func TestDetachingAnUnattributedOrderIsRefusedAndRecordsNothing(t *testing.T) {
 	db, ctx := outboxDB(t)
 	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{})
 
-	if _, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "nothing to detach"); err != ErrOrderNotDetachable {
+	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "nothing to detach"); err != ErrOrderNotDetachable {
 		t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
 	}
 	if records := detachmentsFor(t, db, order); len(records) != 0 {
@@ -149,7 +149,7 @@ func TestDetachRefusesAnOrderThatIsNotCompleted(t *testing.T) {
 			customer := registerClaimant(t, db, ctx, "detach-"+status)
 			order, _ := seedClaimable(t, db, ctx, status, uuid.NullUUID{UUID: customer, Valid: true})
 
-			if _, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "wrong state"); err != ErrOrderNotDetachable {
+			if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "wrong state"); err != ErrOrderNotDetachable {
 				t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
 			}
 			if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != customer {
@@ -164,7 +164,7 @@ func TestDetachRefusesAnOrderThatIsNotCompleted(t *testing.T) {
 
 func TestDetachRefusesAnOrderThatDoesNotExist(t *testing.T) {
 	db, ctx := outboxDB(t)
-	if _, err := DetachOrderAttribution(ctx, db, uuid.New(), "staff:amy", "no such order"); err != ErrOrderNotDetachable {
+	if _, err := DetachOrderAttribution(ctx, db, uuid.New(), "key-"+uuid.NewString(), "staff:amy", "no such order"); err != ErrOrderNotDetachable {
 		t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
 	}
 }
@@ -184,7 +184,7 @@ func TestDetachRefusesABlankActorOrReason(t *testing.T) {
 		{"whitespace reason", "staff:amy", "\t\n "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := DetachOrderAttribution(ctx, db, order, tc.actor, tc.reason); err != ErrDetachmentNotDescribed {
+			if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), tc.actor, tc.reason); err != ErrDetachmentNotDescribed {
 				t.Fatalf("err = %v, want ErrDetachmentNotDescribed", err)
 			}
 		})
@@ -211,7 +211,7 @@ func TestADetachedOrderCanBeClaimedAgain(t *testing.T) {
 	rightful := registerClaimant(t, db, ctx, "detach-rightful")
 	order, ref := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: wrong, Valid: true})
 
-	if _, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "claimed by the wrong account"); err != nil {
+	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "claimed by the wrong account"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,10 +231,10 @@ func TestDetachingTwiceRecordsOnlyTheDetachmentThatHappened(t *testing.T) {
 	customer := registerClaimant(t, db, ctx, "detach-twice")
 	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: customer, Valid: true})
 
-	if _, err := DetachOrderAttribution(ctx, db, order, "staff:amy", "first"); err != nil {
+	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "first"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DetachOrderAttribution(ctx, db, order, "staff:bo", "second"); err != ErrOrderNotDetachable {
+	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:bo", "second"); err != ErrOrderNotDetachable {
 		t.Fatalf("err = %v, want ErrOrderNotDetachable on the second detach", err)
 	}
 	records := detachmentsFor(t, db, order)
@@ -263,5 +263,98 @@ func TestTheDatabaseItselfRefusesABlankReasonOrActor(t *testing.T) {
 				t.Fatal("the database accepted a detachment record that says nothing about itself")
 			}
 		})
+	}
+}
+
+// The race that made the Idempotency-Key necessary (ai-review [high], TKT-225).
+//
+// A detached order is immediately re-claimable by design (ADR-052 § 4), so a
+// detach is NOT naturally idempotent. Without a key: detach A, the HTTP response
+// is lost, B claims the now-free order, the caller retries the identical
+// request — and the retry detaches B. A customer the operator never reviewed
+// loses their purchase, recorded under the reason written about someone else, and
+// retry timing decides who.
+//
+// This drives that exact sequence. With the key, the retry is a replay: it returns
+// the customer the FIRST call detached, and B keeps the order.
+func TestARetryAfterAnInterveningClaimDoesNotDetachTheNewOwner(t *testing.T) {
+	db, ctx := outboxDB(t)
+	first := registerClaimant(t, db, ctx, "retry-first")
+	intervening := registerClaimant(t, db, ctx, "retry-intervening")
+	order, ref := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: first, Valid: true})
+
+	const key = "support-ticket-4471"
+
+	detached, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "claimed by the wrong account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detached != first {
+		t.Fatalf("detached %s, want %s", detached, first)
+	}
+
+	// The response is lost. Meanwhile somebody claims the freed order.
+	if _, err := ClaimGuestOrder(ctx, db, ref, intervening); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator's client retries the identical request.
+	replayed, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "claimed by the wrong account")
+	if err != nil {
+		t.Fatalf("the retry failed instead of replaying: %v", err)
+	}
+	if replayed != first {
+		t.Fatalf("the retry reported %s; a replay must report the customer the FIRST call detached (%s)",
+			replayed, first)
+	}
+
+	// The intervening claimant still has the order, and no second row was written.
+	if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != intervening {
+		t.Fatalf("attribution = %+v; the retry took the order from a customer the operator never reviewed", got)
+	}
+	if records := detachmentsFor(t, db, order); len(records) != 1 {
+		t.Fatalf("recorded %d detachments, want 1 — a replay must not add evidence of a second act", len(records))
+	}
+}
+
+// A DIFFERENT key on the same order is a new decision, not a replay: the operator
+// looked again and asked for another detach. That must work, or support cannot fix
+// a second mis-claim on the same order.
+func TestADifferentKeyOnTheSameOrderIsANewDetachment(t *testing.T) {
+	db, ctx := outboxDB(t)
+	first := registerClaimant(t, db, ctx, "twokeys-first")
+	second := registerClaimant(t, db, ctx, "twokeys-second")
+	order, ref := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: first, Valid: true})
+
+	if _, err := DetachOrderAttribution(ctx, db, order, "support-1", "staff:amy", "first mistake"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimGuestOrder(ctx, db, ref, second); err != nil {
+		t.Fatal(err)
+	}
+	detached, err := DetachOrderAttribution(ctx, db, order, "support-2", "staff:amy", "second mistake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detached != second {
+		t.Fatalf("the second detachment reported %s, want the CURRENT owner %s", detached, second)
+	}
+	if records := detachmentsFor(t, db, order); len(records) != 2 {
+		t.Fatalf("recorded %d detachments, want 2 — each key is its own decision", len(records))
+	}
+}
+
+func TestDetachRefusesABlankIdempotencyKey(t *testing.T) {
+	db, ctx := outboxDB(t)
+	customer := registerClaimant(t, db, ctx, "blank-key")
+	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: customer, Valid: true})
+
+	for _, key := range []string{"", "   "} {
+		if _, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "a reason"); err != ErrDetachmentNotDescribed {
+			t.Fatalf("key %q: err = %v, want ErrDetachmentNotDescribed", key, err)
+		}
+	}
+	if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != customer {
+		t.Fatal("a refused detach still changed the attribution")
 	}
 }

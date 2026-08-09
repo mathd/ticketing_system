@@ -714,6 +714,7 @@ The recourse for "someone else claimed my order". See ADR-052.
 ```bash
 curl -sS -X POST "$COMMERCE_URL/internal/orders/$ORDER_ID/unclaim" \
   -H "X-Internal-Token: $COMMERCE_INTERNAL_TOKEN" \
+  -H "Idempotency-Key: support-4471" \
   -H 'Content-Type: application/json' \
   -d '{"actor":"staff:amy","reason":"claimed by the wrong account, buyer confirmed by phone"}'
 ```
@@ -724,6 +725,11 @@ the order back to if you detached the wrong one.
 
 **Direct to commerce, not through the gateway.** `/api/commerce/internal/` is edge-denied by
 construction, and a smoke test pins that for this route.
+
+**`Idempotency-Key` is required, and it is not ceremony.** Because a detached order is immediately
+claimable again, a retry without a key could detach whoever claimed it in between — someone you
+never reviewed, recorded under your reason. Reuse the same key when retrying; use a NEW key when you
+genuinely mean to detach again (a second mis-claim on the same order).
 
 **`actor` and `reason` are required and are recorded** in `order_attribution_detachments`. Blank or
 whitespace-only values are refused by the handler *and* by a database `CHECK` — an un-claim that

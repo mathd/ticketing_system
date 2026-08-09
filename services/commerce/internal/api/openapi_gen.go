@@ -624,6 +624,11 @@ type RefundOrderParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// UnclaimOrderParams defines parameters for UnclaimOrder.
+type UnclaimOrderParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CreateCancellationRefundRunParams defines parameters for CreateCancellationRefundRun.
 type CreateCancellationRefundRunParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`

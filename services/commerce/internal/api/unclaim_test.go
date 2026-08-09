@@ -23,6 +23,7 @@ func unclaimRequest(t *testing.T, path, body string, headers map[string]string) 
 	s := New(nil, http.DefaultClient, "", "", "", internalTok)
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "tkt-225-test")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -80,6 +81,22 @@ func TestUnclaimRefusesABodyThatDescribesNothing(t *testing.T) {
 				t.Fatalf("status = %d, want 400. Body: %.200s", res.Code, res.Body.String())
 			}
 		})
+	}
+}
+
+// The key is REQUIRED: without it a retry could detach whoever claimed the order
+// in between (ai-review [high]).
+func TestUnclaimRefusesAMissingIdempotencyKey(t *testing.T) {
+	s := New(nil, http.DefaultClient, "", "", "", internalTok)
+	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/unclaim",
+		bytes.NewBufferString(validUnclaimBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", internalTok)
+	// Deliberately no Idempotency-Key.
+	res := httptest.NewRecorder()
+	s.Router(nil, true).ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. Body: %.200s", res.Code, res.Body.String())
 	}
 }
 

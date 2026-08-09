@@ -101,13 +101,23 @@ const detachOrderStatement = `
 // service credential. It constrains nobody with database access, and the audit row
 // it writes is ordinary commerce state that such a writer can alter or delete.
 // Accountability against carelessness, not tamper evidence.
-func DetachOrderAttribution(ctx context.Context, db *sql.DB, order uuid.UUID, actor, reason string) (uuid.UUID, error) {
-	actor, reason = strings.TrimSpace(actor), strings.TrimSpace(reason)
-	// Checked before the transaction opens: a blank actor or reason can never
-	// succeed, and the database CHECK constraints would refuse it anyway. Failing
-	// here means the refusal is the same whether or not the order exists, so a
-	// caller cannot use a deliberately blank reason to probe for orders.
-	if actor == "" || reason == "" {
+// Replay is by KEY, and it is what makes a retry safe (ai-review [high]).
+//
+// Because a detached order is immediately re-claimable (ADR-052 § 4), a detach is
+// NOT naturally idempotent: detach A, lose the response, B claims the now-free
+// order, retry the identical request — and without a key the retry detaches B, a
+// customer the operator never reviewed, recorded under the reason they wrote about
+// A. Retry timing would decide who loses their purchase.
+//
+// So the key is looked up FIRST, inside the same transaction that would do the
+// work. A hit returns the customer the original call detached and touches nothing.
+func DetachOrderAttribution(ctx context.Context, db *sql.DB, order uuid.UUID, key, actor, reason string) (uuid.UUID, error) {
+	key, actor, reason = strings.TrimSpace(key), strings.TrimSpace(actor), strings.TrimSpace(reason)
+	// Checked before the transaction opens: a blank field can never succeed, and
+	// the database CHECK constraints would refuse it anyway. Failing here means the
+	// refusal is the same whether or not the order exists, so a caller cannot use a
+	// deliberately blank reason to probe for orders.
+	if key == "" || actor == "" || reason == "" {
 		return uuid.Nil, ErrDetachmentNotDescribed
 	}
 
@@ -116,6 +126,19 @@ func DetachOrderAttribution(ctx context.Context, db *sql.DB, order uuid.UUID, ac
 		return uuid.Nil, fmt.Errorf("begin detach: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// The replay check. Inside the transaction so it cannot be raced by a
+	// concurrent first attempt: the unique index below is the authority, and this
+	// read is the fast path that turns a retry into a lookup.
+	var replayed uuid.UUID
+	switch err := tx.QueryRowContext(ctx, `
+		SELECT customer_id FROM order_attribution_detachments
+		 WHERE order_id = $1 AND idempotency_key = $2`, order, key).Scan(&replayed); {
+	case err == nil:
+		return replayed, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return uuid.Nil, fmt.Errorf("look up detachment: %w", err)
+	}
 
 	var detached uuid.UUID
 	switch err := tx.QueryRowContext(ctx, detachOrderStatement, order).Scan(&detached); {
@@ -126,9 +149,9 @@ func DetachOrderAttribution(ctx context.Context, db *sql.DB, order uuid.UUID, ac
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO order_attribution_detachments(id, order_id, customer_id, reason, actor)
-		VALUES($1, $2, $3, $4, $5)`,
-		uuid.New(), order, detached, reason, actor); err != nil {
+		INSERT INTO order_attribution_detachments(id, idempotency_key, order_id, customer_id, reason, actor)
+		VALUES($1, $2, $3, $4, $5, $6)`,
+		uuid.New(), key, order, detached, reason, actor); err != nil {
 		return uuid.Nil, fmt.Errorf("record detachment: %w", err)
 	}
 

@@ -97,6 +97,17 @@ The reasoning, and it turns on who the operation is actually for:
 A smoke test and a store test both pin the re-claim, so a later "hardening" has to argue with a test
 rather than quietly reverse this.
 
+**The consequence, which the first implementation missed: a detach is therefore NOT naturally
+idempotent.** Detach A, lose the HTTP response, B claims the now-free order, retry the identical
+request — and the retry detaches **B**, a customer the operator never reviewed, recorded under the
+reason written about A. Retry timing would decide whose purchase is taken.
+
+So `Idempotency-Key` is **required**, stored on the detachment row, and unique per order. A replay
+returns the customer the *first* call detached and touches nothing. A **different** key on the same
+order is a new decision and detaches the current owner — support fixing a second mis-claim must
+still work. Both are pinned by tests, including one that drives the exact lost-response-then-claim
+sequence.
+
 ### 5. Exactly two statements may write `orders.customer_id`
 
 `TestNoProductionCodeUpdatesOrderAttribution` allowed exactly one — the claim (TKT-221/TKT-223). It
@@ -112,6 +123,20 @@ predicates" *independently* would admit a detach carrying the claim's `WHERE` cl
 versa — both halves individually sanctioned, just not together. That is how a two-entry allowlist
 becomes a blanket one, and `TestTheAllowlistCannotBeWidened` now asserts both cross-borrowings are
 refused, alongside a transfer-shaped third statement.
+
+**And matched whole, not by required substrings.** A per-predicate `strings.Contains` check
+authorizes anything that *also* contains them, which SQL boolean precedence makes catastrophic:
+
+```sql
+WHERE id = $1 AND status = 'completed' AND customer_id IS NOT NULL OR $1 = $1
+```
+
+contains every required predicate, keeps the count at two — and clears attribution from **every row
+in the table**. This bypass **pre-dated TKT-225**: the one-statement version admitted the same
+append. It is fixed here rather than filed, because this ticket doubles the number of statements to
+append to. The guard now compares the whole normalized assignment and where-clause (including the
+`RETURNING` clause) for equality, and the widening test covers `OR $1 = $1`, `OR TRUE`, and
+predicates parked in a dead branch.
 
 A claim is the only `NULL → customer` transition and a detach the only `customer → NULL` one.
 Together they are the whole of attribution's mutable life; a third statement is by construction

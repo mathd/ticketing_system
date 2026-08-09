@@ -116,52 +116,79 @@ func commerceProductionSQL(t *testing.T) map[string]string {
 // (ADR-052). Together they are the whole of attribution's mutable life. A third
 // statement is by construction something else — a repoint, a recovery path, a
 // compensation — and is exactly what this guard exists to refuse.
+// Matched WHOLE, not by required substrings (ai-review [high], TKT-225).
+//
+// A `strings.Contains` check per predicate authorizes anything that *also*
+// contains them, and SQL boolean precedence makes that catastrophic:
+//
+//	WHERE id = $1 AND status = 'completed' AND customer_id IS NOT NULL OR $1 = $1
+//
+// contains every required predicate, passes a substring guard, keeps the count at
+// exactly two — and clears attribution from EVERY ROW IN THE TABLE, because the
+// trailing disjunct is always true. The same append weakens the claim.
+//
+// This bypass was NOT introduced by TKT-225; the one-statement version on main had
+// it too, and the same `OR $1 = $1` passes there. What TKT-225 changes is that
+// there are now two statements to append to, so it is fixed here rather than
+// filed. Verified both ways before and after.
+//
+// So the whole normalized assignment and the whole normalized where-clause are
+// compared for EQUALITY against the sanctioned text. Appending anything — a
+// disjunct, a nested OR, a dead branch — changes the string and is refused. The
+// cost is that editing either statement's formatting means editing this list, and
+// that is the intended cost: these two statements are the entire mutable life of
+// attribution, and changing one should require saying so here.
 var sanctionedAttributionWrites = []struct {
+	what       string
 	assignment string
-	predicates []string
+	where      string
 }{
 	{
-		// The claim (TKT-223).
+		// The claim (TKT-223): the only NULL -> customer transition.
+		what:       "the TKT-223 claim",
 		assignment: "customer_id = $2",
-		predicates: []string{
-			"guest_order_ref = $1",
-			"status = 'completed'",
-			"customer_id IS NULL OR customer_id = $2",
-		},
+		where:      "guest_order_ref = $1 AND status = 'completed' AND (customer_id IS NULL OR customer_id = $2) RETURNING id",
 	},
 	{
-		// The detach (TKT-225). `customer_id IS NOT NULL` is load-bearing, not
-		// defensive: without it a detach of an unattributed order reports success
-		// and writes an audit row for something that did not happen.
+		// The detach (TKT-225): the only customer -> NULL transition.
+		// `customer_id IS NOT NULL` is load-bearing, not defensive: without it a
+		// detach of an unattributed order reports success and writes an audit row
+		// for something that did not happen.
+		what:       "the TKT-225 detach",
 		assignment: "customer_id = NULL",
-		predicates: []string{
-			"id = $1",
-			"status = 'completed'",
-			"customer_id IS NOT NULL",
-		},
+		where:      "id = $1 AND status = 'completed' AND customer_id IS NOT NULL RETURNING OLD.customer_id",
 	},
 }
 
-// allowedAttributionUpdate reports whether a statement's assignment AND its own
-// where-clause together match one sanctioned write.
+// The captured "where" runs to the end of the statement, so it carries the
+// RETURNING clause too. That is kept rather than stripped: the detach's
+// `RETURNING OLD.customer_id` is the difference between an audit row naming the
+// account that lost the order and one naming nobody (a bare or table-qualified
+// column returns the NEW value — NULL — which is how the first two versions of
+// this statement shipped broken). Pinning it here means a "simplification" back to
+// `RETURNING customer_id` fails this guard rather than silently writing false
+// audit rows.
+
+// allowedAttributionUpdate reports whether a statement is, in full, one of the two
+// sanctioned writes.
 //
-// Both halves are checked against the SAME entry. Checking them independently —
-// "is this a known assignment" and "are these known predicates" — is the bypass
-// that lets a detach's SET ride the claim's WHERE.
+// Both halves must match the SAME entry. Checking them independently — "is this a
+// known assignment" and "is this a known where-clause" — is the bypass that lets a
+// detach's SET ride the claim's WHERE.
 func allowedAttributionUpdate(assignment, where string) bool {
-	normalized := strings.Join(strings.Fields(assignment), " ")
+	a, w := normalizeSQL(assignment), normalizeSQL(where)
 	for _, sanctioned := range sanctionedAttributionWrites {
-		if normalized != sanctioned.assignment {
-			continue
+		if a == normalizeSQL(sanctioned.assignment) && w == normalizeSQL(sanctioned.where) {
+			return true
 		}
-		for _, predicate := range sanctioned.predicates {
-			if !strings.Contains(where, predicate) {
-				return false
-			}
-		}
-		return true
 	}
 	return false
+}
+
+// normalizeSQL collapses whitespace so the guard is indifferent to how the
+// statement is wrapped across lines, and to nothing else.
+func normalizeSQL(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // scanAttributionUpdates is the WHOLE decision — match, recognise, authorize — in
@@ -315,101 +342,67 @@ func TestOrderSQLIsWrittenAsLiterals(t *testing.T) {
 // ways this one can be widened without anybody noticing, and each must be rejected
 // by the same machinery that permits the real statement.
 func TestTheAllowlistCannotBeWidened(t *testing.T) {
+	claimWhere := "guest_order_ref = $1 AND status = 'completed' AND (customer_id IS NULL OR customer_id = $2) RETURNING id"
+	detachWhere := "id = $1 AND status = 'completed' AND customer_id IS NOT NULL RETURNING OLD.customer_id"
+
 	for _, tc := range []struct {
 		name       string
 		assignment string
 		body       string
 		want       bool
 	}{
-		{
-			name:       "the real claim statement",
-			assignment: "customer_id = $2",
-			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
-			want:       true,
-		},
-		{
-			name:       "the claim with its ownership predicate removed",
-			assignment: "customer_id = $2",
-			body:       "guest_order_ref = $1 status = 'completed'",
-			want:       false,
-		},
-		{
-			name:       "the claim with its completed predicate removed",
-			assignment: "customer_id = $2",
-			body:       "guest_order_ref = $1 customer_id IS NULL OR customer_id = $2",
-			want:       false,
-		},
-		{
-			name:       "a recovery-shaped clearing of attribution",
-			assignment: "customer_id = NULL, status = 'refunded'",
-			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
-			want:       false,
-		},
-		{
-			name:       "an update that sets attribution from a different parameter",
-			assignment: "customer_id = $3",
-			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
-			want:       false,
-		},
-		// The second sanctioned statement, and the ways IT can be widened (TKT-225).
-		{
-			name:       "the real detach statement",
-			assignment: "customer_id = NULL",
-			body:       "id = $1 status = 'completed' customer_id IS NOT NULL",
-			want:       true,
-		},
-		{
-			name: "the detach with its IS NOT NULL predicate removed",
-			// Without it, detaching an unattributed order succeeds and writes an
-			// audit row for a detachment that did not happen.
-			assignment: "customer_id = NULL",
-			body:       "id = $1 status = 'completed'",
-			want:       false,
-		},
-		{
-			name:       "the detach with its completed predicate removed",
-			assignment: "customer_id = NULL",
-			body:       "id = $1 customer_id IS NOT NULL",
-			want:       false,
-		},
-		{
-			name: "the detach with no order identity — every attributed order at once",
-			// The predicate that scopes it to ONE order. Without `id = $1` this is
-			// a statement that unattributes the whole table.
-			assignment: "customer_id = NULL",
-			body:       "status = 'completed' customer_id IS NOT NULL",
-			want:       false,
-		},
-		{
-			name: "a detach borrowing the CLAIM's predicates",
-			// The bypass a two-entry allowlist actually has: checking "is this a
-			// known assignment" and "are these known predicates" independently
-			// would admit this, because both halves are individually sanctioned —
-			// just not together.
-			assignment: "customer_id = NULL",
-			body:       "guest_order_ref = $1 status = 'completed' customer_id IS NULL OR customer_id = $2",
-			want:       false,
-		},
-		{
-			name:       "a claim borrowing the DETACH's predicates",
-			assignment: "customer_id = $2",
-			body:       "id = $1 status = 'completed' customer_id IS NOT NULL",
-			want:       false,
-		},
-		{
-			name: "a THIRD statement that looks like a transfer",
-			// A repoint is not one of the two sanctioned transitions. It is
-			// TKT-9/TKT-160's problem and has a different adversary.
-			assignment: "customer_id = $2",
-			body:       "id = $1 status = 'completed' customer_id IS NOT NULL AND customer_id <> $2",
-			want:       false,
-		},
+		{"the real claim statement", "customer_id = $2", claimWhere, true},
+		{"the real detach statement", "customer_id = NULL", detachWhere, true},
+
+		// --- predicates REMOVED --------------------------------------------------
+		{"the claim with its ownership predicate removed", "customer_id = $2",
+			"guest_order_ref = $1 AND status = 'completed' RETURNING id", false},
+		{"the claim with its completed predicate removed", "customer_id = $2",
+			"guest_order_ref = $1 AND (customer_id IS NULL OR customer_id = $2) RETURNING id", false},
+		{"the detach with its IS NOT NULL predicate removed", "customer_id = NULL",
+			"id = $1 AND status = 'completed' RETURNING OLD.customer_id", false},
+		{"the detach with its completed predicate removed", "customer_id = NULL",
+			"id = $1 AND customer_id IS NOT NULL RETURNING OLD.customer_id", false},
+		{"the detach with no order identity — every attributed order at once", "customer_id = NULL",
+			"status = 'completed' AND customer_id IS NOT NULL RETURNING OLD.customer_id", false},
+
+		// --- predicates present but NEUTRALISED (ai-review pass 1 [high]) ---------
+		//
+		// The bypass a substring guard has, and the reason this check compares the
+		// WHOLE clause. Every required predicate is present in each of these; SQL
+		// boolean precedence makes the statement match every row anyway.
+		{"the detach with a trailing OR that is always true", "customer_id = NULL",
+			detachWhere[:len(detachWhere)-len(" RETURNING OLD.customer_id")] + " OR $1 = $1 RETURNING OLD.customer_id", false},
+		{"the claim with a trailing OR that is always true", "customer_id = $2",
+			claimWhere[:len(claimWhere)-len(" RETURNING id")] + " OR $1 = $1 RETURNING id", false},
+		{"the detach with OR TRUE appended", "customer_id = NULL",
+			detachWhere[:len(detachWhere)-len(" RETURNING OLD.customer_id")] + " OR TRUE RETURNING OLD.customer_id", false},
+		{"the detach with its predicates inside a dead AND branch", "customer_id = NULL",
+			"(id = $1 AND status = 'completed' AND customer_id IS NOT NULL) OR 1 = 1 RETURNING OLD.customer_id", false},
+
+		// --- the two statements BORROWING each other's predicates ----------------
+		{"a detach borrowing the CLAIM's predicates", "customer_id = NULL", claimWhere, false},
+		{"a claim borrowing the DETACH's predicates", "customer_id = $2", detachWhere, false},
+
+		// --- a THIRD statement ---------------------------------------------------
+		{"an update that sets attribution from a different parameter", "customer_id = $3", claimWhere, false},
+		{"a repoint that looks like a transfer", "customer_id = $2",
+			"id = $1 AND status = 'completed' AND customer_id IS NOT NULL AND customer_id <> $2 RETURNING id", false},
+		{"a recovery-shaped clearing of attribution", "customer_id = NULL, status = 'refunded'", detachWhere, false},
+
+		// --- the RETURNING clause is part of the sanctioned text -----------------
+		//
+		// A bare or table-qualified column returns the NEW value, so this spelling
+		// makes every audit row name nobody. It shipped twice before a smoke test
+		// caught it; the guard now refuses it outright.
+		{"the detach returning the NEW customer_id", "customer_id = NULL",
+			"id = $1 AND status = 'completed' AND customer_id IS NOT NULL RETURNING customer_id", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := allowedAttributionUpdate(tc.assignment, tc.body)
 			if got != tc.want {
 				t.Fatalf("allowed = %v, want %v — the allowlist %s", got, tc.want,
-					map[bool]string{true: "refuses the one statement it exists to permit",
+					map[bool]string{true: "refuses a statement it exists to permit",
 						false: "admits a statement nobody reviewed"}[tc.want])
 			}
 		})

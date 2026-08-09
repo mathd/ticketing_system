@@ -23,6 +23,18 @@
 -- session, and at that point the column starts meaning what its name suggests.
 CREATE TABLE order_attribution_detachments (
     id           uuid PRIMARY KEY,
+    -- The caller's Idempotency-Key, and it is load-bearing rather than hygiene
+    -- (ai-review [high]). A detached order is immediately re-claimable by design
+    -- (ADR-052 § 4), so a lost response plus an ordinary retry would detach
+    -- whoever claimed it in between — a customer the operator never reviewed,
+    -- recorded under the reason they gave for a different one. The UNIQUE
+    -- constraint is what makes the second attempt a replay instead of a second
+    -- destructive act.
+    --
+    -- Scoped per order, not globally: two different orders may honestly be
+    -- detached under the same operator key, and a global unique would refuse the
+    -- second for no reason.
+    idempotency_key text     NOT NULL,
     order_id     uuid        NOT NULL REFERENCES orders (id),
     -- The account the order was taken FROM. Kept even though the FK target may be
     -- deleted later: the point of the record is who held it at the time.
@@ -43,7 +55,14 @@ ALTER TABLE order_attribution_detachments
     ADD CONSTRAINT order_attribution_detachments_reason_not_blank
         CHECK (btrim(reason) <> ''),
     ADD CONSTRAINT order_attribution_detachments_actor_not_blank
-        CHECK (btrim(actor) <> '');
+        CHECK (btrim(actor) <> ''),
+    ADD CONSTRAINT order_attribution_detachments_key_not_blank
+        CHECK (btrim(idempotency_key) <> '');
+
+-- The replay guard. One key detaches one order once, however many times the
+-- request arrives.
+CREATE UNIQUE INDEX order_attribution_detachments_key_idx
+    ON order_attribution_detachments (order_id, idempotency_key);
 
 -- One order may be detached more than once — a buyer can re-claim after a detach
 -- (ADR-052 § re-claim), and support may need to undo that too. So no unique
