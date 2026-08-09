@@ -17,6 +17,88 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Split out of TKT-230 at shaping (2026-08-09).** Not explained by TKT-230's proven `claim_history` ordering mechanism — this is a different assertion class entirely, so it is tracked separately rather than carried into a ticket whose COS demands an explained mechanism.\n\nObserved 2026-08-08 on `main` @ `a0a596d`, after TKT-198 and TKT-229 had both merged:\n\n```\n--- FAIL: TestMigrationsRanBeforeServicesStarted/payments\nsmoke_test.go:346: ticketing-smoke-0-payments-migrate-1 finished at 00:48:25.681558716,\nbut ticketing-smoke-0-payments-1 started at 00:48:25.162768220\n— the service started before its migrations completed\n```\n\n**519 milliseconds.** Four of five services passed; only `payments` inverted.\n\n**The interesting part is what it means.** This asserts [ADR-022](docs/adr/ADR-022-out-of-band-service-migrations.md)'s core guarantee — migrations run as a one-shot Compose job the service waits on via `service_completed_successfully`. Compose enforces that as a *dependency condition*. The test checks it by **comparing wall-clock timestamps from container metadata**, which is a different claim: under CPU contention the recorded times can invert while the dependency condition held perfectly.\n\nSo the likely finding is that **the test is wrong, not the system** — a test that measures a guarantee by timing can fail while the guarantee holds. The candidate fix is to assert the Compose dependency condition itself (`docker inspect` the `depends_on` condition, or the migrate job's exit status as a precondition) rather than to compare timestamps. **That is a hypothesis for the plan, not a decision** — and if the dependency condition turns out NOT to be configured for `payments`, then the test is right and the compose file is wrong, which is the more serious outcome. Establish which before changing anything.\n\n**Do not** fix by widening the timestamp tolerance: that converts a real ordering guarantee into an unchecked one. Needs shaping before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Shaping pass, 2026-08-09, against `main` @ `92af3d97`. Verdict: READY — all 8 DoR items `met`, no open blockers, no `owner:\"human\"` item.**\n\nThe ticket arrived asking that two things be established before anything is changed. Both were, by reading and by experiment.\n\n**1. Is the compose file wrong for `payments`?** No. All five services carry the condition on their own migrate job:\n\n```\npayments:\n  depends_on:\n    <<: *go-deps\n    payments-migrate:\n      condition: service_completed_successfully\n```\n\ncatalog `compose.yaml:150-153`, inventory `:178-180`, commerce `:201-203`, payments `:243-245`, access likewise. So the more serious outcome the ticket named — *the test is right and the compose file is wrong* — is **ruled out**. The test is what is wrong.\n\n**2. Is the candidate fix implementable?** Yes, and more directly than the ticket supposed. The ticket guessed at `docker inspect` on the `depends_on` condition; that turns out to be exactly right, because **Compose stamps the resolved edge onto the running container as a label**. Probed on Compose v5.3.1 with a throwaway two-container stack:\n\n```\n$ docker inspect -f '{{index .Config.Labels \"com.docker.compose.depends_on\"}}' dprobe-svc-1\njob:service_completed_successfully:false\n```\n\nExit 0 — and that is the *same* `docker inspect -f` accessor the existing `inspect()` helper at `smoke_test.go:307` already uses, so the fix reuses the helper rather than adding machinery.\n\n**Why this is the right assertion and the timestamp one is not.** ADR-022's Consequences section says assertion #2 exists to catch *\"an absent, failing, or ungated job — i.e. the depends_on edge being wrong.\"* That is a claim about the **edge**, which Compose enforces as a dependency condition. The test rendered it as a claim about **elapsed wall-clock time between two container metadata fields** — a proxy that, under CPU contention, can inverted-report while the edge held perfectly. 519ms on `payments` is that proxy failing, not the system.\n\nThe proxy is also weak in the other direction, which matters more: on an unloaded box a *removed* condition would still usually show the job finishing first, so the timestamp version can pass while the guarantee is gone. Asserting the label fails in exactly one case — the edge is missing or weakened — which is the case the ADR wants caught.\n\n**Explicitly not the fix:** widening the tolerance, adding a retry, or sleeping. The ticket says so and shaping agrees — each would convert a real ordering guarantee into an unchecked one. Scope also excludes touching `compose.yaml` (verified correct) and the other two ADR-022 assertions (complementary; the ADR is explicit that none is sufficient alone).\n\n**Left for the plan, not a shaping gap:** the exact label-parsing shape — assert the full `<job>:service_completed_successfully:<restart>` string, or parse the middle field — and whether ADR-022's §Consequences wording for #2 needs a touch-up once the test no longer mentions time. Both are local decisions on a test body with the mechanism already settled.\n\n`risk:low` is **not** suggested: the ticket is small, but it edits the gate's own ADR-022 assertion, and a wrong edit here silently weakens the check rather than breaking it. That earns the plan gate."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "TestMigrationsRanBeforeServicesStarted asserts ADR-022's ordering guarantee by a means that can report failure while the guarantee held. Make it assert the guarantee itself, so a red run means the system is broken."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the TestMigrationsRanBeforeServicesStarted body in smoke/smoke_test.go, and ADR-022's description of assertion #2 if the wording no longer matches. OUT: compose.yaml (verified correct at shaping - see approach), the other two ADR-022 assertions, and any tolerance/retry mechanism."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The one real unknown - whether the depends_on CONDITION is observable at runtime rather than only in the compose file - was resolved at shaping by direct experiment, not by reading. See approach."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. Relates to TKT-230 (split from it) but is not blocked by it: TKT-230 is Done and this is a different assertion class."
+    },
+    "approach": {
+      "state": "met",
+      "note": "VERIFIED AT SHAPING, both halves of the ticket's hypothesis. (1) The compose file is NOT wrong: all five services, payments included, carry `<svc>-migrate: {condition: service_completed_successfully}` in their depends_on (compose.yaml:150-153, 178-180, 201-203, 243-245, plus access). So the serious outcome the ticket flagged is ruled out and the test is what is wrong. (2) The ticket's candidate fix IS implementable, and better than it knew: Compose stamps the resolved dependency onto the RUNNING container as the label `com.docker.compose.depends_on`, value `<job>:service_completed_successfully:<restart>`. Probed directly on Compose v5.3.1 with a two-container stack: `docker inspect -f '{{index .Config.Labels \"com.docker.compose.depends_on\"}}' <svc>` returned `job:service_completed_successfully:false`, exit 0 - the same `docker inspect -f` accessor the existing `inspect()` helper already uses. That is the assertion to make: the edge as the container actually runs under it, no clock involved. The exit-code and not-Running checks on the migrate job are already clock-free and stay."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole fix is one test body - replace the FinishedAt/StartedAt comparison with a depends_on label assertion, keep the exit-0 and one-shot checks. No slicing needed."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS: (1) the test asserts each service container declares service_completed_successfully on its own migrate job, with no wall-clock comparison left in the body; (2) it FAILS when the guarantee is actually broken - mutation-checked by removing/weakening the condition for one service and observing red; (3) it passes under a loaded `make check`, where the timestamp version inverted by 519ms; (4) ADR-022's description of assertion #2 still matches what the test does."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at shaping, 2026-08-09, against main at 92af3d97."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-09",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-09",
+        "rule": "Before debugging a red test, ask what its fixture can distinguish. A test that measures a guarantee by a proxy can fail while the guarantee holds - and passes for the wrong reason too."
+      },
+      {
+        "id": "TKT-232 ticket text",
+        "date": "2026-08-09",
+        "rule": "Do NOT fix by widening the timestamp tolerance: that converts a real ordering guarantee into an unchecked one. Owner's explicit instruction on the ticket."
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-022",
+        "why": "The decision under test. Its Consequences section states what each of the three assertions is FOR: #2 (this test) exists to catch 'an absent, failing, or ungated job' - i.e. the depends_on edge being wrong. That is a statement about the dependency EDGE, not about elapsed time, so asserting the edge is closer to the ADR's own words than the timestamp comparison is. Also names why all three are needed and why none is sufficient alone - do not collapse them."
+      },
+      {
+        "id": "ADR-020",
+        "why": "Referenced by ADR-022 on the migration-concurrency preconditions. Not touched by this ticket, but it is what makes the migrate job's shape (plain CREATE INDEX, one-shot, 30s deadline) non-negotiable - so do not 'improve' the job while in there."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The test under repair. Lines 330-335 (exit code + not Running) are clock-free and stay; 337-348 are the wall-clock comparison that inverted.",
+        "link": "smoke/smoke_test.go:324-351"
+      },
+      {
+        "summary": "The inspect() helper the fix reuses verbatim - docker inspect -f, t.Fatalf on error.",
+        "link": "smoke/smoke_test.go:307-314"
+      },
+      {
+        "summary": "The compose wiring proven correct at shaping: the &migrate-job anchor plus per-service depends_on with service_completed_successfully.",
+        "link": "compose.yaml:8-26 and 148-153, 176-180, 199-203, 240-245"
+      },
+      {
+        "summary": "ADR-022's own statement of what assertion #2 is for, and why the three are complementary.",
+        "link": "docs/adr/ADR-022-out-of-band-service-migrations.md:130-145"
+      }
+    ]
+  }
 }
