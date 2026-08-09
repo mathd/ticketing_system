@@ -9,12 +9,33 @@ import {
   createSession,
   destroyAllSessionsForCustomer,
   destroySession,
+  isAtSessionCapacity,
   isSecureRequest,
   lookupSession,
   resetSessionsForTest,
   sessionCookieOptions,
   sessionCountForTest,
+  setMaxSessionsTotalForTest,
 } from '../src/lib/session';
+
+// The capacity cases below run against a LOWERED global bound, not the production
+// 20 000 (TKT-229).
+//
+// Why: createSession walks the whole map on every call, so filling it to N costs
+// O(N²). At 20 000 each of these four cases did ~200M iterations, took 15-50s against
+// vitest's 5s default, and failed `make check` whenever the machine was busy — a gate
+// that fails on load certifies nothing.
+//
+// What this does NOT cost: every rule these tests pin — refusal rather than eviction,
+// a bound across distinct principals, own-cap rotation, recovery after a slot frees —
+// is a property of the RULE, not of the bound's magnitude. What is no longer covered
+// is the production NUMBER: nothing here proves 20 000 specifically, and nothing here
+// measures createSession's cost at that size (it is still quadratic in production —
+// see the follow-up on TKT-229).
+//
+// 40, not the floor of 6: enough headroom that a fixture needing "the cap minus a
+// handful" still has room, cheap enough to be instant.
+const TEST_TOTAL = 40;
 
 // A realistic assertion expiry. createSession caps the session at whatever the
 // assertion says, so a fixture with a stale one produces a session that is dead on
@@ -108,6 +129,86 @@ describe('customer sessions', () => {
     expect(rest.every((t) => lookupSession(t, 9_000_005))).toBe(true);
   });
 
+  // Three review passes turned this into the shape below; each line of it is load
+  // bearing (TKT-229).
+  //
+  // Asserting `MAX_SESSIONS_TOTAL === 20_000` proves only that nobody edited a
+  // number — not that createSession reads it. The capacity cases below all set the
+  // bound themselves, so a regression defaulting the ENFORCED bound to the test's
+  // value passes every one of them. On a public unauthenticated surface that is a
+  // 40-session flood away from denying every sign-in.
+  //
+  // Hence: assert through isAtSessionCapacity, the one decision createSession
+  // calls, on a module loaded FRESH. Fresh because the suite's beforeEach resets
+  // the cached instance before every test, so a default asserted from inside a
+  // normal test is the post-reset state, which production never reaches.
+  //
+  // All three were verified by mutation, not assumed: an initializer of 40 with a
+  // correct reset, a parallel accessor beside a hard-capped check, and a literal
+  // threshold in createSession each passed an earlier version of this suite.
+  it('enforces the production bound on a freshly loaded module, before any reset', async () => {
+    // Poison the CURRENT instance first (ai-review pass 3 [medium]). Without this
+    // the fixture cannot tell a re-evaluated module from the cached one: beforeEach
+    // has just reset the cached instance to the production bound, so a cache hit
+    // would satisfy every assertion below for the wrong reason. With the old
+    // instance set to TEST_TOTAL, only a genuinely re-initialized module passes.
+    setMaxSessionsTotalForTest(TEST_TOTAL);
+    expect(isAtSessionCapacity(TEST_TOTAL)).toBe(true);
+
+    vi.resetModules();
+    const fresh = await import('../src/lib/session');
+
+    expect(fresh.MAX_SESSIONS_TOTAL).toBe(20_000);
+    // One below the production bound is not full; at it, it is. Neither needs the
+    // map filled — the decision is asked directly.
+    expect(fresh.isAtSessionCapacity(fresh.MAX_SESSIONS_TOTAL - 1)).toBe(false);
+    expect(fresh.isAtSessionCapacity(fresh.MAX_SESSIONS_TOTAL)).toBe(true);
+    // And the test cap is NOT what a fresh module enforces.
+    expect(fresh.isAtSessionCapacity(TEST_TOTAL)).toBe(false);
+  });
+
+  it('restores the production bound on reset, so a test cap cannot leak', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
+    expect(isAtSessionCapacity(TEST_TOTAL)).toBe(true);
+
+    resetSessionsForTest();
+
+    expect(isAtSessionCapacity(TEST_TOTAL)).toBe(false);
+    expect(isAtSessionCapacity(MAX_SESSIONS_TOTAL)).toBe(true);
+  });
+
+  // ai-review pass 3 [high]: every other capacity case uses TEST_TOTAL, so a
+  // threshold hard-coded to that same number is indistinguishable from the injected
+  // one — `sessions.size >= 40` passed the whole suite. Driving createSession at a
+  // SECOND, different limit is what makes a literal unable to masquerade: it cannot
+  // equal both.
+  //
+  // Through createSession, not isAtSessionCapacity, because the claim under test is
+  // that the production path consumes the decision rather than merely that the
+  // decision is right.
+  it('refuses at whatever limit is injected, not at one fixed number', () => {
+    const OTHER = TEST_TOTAL + 7;
+    setMaxSessionsTotalForTest(OTHER);
+
+    for (let i = 0; i < OTHER; i++) {
+      createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
+    }
+
+    // Full at OTHER, not at TEST_TOTAL — a cap fixed at 40 would have refused seven
+    // sessions ago.
+    expect(sessionCountForTest()).toBe(OTHER);
+    expect(() => createSession(bob)).toThrow(SessionCapacityError);
+  });
+
+  // The seam's floor. Below MAX_SESSIONS_PER_CUSTOMER + 1 there is no room for a
+  // stranger alongside one customer at their own cap, so the precedence test would
+  // silently stop proving anything — a fixture too small to show the negative.
+  it('refuses a test cap that could not discriminate', () => {
+    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER)).toThrow(RangeError);
+    expect(() => setMaxSessionsTotalForTest(1.5)).toThrow(RangeError);
+    expect(() => setMaxSessionsTotalForTest(MAX_SESSIONS_PER_CUSTOMER + 1)).not.toThrow();
+  });
+
   // ai-review [high]: the per-principal cap bounds the map only if the number of
   // principals is bounded, and registration is PUBLIC — so one actor mints
   // unlimited accounts, each entitled to five sessions. The back office's cap
@@ -117,8 +218,9 @@ describe('customer sessions', () => {
   // Deliberately many DISTINCT principals: a fixture with two customers, which is
   // what the per-principal test uses, cannot observe a global bound at all.
   it('bounds the map globally, across unlimited distinct principals', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     let refused = 0;
-    for (let i = 0; i < MAX_SESSIONS_TOTAL + 50; i++) {
+    for (let i = 0; i < TEST_TOTAL + 50; i++) {
       try {
         createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
       } catch (cause) {
@@ -127,7 +229,7 @@ describe('customer sessions', () => {
       }
     }
 
-    expect(sessionCountForTest()).toBeLessThanOrEqual(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBeLessThanOrEqual(TEST_TOTAL);
     expect(refused).toBeGreaterThan(0);
   });
 
@@ -141,15 +243,16 @@ describe('customer sessions', () => {
   // failure the code chooses, because it is the kind of thing a later "cleanup"
   // reverses without noticing.
   it('refuses a new session at capacity rather than evicting a live one', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     const victim = createSession(alice);
-    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
+    for (let i = 0; i < TEST_TOTAL - 1; i++) {
       createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
 
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
     // The buyer who was already signed in is untouched.
     expect(lookupSession(victim)).toEqual(alice);
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBe(TEST_TOTAL);
   });
 
   // ai-review pass 3 [medium]: the two caps interact, and the interaction is
@@ -162,11 +265,12 @@ describe('customer sessions', () => {
   // takes nothing from anyone. Pinned because the previous test used a victim
   // with ONE session and could not observe this case at all.
   it('lets a customer at their own cap rotate a session even when the map is full', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     const mine = Array.from({ length: MAX_SESSIONS_PER_CUSTOMER }, () => createSession(alice));
-    for (let i = 0; i < MAX_SESSIONS_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
+    for (let i = 0; i < TEST_TOTAL - MAX_SESSIONS_PER_CUSTOMER; i++) {
       createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBe(TEST_TOTAL);
 
     // A stranger is refused...
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
@@ -175,14 +279,15 @@ describe('customer sessions', () => {
     expect(lookupSession(rotated)).toEqual(alice);
     expect(lookupSession(mine[0]!)).toBeUndefined();
     expect(lookupSession(mine[1]!)).toEqual(alice);
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_TOTAL);
+    expect(sessionCountForTest()).toBe(TEST_TOTAL);
   });
 
   // The bound must not be a permanent wedge: capacity freed by expiry or sign-out
   // has to become usable again, or one flood ends sign-in for the process's life.
   it('accepts new sessions again once capacity frees up', () => {
+    setMaxSessionsTotalForTest(TEST_TOTAL);
     const doomed = createSession(alice);
-    for (let i = 0; i < MAX_SESSIONS_TOTAL - 1; i++) {
+    for (let i = 0; i < TEST_TOTAL - 1; i++) {
       createSession({ customerId: `flood-${i}`, email: `flood-${i}@example.test`, assertion: `v1.flood-${i}.${FUTURE}.mac` });
     }
     expect(() => createSession(bob)).toThrow(SessionCapacityError);
