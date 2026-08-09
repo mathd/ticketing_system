@@ -201,3 +201,15 @@ exists are in *Historical* at the bottom; their files are kept.
   and still strips path and query. A header that changes what the browser *sends next* cannot be
   judged from either file alone. Third instance of render-is-not-submit (TKT-105, TKT-220); the
   evidence for **TKT-196**.
+- [A total order is not a meaningful one](learnings/2026-08-09-a-total-order-is-not-a-meaningful-one.md)
+  — TKT-230. `ORDER BY occurred_at, id` on an append-only trail reads as correct *because* it is
+  total, but `id` was a random UUIDv4, so ties were broken by a coin flip — invisible serially,
+  and one collision per 1200 rows under 8 concurrent writers, which is enough to make `make check`
+  non-deterministic. Three more from the same ticket: **`now()` is transaction-start time**, so
+  "we hold a row lock, therefore our timestamps are ordered" is false unless the stamp is
+  `clock_timestamp()` (this one survived plan-review and two adversarial passes before a
+  two-terminal experiment overturned it); a column **DEFAULT does not apply to an explicit NULL**,
+  so only an unconditionally-overwriting trigger makes "the sequence is the sole source" true; and
+  **`ADD CONSTRAINT … NOT VALID`** enforces a predicate for new rows without the full-table scan
+  that would blow ADR-008's 30s migration bound. When a plan claims something about database or
+  runtime semantics, run it — a database was available the whole time.
