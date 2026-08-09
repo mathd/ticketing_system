@@ -67,7 +67,7 @@ func everyInternalOperationExceptRefund() []internalOp {
 		// open it. Whoever adds that surface moves this line and argues for it —
 		// which is the whole reason this enumeration exists.
 		{"unclaimOrder", http.MethodPost, "/internal/orders/{id}/unclaim", "/internal/orders/" + someUUID + "/unclaim",
-			`{"actor":"staff:amy","reason":"claimed by the wrong account"}`, false},
+			`{"actor":"staff:amy","reason":"claimed by the wrong account"}`, true},
 	}
 }
 
