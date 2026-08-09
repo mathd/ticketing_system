@@ -47,6 +47,11 @@ import (
 // (ai-review pass 2 [medium]). A scanner that silently skips a real statement is
 // worse than no scanner, so TestTheScannerSeesTheShapesThatExist pins each shape
 // it must recognise.
+// ordersTable matches every spelling of the table these guards protect: bare,
+// schema-qualified, and either part double-quoted. `"orders"` and `orders` are the
+// same table to PostgreSQL and must be the same table to this scanner.
+const ordersTable = `(?:"?[a-z_][a-z0-9_]*"?\.)?"?orders"?`
+
 var (
 	// Two captures: $1 is the SET clause, $2 is everything from WHERE to the end of
 	// the raw string. The second exists so a predicate check can be bound to the
@@ -56,8 +61,14 @@ var (
 	// scanner cannot SEE is the worst failure it has — a real attribution writer
 	// invisible to the guard, with the exactly-one count still satisfied by the
 	// legitimate one (ai-review pass 2 [high]).
-	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s+(?:(?:AS\s+)?[a-z_][a-z0-9_]*\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
-	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+(?:ONLY\s+)?(?:[a-z_][a-z0-9_]*\.)?orders\s*\(([^)]*)\)`)
+	// The table may be written `orders`, `public.orders`, `"orders"` or
+	// `"public"."orders"` — all valid PostgreSQL for the same table, and a scanner
+	// that sees only the bare form is blind to the rest (ai-review pass 2
+	// [medium]). Verified: an `UPDATE "orders" SET customer_id = $9 WHERE 1 = 1`
+	// was neither refused NOR counted, so the exactly-two assertion stayed green
+	// while a blanket attribution write sat in the tree.
+	updateOrders = regexp.MustCompile(`(?is)UPDATE\s+(?:ONLY\s+)?` + ordersTable + `\s+(?:(?:AS\s+)?"?[a-z_][a-z0-9_]*"?\s+)?SET\s+(.*?)(?:\bWHERE\b(.*?))?(?:\x60|;|$)`)
+	insertOrders = regexp.MustCompile(`(?is)INSERT\s+INTO\s+(?:ONLY\s+)?` + ordersTable + `\s*\(([^)]*)\)`)
 )
 
 func commerceProductionSQL(t *testing.T) map[string]string {
@@ -303,7 +314,17 @@ func TestTheScannerSeesTheShapesThatExist(t *testing.T) {
 		{"AS-aliased update", "UPDATE orders AS o SET customer_id=NULL WHERE o.id=$1", true},
 		{"lowercase", "update orders set customer_id=null where id=$1", true},
 		{"multi-line", "UPDATE orders\n\t\tSET customer_id=NULL\n\t\tWHERE id=$1", true},
+		// Quoted and schema-qualified spellings (ai-review pass 2 [medium]). All of
+		// these are the SAME table to PostgreSQL, and a scanner blind to any of them
+		// leaves an attribution writer invisible — neither refused nor counted, so
+		// the exactly-two assertion stays green beside it.
+		{"quoted table", `UPDATE "orders" SET customer_id=NULL WHERE id=$1`, true},
+		{"schema-qualified", "UPDATE public.orders SET customer_id=NULL WHERE id=$1", true},
+		{"quoted schema and table", `UPDATE "public"."orders" SET customer_id=NULL WHERE id=$1`, true},
+		{"quoted table with quoted alias", `UPDATE "orders" "o" SET customer_id=NULL WHERE "o".id=$1`, true},
+		{"ONLY qualified", "UPDATE ONLY orders SET customer_id=NULL WHERE id=$1", true},
 		{"plain insert", "INSERT INTO orders(id,status) VALUES($1,$2)", false},
+		{"quoted insert", `INSERT INTO "orders"(id,status,customer_id) VALUES($1,$2,$3)`, false},
 		{"insert select", "INSERT INTO orders(id,status)\n\t\tSELECT $1,'x' FROM orders WHERE id=$2", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -127,22 +127,37 @@ func DetachOrderAttribution(ctx context.Context, db *sql.DB, order uuid.UUID, ke
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// The replay check. Inside the transaction so it cannot be raced by a
-	// concurrent first attempt: the unique index below is the authority, and this
-	// read is the fast path that turns a retry into a lookup.
-	var replayed uuid.UUID
-	switch err := tx.QueryRowContext(ctx, `
-		SELECT customer_id FROM order_attribution_detachments
-		 WHERE order_id = $1 AND idempotency_key = $2`, order, key).Scan(&replayed); {
-	case err == nil:
+	// The replay check, and it is the FAST path only — not the authority.
+	//
+	// Under READ COMMITTED two concurrent FIRST attempts with the same key both
+	// read no row here and both proceed; the unique index is what actually
+	// serializes them, and the loser is handled at the insert below. Saying this
+	// read "cannot be raced" would be wrong, and the difference is a 500 for the
+	// caller instead of a replay.
+	if replayed, found, err := lookupDetachment(ctx, tx, order, key); err != nil {
+		return uuid.Nil, err
+	} else if found {
 		return replayed, nil
-	case !errors.Is(err, sql.ErrNoRows):
-		return uuid.Nil, fmt.Errorf("look up detachment: %w", err)
 	}
 
 	var detached uuid.UUID
 	switch err := tx.QueryRowContext(ctx, detachOrderStatement, order).Scan(&detached); {
 	case errors.Is(err, sql.ErrNoRows):
+		// Nothing to detach — but that may be because a concurrent attempt with THIS
+		// key already did it (ai-review pass 2 [high]). Both transactions can miss
+		// the replay read above under READ COMMITTED; the winner then commits, and
+		// this UPDATE re-evaluates against a row that is already NULL. Answering 404
+		// here would tell the caller their operation failed when their key's
+		// operation succeeded.
+		//
+		// Re-checked on a fresh connection, because this transaction's snapshot
+		// predates the winner's commit and would miss the row again.
+		_ = tx.Rollback()
+		if winner, found, lookupErr := lookupDetachment(ctx, db, order, key); lookupErr != nil {
+			return uuid.Nil, lookupErr
+		} else if found {
+			return winner, nil
+		}
 		return uuid.Nil, ErrOrderNotDetachable
 	case err != nil:
 		return uuid.Nil, fmt.Errorf("detach order attribution: %w", err)
@@ -152,11 +167,50 @@ func DetachOrderAttribution(ctx context.Context, db *sql.DB, order uuid.UUID, ke
 		INSERT INTO order_attribution_detachments(id, idempotency_key, order_id, customer_id, reason, actor)
 		VALUES($1, $2, $3, $4, $5, $6)`,
 		uuid.New(), key, order, detached, reason, actor); err != nil {
-		return uuid.Nil, fmt.Errorf("record detachment: %w", err)
+		if !isUniqueViolation(err) {
+			return uuid.Nil, fmt.Errorf("record detachment: %w", err)
+		}
+		// Lost a race with a concurrent FIRST attempt carrying the same key. The
+		// winner already detached and recorded it; this transaction rolls back —
+		// including its own UPDATE — and reports what the winner did, which is
+		// exactly what a replay reports. Read on a fresh connection because this
+		// transaction is now aborted and can serve no further queries.
+		_ = tx.Rollback()
+		winner, found, lookupErr := lookupDetachment(ctx, db, order, key)
+		switch {
+		case lookupErr != nil:
+			return uuid.Nil, lookupErr
+		case !found:
+			// The unique index fired but no row is visible: the winner has not
+			// committed yet. Report the collision rather than inventing an answer —
+			// a retry resolves it, and a wrong customer id here would be recorded
+			// by the caller as fact.
+			return uuid.Nil, fmt.Errorf("record detachment: concurrent detachment with the same key is still in flight")
+		}
+		return winner, nil
 	}
 
 	if err := tx.Commit(); err != nil {
 		return uuid.Nil, fmt.Errorf("commit detach: %w", err)
 	}
 	return detached, nil
+}
+
+// lookupDetachment reads a previous detachment by key. Takes any querier so the
+// replay fast-path can use the open transaction and the unique-violation recovery
+// can use a fresh connection — the aborted transaction can serve neither.
+func lookupDetachment(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, order uuid.UUID, key string) (uuid.UUID, bool, error) {
+	var customer uuid.UUID
+	switch err := q.QueryRowContext(ctx, `
+		SELECT customer_id FROM order_attribution_detachments
+		 WHERE order_id = $1 AND idempotency_key = $2`, order, key).Scan(&customer); {
+	case err == nil:
+		return customer, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return uuid.Nil, false, nil
+	default:
+		return uuid.Nil, false, fmt.Errorf("look up detachment: %w", err)
+	}
 }

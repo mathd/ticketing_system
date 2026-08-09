@@ -358,3 +358,56 @@ func TestDetachRefusesABlankIdempotencyKey(t *testing.T) {
 		t.Fatal("a refused detach still changed the attribution")
 	}
 }
+
+// Two concurrent FIRST attempts with the same key (ai-review pass 2).
+//
+// The replay SELECT is a fast path, not the authority: under READ COMMITTED both
+// transactions read no row and both proceed, and the unique index is what
+// serializes them. The loser must report what the winner did — the same answer a
+// replay gives — rather than a raw constraint violation, and exactly one
+// detachment must be recorded.
+func TestTwoConcurrentDetachesWithTheSameKeyProduceOneDetachment(t *testing.T) {
+	db, ctx := outboxDB(t)
+	customer := registerClaimant(t, db, ctx, "concurrent-key")
+	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: customer, Valid: true})
+
+	const key = "support-concurrent"
+	type outcome struct {
+		detached uuid.UUID
+		err      error
+	}
+	results := make(chan outcome, 2)
+	start := make(chan struct{})
+	for range 2 {
+		go func() {
+			<-start
+			d, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "same key, same instant")
+			results <- outcome{d, err}
+		}()
+	}
+	close(start)
+
+	var succeeded int
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			t.Errorf("a concurrent attempt failed instead of agreeing with the winner: %v", got.err)
+			continue
+		}
+		if got.detached != customer {
+			t.Errorf("reported %s, want %s — both attempts must name the customer that lost the order",
+				got.detached, customer)
+		}
+		succeeded++
+	}
+	if succeeded != 2 {
+		t.Fatalf("%d of 2 attempts succeeded; both must, one doing the work and one replaying", succeeded)
+	}
+
+	if records := detachmentsFor(t, db, order); len(records) != 1 {
+		t.Fatalf("recorded %d detachments, want exactly 1", len(records))
+	}
+	if got := attributionOf(t, db, ctx, order); got.Valid {
+		t.Fatalf("order still attributed to %s", got.UUID)
+	}
+}
