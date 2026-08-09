@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,24 @@ func historyFixture(t *testing.T) historyFixtureData {
 		t.Fatal(err)
 	}
 	return historyFixtureData{ctx: ctx, st: st, db: db, org: org, claim: hold.ID}
+}
+
+// withTriggerDisabled runs fn with claim_history_set_append_order disabled, and restores
+// it via t.Cleanup rather than after fn.
+//
+// The distinction matters: fn calls t.Fatal on failure, which does NOT return to this
+// function — a re-enable written as a trailing statement would be skipped, leaving the
+// trigger off for every later insert into this schema and silently weakening whatever ran
+// next (ai-review finding 3). t.Cleanup runs regardless.
+func withTriggerDisabled(t *testing.T, f historyFixtureData, fn func()) {
+	t.Helper()
+	if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE claim_history DISABLE TRIGGER claim_history_set_append_order`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.db.ExecContext(f.ctx, `ALTER TABLE claim_history ENABLE TRIGGER claim_history_set_append_order`)
+	})
+	fn()
 }
 
 type historyFixtureData struct {
@@ -130,19 +149,25 @@ func TestHistoryOrdersDistinctTimestampsByOccurredAt(t *testing.T) {
 	if err := f.db.QueryRowContext(f.ctx, `SELECT now()`).Scan(&base); err != nil {
 		t.Fatal(err)
 	}
+	later, earlier := uuid.New(), uuid.New()
 
-	insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
-		VALUES($1,$2,$3,$4,'staff:a','r',1,1,'held',$5,$6)`
-	// Appended with the LOWER append_order but the LATER timestamp.
-	later := uuid.New()
-	if _, err := f.db.ExecContext(f.ctx, insert, later, f.org, f.claim, "release", base.Add(time.Second), 1_000_001); err != nil {
-		t.Fatal(err)
-	}
-	// HIGHER append_order, EARLIER timestamp: must come first.
-	earlier := uuid.New()
-	if _, err := f.db.ExecContext(f.ctx, insert, earlier, f.org, f.claim, "place", base, 1_000_002); err != nil {
-		t.Fatal(err)
-	}
+	// The trigger OWNS append_order and overwrites anything supplied, so it is disabled
+	// for these two inserts: the point is to construct a state where append_order and
+	// occurred_at DISAGREE, which the trigger exists to make unreachable through the
+	// normal path. Restored immediately, and by t.Cleanup so a failure between the two
+	// statements cannot leave it disabled for the rest of the schema's life.
+	withTriggerDisabled(t, f, func() {
+		insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
+			VALUES($1,$2,$3,$4,'staff:a','r',1,1,'held',$5,$6)`
+		// Appended with the LOWER append_order but the LATER timestamp.
+		if _, err := f.db.ExecContext(f.ctx, insert, later, f.org, f.claim, "release", base.Add(time.Second), 1_000_001); err != nil {
+			t.Fatal(err)
+		}
+		// HIGHER append_order, EARLIER timestamp: must come first.
+		if _, err := f.db.ExecContext(f.ctx, insert, earlier, f.org, f.claim, "place", base, 1_000_002); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	hist, err := f.st.History(f.ctx, f.org, f.claim)
 	if err != nil {
@@ -176,17 +201,13 @@ func TestHistoryOrdersLegacyRowsBeforeTiedNewRows(t *testing.T) {
 	// normally assign one, so it is disabled for this statement only — the point is to
 	// materialize a row shaped like one written before the migration existed.
 	legacy := uuid.New()
-	if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE claim_history DISABLE TRIGGER claim_history_set_append_order`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.ExecContext(f.ctx,
-		`INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
-		 VALUES($1,$2,$3,'place','staff:a','r',1,1,'held',$4,NULL)`, legacy, f.org, f.claim, tied); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE claim_history ENABLE TRIGGER claim_history_set_append_order`); err != nil {
-		t.Fatal(err)
-	}
+	withTriggerDisabled(t, f, func() {
+		if _, err := f.db.ExecContext(f.ctx,
+			`INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
+			 VALUES($1,$2,$3,'place','staff:a','r',1,1,'held',$4,NULL)`, legacy, f.org, f.claim, tied); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	// A new row sharing the legacy row's timestamp.
 	fresh := uuid.New()
@@ -210,33 +231,79 @@ func TestHistoryOrdersLegacyRowsBeforeTiedNewRows(t *testing.T) {
 	}
 }
 
-// TestClaimHistoryAssignsAppendOrderOnExplicitNull proves the TRIGGER, not the DEFAULT.
+// TestClaimHistoryTriggerOwnsAppendOrder proves the TRIGGER, not the DEFAULT — and proves
+// it OWNS the value rather than merely filling in NULLs.
 //
-// A column DEFAULT does not apply when a writer names the column and passes NULL — verified
-// directly against PostgreSQL at plan-review. Without a BEFORE INSERT trigger such a row
-// would be stored unordered, and the ordering guarantee would have a silent hole that no
-// existing writer happens to step in. This test is the only thing that proves the trigger
-// does anything.
-func TestClaimHistoryAssignsAppendOrderOnExplicitNull(t *testing.T) {
+// Two writers the DEFAULT alone does not cover:
+//   - an explicit NULL (a DEFAULT does not apply to an explicitly-supplied NULL);
+//   - a supplied non-NULL value, which a fill-in-NULLs trigger would write through
+//     unchecked — letting a COPY, restore or replication apply reintroduce a duplicate and
+//     collapse two rows back onto the random-uuid tie-break (ai-review finding 3).
+//
+// Uniqueness is not enforced by an index here; it holds because the sequence is the only
+// source of the value. This test is what makes that claim true rather than aspirational.
+func TestClaimHistoryTriggerOwnsAppendOrder(t *testing.T) {
 	f := historyFixture(t)
 
-	id := uuid.New()
-	if _, err := f.db.ExecContext(f.ctx,
-		`INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,append_order)
-		 VALUES($1,$2,$3,'place','staff:a','r',1,1,'held',NULL)`, id, f.org, f.claim); err != nil {
+	nullRow, suppliedRow := uuid.New(), uuid.New()
+	insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,append_order)
+		VALUES($1,$2,$3,'place','staff:a','r',1,1,'held',$4)`
+	if _, err := f.db.ExecContext(f.ctx, insert, nullRow, f.org, f.claim, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A hostile value: negative (sorts ahead of everything) and a duplicate of nothing
+	// legitimate. The trigger must discard it.
+	if _, err := f.db.ExecContext(f.ctx, insert, suppliedRow, f.org, f.claim, -42); err != nil {
 		t.Fatal(err)
 	}
 
-	var appendOrder *int64
-	if err := f.db.QueryRowContext(f.ctx,
-		`SELECT append_order FROM claim_history WHERE id=$1`, id).Scan(&appendOrder); err != nil {
+	var nullAssigned, suppliedAssigned *int64
+	if err := f.db.QueryRowContext(f.ctx, `SELECT append_order FROM claim_history WHERE id=$1`, nullRow).Scan(&nullAssigned); err != nil {
 		t.Fatal(err)
 	}
-	if appendOrder == nil {
+	if err := f.db.QueryRowContext(f.ctx, `SELECT append_order FROM claim_history WHERE id=$1`, suppliedRow).Scan(&suppliedAssigned); err != nil {
+		t.Fatal(err)
+	}
+
+	if nullAssigned == nil {
 		t.Fatal("an explicit NULL append_order was stored as NULL — the DEFAULT does not apply " +
-			"to an explicitly-supplied NULL, so a BEFORE INSERT trigger must assign one")
+			"to an explicitly-supplied NULL, so the BEFORE INSERT trigger must assign one")
 	}
-	if *appendOrder <= 0 {
-		t.Fatalf("append_order = %d, want > 0", *appendOrder)
+	if suppliedAssigned == nil {
+		t.Fatal("a supplied append_order was stored as NULL")
 	}
+	if *suppliedAssigned == -42 {
+		t.Fatalf("a supplied append_order of -42 survived as %d — the trigger must OWN the "+
+			"value, not merely fill in NULLs, or a COPY/restore can write its own ordering",
+			*suppliedAssigned)
+	}
+	if *nullAssigned <= 0 || *suppliedAssigned <= 0 {
+		t.Fatalf("append_order values must be positive, got %d and %d", *nullAssigned, *suppliedAssigned)
+	}
+	if *nullAssigned == *suppliedAssigned {
+		t.Fatalf("two rows share append_order %d — the sequence must not repeat", *nullAssigned)
+	}
+}
+
+// TestClaimHistoryRejectsNonPositiveAppendOrder proves the NOT VALID CHECK is enforced for
+// new rows despite never having been validated against existing ones.
+//
+// The trigger normally makes a bad value unreachable, so the constraint is only observable
+// with the trigger off — which is also exactly the state a restore path would be in, and
+// the state in which the constraint is the last line of defence.
+func TestClaimHistoryRejectsNonPositiveAppendOrder(t *testing.T) {
+	f := historyFixture(t)
+
+	withTriggerDisabled(t, f, func() {
+		_, err := f.db.ExecContext(f.ctx,
+			`INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,append_order)
+			 VALUES($1,$2,$3,'place','staff:a','r',1,1,'held',-1)`, uuid.New(), f.org, f.claim)
+		if err == nil {
+			t.Fatal("a negative append_order was accepted — the NOT VALID CHECK must still " +
+				"enforce the predicate for newly inserted rows")
+		}
+		if !strings.Contains(err.Error(), "claim_history_append_order_positive") {
+			t.Fatalf("rejected, but not by the positivity constraint: %v", err)
+		}
+	})
 }

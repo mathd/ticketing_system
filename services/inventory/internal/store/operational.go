@@ -49,11 +49,17 @@ type StaffAvailability struct {
 }
 
 type HistoryEntry struct {
-	// HistoryID is the row's own identity. Exposed so a caller — and the ordering tests
-	// (TKT-230) — can pin WHICH row is at a position, which action names cannot: a claim's
-	// history routinely repeats an action, so an assertion over names alone passes when a
-	// row is displaced or dropped.
-	HistoryID      uuid.UUID  `json:"history_id"`
+	// HistoryID is the row's own identity, used to pin WHICH row is at a position — which
+	// action names cannot, since a claim's history routinely repeats an action, so an
+	// assertion over names alone still passes when a row is displaced or dropped (TKT-230).
+	//
+	// `json:"-"` is load-bearing, not tidiness. Both history handlers serialize this struct
+	// DIRECTLY (`write(w, 200, entries)` — api/operational.go:145,228) rather than mapping
+	// to the generated api.HistoryEntry, so any JSON-visible field added here lands in a
+	// response body the OpenAPI document does not declare. Under ADR-028 the contract
+	// layer validates responses and fails closed, so exposing it would not merely widen the
+	// contract — it would break the endpoint at runtime.
+	HistoryID      uuid.UUID  `json:"-"`
 	Action         string     `json:"action"`
 	Actor          string     `json:"actor"`
 	Reason         string     `json:"reason"`
