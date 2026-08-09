@@ -331,6 +331,36 @@ paths:
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/unclaim:
+    post:
+      operationId: unclaimOrder
+      summary: Detach a completed order from the customer account it was claimed by
+      # TKT-225 / ADR-052. The undo for TKT-223's claim, which ADR-049 describes as
+      # "destructive, exclusive, permanent and unrecoverable" — until this operation, the
+      # only remedy was a manual UPDATE against the commerce database.
+      #
+      # Restores attribution to NULL and NOTHING ELSE. It never repoints the order at a
+      # different customer: that is a transfer (TKT-9/TKT-160), which has a different
+      # adversary and needs its own argument. Order status, money, tickets and updated_at
+      # are all untouched.
+      #
+      # `actor` and `reason` are REQUIRED and recorded. An un-claim that leaves no trace
+      # turns a support tool into a way to move purchases quietly. Note what the record is
+      # worth (ADR-021): the row lives in the database it describes, so it is accountability
+      # against a careless operator, not tamper evidence against one with database access.
+      # `actor` is an operator-supplied LABEL — this operation's guard is the shared internal
+      # token, which carries no individual identity.
+      #
+      # A detached order becomes immediately re-claimable, deliberately (ADR-052): the most
+      # likely detach is support fixing a mistake, and blocking re-claim would block the
+      # rightful buyer. The claim path is rate limited by ADR-051.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OrderUnclaim'}}}}
+      responses:
+        '200': {description: Detached, content: {application/json: {schema: {$ref: '#/components/schemas/OrderUnclaimed'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/exchanges/{id}/tickets-switched:
     post:
       operationId: exchangeTicketsSwitched
@@ -856,6 +886,25 @@ components:
         # will assume the first. A partial refund of a SEATED order stays false forever —
         # no subset of seats can be identified (TKT-164).
         capacity_returned: {type: boolean}
+    OrderUnclaim:
+      type: object
+      additionalProperties: false
+      # actor and reason bounded exactly as the exchange's are (TKT-158): the same
+      # operator-supplied audit fields, so the same limits.
+      required: [actor, reason]
+      properties:
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    OrderUnclaimed:
+      type: object
+      additionalProperties: false
+      # The account the order was detached FROM. Returned so an operator who
+      # detached the wrong order can tell support who to hand it back to — the
+      # value is gone from `orders` the moment this succeeds.
+      required: [order_id, detached_customer_id]
+      properties:
+        order_id: {type: string, format: uuid}
+        detached_customer_id: {type: string, format: uuid}
     ExchangeCreate:
       type: object
       additionalProperties: false
