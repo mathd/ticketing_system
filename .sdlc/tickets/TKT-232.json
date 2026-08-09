@@ -1,0 +1,22 @@
+{
+  "key": "TKT-232",
+  "type": "Task",
+  "summary": "TestMigrationsRanBeforeServicesStarted measures ADR-022's guarantee by wall clock, and inverts by 519ms under load",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-230"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Split out of TKT-230 at shaping (2026-08-09).** Not explained by TKT-230's proven `claim_history` ordering mechanism — this is a different assertion class entirely, so it is tracked separately rather than carried into a ticket whose COS demands an explained mechanism.\n\nObserved 2026-08-08 on `main` @ `a0a596d`, after TKT-198 and TKT-229 had both merged:\n\n```\n--- FAIL: TestMigrationsRanBeforeServicesStarted/payments\nsmoke_test.go:346: ticketing-smoke-0-payments-migrate-1 finished at 00:48:25.681558716,\nbut ticketing-smoke-0-payments-1 started at 00:48:25.162768220\n— the service started before its migrations completed\n```\n\n**519 milliseconds.** Four of five services passed; only `payments` inverted.\n\n**The interesting part is what it means.** This asserts [ADR-022](docs/adr/ADR-022-out-of-band-service-migrations.md)'s core guarantee — migrations run as a one-shot Compose job the service waits on via `service_completed_successfully`. Compose enforces that as a *dependency condition*. The test checks it by **comparing wall-clock timestamps from container metadata**, which is a different claim: under CPU contention the recorded times can invert while the dependency condition held perfectly.\n\nSo the likely finding is that **the test is wrong, not the system** — a test that measures a guarantee by timing can fail while the guarantee holds. The candidate fix is to assert the Compose dependency condition itself (`docker inspect` the `depends_on` condition, or the migrate job's exit status as a precondition) rather than to compare timestamps. **That is a hypothesis for the plan, not a decision** — and if the dependency condition turns out NOT to be configured for `payments`, then the test is right and the compose file is wrong, which is the more serious outcome. Establish which before changing anything.\n\n**Do not** fix by widening the timestamp tolerance: that converts a real ordering guarantee into an unchecked one. Needs shaping before Gate 1."
+    }
+  ]
+}
