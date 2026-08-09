@@ -1,0 +1,22 @@
+{
+  "key": "TKT-234",
+  "type": "Task",
+  "summary": "Append-only trails order by a non-monotonic wall clock, and claim_history has no guarded restore path",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-230"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Carved out of TKT-230's third adversarial review pass (2026-08-09).** Both findings were rated\n**[high]** by the reviewer and **refused as changes to TKT-230**, with reasons recorded in commit\n`8d4240e` and in TKT-230's `agent:ai-review` summary. They are real; they are not that ticket's.\n\nThis ticket exists so the refusals are tracked rather than dropped. **An agent overrode a\nreviewer's \"do not ship\" twice to get TKT-230 merged** — a human should decide whether that was\nright.\n\n---\n\n### 1. Wall-clock time is the primary ordering authority for append-only trails\n\n`ORDER BY occurred_at, ...` makes a non-monotonic system clock the primary sort key of an\nappend-only audit trail. A backward clock step (NTP correction, VM migration, manual set) can make\na later append sort before an earlier one, and after a large enough step a new row can sort before\nlegacy rows.\n\n**Scope is platform-wide, not inventory's.** The same assumption governs\n`access.lifecycle_events` (`lifecycle_checkpoint.go:317`, `ORDER BY occurred_at,id`) — the trail\n[ADR-021](docs/adr/ADR-021-ticket-lifecycle-trail-integrity.md) makes tamper-evidence claims about.\nFixing inventory alone would leave the two trails inconsistent while implying a guarantee the other\ndoes not make.\n\n**Why it was refused for TKT-230:** pre-existing (occurred_at has been the primary key since\nmigration 0003) and untouched by it — TKT-230 narrowed the window by moving from `now()` to\n`clock_timestamp()`. And the reviewer's proposed remedy, making `append_order` authoritative, is\nthe same change an earlier pass proposed and that branch **disproved**:\n`TestHistoryOrdersDistinctTimestampsByOccurredAt` fails against it, because it reorders every\nhistory whose timestamps differ.\n\n**What a fix would need to establish first:** whether the correct contract is a monotonic clock\nsource, a per-trail sequence promoted to primary with an explicit legacy boundary, or an accepted\ndocumented limitation in the ADR-021 style (\"say which adversary you mean\"). This is an **ADR-level\ndecision**, not a code change.\n\n### 2. No guarded restore path for `claim_history`\n\nTKT-230's `BEFORE INSERT` trigger **overwrites** any supplied `append_order`, which is what makes\nthe sequence the sole source of the value (and uniqueness a property rather than a constraint). The\ncost: a restore or backfill that loads rows through the normal path gets renumbered, and if rows\narrive in heap/archive order rather than original order, the relative order of equal-timestamp rows\nchanges silently.\n\nThe migration says a restore \"must disable this trigger explicitly and resynchronize the sequence\".\n**Nothing enforces or tests that.**\n\n**Why it was refused for TKT-230:** there is no restore path in this repo to guard — no backfill,\nno COPY importer, no documented procedure for `claim_history`. The finding asks for an operational\nprocedure to be designed and tested, which is a larger piece of work than the flake TKT-230 closes.\n\n**The reviewer's own recommendation, recorded verbatim as the starting point:** *\"Provide and test\na restore path that stages rows, validates positive/unique supplied append_order values, inserts in\nappend_order order or preserves them with the trigger disabled, and calls setval before normal\nwrites resume.\"*\n\n---\n\n**Both need shaping before Gate 1.** Item 1 in particular should probably become an ADR before it\nbecomes code — it is a decision about what the trails guarantee, and\n[ADR-021](docs/adr/ADR-021-ticket-lifecycle-trail-integrity.md) is emphatic that such a claim must\nname the adversary and the bound before anyone writes \"tamper-evident\".\n"
+    }
+  ]
+}
