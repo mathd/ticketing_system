@@ -2,7 +2,7 @@
   "key": "TKT-230",
   "type": "Task",
   "summary": "Flaky: smoke DB-backed tests fail intermittently under load, a different test each run (commerce, inventory)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
