@@ -135,9 +135,43 @@ never before; this is not that change.
         1. `TestMigrationsAppliedOutOfBand` — each database is at its latest checked-in version.
            Proves *migratedness*. It was equally true under ADR-008, so it passes unchanged on the
            code this ADR replaces and proves nothing about placement on its own.
-        2. `TestMigrationsRanBeforeServicesStarted` — each job exited 0 before its service started.
-           Catches an absent, failing, or ungated job. Still not placement: a job that exits 0 first
-           and a server that *also* migrates satisfies it.
+        2. `TestMigrationsRanBeforeServicesStarted` — each job exited 0, and its service was
+           **created** declaring `service_completed_successfully` on that job, **required**.
+           Catches an absent or failing job, and an edge that is missing, weakened, or optional.
+           It asserts the **resolved declaration**: the condition from the container's
+           `com.docker.compose.depends_on` label, and `required` from the merged configuration,
+           because Compose does **not** encode `required` in that label — `required: false`
+           serializes identically to the correct edge, and Compose *skips* a failed optional
+           dependency and starts the service anyway; reading the condition alone would miss it.
+           It asserts that declaration rather than comparing container timestamps: Compose enforces
+           this as a dependency condition and promises nothing about elapsed time, so a wall-clock
+           comparison could invert under load while the condition held (TKT-232), and could equally
+           pass on an idle box with the condition removed.
+           **Scope, stated precisely.** Two sources, and they are not equally strong. The
+           *condition* comes from the container's own create-time label, so it describes the
+           running container. `required` cannot: Compose does not encode it anywhere on the
+           container, so it is re-read from the compose files on disk, which is evidence about the
+           **repository**, not about the running stack — an edit between `up` and the assertion
+           would be read as if it had been there at creation. The window is **not** momentary:
+           `scripts/smoke.sh` brings the stack up, then runs the per-service store/mailer/bulkrefund
+           suites and the staff provisioning before reaching the package holding this assertion —
+           minutes, on one unattended `make check`. It is accepted rather than closed because the
+           alternative is not checking `required` at all, and nothing in the gate edits compose
+           files mid-run; a human editing one while the gate runs gets an answer about the file
+           they now have. (The
+           container's `config-hash` does **not** close this gap: it is byte-identical with and
+           without `required: false` — verified — so it cannot detect this particular drift.)
+           Neither source proves this service process was gated by this job run: `docker
+           start` on an existing container bypasses `depends_on` and leaves the label intact. That
+           is the same boundary drawn below: the condition "gates at stack *creation*". The gate
+           only ever observes freshly created containers (`scripts/smoke.sh` pre-cleans with
+           `down -v`, then `up -d --wait`, and never restarts one), so within the gate the
+           declaration and the enforcement coincide. Proving *runtime* enforcement would take a
+           different test — a deliberately blocked job, asserting the service stays unstarted until
+           it completes — which is **not** written; nothing here should be read as claiming it. The
+           wall-clock form this replaced did not prove it either: an ungated restart of the service
+           long after its job finished satisfies `finished < started` just as happily.
+           Still not placement: a job that exits 0 and a server that *also* migrates satisfies it.
         3. `TestServerModeDoesNotMigrate` — catalog in server mode against an empty database never
            creates `goose_db_version`. **This is the one that fails if `store.Migrate` returns to
            `run()`**, which the other two would let through as a silent no-op. A passing healthcheck

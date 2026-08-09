@@ -313,14 +313,230 @@ func inspect(t *testing.T, container, format string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
-// exited 0 before the service process started (ADR-022).
+// dependsOnLabel is where Compose records a container's resolved dependency
+// edges: a comma-separated list of "<service>:<condition>:<restart-bool>".
+// It is written from the merged compose files at container-create time, so it
+// reports the edge the container actually ran under rather than what any single
+// file says.
+const dependsOnLabel = "com.docker.compose.depends_on"
+
+// migrateGateCondition is the depends_on condition ADR-022 requires between a
+// service and its one-shot migrate job.
+const migrateGateCondition = "service_completed_successfully"
+
+// dependsOnCondition returns the condition container `c` declares on compose
+// service `dep`, and whether such an edge exists at all.
 //
-// What this does and does not prove. It catches the job being absent, failing,
-// or not gating the service — i.e. the depends_on edge being wrong. It does NOT
-// prove the server never migrates: a job that exits 0 first and a server that
-// also migrates satisfies it. TestServerModeDoesNotMigrate is what closes that;
-// the two are complementary and neither is sufficient alone.
+// It fails the test when the label is absent or empty rather than reporting
+// "no edge": `docker inspect -f '{{index .Config.Labels "..."}}'` prints an
+// empty string and exits 0 for a missing label, so an empty value is
+// indistinguishable from a container that declares no dependencies — and
+// treating it as "no edge" would let this assertion pass vacuously against a
+// container Compose never labelled.
+//
+// Every entry is validated before the lookup, deliberately: returning on the
+// first match would make "is the rest of this label well-formed?" depend on
+// where Compose happened to place the target entry, and the order is not the
+// compose file's. A format change that appears only after the match would then
+// be invisible — which is the opposite of failing closed on an unrecognised
+// label.
+func dependsOnCondition(t *testing.T, c, dep string) (string, bool) {
+	t.Helper()
+
+	label := inspect(t, c, fmt.Sprintf("{{index .Config.Labels %q}}", dependsOnLabel))
+	if label == "" {
+		t.Fatalf("%s has no %s label — cannot tell whether it is gated on anything. "+
+			"Either Compose did not create this container or the label format changed; "+
+			"do not weaken this assertion to compensate", c, dependsOnLabel)
+	}
+
+	found := ""
+	ok := false
+	seen := make(map[string]bool)
+	for _, entry := range strings.Split(label, ",") {
+		// "<service>:<condition>:<restart-bool>" — cut twice forward rather
+		// than splitting, so a ':' inside a service name cannot silently
+		// re-align the fields.
+		name, rest, cut := strings.Cut(entry, ":")
+		if !cut {
+			t.Fatalf("%s: malformed %s entry %q (want <service>:<condition>:<restart>)",
+				c, dependsOnLabel, entry)
+		}
+		condition, restart, cut := strings.Cut(rest, ":")
+		if !cut {
+			t.Fatalf("%s: malformed %s entry %q (want <service>:<condition>:<restart>)",
+				c, dependsOnLabel, entry)
+		}
+		if name == "" || condition == "" {
+			t.Fatalf("%s: %s entry %q has an empty service or condition field",
+				c, dependsOnLabel, entry)
+		}
+		// The restart flag is parsed to validate the entry's shape but its
+		// value is deliberately not asserted: it governs whether Compose
+		// restarts this container when the dependency restarts, which is
+		// unrelated to startup gating. Asserting it would fail on unrelated
+		// compose edits. ParseBool is too permissive for a format check
+		// ("1", "T" would pass), so require the canonical spelling — anything
+		// else means the format moved and this parser should be re-read.
+		if restart != "true" && restart != "false" {
+			t.Fatalf("%s: %s entry %q has restart field %q, want %q or %q",
+				c, dependsOnLabel, entry, restart, "true", "false")
+		}
+		if seen[name] {
+			t.Fatalf("%s: %s lists %q more than once (%q) — the format is not what "+
+				"this parser assumes", c, dependsOnLabel, name, label)
+		}
+		seen[name] = true
+		if name == dep {
+			found, ok = condition, true
+		}
+	}
+	return found, ok
+}
+
+// dependsOnRequired reports whether compose service `svc` declares its `dep`
+// dependency as required, in the merged configuration the running stack was
+// created from.
+//
+// This exists because `required` is NOT encoded in the depends_on label:
+// `required: false` and the default `required: true` serialize identically to
+// "<dep>:<condition>:<restart>". A migrate edge marked optional still carries
+// condition service_completed_successfully, so the label check alone cannot see
+// it — and an optional edge is exactly the weakening that matters: Compose
+// SKIPS a failed optional dependency and starts the service anyway, which is
+// the ADR-022 violation this test is for.
+//
+// The merged config is reconstructed from the labels Compose wrote onto the
+// container itself (project, config files, working dir), not from an assumption
+// about how scripts/smoke.sh was invoked — so this reads the same file set that
+// actually produced the stack, whatever overrides were in play.
+func dependsOnRequired(t *testing.T, c, svc, dep string) bool {
+	t.Helper()
+
+	project := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project"}}`)
+	files := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project.config_files"}}`)
+	workdir := inspect(t, c, `{{index .Config.Labels "com.docker.compose.project.working_dir"}}`)
+	if project == "" || files == "" || workdir == "" {
+		t.Fatalf("%s: compose project/config-file/working-dir labels are missing (%q/%q/%q) — "+
+			"cannot re-read the configuration this stack was created from",
+			c, project, files, workdir)
+	}
+
+	// The file list must be passed explicitly: `docker compose -p <project>
+	// config` alone re-discovers the default compose.yaml and SILENTLY DROPS
+	// the -f overrides the stack was created with, which would report the base
+	// file's edge and miss an override that weakened it.
+	//
+	// Compose joins the paths with "," in this label, and that encoding is
+	// LOSSY: a directory name may legitimately contain a comma, and no amount
+	// of filesystem probing can recover the intended split in general — a
+	// prefix that happens to exist would be accepted as a complete entry and
+	// silently produce a different -f list, which is the one failure this
+	// helper must never have. So refuse the ambiguous case outright instead of
+	// guessing: every fragment must be an existing regular file, and a comma in
+	// a checkout path is simply unsupported here (it is a checkout-location
+	// problem, and the message says so).
+	args := []string{"compose", "-p", project}
+	for _, f := range strings.Split(files, ",") {
+		st, err := os.Stat(f)
+		if err != nil {
+			t.Fatalf("%s: compose config file %q (from the %s label) is not readable: %v.\n"+
+				"If a directory in this checkout's path contains a comma, that label is "+
+				"ambiguous and this assertion cannot recover the file list — move the "+
+				"checkout somewhere without one.",
+				c, f, "com.docker.compose.project.config_files", err)
+		}
+		if !st.Mode().IsRegular() {
+			t.Fatalf("%s: compose config path %q (from the %s label) is not a regular file",
+				c, f, "com.docker.compose.project.config_files")
+		}
+		args = append(args, "-f", f)
+	}
+	args = append(args, "config", "--format", "json")
+
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = workdir
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		// Almost always interpolation: compose.yaml declares required
+		// variables with ${VAR:?...}, and `config` re-interpolates them, so
+		// this fails unless the caller's environment carries them. It does
+		// today — scripts/smoke.sh sources scripts/stack-env.sh, which exports
+		// every such variable precisely so the stack never depends on a
+		// developer's .env (and so CI needs no secret) — but the coupling is
+		// implicit, so name it rather than leaving a bare exit status.
+		t.Fatalf("%s: docker compose config failed: %v\n%s\n"+
+			"If this is an interpolation error, the required credentials are not in this "+
+			"process's environment; run the suite through scripts/smoke.sh, which exports them.",
+			c, err, strings.TrimSpace(stderr.String()))
+	}
+
+	var cfg struct {
+		Services map[string]struct {
+			DependsOn map[string]struct {
+				Condition string `json:"condition"`
+				// Pointer so an absent key is distinguishable from an explicit
+				// false: Compose's default is true, and defaulting a missing
+				// key to false would fail every correct stack.
+				Required *bool `json:"required"`
+			} `json:"depends_on"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		t.Fatalf("%s: parse docker compose config: %v", c, err)
+	}
+
+	edge, ok := cfg.Services[svc].DependsOn[dep]
+	if !ok {
+		t.Fatalf("%s: merged compose config has no %s -> %s dependency, but the container "+
+			"label declares one — the config and the running stack disagree", c, svc, dep)
+	}
+	return edge.Required == nil || *edge.Required
+}
+
+// TestMigrationsRanBeforeServicesStarted: each service's one-shot migrate job
+// exited 0, and the service is gated on that job completing successfully
+// (ADR-022).
+//
+// Why the dependency edge and not a clock. Compose enforces the guarantee as a
+// depends_on *condition*; it does not promise anything about elapsed time. This
+// test used to compare the job's FinishedAt against the service's StartedAt,
+// which is a different claim: under CPU contention those recorded timestamps
+// can invert while the condition held perfectly (TKT-232 — payments inverted by
+// 519ms on a loaded gate). The proxy was weak in the other direction too, which
+// mattered more: with the condition removed, an unloaded box would usually
+// still record the job finishing first, so the old form could pass while the
+// guarantee was gone. Reading the resolved edge fails in exactly one case — the
+// edge is missing or weakened — which is the case ADR-022 wants caught.
+//
+// Do not "fix" a red here by widening a tolerance or retrying: there is no
+// timing left to be flaky, so a failure means the gating is actually broken.
+//
+// What this does and does not prove. It reads the edge Compose *resolved* and
+// recorded at container-create time, plus the `required` flag the label does
+// not encode, so it proves the declaration the stack was created under — an
+// absent, failing, wrongly-conditioned, or optional migrate job. It is
+// not historical evidence that this particular service process was gated by
+// this particular job run: `docker start` on an existing container bypasses
+// depends_on entirely and leaves the label untouched. That is deliberate, and
+// it is the same scope ADR-022 itself claims — `service_completed_successfully`
+// "gates at stack creation" (§Consequences), and a restarted container re-runs
+// run() without re-running its completed one-shot job. The gate only ever
+// observes freshly created containers: scripts/smoke.sh pre-cleans with
+// `down -v` and then `up -d --wait`, and never issues docker start/restart.
+//
+// The wall-clock form this replaced did not close that gap either — an ungated
+// `docker start` of the service, long after its job finished, satisfies
+// finished < started just as happily. It detected only the narrow case where a
+// job's re-run happened to land after the service's start, at the cost of
+// failing on a busy machine when nothing was wrong (TKT-232).
+//
+// It also does NOT prove the server never migrates: a job that exits 0 and a
+// server that also migrates satisfies it. TestServerModeDoesNotMigrate is what
+// closes that; the three assertions are complementary and none is sufficient
+// alone.
 func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 	for _, service := range migratedServices {
 		t.Run(service, func(t *testing.T) {
@@ -334,17 +550,30 @@ func TestMigrationsRanBeforeServicesStarted(t *testing.T) {
 				t.Fatalf("%s still running — it must be one-shot", job)
 			}
 
-			finished, err := time.Parse(time.RFC3339Nano, inspect(t, job, "{{.State.FinishedAt}}"))
-			if err != nil {
-				t.Fatalf("%s FinishedAt: %v", job, err)
+			// The compose service name, not the container name: the label holds
+			// service names. Matching the specific <service>-migrate edge is
+			// what makes this assertion real — nats-init carries the same
+			// condition, so searching the label for service_completed_successfully
+			// would pass with the migrate edge deleted outright.
+			dep := service + "-migrate"
+			condition, ok := dependsOnCondition(t, srv, dep)
+			if !ok {
+				t.Fatalf("%s declares no dependency on %s — its migrations are not gating "+
+					"startup at all (ADR-022)", srv, dep)
 			}
-			started, err := time.Parse(time.RFC3339Nano, inspect(t, srv, "{{.State.StartedAt}}"))
-			if err != nil {
-				t.Fatalf("%s StartedAt: %v", srv, err)
+			if condition != migrateGateCondition {
+				t.Fatalf("%s depends on %s with condition %q, want %q — the service may start "+
+					"before its migrations complete (ADR-022)", srv, dep, condition, migrateGateCondition)
 			}
-			if !finished.Before(started) {
-				t.Fatalf("%s finished at %s, but %s started at %s — the service started before "+
-					"its migrations completed", job, finished, srv, started)
+			// An OPTIONAL edge carries the right condition and is invisible in
+			// the label, but Compose skips a failed optional dependency and
+			// starts the service regardless — so the gate would hold only for
+			// as long as migrations happen to succeed.
+			if !dependsOnRequired(t, srv, service, dep) {
+				t.Fatalf("%s depends on %s with required:false — Compose will SKIP the job if it "+
+					"fails and start %s against an unmigrated schema (ADR-022). The condition is "+
+					"correct, which is why the container label alone does not show this",
+					srv, dep, service)
 			}
 		})
 	}
