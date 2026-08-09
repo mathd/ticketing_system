@@ -1,0 +1,22 @@
+{
+  "key": "TKT-231",
+  "type": "Task",
+  "summary": "Flaky: TestBackfillOwesEventsForPreExistingCompletedOrders (commerce) fails under load — mechanism unknown",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-230"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "summary",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Split out of TKT-230 at shaping (2026-08-09).** TKT-230 originally carried four load-sensitive smoke failures. Its `claim_history` ordering mechanism was proven by measurement and closes the two *inventory history* failures. **This one is not explained by that mechanism** and was carried no further, because TKT-230's COS requires a mechanism for each failure it claims — bundling an unexplained failure into it guarantees it cannot close honestly.\n\nObserved 2026-08-08, run 3 of four consecutive `make check` runs while gating TKT-229 (a TypeScript-only diff, so it cannot have caused a Go smoke failure).\n\n```\nTestBackfillOwesEventsForPreExistingCompletedOrders  commerce/internal/store\n```\n\n**What is known:** it is DB-backed, it failed once under gate load, and zero `already exists` / `partial migration` errors appeared in that run (so TKT-198's migration race is not implicated).\n\n**What is not known:** everything else. No sample assertion text was captured. The first job is to reproduce it or to retrieve the failure output, not to guess a fix.\n\n**Do not** assume it shares TKT-230's cause. The two inventory failures were ordering ties on `claim_history`; this is a different service and a different table. Needs shaping before Gate 1."
+    }
+  ]
+}
