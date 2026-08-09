@@ -2,15 +2,15 @@
   "key": "TKT-230",
   "type": "Task",
   "summary": "Flaky: smoke DB-backed tests fail intermittently under load, a different test each run (commerce, inventory)",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 188,
     "url": "https://github.com/mathd/ticketing_system/pull/188",
-    "state": "open"
+    "state": "merged"
   },
   "links": [],
   "description": "Observed 2026-08-08 while gating **TKT-229**, on four consecutive `make check` runs. Each run failed\nthe **smoke** stage on a **different** DB-backed test, none of them related to the change under gate\n(TypeScript only):\n\n| Run | Failing test | Package |\n|---|---|---|\n| 1 | `TestGroupReservationRepeatedDrawDownIsQuantityNeutral` | `inventory/internal/store` |\n| 2 | `TestFullSeatedReturnReleasesEverySeat` | `inventory/internal/store` |\n| 3 | `TestBackfillOwesEventsForPreExistingCompletedOrders` | `commerce/internal/store` |\n| 4 (control, pristine `main`) | — smoke never reached; failed earlier at `test-ts` (the TKT-229 flake) | — |\n\n**Not TKT-198 and not TKT-229.** Zero `already exists` / `partial migration` errors in every run, so\nthe migration race TKT-198 fixed is genuinely gone. TKT-229's diff is TypeScript only and cannot\nreach a Go smoke test. The control run on pristine `main` confirms the TS flake is TKT-229's and is\nfixed by it.\n\n**A sample failure, and why it looks like ordering rather than logic:**\n\n```\nreservations_smoke_test.go:167: history[0].Action = draw_down, want reserve\n```\n\nThe assertion wants `[\"reserve\",\"draw_down\",\"draw_down\",\"draw_down\"]` and got a draw_down first.\nThat is a **history ordering** claim. If `History()` orders by a timestamp with insufficient\nresolution, rows written inside the same transaction — or the same millisecond — can tie, and the\ntie-break is then whatever the database returns. Under load the writes bunch up and ties become\nlikely. **That is a hypothesis from one sample, not a diagnosis** — the other two failures were not\ninvestigated and may be unrelated.\n\n**Why it matters.** This is the third distinct load-sensitivity defect found in two days\n(TKT-198 migration race, TKT-229 quadratic TS fixture, this). Each one makes `make check`\nnon-deterministic, and a gate that fails on machine load cannot certify anything — the same\nblocking property that made TKT-198 urgent.\n\n**Conditions of Success:**\n- [ ] The mechanism is identified for **each** observed failure, or the ones that turn out to share a\n      cause are grouped with the evidence that says so.\n- [ ] The failures reproduce deterministically before the fix, or the ticket says why not.\n- [ ] No assertion is widened to pass. If `History()` really is ambiguously ordered, the fix is a\n      total order in the query, not a laxer test.\n- [ ] `make check` green three consecutive times **on a loaded machine**.\n\n**Do not** fix by adding retries or by loosening the ordering assertions — an ordering guarantee the\ntests stop checking is an ordering guarantee the code stops having.",
