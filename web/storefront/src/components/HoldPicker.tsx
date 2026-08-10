@@ -181,7 +181,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       // since died gets this same 401 — with the order completed and the seats
       // long since confirmed. The copy therefore points at the tickets page rather
       // than asserting a state this code cannot know.
-      if (response.status === 401) { setStatus(strings.signInAgain); return; }
+      if (response.status === 401) { setStatus(t.signInAgain); return; }
       // 409 is commerce holding this order under its recovery lease. It clears on its
       // own, and because the key above is stable the retry is a REPLAY rather than a
       // second attempt — so keep the reservation and say "try again" instead of
