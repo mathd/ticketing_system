@@ -191,7 +191,7 @@ func LoadExchangeSource(ctx context.Context, db *sql.DB, org, order uuid.UUID) (
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
 		Scan(&status, &out.PaymentSourceKey, &out.ReservationID, &out.HoldID, &out.BuyerID, &out.SlotID,
-			&out.Quantity, &out.Total, &out.GrossTotal, &out.Currency)
+			&out.Quantity, &out.Total, &out.GrossTotal, &out.Currency, &out.ChannelCode)
 	if err != nil {
 		return ExchangeSource{}, err
 	}

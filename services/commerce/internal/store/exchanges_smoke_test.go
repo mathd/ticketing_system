@@ -751,3 +751,53 @@ func TestReserveLosingTheInsertRaceRefusesForeignTerms(t *testing.T) {
 			"that is not stored cannot be compared", storedChannel)
 	}
 }
+
+// The source sale's channel reaches the exchange (TKT-237).
+//
+// LoadExchangeSource projects reservations.channel_code so the exchange handler
+// can reprice the TARGET on the channel the source was bought on. Without it the
+// target reprices in the default/public context, which silently changes what the
+// buyer owes on the difference — and the symptom is a wrong number, not an
+// error, so nothing else would notice.
+//
+// This test exists because the field was added by editing a SELECT and a Scan in
+// two places, and one Scan was missed: the gate caught it as "expected 11
+// destination arguments, not 10". That failure mode is loud. The one this test
+// guards is the quiet successor — a future edit that drops the column from the
+// SELECT while the struct field stays, leaving every exchange priced publicly.
+func TestLoadExchangeSourceCarriesTheChannel(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	t.Run("a channelled sale", func(t *testing.T) {
+		c, _ := seedCompleted(t, db, ctx, "exch-chan", 2, 1000)
+		if _, err := db.ExecContext(ctx,
+			`UPDATE reservations SET channel_code='reseller' WHERE id=$1`, c.ReservationID); err != nil {
+			t.Fatal(err)
+		}
+		src, err := LoadExchangeSource(ctx, db, c.OrganizerID, c.OrderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if src.ChannelCode == nil {
+			t.Fatal("ChannelCode = nil for a sale made on 'reseller' — the exchange would reprice on the public channel")
+		}
+		if *src.ChannelCode != "reseller" {
+			t.Fatalf("ChannelCode = %q, want %q verbatim", *src.ChannelCode, "reseller")
+		}
+	})
+
+	t.Run("a public sale", func(t *testing.T) {
+		// nil, not "": the default/public context is the absence of a channel,
+		// and an empty string is a channel whose code is empty — which the
+		// contract's minLength forbids anyway. Conflating them would send
+		// `channel_code=` on the reprice, a different request entirely.
+		c, _ := seedCompleted(t, db, ctx, "exch-public", 2, 1000)
+		src, err := LoadExchangeSource(ctx, db, c.OrganizerID, c.OrderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if src.ChannelCode != nil {
+			t.Fatalf("ChannelCode = %q for a sale that named no channel, want nil", *src.ChannelCode)
+		}
+	})
+}
