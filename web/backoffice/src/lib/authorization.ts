@@ -71,6 +71,10 @@ export const ROUTE_MATRIX: readonly RouteRule[] = [
   { template: '/admin/venues/[id]', source: 'page', roles: ['admin'] },
   // The event builder (TKT-192). Authoring, so admin-only for the same reason.
   { template: '/admin/events/new', source: 'page', roles: ['admin'] },
+  // The sales-channel registry (TKT-236). Configuration that decides how sales
+  // reach the organizer — pricing, fees and capacity all key on these codes — so
+  // it sits with the authoring surface rather than with the support one.
+  { template: '/admin/channels', source: 'page', roles: ['admin'] },
 
   // The order console (TKT-193) — the first box_office surface. Support work:
   // it reads an order's status and its tickets' lifecycle history and carries no

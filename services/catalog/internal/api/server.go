@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -246,13 +247,104 @@ func guardInternalSurface(s *Server, next http.Handler) http.Handler {
 		// r.URL.Path is the DECODED path, so an escaped spelling such as
 		// internal%2Fx resolves here even where chi would route it elsewhere.
 		// That direction is fail-closed: it can only guard more, never less.
-		if strings.HasPrefix(r.URL.Path, "/internal/") &&
-			(s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential) {
-			writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
+		if !strings.HasPrefix(r.URL.Path, "/internal/") {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		if s.internalAuthorizedRequest(r) || s.staffMayReadOperatorChannels(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 	})
+}
+
+// internalAuthorizedRequest is the shared-token check, as a predicate. Split out
+// of the guard so a second accepted credential can be expressed as an OR without
+// duplicating the comparison.
+func (s *Server) internalAuthorizedRequest(r *http.Request) bool {
+	return s.internalCredential != "" && r.Header.Get("X-Internal-Token") == s.internalCredential
+}
+
+// staffMayReadOperatorChannels is TKT-236's single, deliberately narrow
+// exception (ADR-053): the back office's catalog staff-write credential also
+// opens `GET /internal/channels`, and nothing else.
+//
+// WHAT IT COSTS, corrected. An earlier version of this comment claimed the added
+// blast radius was NIL, on the argument that a holder of the write credential
+// could already learn which channels exist. **That was false, and ai-review
+// caught it.** Before this read, the credential could only PROBE: a create
+// against a guessed code returns 409 if it is taken, one code per request, and
+// it never yields an id. This read returns every channel for a caller-supplied
+// organizer in one call — ids, codes, kinds, and disabled rows that appear
+// nowhere public. That is a real capability increase, and calling it nil was the
+// kind of confident wrong claim ADR-021 exists to stop.
+//
+// WHAT THE ORGANIZER PREDICATE DOES AND DOES NOT DO. A second review pass caught
+// this comment claiming more than the code delivers, for the SECOND time, so it
+// is now written to what is demonstrable and nothing beyond it.
+//
+// `UpdateChannel` gained `AND organizer_id = $2` in the same pass. That predicate
+// defends ONE adversary: a forged or mistaken request through the back-office
+// form, where the page supplies its session's organizer and the channel id comes
+// from a form field. Against that caller the predicate is a real boundary — a
+// wrong id lands on no row.
+//
+// It does NOT defend against a stolen credential, and an earlier version of this
+// comment said it did. Both the list's `organizer_id` and the update's are
+// CALLER-SUPPLIED, so an attacker holding this token can list a victim's channels
+// and then update the ids it just learned, naming the victim's organizer in both
+// calls. The predicate matches and the write succeeds. That chain was executed
+// against this code, not reasoned about: list returns 200 with the victim's
+// channels, update returns 200 and mutates them.
+//
+// SO, PRECISELY:
+//   - This read ADDS bulk enumeration of any organizer's channel configuration
+//     — ids, codes, kinds, and disabled rows that appear nowhere public — to a
+//     credential that previously had to probe one guessed code at a time.
+//   - It does NOT add cross-tenant WRITE capability, because the same credential
+//     already had it: `createChannel` and `updateChannel` take the organizer from
+//     the request body and catalog cannot check it. Enumeration makes that
+//     existing capability far easier to aim, which is a real amplification and
+//     not a new power.
+//   - The whole thing rests on one assumption, which is the actual security
+//     property: **the back office is not compromised.** Catalog authenticates the
+//     PROCESS (ADR-021 — name the adversary), and no predicate in this file can
+//     change that.
+//
+// TKT-245 owns the fix — an organizer identity catalog can verify independently
+// of the request body. Until it lands, ADR-053 states this assumption rather than
+// implying a boundary that is not there.
+//
+// WHY IT DOES NOT GENERALIZE. The same reasoning fails for inventory's
+// `channel-allocations` (TKT-244): no staff credential exists there, the back
+// office holds nothing for that service, and the surface is a capacity write on
+// the contention hot path. This is an allowlist entry, not a precedent for
+// handing an SSR process an internal surface.
+//
+// WHY IT IS METHOD+PATH EXACT rather than a prefix. `/internal/channels/{id}`
+// sits one character away and is NOT opened — the page does not need it, and an
+// allowance is only narrow if something refuses the things next to it. Matching
+// on a prefix would have quietly included the sibling read the moment it was
+// added.
+//
+// WHAT IT IS NOT: tenant isolation. `organizer_id` is caller-supplied and this
+// credential authenticates the DEPUTY PROCESS, not the staff member behind it
+// (ADR-021 — name the adversary). The back office passes its session's organizer
+// and never one taken from the request; catalog cannot enforce that, and neither
+// this function nor ADR-053 claims it does.
+func (s *Server) staffMayReadOperatorChannels(r *http.Request) bool {
+	if r.Method != http.MethodGet || r.URL.Path != "/internal/channels" {
+		return false
+	}
+	if s.staffWriteCredential == "" {
+		return false
+	}
+	// Constant-time: the comparison target is a secret, and an early-exit
+	// compare leaks its prefix to anyone willing to measure. Same discipline as
+	// authenticateStaffWrite.
+	return subtle.ConstantTimeCompare(
+		[]byte(r.Header.Get(staffWriteHeader)), []byte(s.staffWriteCredential)) == 1
 }
 
 func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {

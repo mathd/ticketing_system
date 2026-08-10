@@ -97,7 +97,7 @@ func TestChannelCodeIsImmutableAndTheRefusalDoesNotPartiallyApply(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	_, err = st.UpdateChannel(ctx, created.ID, ChannelUpdate{
+	_, err = st.UpdateChannel(ctx, org, created.ID, ChannelUpdate{
 		Code: "pos", DisplayName: "Renamed", Kind: ChannelKindPOS, Enabled: true,
 	})
 	if !errors.Is(err, ErrChannelCodeImmutable) {
@@ -126,7 +126,7 @@ func TestUpdateChannelWritesUpdatedAtAndTheMutableFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := st.UpdateChannel(ctx, created.ID, ChannelUpdate{
+	updated, err := st.UpdateChannel(ctx, org, created.ID, ChannelUpdate{
 		Code: "web", DisplayName: "Main website", Kind: ChannelKindWeb, Enabled: false,
 	})
 	if err != nil {
@@ -150,7 +150,7 @@ func TestUpdateChannelWritesUpdatedAtAndTheMutableFields(t *testing.T) {
 func TestUpdateUnknownChannelIsNotFound(t *testing.T) {
 	ctx, db, st := seasonSmokeStore(t)
 	_ = seedChannelOrganizer(ctx, t, db, "missing")
-	_, err := st.UpdateChannel(ctx, uuid.New(), ChannelUpdate{
+	_, err := st.UpdateChannel(ctx, uuid.New(), uuid.New(), ChannelUpdate{
 		Code: "pos", DisplayName: "Box office", Kind: ChannelKindPOS, Enabled: true,
 	})
 	// Not ErrChannelCodeImmutable: reporting the immutability conflict for an id
@@ -387,3 +387,61 @@ func TestChannelRequiresAKnownOrganizer(t *testing.T) {
 }
 
 var _ = context.Background
+
+// The tenant boundary on the update, proved against the REAL SQL.
+//
+// The API-level version of this test passes against the in-memory fake, so it
+// proves the handler and the fake agree — not that the UPDATE statement carries
+// an organizer predicate. A mutation check made that concrete: deleting
+// `AND organizer_id = $2` from the query killed no test at the API tier, because
+// the fake does its own scoping in Go.
+//
+// This is the tier where the predicate exists, so this is the tier that has to
+// assert it (TKT-236 ai-review).
+func TestUpdateChannelIsScopedToTheOwningOrganizer(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	victim := seedChannelOrganizer(ctx, t, db, "victim")
+	attacker := seedChannelOrganizer(ctx, t, db, "attacker")
+
+	theirs, err := st.CreateChannel(ctx, ChannelInput{
+		OrganizerID: victim, Code: "pos", DisplayName: "Their box office",
+		Kind: ChannelKindPOS, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The attacker holds the id AND the exact code — the strongest position a
+	// forged request can be in, since the back office takes the id from a form
+	// field and the code is visible on the storefront selector.
+	_, err = st.UpdateChannel(ctx, attacker, theirs.ID, ChannelUpdate{
+		Code: "pos", DisplayName: "Hijacked", Kind: ChannelKindWeb, Enabled: false,
+	})
+	// ErrNotFound, not ErrChannelCodeImmutable and not a mismatch error: an
+	// answer that distinguished "not yours" from "no such channel" would confirm
+	// a guessed id is real.
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-tenant update = %v, want ErrNotFound — the UPDATE must carry an "+
+			"organizer predicate, and the refusal must not confirm the id exists", err)
+	}
+
+	// Nothing moved.
+	after, err := st.GetChannel(ctx, theirs.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DisplayName != "Their box office" || after.Kind != ChannelKindPOS || !after.Enabled {
+		t.Fatalf("the victim's channel was mutated: %+v", after)
+	}
+
+	// And the owner is unaffected — a boundary, not a wall.
+	updated, err := st.UpdateChannel(ctx, victim, theirs.ID, ChannelUpdate{
+		Code: "pos", DisplayName: "Counter", Kind: ChannelKindPOS, Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("the owning organizer must still update: %v", err)
+	}
+	if updated.DisplayName != "Counter" || updated.Enabled {
+		t.Fatalf("owner update did not apply: %+v", updated)
+	}
+}

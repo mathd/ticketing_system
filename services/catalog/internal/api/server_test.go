@@ -2686,12 +2686,16 @@ func (f *fakeStore) CreateChannel(_ context.Context, in store.ChannelInput) (sto
 	return c, nil
 }
 
-func (f *fakeStore) UpdateChannel(_ context.Context, id uuid.UUID, in store.ChannelUpdate) (store.Channel, error) {
+func (f *fakeStore) UpdateChannel(_ context.Context, organizerID, id uuid.UUID, in store.ChannelUpdate) (store.Channel, error) {
 	if _, err := store.ValidateChannelWriteForTest(in.Code, in.DisplayName, in.Kind); err != nil {
 		return store.Channel{}, err
 	}
 	c, ok := f.channels[id]
-	if !ok {
+	// Scoped to the tenant, exactly as the real store is: a channel belonging to
+	// another organizer is ErrNotFound, indistinguishable from one that does not
+	// exist. A fake that skipped this would let the handler tests agree with a
+	// store that leaks across tenants.
+	if !ok || c.OrganizerID != organizerID {
 		return store.Channel{}, store.ErrNotFound
 	}
 	if in.Code != c.Code {

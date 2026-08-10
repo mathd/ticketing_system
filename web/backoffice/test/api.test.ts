@@ -10,6 +10,8 @@ import {
   addSeatMapSection,
   authenticateStaff,
   CatalogApiError,
+  createChannel,
+  listChannelsForOperator,
   createSeatMap,
   DEFAULT_ORGANIZER_ID,
   editSeatMap,
@@ -18,6 +20,7 @@ import {
   listSeatMapVersions,
   listVenueSeatMaps,
   publishSeatMap,
+  updateChannel,
   updateVenueGaCapacity,
 } from '../src/lib/catalog';
 import { getOrderState, refundOrder } from '../src/lib/commerce';
@@ -567,5 +570,96 @@ describe('the order console reads (TKT-193)', () => {
     expect(serialized).not.toContain('SENTINEL-QR-URL-VALUE');
     expect(serialized).not.toContain('qr_payload');
     expect(serialized).not.toContain('qr_url');
+  });
+});
+
+describe('the channel registry client (TKT-236)', () => {
+  const STAFF = 'X-Catalog-Staff-Write-Token';
+  const INTERNAL = 'X-Internal-Token';
+
+  it('reads the operator list DIRECT from catalog, not through the gateway', async () => {
+    const calls = spyFetch({ channels: [] }, 200);
+    await listChannelsForOperator('org-1');
+    // CATALOG_URL is unset in the suite, so this is the client's own default —
+    // what a developer running `pnpm dev` outside compose gets. Same shape as
+    // the commerce refund's assertion above: the env var is read at module load,
+    // so setting it inside a test would not take effect, and a test that
+    // pretended otherwise would assert nothing.
+    expect(calls[0].url).toBe('http://localhost:8081/internal/channels?organizer_id=org-1');
+    // The gateway edge-denies every /api/<svc>/internal/ route by construction
+    // (ADR-002), so routing this through the gateway would 404 in production
+    // while passing any test that only checked the path.
+    expect(calls[0].url).not.toContain('/api/catalog');
+  });
+
+  it('authenticates the operator read with the STAFF credential, never the internal token', async () => {
+    process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
+    const calls = spyFetch({ channels: [] }, 200);
+    await listChannelsForOperator('org-1');
+    expect(calls[0].headers[STAFF]).toBe('the-credential');
+    // The posture the whole ticket rests on: this process does not hold the
+    // shared internal token and must never send one (compose.yaml).
+    expect(calls[0].headers[INTERNAL]).toBeUndefined();
+  });
+
+  it('encodes the organizer rather than interpolating it raw', async () => {
+    const calls = spyFetch({ channels: [] }, 200);
+    await listChannelsForOperator('org 1&x=2');
+    expect(calls[0].url).toContain('organizer_id=org%201%26x%3D2');
+  });
+
+  // A hand-mounted route is outside catalog's response validation (ADR-009), so
+  // nothing upstream guarantees the key is present. `undefined` here would crash
+  // the page's .map() with a stack trace instead of rendering an empty table.
+  it('survives a body with no channels array', async () => {
+    spyFetch({}, 200);
+    await expect(listChannelsForOperator('org-1')).resolves.toEqual([]);
+  });
+
+  it('surfaces a refusal as CatalogApiError with its status', async () => {
+    spyFetch({ error: 'unauthorized' }, 401);
+    await expect(listChannelsForOperator('org-1')).rejects.toMatchObject({ status: 401 });
+  });
+
+  it('creates through the gateway with the write credential', async () => {
+    process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
+    const calls = spyFetch({ id: 'c1', code: 'pos' }, 201);
+    await createChannel('org-1', { code: 'pos', displayName: 'Box office', kind: 'pos' });
+    expect(calls[0].url).toContain('/api/catalog/channels');
+    expect(calls[0].headers[STAFF]).toBe('the-credential');
+    expect(calls[0].headers[INTERNAL]).toBeUndefined();
+  });
+
+  // The contract's `default: true` only applies when the key is ABSENT. Sending
+  // `enabled: false` explicitly is a different request, and conflating the two
+  // is how a channel is created invisible to the storefront.
+  it('omits enabled when the channel is created available, and sends false when it is not', async () => {
+    let calls = spyFetch({ id: 'c1' }, 201);
+    await createChannel('org-1', { code: 'pos', displayName: 'Box office', kind: 'pos' });
+    expect(calls[0].body).not.toHaveProperty('enabled');
+
+    calls = spyFetch({ id: 'c2' }, 201);
+    await createChannel('org-1', { code: 'x', displayName: 'X', kind: 'web', enabled: false });
+    expect((calls[0].body as { enabled?: boolean }).enabled).toBe(false);
+  });
+
+  // The PUT is a full replacement. An omitted field is not "unchanged" — it is
+  // absent, and for `enabled` that reads as false.
+  it('sends every field on update, including the immutable code and the organizer', async () => {
+    const calls = spyFetch({ id: 'c1' }, 200);
+    await updateChannel('org-1', 'c1', {
+      code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false,
+    });
+    expect(calls[0].url).toContain('/api/catalog/channels/c1');
+    // organizer_id scopes the write. The channel id comes from a form field, so
+    // without it a forged id would let one tenant edit another's channel — an id
+    // is not an authorization boundary (ai-review).
+    expect(calls[0].body).toEqual({
+      organizer_id: 'org-1',
+      code: 'pos',
+      display_name: 'Counter',
+      kind: 'pos',
+      enabled: false,
+    });
   });
 });
