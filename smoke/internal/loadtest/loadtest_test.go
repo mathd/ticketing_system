@@ -256,15 +256,20 @@ func TestClassifyHold409(t *testing.T) {
 		body string
 		want string
 	}{
-		"sellout bare error":  {`{"error":"insufficient availability"}`, KindRejected},
-		"idempotency bare":    {`{"error":"idempotency conflict"}`, KindRejected},
-		"slot archived":       {`{"error":"slot archived","code":"slot_archived"}`, KindServerError},
-		"slot closed":         {`{"error":"slot closed","code":"slot_closed"}`, KindServerError},
-		"unknown code":        {`{"error":"x","code":"something_new"}`, KindServerError},
-		"not json":            {`not json`, KindServerError},
-		"empty object":        {`{}`, KindServerError},
-		"empty body":          {``, KindServerError},
-		"missing error field": {`{"code":""}`, KindServerError},
+		"sellout bare error": {`{"error":"insufficient availability"}`, KindRejected},
+		"idempotency bare":   {`{"error":"idempotency conflict"}`, KindRejected},
+		"slot archived":      {`{"error":"slot archived","code":"slot_archived"}`, KindServerError},
+		"slot closed":        {`{"error":"slot closed","code":"slot_closed"}`, KindServerError},
+		// TKT-238. A closed sales window is not capacity evidence: a load run that
+		// hit one measured nothing about contention, so it MUST fail closed rather
+		// than be counted as a rejection. Pinned by name so a future exemption is
+		// a deliberate edit here rather than a quiet reclassification.
+		"channel window closed": {`{"error":"channel sales window closed","code":"channel_window_closed"}`, KindServerError},
+		"unknown code":          {`{"error":"x","code":"something_new"}`, KindServerError},
+		"not json":              {`not json`, KindServerError},
+		"empty object":          {`{}`, KindServerError},
+		"empty body":            {``, KindServerError},
+		"missing error field":   {`{"code":""}`, KindServerError},
 	} {
 		if got := ClassifyHold409([]byte(tc.body)); got != tc.want {
 			t.Errorf("%s: ClassifyHold409(%q) = %q, want %q", name, tc.body, got, tc.want)

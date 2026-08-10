@@ -6,6 +6,8 @@ Date: 2026-07-16
 
 Accepted
 
+**Sales windows, deferred here, are now decided by [ADR-054](./ADR-054-per-channel-sales-windows.md) (2026-08-10, TKT-238).** This ADR's accounting rules are extended rather than changed: a window gates claims and never releases capacity, so `reservedForChannelsSQL` is untouched, and the same clock_timestamp() discipline applies for the same reason.
+
 ## Context
 
 US-015 (TKT-78) splits a slot's sellable capacity across sales channels — opaque codes with

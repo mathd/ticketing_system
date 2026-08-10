@@ -294,6 +294,13 @@ func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
 	}{
 		{store.ErrSlotArchived, 409, `{"code":"slot_archived","error":"slot archived"}`},
 		{store.ErrSlotClosed, 409, `{"code":"slot_closed","error":"slot closed"}`},
+		// TKT-238. The distinction COS-3 asks for, asserted as an exact body: a
+		// closed sales window carries a code and "insufficient capacity" does not,
+		// so a caller can tell "wait for the window" from "sold out". Without this
+		// row the new sentinel would fall through into the code-less shape below
+		// and the two would be indistinguishable — which is the default outcome,
+		// not a hypothetical one.
+		{store.ErrChannelWindowClosed, 409, `{"code":"channel_window_closed","error":"channel sales window closed"}`},
 		{store.ErrUnavailable, 409, `{"error":"insufficient capacity"}`},
 		{store.ErrIdempotency, 409, `{"error":"idempotency key reused with different request"}`},
 		{store.ErrNotFound, 404, `{"error":"not found"}`},

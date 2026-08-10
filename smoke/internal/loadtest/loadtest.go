@@ -373,12 +373,19 @@ func NewClient() *http.Client {
 // {"error":…} shape — what problem() in services/inventory/internal/api/server.go
 // emits for capacity sellout (ErrUnavailable), ErrConflict and ErrIdempotency —
 // counts as an expected capacity rejection. A body carrying any machine-readable
-// code (today slot_archived / slot_closed) is not sellout, and anything
+// code (today slot_archived / slot_closed / channel_window_closed) is not
+// sellout, and anything
 // unrecognized — a code, no error field, unparseable — fails closed as
 // KindServerError per ADR-028's drift posture:
 // server-error is the class that cannot be silently blessed as capacity
 // evidence. Cost accepted at plan: a new inventory 409 code breaks the harness
 // until taught here.
+//
+// TKT-238 added channel_window_closed and deliberately did NOT special-case it.
+// A closed sales window is not capacity evidence — a load run that hit one was
+// measuring nothing about contention — so counting it as a server error is the
+// correct loud failure, not a gap. If a future load profile wants to drive a
+// closed window on purpose, it needs its own kind, not an exemption here.
 func ClassifyHold409(body []byte) string {
 	var b struct {
 		Error *string `json:"error"`

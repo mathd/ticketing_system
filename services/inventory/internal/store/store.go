@@ -21,7 +21,18 @@ var (
 	ErrNotFound    = errors.New("not found")
 	ErrUnavailable = errors.New("insufficient capacity")
 	ErrConflict    = errors.New("conflicting terminal state")
-	ErrIdempotency = errors.New("idempotency key reused with different request")
+	// ErrChannelWindowClosed: the channel has an allocation with headroom and the
+	// pool has capacity, but the channel's sales window is not open right now
+	// (TKT-238 / ADR-054).
+	//
+	// A SEPARATE sentinel from ErrUnavailable, and that is the point rather than
+	// tidiness: "this channel is not selling yet" and "this channel is sold out"
+	// lead a caller to opposite actions — wait for the window, versus join a
+	// waitlist or stop offering. Collapsing them into the code-less sellout shape
+	// is exactly what COS-3 forbids, and it is what would happen by default,
+	// because ErrUnavailable is the natural thing to return.
+	ErrChannelWindowClosed = errors.New("channel sales window closed")
+	ErrIdempotency         = errors.New("idempotency key reused with different request")
 )
 
 func Migrate(ctx context.Context, db *sql.DB) error {
@@ -249,6 +260,46 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	if err = sweepExpired(ctx, tx, slot); err != nil {
 		return Claim{}, false, err
 	}
+	// The channel's SALES WINDOW is judged before any capacity arithmetic
+	// (TKT-238 ai-review finding 1).
+	//
+	// Precedence, not tidiness. A window is a property of the requested channel;
+	// capacity is a property of the pool. Checking capacity first made the same
+	// request answer `channel_window_closed` while the pool had room and the
+	// code-less "insufficient capacity" once it did not — so a closed presale
+	// read as a sellout exactly when the on-sale was busiest. Worse, the load
+	// harness classifies a code-less 409 as an expected capacity rejection, so a
+	// run against a closed channel could be accepted as contention evidence.
+	//
+	// Verified before fixing: with pool headroom the refusal was the window; with
+	// an operational hold consuming the pool it became "insufficient capacity"
+	// for an otherwise identical request.
+	//
+	// Still under the pool FOR UPDATE and still on clock_timestamp(): moving it
+	// earlier changes which refusal wins, never when the boundary is judged.
+	var channelWindowOpen = true
+	var chCap int32
+	var haveAllocation bool
+	if channel != "" {
+		err = tx.QueryRowContext(ctx,
+			`SELECT cap, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
+			slot, channel).Scan(&chCap, &channelWindowOpen)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// No ACTIVE allocation for this channel — released, or never
+			// configured. That stays the code-less capacity refusal it has always
+			// been: there is no channel here to be closed.
+			haveAllocation = false
+		case err != nil:
+			return Claim{}, false, err
+		default:
+			haveAllocation = true
+			if !channelWindowOpen {
+				return Claim{}, false, ErrChannelWindowClosed
+			}
+		}
+	}
+
 	var held int32
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims, slot).Scan(&held); err != nil {
 		return Claim{}, false, err
@@ -258,14 +309,17 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		return Claim{}, false, ErrUnavailable
 	}
 	if channel != "" {
-		// A channel hold needs an active allocation with headroom, on top of pool capacity.
-		var chCap int32
-		err = tx.QueryRowContext(ctx, `SELECT cap FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap)
-		if errors.Is(err, sql.ErrNoRows) {
+		// The allocation and its window were read above, before the pool-capacity
+		// check, so a closed window refuses as a closed window whatever the pool
+		// looks like. What remains here is the CAP check, which is genuinely
+		// capacity arithmetic and belongs beside the pool's.
+		//
+		// An absent active allocation is the code-less capacity refusal: there is
+		// no channel here to be closed. That keeps "closed window" and "no such
+		// channel" distinct, which selecting the predicate rather than filtering
+		// on it is what makes possible.
+		if !haveAllocation {
 			return Claim{}, false, ErrUnavailable
-		}
-		if err != nil {
-			return Claim{}, false, err
 		}
 		var consumed int64
 		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(`+consumedQuantity+`),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
@@ -422,9 +476,25 @@ func (p *Postgres) Availability(ctx context.Context, org, slot uuid.UUID, channe
 		remaining = 0
 	}
 	if channel != "" {
+		// Same statement, one more column — NOT a third query. The availability read
+		// is pinned at exactly two statements by smoke/onsale_read_proof_test.go,
+		// matched on hardcoded SQL fragments, so a separate window lookup would
+		// break that proof numerically rather than visibly.
 		var chCap int32
-		err = p.db.QueryRowContext(ctx, `SELECT cap FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap)
+		var windowIsOpen bool
+		err = p.db.QueryRowContext(ctx,
+			`SELECT cap, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
+			slot, channel).Scan(&chCap, &windowIsOpen)
 		if errors.Is(err, sql.ErrNoRows) {
+			a.Available = 0
+			return a, nil
+		}
+		if err == nil && !windowIsOpen {
+			// Nothing is claimable on a closed channel, so the read says 0 — the same
+			// answer the claim path would give. The read cannot say WHY without a new
+			// public field, and it deliberately does not get one: the staff breakdown
+			// carries the window (ADR-054), and adding a public field later is
+			// additive while retracting one is a contract break.
 			a.Available = 0
 			return a, nil
 		}
