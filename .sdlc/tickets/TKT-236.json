@@ -4,10 +4,14 @@
   "summary": "US-CH2: Back-office channel registry administration",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 194,
+    "url": "https://github.com/mathd/ticketing_system/pull/194",
+    "state": "open"
+  },
   "parent": "TKT-17",
   "description": "The channel registry (TKT-235) is API-only. This story gives back-office staff the screens to\nmanage it: list, create, enable, disable, rename.\n\n**Re-scoped 2026-08-10 (owner decision).** The allocation editor that was originally in this ticket\nmoved to **TKT-244**, because it needs an inventory credential that does not exist — see the\n`kind=blocker` comment below and TKT-244's own description. What remains is reachable with\ncredentials the back office already holds.\n\n**Conditions of Success:**\n- A back-office channels page lists the organizer's channels — **enabled and disabled** — and\n  supports create, enable, disable, and renaming the display name. The **code is read-only** in the\n  UI: it is immutable per TKT-235, and a rename is a new channel plus disabling the old one.\n- A disabled channel is visibly distinct from an enabled one, and can be re-enabled from the same\n  screen. Disabling must not be a one-way door in the UI.\n- Server refusals surface as field errors rather than a generic failure: a duplicate code for the\n  organizer (409), and the write-gate refusals (empty/over-long code or display name, unknown kind).\n- The page reaches catalog with the **`CATALOG_STAFF_WRITE_TOKEN` the back office already holds**.\n  It must **not** send `X-Internal-Token`, which the back office deliberately does not have\n  (`compose.yaml:379-392`, pinned by `web/backoffice/test/api.test.ts:471`).\n- **Browser-verified:** `make browser` plus a spec in `test/browser/` that *submits* the create form\n  and the enable/disable toggle — not just renders them. Note `scripts/browser.sh` provisions **no**\n  staff account, so the spec must provision its own.\n\nQuality gates: `make check` green; `make browser` green with the new spec; screenshot in the PR;\nOpenAPI/types regenerated and committed before the gate.\n\nParent: TKT-17. Depends on TKT-235 (Done). Non-goals: the slot allocation editor and the inventory\ncredential (**TKT-244**); per-channel pricing UI; presale codes; the reseller API; any storefront\nchannel selector.",
   "readiness": {
