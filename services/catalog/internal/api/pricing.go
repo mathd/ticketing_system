@@ -27,8 +27,12 @@ var CacheControlPriceResolution = cachetier.Never.CacheControl()
 // anyone ask for early-bird pricing after the window closed. The store and the
 // pure comparator still take an instant, so the clock stays testable below HTTP
 // — which is also where TKT-152's boundary proof drives it.
-func (s *Server) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeID openapi_types.UUID) {
-	sel, err := s.store.ResolveTicketTypePrice(r.Context(), ticketTypeID, time.Now().UTC())
+func (s *Server) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeID openapi_types.UUID, params ResolveTicketTypePriceParams) {
+	// params.ChannelCode nil is the default/public context, in which only
+	// channel-agnostic rules are eligible. Passed straight through: no trimming,
+	// no case folding, and no validation against the channel registry (TKT-235),
+	// which is a lookup and not a constraint.
+	sel, err := s.store.ResolveTicketTypePrice(r.Context(), ticketTypeID, params.ChannelCode, time.Now().UTC())
 	if err != nil {
 		// A rule whose currency differs from the ticket type's is invalid
 		// configuration in OUR data, not something the caller can fix by
@@ -57,6 +61,8 @@ func priceResolutionToAPI(sel store.RuleSelection) PriceResolution {
 		PerformanceId:   sel.PerformanceID,
 		BasePrice:       Money{Amount: sel.BasePrice.Amount, Currency: sel.BasePrice.Currency},
 		ResolvedPrice:   Money{Amount: sel.ResolvedPrice.Amount, Currency: sel.ResolvedPrice.Currency},
+		// Echoed so a persisted snapshot records WHICH question was answered.
+		ChannelCode: sel.Channel,
 		// Never nil: the contract requires the array, and "no losers" must
 		// serialize as [] rather than null.
 		Candidates: []LosingPriceRule{},
@@ -99,5 +105,9 @@ func priceRuleToAPI(r store.PriceRule) PriceRuleProvenance {
 		Currency:       r.Currency,
 		Priority:       r.Priority,
 		Forced:         r.ForceAncestorOverride,
+		// Safe on a public read: only channel-ELIGIBLE rules reach provenance,
+		// so this is either the channel the caller named or nil — never
+		// another channel's.
+		ChannelCode: r.ChannelCode,
 	}
 }

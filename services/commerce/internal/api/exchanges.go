@@ -140,7 +140,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 
 	// Price the target through catalog's RULE RESOLUTION — never the raw column, never the
 	// source's snapshot (ADR-036 §5/§6).
-	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TargetTicketTypeID, in.OrganizerID, src.Quantity)
+	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TargetTicketTypeID, in.OrganizerID, src.Quantity, src.ChannelCode)
 	if err != nil {
 		if errors.Is(err, errResolveUnavailable) {
 			write(w, http.StatusBadGateway, map[string]string{"error": "catalog unavailable"})

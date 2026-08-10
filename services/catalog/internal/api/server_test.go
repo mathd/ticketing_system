@@ -701,7 +701,7 @@ func (f *fakeStore) CreatePriceRule(_ context.Context, in store.PriceRuleInput) 
 	return r, nil
 }
 
-func (f *fakeStore) ResolveTicketTypePrice(_ context.Context, ticketTypeID uuid.UUID, at time.Time) (store.RuleSelection, error) {
+func (f *fakeStore) ResolveTicketTypePrice(_ context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (store.RuleSelection, error) {
 	tt, ok := f.ticketTypes[ticketTypeID]
 	if !ok {
 		return store.RuleSelection{}, store.ErrNotFound
@@ -718,10 +718,14 @@ func (f *fakeStore) ResolveTicketTypePrice(_ context.Context, ticketTypeID uuid.
 	if scopes.SeriesID != nil {
 		rules = append(rules, f.priceRules[*scopes.SeriesID]...)
 	}
+	// Runs the REAL comparator, channel and all — the point of the API tests is
+	// the handler and the contract mapping, not a second re-implementation of
+	// ADR-046 §4's channel semantics that could agree with a wrong resolver.
 	sel, err := store.SelectPricingRule(at, store.PricingCandidates{
 		BasePrice: store.Money{Amount: tt.PriceAmount, Currency: tt.Currency},
 		Scopes:    scopes,
 		Rules:     rules,
+		Channel:   channel,
 	})
 	if err != nil {
 		return store.RuleSelection{}, err

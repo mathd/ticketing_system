@@ -25,20 +25,43 @@ const (
 // so ONE catalog read carries identity, slot, money and provenance — two reads
 // would need a coherence check between them that can false-positive on a
 // legitimate concurrent price edit.
+// ptr is the one-liner these channel fixtures need: a *string from a literal,
+// so `nil` and a named channel stay visually distinct at the call site.
+func ptr(s string) *string { return &s }
+
+// resolutionBody is the channel-less form: catalog answering the default/public
+// context. Most callers want this.
 func resolutionBody(resolved int64, winner bool) string {
+	return resolutionBodyFor(resolved, winner, nil)
+}
+
+// resolutionBodyFor echoes a channel, as catalog does since TKT-237. Commerce
+// validates that echo against what it ASKED, so a fake that always answered
+// `null` would make every channelled reserve fail — which is exactly what
+// happened to TestReserveSendsTheChannelToFeeResolution when the guard landed,
+// and is the guard working rather than a test bug.
+func resolutionBodyFor(resolved int64, winner bool, channel *string) string {
 	w := `null`
 	fallback := `,"fallback_reason":"no_eligible_rule"`
 	if winner {
 		w = `{"rule_id":"` + pricingRule + `","scope_level":"event",` +
 			`"scope_id":"00000000-0000-0000-0000-0000000000e1","action_kind":"absolute",` +
 			`"amount":` + itoa(resolved) + `,"currency":"EUR","effective_from":null,` +
-			`"effective_until":null,"priority":0,"forced":false}`
+			`"effective_until":null,"priority":0,"forced":false,"channel_code":null}`
 		fallback = ``
 	}
-	return `{"resolver_version":2,"evaluated_at":"2026-07-31T00:00:00Z",` +
+	ch := "null"
+	if channel != nil {
+		ch = `"` + *channel + `"`
+	}
+	// resolver_version 3 since TKT-237 (the channel axis). Commerce accepts any
+	// version >= 1, so this number is fidelity to what catalog now sends rather
+	// than something under test here.
+	return `{"resolver_version":3,"evaluated_at":"2026-07-31T00:00:00Z",` +
 		`"organizer_id":"` + pricingOrg + `","performance_id":"` + pricingSlot + `",` +
 		`"base_price":{"amount":2500,"currency":"EUR"},` +
 		`"resolved_price":{"amount":` + itoa(resolved) + `,"currency":"EUR"},` +
+		`"channel_code":` + ch + `,` +
 		`"winner":` + w + `,"candidates":[]` + fallback + `}`
 }
 
@@ -249,7 +272,16 @@ func TestReserveOverflowGuardAppliesToResolvedAmount(t *testing.T) {
 // recorded in the snapshot because a stored provenance document must stay
 // interpretable — a read-side concern, not a gate on the sale.
 func TestReserveAcceptsANewerResolverVersion(t *testing.T) {
-	future := strings.Replace(resolutionBody(900, true), `"resolver_version":2`, `"resolver_version":999`, 1)
+	// Built by replacing the CURRENT version literal, and asserted below to have
+	// actually changed. TKT-237 bumped catalog to 3 and this line still said 2,
+	// so strings.Replace matched nothing and the test silently exercised version
+	// 3 instead of 999 — a test that could no longer detect the upper-bound
+	// check it exists to guard. The assertion is what stops that recurring.
+	future := strings.Replace(resolutionBody(900, true), `"resolver_version":3`, `"resolver_version":999`, 1)
+	if !strings.Contains(future, `"resolver_version":999`) {
+		t.Fatalf("the fixture still carries the shipped resolver version — this test would pass "+
+			"without ever exercising a NEWER one. Update the literal to match resolutionBody.\n%s", future)
+	}
 	s, held, done := pricingStack(t, 200, future)
 	defer done()
 
@@ -604,5 +636,276 @@ func TestReserveRefusesOrphanIdentitiesThatWereRequested(t *testing.T) {
 				t.Fatalf("status = %d want 502: %s", res.Code, res.Body.String())
 			}
 		})
+	}
+}
+
+// The channel reaches catalog's PRICE resolution, and the echo is validated
+// (TKT-237).
+//
+// Both halves matter. Forwarding without validating would let catalog answer a
+// different question than the one asked — pricing the sale on another channel's
+// rules — and the buyer would be charged from it with nothing to notice. This is
+// the same guard fee resolution has had since TKT-215, on the money path that
+// decides the unit price rather than the fees on top of it.
+func TestReserveSendsTheChannelToPriceResolution(t *testing.T) {
+	var asked string
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(r.URL.Path, "/price-resolution") {
+			asked = r.URL.RawQuery
+			ch := r.URL.Query().Get("channel_code")
+			_, _ = w.Write([]byte(resolutionBodyFor(900, true, &ch)))
+			return
+		}
+		_, _ = w.Write([]byte(emptyFeeResolutionBody(ptr("reseller"))))
+	}))
+	defer catalog.Close()
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"stop"}`))
+	}))
+	defer inventory.Close()
+
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	reserveInChannel(t, s, "price-chan-1", "reseller")
+	if asked != "channel_code=reseller" {
+		t.Errorf("catalog's price resolution was asked %q, want channel_code=reseller", asked)
+	}
+}
+
+// Omitting the channel sends NO parameter. It is the default/public context, not
+// a wildcard (ADR-046 §4) — and an empty parameter is a different request that
+// catalog's minLength would reject anyway.
+func TestReserveWithoutAChannelSendsNoPriceParameter(t *testing.T) {
+	var asked string
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(r.URL.Path, "/price-resolution") {
+			asked = r.URL.RawQuery
+			_, _ = w.Write([]byte(resolutionBody(900, true)))
+			return
+		}
+		_, _ = w.Write([]byte(emptyFeeResolutionBody(nil)))
+	}))
+	defer catalog.Close()
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"stop"}`))
+	}))
+	defer inventory.Close()
+
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	reserveInChannel(t, s, "price-chan-2", "")
+	if asked != "" {
+		t.Errorf("catalog was asked %q, want no query at all", asked)
+	}
+}
+
+// A resolution echoing a channel the sale did not ask for is UNUSABLE, not
+// merely surprising: it describes a different question, so its price belongs to
+// a different sale.
+func TestReserveRefusesAPriceResolutionEchoingTheWrongChannel(t *testing.T) {
+	cases := []struct {
+		name     string
+		asked    string
+		echoed   *string
+		wantFail bool
+	}{
+		{"asked reseller, echoed pos", "reseller", ptr("pos"), true},
+		{"asked reseller, echoed none", "reseller", nil, true},
+		{"asked none, echoed reseller", "", ptr("reseller"), true},
+		{"asked reseller, echoed reseller", "reseller", ptr("reseller"), false},
+		{"asked none, echoed none", "", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				if strings.HasSuffix(r.URL.Path, "/price-resolution") {
+					_, _ = w.Write([]byte(resolutionBodyFor(900, true, tc.echoed)))
+					return
+				}
+				var feeCh *string
+				if tc.asked != "" {
+					feeCh = &tc.asked
+				}
+				_, _ = w.Write([]byte(emptyFeeResolutionBody(feeCh)))
+			}))
+			defer catalog.Close()
+			inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"error":"stop"}`))
+			}))
+			defer inventory.Close()
+
+			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			res := reserveInChannel(t, s, "echo-"+tc.name, tc.asked)
+			// 500, not 502, and the distinction is the one ADR-028 draws and
+			// this file documents: errResolveUnavailable (no answer) is 502,
+			// errResolveUnusable (a 200 we cannot trust) is 500. A resolution
+			// echoing the wrong channel is the second — catalog answered, and
+			// the answer is about a different sale.
+			//
+			// The status was asserted as 502 when this test was written and the
+			// guard proved it wrong on the first run. Kept as a 500 assertion
+			// rather than loosened to "not 2xx": a mismatched echo becoming a
+			// 502 would mean it had been reclassified as a transport problem,
+			// which is a real regression and one this test should catch.
+			if tc.wantFail && res.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500 — a resolution answering a different question is unusable, not unavailable: %s",
+					res.Code, res.Body.String())
+			}
+			// A matching echo must get PAST price resolution. The fake inventory
+			// answers 409, so that is what a sale reaching inventory looks like.
+			if !tc.wantFail && res.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want the fake inventory's 409 — a matching echo must not stop the sale: %s",
+					res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
+// Mixed-version behaviour of the channel echo guard.
+//
+// Two review passes shaped this and the second reversed the first. Pass 1: an
+// unconditional guard breaks a rolling deploy, so exempt v1-v2. Pass 2: that
+// exemption lets a v2 resolver reading a MIGRATED database load a
+// channel-specific row without its channel_code, treat it as agnostic, pick a
+// `pos` rule for a `reseller` sale, and have the exemption accept it — an
+// outage traded for a silent mischarge.
+//
+// So the guard is unconditional for a channelled sale, and channel-LESS sales
+// stay served at every version. That asymmetry is the whole design and is what
+// these cases pin.
+func TestChannelEchoGuardAcrossResolverVersions(t *testing.T) {
+	cases := []struct {
+		name     string
+		version  string
+		echo     *string
+		asked    string
+		wantFail bool
+	}{
+		// A resolver that does not echo cannot have answered the channelled
+		// question, whatever version it claims. Refused at EVERY version —
+		// see the guard's comment for why pass 2 reversed pass 1 here.
+		{"v2 omitting the echo on a channelled request is refused", `"resolver_version":2`, nil, "reseller", true},
+		{"v1 omitting the echo on a channelled request is refused", `"resolver_version":1`, nil, "reseller", true},
+		{"v3 omitting the echo is refused", `"resolver_version":3`, nil, "reseller", true},
+		// Channel-LESS sales are unaffected by any of this: nothing is echoed
+		// and nothing is expected, so an old catalog still serves them. This is
+		// what keeps the guard from being a blanket version cap.
+		{"v2 serves a channel-less sale", `"resolver_version":2`, nil, "", false},
+		{"v1 serves a channel-less sale", `"resolver_version":1`, nil, "", false},
+		// Echoing an unrequested channel is wrong at ANY version — the answer is
+		// about a different sale, and no version gap explains it.
+		{"v2 echoing an unrequested channel is still refused", `"resolver_version":2`, ptr("pos"), "", true},
+		{"v1 echoing a different channel is still refused", `"resolver_version":1`, ptr("pos"), "reseller", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(resolutionBodyFor(900, true, tc.echo), `"resolver_version":3`, tc.version, 1)
+			if !strings.Contains(body, tc.version) {
+				t.Fatalf("fixture does not carry %s: %s", tc.version, body)
+			}
+			catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				if strings.HasSuffix(r.URL.Path, "/price-resolution") {
+					_, _ = w.Write([]byte(body))
+					return
+				}
+				var feeCh *string
+				if tc.asked != "" {
+					feeCh = &tc.asked
+				}
+				_, _ = w.Write([]byte(emptyFeeResolutionBody(feeCh)))
+			}))
+			defer catalog.Close()
+			inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"error":"stop"}`))
+			}))
+			defer inventory.Close()
+
+			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			res := reserveInChannel(t, s, "mixed-"+tc.name, tc.asked)
+			if tc.wantFail && res.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500 — this resolution is unusable: %s", res.Code, res.Body.String())
+			}
+			// Reaching the fake inventory's 409 is what "the sale proceeded"
+			// looks like. A 500 here would be the outage this test exists to
+			// prevent.
+			if !tc.wantFail && res.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want the fake inventory's 409 — an older catalog must not stop "+
+					"a channelled sale during a rolling deploy: %s", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
+// The failure the v1-v2 exemption would have allowed, pinned so it cannot come
+// back (second ai-review pass).
+//
+// The scenario is not hypothetical arithmetic: a v2 catalog reading a database
+// migrated by 0019 loads a channel-specific price row WITHOUT its channel_code
+// — its query predates the column — and treats it as channel-agnostic. It can
+// therefore select a `pos` rule for a `reseller` sale and answer, honestly by
+// its own lights, with resolver_version 2 and no echo.
+//
+// This fixture reproduces exactly that: the price is the FOREIGN channel's
+// (1200, not the agnostic 3000), the version is 2, and there is no echo. The
+// assertion is not "commerce refuses" but the consequence that matters —
+// **inventory is never asked to hold at that price**. A guard that refused with
+// the wrong status, or refused after placing the hold, would pass a
+// status-only assertion and still have charged the buyer wrongly.
+func TestAV2ResolverCannotPriceAChannelledSaleFromAForeignChannelRule(t *testing.T) {
+	const foreignChannelPrice = 1200 // what a `pos` rule says; the sale asked for `reseller`
+
+	var inventoryAskedFor []int64
+	body := strings.Replace(
+		resolutionBodyFor(foreignChannelPrice, true, nil), // no echo — a v2 catalog cannot send one
+		`"resolver_version":3`, `"resolver_version":2`, 1)
+	if !strings.Contains(body, `"resolver_version":2`) || strings.Contains(body, `"channel_code":"`) {
+		t.Fatalf("fixture is not a v2-without-echo response: %s", body)
+	}
+
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(r.URL.Path, "/price-resolution") {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_, _ = w.Write([]byte(emptyFeeResolutionBody(ptr("reseller"))))
+	}))
+	defer catalog.Close()
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			UnitAmount int64 `json:"unit_amount"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		inventoryAskedFor = append(inventoryAskedFor, in.UnitAmount)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"stop"}`))
+	}))
+	defer inventory.Close()
+
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	res := reserveInChannel(t, s, "v2-foreign-rule", "reseller")
+
+	if len(inventoryAskedFor) != 0 {
+		t.Fatalf("inventory was asked to hold at %v — a resolver that cannot answer the channelled "+
+			"question must not price the sale, and it must be stopped BEFORE the hold", inventoryAskedFor)
+	}
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (the resolution is unusable): %s", res.Code, res.Body.String())
 	}
 }

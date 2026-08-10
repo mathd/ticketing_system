@@ -861,6 +861,11 @@ export interface components {
         };
         /** @description One pricing rule as reported in a resolution's provenance (ADR-036 §5). */
         PriceRuleProvenance: {
+            /**
+             * @description The rule's own channel; null is channel-agnostic (TKT-237). Required and nullable for the reason the window bounds are: TKT-153 persists this shape, and an absent key is a different shape from an explicit null.
+             *     Reporting it discloses nothing new. Only channel-ELIGIBLE rules ever appear in provenance, so this value is either the channel the caller already named or null — never another channel's. That is what makes it safe on a public read, and it is why the filter runs before the window branches rather than after them.
+             */
+            channel_code: string | null;
             /** Format: uuid */
             rule_id: string;
             /** @enum {string} */
@@ -894,7 +899,7 @@ export interface components {
         LosingPriceRule: {
             rule: components["schemas"]["PriceRuleProvenance"];
             /** @enum {string} */
-            reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
+            reason: "less_specific" | "forced_broader_scope" | "excluded_by_forced_rule" | "lower_forced_scope" | "less_channel_specific" | "lower_priority" | "stable_id_tiebreak" | "outside_window_past" | "outside_window_future";
         };
         /**
          * @description A resolved unit price and the provenance of that answer (ADR-036 §5). candidates holds every considered rule EXCEPT the winner — stated explicitly because "candidates" and "the losers" pull in opposite directions and two implementations of a looser sentence would disagree. It is ordered by rule id ascending; the order is representation only and carries no precedence.
@@ -902,6 +907,8 @@ export interface components {
          *     This FLAT schema cannot express that. OpenAPI 3.0 could, as a oneOf of two variants — the accurate statement is not "impossible" but "not worth it here": a oneOf would turn PriceResolution into a union in the generated Go and in both generated TypeScript clients, for a pair no consumer branches on. So the contract is deliberately BROADER than the runtime: a client may rely on the invariant, and the server side is pinned by TestResolveTicketTypePriceWinnerAndFallbackAreExclusive, which covers a winner, an empty-candidate fallback, and a fallback WITH candidates (every rule window-ineligible) — the three shapes the handler can actually produce.
          */
         PriceResolution: {
+            /** @description The channel this resolution answered for; null is the default/public context (TKT-237). Required and nullable, echoed rather than inferred: a persisted snapshot (TKT-153) would otherwise be ambiguous between "no channel-specific rules existed" and "the sale named no channel" — two different facts that produce identical provenance. */
+            channel_code: string | null;
             /**
              * Format: uuid
              * @description Tenant that owns the ticket type. Present so ONE call answers a caller's whole question: commerce needs it to authorize the sale, and a second catalog read to fetch it would have to be reconciled against this response on every reserve (TKT-153).
@@ -1552,7 +1559,7 @@ export interface components {
          * @enum {string}
          */
         ChannelKind: "web" | "pos" | "presale" | "reseller";
-        /** @description An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it. */
+        /** @description An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it. */
         ChannelCode: string;
         ChannelCreate: {
             /** Format: uuid */
@@ -2584,7 +2591,13 @@ export interface operations {
     };
     resolveTicketTypePrice: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description The sales channel to resolve for (TKT-237). An exact opaque string (ADR-024) — matching is case-sensitive and nothing trims. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never prices a sale that named no channel.
+                 *     A rule belonging to a DIFFERENT channel is absent from `candidates` entirely rather than reported as a loser. That is a disclosure decision, not an omission: this operation is public, so reporting other channels' rules would publish which channels carry bespoke pricing and at what amounts.
+                 */
+                channel_code?: string;
+            };
             header?: never;
             path: {
                 ticketTypeId: string;
@@ -2637,7 +2650,7 @@ export interface operations {
     resolveTicketTypeFees: {
         parameters: {
             query?: {
-                /** @description The sales channel to resolve for. An exact opaque string (ADR-024) — there is no channel registry, and inventing one here would decide TKT-17's story. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel. */
+                /** @description The sales channel to resolve for. An exact opaque string (ADR-024). A channel registry now exists (TKT-235) but is a LOOKUP, NOT A CONSTRAINT: nothing validates this value against it, and an unregistered code resolves exactly as it always has. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel. */
                 channel_code?: string;
             };
             header?: never;

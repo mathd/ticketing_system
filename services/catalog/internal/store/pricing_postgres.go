@@ -25,8 +25,8 @@ import (
 const priceRuleWriteGateQuery = `
 INSERT INTO price_rules (organizer_id, scope_level, scope_id, action_kind,
                          amount, currency, priority, force_ancestor_override,
-                         effective_from, effective_until)
-SELECT $1, $2, $3, 'absolute', $4, $5, $6, $7, $8, $9
+                         effective_from, effective_until, channel_code)
+SELECT $1, $2, $3, 'absolute', $4, $5, $6, $7, $8, $9, $10
 FROM (
     SELECT organizer_id FROM ticket_types WHERE $2 = 'ticket_type' AND id = $3
     UNION ALL
@@ -41,7 +41,7 @@ FROM (
 WHERE target.organizer_id = $1
 RETURNING id, organizer_id, scope_level, scope_id, action_kind, amount,
           currency, priority, force_ancestor_override,
-          effective_from, effective_until, created_at`
+          effective_from, effective_until, channel_code, created_at`
 
 // pricingScopesQuery derives the five scope identities from a ticket type in
 // one read (ADR-036 §1). The LEFT JOIN is what makes the series edge partial:
@@ -64,6 +64,15 @@ WHERE t.id = $1`
 // an unrelated event's rule could be loaded as a candidate for a ticket type
 // that happened to share its id (ADR-036 §3).
 //
+// It carries NO channel predicate either, and for a reason of the same shape
+// (TKT-237). Filtering channel in SQL would be cheaper and would break two
+// things: the resolver could no longer report a channel-agnostic rule as
+// `less_channel_specific` (it would never see the winner it lost to), and adding
+// `channel_code` to the WHERE clause pushes scope_id into a post-index Filter,
+// reddening the ADR-019 plan assertion this const exists to bind. Channel
+// eligibility is the resolver's, exactly as the window is. fee_rules made the
+// same call in 0016 and its candidate query has no channel predicate either.
+//
 // It deliberately carries NO time predicate. Filtering by window in SQL would
 // be cheaper and WRONG: an expired rule must still be loaded to be reported as
 // outside_window_past, a future one as outside_window_future, and a future
@@ -77,7 +86,7 @@ WHERE t.id = $1`
 const priceRuleCandidatesQuery = `
 SELECT id, organizer_id, scope_level, scope_id, action_kind, amount,
        currency, priority, force_ancestor_override,
-       effective_from, effective_until, created_at
+       effective_from, effective_until, channel_code, created_at
 FROM price_rules
 WHERE organizer_id = $1
   AND (scope_level, scope_id) IN (
@@ -96,9 +105,10 @@ func (p *Postgres) CreatePriceRule(ctx context.Context, in PriceRuleInput) (Pric
 	err := p.db.QueryRowContext(ctx, priceRuleWriteGateQuery,
 		in.OrganizerID, string(in.ScopeLevel), in.ScopeID, in.Amount, in.Currency,
 		in.Priority, in.ForceAncestorOverride, in.EffectiveFrom, in.EffectiveUntil,
+		in.ChannelCode,
 	).Scan(&r.ID, &r.OrganizerID, &r.ScopeLevel, &r.ScopeID, &r.ActionKind, &r.Amount,
 		&r.Currency, &r.Priority, &r.ForceAncestorOverride,
-		&r.EffectiveFrom, &r.EffectiveUntil, &r.CreatedAt)
+		&r.EffectiveFrom, &r.EffectiveUntil, &r.ChannelCode, &r.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PriceRule{}, ErrNotFound
 	}
@@ -114,7 +124,7 @@ func (p *Postgres) CreatePriceRule(ctx context.Context, in PriceRuleInput) (Pric
 // -- deriving scopes from one state and loading rules against another. This is
 // snapshot coherence, not locking: a concurrent insert legitimately resolves
 // either before or after the snapshot.
-func (p *Postgres) ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, at time.Time) (RuleSelection, error) {
+func (p *Postgres) ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (RuleSelection, error) {
 	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return RuleSelection{}, err
@@ -157,7 +167,7 @@ func (p *Postgres) ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid
 		var r PriceRule
 		if err = rows.Scan(&r.ID, &r.OrganizerID, &r.ScopeLevel, &r.ScopeID, &r.ActionKind,
 			&r.Amount, &r.Currency, &r.Priority, &r.ForceAncestorOverride,
-			&r.EffectiveFrom, &r.EffectiveUntil, &r.CreatedAt); err != nil {
+			&r.EffectiveFrom, &r.EffectiveUntil, &r.ChannelCode, &r.CreatedAt); err != nil {
 			return RuleSelection{}, err
 		}
 		rules = append(rules, r)
@@ -166,7 +176,7 @@ func (p *Postgres) ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid
 		return RuleSelection{}, err
 	}
 
-	sel, err := SelectPricingRule(at, PricingCandidates{BasePrice: base, Scopes: scopes, Rules: rules})
+	sel, err := SelectPricingRule(at, PricingCandidates{BasePrice: base, Scopes: scopes, Rules: rules, Channel: channel})
 	if err != nil {
 		return RuleSelection{}, err
 	}

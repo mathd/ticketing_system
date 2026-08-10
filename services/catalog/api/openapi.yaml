@@ -785,6 +785,25 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: channel_code
+          in: query
+          required: false
+          description: >
+            The sales channel to resolve for (TKT-237). An exact opaque string
+            (ADR-024) — matching is case-sensitive and nothing trims. OMITTING it
+            is the default/public context, in which only channel-agnostic rules
+            are eligible; it is NOT a wildcard, and a channel-specific rule never
+            prices a sale that named no channel.
+
+            A rule belonging to a DIFFERENT channel is absent from `candidates`
+            entirely rather than reported as a loser. That is a disclosure
+            decision, not an omission: this operation is public, so reporting
+            other channels' rules would publish which channels carry bespoke
+            pricing and at what amounts.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
       responses:
         '200':
           description: Resolved price with full provenance
@@ -915,9 +934,11 @@ paths:
           in: query
           required: false
           description: >
-            The sales channel to resolve for. An exact opaque string (ADR-024) —
-            there is no channel registry, and inventing one here would decide
-            TKT-17's story. OMITTING it is the default/public context, in which
+            The sales channel to resolve for. An exact opaque string (ADR-024).
+            A channel registry now exists (TKT-235) but is a LOOKUP, NOT A
+            CONSTRAINT: nothing validates this value against it, and an
+            unregistered code resolves exactly as it always has.
+            OMITTING it is the default/public context, in which
             only channel-agnostic rules are eligible; it is NOT a wildcard, and a
             channel-specific rule never applies to a sale that named no channel.
           schema:
@@ -1664,8 +1685,24 @@ components:
       # null. Optional + omitempty would have shipped the second while claiming
       # the first.
       required: [rule_id, scope_level, scope_id, action_kind, amount, currency,
-                 effective_from, effective_until, priority, forced]
+                 effective_from, effective_until, priority, forced, channel_code]
       properties:
+        channel_code:
+          description: >
+            The rule's own channel; null is channel-agnostic (TKT-237). Required
+            and nullable for the reason the window bounds are: TKT-153 persists
+            this shape, and an absent key is a different shape from an explicit
+            null.
+
+            Reporting it discloses nothing new. Only channel-ELIGIBLE rules ever
+            appear in provenance, so this value is either the channel the caller
+            already named or null — never another channel's. That is what makes
+            it safe on a public read, and it is why the filter runs before the
+            window branches rather than after them.
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 100
         rule_id:
           type: string
           format: uuid
@@ -1730,6 +1767,12 @@ components:
             - forced_broader_scope
             - excluded_by_forced_rule
             - lower_forced_scope
+            # TKT-237. Emitted ONLY for a rule that was channel-ELIGIBLE and lost
+            # on specificity — a channel-agnostic rule beaten by an exact-channel
+            # one at the same scope (or the reverse under a forced partition). A
+            # rule belonging to a DIFFERENT channel never reaches here: it is
+            # ineligible and absent from candidates entirely.
+            - less_channel_specific
             - lower_priority
             - stable_id_tiebreak
             - outside_window_past
@@ -1761,8 +1804,19 @@ components:
       # winner is required and nullable for the same reason: a fallback response
       # must say "winner: null", not omit the key.
       required: [resolver_version, evaluated_at, organizer_id, performance_id,
-                 base_price, resolved_price, winner, candidates]
+                 base_price, resolved_price, winner, candidates, channel_code]
       properties:
+        channel_code:
+          description: >
+            The channel this resolution answered for; null is the default/public
+            context (TKT-237). Required and nullable, echoed rather than
+            inferred: a persisted snapshot (TKT-153) would otherwise be ambiguous
+            between "no channel-specific rules existed" and "the sale named no
+            channel" — two different facts that produce identical provenance.
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 100
         organizer_id:
           description: >
             Tenant that owns the ticket type. Present so ONE call answers a
@@ -2828,8 +2882,9 @@ components:
       description: >
         An exact, opaque, case-sensitive string. The bound mirrors
         claims.channel_code and channel_allocations.channel_code in inventory
-        (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in
-        catalog — all four must agree, or a code legal in one place is unusable
+        (ADR-024) and fee_rules.channel_code, split_schedules.channel_code,
+        price_rules.channel_code (TKT-237) and channels.code (TKT-235) in
+        catalog — all six must agree, or a code legal in one place is unusable
         in another. Nothing normalizes, trims or case-folds it.
     ChannelCreate:
       type: object

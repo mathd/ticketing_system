@@ -278,7 +278,15 @@ func feeStack(t *testing.T, feeStatus int, feeBody string) (*Server, *string, *b
 			_, _ = w.Write([]byte(feeBody))
 			return
 		}
-		_, _ = w.Write([]byte(resolutionBody(900, true)))
+		// Price resolution. Echo back whatever channel was asked for: commerce
+		// validates the echo (TKT-237), so a fake that always answered `null`
+		// would fail every channelled reserve before it reached the fee call
+		// this test is about.
+		var ch *string
+		if q := r.URL.Query().Get("channel_code"); q != "" {
+			ch = &q
+		}
+		_, _ = w.Write([]byte(resolutionBodyFor(900, true, ch)))
 	}))
 	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		inventoryCalled = true

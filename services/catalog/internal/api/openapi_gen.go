@@ -191,6 +191,7 @@ func (e LosingFeeRuleReason) Valid() bool {
 const (
 	LosingPriceRuleReasonExcludedByForcedRule LosingPriceRuleReason = "excluded_by_forced_rule"
 	LosingPriceRuleReasonForcedBroaderScope   LosingPriceRuleReason = "forced_broader_scope"
+	LosingPriceRuleReasonLessChannelSpecific  LosingPriceRuleReason = "less_channel_specific"
 	LosingPriceRuleReasonLessSpecific         LosingPriceRuleReason = "less_specific"
 	LosingPriceRuleReasonLowerForcedScope     LosingPriceRuleReason = "lower_forced_scope"
 	LosingPriceRuleReasonLowerPriority        LosingPriceRuleReason = "lower_priority"
@@ -205,6 +206,8 @@ func (e LosingPriceRuleReason) Valid() bool {
 	case LosingPriceRuleReasonExcludedByForcedRule:
 		return true
 	case LosingPriceRuleReasonForcedBroaderScope:
+		return true
+	case LosingPriceRuleReasonLessChannelSpecific:
 		return true
 	case LosingPriceRuleReasonLessSpecific:
 		return true
@@ -492,7 +495,7 @@ func (e StaffRole) Valid() bool {
 
 // Channel defines model for Channel.
 type Channel struct {
-	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
 	Code        ChannelCode        `json:"code"`
 	CreatedAt   time.Time          `json:"created_at"`
 	DisplayName string             `json:"display_name"`
@@ -505,12 +508,12 @@ type Channel struct {
 	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
-// ChannelCode An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+// ChannelCode An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
 type ChannelCode = string
 
 // ChannelCreate defines model for ChannelCreate.
 type ChannelCreate struct {
-	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
 	Code        ChannelCode `json:"code"`
 	DisplayName string      `json:"display_name"`
 
@@ -532,7 +535,7 @@ type ChannelList struct {
 
 // ChannelUpdate A full replacement of the mutable fields. `code` is required and must equal the stored code — it is present so an update cannot be written against a channel the caller has misidentified, and a mismatch is a 409 rather than a rename.
 type ChannelUpdate struct {
-	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
 	Code        ChannelCode `json:"code"`
 	DisplayName string      `json:"display_name"`
 	Enabled     bool        `json:"enabled"`
@@ -836,6 +839,9 @@ type PriceResolution struct {
 	BasePrice  Money             `json:"base_price"`
 	Candidates []LosingPriceRule `json:"candidates"`
 
+	// ChannelCode The channel this resolution answered for; null is the default/public context (TKT-237). Required and nullable, echoed rather than inferred: a persisted snapshot (TKT-153) would otherwise be ambiguous between "no channel-specific rules existed" and "the sale named no channel" — two different facts that produce identical provenance.
+	ChannelCode *string `json:"channel_code"`
+
 	// EvaluatedAt The server-side instant the rules were evaluated against.
 	EvaluatedAt time.Time `json:"evaluated_at"`
 
@@ -864,7 +870,11 @@ type PriceRuleProvenance struct {
 	// ActionKind Tagged union with one member today; widening it later is additive (ADR-036 §2).
 	ActionKind PriceRuleProvenanceActionKind `json:"action_kind"`
 	Amount     int64                         `json:"amount"`
-	Currency   string                        `json:"currency"`
+
+	// ChannelCode The rule's own channel; null is channel-agnostic (TKT-237). Required and nullable for the reason the window bounds are: TKT-153 persists this shape, and an absent key is a different shape from an explicit null.
+	// Reporting it discloses nothing new. Only channel-ELIGIBLE rules ever appear in provenance, so this value is either the channel the caller already named or null — never another channel's. That is what makes it safe on a public read, and it is why the filter runs before the window branches rather than after them.
+	ChannelCode *string `json:"channel_code"`
+	Currency    string  `json:"currency"`
 
 	// EffectiveFrom Inclusive lower bound of the rule's effective window; null means unbounded. The interval is HALF-OPEN [effective_from, effective_until) — a rule is eligible at an instant equal to effective_from and NOT eligible at one equal to effective_until. Stated explicitly because an inclusive/exclusive ambiguity at a tier boundary is a money bug, not a rounding detail. A reversed window is rejected by the database.
 	EffectiveFrom *time.Time `json:"effective_from"`
@@ -888,7 +898,7 @@ type PriceRuleProvenanceScopeLevel string
 
 // PublicChannel No id, kind or enabled flag: a storefront selector needs a label to show and a code to submit, and the rest is operator configuration. Only enabled channels ever appear here, so an `enabled` field would be a constant.
 type PublicChannel struct {
-	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
 	Code        ChannelCode `json:"code"`
 	DisplayName string      `json:"display_name"`
 }
@@ -1372,7 +1382,7 @@ type ResolvePerformanceDisplayNamesParams struct {
 
 // ResolveTicketTypeFeesParams defines parameters for ResolveTicketTypeFees.
 type ResolveTicketTypeFeesParams struct {
-	// ChannelCode The sales channel to resolve for. An exact opaque string (ADR-024) — there is no channel registry, and inventing one here would decide TKT-17's story. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel.
+	// ChannelCode The sales channel to resolve for. An exact opaque string (ADR-024). A channel registry now exists (TKT-235) but is a LOOKUP, NOT A CONSTRAINT: nothing validates this value against it, and an unregistered code resolves exactly as it always has. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel.
 	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
 }
 
@@ -1410,6 +1420,13 @@ type GetPublicSeasonParams struct {
 type ListPublicVenuesParams struct {
 	// OrganizerId Tenant scope (ADR-002); required — no session to infer from
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// ResolveTicketTypePriceParams defines parameters for ResolveTicketTypePrice.
+type ResolveTicketTypePriceParams struct {
+	// ChannelCode The sales channel to resolve for (TKT-237). An exact opaque string (ADR-024) — matching is case-sensitive and nothing trims. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never prices a sale that named no channel.
+	// A rule belonging to a DIFFERENT channel is absent from `candidates` entirely rather than reported as a loser. That is a disclosure decision, not an omission: this operation is public, so reporting other channels' rules would publish which channels carry bespoke pricing and at what amounts.
+	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
 }
 
 // CreateChannelJSONRequestBody defines body for CreateChannel for application/json ContentType.
@@ -1593,7 +1610,7 @@ type ServerInterface interface {
 	CreateTicketType(w http.ResponseWriter, r *http.Request)
 	// Resolve a ticket type's unit price through the rule hierarchy, with provenance
 	// (GET /ticket-types/{ticketTypeId}/price-resolution)
-	ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID)
+	ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID, params ResolveTicketTypePriceParams)
 	// Create a general-admission venue
 	// (POST /venues)
 	CreateVenue(w http.ResponseWriter, r *http.Request)
@@ -1839,7 +1856,7 @@ func (_ Unimplemented) CreateTicketType(w http.ResponseWriter, r *http.Request) 
 
 // Resolve a ticket type's unit price through the rule hierarchy, with provenance
 // (GET /ticket-types/{ticketTypeId}/price-resolution)
-func (_ Unimplemented) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID) {
+func (_ Unimplemented) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID, params ResolveTicketTypePriceParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3026,8 +3043,24 @@ func (siw *ServerInterfaceWrapper) ResolveTicketTypePrice(w http.ResponseWriter,
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ResolveTicketTypePriceParams
+
+	// ------------- Optional query parameter "channel_code" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "channel_code", r.URL.Query(), &params.ChannelCode, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "channel_code"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channel_code", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ResolveTicketTypePrice(w, r, ticketTypeId)
+		siw.Handler.ResolveTicketTypePrice(w, r, ticketTypeId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {

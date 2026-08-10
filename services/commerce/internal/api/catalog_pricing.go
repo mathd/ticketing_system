@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +71,11 @@ type priceResolution struct {
 	ResolvedPrice   resolvedMoney `json:"resolved_price"`
 	Winner          *resolvedRule `json:"winner"`
 	FallbackReason  *string       `json:"fallback_reason"`
+	// ChannelCode is which channel catalog answered for; nil is the
+	// default/public context. Validated against what was ASKED (TKT-237) — an
+	// answer describing a different question would price the sale on another
+	// channel's rules.
+	ChannelCode *string `json:"channel_code"`
 
 	// raw is the exact bytes catalog sent, persisted verbatim as the
 	// reservation's provenance snapshot. Storing the decoded struct instead
@@ -84,9 +90,16 @@ type priceResolution struct {
 // The internal credential is deliberately NOT sent: this is a declared,
 // publicly routable operation, and putting a service credential on a public
 // route would be strictly worse than the exposure TKT-155 records.
-func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organizerID uuid.UUID, quantity int32) (priceResolution, error) {
-	code, body, err := s.call(ctx, http.MethodGet,
-		s.catalogURL+"/ticket-types/"+ticketTypeID.String()+"/price-resolution", "", nil, false)
+func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organizerID uuid.UUID, quantity int32, channel *string) (priceResolution, error) {
+	endpoint := s.catalogURL + "/ticket-types/" + ticketTypeID.String() + "/price-resolution"
+	if channel != nil {
+		// Omitting the parameter is the default/public context, NOT a wildcard
+		// (ADR-046 §4, applied to prices by TKT-237). A nil channel must send NO
+		// parameter rather than an empty one, which the contract's minLength
+		// would reject anyway. Same shape as the fee call.
+		endpoint += "?channel_code=" + url.QueryEscape(*channel)
+	}
+	code, body, err := s.call(ctx, http.MethodGet, endpoint, "", nil, false)
 	if err != nil {
 		return priceResolution{}, fmt.Errorf("%w: %v", errResolveUnavailable, err)
 	}
@@ -113,7 +126,7 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 		return priceResolution{}, err
 	}
 	p.raw = canonical
-	if err := p.validate(organizerID, quantity); err != nil {
+	if err := p.validate(organizerID, quantity, channel); err != nil {
 		return priceResolution{}, err
 	}
 	return p, nil
@@ -121,8 +134,54 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 
 // validate enforces every invariant the sale depends on. Each check exists
 // because violating it would let the wrong number reach a buyer.
-func (p priceResolution) validate(organizerID uuid.UUID, quantity int32) error {
+func (p priceResolution) validate(organizerID uuid.UUID, quantity int32, channel *string) error {
 	bad := func(why string) error { return fmt.Errorf("%w: %s", errResolveUnusable, why) }
+
+	// The echoed channel must be the one asked about. A mismatch means the
+	// answer describes a different question, and pricing from it would charge
+	// another channel's price. Same guard, same reasoning as fee resolution.
+	//
+	// UNCONDITIONAL for a channelled sale: an answer with no channel echo is
+	// refused whatever version produced it. Two review passes shaped this and
+	// the second reversed the first, so both reasons are recorded.
+	//
+	// Pass 1 found that an unconditional guard breaks a rolling deploy —
+	// channel_code is a v3 field, so a v2 catalog cannot send it, and every
+	// channelled request from new commerce to an old catalog would fail. The fix
+	// was to exempt v1-v2.
+	//
+	// Pass 2 found what that exemption costs, and it is worse. A v2 resolver
+	// reading a MIGRATED database loads a channel-specific row without its
+	// channel_code and treats it as channel-agnostic — so it can pick a `pos`
+	// rule for a `reseller` sale, answer with no echo, and the exemption would
+	// accept it. That is a silent mischarge, traded for an outage. An outage is
+	// recoverable in minutes; a wrong price is discovered in a reconciliation.
+	//
+	// So the guard refuses, and the refusal is CORRECT rather than merely safe:
+	// a resolver that does not know what a channel is cannot answer "what does
+	// this cost on `reseller`", and its answer to a different question must not
+	// price this sale. `errResolveUnusable` says exactly that.
+	//
+	// What this costs, stated plainly: during a catalog rollout, channelled
+	// sales fail while any instance is pre-v3. Channel-LESS sales are unaffected
+	// — nothing is echoed and nothing is expected. The safe order is therefore
+	// catalog first, then commerce, which is also the order that needs no
+	// coordination: a v3 catalog answering old commerce prices
+	// channel-agnostically, which is correct and is the pre-TKT-237 behaviour.
+	//
+	// This is not load-bearing in the shipped topology — one catalog instance,
+	// migrations run out-of-band as a one-shot job the service waits on
+	// (ADR-022), so v2 and v3 never serve concurrently. It is written to hold
+	// anyway, because a guard that depends on the deployment topology stops
+	// being a guard the day the topology changes.
+	switch {
+	case p.ChannelCode != nil && channel == nil:
+		return bad("price resolution echoes a channel the sale did not request")
+	case p.ChannelCode != nil && *p.ChannelCode != *channel:
+		return bad("price resolution echoes a different channel")
+	case p.ChannelCode == nil && channel != nil:
+		return bad("price resolution omits the channel the sale requested")
+	}
 
 	// Any version >= 1 is accepted, and the reason is worth writing down because
 	// the opposite was tried first and was worse.

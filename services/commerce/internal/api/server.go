@@ -550,7 +550,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	// that distinction is the whole point of the fail-closed rule (ADR-028): a
 	// silent fall back to the base price would sell at the wrong price and look
 	// like nothing happened.
-	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TicketTypeID, in.OrganizerID, in.units())
+	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TicketTypeID, in.OrganizerID, in.units(), in.ChannelCode)
 	if err != nil {
 		if errors.Is(err, errResolveUnavailable) {
 			write(w, 502, map[string]string{"error": "catalog unavailable"})

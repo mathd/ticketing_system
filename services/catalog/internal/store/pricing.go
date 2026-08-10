@@ -75,6 +75,22 @@ const (
 	ReasonOutsideWindowFuture = "outside_window_future"
 )
 
+// TKT-237 emits ReasonLessChannelSpecific, declared by the fee resolver
+// (fees.go) since TKT-214. Shared rather than redeclared, and the reason is that
+// the two resolvers agree on this ONE string by necessity, not by coincidence:
+// it is a value in two closed OpenAPI enums, and a price resolution emitting
+// "less_channel_specific " while a fee resolution emits "less_channel_specific"
+// would be two contract bugs that look like one typo.
+//
+// This is the ONLY thing the two comparators share, and it is data rather than
+// logic. ADR-046 §7's decision to duplicate the RANKING stands — see the
+// amendment TKT-237 made to it.
+//
+// A channel-agnostic rule lost to an exact-channel rule at the same scope level
+// (or, under a forced partition, the other way round — see beats). A rule
+// belonging to a DIFFERENT channel is never a loser at all: it is ineligible and
+// absent from provenance entirely.
+
 // FallbackNoEligibleRule is set when no rule applied and the ticket type's own
 // price is the answer.
 const FallbackNoEligibleRule = "no_eligible_rule"
@@ -86,7 +102,13 @@ const FallbackNoEligibleRule = "no_eligible_rule"
 // MEANS, even though the response shape is unchanged. Version 1 cannot honestly
 // describe both "windows ignored" and "windows filter eligibility", and TKT-153
 // persists this number in snapshots that must stay interpretable.
-const PricingResolverVersion int32 = 2
+// Bumped to 3 by TKT-237: the comparator gains a channel axis — a new
+// eligibility filter and a new ranking step between scope and priority. A
+// channel-agnostic request over channel-agnostic rules resolves identically, but
+// version 2 cannot honestly describe both "channel is not a concept" and
+// "channel filters eligibility and ranks below scope". Version 2 snapshots stay
+// valid and are NOT rewritten; commerce accepts any version >= 1.
+const PricingResolverVersion int32 = 3
 
 // ErrPriceRuleCurrencyMismatch is invalid configuration, not a rule that does
 // not apply (ADR-036 §2). Silently skipping it would sell at the wrong price
@@ -137,7 +159,12 @@ type PriceRule struct {
 	// crosses a boundary — no cron, no scheduled write, no job to fail.
 	EffectiveFrom  *time.Time
 	EffectiveUntil *time.Time
-	CreatedAt      time.Time
+	// ChannelCode nil means channel-agnostic: eligible in EVERY channel,
+	// including the default/public one. A non-nil code competes only on an
+	// exact string match (ADR-024 keeps channel codes opaque — nothing trims
+	// or case-folds). TKT-237.
+	ChannelCode *string
+	CreatedAt   time.Time
 }
 
 // PriceRuleInput creates a rule. The store validates that ScopeID names a real
@@ -153,6 +180,8 @@ type PriceRuleInput struct {
 	ForceAncestorOverride bool
 	EffectiveFrom         *time.Time
 	EffectiveUntil        *time.Time
+	// nil = channel-agnostic. Exact and opaque; nothing normalizes (ADR-024).
+	ChannelCode *string
 }
 
 // PricingCandidates is everything the pure comparator needs.
@@ -160,6 +189,10 @@ type PricingCandidates struct {
 	BasePrice Money
 	Scopes    PricingScopes
 	Rules     []PriceRule
+	// Channel the resolution was requested for; nil is the default/public
+	// context, where only channel-agnostic rules are eligible. Omitting it is
+	// NOT a wildcard (ADR-046 §4, applied to prices by TKT-237).
+	Channel *string
 }
 
 // LosingPriceRule is a candidate that did not win, and why.
@@ -178,10 +211,15 @@ type RuleSelection struct {
 	// whole question — commerce needs the organizer to authorize and the slot to
 	// place the hold, and a second catalog read to fetch them would have to be
 	// reconciled against this one on every sale (TKT-153).
-	OrganizerID    uuid.UUID
-	PerformanceID  uuid.UUID
-	BasePrice      Money
-	ResolvedPrice  Money
+	OrganizerID   uuid.UUID
+	PerformanceID uuid.UUID
+	BasePrice     Money
+	ResolvedPrice Money
+	// Channel this resolution answered for; nil is the default/public context.
+	// Echoed so a persisted snapshot (TKT-153) records WHICH question was
+	// answered — without it a stored provenance object is ambiguous between
+	// "no channel rules existed" and "the sale named no channel".
+	Channel        *string
 	Winner         *PriceRule
 	Candidates     []LosingPriceRule
 	FallbackReason *string
@@ -200,6 +238,7 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 		PerformanceID:   in.Scopes.SlotID,
 		BasePrice:       in.BasePrice,
 		ResolvedPrice:   in.BasePrice,
+		Channel:         in.Channel,
 	}
 
 	// Step 0 — keep only rules whose (level, id) is one of the derived pairs.
@@ -222,12 +261,61 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 		return scoped[i].ID.String() < scoped[j].ID.String()
 	})
 
+	// Channel eligibility, BEFORE the currency check and before the window
+	// filter. Both orderings are load-bearing and neither is stylistic (TKT-237).
+	//
+	// A rule belonging to another channel must be ABSENT from provenance, not
+	// reported as a loser: returning it would publish which channels carry
+	// bespoke pricing, and at what amounts, on a route the gateway proxies to
+	// the internet. (ADR-046 §4 argues this for fees, where the endpoint is
+	// /internal/; here the audience is the internet, so the reason is strictly
+	// stronger. TKT-155 already tracks this array over-disclosing.)
+	//
+	// BEFORE THE WINDOW, because filtering after it would classify a foreign
+	// channel's expired rule as `outside_window_past` and report it — leaking
+	// exactly what this filter hides, through the branch that looks unrelated to
+	// channels.
+	//
+	// BEFORE THE CURRENCY CHECK, and this one was a real defect found at
+	// ai-review. The fee resolver deliberately checks currency across channels,
+	// on the argument that a rule misconfigured for another channel is still
+	// misconfigured and should fail loudly rather than lie in wait. Mirroring
+	// that here was wrong, because the two resolvers do not fail the same way: a
+	// currency mismatch aborts the WHOLE resolution with an error, so one
+	// misconfigured `pos` rule made every `reseller` and every public request
+	// return 500. That is a cross-channel outage — one channel's bad
+	// configuration taking down every other channel's sales — and, on a public
+	// endpoint, an oracle for the existence of a rule the filter exists to hide.
+	//
+	// The cost of the correct order, stated: a misconfigured rule on a channel
+	// nobody is currently buying through stays silent until a sale arrives on
+	// it, and then fails closed. That is the same latency the window filter
+	// already accepts for a future-dated rule, and it is strictly better than an
+	// outage on channels that are configured correctly. An operator-facing
+	// validation sweep is the right place to surface it early; TKT-243 carries
+	// that.
+	channelScoped := make([]PriceRule, 0, len(scoped))
+	for _, r := range scoped {
+		if priceChannelEligible(r, in.Channel) {
+			channelScoped = append(channelScoped, r)
+		}
+	}
+	scoped = channelScoped
+
 	// Two rules sharing an id would make the answer depend on input order: the
 	// final tie-break is the id itself, so they form an equivalence class the
 	// comparator cannot separate, and the loser loop would suppress both. The
 	// primary key makes this unreachable through Postgres — but this function is
 	// the seam TKT-152 and TKT-153 build on, and a function that advertises
 	// determinism must not quietly have an input that breaks it.
+	//
+	// NARROWED BY TKT-237, deliberately: this now runs AFTER the channel filter,
+	// so duplicate ids among rules that are ineligible for the requested channel
+	// no longer error. That is the right scope. The guard protects the
+	// DETERMINISM OF THE ANSWER, and a rule that cannot compete cannot affect
+	// the answer — erroring on it would refuse a resolution that has exactly one
+	// correct result. Eligible duplicates still error, which is the case the
+	// guard was written for and the one a test pins.
 	seen := make(map[uuid.UUID]struct{}, len(scoped))
 	for _, r := range scoped {
 		if _, dup := seen[r.ID]; dup {
@@ -376,9 +464,48 @@ func matchesScope(r PriceRule, s PricingScopes) bool {
 	}
 }
 
+// priceChannelEligible reports whether a rule can compete for the requested
+// channel (TKT-237, mirroring ADR-046 §4).
+//
+// A channel-agnostic rule (nil) competes everywhere, including in the
+// default/public context; a channel-specific rule competes only on an exact,
+// case-sensitive string match (ADR-024 keeps channel codes opaque). A nil
+// request is the default/public context, where no channel-specific rule is
+// eligible — **omitting the channel is not a wildcard**, and that asymmetry is
+// the whole point: a rule authored for one channel must never price a sale that
+// named none.
+func priceChannelEligible(r PriceRule, requested *string) bool {
+	if r.ChannelCode == nil {
+		return true
+	}
+	return requested != nil && *r.ChannelCode == *requested
+}
+
+// priceChannelSpecificity ranks a rule's channel selectivity narrowest-first, in
+// the same direction as scopeRank: 0 is the narrower (exact channel) statement.
+func priceChannelSpecificity(r PriceRule) int {
+	if r.ChannelCode != nil {
+		return 0
+	}
+	return 1
+}
+
 // beats reports whether challenger should displace best. Under a forced
-// partition the scope order is inverted (broader wins); otherwise the narrower
-// rule wins. Priority then id break the remaining ties.
+// partition BOTH specificity orders invert — scope level and channel; otherwise
+// the narrower rule wins on each. Priority then id break the remaining ties.
+//
+// Channel sits BELOW scope and ABOVE priority (ADR-046 §4, applied to prices).
+// That placement is deliberate and testable: a channel rule wins even when the
+// agnostic rule carries a higher priority, because priority disambiguates rules
+// of equal specificity and a channel rule is not of equal specificity. A
+// BROADER exact-channel rule still loses to a NARROWER agnostic one, because
+// scope is compared first.
+//
+// Both axes invert under the forced partition for one reason: a forced rule is a
+// house floor that refuses to be undercut, so the BROADEST such statement binds
+// — and a channel-agnostic rule is the broader statement. Left undefined this
+// case would fall through to priority and be decided by accident, on a money
+// path.
 func beats(challenger, best PriceRule, inverted bool) bool {
 	cr, br := scopeRank[challenger.ScopeLevel], scopeRank[best.ScopeLevel]
 	if cr != br {
@@ -386,6 +513,13 @@ func beats(challenger, best PriceRule, inverted bool) bool {
 			return cr > br
 		}
 		return cr < br
+	}
+	cc, bc := priceChannelSpecificity(challenger), priceChannelSpecificity(best)
+	if cc != bc {
+		if inverted {
+			return cc > bc
+		}
+		return cc < bc
 	}
 	if challenger.Priority != best.Priority {
 		return challenger.Priority > best.Priority
@@ -412,6 +546,22 @@ func lossReason(loser, winner PriceRule) string {
 			return ReasonLowerForcedScope
 		}
 		return ReasonLessSpecific
+	}
+	// Channel specificity, below scope and above priority.
+	//
+	// This reason is emitted ONLY for a rule that was channel-ELIGIBLE and lost
+	// on specificity — i.e. a channel-agnostic rule beaten by an exact-channel
+	// rule at the same scope (or, under a forced partition, the reverse). A rule
+	// belonging to a DIFFERENT channel never reaches here: it is filtered out as
+	// ineligible and is absent from provenance entirely, so it has no reason.
+	//
+	// The distinction matters in exactly one direction. Declaring this enum
+	// member and never emitting it would be harmless; emitting it without
+	// declaring it 500s a public money read under ADR-028's fail-closed response
+	// validation, and TestPriceLossReasonEnumMatchesTheContract is what stops
+	// that.
+	if priceChannelSpecificity(loser) != priceChannelSpecificity(winner) {
+		return ReasonLessChannelSpecific
 	}
 	if loser.Priority != winner.Priority {
 		return ReasonLowerPriority

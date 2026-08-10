@@ -220,8 +220,8 @@ func TestWalletRefusesAMalformedCursorRatherThanRestarting(t *testing.T) {
 
 func TestWalletCursorRoundTrips(t *testing.T) {
 	want := commercestore.WalletCursor{
-		CreatedAt: time.Date(2026, 3, 18, 17, 30, 0, 123456789, time.UTC),
-		OrderID:   uuid.New(),
+		CreatedAt:  time.Date(2026, 3, 18, 17, 30, 0, 123456789, time.UTC),
+		OrderID:    uuid.New(),
 		CustomerID: uuid.New(),
 	}
 
