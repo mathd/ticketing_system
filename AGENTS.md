@@ -45,6 +45,20 @@ experiment stays valid.
   (Why: [browser-submit is the only checkOrigin catch](docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md), TKT-105;
   TKT-226 caught a `no-referrer` that 403'd every reset. Promoted from per-ticket throwaway
   scripts in TKT-228.)
+- **A hidden input is not a checkbox, and `git add -A <dir>` is not `git add <file>`.** Two small
+  rules that each cost a real defect. *Absent means false* holds only for inputs that CAN be absent:
+  a hidden field always submits, so `value=""` is present-and-empty and reads as true — which is how
+  renaming a disabled channel silently re-enabled it (TKT-236). And `git add -A docs/` swept an
+  unrelated untracked file into a ticket's merge (TKT-237); stage the paths you edited, by name.
+- **A test must live at the tier its mechanism does.** A cross-tenant assertion passed at the API tier
+  with the SQL predicate deleted, because the in-memory fake scopes in Go (TKT-236). Ask which layer
+  actually enforces the thing, and put the assertion there — a green test one tier above the
+  mechanism proves the fake and the handler agree, and nothing else.
+- **A security claim is a hypothesis until it is executed.** Two consecutive adversarial passes
+  rejected two different claims about one guard, both plausible, both written in good faith, both
+  false; what settled it was running the sequence and watching it return 200 (TKT-236, ADR-053). When
+  a gap turns out to be real and is not this ticket's to close, **pin it as a test that asserts it is
+  present** — as ADR-021's rollback-gap test does — so the claim cannot drift from the behaviour.
 - **A round of review fixes needs a review of the fixes' *interaction*, not each in isolation.**
   Four tickets in TKT-35 had a pass find a defect created by the previous pass's fix, every fix
   correct on its own; a bounded or optimized replacement is a new implementation, so ask what the

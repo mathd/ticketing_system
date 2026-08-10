@@ -46,6 +46,25 @@ require_artifacts() {
   # a stale or absent dist fails later, at `docker build`, with a message about a
   # COPY path rather than the one the developer can act on.
   [ -f "$ROOT/web/backoffice/dist/server/entry.mjs" ] || { echo "browser: missing web/backoffice/dist — run 'make build-ts'" >&2; exit 1; }
+  # REAL Chrome, checked here rather than discovered at browser launch (TKT-236).
+  #
+  # The specs ask for `channel: 'chrome'` deliberately — AGENTS.md wants the
+  # host's browser, which is why CI cannot run this gate. Playwright's bundled
+  # Chromium is not a substitute and using it would make the gate pass while
+  # testing the thing the gate exists to reject.
+  #
+  # This check exists because the gate had NEVER RUN on one developer machine:
+  # all three specs died identically at launch, after the whole stack had come
+  # up, with an error that reads like a Playwright problem rather than a missing
+  # dependency. A mandatory gate that cannot run is worse than one known to be
+  # missing — it is green by omission. Fail here, before spending three minutes
+  # on `docker compose up`, and say exactly what to do.
+  [ -x /opt/google/chrome/chrome ] || command -v google-chrome >/dev/null 2>&1 || {
+    echo "browser: real Google Chrome not found (looked for /opt/google/chrome/chrome and google-chrome on PATH)." >&2
+    echo "  The specs drive the HOST's Chrome on purpose (AGENTS.md); Playwright's bundled Chromium is not a substitute." >&2
+    echo "  Install it with 'npx playwright install chrome' (needs sudo) or your distro's google-chrome-stable package." >&2
+    exit 1
+  }
 }
 
 up() {
