@@ -187,6 +187,67 @@ describe('upstream Age propagation', () => {
   });
 });
 
+// R12 (2026-07-25 architecture review). The map only ever lost an entry when that
+// exact URL was read again, so an SSR process crawling a large catalog grew without
+// bound: a page read once is never revisited and was never released.
+//
+// These assert through `size`, not `get()`. An expired entry re-fetches either way,
+// so a test written against `get()` alone passes with no sweep at all — it cannot
+// reach the state that would fail.
+describe('expired entries are swept', () => {
+  const cacheable = (maxAge: number, age?: string) =>
+    new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers:
+        age === undefined
+          ? { 'cache-control': `public, max-age=${maxAge}` }
+          : { 'cache-control': `public, max-age=${maxAge}`, age },
+    });
+
+  it('drops entries no one will ever read again, on insert', async () => {
+    const fetchImpl = vi.fn(async () => cacheable(300));
+    let now = 0;
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
+
+    for (let i = 0; i < 50; i += 1) {
+      await cache.get(`http://catalog/public/events/${i}`);
+    }
+    expect(cache.size).toBe(50);
+
+    // Past every one of their max-ages, and none of those 50 URLs is ever asked for
+    // again — the crawl case. The insert below is the only thing that runs.
+    now = 301_000;
+    await cache.get('http://catalog/public/events/fresh');
+    expect(cache.size).toBe(1);
+  });
+
+  it('sweeps on the COMBINED age, so an entry that arrived stale is not kept longer', async () => {
+    // 290 seconds old on arrival against a 300-second max-age: it expires 10 seconds
+    // from now, not 300. The pre-TKT-206 predicate (now - fetchedAt >= maxAge) would
+    // hold this for another 290 seconds — sweeping past exactly the entries the sweep
+    // exists to drop.
+    const fetchImpl = vi.fn(async () => cacheable(300, '290'));
+    let now = 0;
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
+    await cache.get('http://catalog/public/events/stale-on-arrival');
+    expect(cache.size).toBe(1);
+
+    now = 11_000; // 290 + 11 = 301 > 300, but only 11s of LOCAL time have passed
+    await cache.get('http://catalog/public/events/other');
+    expect(cache.size).toBe(1); // the stale one went, the new one stayed
+  });
+
+  it('keeps entries that are still live', async () => {
+    const fetchImpl = vi.fn(async () => cacheable(300));
+    let now = 0;
+    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
+    await cache.get('http://catalog/public/events/a');
+    now = 100_000; // well inside 300s
+    await cache.get('http://catalog/public/events/b');
+    expect(cache.size).toBe(2);
+  });
+});
+
 // TKT-206 ai-review: `now` is a wall clock, so it can step backwards. Age must
 // never decrease below what upstream already reported, or the middleware
 // advertises remaining freshness that does not exist — which is precisely the

@@ -65,6 +65,21 @@ export function parseAge(age: string | null): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
+/**
+ * The age this entry would report at `nowMs`, per RFC 9111 as TKT-206 applies it:
+ * upstream age at fetch time plus local elapsed, floored by the high-water mark so a
+ * backward wall-clock step cannot hand back freshness already spent.
+ *
+ * Pure on purpose. `get()` writes the high-water mark because it REPORTS an age; the
+ * sweep only asks, so it must not. Extracted so expiry has exactly one definition —
+ * a sweep that decided expiry differently from `get()` would drop live entries or
+ * keep dead ones, and either way the two would drift apart silently.
+ */
+function ageOf(entry: Entry, nowMs: number): number {
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - entry.fetchedAtMs) / 1000));
+  return Math.max(entry.reportedAgeSeconds, entry.upstreamAgeSeconds + elapsedSeconds);
+}
+
 export class PageDataCache {
   #entries = new Map<string, Entry>();
   // Single-flight: concurrent misses for the same URL share one upstream
@@ -77,6 +92,35 @@ export class PageDataCache {
   constructor(fetchImpl: typeof fetch = fetch, now: () => number = Date.now) {
     this.#fetch = fetchImpl;
     this.#now = now;
+  }
+
+  /**
+   * Live entry count. Exposed because the sweep is otherwise unobservable: an expired
+   * entry re-fetches through `get()` whether or not it was ever dropped, so a test
+   * written against `get()` alone passes with no sweep at all.
+   */
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  /**
+   * Drop every expired entry.
+   *
+   * Without this the map only loses an entry when that exact URL is read again, so a
+   * long-lived SSR process over a large catalog grows without bound — pages read once
+   * during a crawl are never revisited and never released. Swept on insert, the only
+   * moment the map grows.
+   *
+   * O(n) per insert. That is the right trade at this size: n is bounded by the pages
+   * the process has served inside one max-age window, and the alternative (an expiry
+   * heap) is a data structure to maintain for a map that holds hundreds of entries.
+   */
+  #sweep(nowMs: number): void {
+    for (const [key, entry] of this.#entries) {
+      if (ageOf(entry, nowMs) >= entry.maxAgeSeconds) {
+        this.#entries.delete(key);
+      }
+    }
   }
 
   /** Fetch-through cache: one upstream call per URL per max-age window. */
@@ -99,8 +143,7 @@ export class PageDataCache {
       // wall time before the ticket touched it — and closing it needs a
       // monotonic clock source, which changes the injected-clock contract this
       // cache shares with its tests and the middleware.
-      const elapsedSeconds = Math.max(0, Math.floor((nowMs - entry.fetchedAtMs) / 1000));
-      const ageSeconds = Math.max(entry.reportedAgeSeconds, entry.upstreamAgeSeconds + elapsedSeconds);
+      const ageSeconds = ageOf(entry, nowMs);
       entry.reportedAgeSeconds = ageSeconds;
       if (ageSeconds < entry.maxAgeSeconds) {
         return { data: entry.data as T, ageSeconds, maxAgeSeconds: entry.maxAgeSeconds };
@@ -130,6 +173,10 @@ export class PageDataCache {
     // max-age is served to this caller and then dropped: keeping it would hand
     // the next request a value that was already expired when it arrived.
     if (maxAgeSeconds > upstreamAgeSeconds) {
+      // Swept with a FRESH reading, not the `nowMs` captured before the upstream call:
+      // that call is the slow part, and sweeping against a clock from before it would
+      // spare entries that expired while it was in flight.
+      this.#sweep(this.#now());
       this.#entries.set(url, {
         data,
         fetchedAtMs: nowMs,
