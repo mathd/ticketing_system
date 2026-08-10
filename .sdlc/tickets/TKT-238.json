@@ -2,9 +2,9 @@
   "key": "TKT-238",
   "type": "Story",
   "summary": "US-CH4: Per-channel sales windows — when a channel may sell",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
