@@ -1,0 +1,50 @@
+{
+  "key": "TKT-241",
+  "type": "Task",
+  "summary": "Prove lookup-not-constraint end to end, not just at the inventory store (TKT-235 ai-review)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "**Surfaced by TKT-235's ai-review (`gpt-5.6-luna`), finding 5 [medium].** Not a defect that ticket\nintroduced — a gap between what its tests prove and what its design *claims*.\n\nTKT-235 established the sales-channel registry as a **lookup, not a constraint**: an unregistered —\nor disabled — channel code must sell exactly as it did before the registry existed. Two tests guard\nit, and both are narrower than the claim:\n\n- `services/inventory/internal/store/channel_allocations_smoke_test.go` →\n  `TestAnUnregisteredChannelCodeStillSells` calls the **inventory store directly**. It never\n  traverses commerce orchestration, catalog fee resolution, split resolution, payments, or any API\n  boundary. A registry lookup added at any of those layers would reject the sale *earlier* and leave\n  this test green.\n- `services/catalog/internal/store/channels_smoke_test.go` → `TestNothingReferencesTheChannelRegistry`\n  greps `information_schema` for foreign keys pointing at `channels`. That proves **FK absence in\n  catalog's schema**. It says nothing about application-level gating anywhere.\n\nBoth had their scope narrowed in comments at review time, so nothing currently overclaims in the\ncode. What is missing is the test that would actually catch the regression.\n\n**Conditions of Success:**\n- A gateway-level (or `smoke/`) test buys through the full path — reserve → fee resolution → split\n  resolution → confirm — using a channel code that has **no registry row at all**, and asserts the\n  sale completes with the code recorded verbatim on the claim and the order.\n- The same path with a channel code whose registry row exists but is **`enabled = false`**, and it\n  also completes. Disabling is a *display* decision (it removes the channel from\n  `/public/channels`), not a sellability one — nothing in the sale path consults the registry today,\n  and this test is what stops that changing silently.\n- Both assertions name the invariant and cite ADR-024, so a future ticket that deliberately adds\n  registry gating has to change the test and state why, rather than deleting it.\n\nQuality gates: `make check` green. Test-only ticket — if it surfaces a real gating bug in the sale\npath, report it and stop rather than fixing it here.\n\nParent: TKT-17. Non-goals: adding any registry enforcement (that would be the opposite of this\nticket); the seated-pool seam (TKT-176).",
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-024",
+        "why": "The no-FK rule and the reason for it: historical attribution must survive a channel being retired. This ticket proves the rule holds at every layer, not just in catalog's schema."
+      },
+      {
+        "id": "ADR-046",
+        "why": "Fee resolution takes a channel and is one of the layers the end-to-end test must traverse — a registry lookup added there would reject before inventory is reached."
+      },
+      {
+        "id": "ADR-047",
+        "why": "Split resolution is channel-selective and is the other such layer."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The inventory-store-only test whose scope this ticket widens",
+        "link": "services/inventory/internal/store/channel_allocations_smoke_test.go"
+      },
+      {
+        "summary": "The catalog FK-absence test, bounded to catalog's schema",
+        "link": "services/catalog/internal/store/channels_smoke_test.go"
+      },
+      {
+        "summary": "TKT-235 PR — the registry, and the review that surfaced this",
+        "link": "https://github.com/mathd/ticketing_system/pull/192"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-235 ai-review — incidental, deferred\n\n**Finding:** [medium] *\"The lookup-not-constraint regression test does not exercise a sale\nboundary\"* — `gpt-5.6-luna`, TKT-235 ai-review pass 1.\n\n**Triage: incidental, not blocking.** The reviewer is right that the test is narrower than the\nclaim, and wrong that this makes the claim false today: nothing in the sale path reads the registry\nat all (verified — no reference to `channels` or `ListEnabledChannels` anywhere in commerce or\ninventory outside generated types). So there is **no defect in the diff**; there is a missing guard\nagainst a defect a *future* ticket could introduce. Building a full gateway-level purchase harness\nis its own vertical slice, well beyond a registry story's scope.\n\n**Done at review time instead:** both tests had their scope narrowed in their own comments, so\nneither overclaims in the code. This ticket carries the real coverage.\n\nNeeds shaping before Gate 1 — the 8-item DoR is not filled and `first_slice` in particular needs a\ndecision on whether this rides `smoke/` or the gateway suite."
+    }
+  ]
+}
