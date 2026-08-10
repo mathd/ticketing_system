@@ -8,6 +8,15 @@ Accepted (TKT-214; decision taken under the owner-waived gates of that run, reco
 ticket). First deliverable of the TKT-6 epic. Consumed by TKT-215 (the sale path), TKT-216
 (payees and splits), TKT-217 (the settlement ledger).
 
+**§4 and §8 extended to price rules, and §7 amended, by TKT-237 (2026-08-09)** — the channel
+eligibility and precedence rules this ADR wrote for fees now govern `price_rules` as well, with one
+deliberate divergence: a foreign channel's rule is hidden from **fee** provenance to avoid
+publishing the channel fee matrix to other services, and hidden from **price** provenance for a
+strictly larger reason — `price-resolution` is a PUBLIC operation where fee-resolution is
+`/internal/` (§6). §7's revisit trigger is unchanged; see the amendment there for why, now that the
+two comparators resemble each other more closely than when §7 was written. Decision taken under the
+owner-waived gates of that run, recorded on the ticket.
+
 *Extends [ADR-036](./ADR-036-pricing-rules-representation.md); amends nothing in it.*
 *Respects [ADR-002](./ADR-002-services-from-day-one.md)'s ownership row without amending it — see
 § 5.*
@@ -241,6 +250,42 @@ over all of that is two functions wearing one name.
 
 **The trigger for revisiting is a THIRD rule kind, not a second.** Two similar comparators are
 cheaper to keep honest than one over-general one; three are not.
+
+#### Amended by TKT-237 — the gap narrowed, the decision stands
+
+TKT-237 gave `SelectPricingRule` the channel axis, so **one of the three differences named above is
+now gone**. The honest position after that ticket:
+
+| | fee comparator | price comparator |
+|---|---|---|
+| channel axis | yes | **yes** (was: no) |
+| partitions by code | yes | no |
+| returns | a set — one winner per fee code | one winner |
+
+What remains is **arity**, and it is not a detail that could be parameterized away: a fee resolution
+answers "one winner per code" and a price resolution answers "the winner". A helper spanning both
+returns either a set the price path must unwrap or a single value the fee path must call in a loop,
+and in both directions the shared function stops describing what either caller asked.
+
+**The trigger is unchanged: a third rule kind.** Stated explicitly *because* the gap narrowed — the
+next reader will see two comparators that now rank on the same axes in the same order and reasonably
+conclude §7 is stale. It is not. The argument was never "they are very different"; it was that
+merging them edits a shipped money path for zero behavioural gain, and TKT-237 did not change that.
+
+Two things did change, and both are recorded so a future merge starts from facts rather than from
+the resemblance:
+
+- **The ranking is duplicated; the loss-reason vocabulary is not.** `ReasonLessChannelSpecific` is
+  declared once (in the fee resolver) and used by both, because it is a value in **two closed
+  OpenAPI enums** and a price resolution emitting a different spelling from a fee resolution would
+  be two contract bugs wearing one typo. Sharing data is not sharing logic.
+- **The two comparators are pinned by two independent truth tables** (`fees_test.go`'s and
+  `pricing_test.go`'s), each derived from its own §. A merged ranker would have to satisfy both, and
+  the tests are the cheapest existing statement of what "both" means. Whoever revisits this should
+  read them first — if a single implementation cannot pass both unchanged, that is the answer.
+
+A third rule kind gaining a channel axis is the point at which the duplication stops being cheaper
+than the abstraction. TKT-237 is the second, and the count is what the rule turns on.
 
 ### 8. Precedence, in full
 
