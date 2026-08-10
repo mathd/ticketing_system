@@ -2,9 +2,9 @@
   "key": "TKT-236",
   "type": "Story",
   "summary": "US-CH2: Back-office channel registry administration",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
