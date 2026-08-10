@@ -216,27 +216,50 @@ func TestChannelReadsSplitEnabledFromOperatorView(t *testing.T) {
 // the exact const the store runs, not a hand-copied reduction that is free to
 // drift from the shipped SQL.
 func TestPublicChannelReadIsIndexBacked(t *testing.T) {
-	ctx, db, st := seasonSmokeStore(t)
+	ctx, db, _ := seasonSmokeStore(t)
 	org := seedChannelOrganizer(ctx, t, db, "planner")
 	other := seedChannelOrganizer(ctx, t, db, "planner-other")
 
-	// Enough rows across two tenants, and enough disabled ones, that a
-	// sequential scan is the wrong plan and the partial index is the right one.
-	for i := 0; i < 400; i++ {
-		owner, enabled := other, true
-		if i%4 == 0 {
-			owner = org
-		}
-		if i%7 == 0 {
-			enabled = false
-		}
-		if _, err := st.CreateChannel(ctx, ChannelInput{
-			OrganizerID: owner,
-			Code:        "channel-" + uuid.NewString(),
-			DisplayName: "Channel",
-			Kind:        ChannelKindWeb,
-			Enabled:     enabled,
-		}); err != nil {
+	// A plan assertion is only meaningful once a seq scan is the WRONG choice —
+	// and under `force_generic_plan` (which explainGenericPlan sets, because that
+	// is the plan the driver's parameterized statement actually gets) what
+	// decides that is **tenant cardinality**, not table size.
+	//
+	// Two fixtures failed here before this one, and both failures are worth
+	// keeping written down because neither is obvious:
+	//
+	//  1. 400 rows, a quarter of them this organizer's → seq scan. Too small,
+	//     and too concentrated.
+	//  2. 5020 rows across TWO organizers → still a seq scan, and this is the
+	//     instructive one. The generic plan cannot see the literal, so it
+	//     estimates from `n_distinct` on organizer_id: with 2 tenants the average
+	//     tenant owns half the table, so it predicted ~2008 rows and scanning was
+	//     genuinely correct. The same query with a real value planned an index
+	//     scan at 16 rows. The index was never the problem.
+	//
+	// So the fixture models real multi-tenancy: MANY organizers, each holding a
+	// small slice. That is what makes `organizer_id = $1` selective in the
+	// generic plan, and it is also the only condition under which the missing
+	// index would actually hurt in production.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO organizers(name)
+		SELECT 'channel-planner-' || g FROM generate_series(1, 200) g`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channels(organizer_id, code, display_name, kind, enabled)
+		SELECT o.id, 'bulk-' || o.id || '-' || g, 'Bulk', 'web', (g % 5 <> 0)
+		FROM organizers o, generate_series(1, 25) g
+		WHERE o.name LIKE 'channel-planner-%'`); err != nil {
+		t.Fatal(err)
+	}
+	// The two named organizers get a slice the same size as everyone else's, so
+	// neither is special to the planner.
+	for _, owner := range []uuid.UUID{org, other} {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO channels(organizer_id, code, display_name, kind, enabled)
+			SELECT $1::uuid, 'mine-' || $1::text || '-' || g, 'Mine', 'web', (g % 5 <> 0)
+			FROM generate_series(1, 25) g`, owner); err != nil {
 			t.Fatal(err)
 		}
 	}
