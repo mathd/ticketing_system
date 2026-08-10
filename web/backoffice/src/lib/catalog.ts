@@ -355,3 +355,97 @@ export function publishPerformance(performanceId: string): Promise<Performance> 
     null,
   );
 }
+
+// --- The sales-channel registry (TKT-236 / TKT-235). ------------------------
+//
+// Writes go through the gateway like every other catalog write. The OPERATOR
+// READ does not, and that asymmetry is the ticket's one auth decision:
+//
+// The page must show DISABLED channels, and only `GET /internal/channels`
+// returns those — `/public/channels` is enabled-only by design. The gateway
+// edge-denies every `/api/<svc>/internal/` route by construction (ADR-002), so
+// the read goes DIRECT to catalog on the container network, exactly as the
+// staff refund reaches commerce (TKT-194, commerce.ts).
+//
+// It authenticates with the catalog staff-write credential this process ALREADY
+// holds — never `X-Internal-Token`, which the back office is deliberately denied
+// (compose.yaml) and which `api.test.ts` pins that it never sends. Catalog
+// accepts that credential on this one method+path and nothing else (ADR-053,
+// `staffMayReadOperatorChannels`).
+//
+// NOT tenant isolation. Callers pass the organizer from their SESSION and must
+// never take one from the request; catalog authenticates this process, not the
+// staff member behind it (ADR-021).
+
+export type Channel = components['schemas']['Channel'];
+export type ChannelKind = components['schemas']['ChannelKind'];
+
+// Catalog's host on the container network. Only used for the operator read; every
+// other call in this file goes through the gateway.
+const CATALOG_URL = process.env.CATALOG_URL ?? 'http://localhost:8081';
+
+/**
+ * The organizer's channels, enabled AND disabled, for the admin page.
+ *
+ * `organizerId` is required rather than defaulted: this read is the one place a
+ * caller could quietly show another tenant's configuration, so the call site has
+ * to name whose channels it wants — and every call site takes it from the
+ * session.
+ */
+export async function listChannelsForOperator(organizerId: string): Promise<Channel[]> {
+  const url = `${CATALOG_URL}/internal/channels?organizer_id=${encodeURIComponent(organizerId)}`;
+  const res = await fetch(url, {
+    headers: { 'X-Catalog-Staff-Write-Token': staffWriteCredential() },
+  });
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  const body = (await res.json()) as { channels?: Channel[] };
+  // Defensive: a contract-shaped body with no array must not become `undefined`
+  // and crash the page's map. The operator read is hand-mounted and therefore
+  // outside catalog's response validation (ADR-009), so nothing upstream
+  // guarantees the key is present.
+  return body.channels ?? [];
+}
+
+export function createChannel(
+  organizerId: string,
+  input: { code: string; displayName: string; kind: ChannelKind; enabled?: boolean },
+): Promise<Channel> {
+  return postCatalog<Channel>('/channels', {
+    organizer_id: organizerId,
+    code: input.code,
+    display_name: input.displayName,
+    kind: input.kind,
+    ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+  });
+}
+
+/**
+ * Update a channel's display name, kind and enabled flag.
+ *
+ * FULL REPLACEMENT, and `code` is required in the body even though it cannot
+ * change: catalog compares it against the stored code and answers 409 on a
+ * mismatch, so the caller states which channel it believes it is updating
+ * (TKT-235). Every field must be sent — omitting `enabled` would not "leave it
+ * alone", it would send `false`.
+ */
+export async function updateChannel(
+  channelId: string,
+  input: { code: string; displayName: string; kind: ChannelKind; enabled: boolean },
+): Promise<Channel> {
+  const res = await fetch(catalog(`/channels/${encodeURIComponent(channelId)}`), {
+    method: 'PUT',
+    headers: writeHeaders(),
+    body: JSON.stringify({
+      code: input.code,
+      display_name: input.displayName,
+      kind: input.kind,
+      enabled: input.enabled,
+    }),
+  });
+  if (!res.ok) {
+    throw await parseError(res);
+  }
+  return (await res.json()) as Channel;
+}
