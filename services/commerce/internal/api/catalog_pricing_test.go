@@ -272,7 +272,16 @@ func TestReserveOverflowGuardAppliesToResolvedAmount(t *testing.T) {
 // recorded in the snapshot because a stored provenance document must stay
 // interpretable — a read-side concern, not a gate on the sale.
 func TestReserveAcceptsANewerResolverVersion(t *testing.T) {
-	future := strings.Replace(resolutionBody(900, true), `"resolver_version":2`, `"resolver_version":999`, 1)
+	// Built by replacing the CURRENT version literal, and asserted below to have
+	// actually changed. TKT-237 bumped catalog to 3 and this line still said 2,
+	// so strings.Replace matched nothing and the test silently exercised version
+	// 3 instead of 999 — a test that could no longer detect the upper-bound
+	// check it exists to guard. The assertion is what stops that recurring.
+	future := strings.Replace(resolutionBody(900, true), `"resolver_version":3`, `"resolver_version":999`, 1)
+	if !strings.Contains(future, `"resolver_version":999`) {
+		t.Fatalf("the fixture still carries the shipped resolver version — this test would pass "+
+			"without ever exercising a NEWER one. Update the literal to match resolutionBody.\n%s", future)
+	}
 	s, held, done := pricingStack(t, 200, future)
 	defer done()
 
@@ -757,6 +766,77 @@ func TestReserveRefusesAPriceResolutionEchoingTheWrongChannel(t *testing.T) {
 			if !tc.wantFail && res.Code != http.StatusConflict {
 				t.Fatalf("status = %d, want the fake inventory's 409 — a matching echo must not stop the sale: %s",
 					res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
+// A v2 catalog answering a channelled request must NOT break the sale.
+//
+// Found at ai-review. `channel_code` is a v3 field, so an unconditional echo
+// guard rejects every channelled request from new commerce to an old catalog —
+// turning a routine deploy ordering into a sales outage, which is the exact
+// failure this file's comments say the version cap was removed to avoid.
+//
+// The guard is therefore gated on the resolver version: v3+ must echo exactly,
+// v1-v2 may omit the field because they cannot know about it. What no version
+// may do is echo a channel that was never asked for.
+func TestReserveToleratesAV2CatalogOmittingTheChannelEcho(t *testing.T) {
+	cases := []struct {
+		name     string
+		version  string
+		echo     *string
+		asked    string
+		wantFail bool
+	}{
+		// The rollout case: old catalog, channelled sale. Must proceed.
+		{"v2 omits the echo on a channelled request", `"resolver_version":2`, nil, "reseller", false},
+		{"v1 omits the echo on a channelled request", `"resolver_version":1`, nil, "reseller", false},
+		// v3 knows the field, so omitting it is a real defect, not a version gap.
+		{"v3 omitting the echo is refused", `"resolver_version":3`, nil, "reseller", true},
+		// Echoing an unrequested channel is wrong at ANY version — the answer is
+		// about a different sale, and no version gap explains it.
+		{"v2 echoing an unrequested channel is still refused", `"resolver_version":2`, ptr("pos"), "", true},
+		{"v1 echoing a different channel is still refused", `"resolver_version":1`, ptr("pos"), "reseller", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(resolutionBodyFor(900, true, tc.echo), `"resolver_version":3`, tc.version, 1)
+			if !strings.Contains(body, tc.version) {
+				t.Fatalf("fixture does not carry %s: %s", tc.version, body)
+			}
+			catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				if strings.HasSuffix(r.URL.Path, "/price-resolution") {
+					_, _ = w.Write([]byte(body))
+					return
+				}
+				var feeCh *string
+				if tc.asked != "" {
+					feeCh = &tc.asked
+				}
+				_, _ = w.Write([]byte(emptyFeeResolutionBody(feeCh)))
+			}))
+			defer catalog.Close()
+			inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"error":"stop"}`))
+			}))
+			defer inventory.Close()
+
+			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			res := reserveInChannel(t, s, "mixed-"+tc.name, tc.asked)
+			if tc.wantFail && res.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500 — this resolution is unusable: %s", res.Code, res.Body.String())
+			}
+			// Reaching the fake inventory's 409 is what "the sale proceeded"
+			// looks like. A 500 here would be the outage this test exists to
+			// prevent.
+			if !tc.wantFail && res.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want the fake inventory's 409 — an older catalog must not stop "+
+					"a channelled sale during a rolling deploy: %s", res.Code, res.Body.String())
 			}
 		})
 	}

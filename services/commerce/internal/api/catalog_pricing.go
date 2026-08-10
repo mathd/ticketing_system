@@ -140,11 +140,30 @@ func (p priceResolution) validate(organizerID uuid.UUID, quantity int32, channel
 	// The echoed channel must be the one asked about. A mismatch means the
 	// answer describes a different question, and pricing from it would charge
 	// another channel's price. Same guard, same reasoning as fee resolution.
+	//
+	// GATED ON THE RESOLVER VERSION, and that gate is a rolling-deployment
+	// requirement rather than caution (found at ai-review). channel_code is a
+	// v3 field: a v2 catalog does not send it, so an unconditional guard would
+	// reject every channelled request from new commerce to an old catalog and
+	// turn a routine deploy ordering into a sales outage — precisely the failure
+	// this file's own comment says the version cap was removed to avoid.
+	//
+	// So: v3+ must echo exactly; v1-v2 are allowed to omit it, because they
+	// cannot know about it. What they may NOT do is echo a channel that was
+	// never asked for — that is a wrong answer at any version.
+	//
+	// The deployment order this makes safe is commerce first, then catalog. In
+	// the reverse order a v3 catalog answers old commerce, which never forwards
+	// a channel, so every sale prices channel-agnostically: correct, and the
+	// pre-TKT-237 behaviour. Neither order silently mis-prices.
+	const channelEchoFromVersion int32 = 3
 	switch {
-	case channel == nil && p.ChannelCode != nil:
+	case p.ChannelCode != nil && channel == nil:
 		return bad("price resolution echoes a channel the sale did not request")
-	case channel != nil && (p.ChannelCode == nil || *p.ChannelCode != *channel):
+	case p.ChannelCode != nil && *p.ChannelCode != *channel:
 		return bad("price resolution echoes a different channel")
+	case p.ChannelCode == nil && channel != nil && p.ResolverVersion >= channelEchoFromVersion:
+		return bad("price resolution omits the channel the sale requested")
 	}
 
 	// Any version >= 1 is accepted, and the reason is worth writing down because

@@ -261,6 +261,47 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 		return scoped[i].ID.String() < scoped[j].ID.String()
 	})
 
+	// Channel eligibility, BEFORE the currency check and before the window
+	// filter. Both orderings are load-bearing and neither is stylistic (TKT-237).
+	//
+	// A rule belonging to another channel must be ABSENT from provenance, not
+	// reported as a loser: returning it would publish which channels carry
+	// bespoke pricing, and at what amounts, on a route the gateway proxies to
+	// the internet. (ADR-046 §4 argues this for fees, where the endpoint is
+	// /internal/; here the audience is the internet, so the reason is strictly
+	// stronger. TKT-155 already tracks this array over-disclosing.)
+	//
+	// BEFORE THE WINDOW, because filtering after it would classify a foreign
+	// channel's expired rule as `outside_window_past` and report it — leaking
+	// exactly what this filter hides, through the branch that looks unrelated to
+	// channels.
+	//
+	// BEFORE THE CURRENCY CHECK, and this one was a real defect found at
+	// ai-review. The fee resolver deliberately checks currency across channels,
+	// on the argument that a rule misconfigured for another channel is still
+	// misconfigured and should fail loudly rather than lie in wait. Mirroring
+	// that here was wrong, because the two resolvers do not fail the same way: a
+	// currency mismatch aborts the WHOLE resolution with an error, so one
+	// misconfigured `pos` rule made every `reseller` and every public request
+	// return 500. That is a cross-channel outage — one channel's bad
+	// configuration taking down every other channel's sales — and, on a public
+	// endpoint, an oracle for the existence of a rule the filter exists to hide.
+	//
+	// The cost of the correct order, stated: a misconfigured rule on a channel
+	// nobody is currently buying through stays silent until a sale arrives on
+	// it, and then fails closed. That is the same latency the window filter
+	// already accepts for a future-dated rule, and it is strictly better than an
+	// outage on channels that are configured correctly. An operator-facing
+	// validation sweep is the right place to surface it early; TKT-243 carries
+	// that.
+	channelScoped := make([]PriceRule, 0, len(scoped))
+	for _, r := range scoped {
+		if priceChannelEligible(r, in.Channel) {
+			channelScoped = append(channelScoped, r)
+		}
+	}
+	scoped = channelScoped
+
 	// Two rules sharing an id would make the answer depend on input order: the
 	// final tie-break is the id itself, so they form an equivalence class the
 	// comparator cannot separate, and the loser loop would suppress both. The
@@ -306,34 +347,6 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 	// The CHECK in migration 0013 makes a reversed window unrepresentable, so
 	// no rule can be simultaneously past and future and the two reasons below
 	// are mutually exclusive.
-	// Channel eligibility runs BEFORE the window filter, and the order is
-	// load-bearing rather than stylistic (TKT-237).
-	//
-	// A rule belonging to another channel must be ABSENT from provenance, not
-	// reported as a loser — returning it would publish which channels carry
-	// bespoke pricing, and at what amounts, on a route the gateway proxies to
-	// the internet. (ADR-046 §4 makes the same argument for fees; there the
-	// endpoint is /internal/, so the disclosure was smaller and the reasoning
-	// still held. TKT-155 already tracks this array over-disclosing; this must
-	// not widen it.)
-	//
-	// Filtering channel AFTER the window would classify a foreign channel's
-	// expired rule as `outside_window_past` and report it — leaking exactly what
-	// this filter exists to hide, through the one branch that looks unrelated to
-	// channels.
-	//
-	// Currency is deliberately checked EARLIER still, and independently of
-	// channel: a rule misconfigured for another channel is still misconfigured
-	// and will charge wrongly the moment a sale arrives on that channel, so it
-	// must fail loudly now rather than lie in wait.
-	channelScoped := make([]PriceRule, 0, len(scoped))
-	for _, r := range scoped {
-		if priceChannelEligible(r, in.Channel) {
-			channelScoped = append(channelScoped, r)
-		}
-	}
-	scoped = channelScoped
-
 	eligible := make([]PriceRule, 0, len(scoped))
 	var windowLosers []LosingPriceRule
 	for _, r := range scoped {

@@ -866,3 +866,110 @@ func TestChannelFilterRunsBeforeTheWindowFilter(t *testing.T) {
 		t.Fatalf("ResolvedPrice = %d, want the base 4550", got.ResolvedPrice.Amount)
 	}
 }
+
+// A foreign channel's MISCONFIGURED rule must be invisible — and an eligible
+// one must still fail closed.
+//
+// Found at ai-review, and it was a real defect. The currency check originally
+// ran across every scoped rule before channel eligibility, mirroring the fee
+// resolver, which does exactly that on the argument that a rule misconfigured
+// for another channel is still misconfigured and should fail loudly rather than
+// lie in wait.
+//
+// That mirroring was wrong, because the two resolvers do not fail the same way.
+// A currency mismatch aborts the WHOLE resolution, so one bad `pos` rule made
+// every `reseller` request and every public request return 500: one channel's
+// configuration taking down every other channel's sales, and — on an endpoint
+// the gateway proxies to the internet — an oracle for the existence of a rule
+// the channel filter exists to hide.
+//
+// The hides-other-channels tests could not catch this: every fixture there
+// shares one currency, so the ineligible rule was never also invalid. That is
+// the "fixture too small" shape — the test looked thorough and could not
+// express the failure.
+func TestForeignChannelMisconfigurationIsInvisibleButEligibleStillFailsClosed(t *testing.T) {
+	usd := func(r PriceRule) PriceRule { r.Currency = "USD"; return r }
+	reseller := chanReq("reseller")
+
+	cases := []struct {
+		name      string
+		requested *string
+		rules     []PriceRule
+		wantErr   bool
+	}{
+		{
+			// The defect. A USD rule on 'pos' is ineligible for 'reseller', so it
+			// must not be looked at, let alone abort the resolution.
+			name:      "foreign channel's bad currency does not break another channel",
+			requested: reseller,
+			rules: []PriceRule{
+				rule(ruleA, ScopeEvent, eventID, 3000),
+				usd(onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "pos")),
+			},
+		},
+		{
+			// Same rule, public request. Also ineligible, also invisible.
+			name:      "foreign channel's bad currency does not break the public context",
+			requested: nil,
+			rules: []PriceRule{
+				rule(ruleA, ScopeEvent, eventID, 3000),
+				usd(onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "pos")),
+			},
+		},
+		{
+			// The other half, and the one that keeps this a guard rather than a
+			// hole: a misconfigured rule on the REQUESTED channel is eligible,
+			// so it still aborts. Without this case, deleting the currency check
+			// entirely would pass.
+			name:      "requested channel's bad currency still fails closed",
+			requested: reseller,
+			rules: []PriceRule{
+				rule(ruleA, ScopeEvent, eventID, 3000),
+				usd(onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "reseller")),
+			},
+			wantErr: true,
+		},
+		{
+			// A channel-AGNOSTIC misconfigured rule is eligible everywhere, so it
+			// aborts in every context including the public one.
+			name:      "agnostic bad currency still fails closed on a named channel",
+			requested: reseller,
+			rules:     []PriceRule{usd(rule(ruleB, ScopeEvent, eventID, 2500))},
+			wantErr:   true,
+		},
+		{
+			name:      "agnostic bad currency still fails closed in the public context",
+			requested: nil,
+			rules:     []PriceRule{usd(rule(ruleB, ScopeEvent, eventID, 2500))},
+			wantErr:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SelectPricingRule(evalAt, PricingCandidates{
+				BasePrice: Money{Amount: 4550, Currency: "EUR"},
+				Scopes:    testScopes(true),
+				Rules:     tc.rules,
+				Channel:   tc.requested,
+			})
+			if tc.wantErr {
+				if !errors.Is(err, ErrPriceRuleCurrencyMismatch) {
+					t.Fatalf("err = %v, want ErrPriceRuleCurrencyMismatch — an ELIGIBLE misconfigured rule "+
+						"must fail closed rather than sell at the wrong price", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want nil — a rule on another channel is ineligible and must not "+
+					"abort this channel's resolution (cross-channel outage, and a disclosure oracle)", err)
+			}
+			// And it is absent from provenance, not merely non-fatal.
+			for _, c := range got.Candidates {
+				if c.Rule.ID == ruleB {
+					t.Fatalf("the foreign channel's rule appears in candidates as %q", c.Reason)
+				}
+			}
+		})
+	}
+}
