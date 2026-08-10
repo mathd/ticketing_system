@@ -2,7 +2,7 @@
   "key": "TKT-235",
   "type": "Story",
   "summary": "US-CH1: Channel registry — a channel becomes a defined thing in catalog",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
     "needs:human"
   ],
@@ -10,7 +10,7 @@
   "pr": {
     "number": 192,
     "url": "https://github.com/mathd/ticketing_system/pull/192",
-    "state": "open"
+    "state": "merged"
   },
   "parent": "TKT-17",
   "description": "Today `channel_code` is an exact opaque string duplicated across four tables in three services (`claims`, `channel_allocations`, `fee_rules`, `split_schedules`), each with a comment saying the bounds must agree, and nothing defines what a channel *is*. This story creates the registry: an organizer-scoped catalog table of channels with a code, a display name, a kind, and an enabled flag, plus the reads that let the rest of the platform resolve a code to a definition.\n\n**Conditions of Success:**\n- A `channels` table in catalog, organizer-scoped, with `code` (the same 1..100 exact opaque string bound the four existing tables use), `display_name`, `kind` (`web` | `pos` | `presale` | `reseller`), `enabled`, and standard timestamps. Unique on (organizer_id, code).\n- Catalog exposes CRUD over the registry: create, list, get, update. Codes are immutable after creation (a rename is a new channel) — attempting to change one is refused.\n- A public read returns only enabled channels and their display names, in ADR-004's tier with an explicit `Cache-Control`; the operator read (internal) returns everything including disabled.\n- **No FK from `claims`, `channel_allocations`, `fee_rules` or `split_schedules` to the registry.** ADR-024 forbids it for `claims` (historical attribution must survive a channel being deleted); the same argument extends to the rest. The registry is a lookup, not a constraint — an unregistered code keeps working exactly as it does today.\n- A migration backfills nothing and changes no existing table.\n- Tests: the code-immutability refusal, the enabled/disabled split between the two reads, the uniqueness constraint per organizer, and a test asserting an unregistered channel code still sells (the no-FK guarantee).\n\nQuality gates: `make check` green; contract tests for the touched catalog boundary; OpenAPI regenerated and committed before the gate; new public read declares its ADR-004 TTL tier with rationale.\n\nParent: TKT-17. Non-goals: per-channel pricing (US-CH3), windows (US-CH4), presale codes (US-CH5), reseller API (US-CH6), any back-office UI (US-CH2).",
