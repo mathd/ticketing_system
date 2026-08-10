@@ -94,7 +94,69 @@
         "link": "docs/adr/ADR-044-inventory-availability-cache.md"
       }
     ],
-    "capturedAt": "2026-08-09"
+    "capturedAt": "2026-08-10",
+    "governingTests": [
+      {
+        "test": "smoke/internal/loadtest/loadtest_test.go:254 TestClassifyHold409",
+        "rule": "THE SHARPEST TRAP. A 409 carrying ANY `code` is classified KindServerError — the table pre-declares an 'unknown code' case as a server error. A new refusal code breaks the on-sale load harness by design until taught there (loadtest.go:376 says so in a comment)."
+      },
+      {
+        "test": "services/inventory/api/openapi.yaml:378 (Error.code enum) + shared/go/contract/http.go:123",
+        "rule": "The refusal-code enum is CLOSED. ADR-028 replaces a drifting response with a 500, so emitting `channel_not_open` without amending the enum turns every window refusal into a server error — in production, not just in tests."
+      },
+      {
+        "test": "smoke/onsale_read_proof_test.go:321 readControl",
+        "rule": "The availability read is pinned at EXACTLY two statements, matched by hardcoded SQL column fragments. Adding a third query — or changing store.go:409's column list — breaks the read proof numerically."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:350 TestReleaseCutoffHoldsUnderPoolLockContention",
+        "rule": "clock_timestamp(), NOT now(). A hold that begins before a cutoff but queues on the pool lock across it must still reject. A window written with now() reintroduces a bug this test already litigated."
+      },
+      {
+        "test": "services/inventory/internal/store/availability_invalidation_test.go:87 TestAvailabilityMutationsUseInvalidatingCommit",
+        "rule": "An AST scan: ANY production file in internal/store containing a raw .Commit() is an offender. A new sales-windows write path must commit via commitAvailability. Exempt list is two files only."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:100 TestChannelJoinsFingerprintAndLegacyIsPinned",
+        "rule": "The hold fingerprint includes the channel and the channel-less form is pinned BYTE-IDENTICAL to the pre-channel SHA-256. A window must NOT enter the fingerprint — it is a property of the allocation, not the request."
+      },
+      {
+        "test": "services/inventory/internal/store/store.go:239 (offering guard placement)",
+        "rule": "The offering guard sits AFTER idempotency replay, so replaying a pre-closure hold returns its original outcome. A window guard must sit in the same place or a replay starts failing once the window closes."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations.go:45 reservedForChannelsSQL",
+        "rule": "SEMANTIC FORK NOBODY HAS DECIDED: is a window-CLOSED allocation's capacity still reserved (unsellable by the public) or released? TestScheduledReleaseIsLazyAndObservable:245 pins the released answer for release_at; nothing pins it for a window, and getting it wrong silently changes public availability."
+      },
+      {
+        "test": "smoke/inventory_contention_test.go:137 TestChannelAllocationContention",
+        "rule": "Exact grant counts under contention (presale 6 / public 4), and EVERY non-201 must be 409. A window refusal with any other status fails all three contention tests."
+      },
+      {
+        "test": "services/inventory/internal/store/store.go:196 (closure_status column order)",
+        "rule": "closure_status must stay the LAST column before FROM inventory_pools ... FOR UPDATE — the lock-handshake LIKE pattern at inventory_contention_test.go:226 pins the statement text."
+      },
+      {
+        "test": "smoke/coverage_test.go:90 smokeCoverageGatedServices",
+        "rule": "inventory IS gated: every documented 2xx operation must be driven through the real stack on an unfiltered run, or TestMain fails the whole suite."
+      },
+      {
+        "test": "shared/go/cachetier/spec_audit_test.go:275 + availability_cache_tier_test.go:28",
+        "rule": "A NEW operation declaring a Cache-Control tier must be added to wantDeclarations and needs its OWN tier constant — sharing one hides drift. A body-only change to getAvailability does not trip this."
+      },
+      {
+        "test": "services/inventory/internal/availability/cache_test.go:132 TestKeyIncludesOrganizerAndChannel",
+        "rule": "The availability cache keys on (organizer, slot, channel) with a 5s tier. A window makes the answer TIME-VARYING within that tier: a slot whose window opens mid-tier serves a stale 'closed' answer for up to 5s. Nothing invalidates on a time boundary."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:498 TestAnUnregisteredChannelCodeStillSells",
+        "rule": "A tripwire for 'some future ticket adds a registry lookup to the claim path'. Windows must live in INVENTORY's allocation rows, not behind a catalog call — ADR-024 scopes them to TKT-17 and this test is what catches the mistake."
+      },
+      {
+        "test": "smoke/smoke_test.go:279 TestMigrationsAppliedOutOfBand",
+        "rule": "Every service's DB must reach the highest checked-in migration number, parsed from filenames. Inventory's next is 0013. Inventory has NO migration_smoke_test.go, so a rollback guard owes no test — but a nullable-column guard must key on NON-NULL values, not a row count (catalog's 0019 lesson)."
+      }
+    ]
   },
   "links": [
     {
@@ -107,6 +169,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Presale-before-public is inexpressible today |\n| Scope | ✅ | Window + enforcement + refusal; codes are US-CH5 |\n| Uncertainties | ✅ | Placement resolved by reading ADR-010/ADR-024: enforcement must be inside the pool lock, so the row is inventory's |\n| Dependencies | ⚠️ | Blocked by TKT-235 |\n| Approach | ✅ | Mirrors the shipped release_at predicate; verified it already uses clock_timestamp() for the same reason |\n| First slice | ✅ | A window that does not refuse is decoration |\n| Success | ✅ | Stale-clock test is load-bearing |\n| Context-mémo | ✅ | Baked |\n\n**Concerns:** none beyond the TKT-235 ordering.\n**Verdict:** PASS."
+    },
+    {
+      "stage": "backlog",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=backlog kind=blocker -->\n### ⚠️ Two decisions the plan must take explicitly — surfaced by the `governingTests` bake\n\nNot blockers on claiming. Both are places where the obvious implementation silently changes shipped\nbehaviour, and both are cheaper to decide now than to discover at the gate.\n\n#### 1. A new refusal code breaks the on-sale load harness **by design**\n\nCOS-3 requires the window refusal to be *distinguishable from \"sold out\"*. In inventory that means a\nmachine-readable `code` on the 409 — and three things immediately follow:\n\n- `services/inventory/api/openapi.yaml:378` — the `Error.code` enum is **closed**, and ADR-028\n  replaces a drifting response with a **500**. Emitting `channel_not_open` without amending the enum\n  turns every window refusal into a server error *in production*.\n- `smoke/internal/loadtest/loadtest_test.go:254` `TestClassifyHold409` — a 409 carrying **any** code\n  is classified `KindServerError`. Its table already contains an `\"unknown code\"` case asserting\n  exactly that, and `loadtest.go:376` says in a comment: *\"Cost accepted at plan: a new inventory 409\n  code breaks the harness until taught here.\"*\n- `services/inventory/internal/api/server_test.go:289` pins the exact refusal bodies, and\n  `ErrUnavailable` → `409 {\"error\":\"insufficient capacity\"}` with **no `code`**. A new sentinel that\n  is not added there falls through into the code-less sellout shape — which is precisely the\n  outcome COS-3 forbids.\n\nThe plan must name all three edits, or the ticket ships a window refusal that reads as a 500 to the\nload proof and as \"sold out\" to everyone else.\n\n#### 2. Is a window-closed allocation's capacity **reserved** or **released**?\n\n`reservedForChannelsSQL` (`channel_allocations.go:45`) subtracts capacity reserved for *active*\nallocations from what the public may claim. `release_at` answers this: past its release an allocation\nstops being active, and `TestScheduledReleaseIsLazyAndObservable:245` pins that its unsold remainder\nbecomes **publicly claimable**.\n\n**Nothing pins the answer for a window**, and the two readings are both defensible:\n\n- *Released* — symmetric with `release_at`: a presale that has not opened yet leaves its capacity to\n  the public until it does. But then a presale cap guarantees nothing before it opens, and a public\n  on-sale can eat the presale's allocation overnight.\n- *Reserved* — the presale's capacity is held for it whether or not the window is open, which is\n  what an organizer configuring a presale almost certainly means. But it means capacity sits\n  unsellable by anyone during a closed window, which looks like an oversell-free undersell.\n\n**These produce different public availability numbers**, and the difference is silent — no test\nfails either way today. The plan must choose, say why, and pin it.\n\n*(Agent's provisional lean: **reserved**, because a channel allocation is a promise about capacity\nand a window is a statement about time — a promise that evaporates until its window opens is not\nmuch of a promise. But this is a product call and plan-review should attack it.)*\n\n#### And one thing the bake settled rather than opened\n\n**Windows live in inventory's allocation rows, not in catalog's registry.** ADR-024 scopes them to\nTKT-17, and `TestAnUnregisteredChannelCodeStillSells` (added by TKT-235) is an explicit tripwire for\n*\"some future ticket adds a registry lookup to the claim path\"*. Putting windows in catalog and\nhaving inventory call for them would fail that test, and its comment says catching exactly this is\nthe point.\n"
     }
   ]
 }
