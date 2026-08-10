@@ -2,10 +2,8 @@
   "key": "TKT-235",
   "type": "Story",
   "summary": "US-CH1: Channel registry — a channel becomes a defined thing in catalog",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 192,
