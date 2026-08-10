@@ -1,0 +1,108 @@
+{
+  "key": "TKT-236",
+  "type": "Story",
+  "summary": "US-CH2: Back-office channel administration — manage the registry and a slot's allocations from a browser",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "The registry (US-CH1) and channel allocations (shipped, TKT-78) are both API-only. `PUT /internal/slots/{id}/channel-allocations` is unreachable from the edge by construction, and no UI exists anywhere. This story gives back-office staff the screens.\n\n**Conditions of Success:**\n- A back-office channels page lists the organizer's channels and supports create / enable / disable / rename-display-name. Code is shown read-only (immutable per US-CH1).\n- A slot's channel-allocations editor shows the current allocation set with each channel's cap, `release_at` and current consumption, and submits the full set as one atomic replace (the shipped PUT is a full-set replace under the pool lock — the UI must not offer per-row saves, which would round-trip a stale set).\n- The editor surfaces the two server-side refusals as field errors rather than a generic failure: caps summing above pool capacity, and a cap below that channel's current consumption.\n- Allocation rows for channels absent from the registry render with their raw code and a marker — the registry is a lookup, not a constraint, and pre-existing codes must stay editable.\n- **Browser-verified:** `make browser` plus a spec in `test/browser/` that *submits* both write forms, not just renders them.\n\nQuality gates: `make check` green; `make browser` green with the new spec; screenshot in the PR; OpenAPI/types regenerated and committed before the gate.\n\nParent: TKT-17. Depends on US-CH1 (needs the registry to list). Non-goals: pricing, windows, presale codes, reseller API.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Registry and allocations are both API-only; an organizer cannot split capacity across channels without curl. This is the story that makes the epic demoable."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: back-office channels CRUD page, slot allocation editor (atomic full-set replace), the two refusal paths as field errors, unregistered-code rendering, browser submit specs. OUT: storefront UI, pricing/windows/presale/reseller."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading: PUT /internal/slots/{id}/channel-allocations is a full-set atomic replace with no If-Match (ADR-024 accepts this while allocation editing is single-operator) — so the UI must submit the whole set. Internal routes are 404'd at the gateway edge (gateway/cmd/gateway/main.go:42-49), so the back office reaches inventory the same way the existing back-office write paths do; that path is read at plan time."
+    },
+    "dependencies": {
+      "state": "open",
+      "note": "Blocked by US-CH1 (TKT-235) — needs the registry to list channels."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Astro back-office pages following the existing back-office write-form pattern. The known trap is CSRF/checkOrigin on Astro form submits, which make check cannot see — hence the mandatory make browser spec that submits (AGENTS.md, TKT-105/TKT-226)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Channels CRUD page first, allocation editor second — both in one PR; they are the same screen family and split would leave the allocation editor with nothing to pick from."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS above; browser-submit evidence is the acceptance signal, per AGENTS.md."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-024",
+        "why": "Channel codes are exact opaque strings — no normalization, no case folding; a registry must not introduce an FK from claims (historical attribution) nor a counter; release stays a clock_timestamp() predicate under the pool FOR UPDATE."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns rule and entity definitions; commerce owns pricing/fee/promo evaluation. A channel registry is a definition and belongs in catalog."
+      },
+      {
+        "id": "ADR-009",
+        "why": "OpenAPI is the source of truth; generated code must be committed before the gate or check-generate reads the regen as drift."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response validation is fail-closed; a response that drifts from the contract is a 5xx, not a silent pass."
+      },
+      {
+        "id": "ADR-042",
+        "why": "Staff identity and back-office sessions — the channels pages are staff-authenticated surfaces and inherit this session model."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-17 capability row + US-015 non-goals (registry/pricing/windows stay in TKT-17)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-024 channel allocations — the shipped substrate this epic builds on",
+        "link": "docs/adr/ADR-024-channel-allocations.md"
+      },
+      {
+        "summary": "A web-UI ticket is not verified until a browser has SUBMITTED its forms — make check only renders back-office pages, so CSRF/checkOrigin, base-path rewrites, redirects and CSP are invisible to it",
+        "link": "docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md"
+      },
+      {
+        "summary": "PUT /internal/slots/{id}/channel-allocations has no If-Match; ADR-024 accepts this while allocation editing is single-operator",
+        "link": "services/inventory/api/openapi.yaml:217"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-235"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Makes the shipped allocation machinery operable without curl |\n| Scope | ✅ | Two screens, one PR |\n| Uncertainties | ✅ | Full-set-replace semantics and the gateway internal-route deny both read from the code |\n| Dependencies | ⚠️ | Blocked by TKT-235 (registry) — hard, resolves when CH1 merges |\n| Approach | ✅ | Existing back-office write-form pattern; browser-submit spec mandatory |\n| First slice | ✅ | Both screens together — splitting leaves the editor with nothing to list |\n| Success | ✅ | Browser-submit evidence is the acceptance signal |\n| Context-mémo | ✅ | Baked, incl. the checkOrigin learning |\n\n**Concerns:** 1. Blocked by TKT-235 until it merges (ordinary sequencing, not a risk).\n**Verdict:** PASS — proceed once TKT-235 is Done."
+    }
+  ]
+}
