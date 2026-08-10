@@ -2,10 +2,8 @@
   "key": "TKT-238",
   "type": "Story",
   "summary": "US-CH4: Per-channel sales windows — when a channel may sell",
-  "status": "Building",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 195,
