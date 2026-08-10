@@ -1,0 +1,98 @@
+{
+  "key": "TKT-235",
+  "type": "Story",
+  "summary": "US-CH1: Channel registry — a channel becomes a defined thing in catalog",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "Today `channel_code` is an exact opaque string duplicated across four tables in three services (`claims`, `channel_allocations`, `fee_rules`, `split_schedules`), each with a comment saying the bounds must agree, and nothing defines what a channel *is*. This story creates the registry: an organizer-scoped catalog table of channels with a code, a display name, a kind, and an enabled flag, plus the reads that let the rest of the platform resolve a code to a definition.\n\n**Conditions of Success:**\n- A `channels` table in catalog, organizer-scoped, with `code` (the same 1..100 exact opaque string bound the four existing tables use), `display_name`, `kind` (`web` | `pos` | `presale` | `reseller`), `enabled`, and standard timestamps. Unique on (organizer_id, code).\n- Catalog exposes CRUD over the registry: create, list, get, update. Codes are immutable after creation (a rename is a new channel) — attempting to change one is refused.\n- A public read returns only enabled channels and their display names, in ADR-004's tier with an explicit `Cache-Control`; the operator read (internal) returns everything including disabled.\n- **No FK from `claims`, `channel_allocations`, `fee_rules` or `split_schedules` to the registry.** ADR-024 forbids it for `claims` (historical attribution must survive a channel being deleted); the same argument extends to the rest. The registry is a lookup, not a constraint — an unregistered code keeps working exactly as it does today.\n- A migration backfills nothing and changes no existing table.\n- Tests: the code-immutability refusal, the enabled/disabled split between the two reads, the uniqueness constraint per organizer, and a test asserting an unregistered channel code still sells (the no-FK guarantee).\n\nQuality gates: `make check` green; contract tests for the touched catalog boundary; OpenAPI regenerated and committed before the gate; new public read declares its ADR-004 TTL tier with rationale.\n\nParent: TKT-17. Non-goals: per-channel pricing (US-CH3), windows (US-CH4), presale codes (US-CH5), reseller API (US-CH6), any back-office UI (US-CH2).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Four tables carry an opaque channel_code and nothing defines a channel. Every later story in this epic needs a definition to hang behavior off. This is the prefactor slice."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: channels table (organizer-scoped), catalog CRUD, public enabled-only read + internal full read, ADR-004 tier, migration. OUT: pricing axis, windows, presale codes, reseller API, UI, any FK or enforcement against existing channel_code columns."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading: the 1..100 bound is set in services/inventory/.../0004_channel_allocations.sql, catalog 0016_fee_rules.sql:57 and 0017_payees_and_split_schedules.sql:60 — the registry mirrors it rather than inventing one. `kind` is a closed enum here; extending it later is additive."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None open. Builds on shipped TKT-78/TKT-214/TKT-216 substrate; blocks every other child of TKT-17."
+    },
+    "approach": {
+      "state": "met",
+      "note": "New catalog migration + store + API, mirroring the shape of 0016_fee_rules.sql and its store/api pair. Deliberately additive: no existing table is altered, so no existing sale path changes behavior. Verified against the code — the four channel_code columns are independent and uncoerced today, so a lookup-only registry is genuinely non-breaking."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "This IS the first slice — table + CRUD + reads, demoable by creating a channel and listing it."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS above; the load-bearing one is the no-FK test proving an unregistered code still sells."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns rule and entity definitions; commerce owns pricing/fee/promo evaluation. A channel registry is a definition and belongs in catalog."
+      },
+      {
+        "id": "ADR-024",
+        "why": "Channel codes are exact opaque strings — no normalization, no case folding; a registry must not introduce an FK from claims (historical attribution) nor a counter; release stays a clock_timestamp() predicate under the pool FOR UPDATE."
+      },
+      {
+        "id": "ADR-009",
+        "why": "OpenAPI is the source of truth; generated code must be committed before the gate or check-generate reads the regen as drift."
+      },
+      {
+        "id": "ADR-004",
+        "why": "Every public read endpoint declares a volatility-tiered TTL with explicit Cache-Control."
+      },
+      {
+        "id": "ADR-045",
+        "why": "Catalog's public read cache machinery — a new public catalog read joins its tier discipline."
+      },
+      {
+        "id": "ADR-044",
+        "why": "Inventory availability cache is channel-keyed with a 128-entry per-slot bound; a registry must not let arbitrary channel strings cache-through."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-17 capability row + US-015 non-goals (registry/pricing/windows stay in TKT-17)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-024 channel allocations — the shipped substrate this epic builds on",
+        "link": "docs/adr/ADR-024-channel-allocations.md"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Registry is the prefactor every other child needs |\n| Scope | ✅ | Additive only — no existing table altered |\n| Uncertainties | ✅ | Length bound and enum resolved by reading the three existing migrations |\n| Dependencies | ✅ | No open blockers; blocks US-CH2..CH6 |\n| Approach | ✅ | Verified: the four channel_code columns are independent today, so a lookup-only registry is non-breaking |\n| First slice | ✅ | Table + CRUD + reads, demoable standalone |\n| Success | ✅ | COS verifiable; no-FK test is the load-bearing one |\n| Context-mémo | ✅ | Baked, 6 governing ADRs each resolving to a real file at HEAD |\n\n**Concerns:** none.\n**Verdict:** PASS — smallest safe slice of TKT-17 and the prefactor for the rest."
+    }
+  ]
+}
