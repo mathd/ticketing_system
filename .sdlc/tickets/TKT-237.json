@@ -4,7 +4,7 @@
   "summary": "US-CH3: Per-channel price rules — give pricing the channel axis fees already have",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
