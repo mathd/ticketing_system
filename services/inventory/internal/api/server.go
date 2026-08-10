@@ -140,6 +140,14 @@ func problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrSlotClosed):
 		write(w, 409, map[string]string{"error": err.Error(), "code": "slot_closed"})
 		return
+	// A closed sales window is not a sold-out channel and not a dead slot: the
+	// caller should wait for the window, not join a waitlist (TKT-238). It carries
+	// a code for the same reason the two above do, and `slot_closed` deliberately
+	// is not reused — that mirrors catalog's offering closure on the whole SLOT,
+	// while this is one allocation row being temporally shut.
+	case errors.Is(err, store.ErrChannelWindowClosed):
+		write(w, 409, map[string]string{"error": err.Error(), "code": "channel_window_closed"})
+		return
 	case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrIdempotency), errors.Is(err, store.ErrPoolKindMismatch):
 		// ErrPoolKindMismatch: a quantity claim hit a seated pool (or a seat claim a GA
 		// pool) — a 409 conflict, not a 500.

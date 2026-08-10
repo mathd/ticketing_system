@@ -375,7 +375,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [slot_archived, slot_closed, seat_taken, seat_unavailable, pin_unavailable, orphaned_seats], description: 'Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request'}
+        code: {type: string, enum: [slot_archived, slot_closed, channel_window_closed, seat_taken, seat_unavailable, pin_unavailable, orphaned_seats], description: 'Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out.'}
         seat_identities:
           type: array
           description: >
@@ -612,6 +612,14 @@ components:
         channel: {type: string, minLength: 1, maxLength: 100}
         cap: {type: integer, minimum: 1}
         release_at: {type: string, format: date-time, description: 'When the unsold allocation returns to the public channel; omitted means never'}
+        opens_at:
+          type: string
+          format: date-time
+          description: 'Start of the sales window, inclusive (TKT-238). Omit for always-open.'
+        closes_at:
+          type: string
+          format: date-time
+          description: 'End of the sales window, EXCLUSIVE. Omit for never-closes. A reversed window is refused by the schema constraint.'
     ChannelAllocationSet:
       type: object
       additionalProperties: false
@@ -629,12 +637,34 @@ components:
     ChannelAvailability:
       type: object
       additionalProperties: false
-      required: [channel, cap, released, held, confirmed, available]
+      required: [channel, cap, released, held, confirmed, available, window_open]
       properties:
         channel: {type: string}
         cap: {type: integer}
         release_at: {type: string, format: date-time}
         released: {type: boolean}
+        opens_at:
+          type: string
+          format: date-time
+          description: >
+            Start of this channel's sales window (TKT-238), inclusive. Absent
+            means always open. Half-open [opens_at, closes_at).
+        closes_at:
+          type: string
+          format: date-time
+          description: >
+            End of this channel's sales window, EXCLUSIVE. Absent means never
+            closes.
+        window_open:
+          type: boolean
+          description: >
+            Whether the window admits a claim right now. STAFF ONLY — the public
+            availability read reports 0 for a closed channel and says nothing
+            about why, because an operator needs to tell "not open yet" from
+            "sold out" and a buyer does not.
+
+            Separate from `released`: a released allocation is over, a closed
+            window is not its turn yet, and only the second fixes itself.
         held: {type: integer}
         confirmed: {type: integer}
         available: {type: integer}

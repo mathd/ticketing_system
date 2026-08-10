@@ -23,6 +23,26 @@ import (
 // combine into an oversell.
 const activeAllocation = `(release_at IS NULL OR release_at > clock_timestamp())`
 
+// windowOpen is TKT-238's predicate: may this channel sell RIGHT NOW (ADR-054)?
+//
+// Half-open [opens_at, closes_at) — sellable AT the open bound, not at the close. NULL on
+// either side is unbounded there. Same convention as the price/fee/split rule windows, for
+// the same reason: two windows that abut must not both admit the instant between them.
+//
+// clock_timestamp(), not now(), for exactly the reason activeAllocation above gives — and
+// the two are separate predicates deliberately. `release_at` answers "does this allocation
+// still reserve capacity"; a window answers "may it sell". A closed window does NOT release
+// capacity (ADR-054 §Decision B): a presale's cap is a promise, and a promise that
+// evaporates until its window opens is not one. So this predicate appears in the CLAIM
+// paths and never in reservedForChannelsSQL.
+//
+// One const, reused. consumedQuantity's comment above records why: six call sites sum a
+// claim's consumption and one of them silently used a different expression. A window
+// predicate copied by hand into three claim paths would fork the same way, and the fork
+// would be invisible until a hold succeeded on a closed channel.
+const windowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
+	AND (closes_at IS NULL OR closes_at > clock_timestamp())`
+
 // consumingClaims is what counts against a channel's cap: confirmed consumption is
 // permanent, live holds are temporary. Built on liveClaims so expiry semantics can never
 // fork between pool and channel accounting.
@@ -54,6 +74,11 @@ type ChannelAllocation struct {
 	Channel   string     `json:"channel"`
 	Cap       int32      `json:"cap"`
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
+	// The sales window (TKT-238). Nil on either side is unbounded there: no
+	// OpensAt means always open, no ClosesAt means never closes. A reversed
+	// window is unrepresentable — the migration's CHECK refuses it.
+	OpensAt  *time.Time `json:"opens_at,omitempty"`
+	ClosesAt *time.Time `json:"closes_at,omitempty"`
 }
 
 type ChannelAvailability struct {
@@ -61,9 +86,17 @@ type ChannelAvailability struct {
 	Cap       int32      `json:"cap"`
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
 	Released  bool       `json:"released"`
-	Held      int32      `json:"held"`
-	Confirmed int32      `json:"confirmed"`
-	Available int32      `json:"available"`
+	// The sales window and whether it is open right now (TKT-238). STAFF ONLY:
+	// the public availability read reports 0 for a closed channel and says
+	// nothing about why. An operator needs the why — a channel showing 0 because
+	// it has not opened yet and one showing 0 because it sold out are different
+	// problems — and a buyer does not.
+	OpensAt    *time.Time `json:"opens_at,omitempty"`
+	ClosesAt   *time.Time `json:"closes_at,omitempty"`
+	WindowOpen bool       `json:"window_open"`
+	Held       int32      `json:"held"`
+	Confirmed  int32      `json:"confirmed"`
+	Available  int32      `json:"available"`
 }
 
 // ReplaceChannelAllocations atomically replaces the pool's full allocation set under the
@@ -114,7 +147,8 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 		return nil, err
 	}
 	for _, a := range allocs {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO channel_allocations(pool_id,channel_code,cap,release_at) VALUES($1,$2,$3,$4)`, slot, a.Channel, a.Cap, a.ReleaseAt); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO channel_allocations(pool_id,channel_code,cap,release_at,opens_at,closes_at) VALUES($1,$2,$3,$4,$5,$6)`,
+			slot, a.Channel, a.Cap, a.ReleaseAt, a.OpensAt, a.ClosesAt); err != nil {
 			return nil, err
 		}
 	}
@@ -131,6 +165,7 @@ func channelAvailabilities(ctx context.Context, q interface {
 }, pool uuid.UUID, globalRemaining int64) ([]ChannelAvailability, error) {
 	rows, err := q.QueryContext(ctx, `SELECT a.channel_code, a.cap, a.release_at,
 			(a.release_at IS NOT NULL AND a.release_at <= clock_timestamp()),
+			a.opens_at, a.closes_at, (`+windowOpen+`),
 			COALESCE(h.held,0), COALESCE(cf.confirmed,0)
 		FROM channel_allocations a
 		LEFT JOIN LATERAL (SELECT sum(quantity) AS held FROM claims WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND `+liveClaims+`) h ON true
@@ -143,10 +178,16 @@ func channelAvailabilities(ctx context.Context, q interface {
 	out := []ChannelAvailability{}
 	for rows.Next() {
 		var c ChannelAvailability
-		if err = rows.Scan(&c.Channel, &c.Cap, &c.ReleaseAt, &c.Released, &c.Held, &c.Confirmed); err != nil {
+		if err = rows.Scan(&c.Channel, &c.Cap, &c.ReleaseAt, &c.Released,
+			&c.OpensAt, &c.ClosesAt, &c.WindowOpen, &c.Held, &c.Confirmed); err != nil {
 			return nil, err
 		}
-		if !c.Released {
+		// A released OR window-closed channel has nothing claimable, so both
+		// report 0 — the same answer the claim path gives. They are separate
+		// fields rather than one "unavailable" flag because they are different
+		// facts with different remedies: a released allocation is over, a closed
+		// window is not its turn yet, and only the second will fix itself.
+		if !c.Released && c.WindowOpen {
 			c.Available = clampAvailable(min(globalRemaining, int64(c.Cap)-int64(c.Held)-int64(c.Confirmed)))
 		}
 		out = append(out, c)

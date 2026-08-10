@@ -50,17 +50,20 @@ func (e CapacityAdjustmentStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	OrphanedSeats   ErrorCode = "orphaned_seats"
-	PinUnavailable  ErrorCode = "pin_unavailable"
-	SeatTaken       ErrorCode = "seat_taken"
-	SeatUnavailable ErrorCode = "seat_unavailable"
-	SlotArchived    ErrorCode = "slot_archived"
-	SlotClosed      ErrorCode = "slot_closed"
+	ChannelWindowClosed ErrorCode = "channel_window_closed"
+	OrphanedSeats       ErrorCode = "orphaned_seats"
+	PinUnavailable      ErrorCode = "pin_unavailable"
+	SeatTaken           ErrorCode = "seat_taken"
+	SeatUnavailable     ErrorCode = "seat_unavailable"
+	SlotArchived        ErrorCode = "slot_archived"
+	SlotClosed          ErrorCode = "slot_closed"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case ChannelWindowClosed:
+		return true
 	case OrphanedSeats:
 		return true
 	case PinUnavailable:
@@ -203,6 +206,12 @@ type ChannelAllocation struct {
 	Cap     int    `json:"cap"`
 	Channel string `json:"channel"`
 
+	// ClosesAt End of the sales window, EXCLUSIVE. Omit for never-closes. A reversed window is refused by the schema constraint.
+	ClosesAt *time.Time `json:"closes_at,omitempty"`
+
+	// OpensAt Start of the sales window, inclusive (TKT-238). Omit for always-open.
+	OpensAt *time.Time `json:"opens_at,omitempty"`
+
 	// ReleaseAt When the unsold allocation returns to the public channel; omitted means never
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
 }
@@ -221,13 +230,23 @@ type ChannelAllocations struct {
 
 // ChannelAvailability defines model for ChannelAvailability.
 type ChannelAvailability struct {
-	Available int        `json:"available"`
-	Cap       int        `json:"cap"`
-	Channel   string     `json:"channel"`
+	Available int    `json:"available"`
+	Cap       int    `json:"cap"`
+	Channel   string `json:"channel"`
+
+	// ClosesAt End of this channel's sales window, EXCLUSIVE. Absent means never closes.
+	ClosesAt  *time.Time `json:"closes_at,omitempty"`
 	Confirmed int        `json:"confirmed"`
 	Held      int        `json:"held"`
+
+	// OpensAt Start of this channel's sales window (TKT-238), inclusive. Absent means always open. Half-open [opens_at, closes_at).
+	OpensAt   *time.Time `json:"opens_at,omitempty"`
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
 	Released  bool       `json:"released"`
+
+	// WindowOpen Whether the window admits a claim right now. STAFF ONLY — the public availability read reports 0 for a closed channel and says nothing about why, because an operator needs to tell "not open yet" from "sold out" and a buyer does not.
+	// Separate from `released`: a released allocation is over, a closed window is not its turn yet, and only the second fixes itself.
+	WindowOpen bool `json:"window_open"`
 }
 
 // ConvertResult defines model for ConvertResult.
@@ -240,7 +259,7 @@ type ConvertResult struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
+	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out.
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -248,7 +267,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable conflict reason; present when a dead slot, an already-held seat, an unmapped seat, or a transient pin failure rejected the request
+// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out.
 type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.

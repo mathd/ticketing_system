@@ -98,12 +98,27 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	if channel != "" {
 		// A channel reservation needs an active allocation with headroom (ADR-024).
 		var chCap int32
-		err = tx.QueryRowContext(ctx, `SELECT cap FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap)
+		// The window is read alongside the cap and judged below, for the reason
+		// CreateHold's does: filtering on it would make a closed window
+		// indistinguishable from an absent allocation.
+		//
+		// PlaceGroupReservation IS gated because it creates NEW consumption.
+		// DrawDownGroupReservation is deliberately NOT (ADR-054): a draw-down is
+		// quantity-neutral — it inserts a child and decrements the source in one
+		// pool-locked transaction, consuming nothing new — and ADR-027 already
+		// settled the analogous case for release_at, on the clause that transfers
+		// exactly: "the source already consumed it". Gating it would strand
+		// capacity an agency was granted inside the window.
+		var windowIsOpen bool
+		err = tx.QueryRowContext(ctx, `SELECT cap, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap, &windowIsOpen)
 		if errors.Is(err, sql.ErrNoRows) {
 			return GroupReservation{}, false, ErrUnavailable
 		}
 		if err != nil {
 			return GroupReservation{}, false, err
+		}
+		if !windowIsOpen {
+			return GroupReservation{}, false, ErrChannelWindowClosed
 		}
 		var consumed int64
 		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(`+consumedQuantity+`),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {

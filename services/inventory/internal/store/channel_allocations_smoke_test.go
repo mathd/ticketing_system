@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -523,5 +524,315 @@ func TestAnUnregisteredChannelCodeStillSells(t *testing.T) {
 	}
 	if confirmed.Channel != unregistered {
 		t.Fatalf("confirmed claim.Channel = %q, want %q verbatim", confirmed.Channel, unregistered)
+	}
+}
+
+// setWindow writes a sales window directly, in DB time.
+//
+// Bounds are expressed as clock_timestamp() arithmetic, never a Go-side literal
+// and never a time.Sleep. Two reasons, both learned here: a wall-clock fixture
+// rots the moment the suite runs slower than it did at merge (TKT-233's flake),
+// and a bound computed in Go can disagree with the server's clock by enough to
+// straddle the boundary under load — which is the exact condition the window is
+// supposed to decide correctly.
+func setWindow(t *testing.T, ctx context.Context, db *sql.DB, slot uuid.UUID, channel, opensExpr, closesExpr string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx,
+		`UPDATE channel_allocations SET opens_at=`+opensExpr+`, closes_at=`+closesExpr+
+			` WHERE pool_id=$1 AND channel_code=$2`, slot, channel); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The window gates claims, and its refusal is DISTINGUISHABLE from a sellout.
+//
+// Both halves matter. If it did not refuse, the feature does nothing; if it
+// refused with ErrUnavailable, a caller could not tell "not selling yet" from
+// "sold out" — opposite actions, and the whole reason COS-3 asks for a distinct
+// refusal.
+func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+
+	// Not open yet.
+	setWindow(t, ctx, db, slot, "presale", "clock_timestamp() + interval '1 hour'", "NULL")
+	_, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "win-early")
+	if !errors.Is(err, ErrChannelWindowClosed) {
+		t.Fatalf("before the window opens: got %v want ErrChannelWindowClosed — and NOT "+
+			"ErrUnavailable, which would read as sold out", err)
+	}
+	// The pool and the cap both have room; only the window refused.
+	if errors.Is(err, ErrUnavailable) {
+		t.Fatal("the window refusal is also an ErrUnavailable — the two must be distinct sentinels")
+	}
+
+	// Already closed.
+	setWindow(t, ctx, db, slot, "presale", "NULL", "clock_timestamp() - interval '1 second'")
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "win-late"); !errors.Is(err, ErrChannelWindowClosed) {
+		t.Fatalf("after the window closes: got %v want ErrChannelWindowClosed", err)
+	}
+
+	// Open. Same allocation, same pool, same quantity — only the window moved.
+	setWindow(t, ctx, db, slot, "presale", "clock_timestamp() - interval '1 hour'", "clock_timestamp() + interval '1 hour'")
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "win-open"); err != nil {
+		t.Fatalf("inside the window: %v", err)
+	}
+
+	// No window at all is always open — every allocation that existed before this
+	// migration has NULL bounds, so this is the regression that matters most.
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "win-none"); err != nil {
+		t.Fatalf("no window configured must behave exactly as before TKT-238: %v", err)
+	}
+}
+
+// The window is half-open [opens_at, closes_at) — asserted against the PREDICATE
+// itself, because a claim-path fixture cannot sit on the boundary.
+//
+// Why not through CreateHold: the bounds are written as clock_timestamp()
+// arithmetic, and clock_timestamp() ADVANCES WITHIN A STATEMENT — verified
+// against this database: `SELECT clock_timestamp() = clock_timestamp()` is
+// false. So a bound written as exactly `clock_timestamp()` is already in the
+// past by the time the predicate reads it, and `>` and `>=` give the same
+// answer. A first version of this test did exactly that and three mutants
+// survived it — `now()` for `clock_timestamp()`, `>` for `>=` on the close, and
+// `<` for `<=` on the open — because no fixture could distinguish them.
+//
+// Evaluating the predicate against literal bounds makes the boundary
+// expressible: the instant is fixed, so "at the bound" is a real case rather
+// than a race with the clock.
+func TestChannelSalesWindowIsHalfOpen(t *testing.T) {
+	ctx, _, db := storeForTest(t, time.Minute)
+
+	// `at` is the evaluation instant; each row sets the bounds relative to it.
+	// The predicate under test is the shipped const, not a copy — a hand-copied
+	// reduction would drift from what the claim path runs.
+	eval := func(t *testing.T, opens, closes string) bool {
+		t.Helper()
+		var open bool
+		q := `SELECT ` + windowOpen + ` FROM (SELECT ` + opens + `::timestamptz AS opens_at, ` +
+			closes + `::timestamptz AS closes_at) w`
+		// The predicate reads clock_timestamp(); pin it to a literal so the bounds
+		// can be placed exactly ON it.
+		q = strings.ReplaceAll(q, "clock_timestamp()", "$1::timestamptz")
+		if err := db.QueryRowContext(ctx, q, "2026-08-10T12:00:00Z").Scan(&open); err != nil {
+			t.Fatal(err)
+		}
+		return open
+	}
+
+	const at = `'2026-08-10T12:00:00Z'`
+	const before = `'2026-08-10T11:00:00Z'`
+	const after = `'2026-08-10T13:00:00Z'`
+
+	cases := []struct {
+		name          string
+		opens, closes string
+		want          bool
+	}{
+		// The two that matter, and the two no clock-relative fixture can express.
+		{"opens_at EXACTLY at the instant is OPEN (inclusive lower bound)", at, "NULL", true},
+		{"closes_at EXACTLY at the instant is CLOSED (exclusive upper bound)", "NULL", at, false},
+
+		{"no bounds at all is always open", "NULL", "NULL", true},
+		{"opened in the past", before, "NULL", true},
+		{"opens in the future", after, "NULL", false},
+		{"closes in the future", "NULL", after, true},
+		{"closed in the past", "NULL", before, false},
+		{"inside a bounded window", before, after, true},
+		{"before a bounded window", at, after, true},
+		{"after a bounded window", before, at, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := eval(t, tc.opens, tc.closes); got != tc.want {
+				t.Fatalf("windowOpen(opens=%s, closes=%s) = %v, want %v", tc.opens, tc.closes, got, tc.want)
+			}
+		})
+	}
+}
+
+// clock_timestamp(), not now(): the predicate must decide at DECISION time, not
+// at transaction-start time.
+//
+// This is the property ADR-024 wrote down for release_at and that
+// TestReleaseCutoffHoldsUnderPoolLockContention pins for it. A window written
+// with now() reintroduces a bug already litigated in this file — and a
+// clock-relative fixture cannot tell the two apart, because in a short
+// transaction they are microseconds apart.
+//
+// Made observable by holding a transaction open across the boundary: inside one
+// transaction now() is frozen at its start while clock_timestamp() keeps moving,
+// so a window that closed DURING the transaction is still "open" to now() and
+// correctly "closed" to clock_timestamp(). Verified against this database:
+// after a 50ms sleep inside a transaction, `now() < clock_timestamp()` is true.
+func TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart(t *testing.T) {
+	ctx, _, db := storeForTest(t, time.Minute)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Freeze the transaction's now() well before the bound we are about to set.
+	var frozen time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT now()`).Scan(&frozen); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_sleep(0.05)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A window that closed AFTER this transaction began but BEFORE now: frozen
+	// now() still thinks it is open; clock_timestamp() knows it is not.
+	var byClock, byNow bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+windowOpen+`,
+		       (opens_at IS NULL OR opens_at <= now()) AND (closes_at IS NULL OR closes_at > now())
+		FROM (SELECT NULL::timestamptz AS opens_at, $1::timestamptz + interval '10 milliseconds' AS closes_at) w`,
+		frozen).Scan(&byClock, &byNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byNow != true {
+		t.Fatalf("the fixture did not reproduce the divergence: now() says closed already, " +
+			"so this test cannot distinguish the two clocks")
+	}
+	if byClock {
+		t.Fatal("the shipped predicate reports OPEN for a window that closed before decision time — " +
+			"it is reading now(), which freezes at transaction start. A hold queued on the pool lock " +
+			"across the cutoff would sell a closed channel (ADR-024's reasoning for release_at).")
+	}
+}
+
+// A closed window does NOT release the channel's capacity to the public
+// (ADR-054 §Decision B).
+//
+// This is the decision that produces different public availability numbers with
+// no test failing either way, so it is pinned explicitly. A presale's cap is a
+// promise about capacity; a promise that evaporates until its window opens is
+// not one, and the public on-sale would eat the presale's allocation overnight.
+//
+// Deliberately NOT symmetric with release_at, which DOES release
+// (TestScheduledReleaseIsLazyAndObservable). The two answer different questions:
+// release_at says the allocation is over, a window says it is not its turn yet.
+func TestClosedWindowAllocationRemainsReservedFromPublic(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+	setWindow(t, ctx, db, slot, "presale", "clock_timestamp() + interval '1 hour'", "NULL")
+
+	// The public sees 4, not 10: the presale's 6 are still reserved.
+	av, err := st.Availability(ctx, org, slot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if av.Available != 4 {
+		t.Fatalf("public available=%d want 4 — a closed window must not hand the presale's "+
+			"capacity to the public sale before it opens", av.Available)
+	}
+
+	// And the public cannot claim into it.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 5, 0, "", "", "pub-into-closed"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("public hold into a closed channel's reservation: got %v want ErrUnavailable", err)
+	}
+
+	// The channel itself reports nothing claimable while shut.
+	chav, err := st.Availability(ctx, org, slot, "presale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chav.Available != 0 {
+		t.Fatalf("closed channel available=%d want 0", chav.Available)
+	}
+
+	// Opening it changes the channel's answer and leaves the public's alone.
+	setWindow(t, ctx, db, slot, "presale", "clock_timestamp() - interval '1 hour'", "NULL")
+	chav, err = st.Availability(ctx, org, slot, "presale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chav.Available != 6 {
+		t.Fatalf("opened channel available=%d want 6", chav.Available)
+	}
+	av, err = st.Availability(ctx, org, slot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if av.Available != 4 {
+		t.Fatalf("public available=%d want 4 — opening a window must not move the public number", av.Available)
+	}
+}
+
+// An existing hold finishes its lifecycle after its window closes (COS-4).
+//
+// Symmetric with ADR-024's rule for release_at, and the same reasoning: the
+// window gates the creation of NEW consumption, not the completion of consumption
+// already granted. A buyer who got a hold inside the window must be able to pay.
+func TestHoldTakenInsideTheWindowSurvivesItsClose(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+	setWindow(t, ctx, db, slot, "presale", "clock_timestamp() - interval '1 hour'", "clock_timestamp() + interval '1 hour'")
+
+	c, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "presale", "survives-close")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The window shuts under the live hold.
+	setWindow(t, ctx, db, slot, "presale", "NULL", "clock_timestamp() - interval '1 second'")
+
+	if _, err := st.Transition(ctx, org, c.ID, "finalizing"); err != nil {
+		t.Fatalf("finalizing after the window closed: %v", err)
+	}
+	if _, err := st.Transition(ctx, org, c.ID, "confirmed"); err != nil {
+		t.Fatalf("confirming after the window closed: %v — a window gates NEW claims, not the "+
+			"completion of one already granted", err)
+	}
+
+	// But a NEW hold on that channel is refused.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "new-after-close"); !errors.Is(err, ErrChannelWindowClosed) {
+		t.Fatalf("a new hold after the close: got %v want ErrChannelWindowClosed", err)
+	}
+}
+
+// A group reservation granted inside the window still draws down after it closes
+// (ADR-054, citing ADR-027).
+//
+// The plan draft proposed gating draw-down; plan-review rejected it. ADR-027
+// already settled the analogous case for release_at, on the clause that transfers
+// exactly: "the source already consumed it". A draw-down is quantity-neutral —
+// it inserts a child and decrements the source in one pool-locked transaction —
+// so it consumes nothing new. Gating it would strand capacity an agency was
+// granted inside the window, and nobody would report that as a window bug.
+func TestGroupDrawDownSurvivesAClosedWindowButPlacementDoesNot(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+	setWindow(t, ctx, db, slot, "presale", "clock_timestamp() - interval '1 hour'", "clock_timestamp() + interval '1 hour'")
+
+	res, _, err := st.PlaceGroupReservation(ctx, org, slot, 4, "agency-a",
+		time.Now().Add(24*time.Hour), "presale", "staff:amy", "group", "grp-win")
+	if err != nil {
+		t.Fatalf("placing inside the window: %v", err)
+	}
+
+	// The window shuts.
+	setWindow(t, ctx, db, slot, "presale", "NULL", "clock_timestamp() - interval '1 second'")
+
+	// Draw-down still works: the capacity is already theirs and already counted.
+	if _, _, err := st.DrawDownGroupReservation(ctx, org, res.ID, uuid.New(), slot, 2, 2500, "EUR",
+		"staff:amy", "batch after close", "draw-after-close"); err != nil {
+		t.Fatalf("drawing down after the window closed: %v — the source already consumed this "+
+			"capacity (ADR-027); gating it would strand what the agency was granted", err)
+	}
+
+	// A NEW placement on that channel is refused, because it would consume anew.
+	if _, _, err := st.PlaceGroupReservation(ctx, org, slot, 1, "agency-b",
+		time.Now().Add(24*time.Hour), "presale", "staff:amy", "group", "grp-win-2"); !errors.Is(err, ErrChannelWindowClosed) {
+		t.Fatalf("placing after the close: got %v want ErrChannelWindowClosed", err)
 	}
 }
