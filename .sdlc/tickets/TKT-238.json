@@ -7,7 +7,11 @@
     "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 195,
+    "url": "https://github.com/mathd/ticketing_system/pull/195",
+    "state": "open"
+  },
   "parent": "TKT-17",
   "description": "Nothing channel-scoped decides *when* a channel may sell. The only windows in the system are rule-level `effective_from`/`effective_until` on price/fee/split rules, and the nearest on-sale concept is inventory's binary `closure_status`. A presale that opens Tuesday and a public on-sale that opens Friday cannot be expressed.\n\n**Conditions of Success:**\n- A channel sales window is expressible per (channel, slot): `opens_at` / `closes_at`, half-open `[opens_at, closes_at)`, either bound nullable (null open = always open, null close = never closes).\n- **The window is enforced where the claim is decided, on PostgreSQL time, with no sweeper** — the same discipline ADR-024 applied to `release_at`: `clock_timestamp()`, not `now()`, because `now()` freezes at transaction start and a hold queued on the pool lock across the cutoff would decide with stale time. A hold on a channel outside its window is refused even when the channel has allocation headroom and the pool has capacity.\n- Refusal is distinguishable from the existing refusals: a channel-closed refusal must not read as \"sold out\". Availability reads reflect it.\n- Windows do not gate anything but claims — reads of the catalog remain open, and an out-of-window channel's *existing* holds finish their lifecycle untouched (symmetric with `release_at`).\n- Tests: the boundary at both bounds (inclusive open, exclusive close), the stale-clock case (a transaction queued across the cutoff decides on `clock_timestamp()`), the distinct refusal code, and that pool/allocation refusals are unchanged when no window exists.\n\nQuality gates: `make check` green; the contention smoke extends to windows; OpenAPI regenerated and committed before the gate.\n\nParent: TKT-17. Depends on US-CH1. Non-goals: presale codes (US-CH5) — a window says *when*, a code says *who*; reseller API (US-CH6); UI beyond what US-CH2 already renders.",
   "readiness": {
