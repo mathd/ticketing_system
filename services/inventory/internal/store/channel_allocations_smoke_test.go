@@ -836,3 +836,77 @@ func TestGroupDrawDownSurvivesAClosedWindowButPlacementDoesNot(t *testing.T) {
 		t.Fatalf("placing after the close: got %v want ErrChannelWindowClosed", err)
 	}
 }
+
+// A closed window refuses as a CLOSED WINDOW even when the pool is exhausted.
+//
+// Found at ai-review, and it is a precedence bug rather than a missing check.
+// The window was evaluated after the pool-capacity arithmetic, so the identical
+// request answered `channel_window_closed` while the pool had room and the
+// code-less "insufficient capacity" once it did not — a closed presale reading
+// as a sellout exactly when the on-sale was busiest, and a caller told to join a
+// waitlist when it should wait ninety seconds.
+//
+// It also defeated the load harness's fail-closed policy in the wrong direction:
+// ClassifyHold409 counts a code-less 409 as an EXPECTED capacity rejection, so a
+// load run against a closed channel would have been accepted as contention
+// evidence rather than failing loudly.
+//
+// The pool is exhausted with an OPERATIONAL hold on purpose. Operational holds
+// are pool-only and unchanneled (ADR-024 says so explicitly: they can exhaust the
+// pool while a channel has nominal cap headroom), which is the only way to reach
+// "pool full, channel cap free, window shut" — the state the original tests could
+// not construct, because filling the pool through the public channel leaves the
+// presale's reservation intact.
+func TestClosedWindowRefusesAsAWindowEvenOnAnExhaustedPool(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+	setWindow(t, ctx, db, slot, "presale", "clock_timestamp() + interval '1 hour'", "NULL")
+
+	// With headroom: the window refusal, as before.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "prec-headroom"); !errors.Is(err, ErrChannelWindowClosed) {
+		t.Fatalf("with pool headroom: got %v want ErrChannelWindowClosed", err)
+	}
+
+	// Exhaust the pool without touching the presale's allocation.
+	if _, _, err := st.PlaceOperationalHold(ctx, org, slot, 10, "house", "foh", "staff:amy", "ops", "prec-eat"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The SAME request must give the SAME answer. Capacity is a property of the
+	// pool; a window is a property of the requested channel, and the second does
+	// not stop being true because the first ran out.
+	_, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", "prec-exhausted")
+	if !errors.Is(err, ErrChannelWindowClosed) {
+		t.Fatalf("with the pool exhausted: got %v want ErrChannelWindowClosed — a closed window "+
+			"must not read as a sellout just because the pool filled up, and a code-less 409 is "+
+			"counted by the load harness as capacity evidence", err)
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Fatal("the refusal is also ErrUnavailable — the two must stay distinct sentinels")
+	}
+
+	// Same precedence for a group reservation.
+	if _, _, err := st.PlaceGroupReservation(ctx, org, slot, 1, "agency-a",
+		time.Now().Add(24*time.Hour), "presale", "staff:amy", "group", "prec-grp"); !errors.Is(err, ErrChannelWindowClosed) {
+		t.Fatalf("group placement with the pool exhausted: got %v want ErrChannelWindowClosed", err)
+	}
+}
+
+// An absent allocation stays the code-less capacity refusal — the other side of
+// the precedence fix.
+//
+// Hoisting the window check above the capacity arithmetic must not turn "this
+// channel has no allocation" into a window refusal. There is no channel there to
+// be closed, and a caller that named a channel nobody configured should hear the
+// same thing it always did.
+func TestAChannelWithNoAllocationStillRefusesAsCapacity(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "nosuch", "no-alloc"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("an unconfigured channel: got %v want ErrUnavailable — no allocation means no "+
+			"channel to be closed, so this is not a window refusal", err)
+	}
+}

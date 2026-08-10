@@ -78,6 +78,20 @@ A closed window returns `409 {"code":"channel_window_closed","error":"channel sa
 this is one allocation row temporally shut. Collapsing them would make two facts with opposite
 remedies indistinguishable — wait for the window, versus stop offering the slot.
 
+**Precedence: the window is judged BEFORE any capacity arithmetic.** A window is a property of the
+requested *channel*; capacity is a property of the *pool*, and the second running out does not make
+the first stop being true. Checking capacity first — which is the natural ordering, and what the
+first implementation did — made the identical request answer `channel_window_closed` while the pool
+had room and the code-less "insufficient capacity" once it did not. So a closed presale read as a
+sellout **exactly when the on-sale was busiest**, telling a caller to join a waitlist when it should
+have waited ninety seconds. It also defeated §5's fail-closed policy in the wrong direction: a
+code-less 409 is counted as *expected capacity evidence*, so a load run against a closed channel
+would have been silently accepted rather than failing loudly. Found at ai-review; pinned by
+`TestClosedWindowRefusesAsAWindowEvenOnAnExhaustedPool`.
+
+An **absent** active allocation stays the code-less capacity refusal: there is no channel there to be
+closed. That distinction is what selecting the predicate — rather than filtering on it — buys.
+
 The refusal is **not** `ErrUnavailable`, and that took deliberate work: `ErrUnavailable` is the
 natural return and yields the code-less sellout shape, which is exactly what the ticket forbade.
 Pinned by an exact-body assertion in `server_test.go`.

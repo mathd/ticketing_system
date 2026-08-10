@@ -260,6 +260,46 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	if err = sweepExpired(ctx, tx, slot); err != nil {
 		return Claim{}, false, err
 	}
+	// The channel's SALES WINDOW is judged before any capacity arithmetic
+	// (TKT-238 ai-review finding 1).
+	//
+	// Precedence, not tidiness. A window is a property of the requested channel;
+	// capacity is a property of the pool. Checking capacity first made the same
+	// request answer `channel_window_closed` while the pool had room and the
+	// code-less "insufficient capacity" once it did not — so a closed presale
+	// read as a sellout exactly when the on-sale was busiest. Worse, the load
+	// harness classifies a code-less 409 as an expected capacity rejection, so a
+	// run against a closed channel could be accepted as contention evidence.
+	//
+	// Verified before fixing: with pool headroom the refusal was the window; with
+	// an operational hold consuming the pool it became "insufficient capacity"
+	// for an otherwise identical request.
+	//
+	// Still under the pool FOR UPDATE and still on clock_timestamp(): moving it
+	// earlier changes which refusal wins, never when the boundary is judged.
+	var channelWindowOpen = true
+	var chCap int32
+	var haveAllocation bool
+	if channel != "" {
+		err = tx.QueryRowContext(ctx,
+			`SELECT cap, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
+			slot, channel).Scan(&chCap, &channelWindowOpen)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// No ACTIVE allocation for this channel — released, or never
+			// configured. That stays the code-less capacity refusal it has always
+			// been: there is no channel here to be closed.
+			haveAllocation = false
+		case err != nil:
+			return Claim{}, false, err
+		default:
+			haveAllocation = true
+			if !channelWindowOpen {
+				return Claim{}, false, ErrChannelWindowClosed
+			}
+		}
+	}
+
 	var held int32
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims, slot).Scan(&held); err != nil {
 		return Claim{}, false, err
@@ -269,32 +309,17 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		return Claim{}, false, ErrUnavailable
 	}
 	if channel != "" {
-		// A channel hold needs an active allocation with headroom, on top of pool capacity.
+		// The allocation and its window were read above, before the pool-capacity
+		// check, so a closed window refuses as a closed window whatever the pool
+		// looks like. What remains here is the CAP check, which is genuinely
+		// capacity arithmetic and belongs beside the pool's.
 		//
-		// The WINDOW is read alongside the cap in the same statement and judged
-		// here, not in the WHERE clause (TKT-238). Filtering on it would make a
-		// closed window indistinguishable from an absent allocation — both would
-		// be sql.ErrNoRows and both would return the code-less ErrUnavailable,
-		// which is the "reads as sold out" outcome COS-3 forbids. Selecting the
-		// predicate's answer lets the two refusals stay distinct.
-		var chCap int32
-		var windowIsOpen bool
-		err = tx.QueryRowContext(ctx,
-			`SELECT cap, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
-			slot, channel).Scan(&chCap, &windowIsOpen)
-		if errors.Is(err, sql.ErrNoRows) {
+		// An absent active allocation is the code-less capacity refusal: there is
+		// no channel here to be closed. That keeps "closed window" and "no such
+		// channel" distinct, which selecting the predicate rather than filtering
+		// on it is what makes possible.
+		if !haveAllocation {
 			return Claim{}, false, ErrUnavailable
-		}
-		if err != nil {
-			return Claim{}, false, err
-		}
-		// Decided under the pool lock on clock_timestamp(), so a hold queued across
-		// the boundary is judged at DECISION time. This sits after the idempotency
-		// replay and the offering guard for the reason store.go's guard placement
-		// already records: replaying a hold taken inside the window must return its
-		// original outcome, not start failing once the window closes.
-		if !windowIsOpen {
-			return Claim{}, false, ErrChannelWindowClosed
 		}
 		var consumed int64
 		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(`+consumedQuantity+`),0) FROM claims WHERE pool_id=$1 AND channel_code=$2 AND `+consumingClaims, slot, channel).Scan(&consumed); err != nil {
