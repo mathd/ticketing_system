@@ -4,6 +4,17 @@ packages:
   - web/storefront
 allowBuilds:
   esbuild: true
+# Advisories in transitive packages whose direct parents (vite, astro, @astrojs/react,
+# oxlint) have not yet released a bump. Each override is a patch-level move inside the
+# same major, and each key names only the vulnerable range, so a path that already
+# resolves to a patched — or newer-major — version is left alone. Drop an entry once the
+# parent's own bump makes it a no-op; `pnpm why <pkg>` shows whether it still binds.
+overrides:
+  'brace-expansion@>=2.0.0 <2.1.4': '^2.1.4' # GHSA-mh99-v99m-4gvg, GHSA-rgw5-rvv9-x895
+  'js-yaml@>=4.0.0 <4.3.1': '^4.3.1' # GHSA-52cp-r559-cp3m
+  'nanoid@<3.3.17': '^3.3.17' # GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8
+  'postcss@<=8.5.22': '^8.5.23' # GHSA-5p4m-2wfm-xmqj, GHSA-fxqj-rqcc-2cmp
+  'undici@>=7.0.0 <7.29.0': '^7.29.0' # GHSA-4cwx-7wf7-3272
 minimumReleaseAgeExclude:
   - '@astrojs/markdown-satteri@0.3.4'
   - astro@7.0.9
