@@ -481,6 +481,16 @@ func TestCapacityCutWithOversizedChannelAllocations(t *testing.T) {
 // claim path and quietly makes unregistered codes unsellable. It was never
 // observed red, and it is not counted among the tests that were.
 //
+// SCOPE, STATED NARROWLY (ai-review). This covers the INVENTORY-STORE portion of
+// the invariant and nothing more. It calls the store directly, so it does not
+// traverse commerce orchestration, catalog fee or split resolution, payments, or
+// any API boundary — a registry lookup added at one of those layers would reject
+// the sale earlier and leave this test green. The platform-wide claim ("an
+// unregistered channel still sells, end to end") is therefore NOT proven here;
+// TKT-241 owns the gateway-level version. Catalog's companion test
+// (TestNothingReferencesTheChannelRegistry) is similarly bounded: it proves FK
+// absence in catalog's schema, not the absence of application-level gating.
+//
 // Fixture note: the allocation is created for the arbitrary code deliberately. A
 // code with NO allocation is refused for an unrelated reason (no active
 // allocation, asserted above), so without this the test would be measuring

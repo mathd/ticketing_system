@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -65,7 +66,10 @@ func ValidChannelKind(k ChannelKind) bool {
 	return false
 }
 
-// Bounds mirror the SQL CHECKs in 0018_channels.sql, which in turn mirror
+// Bounds are in CHARACTERS, matching PostgreSQL's length(text) and OpenAPI's
+// maxLength — see validateChannelWrite for why the distinction is load-bearing.
+//
+// They mirror the SQL CHECKs in 0018_channels.sql, which in turn mirror
 // claims.channel_code / channel_allocations.channel_code (inventory 0004) and
 // fee_rules.channel_code (0016) / split_schedules.channel_code (0017). All of
 // them must agree or a code legal in one place is unusable in another.
@@ -134,23 +138,33 @@ type ChannelUpdate struct {
 // Callers must persist the returned code, not their input. Today they are
 // identical by construction; the point is that a future change making them
 // differ is caught rather than silently shipped.
-// ValidateChannelWriteForTest exposes the write gate to the api package's
-// in-memory fake store, so the fake refuses exactly what Postgres refuses. A
-// fake that accepted an over-long code or an unknown kind would let the handler
-// tests agree with a store the real one would reject.
-func ValidateChannelWriteForTest(code, displayName string, kind ChannelKind) (string, error) {
-	return validateChannelWrite(code, displayName, kind)
-}
-
 func validateChannelWrite(code, displayName string, kind ChannelKind) (string, error) {
-	if l := len(code); l < 1 || l > maxChannelCodeLen {
+	// CHARACTERS, not bytes. `len()` here would count UTF-8 bytes while
+	// PostgreSQL's `length(text)` and OpenAPI's `maxLength` both count
+	// characters — so a 60-character code of two-byte characters is 120 bytes,
+	// accepted by the request validator and by every SQL channel_code CHECK
+	// (including fee_rules' and split_schedules'), and rejected only here.
+	//
+	// That would break the invariant this bound exists to hold: a code legal in
+	// one of the five places that store one must be legal in all of them. Found
+	// at ai-review; the byte-counting version shipped past the unit tests
+	// because every fixture was ASCII, where the two agree.
+	if l := utf8.RuneCountInString(code); l < 1 || l > maxChannelCodeLen {
 		return "", ErrChannelInvalidInput
 	}
-	if l := len(displayName); l < 1 || l > maxChannelDisplayNameLen {
+	if l := utf8.RuneCountInString(displayName); l < 1 || l > maxChannelDisplayNameLen {
 		return "", ErrChannelInvalidInput
 	}
 	if !ValidChannelKind(kind) {
 		return "", ErrChannelInvalidInput
 	}
 	return code, nil
+}
+
+// ValidateChannelWriteForTest exposes the write gate to the api package's
+// in-memory fake store, so the fake refuses exactly what Postgres refuses. A
+// fake that accepted an over-long code or an unknown kind would let the handler
+// tests agree with a store the real one would reject.
+func ValidateChannelWriteForTest(code, displayName string, kind ChannelKind) (string, error) {
+	return validateChannelWrite(code, displayName, kind)
 }

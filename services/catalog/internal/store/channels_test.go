@@ -87,3 +87,44 @@ func TestValidChannelKindIsClosed(t *testing.T) {
 		}
 	}
 }
+
+// Bounds count CHARACTERS, not bytes — the invariant the whole 1..100 bound
+// exists to hold.
+//
+// Found at ai-review. The gate used Go's `len()`, which counts UTF-8 bytes,
+// while PostgreSQL's `length(text)` and OpenAPI's `maxLength` both count
+// characters. So a 60-character code of two-byte characters is 120 bytes:
+// accepted by the request validator, accepted by every SQL channel_code CHECK
+// including fee_rules' and split_schedules', and rejected only by the store.
+// That is precisely "a code legal in one place is unusable in another", which
+// is the thing the five agreeing bounds exist to prevent.
+//
+// Every pre-existing fixture was ASCII, where bytes and characters agree — so
+// the defect was invisible to a suite that looked thorough.
+func TestChannelBoundsCountCharactersNotBytes(t *testing.T) {
+	// 'é' is two bytes, one character. 100 of them is a legal code (100 chars)
+	// that a byte-counting gate would see as 200 and refuse.
+	code := strings.Repeat("é", maxChannelCodeLen)
+	got, err := validateChannelWrite(code, "Box office", ChannelKindPOS)
+	if err != nil {
+		t.Fatalf("validateChannelWrite(100 two-byte chars) = %v, want nil — "+
+			"PostgreSQL's length() and OpenAPI's maxLength both count characters, so this code is legal there", err)
+	}
+	if got != code {
+		t.Fatalf("returned %q, want the input verbatim", got)
+	}
+	// And one character over is still refused, so the bound did not simply move.
+	if _, err := validateChannelWrite(strings.Repeat("é", maxChannelCodeLen+1), "Box office", ChannelKindPOS); err == nil {
+		t.Fatal("101 two-byte characters accepted, want ErrChannelInvalidInput — the bound must still bind")
+	}
+
+	// Same for display names, and with a 4-byte character so a UTF-16-unit
+	// count (2 units per emoji) is also distinguishable from a rune count.
+	name := strings.Repeat("🎫", maxChannelDisplayNameLen)
+	if _, err := validateChannelWrite("pos", name, ChannelKindPOS); err != nil {
+		t.Fatalf("validateChannelWrite(200 four-byte chars as display_name) = %v, want nil", err)
+	}
+	if _, err := validateChannelWrite("pos", strings.Repeat("🎫", maxChannelDisplayNameLen+1), ChannelKindPOS); err == nil {
+		t.Fatal("201 four-byte characters accepted as a display name, want ErrChannelInvalidInput")
+	}
+}
