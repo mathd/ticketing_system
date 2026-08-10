@@ -1,0 +1,53 @@
+{
+  "key": "TKT-245",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Catalog cannot verify WHICH organizer a back-office request is for (TKT-236 ai-review)",
+  "description": "**Surfaced by TKT-236's ai-review.** Not a defect that ticket introduced — a property of the\ndeputy model that TKT-236 was the first to have to state out loud.\n\nCatalog authenticates the **calling process**, not the staff member behind it. Every back-office\nwrite takes `organizer_id` from the request body and catalog trusts it, because it has nothing else\nto go on. The back office passes its session's organizer and never one from a form — but that is a\ndiscipline in one codebase, not a boundary catalog can enforce.\n\nTKT-236 narrowed the blast radius where it could: `UpdateChannel` now carries an organizer predicate,\nso an id disclosed by the operator list is no longer sufficient to mutate another tenant's channel.\nWhat remains is that a compromised or buggy back office can still *author for*, and now *enumerate*,\nany organizer.\n\n**Conditions of Success:**\n- A way for catalog to verify which organizer a request is for, that does not rest on the caller\n  asserting it. Options to weigh: a per-organizer credential; a signed assertion the back office\n  mints from its session (commerce's customer-assertion key is the in-repo precedent); or catalog\n  resolving the organizer from the staff identity it already stores.\n- An ADR recording the choice and what it does *not* close — ADR-021's rule about naming the\n  adversary applies: this is about a compromised deputy, not a DB writer.\n- Applies to every catalog write the back office makes, not only channels. A fix that scoped one\n  endpoint would leave the model unchanged and the claim still unearned.\n\nQuality gates: `make check` green; `make browser` for any touched write form.\n\nNon-goals: multi-organizer staff sign-in (ADR-042 scopes that as future work); inventory's credential\n(TKT-244).",
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-042",
+        "why": "Staff identity and back-office sessions — the deputy model this ticket revisits, and its own note that multi-organizer sign-in is out of scope."
+      },
+      {
+        "id": "ADR-043",
+        "why": "Where a service's auth guard lives; a new organizer-scoped credential or assertion has to place itself against this."
+      },
+      {
+        "id": "ADR-053",
+        "why": "TKT-236's credential allowlist, which records the enumeration capability this ticket would close."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary: this is about a compromised deputy process, not a DB writer, and the ADR must not overclaim."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The corrected blast-radius reasoning, and the residual it names",
+        "link": "services/catalog/internal/api/server.go"
+      },
+      {
+        "summary": "The precedent for a signed assertion minted from a session",
+        "link": "services/commerce/internal/api"
+      },
+      {
+        "summary": "TKT-236 PR and its review",
+        "link": "https://github.com/mathd/ticketing_system/pull/194"
+      }
+    ],
+    "capturedAt": "2026-08-10"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-236 ai-review — incidental, deferred\n\n**Finding:** [high] *\"Credential widening materially increases compromise impact despite claiming\nnone.\"* The reviewer was **right about the claim**: the code said the added blast radius was nil, and\nthat was false — a create could only probe one guessed code at a time and never yielded an id, while\nthe list read returns every channel, id and disabled row in one call.\n\n**Fixed in TKT-236:** the claim itself (corrected in the code and in ADR-053), and the chain it\nenabled — `UpdateChannel` now carries an organizer predicate, so a disclosed id no longer mutates\nacross tenants.\n\n**Deferred here:** the underlying model. Catalog cannot verify which organizer any back-office\nrequest is for, on any endpoint. Closing that is a new credential or assertion mechanism affecting\nevery catalog write — its own vertical slice, not a channels story's.\n\nNeeds shaping before Gate 1: the choice between a per-organizer credential, a signed session\nassertion, and catalog resolving the organizer from staff identity is the ticket's real content."
+    }
+  ]
+}
