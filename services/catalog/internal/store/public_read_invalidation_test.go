@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -217,7 +218,7 @@ func TestCommitPublicReadOrdersInvalidationAfterCommit(t *testing.T) {
 		p := &Postgres{}
 		p.RegisterPublicReadInvalidator(func(PublicReadScope) { called++ })
 		boom := &fakeCommitError{}
-		if err := p.commitPublicRead(commitFunc(func() error { return boom }), PublicReadAll); err != boom {
+		if err := p.commitPublicRead(commitFunc(func() error { return boom }), PublicReadAll); !errors.Is(err, boom) {
 			t.Fatalf("got %v, want the commit error unwrapped", err)
 		}
 		if called != 0 {

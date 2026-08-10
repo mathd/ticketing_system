@@ -1095,6 +1095,14 @@ func (p *Postgres) transitionSeries(ctx context.Context, id uuid.UUID, target st
 	if err = rows.Close(); err != nil {
 		return nil, err
 	}
+	// Close does NOT report an iteration failure — sql.Rows.Close returns the driver's
+	// close error and leaves rs.lasterr to Err(). Without this a connection that died
+	// mid-read looks like a short series: the transitions below run over the members
+	// that happened to arrive, and COMMIT. transitionFestival has always checked; this
+	// twin did not (TKT-184).
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	if len(members) == 0 {
 		return nil, ErrEmptySeries
 	}
@@ -1488,6 +1496,12 @@ func (p *Postgres) GetPublishedSeason(ctx context.Context, id uuid.UUID) (Season
 		ids[eventID] = true
 	}
 	if err := rows.Close(); err != nil {
+		return SeasonAggregate{}, err
+	}
+	// Iteration errors reach the caller only through Err(); Close() answers for the
+	// driver. Dropping one here silently narrows the id set, and the season then renders
+	// missing events as though the organizer never attached them (TKT-184).
+	if err := rows.Err(); err != nil {
 		return SeasonAggregate{}, err
 	}
 	// Read only this season's events. Passing the id set (never nil — an empty

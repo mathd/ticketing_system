@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import SeatMapPicker, {
+  type SeatMapHandle,
   applySeatConflict,
   orderByPosition,
   reconcileSelection,
@@ -68,16 +69,35 @@ function stubFetch(geo: unknown, occ: unknown, opts: { geoStatus?: number; occSt
   });
 }
 
+// The imperative handle HoldPicker holds (TKT-184). Capturing it here is what makes
+// these tests drive the SAME channel production drives — the previous `window`
+// CustomEvent could be dispatched by a test whether or not anything still listened.
+const handle: { current: SeatMapHandle | null } = { current: null };
+
 function mount(fetchStub: ReturnType<typeof stubFetch>, onChange = vi.fn()) {
   vi.stubGlobal('fetch', fetchStub);
   render(
-    <SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />,
+    <SeatMapPicker
+      ref={handle}
+      organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />,
   );
   return onChange;
 }
 
+// applyConflict updates state outside React's event system, so it needs act() — without
+// it the assertions race the re-render rather than the behaviour.
+function conflict(lost: string[]) {
+  // Throw rather than optional-chain: a helper that silently does nothing when the
+  // handle is missing is the exact failure mode the window CustomEvent had, and it
+  // would let every assertion below pass against a component that never heard.
+  if (handle.current === null) throw new Error('no SeatMapPicker mounted');
+  const h = handle.current;
+  act(() => h.applyConflict(lost));
+}
+
 afterEach(() => {
   cleanup();
+  handle.current = null;
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -187,7 +207,7 @@ describe('SeatMapPicker', () => {
       return new Response('{}', { status: 503 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(4));
 
     await vi.advanceTimersByTimeAsync(5000);
@@ -200,7 +220,7 @@ describe('SeatMapPicker', () => {
     vi.useFakeTimers();
     const stub = stubFetch(geometry(), occupancy([]));
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(4));
     const occCalls = () => stub.mock.calls.filter(([u]) => String(u).includes('seat-occupancy')).length;
     expect(occCalls()).toBe(1);
@@ -240,7 +260,7 @@ describe('ai-review findings', () => {
     });
     vi.stubGlobal('fetch', stub);
     const onChange = vi.fn();
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
 
     fireEvent.click(screen.getByRole('button', { name: /Stalls, row A1, seat 1, Available/ }));
@@ -266,7 +286,7 @@ describe('ai-review findings', () => {
     mount(stub);
     await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
 
-    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    conflict(['Stalls/A1/1']);
 
     // The refresh bypasses the HTTP cache: that is what makes its answer authoritative,
     // and it is the only part of the sequence a fast stub can observe — the overlay is
@@ -291,7 +311,7 @@ describe('ai-review findings', () => {
     mount(stub);
     await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
 
-    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    conflict(['Stalls/A1/1']);
 
     await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Unavailable/ });
     // And it stays taken once the authoritative read lands.
@@ -321,7 +341,7 @@ describe('ai-review findings', () => {
     mount(stub);
     await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
 
-    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    conflict(['Stalls/A1/1']);
     // The 409 is honoured immediately, before any network answer.
     await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Unavailable/ });
 
@@ -347,7 +367,7 @@ describe('ai-review findings', () => {
     });
     vi.stubGlobal('fetch', stub);
     const onChange = vi.fn();
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
     fireEvent.click(screen.getByRole("button", { name: /row A1, seat 1, Available/ }));
     await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith({ seats: ['Stalls/A1/1'], claimable: true }));
@@ -377,7 +397,7 @@ describe('ai-review findings', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
     await vi.advanceTimersByTimeAsync(POLL * 6);
     expect(maxInFlight).toBe(1);
   });
@@ -395,7 +415,7 @@ describe('ai-review findings', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
 
     await vi.advanceTimersByTimeAsync(POLL);        // the failing read: degraded, map kept
@@ -420,7 +440,7 @@ describe('ai-review pass 2 findings', () => {
     });
     vi.stubGlobal('fetch', stub);
     const onChange = vi.fn();
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
     fireEvent.click(screen.getByRole("button", { name: /row A1, seat 1, Available/ }));
     await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith({ seats: ['Stalls/A1/1'], claimable: true }));
@@ -451,7 +471,7 @@ describe('ai-review pass 2 findings', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
 
     await vi.advanceTimersByTimeAsync(POLL);          // the hung read starts
@@ -471,7 +491,7 @@ describe('ai-review pass 2 findings', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
 
     await vi.waitFor(() => expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy());
     await vi.advanceTimersByTimeAsync(POLL * 3);
@@ -497,7 +517,7 @@ describe('ai-review pass 3 findings', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
 
     await vi.advanceTimersByTimeAsync(8000 + 100);
     await vi.waitFor(() => expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy());
@@ -522,10 +542,10 @@ describe('ai-review pass 3 findings', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
 
-    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    conflict(['Stalls/A1/1']);
     await vi.waitFor(() => expect(release).not.toBe(null));
 
     // Push past a poll boundary while the authoritative read is still outstanding.
@@ -583,7 +603,7 @@ describe('ai-review pass 3 findings', () => {
     });
     vi.stubGlobal('fetch', stub);
     const onChange = vi.fn();
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={onChange} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
     fireEvent.click(screen.getByRole("button", { name: /row A1, seat 1, Available/ }));
     await vi.waitFor(() => expect(onChange).toHaveBeenLastCalledWith({ seats: ['Stalls/A1/1'], claimable: true }));
@@ -626,7 +646,7 @@ describe('ai-review pass 4 finding', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
 
     await vi.advanceTimersByTimeAsync(8000 + 200);
     await vi.waitFor(() => expect(screen.getByText(/Seat selection is temporarily unavailable/)).toBeTruthy());
@@ -644,10 +664,10 @@ describe('ai-review pass 4 finding', () => {
       return new Response(JSON.stringify(occupancy([])), { status: 200 });
     });
     vi.stubGlobal('fetch', stub);
-    render(<SeatMapPicker organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
+    render(<SeatMapPicker ref={handle} organizerId={ORG} slotId={SLOT} seatMapId={MAP} locale="en" onSelectionChange={vi.fn()} />);
     await vi.waitFor(() => expect(screen.getAllByRole('button').length).toBe(4));
 
-    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    conflict(['Stalls/A1/1']);
     const before = occCall;
     // Past the deadline: the guard must have been released and polling resumed.
     await vi.advanceTimersByTimeAsync(8000 + POLL * 2);
@@ -665,7 +685,7 @@ describe('orphan refusal (TKT-182)', () => {
     await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
 
     // Only the seat_taken path dispatches the conflict event.
-    window.dispatchEvent(new CustomEvent('seat-conflict:' + SLOT, { detail: ['Stalls/A1/1'] }));
+    conflict(['Stalls/A1/1']);
     await waitFor(() => {
       const occ = stub.mock.calls.filter(([u]) => String(u).includes('seat-occupancy'));
       expect((occ[occ.length - 1][1] as RequestInit | undefined)?.cache).toBe('no-store');

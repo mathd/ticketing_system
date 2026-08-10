@@ -310,6 +310,11 @@ func conflictStates(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid
 		}
 		out[PolicyConflict{Rule: PolicyConflictRule(rule), OccurrenceID: occ}] = status
 	}
+	// A truncated read here returns FEWER conflicts, which is what a passing assertion
+	// looks like. Err() is the only thing separating "none" from "the read died".
+	if err := rows.Err(); err != nil {
+		t.Fatalf("conflict states: %v", err)
+	}
 	return out
 }
 
@@ -339,6 +344,9 @@ func policyAlarms(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.U
 		if envelope.Data["ticket_id"] == ticketID.String() {
 			out = append(out, envelope.Data)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("policy alarms: %v", err)
 	}
 	return out
 }

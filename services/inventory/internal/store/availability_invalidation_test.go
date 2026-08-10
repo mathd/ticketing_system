@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -56,7 +57,7 @@ func TestCommitAvailabilityOrdersInvalidationAfterCommit(t *testing.T) {
 		var called int
 		p := &Postgres{}
 		p.RegisterAvailabilityInvalidator(func(uuid.UUID) { called++ })
-		if err := p.commitAvailability(committerFunc(func() error { return errFakeCommit }), slot); err != errFakeCommit {
+		if err := p.commitAvailability(committerFunc(func() error { return errFakeCommit }), slot); !errors.Is(err, errFakeCommit) {
 			t.Fatalf("commitAvailability returned %v, want the commit error unwrapped", err)
 		}
 		if called != 0 {
