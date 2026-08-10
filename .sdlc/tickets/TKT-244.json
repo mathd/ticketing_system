@@ -1,0 +1,156 @@
+{
+  "key": "TKT-244",
+  "type": "Story",
+  "summary": "US-CH2b: Slot channel-allocation editor — and the inventory credential it needs",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "**Carved out of TKT-236 when its `governingTests` bake found the back office cannot reach the\nendpoint at all.** The screen is the small half of this ticket; the credential is the real subject,\nand giving it its own ticket is the point of the split.\n\nChannel allocations shipped in TKT-78: `PUT /internal/slots/{id}/channel-allocations` atomically\nreplaces a slot's whole allocation set under the pool lock. There is no UI, and there cannot be one\nuntil the back office can call it.\n\n**The blocker, verified at HEAD:**\n- `compose.yaml:379-392` gives the back office `GATEWAY_URL`, `CATALOG_STAFF_WRITE_TOKEN`,\n  `COMMERCE_URL`, `COMMERCE_STAFF_WRITE_TOKEN`. There is **no `INVENTORY_URL`** and no internal token.\n- The comment there refuses the shared one outright: *\"that one value opens every service's internal\n  surface, and this is a public-facing SSR process.\"*\n- `web/backoffice/test/api.test.ts:471` pins it as an assertion: `X-Internal-Token` must be\n  `undefined`.\n- **Inventory has no staff-write credential at all** — only `INTERNAL_SERVICE_TOKEN`. Catalog's\n  equivalent exists because TKT-191 created it; inventory's does not exist yet.\n\nSo this ticket creates a **new per-service credential for inventory**, following the precedent\nTKT-194 set for commerce (`COMMERCE_URL` + `COMMERCE_STAFF_WRITE_TOKEN`, reached directly in-network\nbecause the gateway edge-denies `/internal/`).\n\n**Conditions of Success:**\n- An ADR records the inventory staff-write credential: what it opens, why it is not the shared\n  internal token, and how it relates to the three existing identity classes (ADR-042 staff sessions,\n  ADR-043 internal tokens, ADR-049 customer sessions). ADR-043 draws the guard-placement line; this\n  is a new credential, not a new placement.\n- The credential is generated independently in `scripts/stack-env.sh` (a separate `/dev/urandom`\n  read, never a copy — `stack-env.sh:55-61`), added to `web/backoffice/credentials.mjs`, and refused\n  at startup if absent or equal to another (`credentials.test.ts:14-44`).\n- Inventory guards the allocation write with it. **`X-Internal-Token` must still work** — access and\n  other services use that surface — so this is an additional accepted credential on one route, not a\n  replacement.\n- A back-office slot page shows the current allocation set with each channel's cap, `release_at` and\n  **current consumption**, and submits the full set as **one atomic replace**. The shipped PUT is a\n  full-set replace under the pool lock, so per-row saves would round-trip a stale set.\n- The two server-side refusals surface as field errors, not a generic failure: caps summing above\n  pool capacity, and a cap below that channel's current consumption.\n- Allocation rows for channels absent from the registry render with their raw code and a marker —\n  the registry is a lookup, not a constraint (TKT-235), and pre-existing codes stay editable.\n- **Browser-verified:** `make browser` plus a spec in `test/browser/` that *submits* the form.\n  Note `scripts/browser.sh` provisions **no** staff account — the spec must provision its own.\n\nQuality gates: `make check` green; `make browser` green with the new spec; screenshot in the PR;\nOpenAPI/types regenerated and committed before the gate.\n\nParent: TKT-17. Depends on TKT-236 (the back-office channels surface it extends). Non-goals: seated\npools (TKT-176 owns the seated seam); per-channel pricing UI; the reseller API's partner credential\n(TKT-240 — a *machine-to-machine* class, distinct from this staff-operated one, though TKT-240's ADR\nshould cite this one).",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Channel allocations have shipped since TKT-78 with no UI, and the back office cannot reach the endpoint. Carved out of TKT-236 so the credential decision is the subject rather than an obstacle."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: an inventory staff-write credential + its ADR + stack-env/credentials wiring, the allocation editor screen, the two refusal paths as field errors, a browser-submit spec. OUT: seated pools (TKT-176), the reseller partner credential (TKT-240), pricing UI."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "Whether inventory's new credential guards ONLY the allocation route or its whole /internal/ surface. Narrow is more reversible (widening later is additive); whole-surface is more consistent with how catalog's staff-write credential works. An ADR decides it — this is the ticket's real content and should not be settled while building a form."
+    },
+    "dependencies": {
+      "state": "open",
+      "note": "Blocked by TKT-236 (the channels surface this extends). TKT-235 is Done."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "Depends on the uncertainty above. shaping.md forbids approach:deferred on an auth-touching ticket, so this holds at Gate 1 by design — that is the whole reason this was split out of TKT-236."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Credential + guard + editor in one slice. Splitting further would ship a credential nothing uses, or a screen that cannot save."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS above; the browser-submit spec and the two field-error paths are the acceptance signals."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below, inherited and extended from TKT-236's."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-024",
+        "why": "The allocation semantics this screen edits: full-set atomic replace under the pool lock, caps summing <= capacity, each cap >= its channel's current consumption, release_at as a clock_timestamp() predicate. The UI must not offer per-row saves."
+      },
+      {
+        "id": "ADR-043",
+        "why": "Draws the contract-operation vs internal-route line for where a guard LIVES. This ticket adds a new credential, not a new placement — say so explicitly in the ADR so the two are not conflated."
+      },
+      {
+        "id": "ADR-042",
+        "why": "Staff identity and back-office sessions — the human side of this credential; the operator is a staff session, the credential is how the SSR process proves itself to inventory."
+      },
+      {
+        "id": "ADR-049",
+        "why": "Customer identity — the third existing class, named so the new ADR positions itself against all three."
+      },
+      {
+        "id": "ADR-002",
+        "why": "The gateway edge-denies /api/<svc>/internal/, which is why the back office reaches commerce directly in-network (TKT-194) rather than through the gateway. Same shape here."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first: inventory's allocation route is declared in its OpenAPI document, so a new security scheme is a contract edit and generated code must be committed before the gate."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary: a per-service credential limits blast radius against a compromised SSR process. It is not tamper-evidence, and the ADR must not claim it is."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "web/backoffice/test/api.test.ts:471",
+        "rule": "The back office must NEVER send X-Internal-Token. A new inventory client must use its own credential header, not this one."
+      },
+      {
+        "test": "web/backoffice/test/credentials.test.ts:14-44",
+        "rule": "Every back-office credential must be set and must DIFFER from the others; the startup refusal must name the missing variable and never echo its value."
+      },
+      {
+        "test": "web/backoffice/test/credentials.test.ts:53-74",
+        "rule": "The entrypoint spawns start.mjs and must exit 1 BEFORE importing dist/ — a new credential joins credentials.mjs, not just the client."
+      },
+      {
+        "test": "scripts/stack-env.sh:55-61",
+        "rule": "Each credential is an independent /dev/urandom read. 'A separate read, not a copy' — deriving one from another defeats the separation."
+      },
+      {
+        "test": "web/backoffice/test/authorization.test.ts:63",
+        "rule": "Every file under src/pages/** needs a ROUTE_MATRIX row and every row must name a file; a new page with no row fails the suite."
+      },
+      {
+        "test": "web/backoffice/test/gate.test.ts:313",
+        "rule": "An unclassified route 403s for every role including admin — a page without a matrix row renders 403, not the page."
+      },
+      {
+        "test": "scripts/browser.sh:73-74",
+        "rule": "test/browser/*.mjs is a glob with no allowlist, but browser.sh provisions NO staff account — a back-office spec must provision its own via compose exec catalog /app provision-staff."
+      },
+      {
+        "test": "scripts/browser.sh:38-44",
+        "rule": "Preflight checks storefront and scanner dist but NOT web/backoffice/dist, though Dockerfile.smoke COPYs it — a stale dist fails at docker build with a confusing error."
+      },
+      {
+        "test": "smoke/coverage_test.go:92",
+        "rule": "Every documented 2xx op of inventory must be driven by an unfiltered smoke run — a new or changed inventory operation needs a driving test."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-17 capability row",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "CREDENTIAL BLAST RADIUS — the back office is deliberately denied INTERNAL_SERVICE_TOKEN; the comment states why, and TKT-190 is the worked example of proposing it anyway",
+        "link": "compose.yaml:379-392"
+      },
+      {
+        "summary": "The precedent to follow: COMMERCE_URL + COMMERCE_STAFF_WRITE_TOKEN, reached directly in-network because the gateway edge-denies /internal/",
+        "link": "web/backoffice/src/lib/commerce.ts"
+      },
+      {
+        "summary": "The endpoint being wrapped — full-set atomic replace, no If-Match (ADR-024 accepts this while allocation editing is single-operator)",
+        "link": "services/inventory/api/openapi.yaml:217"
+      }
+    ],
+    "capturedAt": "2026-08-10"
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-236"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS (holds at Gate 1 by design)\n\nCarved out of TKT-236 on the owner's decision, after that ticket's `governingTests` bake found the\nback office cannot reach either endpoint it needed.\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Shipped allocation machinery with no operator UI |\n| Scope | ✅ | Credential + guard + editor; seated pools stay TKT-176's |\n| Uncertainties | ⚠️ | **Narrow vs whole-surface guard is an ADR decision, `owner: human`** |\n| Dependencies | ⚠️ | Blocked by TKT-236 |\n| Approach | ⚠️ | Follows from the uncertainty; `owner: human` |\n| First slice | ✅ | Splitting further ships a credential nothing uses, or a screen that cannot save |\n| Success | ✅ | Browser-submit spec + the two field-error paths |\n| Context-mémo | ✅ | Baked, incl. 9 governing tests and the blast-radius entry |\n\n**Concerns:**\n1. **This ticket creates a new credential class.** That is its subject, not a side effect — which is\n   exactly why it was split out. `shaping.md` forbids `approach: deferred` on an auth-touching\n   ticket, so this holds at Gate 1 until the owner decides the guard's scope.\n2. Blocked by TKT-236.\n\n**Verdict:** CONCERNS. Correctly shaped and correctly blocked. **Under this run's standing waiver\nthe agent would decide the credential scope itself — the owner may prefer to take this one, as both\nprior closeouts recommended for TKT-240.**"
+    }
+  ]
+}
