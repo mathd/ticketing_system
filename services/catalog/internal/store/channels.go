@@ -183,12 +183,23 @@ func validateChannelWrite(code, displayName string, kind ChannelKind) (string, e
 // UTF-8 yields a number that means nothing, so a length verdict derived from it
 // would be arbitrary either way.
 //
-// Not covered here, and deliberately so: kin-openapi's `maxLength` counts UTF-16
-// code units (see its schema.go — "JSON schema string lengths are UTF-16"), so a
-// 100-character astral-plane code is 200 units and the request validator rejects
-// it before this gate runs. That is a stricter bound applied earlier, not a
-// disagreement that can admit a bad value — the only direction that matters here
-// is that nothing this gate ACCEPTS can be refused downstream.
+// All three layers agree at 100 CODE POINTS, including astral-plane ones, and
+// the reason is worth writing down because the library's own comment says
+// otherwise.
+//
+// kin-openapi's maxLength check announces "JSON schema string lengths are
+// UTF-16!" and adds 2 per surrogate — but it obtains `r` by ranging over a Go
+// string, which yields whole code points. `utf16.IsSurrogate` is therefore never
+// true for valid UTF-8, and the branch is dead: it counts code points. Measured
+// against v0.142.0, not inferred — 100 astral characters count as 100, not 200.
+//
+// So an astral code passes the validator, passes this gate, and PostgreSQL's
+// `length()` also calls it 100. Three layers, one answer. Do not "fix" one of
+// them to match the library's comment rather than its behaviour: that would
+// reintroduce exactly the cross-layer disagreement these bounds exist to
+// prevent. If kin-openapi is ever corrected totrue UTF-16 units, this gate becomes
+// the more permissive one and the validator starts rejecting first — safe in
+// direction, but the test below is what would notice.
 func storableText(s string, maxChars int) error {
 	if !utf8.ValidString(s) {
 		return ErrChannelInvalidInput

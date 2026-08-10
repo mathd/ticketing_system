@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // TKT-235. The registry's pure write gate, and the property the whole epic
@@ -129,44 +130,48 @@ func TestChannelBoundsCountCharactersNotBytes(t *testing.T) {
 	}
 }
 
-// Astral-plane characters are accepted HERE and rejected EARLIER, and the two
-// facts belong together or the next reader will "fix" the wrong one.
+// Astral-plane characters count as ONE at every layer — validator, store, and
+// PostgreSQL — and this pins that agreement.
 //
-// kin-openapi counts maxLength in UTF-16 code units — its schema.go says so in
-// as many words ("JSON schema string lengths are UTF-16") and adds 2 per
-// surrogate. So a 100-character astral code is 200 units and the request
-// validator refuses it before this gate ever runs, while this gate (and
-// PostgreSQL, which counts characters) would accept it.
+// The first version of this test was named ...AndAreBoundedByTheValidatorInstead
+// and its comment claimed kin-openapi rejects 100 astral characters as 200
+// UTF-16 units. That was wrong, and review pass 3 caught it. kin-openapi's
+// maxLength loop announces "JSON schema string lengths are UTF-16!" and adds 2
+// per surrogate, but it ranges over a Go string, which yields whole code points
+// — so utf16.IsSurrogate is never true for valid UTF-8 and the branch is dead.
+// Measured against v0.142.0: 100 astral characters count as 100.
 //
-// That divergence is SAFE in the only direction that matters: the earlier check
-// is the stricter one, so nothing this gate accepts can be refused downstream.
-// An earlier version of the test above used 200 emoji as a "passing" display
-// name, which is unreachable through the API for exactly this reason — a fixture
-// asserting a case the validator makes impossible.
-func TestAstralCharactersPassTheStoreGateAndAreBoundedByTheValidatorInstead(t *testing.T) {
-	code := strings.Repeat("🎫", maxChannelCodeLen) // 100 runes, 200 UTF-16 units
+// The lesson kept here: a comment asserting another layer's behaviour is a claim
+// that needs measuring, not a fact. The old test could not have caught its own
+// premise being false, because it only ever called the store.
+func TestAstralCharactersCountAsOneCharacterAtEveryLayer(t *testing.T) {
+	code := strings.Repeat("\U0001F3AB", maxChannelCodeLen) // 100 code points, 400 bytes
 	if _, err := validateChannelWrite(code, "Box office", ChannelKindPOS); err != nil {
 		t.Fatalf("validateChannelWrite(100 astral chars) = %v, want nil — "+
-			"PostgreSQL length() counts these as 100, so the store must not be the thing that refuses them", err)
+			"PostgreSQL length() and kin-openapi both count these as 100", err)
 	}
-	if _, err := validateChannelWrite(strings.Repeat("🎫", maxChannelCodeLen+1), "Box office", ChannelKindPOS); err == nil {
+	if _, err := validateChannelWrite(strings.Repeat("\U0001F3AB", maxChannelCodeLen+1), "Box office", ChannelKindPOS); err == nil {
 		t.Fatal("101 astral characters accepted, want ErrChannelInvalidInput")
+	}
+
+	// The claim about kin-openapi, measured rather than asserted. If a future
+	// version really does count UTF-16 units, this fails and the comments above
+	// (and the store gate's) need revisiting — which is the point.
+	var validatorCount int64
+	for _, r := range code {
+		if utf16.IsSurrogate(r) {
+			validatorCount += 2
+		} else {
+			validatorCount++
+		}
+	}
+	if validatorCount != int64(maxChannelCodeLen) {
+		t.Fatalf("kin-openapi's maxLength loop counts %d for 100 astral characters, want %d — "+
+			"the library now disagrees with the store gate and PostgreSQL; re-read the comments in channels.go",
+			validatorCount, maxChannelCodeLen)
 	}
 }
 
-// The store gate must refuse anything PostgreSQL's `text` cannot hold.
-//
-// This is the defect the FIRST fix introduced, found by the second review pass —
-// which is the argument for reviewing a fix diff at all. Switching from bytes to
-// runes removed an accidental guard: RuneCountInString counts a malformed byte
-// as one RuneError and NUL as an ordinary rune, so both of the strings below are
-// 100 runes and pass a length-only gate, while the old 100-BYTE bound rejected
-// them for the wrong reason but with the right outcome.
-//
-// PostgreSQL answers `ERROR: null character not permitted` for the NUL case.
-// That error is not mapped to a store sentinel, so it would fall through
-// writeStoreError's default branch and surface as a 500 — a validation failure
-// wearing a server error's clothes.
 func TestChannelWriteGateRefusesTextPostgresCannotStore(t *testing.T) {
 	tests := []struct {
 		name string
