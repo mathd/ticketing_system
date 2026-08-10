@@ -2,10 +2,8 @@
   "key": "TKT-237",
   "type": "Story",
   "summary": "US-CH3: Per-channel price rules — give pricing the channel axis fees already have",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 193,
