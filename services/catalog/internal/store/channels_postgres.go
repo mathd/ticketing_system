@@ -76,7 +76,7 @@ RETURNING id, organizer_id, code, display_name, kind, enabled, created_at, updat
 //
 // updated_at is written explicitly — catalog has no updated_at trigger anywhere,
 // so a store that forgets leaves a stale value rather than failing loudly.
-func (p *Postgres) UpdateChannel(ctx context.Context, id uuid.UUID, in ChannelUpdate) (Channel, error) {
+func (p *Postgres) UpdateChannel(ctx context.Context, organizerID, id uuid.UUID, in ChannelUpdate) (Channel, error) {
 	code, err := validateChannelWrite(in.Code, in.DisplayName, in.Kind)
 	if err != nil {
 		return Channel{}, err
@@ -84,20 +84,45 @@ func (p *Postgres) UpdateChannel(ctx context.Context, id uuid.UUID, in ChannelUp
 	var c Channel
 	err = p.db.QueryRowContext(ctx, `
 UPDATE channels
-SET display_name = $3, kind = $4, enabled = $5, updated_at = now()
-WHERE id = $1 AND code = $2
+SET display_name = $4, kind = $5, enabled = $6, updated_at = now()
+WHERE id = $1 AND organizer_id = $2 AND code = $3
 RETURNING id, organizer_id, code, display_name, kind, enabled, created_at, updated_at`,
-		id, code, in.DisplayName, string(in.Kind), in.Enabled,
+		id, organizerID, code, in.DisplayName, string(in.Kind), in.Enabled,
 	).Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		// Either the channel does not exist, or it does and the submitted code
-		// differs from the stored one. Only the second is ErrChannelCodeImmutable
-		// — reporting it for an unknown id would tell a caller that an id it
-		// guessed exists.
-		if _, getErr := p.GetChannel(ctx, id); getErr != nil {
+		// Three ways to match no row, and they must not be distinguishable to a
+		// caller who guessed: the channel does not exist, it belongs to another
+		// organizer, or the submitted code differs from the stored one.
+		//
+		// The organizer predicate is what makes this a TENANT boundary rather
+		// than a convention (TKT-236 ai-review). Without it, a caller holding a
+		// channel's id and code could rename, re-kind, enable or disable another
+		// organizer's channel — an id is not an authorization boundary, and the
+		// back office takes the id from a form field.
+		//
+		// The follow-up read is scoped the same way, so "exists but is not
+		// yours" reports ErrNotFound rather than the immutability conflict: an
+		// answer that distinguished them would confirm the id is real.
+		if _, getErr := p.getChannelForOrganizer(ctx, organizerID, id); getErr != nil {
 			return Channel{}, getErr
 		}
 		return Channel{}, ErrChannelCodeImmutable
+	}
+	if err != nil {
+		return Channel{}, err
+	}
+	return c, nil
+}
+
+// getChannelForOrganizer is GetChannel scoped to one tenant. Used only to
+// disambiguate a failed update, where an unscoped read would leak whether a
+// guessed id exists in another organizer.
+func (p *Postgres) getChannelForOrganizer(ctx context.Context, organizerID, id uuid.UUID) (Channel, error) {
+	var c Channel
+	err := p.db.QueryRowContext(ctx, getChannelQuery+` AND organizer_id = $2`, id, organizerID).
+		Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Channel{}, ErrNotFound
 	}
 	if err != nil {
 		return Channel{}, err

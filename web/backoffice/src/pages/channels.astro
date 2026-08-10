@@ -46,6 +46,11 @@ const here = `${base}/channels`;
 
 let errors: ChannelFormErrors = { fields: {} };
 let submitted: Record<string, string> = {};
+// Which form the errors belong to. Without this every refusal renders against
+// the CREATE form — so an overlong rename flagged the create field and copied
+// the attempted name into it, sending the operator to edit the wrong input
+// (ai-review). `null` on the create path; the channel id on a row action.
+let failedChannelId: string | null = null;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -80,12 +85,16 @@ if (Astro.request.method === 'POST') {
       const local = validateSubmission(input);
       if (hasErrors(local)) {
         errors = local;
+        failedChannelId = field('channel_id');
       } else {
-        await updateChannel(field('channel_id'), {
+        await updateChannel(staff.organizerId, field('channel_id'), {
           code: input.code,
           displayName: input.displayName,
           kind: asChannelKind(input.kind)!,
-          enabled: checkboxChecked(form.get('enabled')),
+          // A literal, not checkboxChecked: this comes from a HIDDEN input that
+          // always submits, so "absent means false" does not apply and an empty
+          // value would read as true. Only the create form has a real checkbox.
+          enabled: field('enabled') === 'true',
         });
         return Astro.redirect(here, 303);
       }
@@ -95,7 +104,7 @@ if (Astro.request.method === 'POST') {
       // kind ride along in hidden fields. `enabled` here is an explicit value
       // rather than a checkbox: the button states which way it is going, so
       // there is no unchecked-box ambiguity to resolve.
-      await updateChannel(field('channel_id'), {
+      await updateChannel(staff.organizerId, field('channel_id'), {
         code: field('code'),
         displayName: field('display_name'),
         kind: asChannelKind(field('kind'))!,
@@ -104,6 +113,9 @@ if (Astro.request.method === 'POST') {
       return Astro.redirect(here, 303);
     }
   } catch (e) {
+    if (action === 'update' || action === 'set-enabled') {
+      failedChannelId = field('channel_id');
+    }
     errors =
       e instanceof CatalogApiError
         ? classifyCatalogError(e.status, e.message, {
@@ -125,8 +137,16 @@ try {
   readFailed = true;
 }
 
-const val = (name: string) => submitted[name] ?? '';
-const fieldError = (name: 'code' | 'display_name' | 'kind') => errors.fields[name];
+const val = (name: string) => (failedChannelId === null ? (submitted[name] ?? '') : '');
+// Create-form errors only. A row action's refusal belongs beside that row.
+const fieldError = (name: 'code' | 'display_name' | 'kind') =>
+  failedChannelId === null ? errors.fields[name] : undefined;
+// The refusal for one row, whichever field it landed on — the row has a single
+// editable input, so there is nowhere else for it to go.
+const rowError = (channelId: string) =>
+  failedChannelId === channelId
+    ? (errors.fields.display_name ?? errors.fields.code ?? errors.fields.kind ?? errors.form)
+    : undefined;
 ---
 
 <Layout title="Sales channels">
@@ -136,7 +156,7 @@ const fieldError = (name: 'code' | 'display_name' | 'kind') => errors.fields[nam
     Channels carry their own prices, fees and capacity elsewhere; this page defines which exist.
   </p>
 
-  {errors.form && <p class="error" role="alert">{errors.form}</p>}
+  {errors.form && failedChannelId === null && <p class="error" role="alert">{errors.form}</p>}
 
   {readFailed && (
     <p class="error" role="alert">
@@ -189,16 +209,26 @@ const fieldError = (name: 'code' | 'display_name' | 'kind') => errors.fields[nam
                 <input type="hidden" name="channel_id" value={channel.id} />
                 <input type="hidden" name="code" value={channel.code} />
                 <input type="hidden" name="kind" value={channel.kind} />
-                <input type="hidden" name="enabled" value={channel.enabled ? 'on' : ''} />
+                {/* An EXPLICIT boolean string, read by `field('enabled') === 'true'`
+                    — never checkboxChecked. A hidden input always submits, so
+                    the checkbox convention (absent means false) cannot apply:
+                    `value=""` is present-and-empty, which checkboxChecked
+                    correctly calls true, and a rename would re-enable a disabled
+                    channel. Found at ai-review. */}
+                <input type="hidden" name="enabled" value={String(channel.enabled)} />
                 <label for={`name-${channel.id}`}>Display name</label>
                 <input
                   id={`name-${channel.id}`}
                   name="display_name"
-                  value={channel.display_name}
+                  value={failedChannelId === channel.id ? (submitted.display_name ?? channel.display_name) : channel.display_name}
                   data-rename-for={channel.code}
+                  aria-invalid={rowError(channel.id) ? 'true' : undefined}
                   required
                 />
                 <button type="submit">Rename</button>
+                {rowError(channel.id) && (
+                  <p class="error" role="alert" data-row-error={channel.code}>{rowError(channel.id)}</p>
+                )}
               </form>
             </td>
           </tr>

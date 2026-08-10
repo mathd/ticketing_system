@@ -143,6 +143,41 @@ try {
   const afterEnable = page.locator(`tr[data-channel-code="${code}"]`);
   check('a disabled channel can be re-enabled from the list', (await afterEnable.getAttribute('data-enabled')) === 'true');
 
+  // --- 6b. RENAME WHILE DISABLED. The case ai-review found, and the reason the
+  // rename form's `enabled` is an explicit boolean string rather than a
+  // checkbox value: a hidden input ALWAYS submits, so `value=""` is
+  // present-and-empty, which the checkbox convention reads as true — and
+  // renaming a disabled channel silently re-enabled it.
+  //
+  // The original spec could not catch this: it re-enabled the row before
+  // testing rename, so the rename never ran against a disabled channel. An
+  // ordering that made the defect unreachable, in a spec that looked complete.
+  await Promise.all([
+    page.waitForURL('**/admin/channels'),
+    page.click(`tr[data-channel-code="${code}"] button[data-action="disable"]`),
+  ]);
+  await page.fill(`input[data-rename-for="${code}"]`, `Renamed while off ${stamp}`);
+  await Promise.all([
+    page.waitForURL('**/admin/channels'),
+    page.locator(`tr[data-channel-code="${code}"] form:has(input[value="update"]) button[type=submit]`).click(),
+  ]);
+  const afterOffRename = page.locator(`tr[data-channel-code="${code}"]`);
+  check(
+    'renaming a DISABLED channel does not re-enable it',
+    (await afterOffRename.getAttribute('data-enabled')) === 'false',
+    'a hidden enabled="" reads as true under the checkbox convention',
+  );
+  check(
+    'the rename applied while disabled',
+    (await afterOffRename.innerText()).includes(`Renamed while off ${stamp}`),
+  );
+
+  // Back to enabled for the remaining assertions.
+  await Promise.all([
+    page.waitForURL('**/admin/channels'),
+    page.click(`tr[data-channel-code="${code}"] button[data-action="enable"]`),
+  ]);
+
   // --- 7. RENAME the display name, and confirm the code did not move with it.
   const renamed = `Counter ${stamp}`;
   await page.fill(`input[data-rename-for="${code}"]`, renamed);

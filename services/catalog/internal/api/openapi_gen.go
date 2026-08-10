@@ -542,6 +542,9 @@ type ChannelUpdate struct {
 
 	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
 	Kind ChannelKind `json:"kind"`
+
+	// OrganizerId The tenant the channel must belong to (TKT-236). Scopes the write: a channel owned by another organizer is refused with 404, exactly as a channel that does not exist. An id alone is not an authorization boundary — callers take it from a form field, and catalog authenticates the calling PROCESS rather than the staff member behind it (ADR-021), so the predicate has to be in the query.
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
 // Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.

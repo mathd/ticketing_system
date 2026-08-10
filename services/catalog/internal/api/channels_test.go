@@ -153,7 +153,7 @@ func TestUpdateChannelRefusesToRenameTheCode(t *testing.T) {
 	// recorded on live claims, fee rules and split schedules — none of which
 	// reference this table, so nothing would cascade and nothing would complain.
 	rec = e.do(http.MethodPut, "/channels/"+created.Id.String(), map[string]any{
-		"code": "pos", "display_name": "Old box office", "kind": "pos", "enabled": true,
+		"organizer_id": org, "code": "pos", "display_name": "Old box office", "kind": "pos", "enabled": true,
 	})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("renaming the code = %d, want 409: %s", rec.Code, rec.Body.String())
@@ -187,7 +187,7 @@ func TestUpdateChannelChangesTheMutableFields(t *testing.T) {
 	}
 
 	rec = e.do(http.MethodPut, "/channels/"+created.Id.String(), map[string]any{
-		"code": "web", "display_name": "Main website", "kind": "web", "enabled": false,
+		"organizer_id": org, "code": "web", "display_name": "Main website", "kind": "web", "enabled": false,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -210,7 +210,7 @@ func TestUpdateUnknownChannelIs404NotAnImmutabilityConflict(t *testing.T) {
 	// Reporting 409 for an id that does not exist would tell a caller that an id
 	// it guessed is real.
 	rec := e.do(http.MethodPut, "/channels/"+uuid.New().String(), map[string]any{
-		"code": "pos", "display_name": "Box office", "kind": "pos", "enabled": true,
+		"organizer_id": uuid.New(), "code": "pos", "display_name": "Box office", "kind": "pos", "enabled": true,
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("PUT to an unknown channel = %d, want 404: %s", rec.Code, rec.Body.String())
@@ -618,5 +618,80 @@ func TestStaffCredentialAllowanceFailsClosedWhenUnconfigured(t *testing.T) {
 	req.Header.Set(staffWriteHeader, "")
 	if s.staffMayReadOperatorChannels(req) {
 		t.Fatal("an unconfigured staff credential accepted an empty header — empty must never match empty")
+	}
+}
+
+// A channel id is not an authorization boundary (TKT-236 ai-review).
+//
+// The back office takes the id from a FORM FIELD, so a forged submit could name
+// any channel in the database. Before this fix the UPDATE was scoped by
+// (id, code) alone, and a caller holding another organizer's id and code could
+// rename, re-kind, enable or disable their channel. Both are discoverable: the
+// code is shown on the storefront selector, and the id leaks through any
+// response that carries it.
+//
+// The refusal is 404, indistinguishable from a channel that does not exist. An
+// answer that distinguished "not yours" from "no such thing" would confirm the
+// id is real, which is the enumeration the scoping exists to prevent.
+func TestUpdateChannelRefusesAnotherOrganizersChannel(t *testing.T) {
+	e := newEnv(t)
+	victim, attacker := uuid.New(), uuid.New()
+
+	rec := e.do(http.MethodPost, "/channels", createChannelBody(victim, "pos", "Their box office", "pos", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed = %d: %s", rec.Code, rec.Body.String())
+	}
+	var theirs Channel
+	if err := json.Unmarshal(rec.Body.Bytes(), &theirs); err != nil {
+		t.Fatal(err)
+	}
+
+	// The attacker knows the id AND the exact code — the strongest position a
+	// forged form can be in — and still must not touch the row.
+	rec = e.do(http.MethodPut, "/channels/"+theirs.Id.String(), map[string]any{
+		"organizer_id": attacker, "code": "pos", "display_name": "Hijacked", "kind": "web", "enabled": false,
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant update = %d, want 404 — a channel id is not an authorization "+
+			"boundary, and the refusal must not distinguish 'not yours' from 'no such channel': %s",
+			rec.Code, rec.Body.String())
+	}
+
+	// And nothing moved.
+	rec = operatorGet(e, "/internal/channels?organizer_id="+victim.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify read = %d", rec.Code)
+	}
+	var after ChannelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Channels) != 1 {
+		t.Fatalf("victim has %d channels, want 1", len(after.Channels))
+	}
+	got := after.Channels[0]
+	if got.DisplayName != "Their box office" || got.Kind != "pos" || !got.Enabled {
+		t.Fatalf("the victim's channel was mutated: %+v", got)
+	}
+}
+
+// The owner still updates their own channel — the scoping must be a boundary,
+// not a wall.
+func TestUpdateChannelAcceptsTheOwningOrganizer(t *testing.T) {
+	e := newEnv(t)
+	org := uuid.New()
+	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed = %d", rec.Code)
+	}
+	var created Channel
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.do(http.MethodPut, "/channels/"+created.Id.String(), map[string]any{
+		"organizer_id": org, "code": "pos", "display_name": "Counter", "kind": "pos", "enabled": false,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner update = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 }

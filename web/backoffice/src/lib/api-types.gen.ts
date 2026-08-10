@@ -1575,6 +1575,11 @@ export interface components {
         };
         /** @description A full replacement of the mutable fields. `code` is required and must equal the stored code — it is present so an update cannot be written against a channel the caller has misidentified, and a mismatch is a 409 rather than a rename. */
         ChannelUpdate: {
+            /**
+             * Format: uuid
+             * @description The tenant the channel must belong to (TKT-236). Scopes the write: a channel owned by another organizer is refused with 404, exactly as a channel that does not exist. An id alone is not an authorization boundary — callers take it from a form field, and catalog authenticates the calling PROCESS rather than the staff member behind it (ADR-021), so the predicate has to be in the query.
+             */
+            organizer_id: string;
             code: components["schemas"]["ChannelCode"];
             display_name: string;
             kind: components["schemas"]["ChannelKind"];

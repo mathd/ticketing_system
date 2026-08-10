@@ -155,7 +155,7 @@ func (s *Server) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	c, err := s.store.UpdateChannel(r.Context(), channelId, store.ChannelUpdate{
+	c, err := s.store.UpdateChannel(r.Context(), in.OrganizerId, channelId, store.ChannelUpdate{
 		Code:        in.Code,
 		DisplayName: in.DisplayName,
 		Kind:        store.ChannelKind(in.Kind),

@@ -640,7 +640,11 @@ type Store interface {
 	// ErrChannelCodeImmutable rather than a rename. Renaming would orphan the
 	// code already recorded on live claims, fee rules and split schedules —
 	// none of which reference this table, so nothing would cascade.
-	UpdateChannel(ctx context.Context, id uuid.UUID, in ChannelUpdate) (Channel, error)
+	// organizerID scopes the write to one tenant: an id alone is not an
+	// authorization boundary, and callers take it from a form field. A channel
+	// belonging to another organizer is ErrNotFound, indistinguishable from one
+	// that does not exist.
+	UpdateChannel(ctx context.Context, organizerID, id uuid.UUID, in ChannelUpdate) (Channel, error)
 	GetChannel(ctx context.Context, id uuid.UUID) (Channel, error)
 	// ListChannels is the operator read: enabled AND disabled, full definitions.
 	ListChannels(ctx context.Context, organizerID uuid.UUID) ([]Channel, error)

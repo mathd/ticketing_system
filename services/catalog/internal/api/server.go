@@ -270,12 +270,34 @@ func (s *Server) internalAuthorizedRequest(r *http.Request) bool {
 // exception (ADR-053): the back office's catalog staff-write credential also
 // opens `GET /internal/channels`, and nothing else.
 //
-// WHY IT IS SAFE, precisely. X-Catalog-Staff-Write-Token already authorizes every
-// unsafe operation in catalog's contract — including `createChannel` and
-// `updateChannel`. A holder that can create and rename channels can already
-// learn which channels exist; letting it LIST them grants no capability it could
-// not reach by other means. The blast radius added is nil, which is the entire
-// argument.
+// WHAT IT COSTS, corrected. An earlier version of this comment claimed the added
+// blast radius was NIL, on the argument that a holder of the write credential
+// could already learn which channels exist. **That was false, and ai-review
+// caught it.** Before this read, the credential could only PROBE: a create
+// against a guessed code returns 409 if it is taken, one code per request, and
+// it never yields an id. This read returns every channel for a caller-supplied
+// organizer in one call — ids, codes, kinds, and disabled rows that appear
+// nowhere public. That is a real capability increase, and calling it nil was the
+// kind of confident wrong claim ADR-021 exists to stop.
+//
+// What is true: the increase is bounded to ENUMERATION, and it is bounded by the
+// fix that landed with it. The ids this read discloses are no longer sufficient
+// to mutate anything across a tenant boundary — `UpdateChannel` now carries an
+// organizer predicate, so a stolen token holding another organizer's channel id
+// and code gets a 404 rather than a rename (TKT-236 ai-review, the same pass).
+// Before that fix, enumeration plus the existing write access chained into
+// cross-tenant mutation; after it, the two are separate problems and only the
+// first is added here.
+//
+// The residual, stated so it is a decision rather than an omission: a compromised
+// back-office process can enumerate any organizer's channel configuration. It
+// could already author events, seat maps and channels for any organizer with the
+// same credential — catalog authenticates the PROCESS, and every one of its
+// writes takes the organizer from the request. Enumeration is a smaller
+// capability than authoring, but it is not nothing, and the honest framing is
+// that this read joins an existing process-wide trust assumption rather than
+// adding no risk at all. ADR-053 records it; a per-organizer delegation catalog
+// could verify is the real fix and is nobody's ticket yet (TKT-245).
 //
 // WHY IT DOES NOT GENERALIZE. The same reasoning fails for inventory's
 // `channel-allocations` (TKT-244): no staff credential exists there, the back

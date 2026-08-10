@@ -645,10 +645,21 @@ describe('the channel registry client (TKT-236)', () => {
 
   // The PUT is a full replacement. An omitted field is not "unchanged" — it is
   // absent, and for `enabled` that reads as false.
-  it('sends every field on update, including the immutable code', async () => {
+  it('sends every field on update, including the immutable code and the organizer', async () => {
     const calls = spyFetch({ id: 'c1' }, 200);
-    await updateChannel('c1', { code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false });
+    await updateChannel('org-1', 'c1', {
+      code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false,
+    });
     expect(calls[0].url).toContain('/api/catalog/channels/c1');
-    expect(calls[0].body).toEqual({ code: 'pos', display_name: 'Counter', kind: 'pos', enabled: false });
+    // organizer_id scopes the write. The channel id comes from a form field, so
+    // without it a forged id would let one tenant edit another's channel — an id
+    // is not an authorization boundary (ai-review).
+    expect(calls[0].body).toEqual({
+      organizer_id: 'org-1',
+      code: 'pos',
+      display_name: 'Counter',
+      kind: 'pos',
+      enabled: false,
+    });
   });
 });

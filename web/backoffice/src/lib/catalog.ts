@@ -424,13 +424,15 @@ export function createChannel(
 /**
  * Update a channel's display name, kind and enabled flag.
  *
- * FULL REPLACEMENT, and `code` is required in the body even though it cannot
- * change: catalog compares it against the stored code and answers 409 on a
+ * FULL REPLACEMENT, scoped to `organizerId` — which the caller must take from
+ * its SESSION, never from the request. `code` is required in the body even
+ * though it cannot change: catalog compares it against the stored code and answers 409 on a
  * mismatch, so the caller states which channel it believes it is updating
  * (TKT-235). Every field must be sent — omitting `enabled` would not "leave it
  * alone", it would send `false`.
  */
 export async function updateChannel(
+  organizerId: string,
   channelId: string,
   input: { code: string; displayName: string; kind: ChannelKind; enabled: boolean },
 ): Promise<Channel> {
@@ -438,6 +440,10 @@ export async function updateChannel(
     method: 'PUT',
     headers: writeHeaders(),
     body: JSON.stringify({
+      // Scopes the write to the caller's tenant (TKT-236 ai-review). The channel
+      // id comes from a form field, and an id is not an authorization boundary;
+      // catalog refuses a channel owned by another organizer with 404.
+      organizer_id: organizerId,
       code: input.code,
       display_name: input.displayName,
       kind: input.kind,
