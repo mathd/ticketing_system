@@ -1,0 +1,17 @@
+{
+  "key": "TKT-242",
+  "type": "Task",
+  "summary": "Flaky: TestMarkPublishedRemovesRowFromClaimableSet (commerce outbox) fails under gate load",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "description": "**Observed during TKT-235's gate run 6.** Not caused by that ticket — its diff touches no commerce\nfile at all (`git diff --name-only origin/main HEAD | grep commerce` is empty; the change is\ncatalog + inventory-test + shared/cachetier).\n\n```\n--- FAIL: TestMarkPublishedRemovesRowFromClaimableSet (0.03s)\n    outbox_smoke_test.go:417: order 240e4f40-b3d4-4a3c-a738-9476deb8fdc9 not claimable\nFAIL\tticketing/services/commerce/internal/store\t11.404s\n```\n\n**Evidence it is load-sensitive, not a real regression:**\n- 5 consecutive isolated runs against a dedicated PostgreSQL: **5/5 green**.\n- The whole `make check` had passed green twice earlier in the same session on a\n  superset of this branch's commits (gate runs 4 and 5), with this test included.\n- The failing assertion is about a row being *claimable*, which in this outbox is decided by a\n  time/lease predicate — the classic shape for a test that reddens only when the whole smoke suite\n  contends for one database.\n\n**This is the third of its family on the board**, and they should probably be fixed together rather\nthan one at a time:\n- TKT-231 — `TestBackfillOwesEventsForPreExistingCompletedOrders` (commerce), fails under load\n- TKT-218 — storefront call-budget tests, one of which fails OPEN\n- TKT-149 — `TestOnsaleLoadProof`, a single 5xx in 250 requests\n\n**Conditions of Success:**\n- Diagnose whether the claimable predicate depends on wall-clock timing or on a lease/visibility\n  window that suite-wide contention can exceed, and make the test's fixture decide it explicitly —\n  the same treatment TKT-233 and TKT-232 applied (assert the dependency edge, not a wall clock).\n- The test must still fail if the production `MarkPublished` behaviour it covers regresses; a fix\n  that merely widens a timeout is a fix that removes the test's teeth.\n- Run it under simulated suite load (parallel packages against one database) to show it holds.\n\nQuality gates: `make check` green.\n\nNon-goals: fixing TKT-231/218/149 here, unless the diagnosis turns out to be one shared root cause —\nin which case say so and re-scope explicitly rather than silently widening.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-235's gate run — incidental, not blocking that ticket\n\n**Triage: incidental.** TKT-235's diff contains no commerce file; the test passes 5/5 in isolation\nand passed inside two full green `make check` runs on a superset of the same commits. Fixing an\nunrelated service's flaky test inside a channel-registry PR would be scope creep, and would bloat a\ndiff a reviewer has to read.\n\nNeeds shaping before Gate 1 — in particular, whether this shares a root cause with TKT-231 (same\npackage, same shape) and should be merged into it rather than run separately."
+    }
+  ]
+}
