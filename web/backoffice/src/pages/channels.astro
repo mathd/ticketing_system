@@ -1,0 +1,261 @@
+---
+// The sales-channel registry admin (TKT-236 / US-CH2): define the channels this
+// organizer sells through, and retire one without deleting it.
+//
+// One page, three actions, no query-string state — the whole registry fits on
+// one screen, so there is nothing to page through and nothing to carry across
+// requests. Same idiom as events/new.astro and venues/[id].astro: `_action`
+// dispatch, post/redirect/get on success, re-render with the error on failure,
+// and RELATIVE form actions (an absolute one trips the origin handling even
+// same-origin — TKT-105; `checkOrigin` is off and gate.ts is authoritative).
+//
+// The organizer comes from the SESSION on every read and every write. Never from
+// the URL: catalog authenticates this process, not the staff member behind it
+// (ADR-021), so it cannot tell a legitimate organizer from one typed into the
+// address bar. That check has to live here to live anywhere.
+//
+// DISABLE, NEVER DELETE. There is no delete endpoint by design (TKT-235): a code
+// removed from the registry is still recorded on live claims, fee rules and
+// split schedules, none of which reference this table — so a delete would orphan
+// data silently. Disabling takes the channel out of the storefront selector and
+// leaves everything else intact, which is why this page must both SHOW disabled
+// channels and be able to re-enable them.
+import Layout from '../layouts/Layout.astro';
+import {
+  CatalogApiError,
+  type Channel,
+  createChannel,
+  listChannelsForOperator,
+  updateChannel,
+} from '../lib/catalog';
+import {
+  CHANNEL_KINDS,
+  type ChannelFormErrors,
+  asChannelKind,
+  checkboxChecked,
+  classifyCatalogError,
+  hasErrors,
+  validateSubmission,
+} from '../lib/channel-form';
+
+const staff = Astro.locals.staff;
+if (!staff) throw new Error('unauthenticated request reached the channels page');
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const here = `${base}/channels`;
+
+let errors: ChannelFormErrors = { fields: {} };
+let submitted: Record<string, string> = {};
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const action = String(form.get('_action') ?? '');
+  const field = (name: string) => String(form.get(name) ?? '');
+  submitted = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
+
+  try {
+    if (action === 'create') {
+      const input = { code: field('code'), displayName: field('display_name'), kind: field('kind') };
+      const local = validateSubmission(input);
+      if (hasErrors(local)) {
+        errors = local;
+      } else {
+        // `enabled` is omitted when the box is checked so the contract's
+        // `default: true` applies, and sent explicitly as false when it is not.
+        // An unchecked checkbox submits NOTHING — see checkboxChecked.
+        const enabled = checkboxChecked(form.get('enabled'));
+        await createChannel(staff.organizerId, {
+          code: input.code,
+          displayName: input.displayName,
+          kind: asChannelKind(input.kind)!,
+          ...(enabled ? {} : { enabled: false }),
+        });
+        return Astro.redirect(here, 303);
+      }
+    } else if (action === 'update') {
+      // A full replacement, so every field goes: the code (which catalog compares
+      // and refuses to rename), the display name, the kind, and the enabled flag.
+      // Omitting `enabled` here would send false, not "leave it alone".
+      const input = { code: field('code'), displayName: field('display_name'), kind: field('kind') };
+      const local = validateSubmission(input);
+      if (hasErrors(local)) {
+        errors = local;
+      } else {
+        await updateChannel(field('channel_id'), {
+          code: input.code,
+          displayName: input.displayName,
+          kind: asChannelKind(input.kind)!,
+          enabled: checkboxChecked(form.get('enabled')),
+        });
+        return Astro.redirect(here, 303);
+      }
+    } else if (action === 'set-enabled') {
+      // The one-click enable/disable on a row. It is still a full PUT — the
+      // endpoint has no partial update — so the row's current code, name and
+      // kind ride along in hidden fields. `enabled` here is an explicit value
+      // rather than a checkbox: the button states which way it is going, so
+      // there is no unchecked-box ambiguity to resolve.
+      await updateChannel(field('channel_id'), {
+        code: field('code'),
+        displayName: field('display_name'),
+        kind: asChannelKind(field('kind'))!,
+        enabled: field('enabled') === 'true',
+      });
+      return Astro.redirect(here, 303);
+    }
+  } catch (e) {
+    errors =
+      e instanceof CatalogApiError
+        ? classifyCatalogError(e.status, e.message, {
+            code: String(submitted.code ?? ''),
+            displayName: String(submitted.display_name ?? ''),
+            kind: String(submitted.kind ?? ''),
+          })
+        : { fields: {}, form: 'Catalog could not be reached. The change was not saved — try again.' };
+  }
+}
+
+// The read is inside its own error path: a catalog failure must render this
+// page's readable message, not abort SSR into a 500 that says nothing.
+let channels: Channel[] = [];
+let readFailed = false;
+try {
+  channels = await listChannelsForOperator(staff.organizerId);
+} catch {
+  readFailed = true;
+}
+
+const val = (name: string) => submitted[name] ?? '';
+const fieldError = (name: 'code' | 'display_name' | 'kind') => errors.fields[name];
+---
+
+<Layout title="Sales channels">
+  <h1>Sales channels</h1>
+  <p>
+    A channel is how a sale reaches you — the website, the box office, a presale, a reseller.
+    Channels carry their own prices, fees and capacity elsewhere; this page defines which exist.
+  </p>
+
+  {errors.form && <p class="error" role="alert">{errors.form}</p>}
+
+  {readFailed && (
+    <p class="error" role="alert">
+      The channel list is unavailable, so existing channels cannot be shown or edited. Creating one
+      may still work.
+    </p>
+  )}
+
+  {!readFailed && channels.length === 0 && <p>No channels yet.</p>}
+
+  {!readFailed && channels.length > 0 && (
+    <table>
+      <thead>
+        <tr>
+          <th>Code</th>
+          <th>Display name</th>
+          <th>Kind</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {channels.map((channel) => (
+          <tr data-channel-code={channel.code} data-enabled={String(channel.enabled)}>
+            {/* Read-only, and not an input: the code is immutable (TKT-235), and
+                an editable box the server refuses is a worse affordance than
+                text. A rename is a new channel plus disabling this one. */}
+            <td><code>{channel.code}</code></td>
+            <td>{channel.display_name}</td>
+            <td>{channel.kind}</td>
+            <td>
+              <span data-status={channel.enabled ? 'enabled' : 'disabled'}>
+                {channel.enabled ? 'Enabled' : 'Disabled'}
+              </span>
+            </td>
+            <td>
+              <form method="post" action="">
+                <input type="hidden" name="_action" value="set-enabled" />
+                <input type="hidden" name="channel_id" value={channel.id} />
+                <input type="hidden" name="code" value={channel.code} />
+                <input type="hidden" name="display_name" value={channel.display_name} />
+                <input type="hidden" name="kind" value={channel.kind} />
+                <input type="hidden" name="enabled" value={channel.enabled ? 'false' : 'true'} />
+                <button type="submit" data-action={channel.enabled ? 'disable' : 'enable'}>
+                  {channel.enabled ? 'Disable' : 'Enable'}
+                </button>
+              </form>
+              <form method="post" action="">
+                <input type="hidden" name="_action" value="update" />
+                <input type="hidden" name="channel_id" value={channel.id} />
+                <input type="hidden" name="code" value={channel.code} />
+                <input type="hidden" name="kind" value={channel.kind} />
+                <input type="hidden" name="enabled" value={channel.enabled ? 'on' : ''} />
+                <label for={`name-${channel.id}`}>Display name</label>
+                <input
+                  id={`name-${channel.id}`}
+                  name="display_name"
+                  value={channel.display_name}
+                  data-rename-for={channel.code}
+                  required
+                />
+                <button type="submit">Rename</button>
+              </form>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )}
+
+  <h2>Add a channel</h2>
+  <form method="post" action="">
+    <input type="hidden" name="_action" value="create" />
+
+    <label for="code">Code</label>
+    <input
+      id="code"
+      name="code"
+      required
+      value={val('code')}
+      aria-invalid={fieldError('code') ? 'true' : undefined}
+      aria-describedby={fieldError('code') ? 'code-error' : undefined}
+    />
+    {/* Beside the field, not in a banner: the operator has to know WHICH input
+        to fix, and a single form-level line does not say. */}
+    {fieldError('code') && <p class="error" id="code-error" role="alert">{fieldError('code')}</p>}
+    <p>Exact and case-sensitive, and permanent. “POS” and “pos” are two channels.</p>
+
+    <label for="display_name">Display name</label>
+    <input
+      id="display_name"
+      name="display_name"
+      required
+      value={val('display_name')}
+      aria-invalid={fieldError('display_name') ? 'true' : undefined}
+      aria-describedby={fieldError('display_name') ? 'display-name-error' : undefined}
+    />
+    {fieldError('display_name') && (
+      <p class="error" id="display-name-error" role="alert">{fieldError('display_name')}</p>
+    )}
+
+    <label for="kind">Kind</label>
+    <select
+      id="kind"
+      name="kind"
+      aria-invalid={fieldError('kind') ? 'true' : undefined}
+      aria-describedby={fieldError('kind') ? 'kind-error' : undefined}
+    >
+      {CHANNEL_KINDS.map((kind) => (
+        <option value={kind} selected={val('kind') === kind}>{kind}</option>
+      ))}
+    </select>
+    {fieldError('kind') && <p class="error" id="kind-error" role="alert">{fieldError('kind')}</p>}
+
+    <label for="enabled">
+      <input id="enabled" type="checkbox" name="enabled" checked={submitted.enabled !== undefined || Astro.request.method !== 'POST'} />
+      Available for sale
+    </label>
+
+    <button type="submit">Add channel</button>
+  </form>
+</Layout>

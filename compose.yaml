@@ -390,6 +390,20 @@ services:
       # this process can already open a socket to.
       COMMERCE_URL: http://commerce:8080
       COMMERCE_STAFF_WRITE_TOKEN: ${COMMERCE_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
+      # The operator channel read (TKT-236). Direct to catalog, in-network, for
+      # the same reason the refund above goes direct to commerce: only
+      # /internal/channels returns DISABLED channels, and the gateway edge-denies
+      # every /api/<svc>/internal/ route by construction (ADR-002). Publishing an
+      # exception would put operator configuration on the internet to reach a
+      # service this process can already open a socket to.
+      #
+      # NO NEW CREDENTIAL. It authenticates with CATALOG_STAFF_WRITE_TOKEN above,
+      # which catalog accepts on that ONE method+path (ADR-053) because that
+      # token already opens createChannel and updateChannel — so a holder can
+      # already learn which channels exist. Still deliberately NOT
+      # INTERNAL_SERVICE_TOKEN: that one value opens every service's internal
+      # surface, and this is a public-facing SSR process.
+      CATALOG_URL: http://catalog:8080
     healthcheck:
       # base:'/admin' means Astro serves healthz at /admin/healthz; the probe
       # hits the container directly (pre-gateway), so it targets the base path.
