@@ -141,28 +141,45 @@ func (p priceResolution) validate(organizerID uuid.UUID, quantity int32, channel
 	// answer describes a different question, and pricing from it would charge
 	// another channel's price. Same guard, same reasoning as fee resolution.
 	//
-	// GATED ON THE RESOLVER VERSION, and that gate is a rolling-deployment
-	// requirement rather than caution (found at ai-review). channel_code is a
-	// v3 field: a v2 catalog does not send it, so an unconditional guard would
-	// reject every channelled request from new commerce to an old catalog and
-	// turn a routine deploy ordering into a sales outage — precisely the failure
-	// this file's own comment says the version cap was removed to avoid.
+	// UNCONDITIONAL for a channelled sale: an answer with no channel echo is
+	// refused whatever version produced it. Two review passes shaped this and
+	// the second reversed the first, so both reasons are recorded.
 	//
-	// So: v3+ must echo exactly; v1-v2 are allowed to omit it, because they
-	// cannot know about it. What they may NOT do is echo a channel that was
-	// never asked for — that is a wrong answer at any version.
+	// Pass 1 found that an unconditional guard breaks a rolling deploy —
+	// channel_code is a v3 field, so a v2 catalog cannot send it, and every
+	// channelled request from new commerce to an old catalog would fail. The fix
+	// was to exempt v1-v2.
 	//
-	// The deployment order this makes safe is commerce first, then catalog. In
-	// the reverse order a v3 catalog answers old commerce, which never forwards
-	// a channel, so every sale prices channel-agnostically: correct, and the
-	// pre-TKT-237 behaviour. Neither order silently mis-prices.
-	const channelEchoFromVersion int32 = 3
+	// Pass 2 found what that exemption costs, and it is worse. A v2 resolver
+	// reading a MIGRATED database loads a channel-specific row without its
+	// channel_code and treats it as channel-agnostic — so it can pick a `pos`
+	// rule for a `reseller` sale, answer with no echo, and the exemption would
+	// accept it. That is a silent mischarge, traded for an outage. An outage is
+	// recoverable in minutes; a wrong price is discovered in a reconciliation.
+	//
+	// So the guard refuses, and the refusal is CORRECT rather than merely safe:
+	// a resolver that does not know what a channel is cannot answer "what does
+	// this cost on `reseller`", and its answer to a different question must not
+	// price this sale. `errResolveUnusable` says exactly that.
+	//
+	// What this costs, stated plainly: during a catalog rollout, channelled
+	// sales fail while any instance is pre-v3. Channel-LESS sales are unaffected
+	// — nothing is echoed and nothing is expected. The safe order is therefore
+	// catalog first, then commerce, which is also the order that needs no
+	// coordination: a v3 catalog answering old commerce prices
+	// channel-agnostically, which is correct and is the pre-TKT-237 behaviour.
+	//
+	// This is not load-bearing in the shipped topology — one catalog instance,
+	// migrations run out-of-band as a one-shot job the service waits on
+	// (ADR-022), so v2 and v3 never serve concurrently. It is written to hold
+	// anyway, because a guard that depends on the deployment topology stops
+	// being a guard the day the topology changes.
 	switch {
 	case p.ChannelCode != nil && channel == nil:
 		return bad("price resolution echoes a channel the sale did not request")
 	case p.ChannelCode != nil && *p.ChannelCode != *channel:
 		return bad("price resolution echoes a different channel")
-	case p.ChannelCode == nil && channel != nil && p.ResolverVersion >= channelEchoFromVersion:
+	case p.ChannelCode == nil && channel != nil:
 		return bad("price resolution omits the channel the sale requested")
 	}
 

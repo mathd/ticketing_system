@@ -973,3 +973,56 @@ func TestForeignChannelMisconfigurationIsInvisibleButEligibleStillFailsClosed(t 
 		})
 	}
 }
+
+// The duplicate-id guard's scope after TKT-237 moved the channel filter ahead
+// of it.
+//
+// Both halves are deliberate. Eligible duplicates still error: they form an
+// equivalence class the comparator cannot separate, so the answer would depend
+// on input order, which this function advertises it does not. Ineligible
+// duplicates do NOT error: a rule that cannot compete cannot affect the answer,
+// and refusing a resolution with exactly one correct result would be a worse
+// outcome than the malformed data it is reporting.
+//
+// Written after a second-pass review asked whether moving the filter weakened
+// the steps downstream of it. This is the one step whose scope actually changed.
+func TestDuplicateRuleIDsErrorOnlyWhenTheyCouldChangeTheAnswer(t *testing.T) {
+	res := chanReq("reseller")
+
+	// Ineligible duplicates: filtered out before the guard, so the resolution
+	// succeeds on the remaining eligible rule.
+	got, err := SelectPricingRule(evalAt, PricingCandidates{
+		BasePrice: Money{Amount: 4550, Currency: "EUR"},
+		Scopes:    testScopes(true),
+		Rules: []PriceRule{
+			rule(ruleA, ScopeEvent, eventID, 3000),
+			onChannel(rule(ruleB, ScopeEvent, eventID, 100), "pos"),
+			onChannel(rule(ruleB, ScopeVenue, venueID, 200), "pos"),
+		},
+		Channel: res,
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil — duplicates on a channel that cannot compete "+
+			"must not refuse a resolution whose answer is unambiguous", err)
+	}
+	if got.Winner == nil || got.Winner.ID != ruleA || got.ResolvedPrice.Amount != 3000 {
+		t.Fatalf("winner/price = %v/%d, want ruleA/3000", got.Winner, got.ResolvedPrice.Amount)
+	}
+
+	// Eligible duplicates: still an error, in both channel contexts.
+	for _, req := range []*string{res, nil} {
+		_, err := SelectPricingRule(evalAt, PricingCandidates{
+			BasePrice: Money{Amount: 4550, Currency: "EUR"},
+			Scopes:    testScopes(true),
+			Rules: []PriceRule{
+				rule(ruleB, ScopeEvent, eventID, 100),
+				rule(ruleB, ScopeVenue, venueID, 200),
+			},
+			Channel: req,
+		})
+		if !errors.Is(err, ErrDuplicatePriceRuleID) {
+			t.Fatalf("channel=%v: err = %v, want ErrDuplicatePriceRuleID — eligible duplicates "+
+				"make the answer depend on input order", req, err)
+		}
+	}
+}

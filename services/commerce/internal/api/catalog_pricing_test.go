@@ -771,17 +771,19 @@ func TestReserveRefusesAPriceResolutionEchoingTheWrongChannel(t *testing.T) {
 	}
 }
 
-// A v2 catalog answering a channelled request must NOT break the sale.
+// Mixed-version behaviour of the channel echo guard.
 //
-// Found at ai-review. `channel_code` is a v3 field, so an unconditional echo
-// guard rejects every channelled request from new commerce to an old catalog —
-// turning a routine deploy ordering into a sales outage, which is the exact
-// failure this file's comments say the version cap was removed to avoid.
+// Two review passes shaped this and the second reversed the first. Pass 1: an
+// unconditional guard breaks a rolling deploy, so exempt v1-v2. Pass 2: that
+// exemption lets a v2 resolver reading a MIGRATED database load a
+// channel-specific row without its channel_code, treat it as agnostic, pick a
+// `pos` rule for a `reseller` sale, and have the exemption accept it — an
+// outage traded for a silent mischarge.
 //
-// The guard is therefore gated on the resolver version: v3+ must echo exactly,
-// v1-v2 may omit the field because they cannot know about it. What no version
-// may do is echo a channel that was never asked for.
-func TestReserveToleratesAV2CatalogOmittingTheChannelEcho(t *testing.T) {
+// So the guard is unconditional for a channelled sale, and channel-LESS sales
+// stay served at every version. That asymmetry is the whole design and is what
+// these cases pin.
+func TestChannelEchoGuardAcrossResolverVersions(t *testing.T) {
 	cases := []struct {
 		name     string
 		version  string
@@ -789,11 +791,17 @@ func TestReserveToleratesAV2CatalogOmittingTheChannelEcho(t *testing.T) {
 		asked    string
 		wantFail bool
 	}{
-		// The rollout case: old catalog, channelled sale. Must proceed.
-		{"v2 omits the echo on a channelled request", `"resolver_version":2`, nil, "reseller", false},
-		{"v1 omits the echo on a channelled request", `"resolver_version":1`, nil, "reseller", false},
-		// v3 knows the field, so omitting it is a real defect, not a version gap.
+		// A resolver that does not echo cannot have answered the channelled
+		// question, whatever version it claims. Refused at EVERY version —
+		// see the guard's comment for why pass 2 reversed pass 1 here.
+		{"v2 omitting the echo on a channelled request is refused", `"resolver_version":2`, nil, "reseller", true},
+		{"v1 omitting the echo on a channelled request is refused", `"resolver_version":1`, nil, "reseller", true},
 		{"v3 omitting the echo is refused", `"resolver_version":3`, nil, "reseller", true},
+		// Channel-LESS sales are unaffected by any of this: nothing is echoed
+		// and nothing is expected, so an old catalog still serves them. This is
+		// what keeps the guard from being a blanket version cap.
+		{"v2 serves a channel-less sale", `"resolver_version":2`, nil, "", false},
+		{"v1 serves a channel-less sale", `"resolver_version":1`, nil, "", false},
 		// Echoing an unrequested channel is wrong at ANY version — the answer is
 		// about a different sale, and no version gap explains it.
 		{"v2 echoing an unrequested channel is still refused", `"resolver_version":2`, ptr("pos"), "", true},
@@ -839,5 +847,65 @@ func TestReserveToleratesAV2CatalogOmittingTheChannelEcho(t *testing.T) {
 					"a channelled sale during a rolling deploy: %s", res.Code, res.Body.String())
 			}
 		})
+	}
+}
+
+// The failure the v1-v2 exemption would have allowed, pinned so it cannot come
+// back (second ai-review pass).
+//
+// The scenario is not hypothetical arithmetic: a v2 catalog reading a database
+// migrated by 0019 loads a channel-specific price row WITHOUT its channel_code
+// — its query predates the column — and treats it as channel-agnostic. It can
+// therefore select a `pos` rule for a `reseller` sale and answer, honestly by
+// its own lights, with resolver_version 2 and no echo.
+//
+// This fixture reproduces exactly that: the price is the FOREIGN channel's
+// (1200, not the agnostic 3000), the version is 2, and there is no echo. The
+// assertion is not "commerce refuses" but the consequence that matters —
+// **inventory is never asked to hold at that price**. A guard that refused with
+// the wrong status, or refused after placing the hold, would pass a
+// status-only assertion and still have charged the buyer wrongly.
+func TestAV2ResolverCannotPriceAChannelledSaleFromAForeignChannelRule(t *testing.T) {
+	const foreignChannelPrice = 1200 // what a `pos` rule says; the sale asked for `reseller`
+
+	var inventoryAskedFor []int64
+	body := strings.Replace(
+		resolutionBodyFor(foreignChannelPrice, true, nil), // no echo — a v2 catalog cannot send one
+		`"resolver_version":3`, `"resolver_version":2`, 1)
+	if !strings.Contains(body, `"resolver_version":2`) || strings.Contains(body, `"channel_code":"`) {
+		t.Fatalf("fixture is not a v2-without-echo response: %s", body)
+	}
+
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(r.URL.Path, "/price-resolution") {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_, _ = w.Write([]byte(emptyFeeResolutionBody(ptr("reseller"))))
+	}))
+	defer catalog.Close()
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			UnitAmount int64 `json:"unit_amount"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		inventoryAskedFor = append(inventoryAskedFor, in.UnitAmount)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"stop"}`))
+	}))
+	defer inventory.Close()
+
+	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	res := reserveInChannel(t, s, "v2-foreign-rule", "reseller")
+
+	if len(inventoryAskedFor) != 0 {
+		t.Fatalf("inventory was asked to hold at %v — a resolver that cannot answer the channelled "+
+			"question must not price the sale, and it must be stopped BEFORE the hold", inventoryAskedFor)
+	}
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (the resolution is unusable): %s", res.Code, res.Body.String())
 	}
 }

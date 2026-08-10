@@ -308,6 +308,14 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 	// primary key makes this unreachable through Postgres — but this function is
 	// the seam TKT-152 and TKT-153 build on, and a function that advertises
 	// determinism must not quietly have an input that breaks it.
+	//
+	// NARROWED BY TKT-237, deliberately: this now runs AFTER the channel filter,
+	// so duplicate ids among rules that are ineligible for the requested channel
+	// no longer error. That is the right scope. The guard protects the
+	// DETERMINISM OF THE ANSWER, and a rule that cannot compete cannot affect
+	// the answer — erroring on it would refuse a resolution that has exactly one
+	// correct result. Eligible duplicates still error, which is the case the
+	// guard was written for and the one a test pins.
 	seen := make(map[uuid.UUID]struct{}, len(scoped))
 	for _, r := range scoped {
 		if _, dup := seen[r.ID]; dup {
