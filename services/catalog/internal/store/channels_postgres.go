@@ -126,7 +126,7 @@ func (p *Postgres) ListChannels(ctx context.Context, organizerID uuid.UUID) ([]C
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []Channel{}
 	for rows.Next() {
 		var c Channel
@@ -150,7 +150,7 @@ func (p *Postgres) ListEnabledChannels(ctx context.Context, organizerID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []PublicChannel{}
 	for rows.Next() {
 		var c PublicChannel

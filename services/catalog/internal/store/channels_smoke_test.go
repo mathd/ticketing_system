@@ -270,7 +270,7 @@ WHERE tc.constraint_type = 'FOREIGN KEY'
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var offenders []string
 	for rows.Next() {
 		var table, constraint string
