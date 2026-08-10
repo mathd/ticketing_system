@@ -73,6 +73,13 @@ code actually under discussion) — a huge file risks being dropped from context
 
 ## Judging the output — exit 0 ≠ success
 
+**`$CODEX` is NOT set in a fresh shell.** Shell state does not persist between `Bash` calls, so
+`node "$CODEX" …` expands to `node ""` — which **exits 0 and does nothing**, printing not one byte.
+Invoke the companion by absolute path instead, resolving it once per session:
+`node /home/mathieu/.claude/plugins/cache/openai-codex/codex/<version>/scripts/codex-companion.mjs …`
+(`find ~/.claude/plugins -name codex-companion.mjs` if the version moved). A completely empty
+tool result is the signature of this failure, not of a quiet success.
+
 **A codex invocation is the ONLY command in its `Bash` call.** Never chain it after anything — no
 `python3 … && node "$CODEX" …`, no `git push; node "$CODEX" …`, no leading `cd`. When chained, the
 first command runs and **the codex call silently does not**: no error, exit 0, an output file a few
