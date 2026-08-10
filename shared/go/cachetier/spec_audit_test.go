@@ -109,8 +109,20 @@ var wantDeclarations = []string{
 	// at a known instant once effective windows are in play. It is an /internal/
 	// operation rather than a public read (ADR-046 §6), which changes who may ask
 	// but not how long the answer stays true.
+	// TKT-235, the sales-channel registry. Two decisions, not one:
+	//
+	// listPublicChannels takes the MINUTES tier, like the four aggregated
+	// storefront reads — a channel list is slow-moving organizer configuration
+	// and a buyer seeing a retired channel for five minutes costs a rejected
+	// hold, not a wrong price. It declares the new single-valued
+	// MinutesCacheControl component rather than joining TKT-204's free-form
+	// allowlist, which is closed to new operations (TKT-209 tracks removing it).
+	//
+	// updateChannel takes NEVER, like every other write's response.
+	"catalog/listPublicChannels 200",
 	"catalog/resolveTicketTypeFees 200",
 	"catalog/resolveTicketTypePrice 200",
+	"catalog/updateChannel 200",
 	"inventory/getAvailability 200",
 	// The operator kill-switch (TKT-210). A never-tier declaration on a control
 	// surface rather than a data read: a cached answer about whether a cache is

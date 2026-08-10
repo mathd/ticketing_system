@@ -1676,6 +1676,11 @@ export interface components {
         SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
         /** @description Always no-store. A resolved price feeds a money decision (ADR-004's "never" tier), and once TKT-152 adds effective windows the response's correctness expires at a known instant — caching it past that instant would sell at a stale price. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
         PriceResolutionCacheControl: "no-store";
+        /**
+         * @description Always the ADR-004 minutes tier. Single-valued and required, so the ADR-028 response validator turns any other value into a 500 and the cross-service tier audit (shared/go/cachetier) can check the committed value rather than take it on trust.
+         *     Distinct from the free-form `CacheControl` component above, which is `type: string` with no enum and therefore commits nothing. That one is TKT-204's bounded legacy exception, closed to new operations and tracked for removal by TKT-209 — a new read joins this component instead.
+         */
+        MinutesCacheControl: "public, max-age=300, s-maxage=300";
         /** @description Always no-store — ADR-004's "never" tier. An authentication response is never shared-cacheable: it is computed from a submitted credential and says whether that credential is good. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
         NeverCacheControl: "no-store";
     };
@@ -3012,7 +3017,7 @@ export interface operations {
             /** @description Enabled channels, code and display name */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["MinutesCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {

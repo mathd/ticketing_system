@@ -1332,7 +1332,7 @@ paths:
         '200':
           description: Enabled channels, code and display name
           headers:
-            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+            Cache-Control: { $ref: '#/components/headers/MinutesCacheControl' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublicChannelList' }
@@ -1484,6 +1484,22 @@ components:
         type: string
         enum:
           - 'no-store'
+    MinutesCacheControl:
+      description: >
+        Always the ADR-004 minutes tier. Single-valued and required, so the
+        ADR-028 response validator turns any other value into a 500 and the
+        cross-service tier audit (shared/go/cachetier) can check the committed
+        value rather than take it on trust.
+
+        Distinct from the free-form `CacheControl` component above, which is
+        `type: string` with no enum and therefore commits nothing. That one is
+        TKT-204's bounded legacy exception, closed to new operations and tracked
+        for removal by TKT-209 — a new read joins this component instead.
+      required: true
+      schema:
+        type: string
+        enum:
+          - 'public, max-age=300, s-maxage=300'
     NeverCacheControl:
       description: >
         Always no-store — ADR-004's "never" tier. An authentication response is
