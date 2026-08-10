@@ -606,3 +606,263 @@ func assertLoserOrder(t *testing.T, got RuleSelection, want ...uuid.UUID) {
 		}
 	}
 }
+
+// ruleChan is a third fixture id, local to the channel tests: the package
+// block declares only ruleA and ruleB, and the case-sensitivity case needs
+// three rules to show that two distinct spellings are both ineligible.
+var ruleChan = uuid.MustParse("cccccccc-0000-0000-0000-000000000000")
+
+// onChannel puts a rule on an exact channel. Nil-safe by construction: the
+// helper takes a value and the field is a pointer, so a fixture cannot
+// accidentally share one across rules.
+func onChannel(r PriceRule, code string) PriceRule { r.ChannelCode = &code; return r }
+
+// chanReq builds the requested-channel pointer. `nil` is the default/public
+// context and is written as a literal nil at the call site, so the two cases are
+// visually distinct in the table.
+func chanReq(code string) *string { return &code }
+
+// TKT-237: the channel axis, as a truth table.
+//
+// ADR-046 §4/§8 specify this for fees; this asserts the same semantics for
+// prices, against SelectPricingRule rather than by reading the fee tests. The
+// two comparators are deliberately separate implementations (ADR-046 §7), so a
+// shared test would prove only that one of them works.
+func TestSelectPricingRuleChannelAxis(t *testing.T) {
+	tests := []struct {
+		name       string
+		requested  *string
+		rules      []PriceRule
+		wantWinner *uuid.UUID
+		wantAmount int64
+		wantLosers []loserWant
+	}{
+		{
+			// The regression that matters most: every existing row is
+			// channel-agnostic, and a channel-less request must resolve exactly
+			// as it did before this column existed.
+			name:       "agnostic_rule_agnostic_request_is_unchanged",
+			requested:  nil,
+			rules:      []PriceRule{rule(ruleA, ScopeEvent, eventID, 3000)},
+			wantWinner: &ruleA, wantAmount: 3000,
+		},
+		{
+			// A channel-agnostic rule is eligible in EVERY channel, including a
+			// named one — that is what "agnostic" means, and it is why existing
+			// data keeps pricing channelled sales.
+			name:       "agnostic_rule_is_eligible_on_a_named_channel",
+			requested:  chanReq("reseller"),
+			rules:      []PriceRule{rule(ruleA, ScopeEvent, eventID, 3000)},
+			wantWinner: &ruleA, wantAmount: 3000,
+		},
+		{
+			// The headline: at equal scope, the exact-channel rule wins.
+			name:      "exact_channel_beats_agnostic_at_equal_scope",
+			requested: chanReq("reseller"),
+			rules: []PriceRule{
+				rule(ruleA, ScopeEvent, eventID, 3000),
+				onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "reseller"),
+			},
+			wantWinner: &ruleB, wantAmount: 2500,
+			wantLosers: []loserWant{{ruleA, ReasonLessChannelSpecific}},
+		},
+		{
+			// Channel ranks ABOVE priority. A channel rule wins even when the
+			// agnostic rule carries a higher priority, because priority
+			// disambiguates rules of EQUAL specificity and a channel rule is not
+			// of equal specificity. If this ever flips, an operator raising a
+			// priority silently overrides every channel price.
+			name:      "channel_beats_a_higher_priority_agnostic_rule",
+			requested: chanReq("reseller"),
+			rules: []PriceRule{
+				withPriority(rule(ruleA, ScopeEvent, eventID, 3000), 100),
+				onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "reseller"),
+			},
+			wantWinner: &ruleB, wantAmount: 2500,
+			wantLosers: []loserWant{{ruleA, ReasonLessChannelSpecific}},
+		},
+		{
+			// Channel ranks BELOW scope. A broader exact-channel rule loses to a
+			// narrower agnostic one — scope is compared first, and the loss
+			// reason says so rather than blaming the channel.
+			name:      "narrower_agnostic_scope_beats_broader_exact_channel",
+			requested: chanReq("reseller"),
+			rules: []PriceRule{
+				rule(ruleA, ScopeTicketType, ttID, 3000),
+				onChannel(rule(ruleB, ScopeVenue, venueID, 2500), "reseller"),
+			},
+			wantWinner: &ruleA, wantAmount: 3000,
+			wantLosers: []loserWant{{ruleB, ReasonLessSpecific}},
+		},
+		{
+			// Omitting the channel is NOT a wildcard. A rule authored for one
+			// channel must never price a sale that named none.
+			name:      "channel_specific_rule_is_invisible_to_a_channel_less_request",
+			requested: nil,
+			rules: []PriceRule{
+				rule(ruleA, ScopeEvent, eventID, 3000),
+				onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "reseller"),
+			},
+			wantWinner: &ruleA, wantAmount: 3000,
+			// ruleB is ABSENT, not a loser — see the dedicated test below.
+		},
+		{
+			// Exact, case-sensitive matching (ADR-024). "Reseller" is a
+			// different channel from "reseller", and " reseller" is a third —
+			// nothing folds case and nothing trims. Both are therefore
+			// INELIGIBLE, so the agnostic rule wins and neither appears.
+			name:      "channel_matching_is_exact_and_case_sensitive",
+			requested: chanReq("reseller"),
+			rules: []PriceRule{
+				rule(ruleA, ScopeEvent, eventID, 3000),
+				onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "Reseller"),
+				onChannel(rule(ruleChan, ScopeEvent, eventID, 2000), "reseller "),
+			},
+			wantWinner: &ruleA, wantAmount: 3000,
+		},
+		{
+			// Under a forced partition BOTH specificity axes invert: the
+			// BROADEST statement binds, and a channel-agnostic rule is the
+			// broader one. Left undefined this falls through to priority and is
+			// decided by accident, on a money path.
+			name:      "forced_partition_inverts_the_channel_axis",
+			requested: chanReq("reseller"),
+			rules: []PriceRule{
+				forced(rule(ruleA, ScopeEvent, eventID, 3000)),
+				forced(onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "reseller")),
+			},
+			wantWinner: &ruleA, wantAmount: 3000,
+			wantLosers: []loserWant{{ruleB, ReasonLessChannelSpecific}},
+		},
+		{
+			// The forced partition is a FILTER, not a tie-break — so an unforced
+			// exact-channel rule cannot beat a forced agnostic one, however
+			// specific it is. Getting this order wrong is the inversion
+			// force_ancestor_override exists to prevent.
+			name:      "forced_agnostic_excludes_an_unforced_channel_rule",
+			requested: chanReq("reseller"),
+			rules: []PriceRule{
+				forced(rule(ruleA, ScopeEvent, eventID, 3000)),
+				onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "reseller"),
+			},
+			wantWinner: &ruleA, wantAmount: 3000,
+			wantLosers: []loserWant{{ruleB, ReasonExcludedByForcedRule}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SelectPricingRule(evalAt, PricingCandidates{
+				BasePrice: Money{Amount: 4550, Currency: "EUR"},
+				Scopes:    testScopes(true),
+				Rules:     tc.rules,
+				Channel:   tc.requested,
+			})
+			if err != nil {
+				t.Fatalf("SelectPricingRule: %v", err)
+			}
+			if got.ResolvedPrice.Amount != tc.wantAmount {
+				t.Errorf("ResolvedPrice.Amount = %d, want %d", got.ResolvedPrice.Amount, tc.wantAmount)
+			}
+			switch {
+			case tc.wantWinner == nil && got.Winner != nil:
+				t.Fatalf("Winner = %v, want none", got.Winner.ID)
+			case tc.wantWinner != nil && got.Winner == nil:
+				t.Fatalf("Winner = none, want %v", *tc.wantWinner)
+			case tc.wantWinner != nil && got.Winner.ID != *tc.wantWinner:
+				t.Fatalf("Winner = %v, want %v", got.Winner.ID, *tc.wantWinner)
+			}
+			assertLosers(t, got, tc.wantLosers)
+			// The resolution echoes which question it answered, so a persisted
+			// snapshot is not ambiguous between "no channel rules existed" and
+			// "the sale named no channel".
+			switch {
+			case tc.requested == nil && got.Channel != nil:
+				t.Errorf("Channel = %q, want nil echoed back", *got.Channel)
+			case tc.requested != nil && (got.Channel == nil || *got.Channel != *tc.requested):
+				t.Errorf("Channel = %v, want %q echoed back", got.Channel, *tc.requested)
+			}
+		})
+	}
+}
+
+// A foreign channel's rule is ABSENT from provenance, not reported as a loser.
+//
+// This is the disclosure decision, and it is the one place price resolution
+// deliberately diverges from reporting everything it considered. `price-resolution`
+// is PUBLIC — the gateway proxies it to the internet — so reporting other
+// channels' rules would publish which channels carry bespoke pricing and at what
+// amounts. TKT-155 already tracks this array over-disclosing; this must not
+// widen it.
+//
+// Asserted separately from the truth table because the table asserts what the
+// losers ARE, and this asserts what they must NOT contain — a distinction the
+// table's `wantLosers` cannot express without a "and nothing else" that would
+// duplicate assertSelection.
+func TestSelectPricingRuleHidesOtherChannelsEntirely(t *testing.T) {
+	cases := []struct {
+		name      string
+		requested *string
+		foreign   PriceRule
+	}{
+		{"named request, foreign channel", chanReq("reseller"),
+			onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "pos")},
+		{"channel-less request, any channel rule", nil,
+			onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "pos")},
+		{"foreign channel whose window has CLOSED", chanReq("reseller"),
+			window(onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "pos"), dur(-2*time.Hour), dur(-time.Hour))},
+		{"foreign channel whose window is in the FUTURE", chanReq("reseller"),
+			window(onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "pos"), dur(time.Hour), dur(2*time.Hour))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SelectPricingRule(evalAt, PricingCandidates{
+				BasePrice: Money{Amount: 4550, Currency: "EUR"},
+				Scopes:    testScopes(true),
+				Rules:     []PriceRule{rule(ruleA, ScopeEvent, eventID, 3000), tc.foreign},
+				Channel:   tc.requested,
+			})
+			if err != nil {
+				t.Fatalf("SelectPricingRule: %v", err)
+			}
+			for _, c := range got.Candidates {
+				if c.Rule.ID == tc.foreign.ID {
+					t.Fatalf("a foreign channel's rule appears in candidates as %q — "+
+						"this publishes the channel price matrix on a PUBLIC endpoint (ADR-046 §4, TKT-155)", c.Reason)
+				}
+			}
+		})
+	}
+}
+
+// The window branches are the ones most likely to leak a foreign channel: they
+// run after eligibility and classify by time alone. The last two cases above
+// exist because filtering channel AFTER the window would report a foreign
+// channel's expired rule as `outside_window_past` — leaking exactly what the
+// channel filter exists to hide, through the one branch that looks unrelated to
+// channels.
+func TestChannelFilterRunsBeforeTheWindowFilter(t *testing.T) {
+	got, err := SelectPricingRule(evalAt, PricingCandidates{
+		BasePrice: Money{Amount: 4550, Currency: "EUR"},
+		Scopes:    testScopes(true),
+		Rules: []PriceRule{
+			// Only rule: a foreign channel's expired rule. Nothing eligible
+			// remains, so this falls back to the base price.
+			window(onChannel(rule(ruleB, ScopeEvent, eventID, 2500), "pos"), dur(-2*time.Hour), dur(-time.Hour)),
+		},
+		Channel: chanReq("reseller"),
+	})
+	if err != nil {
+		t.Fatalf("SelectPricingRule: %v", err)
+	}
+	if len(got.Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want empty — a foreign channel's expired rule must be absent, "+
+			"not reported as outside_window_past", got.Candidates)
+	}
+	if got.FallbackReason == nil || *got.FallbackReason != FallbackNoEligibleRule {
+		t.Fatalf("FallbackReason = %v, want %q", got.FallbackReason, FallbackNoEligibleRule)
+	}
+	if got.ResolvedPrice.Amount != 4550 {
+		t.Fatalf("ResolvedPrice = %d, want the base 4550", got.ResolvedPrice.Amount)
+	}
+}
