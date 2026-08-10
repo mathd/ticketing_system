@@ -1,5 +1,15 @@
 version: "2"
 
+# Report EVERY finding. golangci-lint defaults to max-same-issues: 3, and that default
+# is not a display preference here — it is a hole in the gate. Rebasing this branch onto
+# main, the first sweep of services/commerce reported three errorlint hits in one file;
+# fixing those three revealed three MORE in the same file that the cap had withheld. A
+# gate that stops counting at three tells you it is clean when it is not, which is the
+# same green-by-omission shape this config exists to close.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
 # The gate runs golangci-lint per Go module (`cd $m && golangci-lint run`, see the
 # Makefile). golangci-lint walks up from the module directory to the git root to find
 # this file, so one config covers every module — do not copy it per service.

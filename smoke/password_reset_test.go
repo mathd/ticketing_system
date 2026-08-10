@@ -4,6 +4,7 @@ package smoke_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -62,7 +63,7 @@ func awaitEnqueuedResetMail(t *testing.T, recipient string) (token string, sent 
 			if token != "" && sentAt != nil {
 				return token, true
 			}
-		} else if err != pgx.ErrNoRows {
+		} else if !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatalf("read mail_outbox: %v", err)
 		}
 		time.Sleep(500 * time.Millisecond)

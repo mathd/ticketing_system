@@ -4,6 +4,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -126,7 +127,7 @@ func TestDetachingAnUnattributedOrderIsRefusedAndRecordsNothing(t *testing.T) {
 	db, ctx := outboxDB(t)
 	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{})
 
-	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "nothing to detach"); err != ErrOrderNotDetachable {
+	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "nothing to detach"); !errors.Is(err, ErrOrderNotDetachable) {
 		t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
 	}
 	if records := detachmentsFor(t, db, order); len(records) != 0 {
@@ -149,7 +150,7 @@ func TestDetachRefusesAnOrderThatIsNotCompleted(t *testing.T) {
 			customer := registerClaimant(t, db, ctx, "detach-"+status)
 			order, _ := seedClaimable(t, db, ctx, status, uuid.NullUUID{UUID: customer, Valid: true})
 
-			if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "wrong state"); err != ErrOrderNotDetachable {
+			if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "wrong state"); !errors.Is(err, ErrOrderNotDetachable) {
 				t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
 			}
 			if got := attributionOf(t, db, ctx, order); !got.Valid || got.UUID != customer {
@@ -164,7 +165,7 @@ func TestDetachRefusesAnOrderThatIsNotCompleted(t *testing.T) {
 
 func TestDetachRefusesAnOrderThatDoesNotExist(t *testing.T) {
 	db, ctx := outboxDB(t)
-	if _, err := DetachOrderAttribution(ctx, db, uuid.New(), "key-"+uuid.NewString(), "staff:amy", "no such order"); err != ErrOrderNotDetachable {
+	if _, err := DetachOrderAttribution(ctx, db, uuid.New(), "key-"+uuid.NewString(), "staff:amy", "no such order"); !errors.Is(err, ErrOrderNotDetachable) {
 		t.Fatalf("err = %v, want ErrOrderNotDetachable", err)
 	}
 }
@@ -184,7 +185,7 @@ func TestDetachRefusesABlankActorOrReason(t *testing.T) {
 		{"whitespace reason", "staff:amy", "\t\n "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), tc.actor, tc.reason); err != ErrDetachmentNotDescribed {
+			if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), tc.actor, tc.reason); !errors.Is(err, ErrDetachmentNotDescribed) {
 				t.Fatalf("err = %v, want ErrDetachmentNotDescribed", err)
 			}
 		})
@@ -234,7 +235,7 @@ func TestDetachingTwiceRecordsOnlyTheDetachmentThatHappened(t *testing.T) {
 	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:amy", "first"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:bo", "second"); err != ErrOrderNotDetachable {
+	if _, err := DetachOrderAttribution(ctx, db, order, "key-"+uuid.NewString(), "staff:bo", "second"); !errors.Is(err, ErrOrderNotDetachable) {
 		t.Fatalf("err = %v, want ErrOrderNotDetachable on the second detach", err)
 	}
 	records := detachmentsFor(t, db, order)
@@ -350,7 +351,7 @@ func TestDetachRefusesABlankIdempotencyKey(t *testing.T) {
 	order, _ := seedClaimable(t, db, ctx, "completed", uuid.NullUUID{UUID: customer, Valid: true})
 
 	for _, key := range []string{"", "   "} {
-		if _, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "a reason"); err != ErrDetachmentNotDescribed {
+		if _, err := DetachOrderAttribution(ctx, db, order, key, "staff:amy", "a reason"); !errors.Is(err, ErrDetachmentNotDescribed) {
 			t.Fatalf("key %q: err = %v, want ErrDetachmentNotDescribed", key, err)
 		}
 	}
