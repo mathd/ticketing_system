@@ -4,7 +4,7 @@
   "summary": "US-CH4: Per-channel sales windows — when a channel may sell",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
   "pr": null,
