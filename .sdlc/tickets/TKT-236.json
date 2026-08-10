@@ -1,13 +1,13 @@
 {
   "key": "TKT-236",
   "type": "Story",
-  "summary": "US-CH2: Back-office channel administration — manage the registry and a slot's allocations from a browser",
+  "summary": "US-CH2: Back-office channel registry administration",
   "status": "Backlog",
   "labels": [],
   "assignee": null,
   "pr": null,
   "parent": "TKT-17",
-  "description": "The registry (US-CH1) and channel allocations (shipped, TKT-78) are both API-only. `PUT /internal/slots/{id}/channel-allocations` is unreachable from the edge by construction, and no UI exists anywhere. This story gives back-office staff the screens.\n\n**Conditions of Success:**\n- A back-office channels page lists the organizer's channels and supports create / enable / disable / rename-display-name. Code is shown read-only (immutable per US-CH1).\n- A slot's channel-allocations editor shows the current allocation set with each channel's cap, `release_at` and current consumption, and submits the full set as one atomic replace (the shipped PUT is a full-set replace under the pool lock — the UI must not offer per-row saves, which would round-trip a stale set).\n- The editor surfaces the two server-side refusals as field errors rather than a generic failure: caps summing above pool capacity, and a cap below that channel's current consumption.\n- Allocation rows for channels absent from the registry render with their raw code and a marker — the registry is a lookup, not a constraint, and pre-existing codes must stay editable.\n- **Browser-verified:** `make browser` plus a spec in `test/browser/` that *submits* both write forms, not just renders them.\n\nQuality gates: `make check` green; `make browser` green with the new spec; screenshot in the PR; OpenAPI/types regenerated and committed before the gate.\n\nParent: TKT-17. Depends on US-CH1 (needs the registry to list). Non-goals: pricing, windows, presale codes, reseller API.",
+  "description": "The channel registry (TKT-235) is API-only. This story gives back-office staff the screens to\nmanage it: list, create, enable, disable, rename.\n\n**Re-scoped 2026-08-10 (owner decision).** The allocation editor that was originally in this ticket\nmoved to **TKT-244**, because it needs an inventory credential that does not exist — see the\n`kind=blocker` comment below and TKT-244's own description. What remains is reachable with\ncredentials the back office already holds.\n\n**Conditions of Success:**\n- A back-office channels page lists the organizer's channels — **enabled and disabled** — and\n  supports create, enable, disable, and renaming the display name. The **code is read-only** in the\n  UI: it is immutable per TKT-235, and a rename is a new channel plus disabling the old one.\n- A disabled channel is visibly distinct from an enabled one, and can be re-enabled from the same\n  screen. Disabling must not be a one-way door in the UI.\n- Server refusals surface as field errors rather than a generic failure: a duplicate code for the\n  organizer (409), and the write-gate refusals (empty/over-long code or display name, unknown kind).\n- The page reaches catalog with the **`CATALOG_STAFF_WRITE_TOKEN` the back office already holds**.\n  It must **not** send `X-Internal-Token`, which the back office deliberately does not have\n  (`compose.yaml:379-392`, pinned by `web/backoffice/test/api.test.ts:471`).\n- **Browser-verified:** `make browser` plus a spec in `test/browser/` that *submits* the create form\n  and the enable/disable toggle — not just renders them. Note `scripts/browser.sh` provisions **no**\n  staff account, so the spec must provision its own.\n\nQuality gates: `make check` green; `make browser` green with the new spec; screenshot in the PR;\nOpenAPI/types regenerated and committed before the gate.\n\nParent: TKT-17. Depends on TKT-235 (Done). Non-goals: the slot allocation editor and the inventory\ncredential (**TKT-244**); per-channel pricing UI; presale codes; the reseller API; any storefront\nchannel selector.",
   "readiness": {
     "objective": {
       "state": "met",
@@ -15,25 +15,24 @@
     },
     "scope": {
       "state": "met",
-      "note": "IN: back-office channels CRUD page, slot allocation editor (atomic full-set replace), the two refusal paths as field errors, unregistered-code rendering, browser submit specs. OUT: storefront UI, pricing/windows/presale/reseller."
+      "note": "IN: channels list/create/enable/disable/rename-display-name, disabled channels visible and re-enablable, refusals as field errors, browser-submit spec. OUT: the allocation editor and the inventory credential (TKT-244), pricing UI, presale codes, reseller API, storefront selector."
     },
     "uncertainties": {
       "state": "met",
-      "note": "Resolved by reading: PUT /internal/slots/{id}/channel-allocations is a full-set atomic replace with no If-Match (ADR-024 accepts this while allocation editing is single-operator) — so the UI must submit the whole set. Internal routes are 404'd at the gateway edge (gateway/cmd/gateway/main.go:42-49), so the back office reaches inventory the same way the existing back-office write paths do; that path is read at plan time."
+      "note": "Resolved by reading: registry writes are contract operations behind a credential the back office already holds; only the disabled-channel read needs a decision, and kind=blocker states it with its alternative."
     },
     "dependencies": {
-      "state": "open",
-      "owner": "human",
-      "note": "BLOCKER: the back office holds no credential for catalog's or inventory's /internal/ surface, and is explicitly forbidden the shared INTERNAL_SERVICE_TOKEN (compose.yaml:379-392, api.test.ts:471). Reaching either endpoint needs a new per-service credential class — an ADR-043 question, not a UI one. See kind=blocker."
+      "state": "met",
+      "note": "TKT-235 is Done and merged. The credential blocker moved to TKT-244 with the allocation editor; nothing this ticket needs is missing."
     },
     "approach": {
       "state": "open",
       "owner": "human",
-      "note": "Depends on the scoping decision in kind=blocker. Agent recommends option 1 (registry screens only, allocation editor carved out), but shaping.md forbids approach:deferred on an auth-touching ticket — this holds at Gate 1."
+      "note": "One auth decision remains and is deliberately NOT deferred: reaching GET /internal/channels with the CATALOG_STAFF_WRITE_TOKEN the back office already holds, so the page can show disabled channels. Rationale and the rejected alternative are in kind=blocker. shaping.md keeps this owner:human because it touches auth — it is a much smaller decision than TKT-244's, not an absent one."
     },
     "first_slice": {
       "state": "met",
-      "note": "Channels CRUD page first, allocation editor second — both in one PR; they are the same screen family and split would leave the allocation editor with nothing to pick from."
+      "note": "One screen, one PR. The allocation editor is no longer in scope, so the earlier 'both screens together' argument no longer applies."
     },
     "success": {
       "state": "met",
@@ -90,9 +89,17 @@
       {
         "summary": "PUT /internal/slots/{id}/channel-allocations has no If-Match; ADR-024 accepts this while allocation editing is single-operator",
         "link": "services/inventory/api/openapi.yaml:217"
+      },
+      {
+        "summary": "The precedent for reaching a service directly with a per-service staff credential: COMMERCE_URL + COMMERCE_STAFF_WRITE_TOKEN (TKT-194)",
+        "link": "web/backoffice/src/lib/commerce.ts"
+      },
+      {
+        "summary": "The allocation editor and the inventory credential were carved out here",
+        "link": ".sdlc/tickets/TKT-244.json"
       }
     ],
-    "capturedAt": "2026-08-09",
+    "capturedAt": "2026-08-10",
     "governingTests": [
       {
         "test": "web/backoffice/test/authorization.test.ts:63 TestClassifiesEveryPage",
@@ -132,6 +139,10 @@
     {
       "type": "blocked-by",
       "key": "TKT-235"
+    },
+    {
+      "type": "blocks",
+      "key": "TKT-244"
     }
   ],
   "comments": [
@@ -144,6 +155,11 @@
       "stage": "backlog",
       "kind": "blocker",
       "body": "<!-- sdlc:stage=backlog kind=blocker -->\n### ⛔ Not claimable as shaped — the back office cannot reach either endpoint this ticket needs\n\nFound during the pre-claim `governingTests` bake (the context-mémo field added after TKT-235's\nretro). This is exactly the class that field exists to surface: the blocker is stated in **no ADR**,\nis invisible in the files a plan brief would point at, and lives in a compose comment plus a test\nassertion.\n\n#### The finding\n\nTKT-236's two screens need:\n1. `GET /internal/channels` (catalog) — the operator read, which returns disabled channels.\n2. `PUT /internal/slots/{id}/channel-allocations` (inventory) — the allocation editor's write.\n\nBoth are `/internal/` routes guarded by `X-Internal-Token` == `INTERNAL_SERVICE_TOKEN`. **The back\noffice does not hold that token, does not have a URL for either service, and is deliberately\nforbidden from holding it.**\n\nVerified at HEAD:\n\n- `compose.yaml:379-392` — the back office's entire environment is `GATEWAY_URL`,\n  `CATALOG_STAFF_WRITE_TOKEN`, `COMMERCE_URL`, `COMMERCE_STAFF_WRITE_TOKEN`. There is **no\n  `CATALOG_URL`**, **no `INVENTORY_URL`**, and no internal token. The comment states the reason\n  outright: *\"that one value opens every service's internal surface, and this is a public-facing SSR\n  process.\"*\n- `web/backoffice/test/api.test.ts:471` — pins the posture as an assertion:\n  `expect(calls[0].headers['X-Internal-Token']).toBeUndefined()` with the comment *\"Never the shared\n  internal token, which the back office does not hold.\"*\n- `web/backoffice/test/credentials.test.ts:14-44` — the two credentials it does hold must both be\n  set and must **differ**; `scripts/stack-env.sh:55-61` generates each from an independent\n  `/dev/urandom` read, *\"A separate read, not a copy.\"*\n- Inventory has **no staff-write credential at all** — only `INTERNAL_SERVICE_TOKEN`. Catalog's\n  staff-write credential exists but does not open `/internal/` (that surface takes the internal\n  token, per `internalAuthorized`).\n\n#### Why this is not a plan-stage problem\n\nThe shaping put `dependencies: met` because the only blocker considered was TKT-235, and\n`approach: met` because the Astro write-form pattern is well established. Both were right about what\nthey looked at. What neither covered is that **the transport does not exist** — and the fix is not a\nUI decision:\n\n- Giving the back office `INTERNAL_SERVICE_TOKEN` is refused by an explicit, tested, commented\n  decision. It is also the precise mistake TKT-190 made and plan-review caught: one shared value\n  opening commerce's refunds and inventory's operational holds.\n- The in-repo precedent (TKT-194, `COMMERCE_URL` + `COMMERCE_STAFF_WRITE_TOKEN`) is a **new\n  per-service staff credential** reaching a service directly, in-network. Applying it here means a\n  **third and fourth credential**, a new inventory credential class where none exists, and a new\n  guard on inventory's internal surface — i.e. an ADR-043 question, not a screen.\n\n#### This is stop-condition (b)\n\nThe run's terms say stop when *\"implementation would touch auth … in a way the ticket and plan did\nnot anticipate.\"* This ticket's COS describe two screens; the work actually required is a new\nservice-to-service credential class for inventory plus a compose/credential-generation change. The\nowner waived the gates for the epic on the understanding that TKT-240 was where auth lived — this is\nan auth decision arriving one ticket early, in a story shaped as UI-only.\n\n#### Options (agent's recommendation first, but this is the owner's call)\n\n1. **Re-scope TKT-236 to the registry screens only** (create / enable / disable / rename). Catalog's\n   *public* `GET /public/channels` is reachable through the gateway today, and the writes go through\n   `POST /channels` / `PUT /channels/{id}` with the `CATALOG_STAFF_WRITE_TOKEN` the back office\n   already holds. Only the *disabled-channel* view needs `/internal/`, and a narrower fix exists:\n   let catalog's operator list be reached with the staff-write credential it already has — which is\n   its own small decision, but a much smaller one. **The allocation editor moves to its own ticket**,\n   carrying the inventory-credential question with it.\n2. **Split the credential work out first** as a prefactor ticket (an ADR + the inventory credential\n   + compose wiring), then run TKT-236 unchanged behind it.\n3. **Proceed as shaped**, deciding the credential design inside this ticket under the standing\n   waiver.\n\nRecommending **(1)**: it is the most reversible, it ships a demoable slice now, and it does not\ndecide inventory's credential class as a side effect of building a form.\n\n#### Mémo updated\n\n`governingTests` baked onto this ticket (below) — 8 invariants that would otherwise have been\ndiscovered by failing the gate, including the `ROUTE_MATRIX` completeness guard (a new page under\n`src/pages/` with no matrix row fails the suite *and* 403s at runtime, even for admin) and\n`browser.sh` provisioning no staff account, so a back-office browser spec must provision its own.\n"
+    },
+    {
+      "stage": "backlog",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=backlog kind=blocker -->\n### ✅ Resolved — re-scoped on the owner's decision (2026-08-10)\n\nThe blocker below stands as filed. The owner chose **option 1**: re-scope this ticket to the registry\nscreens, carve the allocation editor into its own ticket.\n\n**What moved to [TKT-244]:** the slot channel-allocation editor, and with it the whole\ninventory-credential question — inventory has no staff-write credential at all, and the back office is\nexplicitly denied the shared `INTERNAL_SERVICE_TOKEN`. That is an ADR-scale decision and now has a\nticket where it is the *subject* rather than an obstacle found mid-build.\n\n**What stays here, and why it is unblocked:** the registry writes are **contract operations**\n(`POST /channels`, `PUT /channels/{channelId}`) guarded by `CATALOG_STAFF_WRITE_TOKEN` — a credential\n**the back office already holds and already uses**. Nothing new is needed to ship the screens.\n\n#### The one residual question, and the answer this re-scope takes\n\nThe page must show **disabled** channels, and today only `GET /internal/channels` returns those.\nTwo ways, and this ticket takes the first:\n\n1. **Reach `GET /internal/channels` with `CATALOG_STAFF_WRITE_TOKEN`** — needs `CATALOG_URL` in the\n   back office's compose environment, exactly mirroring `COMMERCE_URL` + `COMMERCE_STAFF_WRITE_TOKEN`\n   from TKT-194. **No new credential**: catalog already issues this one to the back office, so the\n   change is teaching catalog's existing internal guard to accept a credential it already trusts on\n   its contract surface. Small, precedented, and reversible.\n2. Ship against the public read only — enabled channels, disabling one-way from the UI. **Rejected:**\n   an operator who cannot see or re-enable what they disabled has a screen that creates dead\n   configuration, and \"we shipped it crippled to avoid a compose line\" is not a trade worth making.\n\n**Why (1) is a genuinely smaller decision than TKT-244's**, and not the same thing wearing a\ndifferent hat: catalog's staff-write credential **exists**, is **already held by this exact process**,\nand already opens catalog's *unsafe contract operations* — including the very writes this page\nperforms. Extending it to a read on the same service adds **no blast radius**: a holder that can\nalready create and update channels can trivially learn which channels exist. Inventory's case is the\nopposite on all three counts — no credential exists, the back office holds nothing for that service,\nand the surface it would open (`channel-allocations`) is a capacity write on the contention hot path.\n\n**Stated plainly so plan-review can attack it:** this is still an auth change, it is still `owner:\nhuman` on the readiness item, and if plan-review argues option 2 or a third way, that is the gate\nworking. What it is *not* is the TKT-244-shaped decision — that one is genuinely deferred.\n\n#### Governing tests re-baked for the narrowed scope\n\nNine invariants remain (see the mémo). The two that most often break a plan that has not read them:\n`ROUTE_MATRIX` completeness (a new page with no row fails the suite **and** 403s at runtime, even for\nadmin), and `browser.sh` provisioning **no** staff account, so a back-office spec must provision its\nown.\n"
     }
   ]
 }
