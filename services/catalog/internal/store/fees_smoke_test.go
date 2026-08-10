@@ -165,7 +165,7 @@ func TestResolveTicketTypeFeesWithoutRulesIsEmpty(t *testing.T) {
 		t.Errorf("Currency = %q, want the ticket type's EUR", sel.Currency)
 	}
 	// Price resolution must be untouched by any of this.
-	price, err := st.ResolveTicketTypePrice(ctx, ttID, feeSmokeAt(t))
+	price, err := st.ResolveTicketTypePrice(ctx, ttID, nil, feeSmokeAt(t))
 	if err != nil {
 		t.Fatal(err)
 	}

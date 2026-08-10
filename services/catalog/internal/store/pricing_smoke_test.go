@@ -147,7 +147,7 @@ func TestResolveTicketTypePriceFallsBackToBasePrice(t *testing.T) {
 	ctx, db, st := seasonSmokeStore(t)
 	ttID, _, _, _, _, _ := seedPricingChain(ctx, t, db)
 
-	sel, err := st.ResolveTicketTypePrice(ctx, ttID, pricingAt(t))
+	sel, err := st.ResolveTicketTypePrice(ctx, ttID, nil, pricingAt(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestResolveTicketTypePriceUsesTheHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sel, err := st.ResolveTicketTypePrice(ctx, ttID, pricingAt(t))
+	sel, err := st.ResolveTicketTypePrice(ctx, ttID, nil, pricingAt(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestResolveTicketTypePriceDoesNotLoadScopeIDCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sel, err := st.ResolveTicketTypePrice(ctx, ttID, pricingAt(t))
+	sel, err := st.ResolveTicketTypePrice(ctx, ttID, nil, pricingAt(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestResolveTicketTypePriceDoesNotLoadScopeIDCollision(t *testing.T) {
 func TestResolveTicketTypePriceIsIndexScoped(t *testing.T) {
 	ctx, db, st := seasonSmokeStore(t)
 	ttID, orgID, venueID, eventID, slotID, seriesID := seedPricingChain(ctx, t, db)
-	if _, err := st.ResolveTicketTypePrice(ctx, ttID, pricingAt(t)); err != nil {
+	if _, err := st.ResolveTicketTypePrice(ctx, ttID, nil, pricingAt(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -390,7 +390,7 @@ func TestResolveTicketTypePriceSwitchesTierWithoutAnyWrite(t *testing.T) {
 
 	// ---- no writes from here on ----
 
-	before, err := st.ResolveTicketTypePrice(ctx, ttID, cutover.Add(-time.Nanosecond))
+	before, err := st.ResolveTicketTypePrice(ctx, ttID, nil, cutover.Add(-time.Nanosecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestResolveTicketTypePriceSwitchesTierWithoutAnyWrite(t *testing.T) {
 		t.Errorf("at cutover-1ns losers = %+v, want the successor as outside_window_future", before.Candidates)
 	}
 
-	after, err := st.ResolveTicketTypePrice(ctx, ttID, cutover)
+	after, err := st.ResolveTicketTypePrice(ctx, ttID, nil, cutover)
 	if err != nil {
 		t.Fatal(err)
 	}

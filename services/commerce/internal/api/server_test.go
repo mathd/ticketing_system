@@ -686,12 +686,12 @@ func TestReserveRequiresExactlyOneOfQuantityOrSeats(t *testing.T) {
 	const org = `"organizer_id":"00000000-0000-0000-0000-000000000001"`
 	const tt = `"ticket_type_id":"00000000-0000-0000-0000-000000000002"`
 	for name, body := range map[string]string{
-		"neither":                  `{` + org + `,` + tt + `}`,
-		"both":                     `{` + org + `,` + tt + `,"quantity":1,"seat_identities":["A/1/1"]}`,
-		"empty seat set":           `{` + org + `,` + tt + `,"seat_identities":[]}`,
-		"blank seat identity":      `{` + org + `,` + tt + `,"seat_identities":["  "]}`,
-		"quantity below the band":  `{` + org + `,` + tt + `,"quantity":0}`,
-		"seat set above the band":  `{` + org + `,` + tt + `,"seat_identities":[` + strings.Repeat(`"x",`, 50) + `"y"]}`,
+		"neither":                 `{` + org + `,` + tt + `}`,
+		"both":                    `{` + org + `,` + tt + `,"quantity":1,"seat_identities":["A/1/1"]}`,
+		"empty seat set":          `{` + org + `,` + tt + `,"seat_identities":[]}`,
+		"blank seat identity":     `{` + org + `,` + tt + `,"seat_identities":["  "]}`,
+		"quantity below the band": `{` + org + `,` + tt + `,"quantity":0}`,
+		"seat set above the band": `{` + org + `,` + tt + `,"seat_identities":[` + strings.Repeat(`"x",`, 50) + `"y"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))

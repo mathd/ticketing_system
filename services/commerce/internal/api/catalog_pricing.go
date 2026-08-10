@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +71,11 @@ type priceResolution struct {
 	ResolvedPrice   resolvedMoney `json:"resolved_price"`
 	Winner          *resolvedRule `json:"winner"`
 	FallbackReason  *string       `json:"fallback_reason"`
+	// ChannelCode is which channel catalog answered for; nil is the
+	// default/public context. Validated against what was ASKED (TKT-237) — an
+	// answer describing a different question would price the sale on another
+	// channel's rules.
+	ChannelCode *string `json:"channel_code"`
 
 	// raw is the exact bytes catalog sent, persisted verbatim as the
 	// reservation's provenance snapshot. Storing the decoded struct instead
@@ -84,9 +90,16 @@ type priceResolution struct {
 // The internal credential is deliberately NOT sent: this is a declared,
 // publicly routable operation, and putting a service credential on a public
 // route would be strictly worse than the exposure TKT-155 records.
-func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organizerID uuid.UUID, quantity int32) (priceResolution, error) {
-	code, body, err := s.call(ctx, http.MethodGet,
-		s.catalogURL+"/ticket-types/"+ticketTypeID.String()+"/price-resolution", "", nil, false)
+func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organizerID uuid.UUID, quantity int32, channel *string) (priceResolution, error) {
+	endpoint := s.catalogURL + "/ticket-types/" + ticketTypeID.String() + "/price-resolution"
+	if channel != nil {
+		// Omitting the parameter is the default/public context, NOT a wildcard
+		// (ADR-046 §4, applied to prices by TKT-237). A nil channel must send NO
+		// parameter rather than an empty one, which the contract's minLength
+		// would reject anyway. Same shape as the fee call.
+		endpoint += "?channel_code=" + url.QueryEscape(*channel)
+	}
+	code, body, err := s.call(ctx, http.MethodGet, endpoint, "", nil, false)
 	if err != nil {
 		return priceResolution{}, fmt.Errorf("%w: %v", errResolveUnavailable, err)
 	}
@@ -113,7 +126,7 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 		return priceResolution{}, err
 	}
 	p.raw = canonical
-	if err := p.validate(organizerID, quantity); err != nil {
+	if err := p.validate(organizerID, quantity, channel); err != nil {
 		return priceResolution{}, err
 	}
 	return p, nil
@@ -121,8 +134,18 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 
 // validate enforces every invariant the sale depends on. Each check exists
 // because violating it would let the wrong number reach a buyer.
-func (p priceResolution) validate(organizerID uuid.UUID, quantity int32) error {
+func (p priceResolution) validate(organizerID uuid.UUID, quantity int32, channel *string) error {
 	bad := func(why string) error { return fmt.Errorf("%w: %s", errResolveUnusable, why) }
+
+	// The echoed channel must be the one asked about. A mismatch means the
+	// answer describes a different question, and pricing from it would charge
+	// another channel's price. Same guard, same reasoning as fee resolution.
+	switch {
+	case channel == nil && p.ChannelCode != nil:
+		return bad("price resolution echoes a channel the sale did not request")
+	case channel != nil && (p.ChannelCode == nil || *p.ChannelCode != *channel):
+		return bad("price resolution echoes a different channel")
+	}
 
 	// Any version >= 1 is accepted, and the reason is worth writing down because
 	// the opposite was tried first and was worse.

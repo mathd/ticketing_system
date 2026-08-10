@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
 
+	apispec "ticketing/services/catalog/api"
 	"ticketing/services/catalog/internal/store"
 )
 
@@ -126,8 +128,13 @@ func TestResolveTicketTypePrice(t *testing.T) {
 	if out.PerformanceId != scopes.SlotID {
 		t.Errorf("performance_id = %v, want the ticket type's slot %v", out.PerformanceId, scopes.SlotID)
 	}
-	if out.ResolverVersion != 2 {
-		t.Errorf("ResolverVersion = %d, want 2", out.ResolverVersion)
+	// The LITERAL, deliberately not store.PricingResolverVersion: comparing the
+	// response to the constant it came from passes at any version, including one
+	// bumped by accident. Moved 2 -> 3 by TKT-237, which added the channel axis
+	// to the comparator — this literal, the constant in pricing.go, and
+	// commerce's stored-snapshot literals move together or not at all.
+	if out.ResolverVersion != 3 {
+		t.Errorf("ResolverVersion = %d, want 3", out.ResolverVersion)
 	}
 	// This winner carries no window, so both bounds are null — the unbounded
 	// case, which must stay representable now that windows exist.
@@ -298,5 +305,63 @@ func TestResolveTicketTypePriceWinnerAndFallbackAreExclusive(t *testing.T) {
 					hasWinner, hasFallback)
 			}
 		})
+	}
+}
+
+// The pricing twin of TestFeeLossReasonEnumMatchesTheContract (TKT-237).
+//
+// Its absence was found while shaping this ticket: fees had this parity check
+// since TKT-214 and prices never did, so a price comparator gaining a new loss
+// reason without a matching enum member would 500 a PUBLIC money read under
+// ADR-028's fail-closed response validation — with nothing to catch it, because
+// the reason is only emitted on the narrow path where an agnostic rule loses to
+// a channel rule at equal scope.
+//
+// Both directions matter, as in the fee twin. A Go constant with no enum member
+// is the 500; an enum member nothing emits is a contract promising a value that
+// can never appear, which misleads every client that switches on it.
+func TestPriceLossReasonEnumMatchesTheContract(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(apispec.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, ok := doc.Components.Schemas["LosingPriceRule"]
+	if !ok {
+		t.Fatal("the contract declares no LosingPriceRule schema")
+	}
+	reason, ok := schema.Value.Properties["reason"]
+	if !ok {
+		t.Fatal("LosingPriceRule declares no reason property")
+	}
+	declared := map[string]bool{}
+	for _, v := range reason.Value.Enum {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("non-string enum member %v", v)
+		}
+		declared[s] = true
+	}
+	// Every value lossReason() in services/catalog/internal/store/pricing.go can
+	// return. Listed by hand rather than derived, deliberately: a derivation
+	// would read the same constants the code reads and agree with it by
+	// construction, which is the fixture-cannot-fail trap. Adding a return to
+	// lossReason without adding it here is what this list exists to catch.
+	emitted := map[string]bool{
+		store.ReasonLessSpecific: true, store.ReasonForcedBroaderScope: true,
+		store.ReasonExcludedByForcedRule: true, store.ReasonLowerForcedScope: true,
+		store.ReasonLessChannelSpecific: true, store.ReasonLowerPriority: true,
+		store.ReasonStableIDTiebreak: true, store.ReasonOutsideWindowPast: true,
+		store.ReasonOutsideWindowFuture: true,
+	}
+	for r := range emitted {
+		if !declared[r] {
+			t.Errorf("the price resolver can emit %q, which the contract does not declare — "+
+				"response validation would turn that into a 500 on a PUBLIC money read", r)
+		}
+	}
+	for r := range declared {
+		if !emitted[r] {
+			t.Errorf("the contract declares %q, which nothing emits", r)
+		}
 	}
 }

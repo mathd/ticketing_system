@@ -8,8 +8,8 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -221,8 +221,8 @@ func (s *Server) performanceNames(ctx context.Context, orders []commercestore.Wa
 	}
 	var resolved struct {
 		Performances []struct {
-			PerformanceID uuid.UUID  `json:"performance_id"`
-			EventName     string     `json:"event_name"`
+			PerformanceID uuid.UUID `json:"performance_id"`
+			EventName     string    `json:"event_name"`
 			// Nullable: a festival day has an operating date and opening hours
 			// rather than an instant (ADR-014).
 			StartsAt *time.Time `json:"starts_at"`

@@ -604,7 +604,11 @@ type Store interface {
 	// existing data resolves exactly as it did before this table existed.
 	// A rule whose currency differs from the ticket type's fails the resolution
 	// with ErrPriceRuleCurrencyMismatch rather than being skipped (§2).
-	ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, at time.Time) (RuleSelection, error)
+	// `channel` nil is the default/public context, where only channel-agnostic
+	// rules are eligible — omitting it is not a wildcard (TKT-237, mirroring
+	// ADR-046 §4). A rule belonging to a different channel is absent from
+	// provenance entirely rather than reported as a loser: this read is public.
+	ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (RuleSelection, error)
 	// CreateFeeRule attaches a fee rule to one of the same five scope levels
 	// (TKT-214 / ADR-046), with the same write gate and the same ErrNotFound
 	// disposition as CreatePriceRule.

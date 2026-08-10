@@ -32,6 +32,7 @@ const (
 	versionBeforeStaffAccounts      = 14 // roll 0015_staff_accounts down (TKT-190)
 	versionBeforeFeeRules           = 15 // roll 0016_fee_rules down (TKT-214)
 	versionBeforeChannels           = 17 // roll 0018_channels down (TKT-235)
+	versionBeforePriceRuleChannel   = 18 // roll 0019_price_rule_channels down (TKT-237)
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -632,6 +633,78 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		if !table || !index || rows != 1 {
 			t.Fatalf("failed 0018 down partially dropped the registry: table=%v index=%v rows=%d",
 				table, index, rows)
+		}
+	})
+
+	// TKT-237. A NULLABLE column added to a populated table, which is the shape
+	// where a guard most easily goes vacuous in REVERSE: legacy price rules are
+	// expected and all carry NULL, so a row-count guard would refuse every
+	// rollback including the safe ones. 0019 keys its refusal on a NON-NULL
+	// channel_code, and these two subtests are what prove that — the first needs
+	// a channelled row to be refused, the second needs plain legacy rows to pass.
+	t.Run("0019 down refuses to discard per-channel price rules", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID := uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'chan-prices') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'hall',10 FROM o RETURNING id
+		)
+		INSERT INTO price_rules(organizer_id,scope_level,scope_id,action_kind,amount,currency,channel_code)
+		SELECT $1,'venue',v.id,'absolute',2500,'EUR','reseller' FROM v`,
+			organizerID, venueID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforePriceRuleChannel); err == nil {
+			t.Fatal("0019 down unexpectedly discarded per-channel price-rule data")
+		}
+		// A refused Down leaves the column AND the row intact, not half-dropped.
+		var hasColumn bool
+		var rows int
+		if err := db.QueryRowContext(ctx, `SELECT
+			EXISTS(SELECT 1 FROM information_schema.columns
+			       WHERE table_schema=current_schema() AND table_name='price_rules' AND column_name='channel_code'),
+			(SELECT count(*) FROM price_rules WHERE channel_code IS NOT NULL)`).Scan(&hasColumn, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if !hasColumn || rows != 1 {
+			t.Fatalf("failed 0019 down partially dropped the channel column: column=%v channelled_rows=%d", hasColumn, rows)
+		}
+	})
+
+	// The half that makes it a guard rather than a wall — AND the half that
+	// catches a row-count guard. These legacy rules carry NULL channel_code,
+	// exactly like every row that existed before 0019, so a guard counting rows
+	// rather than non-NULL values would refuse this rollback and fail here.
+	t.Run("0019 down succeeds over legacy channel-less price rules", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		organizerID, venueID := uuid.New(), uuid.New()
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(id,name) VALUES($1,'legacy-prices') RETURNING id
+		), v AS (
+			INSERT INTO venues(id,organizer_id,name,ga_capacity) SELECT $2,id,'hall',10 FROM o RETURNING id
+		)
+		INSERT INTO price_rules(organizer_id,scope_level,scope_id,action_kind,amount,currency)
+		SELECT $1,'venue',v.id,'absolute',2500,'EUR' FROM v`,
+			organizerID, venueID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforePriceRuleChannel); err != nil {
+			t.Fatalf("0019 down over legacy channel-less rules should succeed: %v", err)
+		}
+		var hasColumn bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name='price_rules' AND column_name='channel_code')`).Scan(&hasColumn); err != nil {
+			t.Fatal(err)
+		}
+		if hasColumn {
+			t.Fatal("0019 down left price_rules.channel_code behind")
 		}
 	})
 

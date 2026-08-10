@@ -168,6 +168,12 @@ type ExchangeSource struct {
 	Total                      int64
 	GrossTotal                 int64
 	Currency, PaymentSourceKey string
+	// ChannelCode is the channel the SOURCE sale named; nil is the
+	// default/public context. Carried so an exchange reprices the target on the
+	// same channel it was bought on (TKT-237): repricing on the public channel
+	// would silently change what the buyer owes on the difference, and the
+	// change would look like a pricing bug rather than a lost field.
+	ChannelCode *string
 }
 
 // LoadExchangeSource reads the source order's line for eligibility checks.
@@ -181,7 +187,7 @@ func LoadExchangeSource(ctx context.Context, db *sql.DB, org, order uuid.UUID) (
 	var out ExchangeSource
 	var status string
 	err := db.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.face_value_amount, r.total_amount, r.currency
+		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.face_value_amount, r.total_amount, r.currency, r.channel_code
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
 		Scan(&status, &out.PaymentSourceKey, &out.ReservationID, &out.HoldID, &out.BuyerID, &out.SlotID,
