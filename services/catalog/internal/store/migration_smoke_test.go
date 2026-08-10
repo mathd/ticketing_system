@@ -31,6 +31,7 @@ const (
 	versionBeforeSeatedPerformances = 9  // roll 0010_publish_seat_maps down
 	versionBeforeStaffAccounts      = 14 // roll 0015_staff_accounts down (TKT-190)
 	versionBeforeFeeRules           = 15 // roll 0016_fee_rules down (TKT-214)
+	versionBeforeChannels           = 17 // roll 0018_channels down (TKT-235)
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -598,6 +599,58 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if table {
 			t.Fatal("0016 down left fee_rules behind")
+		}
+	})
+
+	// TKT-235. Same guard, same two halves, for the channel registry. Written
+	// by rolling back rather than by re-executing a copy of 0018's DO block —
+	// the mistake ai-review caught on 0016, where the test's private copy would
+	// have raised even with the guard deleted from the migration.
+	t.Run("0018 down refuses to discard channels", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(name) VALUES('channels') RETURNING id
+		)
+		INSERT INTO channels(organizer_id,code,display_name,kind)
+		SELECT id,'pos','Box office','pos' FROM o`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeChannels); err == nil {
+			t.Fatal("0018 down unexpectedly discarded channel registry data")
+		}
+		var table, index bool
+		var rows int
+		if err := db.QueryRowContext(ctx, `SELECT
+			to_regclass(current_schema() || '.channels') IS NOT NULL,
+			to_regclass(current_schema() || '.channels_enabled_by_organizer') IS NOT NULL,
+			(SELECT count(*) FROM channels)`).Scan(&table, &index, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if !table || !index || rows != 1 {
+			t.Fatalf("failed 0018 down partially dropped the registry: table=%v index=%v rows=%d",
+				table, index, rows)
+		}
+	})
+
+	// The half that makes it a guard rather than a wall.
+	t.Run("0018 down succeeds with no channels", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeChannels); err != nil {
+			t.Fatalf("0018 down with no data should succeed: %v", err)
+		}
+		var table bool
+		if err := db.QueryRowContext(ctx,
+			`SELECT to_regclass(current_schema() || '.channels') IS NOT NULL`).Scan(&table); err != nil {
+			t.Fatal(err)
+		}
+		if table {
+			t.Fatal("0018 down left channels behind")
 		}
 	})
 }

@@ -192,6 +192,11 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	// drains this to find pins left behind by holds that expired on a pool nobody touched
 	// again. Same hand-mounted, credential-guarded, out-of-contract convention.
 	r.Get("/internal/seat-map-pins", s.listSeatMapPins)
+	// TKT-235 operator channel reads. Undeclared and hand-mounted because
+	// catalog's contract cannot express a staff-authenticated GET — see
+	// channels.go for why.
+	r.Get("/internal/channels", s.listChannels)
+	r.Get("/internal/channels/{id}", s.getChannel)
 	// Unauthenticated public surface: bound request bodies before any read.
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -468,6 +473,16 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		// TKT-105/ADR-029: an edit that drops a seat identity pinned by a sale or
 		// hold is a conflict, not a 500. The message is actionable for the UI.
 		writeJSON(w, http.StatusConflict, Error{Error: "edit would orphan a seat identity pinned by a sale or hold; the new geometry must keep every pinned seat (same section/row/seat labels)"})
+	case errors.Is(err, store.ErrChannelCodeTaken):
+		writeJSON(w, http.StatusConflict, Error{Error: "this organizer already has a channel with that code"})
+	case errors.Is(err, store.ErrChannelCodeImmutable):
+		// TKT-235: a channel code is immutable. Renaming would orphan the code
+		// already recorded on live claims, fee rules and split schedules, none of
+		// which reference the registry (ADR-024), so nothing would cascade and
+		// nothing would complain. The message says what to do instead.
+		writeJSON(w, http.StatusConflict, Error{Error: "channel code is immutable; create a new channel and disable this one instead of renaming"})
+	case errors.Is(err, store.ErrChannelInvalidInput):
+		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid channel: code 1..100 bytes, display_name 1..200, kind one of web/pos/presale/reseller"})
 	case errors.Is(err, store.ErrSeatIdentityNotFound):
 		// Defensive: never let this store sentinel fall through to 500. No HTTP
 		// path triggers it today (PinSeat is store-only), but if one does, it is a

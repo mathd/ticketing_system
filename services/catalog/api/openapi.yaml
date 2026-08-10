@@ -1228,6 +1228,115 @@ paths:
               schema: { $ref: '#/components/schemas/SeatMapVersionHistory' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /channels:
+    post:
+      operationId: createChannel
+      summary: Define a sales channel (TKT-235 / epic TKT-17)
+      description: >
+        Creates an organizer-scoped channel definition: an exact opaque code, a
+        display name, a kind and an enabled flag. The registry is a LOOKUP, not a
+        constraint — no table that stores a channel_code (inventory's claims and
+        channel_allocations, catalog's fee_rules and split_schedules) references
+        it, so an unregistered code keeps selling exactly as it does today. That
+        is ADR-024's rule: historical attribution must survive a channel being
+        retired, which a foreign key would break.
+
+        Codes are exact and case-sensitive (ADR-024, ADR-046 §4): "POS", "pos"
+        and " pos " are three different channels. Nothing trims or case-folds
+        them, here or anywhere else.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelCreate' }
+      responses:
+        '401': { $ref: '#/components/responses/StaffWriteUnauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '201':
+          description: Channel created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: This organizer already has a channel with that code
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /channels/{channelId}:
+    put:
+      operationId: updateChannel
+      summary: Update a channel's display name, kind or enabled flag (TKT-235)
+      description: >
+        The code is IMMUTABLE. It is required in the body and must equal the
+        stored code; a different value is refused with 409 rather than renaming
+        the row. Renaming would silently orphan the code already recorded on
+        live claims, fee rules and split schedules — none of which reference
+        this table (ADR-024), so nothing would cascade and nothing would
+        complain. A rename is a new channel plus disabling the old one.
+
+        There is no GET beside this PUT. Catalog's contract holds an invariant
+        (TKT-191, write_credential_test.go): every unsafe operation requires the
+        staff-write credential and every SAFE one opts out with `security: []`.
+        The credential is a write credential, so a staff-authenticated read
+        cannot be expressed here — the operator read that shows disabled
+        channels is a hand-mounted /internal/ route instead, following the same
+        convention as catalog's other internal reads.
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelUpdate' }
+      responses:
+        '401': { $ref: '#/components/responses/StaffWriteUnauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '200':
+          description: The updated channel
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NeverCacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The submitted code differs from the stored one — codes are immutable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /public/channels:
+    get:
+      operationId: listPublicChannels
+      # Public read: opts out of the document-level staff-write requirement.
+      security: []
+      summary: Enabled sales channels for a storefront selector (minutes tier)
+      description: >
+        The organizer's ENABLED channels only, as {code, display_name}. A client
+        that renders a channel selector needs the opaque code to submit a later
+        sale, so the code is returned; it is configuration, not a secret.
+
+        Served straight from the store with no server-side cache, unlike
+        catalog's four aggregated storefront reads. That is deliberate: this is
+        low-volume configuration, and the repo already classified its two closest
+        siblings the same way — public_read_invalidation_test.go records
+        CreateFeeRule and CreateSplitSchedule as affecting no cached public
+        payload. Cache-Control still declares the ADR-004 minutes tier, so shared
+        caches and the storefront behave as they do for the cached reads; no Age
+        header, because nothing here ages in memory.
+      parameters:
+        - $ref: '#/components/parameters/OrganizerId'
+      responses:
+        '500': { $ref: '#/components/responses/InternalError' }
+        '200':
+          description: Enabled channels, code and display name
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicChannelList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec
@@ -1308,6 +1417,15 @@ components:
       name: seatMapId
       in: path
       required: true
+      schema: { type: string, format: uuid }
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      description: >
+        The channel's UUID, not its code. Codes are opaque 1..100-byte strings
+        that may legally contain characters requiring percent-encoding, and they
+        are immutable — neither property makes them a good path identifier.
       schema: { type: string, format: uuid }
   headers:
     CacheControl:
@@ -2678,3 +2796,117 @@ components:
           type: string
         price:
           $ref: '#/components/schemas/Money'
+    ChannelKind:
+      type: string
+      description: >
+        What kind of sales channel this is. A CLOSED enum, deliberately: the four
+        values are the ones the PRD names, and adding a fifth is a coordinated
+        change to this document, the generated Go and TypeScript types, and the
+        SQL CHECK — not a database-only edit. A data-driven vocabulary would be
+        more machinery than four fixed values justify.
+      enum: [web, pos, presale, reseller]
+    ChannelCode:
+      type: string
+      minLength: 1
+      maxLength: 100
+      description: >
+        An exact, opaque, case-sensitive string. The bound mirrors
+        claims.channel_code and channel_allocations.channel_code in inventory
+        (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in
+        catalog — all four must agree, or a code legal in one place is unusable
+        in another. Nothing normalizes, trims or case-folds it.
+    ChannelCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, code, display_name, kind]
+      properties:
+        organizer_id:
+          type: string
+          format: uuid
+        code:
+          $ref: '#/components/schemas/ChannelCode'
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        enabled:
+          type: boolean
+          default: true
+          description: Omitted means enabled; a channel is created sellable unless said otherwise.
+    ChannelUpdate:
+      type: object
+      additionalProperties: false
+      required: [code, display_name, kind, enabled]
+      description: >
+        A full replacement of the mutable fields. `code` is required and must
+        equal the stored code — it is present so an update cannot be written
+        against a channel the caller has misidentified, and a mismatch is a 409
+        rather than a rename.
+      properties:
+        code:
+          $ref: '#/components/schemas/ChannelCode'
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        enabled:
+          type: boolean
+    Channel:
+      type: object
+      additionalProperties: false
+      required: [id, organizer_id, code, display_name, kind, enabled, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizer_id:
+          type: string
+          format: uuid
+        code:
+          $ref: '#/components/schemas/ChannelCode'
+        display_name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ChannelList:
+      type: object
+      additionalProperties: false
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/Channel' }
+    PublicChannel:
+      type: object
+      additionalProperties: false
+      required: [code, display_name]
+      description: >
+        No id, kind or enabled flag: a storefront selector needs a label to show
+        and a code to submit, and the rest is operator configuration. Only
+        enabled channels ever appear here, so an `enabled` field would be a
+        constant.
+      properties:
+        code:
+          $ref: '#/components/schemas/ChannelCode'
+        display_name:
+          type: string
+    PublicChannelList:
+      type: object
+      additionalProperties: false
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/PublicChannel' }

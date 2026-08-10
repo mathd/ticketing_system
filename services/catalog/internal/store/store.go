@@ -623,6 +623,27 @@ type Store interface {
 	// the balance trigger is deferred, so a schedule is unbalanced for the whole
 	// of its own creation and two transactions would commit that state.
 	CreateSplitSchedule(ctx context.Context, in SplitSchedule) (uuid.UUID, error)
+	// CreateChannel registers a sales channel (TKT-235 / epic TKT-17): an exact
+	// opaque code, a display name, a kind and an enabled flag, scoped to one
+	// organizer. The registry is a LOOKUP, NOT A CONSTRAINT — nothing that
+	// stores a channel_code references it, so an unregistered code sells exactly
+	// as it did before this table existed (ADR-024's no-FK rule, which exists so
+	// historical attribution survives a channel being retired).
+	CreateChannel(ctx context.Context, in ChannelInput) (Channel, error)
+	// UpdateChannel replaces a channel's display name, kind and enabled flag.
+	// The code is IMMUTABLE: it is submitted so the caller states which channel
+	// it believes it is updating, and a value differing from the stored one is
+	// ErrChannelCodeImmutable rather than a rename. Renaming would orphan the
+	// code already recorded on live claims, fee rules and split schedules —
+	// none of which reference this table, so nothing would cascade.
+	UpdateChannel(ctx context.Context, id uuid.UUID, in ChannelUpdate) (Channel, error)
+	GetChannel(ctx context.Context, id uuid.UUID) (Channel, error)
+	// ListChannels is the operator read: enabled AND disabled, full definitions.
+	ListChannels(ctx context.Context, organizerID uuid.UUID) ([]Channel, error)
+	// ListEnabledChannels is the public read: enabled only, code + display name.
+	// The filter is in the SQL, not applied afterwards, so a disabled channel is
+	// never loaded into a response the public can see.
+	ListEnabledChannels(ctx context.Context, organizerID uuid.UUID) ([]PublicChannel, error)
 	// AuthenticateStaff verifies a back-office sign-in (TKT-190, staff.go).
 	// Every credential failure is ErrStaffCredentialsInvalid — an unknown
 	// identifier and a wrong password are indistinguishable *by construction*,

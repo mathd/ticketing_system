@@ -465,3 +465,53 @@ func TestCapacityCutWithOversizedChannelAllocations(t *testing.T) {
 		t.Fatalf("availability %+v", a)
 	}
 }
+
+// The channel registry (catalog, TKT-235) is a LOOKUP, NOT A CONSTRAINT — this
+// is inventory's half of that guarantee.
+//
+// Catalog now defines what a channel is, but no column here references it and
+// inventory never calls catalog to check one. A code that exists in no registry
+// must sell exactly as it did before the registry existed. ADR-024 is why:
+// historical attribution has to survive a channel being retired, so an FK from
+// claims was refused, and the same argument extends to the rest.
+//
+// CHARACTERIZATION TEST, NOT TDD EVIDENCE. It was green before TKT-235 existed,
+// because inventory has never consulted catalog on this path — that is the point.
+// It is here to fail loudly if some future ticket adds a registry lookup to the
+// claim path and quietly makes unregistered codes unsellable. It was never
+// observed red, and it is not counted among the tests that were.
+//
+// Fixture note: the allocation is created for the arbitrary code deliberately. A
+// code with NO allocation is refused for an unrelated reason (no active
+// allocation, asserted above), so without this the test would be measuring
+// "unallocated" and would pass against a build that did gate on the registry.
+func TestAnUnregisteredChannelCodeStillSells(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+
+	// A code no catalog registry has ever heard of. Inventory does not know, and
+	// must not learn.
+	const unregistered = "legacy-partner-2019"
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: unregistered, Cap: 4}})
+
+	claim, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 3, 0, "", unregistered, "unregistered-hold")
+	if err != nil {
+		t.Fatalf("hold on an unregistered channel code: %v — the registry is a lookup, not a constraint (ADR-024)", err)
+	}
+	if claim.Channel != unregistered {
+		t.Fatalf("claim.Channel = %q, want %q verbatim — attribution must survive exactly as written", claim.Channel, unregistered)
+	}
+	// And it confirms, so the whole sale completes rather than only the hold —
+	// a registry lookup added to the confirm path would be just as breaking as
+	// one added to the hold path.
+	if _, err := st.Transition(ctx, org, claim.ID, "finalizing"); err != nil {
+		t.Fatalf("finalizing a hold on an unregistered channel code: %v", err)
+	}
+	confirmed, err := st.Transition(ctx, org, claim.ID, "confirmed")
+	if err != nil {
+		t.Fatalf("confirming a hold on an unregistered channel code: %v", err)
+	}
+	if confirmed.Channel != unregistered {
+		t.Fatalf("confirmed claim.Channel = %q, want %q verbatim", confirmed.Channel, unregistered)
+	}
+}
