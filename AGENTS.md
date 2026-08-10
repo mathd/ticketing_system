@@ -66,6 +66,13 @@ experiment stays valid.
   can distinguish** — a rule-refuses test whose fixture admits no allowed input, or a planner proof
   with too few distinct values, fails while the code is correct. ([fixes compose](docs/learnings/2026-08-03-two-correct-fixes-can-compose-into-a-new-defect.md),
   [fixture too small](docs/learnings/2026-08-03-a-fixture-too-small-cannot-show-the-negative.md))
+- **And before trusting a *green* test, ask whether its fixture can reach the state that would fail.**
+  A red test announces itself; a test structurally incapable of failing looks exactly like one that
+  proves something. Three defects in TKT-236/TKT-238 hid behind tests that named the right case and
+  were green — asserting against a fake that enforces in Go what the shipped SQL doesn't, repairing
+  the precondition during setup, and naming a state the fixture cannot construct. Delete the
+  mechanism and re-run: if it stays green, the test is about something else.
+  ([a green test that cannot reach the failing state](docs/learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md))
 - **Specs before code.** Prefer writing/refining a spec or PRD before implementing. Ground work in
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`

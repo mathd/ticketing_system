@@ -240,3 +240,14 @@ exists are in *Historical* at the bottom; their files are kept.
   scanning it fails with `unsupported Scan, storing driver.Value type string`. Fine to write, fine
   for SQL to compare — never scan it into Go. Keep such a pin short-lived, restore a finite value
   before anything reads the row, and comment the pin, because the error surfaces far from its cause.
+- [A green test that cannot reach the failing state](learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md)
+  — TKT-236, TKT-238. `AGENTS.md` already says to ask what a *red* test's fixture can distinguish;
+  this is the other half. **Before trusting a green test, ask whether it can reach the state that
+  would fail.** Three defects in one epic hid behind tests that named the right case and were green:
+  one asserted against an in-memory fake that scopes in Go while the shipped SQL predicate was
+  deleted (wrong tier), one re-enabled the row in setup before testing that a rename doesn't
+  re-enable it (the fixture repaired the precondition), and one needed *pool full + channel cap free
+  + window shut*, a state the obvious fixture cannot build because filling the pool through the
+  public channel leaves the presale's reservation intact by construction. None was a forgotten case.
+  The gap is between the state a test *names* and the state it *constructs*, and unlike a red test
+  nothing prompts you to look.

@@ -73,6 +73,15 @@ code actually under discussion) — a huge file risks being dropped from context
 
 ## Judging the output — exit 0 ≠ success
 
+**A codex invocation is the ONLY command in its `Bash` call.** Never chain it after anything — no
+`python3 … && node "$CODEX" …`, no `git push; node "$CODEX" …`, no leading `cd`. When chained, the
+first command runs and **the codex call silently does not**: no error, exit 0, an output file a few
+bytes long. This happened **three times in one ticket** (TKT-238), each time caught only by reading
+the artifact — and a review that never ran is indistinguishable from one that found nothing, which
+is the single most dangerous failure this pipeline has, because the whole cross-model invariant
+rests on it having executed. Set the working directory with the tool's own facility or absolute
+paths, and put every preparation step in a separate call *before* the one that launches codex.
+
 **Read the output; never judge by exit status** (raw `exec` exits 0 on both a zero-findings
 hijack and a bad flag that never reached the model). Pass = **the reviewer actually ran against
 the intended scope and returned a conclusive verdict** — *not* whether it found defects. A
