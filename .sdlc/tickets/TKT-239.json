@@ -2,12 +2,12 @@
   "key": "TKT-239",
   "type": "Story",
   "summary": "US-CH5: Presale unlock codes — who may sell on a gated channel",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
   "parent": "TKT-17",
-  "description": "A window says *when* a channel may sell; a presale code says *who* may. No code/voucher/redemption machinery exists anywhere in the repo — this is greenfield. Scope is deliberately narrow: an unlock code grants access to a gated channel. It is **not** a discount (TKT-7 owns promotions) and grants no price change.\n\n**Conditions of Success:**\n- A gated channel requires an unlock code to hold on it. A channel is gated by a flag on the registry row (US-CH1), so ungated channels are entirely unaffected.\n- Codes are issued per (organizer, channel) with an optional max-redemption count and an optional validity window. A code is an exact opaque string like a channel code — no normalization, no case folding — so that lookup is unambiguous.\n- **Redemption is counted under the same serialization point as the claim**, so a code capped at N cannot be redeemed N+1 times under contention. Derived-usage, not a counter, per ADR-024's reasoning: a counter cannot be decremented by hold expiry without a sweeper, and hold expiry is lazy. A code's consumption is a sum over live-and-confirmed claims that cite it.\n- A code presented for the wrong channel, an exhausted code, an out-of-window code and an unknown code are all refused, and the refusal does **not** distinguish them to the public caller (an enumeration oracle on presale codes is exactly how presales get scraped). The operator read may distinguish.\n- The code travels with the hold and is recorded on the claim for attribution, alongside `channel_code`.\n- Tests: the contention proof (a code capped at N grants exactly N under concurrent load, mirroring the shape of `smoke/inventory_contention_test.go`), the expiry-releases-a-redemption case, the uniform-refusal property, and that an ungated channel ignores codes entirely.\n\nQuality gates: `make check` green; contention smoke extended; OpenAPI regenerated and committed before the gate.\n\nParent: TKT-17. Depends on US-CH1 (the gated flag) and US-CH4 (windows — a code and a window compose, and the refusal precedence between them must be defined once). Non-goals: discounts/promotions (TKT-7), per-customer limits (TKT-20), reseller API (US-CH6).",
+  "description": "A window says *when* a channel may sell; a presale code says *who* may. No code/voucher/redemption machinery exists anywhere in the repo — this is greenfield. Scope is deliberately narrow: an unlock code grants access to a gated channel. It is **not** a discount (TKT-7 owns promotions) and grants no price change.\n\n**Gating lives in inventory, on the allocation — not on the catalog registry.** Re-shaped before Gate 1 (see the `kind=reshaping` comment): the original phrasing assumed a `gated` flag on the catalog `channels` row, but TKT-235 shipped that registry as *\"a lookup, not a constraint\"* that *\"never answers may this sell\"*, pinned by a characterization test asserting an unregistered code still sells — and inventory has **no read path to catalog's registry at all**. A `requires_code` flag on `channel_allocations` is read under the same pool `FOR UPDATE` the claim already takes, exactly as TKT-238's sales window is. Owner decision, recorded here and to be recorded as an ADR by this ticket.\n\n**Conditions of Success:**\n- A channel allocation flagged `requires_code` refuses a hold that presents no code, or an invalid one. Unflagged allocations are entirely unaffected — the flag defaults false, so every existing allocation keeps selling exactly as it does today, and a test pins that.\n- Codes are issued per (organizer, channel) with an optional max-redemption count and an optional validity window. A code is an exact opaque string like a channel code — no normalization, no case folding — so that lookup is unambiguous.\n- **Redemption is counted under the same serialization point as the claim**, so a code capped at N cannot be redeemed N+1 times under contention. Derived-usage, not a counter, per ADR-024's reasoning: a counter cannot be decremented by hold expiry without a sweeper, and hold expiry is lazy. A code's consumption is a sum over live-and-confirmed claims that cite it.\n- A code presented for the wrong channel, an exhausted code, an out-of-window code and an unknown code are all refused, and the refusal does **not** distinguish them to the public caller (an enumeration oracle on presale codes is exactly how presales get scraped). The operator read may distinguish.\n- **The code refusal composes with TKT-238's window refusal with a defined precedence**, and the precedence is asserted by a test rather than argued. ADR-054 defines one half; this ticket defines the composition and amends or extends ADR-054 to say so. Note the shape TKT-238's ai-review found: a refusal that is correct in isolation can still be *ordered* wrongly, and the failing state may be unreachable by the obvious fixture.\n- The code travels with the hold and is recorded on the claim for attribution, alongside `channel_code`.\n- Tests: the contention proof (a code capped at N grants exactly N under concurrent load, mirroring the shape of `smoke/inventory_contention_test.go`), the expiry-releases-a-redemption case, the uniform-refusal property, the code/window precedence, and that an unflagged allocation ignores codes entirely.\n\nQuality gates: `make check` green; contention smoke extended; OpenAPI regenerated and committed before the gate.\n\nParent: TKT-17. Depends on US-CH1 (TKT-235, merged) and US-CH4 (TKT-238, merged — windows, whose refusal this composes with). Non-goals: discounts/promotions (TKT-7), per-customer limits (TKT-20), reseller API (US-CH6), and **operator UI for issuing codes** (no back-office surface in this ticket; issuance is API + fixtures).",
   "readiness": {
     "objective": {
       "state": "met",
@@ -15,19 +15,19 @@
     },
     "scope": {
       "state": "met",
-      "note": "IN: gated flag on the registry, code issuance per (organizer, channel), contention-safe redemption counting, uniform public refusal, attribution on the claim. OUT: discounts (TKT-7), per-customer purchase limits (TKT-20), reseller API."
+      "note": "IN: a requires_code flag on channel_allocations (INVENTORY, not the catalog registry — owner decision at re-shaping), code issuance per (organizer, channel), contention-safe derived redemption counting, uniform public refusal, code/window refusal precedence, attribution on the claim. OUT: discounts (TKT-7), per-customer purchase limits (TKT-20), reseller API (TKT-240), back-office issuance UI."
     },
     "uncertainties": {
       "state": "met",
-      "note": "Two resolved by reading: (a) redemption must be derived-usage not a counter, because hold expiry is lazy and ADR-024 bans the sweeper a counter would need; (b) the refusal must be uniform to the public caller, because a distinguishing refusal is a presale-code enumeration oracle. The composition order between a window refusal and a code refusal is defined by this ticket (both are 'not sellable', so the uniform refusal absorbs it)."
+      "note": "Resolved by reading: (a) redemption must be derived-usage not a counter, because hold expiry is lazy and ADR-024 bans the sweeper a counter would need; (b) the refusal must be uniform to the public caller, because a distinguishing refusal is a presale-code enumeration oracle. RESOLVED BY THE OWNER at re-shaping: where gating lives (inventory allocation, not catalog registry) — the shaped premise conflicted with TKT-235's shipped decision. OPEN FOR THE PLAN, not blocking: the code-vs-window refusal precedence, which this ticket must define and pin."
     },
     "dependencies": {
       "state": "open",
-      "note": "Blocked by US-CH1 (TKT-235) for the gated flag and US-CH4 (TKT-238) for window composition."
+      "note": "Blocked by US-CH1 (TKT-235, merged) and US-CH4 (TKT-238, merged). Both satisfied; composition with TKT-238's window refusal is in scope."
     },
     "approach": {
       "state": "met",
-      "note": "A codes table plus a claim-side citation column, redemption derived under the pool FOR UPDATE the way channel consumption already is (services/inventory/internal/store/channel_allocations.go:40 is the reference shape). Verified the derived-usage pattern exists and is proven by an exact-grant-count contention smoke — the same test shape extends here."
+      "note": "A codes table in inventory plus a requires_code flag on channel_allocations and a claim-side citation column. Redemption derived under the pool FOR UPDATE the way channel consumption already is (services/inventory/internal/store/channel_allocations.go, consumedQuantity/windowOpen are the reference shapes). Gating deliberately does NOT live on catalog's channels row: that registry is a lookup, not a constraint (0018_channels.sql), and inventory has no read path to it. Verified at claim time, 2026-08-10."
     },
     "first_slice": {
       "state": "met",
@@ -53,11 +53,19 @@
     "governingAdrs": [
       {
         "id": "ADR-024",
-        "why": "Channel codes are exact opaque strings — no normalization, no case folding; a registry must not introduce an FK from claims (historical attribution) nor a counter; release stays a clock_timestamp() predicate under the pool FOR UPDATE."
+        "why": "Channel codes are exact opaque strings — no normalization, no case folding; no FK from claims (historical attribution) and no counter; release stays a clock_timestamp() predicate under the pool FOR UPDATE."
+      },
+      {
+        "id": "ADR-054",
+        "why": "NEW since the bake (TKT-238, merged 2026-08-10). Per-channel sales windows: the window is judged BEFORE pool-capacity arithmetic, on clock_timestamp(), half-open [opens_at, closes_at). A code refusal must compose with this one and the precedence must be defined and tested, not assumed."
       },
       {
         "id": "ADR-010",
-        "why": "The inventory pool row is the single serialization point; no background sweeper may be required for correctness."
+        "why": "The inventory pool row is the single serialization point; no background sweeper may be required for correctness. This is why gating lives in inventory rather than behind a cross-service read on the claim path."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Service/database boundaries: inventory cannot read catalog's channels table. Verified at claim time — no client, no consumer, no replica."
       },
       {
         "id": "ADR-009",
@@ -65,15 +73,15 @@
       },
       {
         "id": "ADR-028",
-        "why": "Response validation is fail-closed; a response that drifts from the contract is a 5xx, not a silent pass."
-      },
-      {
-        "id": "ADR-051",
-        "why": "Public customer-surface rate limiting: per-subject and per-source limits — an external partner API needs the same treatment."
+        "why": "Response validation is fail-closed and the Error.code enum is CLOSED — a new refusal code means the enum entry, the mapping and the exact-body assertion move together, or it is a 500 in production (TKT-238's lesson)."
       },
       {
         "id": "ADR-021",
         "why": "Name the adversary before claiming a guarantee: redemption counting is honest-writer consistency, not tamper-evidence — a writer with inventory DB access can mint redemptions. Say which one you mean in any claim about code integrity."
+      },
+      {
+        "id": "ADR-051",
+        "why": "Public customer-surface rate limiting — a code-redemption endpoint is a guessing surface; the uniform refusal removes the oracle but not the guessing."
       }
     ],
     "reference": [
@@ -92,9 +100,39 @@
       {
         "summary": "Exact-grant-count contention smoke — the test shape the redemption cap proof mirrors",
         "link": "smoke/inventory_contention_test.go:86-140"
+      },
+      {
+        "summary": "ADR-054 per-channel sales windows — the refusal this ticket's code refusal composes with",
+        "link": "docs/adr/ADR-054-per-channel-sales-windows.md"
+      },
+      {
+        "summary": "The registry is a lookup, not a constraint — why gating is not a flag on the catalog channels row",
+        "link": "services/catalog/internal/store/migrations/0018_channels.sql"
       }
     ],
-    "capturedAt": "2026-08-09"
+    "capturedAt": "2026-08-10",
+    "governingTests": [
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:TestUnregisteredChannelCodeStillSells",
+        "rule": "The catalog registry is a lookup, not a constraint — an unregistered code sells. Gating must NOT be implemented by making this fail."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:TestClosedWindowRefusesAsAWindowEvenOnAnExhaustedPool",
+        "rule": "Refusal precedence is a behaviour with its own test: a channel-property refusal outranks pool-capacity arithmetic. A code refusal must slot into this order deliberately."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:TestAChannelWithNoAllocationStillRefusesAsCapacity",
+        "rule": "An absent allocation stays the code-less capacity refusal. Adding requires_code must not turn 'no allocation' into a code refusal."
+      },
+      {
+        "test": "smoke/internal/loadtest/loadtest_test.go:TestClassifyHold409",
+        "rule": "The load harness counts a code-less 409 as capacity evidence; any new refusal code must stay KindServerError so a misconfigured run fails loudly instead of being read as contention."
+      },
+      {
+        "test": "smoke/inventory_contention_test.go:TestChannelAllocationContention",
+        "rule": "Exact-grant-count under concurrency is the load-bearing proof shape; the code cap proof mirrors it."
+      }
+    ]
   },
   "links": [
     {
