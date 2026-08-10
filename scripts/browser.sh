@@ -41,6 +41,11 @@ require_artifacts() {
   done
   [ -f "$ROOT/web/scanner/dist/index.html" ] || { echo "browser: missing web/scanner/dist — run 'make build-ts'" >&2; exit 1; }
   [ -f "$ROOT/web/storefront/dist/server/entry.mjs" ] || { echo "browser: missing web/storefront/dist — run 'make build-ts'" >&2; exit 1; }
+  # The back office is built from web/backoffice/dist by Dockerfile.smoke, exactly
+  # as the storefront is. It was missing from this preflight (TKT-236): without it
+  # a stale or absent dist fails later, at `docker build`, with a message about a
+  # COPY path rather than the one the developer can act on.
+  [ -f "$ROOT/web/backoffice/dist/server/entry.mjs" ] || { echo "browser: missing web/backoffice/dist — run 'make build-ts'" >&2; exit 1; }
 }
 
 up() {
@@ -73,10 +78,19 @@ run_specs() {
   local specs=("$ROOT"/test/browser/*.mjs)
   [ -f "${specs[0]}" ] || { echo "browser: no specs in test/browser" >&2; exit 1; }
 
+  # The catalog container, for the same reason as postgres: a back-office spec has
+  # to SIGN IN, and this script provisions no staff account (smoke.sh does, for its
+  # own suite). Handing over the container rather than a credential keeps the
+  # provisioning where the password can go in on stdin and never onto a command
+  # line (TKT-236).
+  local catalog
+  catalog="$(compose ps -q catalog)"
+  [ -n "$catalog" ] || { echo "browser: catalog container not found" >&2; exit 1; }
+
   local failed=0
   for spec in "${specs[@]}"; do
     echo "=== $(basename "$spec")"
-    BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" \
+    BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" CATALOG_CONTAINER="$catalog" \
       node "$spec" || failed=1
   done
   return $failed
