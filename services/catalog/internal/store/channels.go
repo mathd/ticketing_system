@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -139,26 +140,66 @@ type ChannelUpdate struct {
 // identical by construction; the point is that a future change making them
 // differ is caught rather than silently shipped.
 func validateChannelWrite(code, displayName string, kind ChannelKind) (string, error) {
-	// CHARACTERS, not bytes. `len()` here would count UTF-8 bytes while
-	// PostgreSQL's `length(text)` and OpenAPI's `maxLength` both count
-	// characters — so a 60-character code of two-byte characters is 120 bytes,
-	// accepted by the request validator and by every SQL channel_code CHECK
-	// (including fee_rules' and split_schedules'), and rejected only here.
-	//
-	// That would break the invariant this bound exists to hold: a code legal in
-	// one of the five places that store one must be legal in all of them. Found
-	// at ai-review; the byte-counting version shipped past the unit tests
-	// because every fixture was ASCII, where the two agree.
-	if l := utf8.RuneCountInString(code); l < 1 || l > maxChannelCodeLen {
-		return "", ErrChannelInvalidInput
+	// Storability first, then length. The order matters — see storableText.
+	if err := storableText(code, maxChannelCodeLen); err != nil {
+		return "", err
 	}
-	if l := utf8.RuneCountInString(displayName); l < 1 || l > maxChannelDisplayNameLen {
-		return "", ErrChannelInvalidInput
+	if err := storableText(displayName, maxChannelDisplayNameLen); err != nil {
+		return "", err
 	}
 	if !ValidChannelKind(kind) {
 		return "", ErrChannelInvalidInput
 	}
 	return code, nil
+}
+
+// storableText refuses anything PostgreSQL's `text` cannot hold, then bounds the
+// length in CHARACTERS.
+//
+// Both halves are the residue of a bug and its fix, and both are easy to get
+// wrong in the same place:
+//
+//   - LENGTH IS IN CHARACTERS, NOT BYTES. `len()` counts UTF-8 bytes while
+//     PostgreSQL's `length(text)` counts characters, so a 60-character code of
+//     two-byte characters is 120 bytes: accepted by the request validator and by
+//     every SQL channel_code CHECK (fee_rules', split_schedules', inventory's),
+//     and rejected only here. That breaks the invariant the bound exists to hold
+//     — a code legal in one of the five places that store one must be legal in
+//     all of them. (ai-review pass 1; invisible to an all-ASCII fixture, where
+//     the two counts agree.)
+//
+//   - BUT RUNE-COUNTING ALONE ADMITS WHAT POSTGRES REFUSES, which is the defect
+//     the first fix introduced. `RuneCountInString` counts each malformed byte
+//     as one RuneError and counts NUL as an ordinary rune, so `"é"×99 + "\x00"`
+//     is 100 runes (passes) and 199 bytes (the old byte gate rejected it) — and
+//     PostgreSQL answers `ERROR: null character not permitted`, unmapped, which
+//     surfaces as a 500 where the caller should have got a 400. A JSON
+//     "\u0000" is
+//     reachable through ordinary JSON. Invalid UTF-8 fails the same way against
+//     a UTF8-encoded database. (ai-review pass 2 — a defect in the fix, found
+//     only because the fix diff got its own review.)
+//
+// Checking validity BEFORE counting is deliberate: counting runes in invalid
+// UTF-8 yields a number that means nothing, so a length verdict derived from it
+// would be arbitrary either way.
+//
+// Not covered here, and deliberately so: kin-openapi's `maxLength` counts UTF-16
+// code units (see its schema.go — "JSON schema string lengths are UTF-16"), so a
+// 100-character astral-plane code is 200 units and the request validator rejects
+// it before this gate runs. That is a stricter bound applied earlier, not a
+// disagreement that can admit a bad value — the only direction that matters here
+// is that nothing this gate ACCEPTS can be refused downstream.
+func storableText(s string, maxChars int) error {
+	if !utf8.ValidString(s) {
+		return ErrChannelInvalidInput
+	}
+	if strings.ContainsRune(s, 0) {
+		return ErrChannelInvalidInput
+	}
+	if l := utf8.RuneCountInString(s); l < 1 || l > maxChars {
+		return ErrChannelInvalidInput
+	}
+	return nil
 }
 
 // ValidateChannelWriteForTest exposes the write gate to the api package's

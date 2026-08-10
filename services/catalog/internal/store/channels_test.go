@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -118,13 +119,76 @@ func TestChannelBoundsCountCharactersNotBytes(t *testing.T) {
 		t.Fatal("101 two-byte characters accepted, want ErrChannelInvalidInput — the bound must still bind")
 	}
 
-	// Same for display names, and with a 4-byte character so a UTF-16-unit
-	// count (2 units per emoji) is also distinguishable from a rune count.
-	name := strings.Repeat("🎫", maxChannelDisplayNameLen)
+	// Same boundary for display names.
+	name := strings.Repeat("é", maxChannelDisplayNameLen)
 	if _, err := validateChannelWrite("pos", name, ChannelKindPOS); err != nil {
-		t.Fatalf("validateChannelWrite(200 four-byte chars as display_name) = %v, want nil", err)
+		t.Fatalf("validateChannelWrite(200 two-byte chars as display_name) = %v, want nil", err)
 	}
-	if _, err := validateChannelWrite("pos", strings.Repeat("🎫", maxChannelDisplayNameLen+1), ChannelKindPOS); err == nil {
-		t.Fatal("201 four-byte characters accepted as a display name, want ErrChannelInvalidInput")
+	if _, err := validateChannelWrite("pos", strings.Repeat("é", maxChannelDisplayNameLen+1), ChannelKindPOS); err == nil {
+		t.Fatal("201 two-byte characters accepted as a display name, want ErrChannelInvalidInput")
+	}
+}
+
+// Astral-plane characters are accepted HERE and rejected EARLIER, and the two
+// facts belong together or the next reader will "fix" the wrong one.
+//
+// kin-openapi counts maxLength in UTF-16 code units — its schema.go says so in
+// as many words ("JSON schema string lengths are UTF-16") and adds 2 per
+// surrogate. So a 100-character astral code is 200 units and the request
+// validator refuses it before this gate ever runs, while this gate (and
+// PostgreSQL, which counts characters) would accept it.
+//
+// That divergence is SAFE in the only direction that matters: the earlier check
+// is the stricter one, so nothing this gate accepts can be refused downstream.
+// An earlier version of the test above used 200 emoji as a "passing" display
+// name, which is unreachable through the API for exactly this reason — a fixture
+// asserting a case the validator makes impossible.
+func TestAstralCharactersPassTheStoreGateAndAreBoundedByTheValidatorInstead(t *testing.T) {
+	code := strings.Repeat("🎫", maxChannelCodeLen) // 100 runes, 200 UTF-16 units
+	if _, err := validateChannelWrite(code, "Box office", ChannelKindPOS); err != nil {
+		t.Fatalf("validateChannelWrite(100 astral chars) = %v, want nil — "+
+			"PostgreSQL length() counts these as 100, so the store must not be the thing that refuses them", err)
+	}
+	if _, err := validateChannelWrite(strings.Repeat("🎫", maxChannelCodeLen+1), "Box office", ChannelKindPOS); err == nil {
+		t.Fatal("101 astral characters accepted, want ErrChannelInvalidInput")
+	}
+}
+
+// The store gate must refuse anything PostgreSQL's `text` cannot hold.
+//
+// This is the defect the FIRST fix introduced, found by the second review pass —
+// which is the argument for reviewing a fix diff at all. Switching from bytes to
+// runes removed an accidental guard: RuneCountInString counts a malformed byte
+// as one RuneError and NUL as an ordinary rune, so both of the strings below are
+// 100 runes and pass a length-only gate, while the old 100-BYTE bound rejected
+// them for the wrong reason but with the right outcome.
+//
+// PostgreSQL answers `ERROR: null character not permitted` for the NUL case.
+// That error is not mapped to a store sentinel, so it would fall through
+// writeStoreError's default branch and surface as a 500 — a validation failure
+// wearing a server error's clothes.
+func TestChannelWriteGateRefusesTextPostgresCannotStore(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+	}{
+		{"NUL alone", "\x00"},
+		{"NUL at 100 runes", strings.Repeat("é", 99) + "\x00"},
+		{"NUL embedded mid-code", "po\x00s"},
+		{"invalid UTF-8 alone", "\xff"},
+		{"invalid UTF-8 at 100 runes", strings.Repeat("é", 99) + "\xff"},
+		{"lone surrogate half", "a\xed\xa0\x80b"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := validateChannelWrite(tc.code, "Box office", ChannelKindPOS); !errors.Is(err, ErrChannelInvalidInput) {
+				t.Fatalf("validateChannelWrite(%q) = %v, want ErrChannelInvalidInput — "+
+					"PostgreSQL refuses this and the error is unmapped, so accepting it turns a 400 into a 500", tc.code, err)
+			}
+			// The display name takes the same path and must refuse the same input.
+			if _, err := validateChannelWrite("pos", tc.code, ChannelKindPOS); !errors.Is(err, ErrChannelInvalidInput) {
+				t.Fatalf("validateChannelWrite(display_name=%q) = %v, want ErrChannelInvalidInput", tc.code, err)
+			}
+		})
 	}
 }
