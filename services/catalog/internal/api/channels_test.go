@@ -695,3 +695,62 @@ func TestUpdateChannelAcceptsTheOwningOrganizer(t *testing.T) {
 		t.Fatalf("owner update = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// The enumeration→mutation chain, PINNED AS PRESENT rather than claimed absent.
+//
+// This test asserts a capability the system HAS, and it exists because the
+// comment above `staffMayReadOperatorChannels` twice claimed the opposite. Pass 1
+// of ai-review rejected "the added blast radius is nil"; pass 2 rejected the
+// replacement, "the organizer predicate breaks the chain". Both were written in
+// good faith and both were false, and the second was only settled by running the
+// sequence — which is what this test now does, permanently.
+//
+// What it proves: a holder of ONLY the catalog staff-write credential can list a
+// victim organizer's channels and then mutate the ids it just learned, because
+// `organizer_id` is caller-supplied on both calls. The organizer predicate on
+// UpdateChannel defends the back-office FORM path (where the page supplies its
+// session's organizer against a form-supplied id) and nothing else.
+//
+// This is NOT a new capability — the same credential could already create and
+// update channels for any organizer, since catalog authenticates the PROCESS
+// (ADR-021). The read makes it far easier to aim. TKT-245 owns the fix.
+//
+// **If this test ever fails, the boundary changed and the comments must be
+// rewritten — do not delete it.** It is the same shape as ADR-021's rollback-gap
+// test: an honest record of what is not yet closed.
+func TestStaffCredentialCanStillEnumerateAndMutateAcrossTenants(t *testing.T) {
+	e := newEnv(t)
+	victim := uuid.New()
+
+	rec := e.do(http.MethodPost, "/channels", createChannelBody(victim, "pos", "Victim box office", "pos", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Step 1 — enumerate, naming the victim's organizer.
+	rec = e.doWithHeaders(http.MethodGet, "/internal/channels?organizer_id="+victim.String(), nil,
+		map[string]string{staffWriteHeader: testStaffWriteToken})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d, want 200 — this read is the capability under description", rec.Code)
+	}
+	var list ChannelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Channels) != 1 {
+		t.Fatalf("list returned %d channels, want the victim's 1", len(list.Channels))
+	}
+
+	// Step 2 — mutate the id it just learned, claiming the victim's organizer.
+	rec = e.do(http.MethodPut, "/channels/"+list.Channels[0].Id.String(), map[string]any{
+		"organizer_id": victim, "code": "pos", "display_name": "Renamed by a token holder",
+		"kind": "web", "enabled": false,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update = %d, want 200.\n\nIf this now REFUSES, the boundary has changed for the "+
+			"better — most likely TKT-245 landed an organizer identity catalog can verify. Update "+
+			"the comment on staffMayReadOperatorChannels and ADR-053 to match, then change this "+
+			"test to assert the refusal. Do not simply delete it: it is the record of what was "+
+			"open.\n\nbody: %s", rec.Code, rec.Body.String())
+	}
+}

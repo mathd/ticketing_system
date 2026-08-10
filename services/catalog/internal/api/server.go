@@ -280,24 +280,41 @@ func (s *Server) internalAuthorizedRequest(r *http.Request) bool {
 // nowhere public. That is a real capability increase, and calling it nil was the
 // kind of confident wrong claim ADR-021 exists to stop.
 //
-// What is true: the increase is bounded to ENUMERATION, and it is bounded by the
-// fix that landed with it. The ids this read discloses are no longer sufficient
-// to mutate anything across a tenant boundary — `UpdateChannel` now carries an
-// organizer predicate, so a stolen token holding another organizer's channel id
-// and code gets a 404 rather than a rename (TKT-236 ai-review, the same pass).
-// Before that fix, enumeration plus the existing write access chained into
-// cross-tenant mutation; after it, the two are separate problems and only the
-// first is added here.
+// WHAT THE ORGANIZER PREDICATE DOES AND DOES NOT DO. A second review pass caught
+// this comment claiming more than the code delivers, for the SECOND time, so it
+// is now written to what is demonstrable and nothing beyond it.
 //
-// The residual, stated so it is a decision rather than an omission: a compromised
-// back-office process can enumerate any organizer's channel configuration. It
-// could already author events, seat maps and channels for any organizer with the
-// same credential — catalog authenticates the PROCESS, and every one of its
-// writes takes the organizer from the request. Enumeration is a smaller
-// capability than authoring, but it is not nothing, and the honest framing is
-// that this read joins an existing process-wide trust assumption rather than
-// adding no risk at all. ADR-053 records it; a per-organizer delegation catalog
-// could verify is the real fix and is nobody's ticket yet (TKT-245).
+// `UpdateChannel` gained `AND organizer_id = $2` in the same pass. That predicate
+// defends ONE adversary: a forged or mistaken request through the back-office
+// form, where the page supplies its session's organizer and the channel id comes
+// from a form field. Against that caller the predicate is a real boundary — a
+// wrong id lands on no row.
+//
+// It does NOT defend against a stolen credential, and an earlier version of this
+// comment said it did. Both the list's `organizer_id` and the update's are
+// CALLER-SUPPLIED, so an attacker holding this token can list a victim's channels
+// and then update the ids it just learned, naming the victim's organizer in both
+// calls. The predicate matches and the write succeeds. That chain was executed
+// against this code, not reasoned about: list returns 200 with the victim's
+// channels, update returns 200 and mutates them.
+//
+// SO, PRECISELY:
+//   - This read ADDS bulk enumeration of any organizer's channel configuration
+//     — ids, codes, kinds, and disabled rows that appear nowhere public — to a
+//     credential that previously had to probe one guessed code at a time.
+//   - It does NOT add cross-tenant WRITE capability, because the same credential
+//     already had it: `createChannel` and `updateChannel` take the organizer from
+//     the request body and catalog cannot check it. Enumeration makes that
+//     existing capability far easier to aim, which is a real amplification and
+//     not a new power.
+//   - The whole thing rests on one assumption, which is the actual security
+//     property: **the back office is not compromised.** Catalog authenticates the
+//     PROCESS (ADR-021 — name the adversary), and no predicate in this file can
+//     change that.
+//
+// TKT-245 owns the fix — an organizer identity catalog can verify independently
+// of the request body. Until it lands, ADR-053 states this assumption rather than
+// implying a boundary that is not there.
 //
 // WHY IT DOES NOT GENERALIZE. The same reasoning fails for inventory's
 // `channel-allocations` (TKT-244): no staff credential exists there, the back
