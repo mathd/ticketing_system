@@ -59,10 +59,17 @@ require_artifacts() {
   # dependency. A mandatory gate that cannot run is worse than one known to be
   # missing — it is green by omission. Fail here, before spending three minutes
   # on `docker compose up`, and say exactly what to do.
-  [ -x /opt/google/chrome/chrome ] || command -v google-chrome >/dev/null 2>&1 || {
-    echo "browser: real Google Chrome not found (looked for /opt/google/chrome/chrome and google-chrome on PATH)." >&2
+  #
+  # The probe has to name every path Playwright's `channel: 'chrome'` would itself
+  # accept, or it reintroduces the failure it was written to prevent: it was Linux-only,
+  # so on macOS — where Chrome lives in the app bundle below — the gate refused to start
+  # on a machine that had Chrome installed all along. A preflight stricter than the
+  # launcher is the same "cannot run" outcome, just louder.
+  CHROME_MACOS="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  [ -x /opt/google/chrome/chrome ] || [ -x "$CHROME_MACOS" ] || command -v google-chrome >/dev/null 2>&1 || {
+    echo "browser: real Google Chrome not found (looked for /opt/google/chrome/chrome, the macOS app bundle, and google-chrome on PATH)." >&2
     echo "  The specs drive the HOST's Chrome on purpose (AGENTS.md); Playwright's bundled Chromium is not a substitute." >&2
-    echo "  Install it with 'npx playwright install chrome' (needs sudo) or your distro's google-chrome-stable package." >&2
+    echo "  Install it with 'npx playwright install chrome' (needs sudo), your distro's google-chrome-stable package, or the macOS download." >&2
     exit 1
   }
 }
