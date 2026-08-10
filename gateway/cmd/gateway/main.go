@@ -173,11 +173,32 @@ func run() error {
 	}
 }
 
+// proxyTransport is the shared upstream transport for every proxied route.
+//
+// http.DefaultTransport leaves MaxIdleConnsPerHost at the package default of 2
+// (net/http DefaultMaxIdleConnsPerHost), so past two concurrent requests to one
+// upstream the gateway opens and discards a TCP connection per request — at the
+// front door of the on-sale path, which is the moment concurrency is highest.
+//
+// Cloned rather than built fresh so the dialer, TLS config and HTTP/2 setup stay
+// exactly as the standard library ships them; only the two idle ceilings move.
+//
+// One transport shared by all routes is deliberate: the idle pool inside it is
+// keyed per host, so the upstreams already get independent pools, and a second
+// transport would only fragment them.
+var proxyTransport = func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 100
+	t.MaxIdleConns = 500
+	return t
+}()
+
 // apiProxy builds the reverse proxy for one route-table entry. Extracted from run so
 // the rewrite can be exercised against a real upstream — what the upstream actually
 // receives is the only thing that settles whether an edge refusal held.
 func apiProxy(u *url.URL, prefix string, stripAPIPrefix bool) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
+		Transport: proxyTransport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u)
 			if stripAPIPrefix {
