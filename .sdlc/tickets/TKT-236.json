@@ -23,11 +23,13 @@
     },
     "dependencies": {
       "state": "open",
-      "note": "Blocked by US-CH1 (TKT-235) — needs the registry to list channels."
+      "owner": "human",
+      "note": "BLOCKER: the back office holds no credential for catalog's or inventory's /internal/ surface, and is explicitly forbidden the shared INTERNAL_SERVICE_TOKEN (compose.yaml:379-392, api.test.ts:471). Reaching either endpoint needs a new per-service credential class — an ADR-043 question, not a UI one. See kind=blocker."
     },
     "approach": {
-      "state": "met",
-      "note": "Astro back-office pages following the existing back-office write-form pattern. The known trap is CSRF/checkOrigin on Astro form submits, which make check cannot see — hence the mandatory make browser spec that submits (AGENTS.md, TKT-105/TKT-226)."
+      "state": "open",
+      "owner": "human",
+      "note": "Depends on the scoping decision in kind=blocker. Agent recommends option 1 (registry screens only, allocation editor carved out), but shaping.md forbids approach:deferred on an auth-touching ticket — this holds at Gate 1."
     },
     "first_slice": {
       "state": "met",
@@ -90,7 +92,41 @@
         "link": "services/inventory/api/openapi.yaml:217"
       }
     ],
-    "capturedAt": "2026-08-09"
+    "capturedAt": "2026-08-09",
+    "governingTests": [
+      {
+        "test": "web/backoffice/test/authorization.test.ts:63 TestClassifiesEveryPage",
+        "rule": "Every file under src/pages/** needs a matching source:'page' row in ROUTE_MATRIX, and every row must name a file — a new page with no row fails the suite."
+      },
+      {
+        "test": "web/backoffice/test/gate.test.ts:313 refuses a route no rule classifies",
+        "rule": "An unclassified route 403s for every role including admin — a page shipped without a matrix row renders a 403, not the page."
+      },
+      {
+        "test": "web/backoffice/test/authorization.test.ts:244 uses only segment shapes the matcher models",
+        "rule": "Templates must be fully static, a whole [param], or a whole [...rest] — 'channel-[id]' is refused."
+      },
+      {
+        "test": "web/backoffice/test/api.test.ts:471 (refund direct to commerce)",
+        "rule": "The back office must NEVER send X-Internal-Token — it does not hold the shared internal token. This is the ticket's blocker."
+      },
+      {
+        "test": "web/backoffice/test/credentials.test.ts:14-44 refuses collapsed credentials",
+        "rule": "Every back-office credential must be set and must differ from the others; scripts/stack-env.sh generates each from an independent /dev/urandom read."
+      },
+      {
+        "test": "smoke/backoffice_venue_list_test.go:390 TestBackofficeRoleMatrixRefusesTheAuthoringSurface",
+        "rule": "A refusal must be status-identical to an imaginary route and its body must not echo the path, the role name, or 'admin'."
+      },
+      {
+        "test": "scripts/browser.sh:73-74 run_specs",
+        "rule": "test/browser/*.mjs is a glob with no allowlist — a new spec needs no registration, but browser.sh provisions NO staff account, so a back-office spec must provision its own."
+      },
+      {
+        "test": "scripts/browser.sh:38-44 require_artifacts",
+        "rule": "Preflight checks storefront and scanner dist but NOT web/backoffice/dist, though Dockerfile.smoke COPYs it — a stale backoffice dist fails at docker build with a confusing error."
+      }
+    ]
   },
   "links": [
     {
@@ -103,6 +139,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Makes the shipped allocation machinery operable without curl |\n| Scope | ✅ | Two screens, one PR |\n| Uncertainties | ✅ | Full-set-replace semantics and the gateway internal-route deny both read from the code |\n| Dependencies | ⚠️ | Blocked by TKT-235 (registry) — hard, resolves when CH1 merges |\n| Approach | ✅ | Existing back-office write-form pattern; browser-submit spec mandatory |\n| First slice | ✅ | Both screens together — splitting leaves the editor with nothing to list |\n| Success | ✅ | Browser-submit evidence is the acceptance signal |\n| Context-mémo | ✅ | Baked, incl. the checkOrigin learning |\n\n**Concerns:** 1. Blocked by TKT-235 until it merges (ordinary sequencing, not a risk).\n**Verdict:** PASS — proceed once TKT-235 is Done."
+    },
+    {
+      "stage": "backlog",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=backlog kind=blocker -->\n### ⛔ Not claimable as shaped — the back office cannot reach either endpoint this ticket needs\n\nFound during the pre-claim `governingTests` bake (the context-mémo field added after TKT-235's\nretro). This is exactly the class that field exists to surface: the blocker is stated in **no ADR**,\nis invisible in the files a plan brief would point at, and lives in a compose comment plus a test\nassertion.\n\n#### The finding\n\nTKT-236's two screens need:\n1. `GET /internal/channels` (catalog) — the operator read, which returns disabled channels.\n2. `PUT /internal/slots/{id}/channel-allocations` (inventory) — the allocation editor's write.\n\nBoth are `/internal/` routes guarded by `X-Internal-Token` == `INTERNAL_SERVICE_TOKEN`. **The back\noffice does not hold that token, does not have a URL for either service, and is deliberately\nforbidden from holding it.**\n\nVerified at HEAD:\n\n- `compose.yaml:379-392` — the back office's entire environment is `GATEWAY_URL`,\n  `CATALOG_STAFF_WRITE_TOKEN`, `COMMERCE_URL`, `COMMERCE_STAFF_WRITE_TOKEN`. There is **no\n  `CATALOG_URL`**, **no `INVENTORY_URL`**, and no internal token. The comment states the reason\n  outright: *\"that one value opens every service's internal surface, and this is a public-facing SSR\n  process.\"*\n- `web/backoffice/test/api.test.ts:471` — pins the posture as an assertion:\n  `expect(calls[0].headers['X-Internal-Token']).toBeUndefined()` with the comment *\"Never the shared\n  internal token, which the back office does not hold.\"*\n- `web/backoffice/test/credentials.test.ts:14-44` — the two credentials it does hold must both be\n  set and must **differ**; `scripts/stack-env.sh:55-61` generates each from an independent\n  `/dev/urandom` read, *\"A separate read, not a copy.\"*\n- Inventory has **no staff-write credential at all** — only `INTERNAL_SERVICE_TOKEN`. Catalog's\n  staff-write credential exists but does not open `/internal/` (that surface takes the internal\n  token, per `internalAuthorized`).\n\n#### Why this is not a plan-stage problem\n\nThe shaping put `dependencies: met` because the only blocker considered was TKT-235, and\n`approach: met` because the Astro write-form pattern is well established. Both were right about what\nthey looked at. What neither covered is that **the transport does not exist** — and the fix is not a\nUI decision:\n\n- Giving the back office `INTERNAL_SERVICE_TOKEN` is refused by an explicit, tested, commented\n  decision. It is also the precise mistake TKT-190 made and plan-review caught: one shared value\n  opening commerce's refunds and inventory's operational holds.\n- The in-repo precedent (TKT-194, `COMMERCE_URL` + `COMMERCE_STAFF_WRITE_TOKEN`) is a **new\n  per-service staff credential** reaching a service directly, in-network. Applying it here means a\n  **third and fourth credential**, a new inventory credential class where none exists, and a new\n  guard on inventory's internal surface — i.e. an ADR-043 question, not a screen.\n\n#### This is stop-condition (b)\n\nThe run's terms say stop when *\"implementation would touch auth … in a way the ticket and plan did\nnot anticipate.\"* This ticket's COS describe two screens; the work actually required is a new\nservice-to-service credential class for inventory plus a compose/credential-generation change. The\nowner waived the gates for the epic on the understanding that TKT-240 was where auth lived — this is\nan auth decision arriving one ticket early, in a story shaped as UI-only.\n\n#### Options (agent's recommendation first, but this is the owner's call)\n\n1. **Re-scope TKT-236 to the registry screens only** (create / enable / disable / rename). Catalog's\n   *public* `GET /public/channels` is reachable through the gateway today, and the writes go through\n   `POST /channels` / `PUT /channels/{id}` with the `CATALOG_STAFF_WRITE_TOKEN` the back office\n   already holds. Only the *disabled-channel* view needs `/internal/`, and a narrower fix exists:\n   let catalog's operator list be reached with the staff-write credential it already has — which is\n   its own small decision, but a much smaller one. **The allocation editor moves to its own ticket**,\n   carrying the inventory-credential question with it.\n2. **Split the credential work out first** as a prefactor ticket (an ADR + the inventory credential\n   + compose wiring), then run TKT-236 unchanged behind it.\n3. **Proceed as shaped**, deciding the credential design inside this ticket under the standing\n   waiver.\n\nRecommending **(1)**: it is the most reversible, it ships a demoable slice now, and it does not\ndecide inventory's credential class as a side effect of building a form.\n\n#### Mémo updated\n\n`governingTests` baked onto this ticket (below) — 8 invariants that would otherwise have been\ndiscovered by failing the gate, including the `ROUTE_MATRIX` completeness guard (a new page under\n`src/pages/` with no matrix row fails the suite *and* 403s at runtime, even for admin) and\n`browser.sh` provisioning no staff account, so a back-office browser spec must provision its own.\n"
     }
   ]
 }
