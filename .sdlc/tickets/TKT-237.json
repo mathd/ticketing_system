@@ -94,7 +94,57 @@
         "link": "services/catalog/internal/store/pricing_postgres.go:81"
       }
     ],
-    "capturedAt": "2026-08-09"
+    "capturedAt": "2026-08-09",
+    "governingTests": [
+      {
+        "test": "services/catalog/internal/api/pricing_test.go:68 TestResolveTicketTypePrice",
+        "rule": "Pins TKT-155's over-disclosure as CURRENT behaviour: a losing venue rule MUST appear in candidates with reason 'less_specific'. Directly contradicts this ticket's 'other channels are absent' COS."
+      },
+      {
+        "test": "services/catalog/internal/store/fees_test.go:426 TestSelectFeeRulesHidesOtherChannelsEntirely",
+        "rule": "The fee-side mirror this ticket was told to copy — another channel's rule is absent, not a loser. Safe there because fee-resolution is /internal/; price-resolution is public."
+      },
+      {
+        "test": "services/catalog/internal/api/fees_test.go:476 TestFeeLossReasonEnumMatchesTheContract",
+        "rule": "Go's Reason* vocabulary and the spec's enum must match in BOTH directions. There is NO pricing twin — a Go-only 'less_channel_specific' reason 500s the public money read under ADR-028 and nothing catches it."
+      },
+      {
+        "test": "services/catalog/internal/api/pricing_test.go:129 (ResolverVersion asserted as literal 2)",
+        "rule": "Asserted as a LITERAL, deliberately not against the constant. A comparator-semantics change must bump pricing.go:89's PricingResolverVersion, this literal, and commerce's snapshot literals together."
+      },
+      {
+        "test": "services/commerce/internal/store/migration_smoke_test.go:207 TestPriceResolutionSnapshotColumns",
+        "rule": "reservations.price_resolution_snapshot must keep winner XOR fallback_reason and its generated columns derivable; its literals hard-code resolver_version:2."
+      },
+      {
+        "test": "services/catalog/internal/store/pricing_test.go:467 TestSelectPricingRuleIsOrderIndependent",
+        "rule": "The comparator is a deterministic function of the candidate SET, not input order — the most likely casualty of a new comparison axis."
+      },
+      {
+        "test": "services/catalog/internal/store/pricing_test.go:505 TestSelectPricingRuleCurrencyErrorIsOrderIndependent",
+        "rule": "A currency mismatch fails loudly and identically regardless of candidate order; a channel axis reordering candidates must not change which error surfaces."
+      },
+      {
+        "test": "services/catalog/internal/store/pricing_smoke_test.go:247 TestResolveTicketTypePriceIsIndexScoped",
+        "rule": "ADR-019: the generic plan must reach price_rules via price_rules_scope with both scope_level and scope_id in the Index Cond and no post-index Filter on scope_id. Seeds 10k rows."
+      },
+      {
+        "test": "services/catalog/internal/store/migration_smoke_test.go:25-35 (versionBefore* consts)",
+        "rule": "Highest is versionBeforeChannels=17; 0019 needs versionBeforePriceRuleChannel=18 plus the refusal/success subtest PAIR. A nullable-column Down is the shape most likely to make a guard vacuous — key the refusal on a non-NULL channel_code row."
+      },
+      {
+        "test": "smoke/checkout_test.go:~570-660 (TKT-153 price pin)",
+        "rule": "A replay under the same Idempotency-Key must return the ORIGINAL quote; re-resolving hands inventory a different unit_amount and its fingerprint 409s. If channel now feeds price resolution, a channel that changes the price changes that fingerprint."
+      },
+      {
+        "test": "services/commerce/internal/api/catalog_fees_test.go:744 TestSameTermsComparesEveryIdempotencyTerm",
+        "rule": "sameTerms already includes channel_code by value — forwarding channel to price resolution adds no new idempotency term. Good news, verified rather than assumed."
+      },
+      {
+        "test": "shared/go/cachetier/spec_audit_test.go:124 wantDeclarations",
+        "rule": "'catalog/resolveTicketTypePrice 200' is already listed; adding a query param does not touch response headers, but the single-valued no-store enum must survive the edit (slices.Equal — any add/remove is a hard failure)."
+      }
+    ]
   },
   "links": [
     {
@@ -107,6 +157,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Closes the price/fee asymmetry the PRD's cross-epic invariant assumes away |\n| Scope | ✅ | One axis, one slice — a half-applied precedence rule on money is worse than none |\n| Uncertainties | ✅ | The comparator-duplication question is a named COS deliverable (an ADR), not an implicit call |\n| Dependencies | ⚠️ | Blocked by TKT-235 |\n| Approach | ✅ | Mirror ADR-046 §4/§8 onto SelectPricingRule; verified the target comparator exists and is channel-blind |\n| First slice | ✅ | Whole axis together |\n| Success | ✅ | Migration-inertness test is load-bearing |\n| Context-mémo | ✅ | Baked |\n\n**Concerns:**\n1. **This is a money path.** The migration adds a nullable column to `price_rules` and extends a shipped comparator. The COS requires proving channel-agnostic resolution is byte-identical after the change; if that proof is not clean, stop rather than ship.\n2. Blocked by TKT-235.\n\n**Verdict:** CONCERNS — proceedable with the money-path proof as a hard COS."
+    },
+    {
+      "stage": "backlog",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=backlog kind=blocker -->\n### ⚠️ A COS contradicts a shipped, tested behaviour — resolved at Planning, not silently\n\nFound during the pre-claim `governingTests` bake. Not a blocker on claiming — a **decision the plan\nmust take explicitly**, recorded here so it cannot be settled by accident in code.\n\n#### The contradiction\n\nThis ticket's 4th COS says, copying ADR-046 §4:\n\n> A price rule belonging to a different channel is **absent** from provenance, not reported as a\n> loser.\n\nThat is correct **for fees** and its reason does not transfer. ADR-046 §4 hides other channels\nbecause *\"returning it would publish one caller's whole channel fee matrix to every other caller\"* —\nand fee-resolution is an **`/internal/`** operation (ADR-046 §6), so its audience is other services.\n\n`GET /ticket-types/{id}/price-resolution` is **public**, proxied to the internet by the gateway, and\nits `candidates` array reporting losers is **pinned as current behaviour**:\n\n- `services/catalog/internal/api/pricing_test.go:68` asserts `len(out.Candidates) == 1` with an\n  exact loser rule id and `reason == \"less_specific\"`.\n- `pricing_test.go:205` asserts an out-of-window rule appears with `outside_window_past` and its\n  `effective_until`.\n\nSo \"hide other channels\" and \"report losers\" are both required by the ticket as written, and the\nexisting tests choose the second.\n\n#### Why it matters beyond consistency\n\n**TKT-155 is open** and records that this public array already over-discloses — including\nunannounced future prices. Adding a channel axis without deciding this makes the array leak *the\nchannel matrix too*: a public caller could enumerate which channels have bespoke pricing, and at\nwhat amounts. That is a commercial disclosure, and the whole reason ADR-046 §4 hid it on the fee\nside.\n\n#### The three options, for the plan to pick\n\n1. **Hide other-channel rules from `candidates`, keep everything else reported.** Matches ADR-046 §4\n   and does not widen TKT-155. Requires amending the two pinned tests — they assert *scope* losers,\n   not channel ones, so the amendment is additive rather than a reversal.\n2. **Report other-channel rules as losers.** Consistent with the endpoint's existing disclosure\n   posture, but knowingly widens an open disclosure ticket on a public route.\n3. **Make price-resolution `/internal/` like fee-resolution.** Resolves TKT-155 wholesale and makes\n   the fee semantics transfer verbatim — but it is a **breaking contract change** on a shipped\n   public operation with a storefront consumer, so it is TKT-155's call, not this ticket's.\n\nRecommending **(1)**: it is what the COS actually asks for, it is the more reversible direction\n(adding a field back is additive; retracting a published one is a contract break — ADR-046 §6's own\nargument), and it leaves TKT-155 exactly as it is rather than deeper.\n\n#### Second finding, smaller but sharper\n\n**There is no pricing twin of `TestFeeLossReasonEnumMatchesTheContract`** (`fees_test.go:476`), which\nasserts the Go reason vocabulary and the OpenAPI enum are the same set in both directions. So if the\nprice comparator gains a `less_channel_specific` reason and the spec's `LosingPriceRule.reason` enum\ndoes not, the response **500s under ADR-028 on a public money read** and no test catches it. The\nplan must add that twin regardless of which option above is chosen.\n"
     }
   ]
 }
