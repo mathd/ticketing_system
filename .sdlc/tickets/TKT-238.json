@@ -4,7 +4,7 @@
   "summary": "US-CH4: Per-channel sales windows — when a channel may sell",
   "status": "Planning",
   "labels": [
-    "agent:planning"
+    "agent:plan-review"
   ],
   "assignee": "agent",
   "pr": null,
