@@ -132,7 +132,7 @@ describe('checkout idempotency', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Pay/ }));
     await screen.findByText('Order confirmed');
 
-    const keys = keysFor(stub, '/orders');
+    const keys = keysFor(stub, '/checkout');
     expect(keys.length).toBe(2);
     expect(keys[0]).not.toBe('');
     expect(keys[1]).toBe(keys[0]);
@@ -156,6 +156,6 @@ describe('checkout idempotency', () => {
 
     // Distinct keyspaces: commerce derives the reservation id from one and the order's
     // stored key from the other, so sharing a value would collide two identities.
-    expect(keysFor(stub, '/orders')[0]).not.toBe(keysFor(stub, '/reservations')[0]);
+    expect(keysFor(stub, '/checkout')[0]).not.toBe(keysFor(stub, '/reservations')[0]);
   });
 });

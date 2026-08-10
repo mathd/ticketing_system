@@ -186,6 +186,16 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       // own, and because the key above is stable the retry is a REPLAY rather than a
       // second attempt — so keep the reservation and say "try again" instead of
       // stranding the buyer on the ambiguous checking message (TKT-184).
+      //
+      // NOT covered, and named so it is not mistaken for covered: claimOrder answers
+      // 409 for a second reason — `storedFingerprint != fingerprint`, the fingerprint
+      // being sha256 over reservation id, name, email and payment token. A buyer who
+      // edits any of those between attempts gets this same 409, and for them it does
+      // NOT clear on its own, so "try again in a moment" is a promise this branch
+      // cannot keep. It is still an improvement on what main said there (the same
+      // ambiguous "being checked"), and the two causes are distinguishable only by
+      // commerce's error string today. Telling them apart wants a machine-readable
+      // code on the response rather than copy matched against prose.
       if (response.status === 409) { setStatus(t.checkoutRetryShortly); return; }
       setStatus(t.paymentChecking);
     } catch { setStatus(t.paymentChecking); }

@@ -72,10 +72,19 @@ export const POST: APIRoute = async ({ request, cookies }) => {
     // was lost. Telling a buyer that is safe to retry is telling them to pay
     // twice.
     //
-    // What actually protects them is commerce, not this handler: a retry carries
-    // a fresh Idempotency-Key while an order already exists for that reservation,
-    // which claimOrder answers with errCheckoutConflict (409) rather than a second
-    // charge. And ADR-016's recovery runner resolves the order either way.
+    // What actually protects them is commerce, not this handler, and the mechanism
+    // is claimOrder resolving by RESERVATION ID — not by anything about the key.
+    // It locks the order row for this reservation, so a retry meets the order the
+    // lost attempt already created instead of opening a second one.
+    //
+    // This used to say the protection was the retry carrying a *fresh* key, which
+    // claimOrder would refuse with 409. That stopped being true in TKT-184: the
+    // island now sends a key bound to the reservation, so the retry arrives with the
+    // SAME key and the same request fingerprint and is a REPLAY — it resolves the
+    // existing order and reports its real outcome. That is a better answer than the
+    // 409, and it is still not a second charge. A 409 now means the buyer edited
+    // their name, email or payment token between attempts, which changes the
+    // fingerprint. ADR-016's recovery runner resolves the order either way.
     //
     // So this returns 503 with a body that says UNKNOWN. The island's fallback
     // branch renders exactly that — "payment status is being checked" — which is
