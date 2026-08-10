@@ -113,8 +113,12 @@
     "capturedAt": "2026-08-10",
     "governingTests": [
       {
-        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:TestUnregisteredChannelCodeStillSells",
-        "rule": "The catalog registry is a lookup, not a constraint — an unregistered code sells. Gating must NOT be implemented by making this fail."
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:TestAnUnregisteredChannelCodeStillSells",
+        "rule": "The catalog registry is a lookup, not a constraint — an unregistered code sells. Gating must NOT be implemented by making this fail. Note its own scope caveat: it covers the inventory-STORE layer only, so a registry lookup added at commerce/gateway would leave it green (TKT-241 owns the end-to-end version)."
+      },
+      {
+        "test": "services/catalog/internal/store/...:TestNothingReferencesTheChannelRegistry",
+        "rule": "Catalog's companion guard: no FK points at the channels table. Bounded to schema-level FK absence, not application-level gating."
       },
       {
         "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:TestClosedWindowRefusesAsAWindowEvenOnAnExhaustedPool",
