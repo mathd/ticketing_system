@@ -182,6 +182,11 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #      goes stale when ADRs land between shaping and claim (TKT-73, TKT-79) — do not skip). The
 #      drafter reads code, not decision
 #      history: an ADR that makes the obvious solution wrong is invisible to it (TKT-62).
+#      REQUIRED brief SECTION — "governing tests": the cross-cutting invariants enforced by a TEST
+#      rather than an ADR, from the mémo's governingTests (decomposition.md § context-mémo). An ADR
+#      is discoverable by reading; these are discoverable by failing the gate. TKT-235's plan was
+#      correct against all ten of its governing ADRs and still failed the gate twice — on catalog's
+#      safe-must-be-public contract rule and on the cachetier tier audit's closed allowlist.
 #      Post the draft attributed to the model that wrote it.
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=planning kind=plan -->
 #   MCP editJiraIssue: -agent:planning +agent:plan-review
@@ -223,9 +228,14 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   the harness-reported exit code — they diverged on TKT-101 (bg wrapper said exit 0 across three
 #   runs the log showed failing: errcheck, a .dockerignore miss, a migration-version collision).
 #   And judge a bg gate DONE by an explicit exit-code sentinel (`gate > log 2>&1; echo EXIT=$? > done`;
-#   wait on the sentinel file), NEVER by `pgrep -f "<gate cmd>"` — `-f` matches the watcher's own
-#   command line, so the poll self-matches and reports a false "still running" long after the gate
-#   exited (TKT-106; docs/learnings/2026-07-21-pgrep-watchers-self-match.md).
+#   wait on the sentinel file with `until [ -f done ]; do sleep N; done`), NEVER by
+#   `pgrep -f "<gate cmd>"` — `-f` matches the watcher's own command line, so the poll self-matches
+#   and reports a false "still running" long after the gate exited (TKT-106;
+#   docs/learnings/2026-07-21-pgrep-watchers-self-match.md). The sentinel is also what makes the
+#   harness's own completion status non-load-bearing: on TKT-235 the harness reported a background
+#   gate as "exit code 0" while the sentinel said EXIT=2 and the log said
+#   `make: *** [lint-go] Error 1`. Read the sentinel AND grep the log body; believe neither the
+#   harness nor a single one of them alone.
 #   Code: verify `git branch --show-current` is the ticket branch FIRST (a session's branch can
 #   be switched under it — TKT-84 briefly committed to local main), then commit (no AI
 #   attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"
