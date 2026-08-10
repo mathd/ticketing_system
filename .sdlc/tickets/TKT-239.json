@@ -2,9 +2,9 @@
   "key": "TKT-239",
   "type": "Story",
   "summary": "US-CH5: Presale unlock codes — who may sell on a gated channel",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
