@@ -1,0 +1,154 @@
+{
+  "key": "TKT-240",
+  "type": "Story",
+  "summary": "US-CH6: Reseller API — an external partner sells from shared inventory",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "The last and largest slice: an external reseller sells from the same inventory as everyone else, with the same no-oversell guarantee and per-reseller attribution. This introduces a **third identity class** — a machine-to-machine partner credential, alongside staff sessions (ADR-042), internal tokens (ADR-043) and customer sessions (ADR-049) — and closes the known commerce→inventory channel seam.\n\n**Conditions of Success:**\n- A partner credential class exists: per-reseller API credentials, scoped to one organizer and one channel from the registry (US-CH1). Credentials are stored hashed, never recoverable, and are revocable. **An ADR records this identity class** and its relationship to the three existing ones.\n- The reseller surface is a **contract operation, not an internal route** — per ADR-043's line, it declares `security:` in the OpenAPI document and is validator-enforced, not header-compared in a handler. It is reachable from the edge (unlike `/internal/`), so the gateway gains an external partner route.\n- The partner may: read availability for its channel, hold, and confirm a sale. It may **not** read anything scoped outside its organizer+channel.\n- **The commerce→inventory channel seam is closed for GA pools**: a sale naming a channel consumes *that channel's* allocation. Today `services/commerce/internal/api/server.go:260-263` documents that channel is deliberately not forwarded to inventory, with the consequence that a reseller-channel sale takes reseller fees while eating public inventory. **Closing this will make some currently-succeeding reserves return 409** — that behavior change is intended, must be called out in the PR, and must be covered by a test that asserts the new refusal.\n- **The seated half of the same seam stays with TKT-176 and is an explicit non-goal here.** `CreateSeatHold` admits against capacity alone and `SeatHoldCreate` has no `channel` field at all, so a seated claim ignores allocations entirely — a separate defect with its own display consequences, already ticketed. This story must not silently half-fix it: if the reseller surface is offered on a seated pool, it refuses rather than overselling the channel, and the refusal cites TKT-176.\n- Per-reseller attribution: the claim and the order carry the channel and the reseller identity, so settlement (TKT-217/ADR-048) can already split by it.\n- Rate limiting per ADR-051's per-subject/per-source discipline applies to the partner surface.\n- Tests: an unauthenticated call is refused by the validator (not the handler); a credential scoped to channel A cannot hold on channel B; the no-oversell contention proof holds with a reseller participating; the seam-closure 409; and a revoked credential is refused immediately.\n\nQuality gates: `make check` green; contention smoke extended with a partner participant; OpenAPI regenerated and committed before the gate; the identity-class ADR merged with the code.\n\nParent: TKT-17. Depends on US-CH1 (channel registry), US-CH3 (per-channel price — a reseller with its own price is the point) and US-CH4 (windows). Non-goals: reseller settlement reports (TKT-23), partner self-service onboarding UI, OAuth flows beyond a credential.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The epic's headline COS: an external reseller sells from shared inventory with the same no-oversell guarantee and per-reseller attribution. Nothing of it exists today."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: partner credential class + ADR, contract-declared external surface, availability/hold/confirm scoped to organizer+channel, the commerce→inventory seam closure, attribution, ADR-051 rate limiting. OUT: settlement reporting (TKT-23), partner onboarding UI, OAuth."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "AUTONOMOUS-RUN WAIVER: the owner waived stop-condition (b) for auth and migrations on this run (see epic claim comment), so the two decisions below are the agent's to make and record rather than a human's: (1) credential shape — a hashed bearer secret vs mTLS vs signed requests; (2) whether the seam closure ships behind a per-organizer opt-in or unconditionally. Both are recorded in kind=plan-final with rationale, and any overridden objection lands in the closeout's overrides: list."
+    },
+    "dependencies": {
+      "state": "open",
+      "note": "Blocked by US-CH1 (TKT-235), US-CH3 (TKT-237) and US-CH4 (TKT-238)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "ADR-043 decides the mechanism question outright: a public partner API is a contract operation, so it declares security: and is validator-enforced — NOT the inline header comparison commerce uses on internal routes. Verified: catalog already runs the declared-security idiom (12 security lines over 37 operations, per ADR-043's own table), so this is an existing pattern, not a new one. The seam is at services/commerce/internal/api/server.go:260-263 and is documented as deliberate — closing it is a behavior change, not a bug fix."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Credential + scoped availability/hold/confirm + seam closure in one slice. Splitting the seam closure out would ship a reseller API that oversells its own channel, which is the opposite of the COS."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS above; the no-oversell-with-a-partner contention proof and the seam-closure 409 test are the load-bearing ones."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      },
+      {
+        "id": "ADR-003",
+        "rule": "Money-relevant records land as immutable, hash-chained, signed journal entries from the first order; every ticket/entitlement state change is an append-only lifecycle event linked to its order. No raw PII in any append-only record — pseudonymous IDs only.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-043",
+        "why": "The guard line is contract operation vs internal route: a public partner API is a contract operation and must declare security: and be validator-enforced, not header-compared in a handler."
+      },
+      {
+        "id": "ADR-051",
+        "why": "Public customer-surface rate limiting: per-subject and per-source limits — an external partner API needs the same treatment."
+      },
+      {
+        "id": "ADR-010",
+        "why": "The inventory pool row is the single serialization point; no background sweeper may be required for correctness."
+      },
+      {
+        "id": "ADR-024",
+        "why": "Channel codes are exact opaque strings — no normalization, no case folding; a registry must not introduce an FK from claims (historical attribution) nor a counter; release stays a clock_timestamp() predicate under the pool FOR UPDATE."
+      },
+      {
+        "id": "ADR-009",
+        "why": "OpenAPI is the source of truth; generated code must be committed before the gate or check-generate reads the regen as drift."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response validation is fail-closed; a response that drifts from the contract is a 5xx, not a silent pass."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns rule and entity definitions; commerce owns pricing/fee/promo evaluation. A channel registry is a definition and belongs in catalog."
+      },
+      {
+        "id": "ADR-042",
+        "why": "Staff identity/back-office sessions — one of the three existing identity classes the new partner credential must be positioned against."
+      },
+      {
+        "id": "ADR-049",
+        "why": "Customer identity/storefront sessions — the second existing class; the partner credential is explicitly a third, not a reuse of either."
+      },
+      {
+        "id": "ADR-048",
+        "why": "Settlement ledger — per-reseller attribution must land in a shape settlement can already split by."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before writing 'tamper-evident' or 'secure': a hashed credential protects against credential disclosure at rest, not against a writer with DB access."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-17 capability row + US-015 non-goals (registry/pricing/windows stay in TKT-17)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "The commerce→inventory channel seam: channel_code is forwarded to catalog for fees but deliberately NOT to inventory, so a reseller-channel sale takes reseller fees while consuming public inventory",
+        "link": "services/commerce/internal/api/server.go:260-263"
+      },
+      {
+        "summary": "TKT-176 (open) owns the SEATED half of the same seam — CreateSeatHold admits against capacity alone and SeatHoldCreate has no channel field. Do not half-fix it here; refuse the reseller surface on seated pools and cite TKT-176",
+        "link": ".sdlc/tickets/TKT-176.json"
+      },
+      {
+        "summary": "ADR-043's own table: catalog already runs declared-security over 37 operations, so the contract-declared idiom is existing, not new",
+        "link": "docs/adr/ADR-043-where-a-service-auth-guard-lives.md"
+      },
+      {
+        "summary": "CREDENTIAL BLAST RADIUS — INTERNAL_SERVICE_TOKEN is one shared value opening commerce refunds and inventory operational holds; the partner credential must NOT be that token, nor share its scope (TKT-190 proposed exactly this and it was caught at plan-review)",
+        "link": "compose.yaml"
+      },
+      {
+        "summary": "Gateway route table — internal routes are 404'd at the edge; an external partner route is a new edge binding",
+        "link": "gateway/cmd/gateway/main.go:29-49"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-235"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-237"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-238"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | The epic's headline COS |\n| Scope | ✅ | Credential + scoped surface + seam closure; settlement reporting stays TKT-23 |\n| Uncertainties | ⚠️ | Two auth-shape decisions, normally `owner: human` — waived to the agent for this run by explicit owner instruction |\n| Dependencies | ⚠️ | Blocked by TKT-235, TKT-237, TKT-238 |\n| Approach | ✅ | ADR-043 decides the mechanism outright; verified the declared-security idiom already exists in catalog |\n| First slice | ✅ | Splitting the seam closure out would ship a reseller API that oversells its own channel |\n| Success | ✅ | Contention-with-partner and seam-closure-409 tests are load-bearing |\n| Context-mémo | ✅ | Baked, incl. the INTERNAL_SERVICE_TOKEN blast-radius entry (TKT-190's worked example) |\n\n**Concerns:**\n1. **New auth surface, externally reachable.** A third identity class. Normally `approach: deferred` would be refused here outright (shaping.md's four-surface exception); it is `met` because ADR-043 already decides the mechanism, and the residual shape questions are recorded as waived-to-agent rather than hidden.\n2. **Intended breaking behavior change.** Closing the commerce→inventory seam turns some currently-succeeding reserves into 409s. Intended, tested, and called out — but it is the highest-blast-radius change in the epic.\n3. **Data migrations** on the inventory hot path.\n4. Blocked by three siblings.\n\n**Verdict:** CONCERNS — the largest and riskiest child. Proceeding under the owner's explicit waiver of stop-condition (b); every overridden objection is recorded in the closeout's `overrides:` list."
+    }
+  ]
+}
