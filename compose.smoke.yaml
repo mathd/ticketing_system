@@ -16,12 +16,10 @@ services:
       RECOVERY_INTERVAL: 2s
   payments:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: payments } }
-    environment:
-      # TKT-115: the fake PSP never expires idempotency keys (retention 0), so the
-      # status-replay deadline path would be untestable offline. Inject Stripe's ~24h
-      # bound: a backdated operation proves the 409/park path against real predicates,
-      # while fresh testbed operations stay comfortably inside the window.
-      PAYMENTS_STATUS_REPLAY_RETENTION: 24h
+    # PAYMENTS_STATUS_REPLAY_RETENTION used to be injected here and now lives in
+    # compose.yaml, beside the STRIPE_SECRET_KEY that decides the default it overrides.
+    # It is a property of the PSP, not of how the binary was built, and keeping it in
+    # this file meant the hermetic path — which does not load it — ran unbounded.
   access:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: access } }
   # The migrate jobs (ADR-022) run the same binaries; override them too, or

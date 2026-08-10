@@ -261,6 +261,22 @@ services:
       # Offline by default: the fake PSP. An sk_test_ key selects the Stripe test-mode
       # adapter; sk_live_ is rejected at startup (ADR-032). Never commit a real key.
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-fake}
+      # Belongs NEXT TO the key above, because the key is what decides the default it
+      # overrides: the fake retains idempotency keys forever (retention 0, unbounded),
+      # Stripe retains them ~24h. Without an injected bound the status-replay deadline
+      # does not exist offline, and every assertion about it is unreachable.
+      #
+      # It lived in compose.smoke.yaml until TKT-184 follow-up, and that file is about
+      # the BUILD METHOD — host-built binaries vs in-Docker — not about the PSP. So the
+      # hermetic path, which loads only this file, ran with retention 0 and failed
+      # TestStatusReplayWindowExpiryAnswers409 while the fast path passed. A precondition
+      # that only one of two stacks loads is a test that only one of two stacks can pass.
+      #
+      # 24h, not something smaller: it must stay above the testbed's own fresh
+      # operations, which have to sit comfortably inside the window. Only ever shortened
+      # against a bounded provider — payments refuses startup on a value that would
+      # extend one (ADR-032 §Status/replay).
+      PAYMENTS_STATUS_REPLAY_RETENTION: ${PAYMENTS_STATUS_REPLAY_RETENTION:-24h}
 
   access-migrate:
     <<: *migrate-job
