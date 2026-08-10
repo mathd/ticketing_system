@@ -1,0 +1,112 @@
+{
+  "key": "TKT-237",
+  "type": "Story",
+  "summary": "US-CH3: Per-channel price rules — give pricing the channel axis fees already have",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "Fees resolve per channel (`fee_rules.channel_code`, ADR-046) but prices do not — `price_rules` has no channel column, and ADR-046 §7 deliberately refused to share one parameterized comparator between price and fee. This story adds the channel axis to price rules with semantics identical to the fee axis, and duplicates the comparator rather than unifying it.\n\n**Conditions of Success:**\n- `price_rules` gains a nullable `channel_code` with the same 1..100 exact-opaque-string bound as `fee_rules.channel_code`. Existing rows are NULL = channel-agnostic, so every currently-resolving price resolves identically after the migration.\n- Resolution semantics **match ADR-046 §4 exactly**: NULL is channel-agnostic and eligible everywhere; a non-NULL code matches exactly; a request naming no channel is the default/public context in which only channel-agnostic rules are eligible; omitting the channel is not a wildcard.\n- **Precedence matches ADR-046 §8's ranking order**: scope level, then channel specificity, then priority, then stable rule id — and **both specificity axes invert under `force_ancestor_override`**, exactly as fees do.\n- A price rule belonging to a different channel is **absent** from provenance, not reported as a loser — same disclosure argument as ADR-046 §4 (TKT-155 already records that `price-resolution`'s candidates array over-discloses; this must not widen it).\n- `GET /ticket-types/{id}/price-resolution` takes an optional `channel_code`, mirroring the fee-resolution endpoint. Commerce forwards the reservation's `channel_code` to price resolution the way it already does to fee resolution (`services/commerce/internal/api/catalog_pricing.go`), and the resolved price is snapshotted as it is today.\n- **An ADR records the decision** to duplicate the comparator a third time — or to unify, if plan-review argues it. ADR-046 §7 states the trigger for revisiting is a *third* rule kind, and this is it; the ticket must answer that question in writing rather than inherit it.\n- Tests: table-driven precedence covering the inversion under force, the exact-match-only rule, the no-channel-is-not-a-wildcard rule, the foreign-channel-is-absent rule, and a migration test proving pre-existing rules resolve unchanged.\n\nQuality gates: `make check` green; money-path story — the price snapshot must remain byte-identical for channel-agnostic resolutions; OpenAPI regenerated and committed before the gate.\n\nParent: TKT-17. Depends on US-CH1 (channels exist to name). Non-goals: windows (US-CH4), fee changes (shipped), UI.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "PRD cross-epic invariant says every price/fee decision resolves through the TKT-5 hierarchy; fees got the channel axis in TKT-214, prices never did. A reseller channel that cannot carry its own price is the gap."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: channel_code on price_rules, comparator extension, price-resolution endpoint param, commerce forwarding, the comparator-duplication ADR. OUT: windows, fee changes, UI, any change to fee semantics."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The one real open question — duplicate the comparator a third time or unify — is named as a COS deliverable (an ADR) rather than left implicit. ADR-046 §7 explicitly set 'a third rule kind' as the trigger to revisit, so this ticket must decide it, not assume it."
+    },
+    "dependencies": {
+      "state": "open",
+      "note": "Blocked by US-CH1 (TKT-235)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror 0016_fee_rules.sql's channel column and SelectFeeRules' ranking into price_rules / SelectPricingRule. Verified against the code: SelectPricingRule is at services/catalog/internal/store/pricing_postgres.go:81 and has no channel awareness; the fee comparator's ranking is the reference implementation to mirror. This IS a money path — the migration must be proven inert for channel-agnostic resolution."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Whole axis in one slice — a half-applied precedence rule on a money path is worse than none."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS above; the migration-inertness test is the load-bearing one."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "Pricing rules are declarative typed rows with five scope levels, priority and force_ancestor_override; catalog resolves, commerce computes. Adding a channel axis extends SelectPricingRule's comparator."
+      },
+      {
+        "id": "ADR-046",
+        "why": "Fee channel semantics already decided: NULL = channel-agnostic, exact match only, omitting a channel is NOT a wildcard, channel specificity ranks below scope and above priority, both axes invert under the forced partition, and a foreign channel's rule is absent rather than a reported loser."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns rule and entity definitions; commerce owns pricing/fee/promo evaluation. A channel registry is a definition and belongs in catalog."
+      },
+      {
+        "id": "ADR-009",
+        "why": "OpenAPI is the source of truth; generated code must be committed before the gate or check-generate reads the regen as drift."
+      },
+      {
+        "id": "ADR-024",
+        "why": "Channel codes are exact opaque strings — no normalization, no case folding; a registry must not introduce an FK from claims (historical attribution) nor a counter; release stays a clock_timestamp() predicate under the pool FOR UPDATE."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response validation is fail-closed; a response that drifts from the contract is a 5xx, not a silent pass."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-17 capability row + US-015 non-goals (registry/pricing/windows stay in TKT-17)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-046 §4 (channel semantics) and §8 (full precedence order) are the specification this story mirrors onto prices; §7 sets 'a third rule kind' as the trigger to revisit comparator duplication — this ticket is that third kind",
+        "link": "docs/adr/ADR-046-fee-rules-representation.md"
+      },
+      {
+        "summary": "TKT-155 (open) already records that public price-resolution over-discloses via its candidates array — do not widen it with channel rows",
+        "link": ".sdlc/tickets/TKT-155.json"
+      },
+      {
+        "summary": "SelectPricingRule — the comparator to extend",
+        "link": "services/catalog/internal/store/pricing_postgres.go:81"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-235"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Closes the price/fee asymmetry the PRD's cross-epic invariant assumes away |\n| Scope | ✅ | One axis, one slice — a half-applied precedence rule on money is worse than none |\n| Uncertainties | ✅ | The comparator-duplication question is a named COS deliverable (an ADR), not an implicit call |\n| Dependencies | ⚠️ | Blocked by TKT-235 |\n| Approach | ✅ | Mirror ADR-046 §4/§8 onto SelectPricingRule; verified the target comparator exists and is channel-blind |\n| First slice | ✅ | Whole axis together |\n| Success | ✅ | Migration-inertness test is load-bearing |\n| Context-mémo | ✅ | Baked |\n\n**Concerns:**\n1. **This is a money path.** The migration adds a nullable column to `price_rules` and extends a shipped comparator. The COS requires proving channel-agnostic resolution is byte-identical after the change; if that proof is not clean, stop rather than ship.\n2. Blocked by TKT-235.\n\n**Verdict:** CONCERNS — proceedable with the money-path proof as a hard COS."
+    }
+  ]
+}
