@@ -1,0 +1,112 @@
+{
+  "key": "TKT-238",
+  "type": "Story",
+  "summary": "US-CH4: Per-channel sales windows — when a channel may sell",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "Nothing channel-scoped decides *when* a channel may sell. The only windows in the system are rule-level `effective_from`/`effective_until` on price/fee/split rules, and the nearest on-sale concept is inventory's binary `closure_status`. A presale that opens Tuesday and a public on-sale that opens Friday cannot be expressed.\n\n**Conditions of Success:**\n- A channel sales window is expressible per (channel, slot): `opens_at` / `closes_at`, half-open `[opens_at, closes_at)`, either bound nullable (null open = always open, null close = never closes).\n- **The window is enforced where the claim is decided, on PostgreSQL time, with no sweeper** — the same discipline ADR-024 applied to `release_at`: `clock_timestamp()`, not `now()`, because `now()` freezes at transaction start and a hold queued on the pool lock across the cutoff would decide with stale time. A hold on a channel outside its window is refused even when the channel has allocation headroom and the pool has capacity.\n- Refusal is distinguishable from the existing refusals: a channel-closed refusal must not read as \"sold out\". Availability reads reflect it.\n- Windows do not gate anything but claims — reads of the catalog remain open, and an out-of-window channel's *existing* holds finish their lifecycle untouched (symmetric with `release_at`).\n- Tests: the boundary at both bounds (inclusive open, exclusive close), the stale-clock case (a transaction queued across the cutoff decides on `clock_timestamp()`), the distinct refusal code, and that pool/allocation refusals are unchanged when no window exists.\n\nQuality gates: `make check` green; the contention smoke extends to windows; OpenAPI regenerated and committed before the gate.\n\nParent: TKT-17. Depends on US-CH1. Non-goals: presale codes (US-CH5) — a window says *when*, a code says *who*; reseller API (US-CH6); UI beyond what US-CH2 already renders.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A presale that opens before the public on-sale is the single most common channel requirement and is inexpressible today."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: per-(channel,slot) window rows, enforcement at claim time on clock_timestamp(), a distinct refusal, availability reflection. OUT: presale codes, reseller API, catalog read gating."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Where the window lives is the real question: inventory (next to allocations, inside the pool lock — the only place claim-time enforcement can be correct) vs catalog (next to the registry, as a definition). Resolved by reading ADR-024 and ADR-010: correctness requires the check inside the pool FOR UPDATE, so the enforcing row is inventory's, alongside channel_allocations. Catalog may later mirror it for display; that is additive."
+    },
+    "dependencies": {
+      "state": "open",
+      "note": "Blocked by US-CH1 (TKT-235)."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Extend channel_allocations, or add a sibling table, in inventory; enforce in the same predicate that already evaluates release_at. Verified: the active-allocation predicate is at services/inventory/internal/store/channel_allocations.go:25 and already uses clock_timestamp() — a window is the same shape of predicate, which is why the ADR-024 discipline transfers cleanly here (unlike TKT-233's inject-the-clock suggestion, which did not transfer)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Window + enforcement + refusal in one slice; a window that does not refuse is decoration."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS above; the stale-clock test is the load-bearing one and directly mirrors ADR-024's stated reasoning."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-001",
+        "rule": "Money is represented as integer minor units + ISO currency code everywhere; floats are banned on money paths.",
+        "date": "2026-07-12"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-024",
+        "why": "Channel codes are exact opaque strings — no normalization, no case folding; a registry must not introduce an FK from claims (historical attribution) nor a counter; release stays a clock_timestamp() predicate under the pool FOR UPDATE."
+      },
+      {
+        "id": "ADR-010",
+        "why": "The inventory pool row is the single serialization point; no background sweeper may be required for correctness."
+      },
+      {
+        "id": "ADR-009",
+        "why": "OpenAPI is the source of truth; generated code must be committed before the gate or check-generate reads the regen as drift."
+      },
+      {
+        "id": "ADR-044",
+        "why": "Inventory availability cache is channel-keyed with a 128-entry per-slot bound; a registry must not let arbitrary channel strings cache-through."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Response validation is fail-closed; a response that drifts from the contract is a 5xx, not a silent pass."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns rule and entity definitions; commerce owns pricing/fee/promo evaluation. A channel registry is a definition and belongs in catalog."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "PRD v1 — TKT-17 capability row + US-015 non-goals (registry/pricing/windows stay in TKT-17)",
+        "link": "docs/product/prd-v1.md"
+      },
+      {
+        "summary": "ADR-024 channel allocations — the shipped substrate this epic builds on",
+        "link": "docs/adr/ADR-024-channel-allocations.md"
+      },
+      {
+        "summary": "The active-allocation predicate already uses clock_timestamp() for exactly the stale-transaction-time reason a window faces — mirror it",
+        "link": "services/inventory/internal/store/channel_allocations.go:25"
+      },
+      {
+        "summary": "Availability cache is channel-keyed with a 5s tier, so window transitions may lag reads by 5s while write correctness switches at PostgreSQL time — same accepted trade as release_at",
+        "link": "docs/adr/ADR-044-inventory-availability-cache.md"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  },
+  "links": [
+    {
+      "type": "blocked-by",
+      "key": "TKT-235"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | ✅ | Presale-before-public is inexpressible today |\n| Scope | ✅ | Window + enforcement + refusal; codes are US-CH5 |\n| Uncertainties | ✅ | Placement resolved by reading ADR-010/ADR-024: enforcement must be inside the pool lock, so the row is inventory's |\n| Dependencies | ⚠️ | Blocked by TKT-235 |\n| Approach | ✅ | Mirrors the shipped release_at predicate; verified it already uses clock_timestamp() for the same reason |\n| First slice | ✅ | A window that does not refuse is decoration |\n| Success | ✅ | Stale-clock test is load-bearing |\n| Context-mémo | ✅ | Baked |\n\n**Concerns:** none beyond the TKT-235 ordering.\n**Verdict:** PASS."
+    }
+  ]
+}
