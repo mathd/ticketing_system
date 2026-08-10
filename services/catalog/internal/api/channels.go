@@ -98,7 +98,18 @@ func (s *Server) CreateChannel(w http.ResponseWriter, r *http.Request) {
 // which denies /api/catalog/internal/ at the edge.
 
 func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
-	if !s.internalAuthorized(w, r) {
+	// Two accepted credentials on this ONE route (TKT-236 / ADR-053): the shared
+	// internal token that every other internal route takes, and the back office's
+	// catalog staff-write token. See staffMayReadOperatorChannels in server.go
+	// for why the second is safe here and why it does not generalize.
+	//
+	// The per-handler check stays even though guardInternalSurface already
+	// refused an unauthorized request before routing — the prefix guard is the
+	// one that must not be the only thing standing there, and the two must agree
+	// about this route or the defence-in-depth becomes a 401 on a request the
+	// guard admitted. A test pins that agreement.
+	if !s.internalAuthorizedRequest(r) && !s.staffMayReadOperatorChannels(r) {
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return
 	}
 	organizerID, err := uuid.Parse(r.URL.Query().Get("organizer_id"))

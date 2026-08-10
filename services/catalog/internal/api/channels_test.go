@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -415,5 +417,206 @@ func TestChannelEnabledDefaultLivesInTheContract(t *testing.T) {
 		if req == "enabled" {
 			t.Fatal("ChannelCreate.enabled is required; it must stay optional for the default to mean anything")
 		}
+	}
+}
+
+// The back office reaches the operator channel LIST with the staff-write
+// credential it already holds (TKT-236 / ADR-053).
+//
+// Narrow by construction, and the narrowness is the decision. The back office
+// needs one read — the collection — to show disabled channels on its admin page.
+// Everything else on /internal/ stays shared-token-only, including the
+// single-row read beside it, because nothing asked for those.
+//
+// Why this adds no blast radius: X-Catalog-Staff-Write-Token already opens every
+// unsafe catalog operation, INCLUDING createChannel and updateChannel. A holder
+// that can create and update channels can already learn which ones exist, so
+// letting it list them grants nothing it could not obtain by other means. That
+// is the whole argument, and it does NOT transfer to inventory (TKT-244), where
+// no such credential exists and the surface is a capacity write.
+//
+// What this is NOT: tenant isolation. organizer_id is caller-supplied and
+// catalog authenticates the DEPUTY PROCESS, not the staff member (ADR-021 — name
+// the adversary). The back office passes its session's organizer and never one
+// from the request; catalog cannot enforce that and does not claim to.
+func TestOperatorChannelListAcceptsTheStaffWriteCredential(t *testing.T) {
+	e := newEnv(t)
+	org := uuid.New()
+	if rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil)); rec.Code != http.StatusCreated {
+		t.Fatalf("seed = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec := e.doWithHeaders(http.MethodGet, "/internal/channels?organizer_id="+org.String(), nil,
+		map[string]string{staffWriteHeader: testStaffWriteToken})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /internal/channels with the staff-write credential = %d, want 200: %s",
+			rec.Code, rec.Body.String())
+	}
+	var out ChannelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Channels) != 1 || out.Channels[0].Code != "pos" {
+		t.Fatalf("channels = %+v, want the one seeded channel", out.Channels)
+	}
+}
+
+// The allowance is scoped to ONE method on ONE path. Everything else on the
+// internal surface still requires the shared token.
+//
+// This is the test that keeps the allowance narrow. Without it, a future edit
+// widening `guardInternalSurface` to accept the staff token generally would pass
+// every other test in this file — and would hand a public-facing SSR process the
+// whole internal surface, which is exactly what compose.yaml refuses it.
+func TestTheStaffWriteCredentialOpensNothingElseOnTheInternalSurface(t *testing.T) {
+	e := newEnv(t)
+	org := uuid.New()
+	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed = %d", rec.Code)
+	}
+	var created Channel
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	staff := map[string]string{staffWriteHeader: testStaffWriteToken}
+	refused := []struct {
+		name, method, path string
+	}{
+		// The sibling read. Deliberately NOT opened: the page does not need it.
+		{"single channel read", http.MethodGet, "/internal/channels/" + created.Id.String()},
+		// Catalog's other internal reads, none of which this ticket touches.
+		{"ticket type", http.MethodGet, "/internal/ticket-types/" + uuid.New().String()},
+		{"published performance", http.MethodGet, "/internal/performances/" + uuid.New().String()},
+		{"pool offer state", http.MethodGet, "/internal/pools/" + uuid.New().String() + "/offer-state"},
+		{"seat map pins", http.MethodGet, "/internal/seat-map-pins"},
+		// The cache kill-switch — a control surface, and the one whose accidental
+		// exposure would be worst.
+		{"cache control status", http.MethodGet, "/internal/cache-control"},
+		// A DIFFERENT METHOD on the very path that is allowed. The allowance is
+		// per method+path, not per path.
+		{"channels collection, wrong method", http.MethodPut, "/internal/channels"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := e.doWithHeaders(tc.method, tc.path, nil, staff)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s with only the staff-write credential = %d, want 401 — "+
+					"the allowance is one method on one path, and a public-facing SSR process "+
+					"must not reach the rest of the internal surface", tc.method, tc.path, rec.Code)
+			}
+		})
+	}
+}
+
+// The shared internal token still works on the route the staff token now also
+// opens. This is an ADDITIONAL accepted credential, not a replacement: access
+// and other services reach catalog's internal surface with it.
+func TestOperatorChannelListStillAcceptsTheInternalToken(t *testing.T) {
+	e := newEnv(t)
+	org := uuid.New()
+	if rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil)); rec.Code != http.StatusCreated {
+		t.Fatalf("seed = %d", rec.Code)
+	}
+	if rec := operatorGet(e, "/internal/channels?organizer_id="+org.String()); rec.Code != http.StatusOK {
+		t.Fatalf("GET with X-Internal-Token = %d, want 200 — the staff allowance must ADD a "+
+			"credential, not replace the one other services use: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A wrong staff credential is refused, and indistinguishably from an absent one.
+func TestOperatorChannelListRefusesAWrongStaffCredential(t *testing.T) {
+	e := newEnv(t)
+	path := "/internal/channels?organizer_id=" + uuid.New().String()
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+	}{
+		{"wrong staff token", map[string]string{staffWriteHeader: "not-the-credential"}},
+		{"empty staff token", map[string]string{staffWriteHeader: ""}},
+		{"no credential at all", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if rec := e.doWithHeaders(http.MethodGet, path, nil, tc.headers); rec.Code != http.StatusUnauthorized {
+				t.Fatalf("= %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
+// The GUARD's allowance is exactly one method+path — asserted against the guard
+// itself, not through a route.
+//
+// Why this test exists rather than trusting the route-level ones above: the
+// hand-mounted handlers carry their own credential check, so a widened
+// guardInternalSurface is INVISIBLE from outside. Open the guard to
+// `/internal/channels/{id}` and `getChannel`'s own internalAuthorized still
+// answers 401 — the status is unchanged, every route test stays green, and the
+// prefix guard has quietly stopped being narrow. A mutation check found exactly
+// that: widening the match to a prefix killed no test.
+//
+// Defence in depth is why the widening is not immediately exploitable. It is
+// also why it cannot be detected through the front door. So this asserts the
+// predicate directly.
+func TestStaffCredentialAllowanceIsExactlyOneMethodAndPath(t *testing.T) {
+	s := NewServer(newFakeStore(), &fakePublisher{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", testStaffWriteToken)
+
+	with := func(method, path, token string) *http.Request {
+		req := httptest.NewRequest(method, "http://catalog.local"+path, nil)
+		if token != "" {
+			req.Header.Set(staffWriteHeader, token)
+		}
+		return req
+	}
+
+	if !s.staffMayReadOperatorChannels(with(http.MethodGet, "/internal/channels", testStaffWriteToken)) {
+		t.Fatal("GET /internal/channels with the staff credential is not allowed — the one route this ticket opens")
+	}
+	// A query string must not change the decision: r.URL.Path excludes it, and
+	// the real caller always sends ?organizer_id=...
+	if !s.staffMayReadOperatorChannels(with(http.MethodGet, "/internal/channels?organizer_id="+uuid.New().String(), testStaffWriteToken)) {
+		t.Fatal("a query string defeated the path match")
+	}
+
+	refused := []struct{ name, method, path, token string }{
+		// The sibling read, one character away. THIS is the case a prefix match
+		// would silently include, and the reason this test is written against
+		// the predicate.
+		{"sibling single-channel read", http.MethodGet, "/internal/channels/" + uuid.New().String(), testStaffWriteToken},
+		{"trailing slash", http.MethodGet, "/internal/channels/", testStaffWriteToken},
+		{"a longer path that shares the prefix", http.MethodGet, "/internal/channels-secret", testStaffWriteToken},
+		// Other methods on the allowed path.
+		{"PUT", http.MethodPut, "/internal/channels", testStaffWriteToken},
+		{"POST", http.MethodPost, "/internal/channels", testStaffWriteToken},
+		{"DELETE", http.MethodDelete, "/internal/channels", testStaffWriteToken},
+		// Other internal routes entirely.
+		{"cache control", http.MethodGet, "/internal/cache-control", testStaffWriteToken},
+		{"seat map pins", http.MethodGet, "/internal/seat-map-pins", testStaffWriteToken},
+		// Wrong or absent credential on the allowed route.
+		{"wrong token", http.MethodGet, "/internal/channels", "not-the-credential"},
+		{"no token", http.MethodGet, "/internal/channels", ""},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			if s.staffMayReadOperatorChannels(with(tc.method, tc.path, tc.token)) {
+				t.Fatalf("%s %s was ALLOWED by the staff-credential exception — it must open "+
+					"exactly GET /internal/channels and nothing else", tc.method, tc.path)
+			}
+		})
+	}
+}
+
+// A server built with no staff credential configured must not accept a request
+// that also sends nothing. Empty == empty is the classic open door, and the
+// route tests cannot see it because newEnv always configures a credential.
+func TestStaffCredentialAllowanceFailsClosedWhenUnconfigured(t *testing.T) {
+	s := NewServer(newFakeStore(), &fakePublisher{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", "")
+	req := httptest.NewRequest(http.MethodGet, "http://catalog.local/internal/channels", nil)
+	req.Header.Set(staffWriteHeader, "")
+	if s.staffMayReadOperatorChannels(req) {
+		t.Fatal("an unconfigured staff credential accepted an empty header — empty must never match empty")
 	}
 }
