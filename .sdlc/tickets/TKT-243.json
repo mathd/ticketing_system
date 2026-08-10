@@ -1,0 +1,50 @@
+{
+  "key": "TKT-243",
+  "type": "Task",
+  "summary": "A misconfigured price rule is now silent until a sale arrives on its channel (TKT-237 ai-review)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "description": "**The accepted cost of TKT-237's ai-review [high] fix, recorded so it is a decision rather than a\nside effect.**\n\nTKT-237 moved channel eligibility ahead of the currency check in `SelectPricingRule`. It had to: the\noriginal order meant one misconfigured `pos` rule returned **500 for every `reseller` request and\nevery public request** — one channel's bad configuration taking down every other channel's sales, and\non a public endpoint an oracle for a rule the channel filter exists to hide.\n\nThe correct order has a real cost, and this ticket is that cost:\n\n**A price rule with the wrong currency on a channel nobody is currently buying through is now\ninvisible.** It fails closed the moment a sale arrives on that channel — correctly, loudly, at the\nworst possible time — where previously it would have failed on the *next request from anyone*.\n\nThat is the same latency the window filter already accepts for a future-dated rule, and it is\nstrictly better than an outage on correctly-configured channels. But \"you find out when a buyer\ndoes\" is not where a money-path misconfiguration should surface.\n\n**Conditions of Success:**\n- An operator-facing way to find misconfigured price and fee rules *across every channel*, without\n  needing a sale on each. A validation read (or a `catalog validate-rules` subcommand in the shape\n  of `access verify-lifecycle`) that reports every rule whose currency differs from its ticket\n  type's, whichever channel it names.\n- It must cover rules that no current request would reach: every channel, including channels with no\n  registry entry (TKT-235's registry is a lookup, so codes need not be registered to be used), and\n  rules whose effective window has not opened.\n- Not a write path and not a gate on anything. It reports; an operator decides.\n- A test proving it finds a rule that resolution deliberately ignores — the exact case that motivated\n  this ticket.\n\nQuality gates: `make check` green.\n\nParent: TKT-17. Non-goals: changing resolution semantics back (that is the defect this ticket exists\nbecause we fixed); blocking rule creation on currency (a write-time check is a different, larger\ndecision — the write gate deliberately does not know the ticket type's currency).",
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-036",
+        "why": "§2: a currency mismatch is invalid configuration, not a rule that does not apply — resolution fails rather than skipping it. This ticket is about finding those rules before a buyer does."
+      },
+      {
+        "id": "ADR-046",
+        "why": "§8: currency is checked before the window filter and independently of channel, in the FEE resolver. TKT-237 diverged for prices and this ticket carries the consequence."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary: a validation sweep is an operator aid under honest-writer assumptions, not an integrity control."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The comparator and the comment explaining why channel now precedes currency",
+        "link": "services/catalog/internal/store/pricing.go"
+      },
+      {
+        "summary": "The regression test pinning both halves of the fix",
+        "link": "services/catalog/internal/store/pricing_test.go"
+      },
+      {
+        "summary": "TKT-237 PR — the review finding and the fix",
+        "link": "https://github.com/mathd/ticketing_system/pull/193"
+      }
+    ],
+    "capturedAt": "2026-08-09"
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-237 ai-review — the accepted cost of a [high] fix\n\nNot a defect in the merged code. The fix was necessary and is correct; this records what it costs\nand gives the cost an owner, rather than leaving it in a code comment where nobody schedules it.\n\nNeeds shaping before Gate 1 — in particular whether this is a read endpoint, a CLI subcommand, or a\ngate-time check, and whether it should cover fee rules and split schedules in the same pass (they\nhave the same shape and the same blind spot)."
+    }
+  ]
+}
