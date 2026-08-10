@@ -2,10 +2,8 @@
   "key": "TKT-236",
   "type": "Story",
   "summary": "US-CH2: Back-office channel registry administration",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 194,
