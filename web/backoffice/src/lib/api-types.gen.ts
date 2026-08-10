@@ -731,6 +731,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Define a sales channel (TKT-235 / epic TKT-17)
+         * @description Creates an organizer-scoped channel definition: an exact opaque code, a display name, a kind and an enabled flag. The registry is a LOOKUP, not a constraint — no table that stores a channel_code (inventory's claims and channel_allocations, catalog's fee_rules and split_schedules) references it, so an unregistered code keeps selling exactly as it does today. That is ADR-024's rule: historical attribution must survive a channel being retired, which a foreign key would break.
+         *     Codes are exact and case-sensitive (ADR-024, ADR-046 §4): "POS", "pos" and " pos " are three different channels. Nothing trims or case-folds them, here or anywhere else.
+         */
+        post: operations["createChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/channels/{channelId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update a channel's display name, kind or enabled flag (TKT-235)
+         * @description The code is IMMUTABLE. It is required in the body and must equal the stored code; a different value is refused with 409 rather than renaming the row. Renaming would silently orphan the code already recorded on live claims, fee rules and split schedules — none of which reference this table (ADR-024), so nothing would cascade and nothing would complain. A rename is a new channel plus disabling the old one.
+         *     There is no GET beside this PUT. Catalog's contract holds an invariant (TKT-191, write_credential_test.go): every unsafe operation requires the staff-write credential and every SAFE one opts out with `security: []`. The credential is a write credential, so a staff-authenticated read cannot be expressed here — the operator read that shows disabled channels is a hand-mounted /internal/ route instead, following the same convention as catalog's other internal reads.
+         */
+        put: operations["updateChannel"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Enabled sales channels for a storefront selector (minutes tier)
+         * @description The organizer's ENABLED channels only, as {code, display_name}. A client that renders a channel selector needs the opaque code to submit a later sale, so the code is returned; it is configuration, not a secret.
+         *     Served straight from the store with no server-side cache, unlike catalog's four aggregated storefront reads. That is deliberate: this is low-volume configuration, and the repo already classified its two closest siblings the same way — public_read_invalidation_test.go records CreateFeeRule and CreateSplitSchedule as affecting no cached public payload. Cache-Control still declares the ADR-004 minutes tier, so shared caches and the storefront behave as they do for the cached reads; no Age header, because nothing here ages in memory.
+         */
+        get: operations["listPublicChannels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/openapi.yaml": {
         parameters: {
             query?: never;
@@ -1484,6 +1547,57 @@ export interface components {
             name: string;
             price: components["schemas"]["Money"];
         };
+        /**
+         * @description What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
+         * @enum {string}
+         */
+        ChannelKind: "web" | "pos" | "presale" | "reseller";
+        /** @description An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it. */
+        ChannelCode: string;
+        ChannelCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            code: components["schemas"]["ChannelCode"];
+            display_name: string;
+            kind: components["schemas"]["ChannelKind"];
+            /**
+             * @description Omitted means enabled; a channel is created sellable unless said otherwise.
+             * @default true
+             */
+            enabled: boolean;
+        };
+        /** @description A full replacement of the mutable fields. `code` is required and must equal the stored code — it is present so an update cannot be written against a channel the caller has misidentified, and a mismatch is a 409 rather than a rename. */
+        ChannelUpdate: {
+            code: components["schemas"]["ChannelCode"];
+            display_name: string;
+            kind: components["schemas"]["ChannelKind"];
+            enabled: boolean;
+        };
+        Channel: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            code: components["schemas"]["ChannelCode"];
+            display_name: string;
+            kind: components["schemas"]["ChannelKind"];
+            enabled: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ChannelList: {
+            channels: components["schemas"]["Channel"][];
+        };
+        /** @description No id, kind or enabled flag: a storefront selector needs a label to show and a code to submit, and the rest is operator configuration. Only enabled channels ever appear here, so an `enabled` field would be a constant. */
+        PublicChannel: {
+            code: components["schemas"]["ChannelCode"];
+            display_name: string;
+        };
+        PublicChannelList: {
+            channels: components["schemas"]["PublicChannel"][];
+        };
     };
     responses: {
         /** @description The staff-write credential was absent or wrong. Deliberately says which of those it was NOT: distinguishing them tells a caller whether a credential is configured at all. Identical bytes either way. */
@@ -1545,6 +1659,8 @@ export interface components {
         OrganizerId: string;
         VenueId: string;
         SeatMapId: string;
+        /** @description The channel's UUID, not its code. Codes are opaque 1..100-byte strings that may legally contain characters requiring percent-encoding, and they are immutable — neither property makes them a good path identifier. */
+        ChannelId: string;
     };
     requestBodies: never;
     headers: {
@@ -1560,6 +1676,11 @@ export interface components {
         SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
         /** @description Always no-store. A resolved price feeds a money decision (ADR-004's "never" tier), and once TKT-152 adds effective windows the response's correctness expires at a known instant — caching it past that instant would sell at a stale price. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
         PriceResolutionCacheControl: "no-store";
+        /**
+         * @description Always the ADR-004 minutes tier. Single-valued and required, so the ADR-028 response validator turns any other value into a 500 and the cross-service tier audit (shared/go/cachetier) can check the committed value rather than take it on trust.
+         *     Distinct from the free-form `CacheControl` component above, which is `type: string` with no enum and therefore commits nothing. That one is TKT-204's bounded legacy exception, closed to new operations and tracked for removal by TKT-209 — a new read joins this component instead.
+         */
+        MinutesCacheControl: "public, max-age=300, s-maxage=300";
         /** @description Always no-store — ADR-004's "never" tier. An authentication response is never shared-cacheable: it is computed from a submitted credential and says whether that credential is good. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
         NeverCacheControl: "no-store";
     };
@@ -2801,6 +2922,109 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    createChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelCreate"];
+            };
+        };
+        responses: {
+            /** @description Channel created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Channel"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
+            /** @description This organizer already has a channel with that code */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+        };
+    };
+    updateChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The channel's UUID, not its code. Codes are opaque 1..100-byte strings that may legally contain characters requiring percent-encoding, and they are immutable — neither property makes them a good path identifier. */
+                channelId: components["parameters"]["ChannelId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelUpdate"];
+            };
+        };
+        responses: {
+            /** @description The updated channel */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NeverCacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Channel"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["StaffWriteUnauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description The submitted code differs from the stored one — codes are immutable */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listPublicChannels: {
+        parameters: {
+            query: {
+                /** @description Tenant scope (ADR-002); required — no session to infer from */
+                organizer_id: components["parameters"]["OrganizerId"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enabled channels, code and display name */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["MinutesCacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicChannelList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
             500: components["responses"]["InternalError"];
         };
     };

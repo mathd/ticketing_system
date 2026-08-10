@@ -30,6 +30,15 @@ import (
 //   - CreatePayee / CreateSplitSchedule: payout configuration. It reaches the
 //     sale only through the fee resolution, an /internal/ read, and never
 //     appears in a cached public payload at all.
+//   - CreateChannel / UpdateChannel: the sales-channel registry (TKT-235). Same
+//     shape as the two above — organizer configuration that no cached public
+//     payload carries. The four cached reads project events, seasons, festivals
+//     and their ticket types; none of them names a channel. /public/channels
+//     serves the registry, but it is deliberately NOT one of the cached reads:
+//     it goes straight to the store, so there is no cached entry to invalidate.
+//     If it is ever added to the cache, this entry becomes PublicReadAll and the
+//     read joins publicReadSource — one change, both halves, or the cache serves
+//     a retired channel for a full tier.
 //   - CreateFeeRule: same shape, one step further out. fee_rules is reached only
 //     by ResolveTicketTypeFees, which is an /internal/ operation and not a public
 //     read at all, so no cached public payload can carry a fee.
@@ -58,6 +67,8 @@ var publicReadEffect = map[string]PublicReadScope{
 	"CreateFeeRule":                 0,
 	"CreatePayee":                   0,
 	"CreateSplitSchedule":           0,
+	"CreateChannel":                 0,
+	"UpdateChannel":                 0,
 	"CloseSlot":                     0,
 	"ReopenSlot":                    0,
 	"CreateSeries":                  0,
@@ -97,6 +108,10 @@ var readOnlyStoreMethods = map[string]bool{
 	// TKT-222. A pure read, and one that deliberately IGNORES publication state —
 	// so it neither invalidates a public read nor participates in one.
 	"PerformanceDisplayNames": true,
+	// TKT-235. The registry's three reads. ListEnabledChannels backs
+	// /public/channels, which is public but NOT cached — it reads through to
+	// Postgres on every request, so it participates in no cached payload.
+	"GetChannel": true, "ListChannels": true, "ListEnabledChannels": true,
 }
 
 // TestEveryStoreMethodIsClassifiedForPublicReads is the anti-rot guard.

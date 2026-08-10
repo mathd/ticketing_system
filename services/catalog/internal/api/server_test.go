@@ -68,6 +68,8 @@ type fakeStore struct {
 	staffAccounts  map[string]staffAuthResult
 	staffAuthErr   error
 	staffAuthCalls int
+	// TKT-235 the sales-channel registry, keyed by channel id.
+	channels map[uuid.UUID]store.Channel
 }
 
 // fakeSection/fakeRow/fakeSeat carry the parent linkage the SQL enforces via
@@ -2645,4 +2647,87 @@ func TestInternalSeatMapPinsRead(t *testing.T) {
 	if st.pinLimits[0] != reconcileDefaultPinPage {
 		t.Fatalf("default limit = %d want %d", st.pinLimits[0], reconcileDefaultPinPage)
 	}
+}
+
+// TKT-235 sales-channel registry. The fake mirrors the real store's SEMANTICS,
+// not its SQL: per-organizer code uniqueness, code immutability on update, and
+// the enabled filter applied at lookup rather than by the caller. A fake that
+// let the handler get away with post-filtering would make the API tests agree
+// with a store that leaks disabled channels to the public read.
+func (f *fakeStore) CreateChannel(_ context.Context, in store.ChannelInput) (store.Channel, error) {
+	if _, err := store.ValidateChannelWriteForTest(in.Code, in.DisplayName, in.Kind); err != nil {
+		return store.Channel{}, err
+	}
+	if f.channels == nil {
+		f.channels = map[uuid.UUID]store.Channel{}
+	}
+	for _, c := range f.channels {
+		// Exact, case-sensitive, per organizer — 'POS' and 'pos' coexist.
+		if c.OrganizerID == in.OrganizerID && c.Code == in.Code {
+			return store.Channel{}, store.ErrChannelCodeTaken
+		}
+	}
+	now := time.Now().UTC()
+	c := store.Channel{
+		ID:          uuid.New(),
+		OrganizerID: in.OrganizerID,
+		Code:        in.Code,
+		DisplayName: in.DisplayName,
+		Kind:        in.Kind,
+		Enabled:     in.Enabled,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	f.channels[c.ID] = c
+	return c, nil
+}
+
+func (f *fakeStore) UpdateChannel(_ context.Context, id uuid.UUID, in store.ChannelUpdate) (store.Channel, error) {
+	if _, err := store.ValidateChannelWriteForTest(in.Code, in.DisplayName, in.Kind); err != nil {
+		return store.Channel{}, err
+	}
+	c, ok := f.channels[id]
+	if !ok {
+		return store.Channel{}, store.ErrNotFound
+	}
+	if in.Code != c.Code {
+		return store.Channel{}, store.ErrChannelCodeImmutable
+	}
+	c.DisplayName = in.DisplayName
+	c.Kind = in.Kind
+	c.Enabled = in.Enabled
+	// Written explicitly, as the real store does — there is no trigger.
+	c.UpdatedAt = time.Now().UTC().Add(time.Millisecond)
+	f.channels[id] = c
+	return c, nil
+}
+
+func (f *fakeStore) GetChannel(_ context.Context, id uuid.UUID) (store.Channel, error) {
+	c, ok := f.channels[id]
+	if !ok {
+		return store.Channel{}, store.ErrNotFound
+	}
+	return c, nil
+}
+
+func (f *fakeStore) ListChannels(_ context.Context, organizerID uuid.UUID) ([]store.Channel, error) {
+	out := make([]store.Channel, 0)
+	for _, c := range f.channels {
+		if c.OrganizerID == organizerID {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out, nil
+}
+
+func (f *fakeStore) ListEnabledChannels(_ context.Context, organizerID uuid.UUID) ([]store.PublicChannel, error) {
+	out := make([]store.PublicChannel, 0)
+	for _, c := range f.channels {
+		if c.OrganizerID == organizerID && c.Enabled {
+			out = append(out, store.PublicChannel{Code: c.Code, DisplayName: c.DisplayName})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out, nil
 }

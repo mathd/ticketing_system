@@ -19,6 +19,30 @@ const (
 	CatalogStaffWriteCredentialScopes catalogStaffWriteCredentialContextKey = "CatalogStaffWriteCredential.Scopes"
 )
 
+// Defines values for ChannelKind.
+const (
+	Pos      ChannelKind = "pos"
+	Presale  ChannelKind = "presale"
+	Reseller ChannelKind = "reseller"
+	Web      ChannelKind = "web"
+)
+
+// Valid indicates whether the value is a known member of the ChannelKind enum.
+func (e ChannelKind) Valid() bool {
+	switch e {
+	case Pos:
+		return true
+	case Presale:
+		return true
+	case Reseller:
+		return true
+	case Web:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ClosureStatus.
 const (
 	Closed ClosureStatus = "closed"
@@ -466,6 +490,57 @@ func (e StaffRole) Valid() bool {
 	}
 }
 
+// Channel defines model for Channel.
+type Channel struct {
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	Code        ChannelCode        `json:"code"`
+	CreatedAt   time.Time          `json:"created_at"`
+	DisplayName string             `json:"display_name"`
+	Enabled     bool               `json:"enabled"`
+	Id          openapi_types.UUID `json:"id"`
+
+	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
+	Kind        ChannelKind        `json:"kind"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+}
+
+// ChannelCode An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+type ChannelCode = string
+
+// ChannelCreate defines model for ChannelCreate.
+type ChannelCreate struct {
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	Code        ChannelCode `json:"code"`
+	DisplayName string      `json:"display_name"`
+
+	// Enabled Omitted means enabled; a channel is created sellable unless said otherwise.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
+	Kind        ChannelKind        `json:"kind"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+}
+
+// ChannelKind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
+type ChannelKind string
+
+// ChannelList defines model for ChannelList.
+type ChannelList struct {
+	Channels []Channel `json:"channels"`
+}
+
+// ChannelUpdate A full replacement of the mutable fields. `code` is required and must equal the stored code — it is present so an update cannot be written against a channel the caller has misidentified, and a mismatch is a 409 rather than a rename.
+type ChannelUpdate struct {
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	Code        ChannelCode `json:"code"`
+	DisplayName string      `json:"display_name"`
+	Enabled     bool        `json:"enabled"`
+
+	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
+	Kind ChannelKind `json:"kind"`
+}
+
 // Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.
 type Closure struct {
 	ClosedAt *time.Time    `json:"closed_at,omitempty"`
@@ -810,6 +885,18 @@ type PriceRuleProvenanceActionKind string
 
 // PriceRuleProvenanceScopeLevel defines model for PriceRuleProvenance.ScopeLevel.
 type PriceRuleProvenanceScopeLevel string
+
+// PublicChannel No id, kind or enabled flag: a storefront selector needs a label to show and a code to submit, and the rest is operator configuration. Only enabled channels ever appear here, so an `enabled` field would be a constant.
+type PublicChannel struct {
+	// Code An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code / split_schedules.channel_code in catalog — all four must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
+	Code        ChannelCode `json:"code"`
+	DisplayName string      `json:"display_name"`
+}
+
+// PublicChannelList defines model for PublicChannelList.
+type PublicChannelList struct {
+	Channels []PublicChannel `json:"channels"`
+}
 
 // PublicEventDetail defines model for PublicEventDetail.
 type PublicEventDetail struct {
@@ -1227,6 +1314,9 @@ type VenueGaCapacityUpdate struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
+// ChannelId defines model for ChannelId.
+type ChannelId = openapi_types.UUID
+
 // EventId defines model for EventId.
 type EventId = openapi_types.UUID
 
@@ -1286,6 +1376,12 @@ type ResolveTicketTypeFeesParams struct {
 	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
 }
 
+// ListPublicChannelsParams defines parameters for ListPublicChannels.
+type ListPublicChannelsParams struct {
+	// OrganizerId Tenant scope (ADR-002); required — no session to infer from
+	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
 // ListPublicEventsParams defines parameters for ListPublicEvents.
 type ListPublicEventsParams struct {
 	// Locale BCP-47 primary subtag; supported set is data, not schema (TKT-36)
@@ -1315,6 +1411,12 @@ type ListPublicVenuesParams struct {
 	// OrganizerId Tenant scope (ADR-002); required — no session to infer from
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
+
+// CreateChannelJSONRequestBody defines body for CreateChannel for application/json ContentType.
+type CreateChannelJSONRequestBody = ChannelCreate
+
+// UpdateChannelJSONRequestBody defines body for UpdateChannel for application/json ContentType.
+type UpdateChannelJSONRequestBody = ChannelUpdate
 
 // CreateEventJSONRequestBody defines body for CreateEvent for application/json ContentType.
 type CreateEventJSONRequestBody = EventCreate
@@ -1375,6 +1477,12 @@ type CreateSeatMapJSONRequestBody = SeatMapCreate
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// Define a sales channel (TKT-235 / epic TKT-17)
+	// (POST /channels)
+	CreateChannel(w http.ResponseWriter, r *http.Request)
+	// Update a channel's display name, kind or enabled flag (TKT-235)
+	// (PUT /channels/{channelId})
+	UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId)
 	// Create an event (localizable content)
 	// (POST /events)
 	CreateEvent(w http.ResponseWriter, r *http.Request)
@@ -1414,6 +1522,9 @@ type ServerInterface interface {
 	// Reopen a closed slot (idempotent)
 	// (POST /performances/{performanceId}/reopen)
 	ReopenSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
+	// Enabled sales channels for a storefront selector (minutes tier)
+	// (GET /public/channels)
+	ListPublicChannels(w http.ResponseWriter, r *http.Request, params ListPublicChannelsParams)
 	// Aggregated storefront list read (minutes tier)
 	// (GET /public/events)
 	ListPublicEvents(w http.ResponseWriter, r *http.Request, params ListPublicEventsParams)
@@ -1498,6 +1609,18 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
+// Define a sales channel (TKT-235 / epic TKT-17)
+// (POST /channels)
+func (_ Unimplemented) CreateChannel(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Update a channel's display name, kind or enabled flag (TKT-235)
+// (PUT /channels/{channelId})
+func (_ Unimplemented) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Create an event (localizable content)
 // (POST /events)
 func (_ Unimplemented) CreateEvent(w http.ResponseWriter, r *http.Request) {
@@ -1573,6 +1696,12 @@ func (_ Unimplemented) PublishPerformance(w http.ResponseWriter, r *http.Request
 // Reopen a closed slot (idempotent)
 // (POST /performances/{performanceId}/reopen)
 func (_ Unimplemented) ReopenSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Enabled sales channels for a storefront selector (minutes tier)
+// (GET /public/channels)
+func (_ Unimplemented) ListPublicChannels(w http.ResponseWriter, r *http.Request, params ListPublicChannelsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1740,6 +1869,58 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// CreateChannel operation middleware
+func (siw *ServerInterfaceWrapper) CreateChannel(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateChannel(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateChannel operation middleware
+func (siw *ServerInterfaceWrapper) UpdateChannel(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "channelId" -------------
+	var channelId ChannelId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "channelId", chi.URLParam(r, "channelId"), &channelId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channelId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateChannel(w, r, channelId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // CreateEvent operation middleware
 func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Request) {
@@ -2118,6 +2299,39 @@ func (siw *ServerInterfaceWrapper) ReopenSlot(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ReopenSlot(w, r, performanceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListPublicChannels operation middleware
+func (siw *ServerInterfaceWrapper) ListPublicChannels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPublicChannelsParams
+
+	// ------------- Required query parameter "organizer_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "organizer_id", r.URL.Query(), &params.OrganizerId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "organizer_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "organizer_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPublicChannels(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3021,6 +3235,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	}
 
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/channels", wrapper.CreateChannel)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/channels/{channelId}", wrapper.UpdateChannel)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/events", wrapper.CreateEvent)
 	})
 	r.Group(func(r chi.Router) {
@@ -3058,6 +3278,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/performances/{performanceId}/reopen", wrapper.ReopenSlot)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/public/channels", wrapper.ListPublicChannels)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/public/events", wrapper.ListPublicEvents)
