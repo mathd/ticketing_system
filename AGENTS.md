@@ -73,6 +73,16 @@ experiment stays valid.
   the precondition during setup, and naming a state the fixture cannot construct. Delete the
   mechanism and re-run: if it stays green, the test is about something else.
   ([a green test that cannot reach the failing state](docs/learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md))
+- **And a green test can assert the DEFECT as correct — mutation testing cannot catch that.** When a
+  test pins a *number* or a *state* rather than a refusal, derive the expected value from the
+  requirement, never from a run: an assertion written by observing what the code did pins the
+  behaviour, not the rule. TKT-239 asserted a code's usage was 6 after drawing 4 of 10 — exactly what
+  the broken code produced — and every mutant died, because the mutant flips the mechanism and the
+  assertion was written to match the mechanism. Say the invariant in one sentence without naming the
+  implementation ("a draw-down moves a redemption, never creates or destroys one"), and prefer it to
+  a value. Nothing local catches this: types, tests, mutants and the gate are all downstream of the
+  author's model of correctness, which is why cross-model review is a prerequisite, not an option.
+  ([a green test can bless the defect](docs/learnings/2026-08-10-a-green-test-can-bless-the-defect.md))
 - **Specs before code.** Prefer writing/refining a spec or PRD before implementing. Ground work in
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`

@@ -251,3 +251,12 @@ exists are in *Historical* at the bottom; their files are kept.
   public channel leaves the presale's reservation intact by construction. None was a forgotten case.
   The gap is between the state a test *names* and the state it *constructs*, and unlike a red test
   nothing prompts you to look.
+- [A green test can assert the defect as correct](learnings/2026-08-10-a-green-test-can-bless-the-defect.md)
+  — TKT-239, and the sibling of the entry above. A test that encodes the WRONG invariant is green,
+  stays green, and **kills every mutant** — the mutant flips the mechanism, the assertion was written
+  to match the mechanism, so they agree and the report says covered. A draw-down test asserted usage
+  `== 6` after drawing 4 of 10, which is exactly what the defective code produced; the real invariant
+  was that usage never changes. Cost: a code capped at 10 granted 20. Nothing local catches this —
+  types, tests, mutants and the gate are all downstream of the author's model of correctness — which
+  is why cross-model review is a prerequisite, not an option. Derive expected values from the
+  requirement, never from a run, and prefer an invariant to a number.
