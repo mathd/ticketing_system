@@ -105,17 +105,32 @@ answer to a request a *valid* code would also have refused. Code before capacity
 TKT-238's review established — a channel-property refusal masked by a full pool makes a gated
 presale read as a **sellout exactly when the on-sale is busiest**.
 
-### 6. A draw-down does **not** redeem again
+### 6. A draw-down **moves** a redemption — the child inherits the citation
 
-The **source** reservation cites the code; its draw-down **children do not**.
+The source reservation cites the code, and **every draw-down child inherits it**.
 
-`consumingClaims` counts a live source *and* its live children, so a citation on both would count
-the same units twice and a code capped at 10 would exhaust at 5. This also matches ADR-027's
-reasoning that a draw-down is quantity-neutral: it consumes nothing new, so it must redeem nothing
-new.
+**This reverses the decision this ADR originally recorded, and the reversal is the point.** The
+first version had children *not* inherit, reasoning that `consumingClaims` counts a live source and
+its live children, so citing both would double-count and exhaust a cap at half value.
 
-**Accepted cost:** a child claim cannot be attributed to the code from its own row; attribution goes
-through the reservation. A reporting join, not a correctness problem (TKT-23's territory).
+That reasoning is false. A draw-down **decrements the source by exactly the drawn quantity**, or
+releases it whole when fully drawn — source + children always sums to the original. Citing both is
+conservative, not duplicative.
+
+The consequence of the wrong version was measured, not argued: drawing a 10-unit reservation fully
+down took derived usage from 10 to **zero** while all 10 units remained consumed, and the same
+"capped at 10" code then granted **10 more**. Twenty units from a cap of ten.
+
+It survived a mutation check and a green test, because the test asserted the *wrong invariant* —
+usage `== 6` after drawing 4 of 10, which is exactly what the defective code produced. A test can
+encode a mistaken rule as confidently as a correct one.
+
+The source's code is read **under the same row lock** as the rest of the source claim, so a child
+cannot inherit a citation that disagrees with the units being moved.
+
+Still true, and still the reason gating a draw-down would be wrong: a draw-down consumes nothing
+new, so it **redeems** nothing new. Inheriting a citation is not redeeming — the redemption already
+happened at placement.
 
 ### 7. Codes are **exact opaque strings**
 
@@ -135,15 +150,23 @@ A code presented to an **ungated** allocation is ignored **and not recorded** �
 let any caller write arbitrary strings into a column reporting reads, on a path where nothing
 validated them.
 
-### 9. The idempotency fingerprint appends the code **only when non-empty**
+### 9. The idempotency fingerprint appends the code **only when non-empty**, and **frames** it
 
-A code must enter the fingerprint: two holds sharing a key but presenting different codes are
-different requests, and replaying one as the other would grant the second the first's redemption.
+A code must enter the fingerprint — on **both** the hold and the group-placement paths. Two requests
+sharing a key but presenting different codes are different requests, and replaying one as the other
+grants the second the first's redemption *without its code ever being checked*. Plan-review caught
+this for `CreateHold`; ai-review caught that `PlaceGroupReservation` had the identical defect.
 
-But an **unconditional** append rehashes every claim in the database, so every in-flight retry stops
+An **unconditional** append rehashes every claim in the database, so every in-flight retry stops
 replaying and re-executes — a system-wide double-sell on retry, from what looks like adding a field.
 Golden literals computed outside the package pin the pre-TKT-239 values; changing them is a
 wire-compatibility break, not a test update.
+
+And the appended part is **length-framed**, not colon-joined. Channel codes and presale codes are
+both arbitrary opaque strings that may contain the delimiter, so a bare join is ambiguous:
+`(channel="a", code="b:c")` and `(channel="a:b", code="c")` hashed **identically** — measured — and
+the second request replayed the first before its allocation or code was examined. Framing applies
+only to code-bearing requests, so no existing fingerprint changes.
 
 ## Guarantees, and what they are not
 

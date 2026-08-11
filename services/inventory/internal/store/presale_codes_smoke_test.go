@@ -457,15 +457,22 @@ func TestConfirmedClaimKeepsItsRedemptionForever(t *testing.T) {
 	}
 }
 
-// A draw-down does NOT redeem again (ADR-055).
+// A draw-down MOVES a redemption; it never creates or destroys one.
 //
-// consumingClaims counts a live source AND its live children, so if a child
-// inherited the citation the same units would count twice and a code capped at N
-// would exhaust at N/2. The redemption happened once, at placement.
-func TestDrawDownDoesNotRedeemThePresaleCodeAgain(t *testing.T) {
+// The first version of this ticket had the child NOT inherit the citation, on the
+// reasoning that source and children would double-count. That reasoning was wrong
+// and ai-review caught it: a draw-down DECREMENTS the source by exactly the drawn
+// quantity (or releases it whole), so source + children always sums to the
+// original. Citing both is conservative.
+//
+// Measured on the un-fixed build: drawing a 10-unit reservation fully down took
+// usage from 10 to ZERO and a code "capped at 10" then granted 10 MORE — 20 units
+// from a cap of 10. The old test asserted usage == 6 after a partial draw and
+// called that correct, which is why it was green while the defect shipped.
+func TestDrawDownMovesTheRedemptionAndNeverFreesIt(t *testing.T) {
 	ctx, st, db := storeForTest(t, time.Minute)
-	org, slot := provisioned(t, ctx, st, 40)
-	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "agency", Cap: 20, RequiresCode: true}})
+	org, slot := provisioned(t, ctx, st, 100)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "agency", Cap: 100, RequiresCode: true}})
 	mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "agency", Code: "AGENCY-10",
 		MaxRedemptions: capOf(10)})
 
@@ -475,34 +482,84 @@ func TestDrawDownDoesNotRedeemThePresaleCodeAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("place: %v", err)
 	}
-	// The whole cap is now redeemed by the source.
-	usage := redeemedUnits(t, ctx, db, org, "agency", "AGENCY-10")
-	if usage != 10 {
-		t.Fatalf("after placing 10, derived usage is %d, want 10", usage)
+	if got := redeemedUnits(t, ctx, db, org, "agency", "AGENCY-10"); got != 10 {
+		t.Fatalf("after placing 10, usage is %d, want 10", got)
 	}
 
-	// Drawing down does not consume a new redemption — it moves units the source
-	// already redeemed.
-	if _, _, err := st.DrawDownGroupReservation(ctx, org, res.ID, uuid.Nil, slot, 4, 0, "", "staff:amy", "draw", "draw-1"); err != nil {
-		t.Fatalf("draw-down against a fully-redeemed code: %v — draw-down must not re-redeem", err)
+	// PARTIAL draw: 4 units move to a child, the source keeps 6. Total unchanged.
+	if _, _, err := st.DrawDownGroupReservation(ctx, org, res.ID, uuid.Nil, slot, 4, 0, "", "staff", "d", "draw-1"); err != nil {
+		t.Fatalf("partial draw-down: %v", err)
 	}
-	// Usage does NOT grow: the child cites no code, so drawing down cannot redeem
-	// again. It legitimately SHRINKS, because a draw-down decrements the source and
-	// the source is what carries the citation — the units left the reservation and
-	// became ordinary channel claims.
-	//
-	// The invariant is "a draw-down never consumes a NEW redemption", so the bound
-	// is <= 10, and it must never exceed the cap. Asserting == 10 was wrong: it
-	// would fail on correct code and pass on code that double-counted by exactly
-	// the amount drawn.
-	after := redeemedUnits(t, ctx, db, org, "agency", "AGENCY-10")
-	if after > 10 {
-		t.Fatalf("derived usage rose to %d after a draw-down, want <= 10 — the child is "+
-			"double-counting the source's redemption", after)
+	if got := redeemedUnits(t, ctx, db, org, "agency", "AGENCY-10"); got != 10 {
+		t.Fatalf("usage is %d after a PARTIAL draw-down, want 10 — the drawn units are "+
+			"still consumed, so the redemption must not be freed", got)
 	}
-	if after != 6 {
-		t.Fatalf("derived usage is %d after drawing 4 of 10; want 6 — the source's "+
-			"remaining quantity is what still holds the redemption", after)
+
+	// FULL draw of the remaining 6: the source is released, the child holds it all.
+	if _, _, err := st.DrawDownGroupReservation(ctx, org, res.ID, uuid.Nil, slot, 6, 0, "", "staff", "d", "draw-2"); err != nil {
+		t.Fatalf("full draw-down: %v", err)
+	}
+	if got := redeemedUnits(t, ctx, db, org, "agency", "AGENCY-10"); got != 10 {
+		t.Fatalf("usage is %d after a FULL draw-down, want 10 — a released source with "+
+			"live children must not zero the redemption count", got)
+	}
+
+	// And the cap genuinely still binds.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "agency", "over",
+		WithPresaleCode("AGENCY-10")); !errors.Is(err, ErrPresaleCodeInvalid) {
+		t.Fatalf("a code capped at 10 granted an 11th unit after draw-down: got %v", err)
+	}
+}
+
+// Two holds sharing an idempotency key but presenting DIFFERENT codes are
+// different requests — including when the difference hides in the delimiter.
+//
+// channel and presale_code are both arbitrary opaque strings that may contain
+// ':'. A bare join made (channel="a", code="b:c") and (channel="a:b", code="c")
+// hash identically — measured — so the second request replayed the first BEFORE
+// its allocation or code was checked.
+func TestFingerprintCannotBeConfusedByADelimiterInTheCode(t *testing.T) {
+	org, slot, tt := uuid.New(), uuid.New(), uuid.New()
+	if x, y := fingerprint(org, slot, tt, 1, 100, "EUR", "a", "b:c"),
+		fingerprint(org, slot, tt, 1, 100, "EUR", "a:b", "c"); x == y {
+		t.Fatalf("(channel=a, code=b:c) and (channel=a:b, code=c) hash identically (%s) — "+
+			"one replays as the other", x)
+	}
+	// The plain different-code case too.
+	if x, y := fingerprint(org, slot, tt, 1, 100, "EUR", "presale", "AAA"),
+		fingerprint(org, slot, tt, 1, 100, "EUR", "presale", "BBB"); x == y {
+		t.Fatal("two different codes hash identically")
+	}
+}
+
+// A group placement replayed with a DIFFERENT code is a key reuse, not a replay.
+func TestGroupPlacementFingerprintIncludesThePresaleCode(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "agency", Cap: 100, RequiresCode: true}})
+	mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "agency", Code: "FIRST"})
+	mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "agency", Code: "SECOND"})
+
+	expires := time.Now().Add(time.Hour)
+	if _, _, err := st.PlaceGroupReservation(ctx, org, slot, 5, "cp", expires, "agency",
+		"staff", "r", "same-key", WithPresaleCode("FIRST")); err != nil {
+		t.Fatal(err)
+	}
+	// Same key, same everything, DIFFERENT code: must not replay as a success.
+	_, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "cp", expires, "agency",
+		"staff", "r", "same-key", WithPresaleCode("SECOND"))
+	if err == nil && replay {
+		t.Fatal("a placement with a DIFFERENT presale code replayed the original as a " +
+			"success — the code is not in the fingerprint, so the second request never " +
+			"had its code checked at all")
+	}
+	if !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("got %v, want ErrIdempotency", err)
+	}
+	// The identical request DOES still replay.
+	if _, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "cp", expires, "agency",
+		"staff", "r", "same-key", WithPresaleCode("FIRST")); err != nil || !replay {
+		t.Fatalf("the identical request did not replay: replay=%v err=%v", replay, err)
 	}
 }
 

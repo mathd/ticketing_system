@@ -39,7 +39,20 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	if qty <= 0 {
 		return GroupReservation{}, false, fmt.Errorf("quantity must be positive")
 	}
-	fp := opFingerprint("grp-place", org, slot, qty, counterparty, expiresAt.UTC().Format(time.RFC3339Nano), channel)
+	// The presale code enters the fingerprint (ai-review finding 2): without it,
+	// reusing an idempotency key with a DIFFERENT, absent, exhausted or
+	// wrong-channel code replays the original reservation as a success instead of
+	// refusing — the placement path had the same defect the hold path's
+	// plan-review caught.
+	//
+	// Appended only when non-empty, so pre-TKT-239 reservations keep their exact
+	// fingerprints; framed with lengths for the reason fingerprint() documents —
+	// channel and code are opaque strings that may contain the delimiter.
+	fpParts := []any{"grp-place", org, slot, qty, counterparty, expiresAt.UTC().Format(time.RFC3339Nano), channel}
+	if presaleCode != "" {
+		fpParts = append(fpParts, fmt.Sprintf("c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode))
+	}
+	fp := opFingerprint(fpParts...)
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return GroupReservation{}, false, err
@@ -232,8 +245,12 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	var c Claim
 	var channel string
 	var decision time.Time
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),claim_kind FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
-		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &channel, &c.ExpiresAt, &decision, &c.Kind)
+	// sourcePresaleCode is read under the SAME row lock as the rest of the source,
+	// so the citation the child inherits cannot be a different code than the one
+	// whose units are being moved.
+	var sourcePresaleCode string
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),COALESCE(presale_code,''),expires_at,clock_timestamp(),claim_kind FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
+		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &channel, &sourcePresaleCode, &c.ExpiresAt, &decision, &c.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConvertResult{}, false, ErrNotFound
 	}
@@ -268,9 +285,21 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 		return ConvertResult{}, false, ErrConflict
 	}
 	child := Claim{ID: uuid.New(), OrganizerID: org, PoolID: pool, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,'')) RETURNING expires_at,now()`,
-		child.ID, org, pool, ticketType, qty, unitAmount, currency, p.ttl.String(), "grp-draw:"+id.String()+":"+key, fp, channel).Scan(&child.ExpiresAt, &child.ServerTime)
+	// The child INHERITS the source's presale code (TKT-239 ai-review finding 1).
+	//
+	// The first version of this deliberately did not, reasoning that the source and
+	// its children would double-count. That reasoning was WRONG and running it
+	// proved so: a draw-down DECREMENTS the source by exactly qty (or releases it
+	// whole, above), so source + children always sums to the original quantity.
+	// Citing both is conservative, not duplicative.
+	//
+	// Without the citation the units stay consumed while the redemption count
+	// forgets them: drawing a 10-unit reservation fully down took usage from 10 to
+	// ZERO and let the same "capped at 10" code grant 10 more. Measured: 20 units
+	// from a cap of 10.
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,'')) RETURNING expires_at,now()`,
+		child.ID, org, pool, ticketType, qty, unitAmount, currency, p.ttl.String(), "grp-draw:"+id.String()+":"+key, fp, channel, sourcePresaleCode).Scan(&child.ExpiresAt, &child.ServerTime)
 	if err != nil {
 		return ConvertResult{}, false, err
 	}

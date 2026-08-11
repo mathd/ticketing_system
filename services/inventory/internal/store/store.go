@@ -207,17 +207,30 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 	if channel != "" {
 		s += ":" + channel
 	}
-	// Appended ONLY when non-empty, for exactly the reason the channel above is:
-	// an unconditional append rehashes EVERY claim in the database, so every
-	// in-flight retry stops replaying and re-executes instead — a double-sell on
-	// retry, system-wide, from what looks like adding a field (TKT-239
-	// plan-review). TestFingerprintStaysByteIdenticalWithoutAPresaleCode pins it.
+	// The presale code is appended ONLY when non-empty, for exactly the reason the
+	// channel above is: an unconditional append rehashes EVERY claim in the
+	// database, so every in-flight retry stops replaying and re-executes instead —
+	// a double-sell on retry, system-wide, from what looks like adding a field
+	// (TKT-239 plan-review). TestFingerprintStaysByteIdenticalWithoutAPresaleCode
+	// pins the legacy bytes with golden literals.
 	//
 	// It must be IN the fingerprint though: two holds sharing an idempotency key
 	// but presenting different codes are different requests, and replaying one as
 	// the other would grant the second the first's redemption.
+	//
+	// FRAMED, not concatenated (ai-review finding 3). Both channel and code are
+	// arbitrary opaque strings that MAY CONTAIN COLONS, so a bare ":" join is
+	// ambiguous: (channel="a", code="b:c") and (channel="a:b", code="c") produced
+	// byte-identical input and therefore the same hash — measured, not theorised.
+	// The second request would then replay the first BEFORE its allocation or code
+	// was ever checked. Length-prefixing removes the ambiguity: no two distinct
+	// (channel, code) pairs can produce the same framing.
+	//
+	// Only code-bearing requests are framed. A code-less request keeps the exact
+	// legacy algorithm, so nothing already in a database is rehashed — the
+	// collision needs a non-empty code to be reachable at all.
 	if presaleCode != "" {
-		s += ":" + presaleCode
+		s += fmt.Sprintf(":c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode)
 	}
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
 }
