@@ -166,7 +166,14 @@ And the appended part is **length-framed**, not colon-joined. Channel codes and 
 both arbitrary opaque strings that may contain the delimiter, so a bare join is ambiguous:
 `(channel="a", code="b:c")` and `(channel="a:b", code="c")` hashed **identically** — measured — and
 the second request replayed the first before its allocation or code was examined. Framing applies
-only to code-bearing requests, so no existing fingerprint changes.
+only to code-bearing requests, so **no fingerprint that can already exist in a database changes**.
+
+A second review pass argued the framing broke compatibility with fingerprints written by this
+ticket's own first commit. **Rejected on its premise:** that commit lives only on an unmerged
+feature branch, never ran against a database, and a code-bearing request could not have existed
+before the feature that introduced codes. The only compatibility boundary is pre-TKT-239 →
+shipped, every stored fingerprint is code-less by construction, and
+`TestOnlyCodeLessFingerprintsNeedBackwardCompatibility` pins it.
 
 ## Guarantees, and what they are not
 

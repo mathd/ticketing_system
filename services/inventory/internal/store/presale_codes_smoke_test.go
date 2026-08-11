@@ -511,6 +511,31 @@ func TestDrawDownMovesTheRedemptionAndNeverFreesIt(t *testing.T) {
 	}
 }
 
+// The compatibility boundary is PRE-TKT-239 -> shipped, and nothing else.
+//
+// A second-pass review argued the framed encoding broke compatibility with
+// fingerprints written by this branch's own first commit. It does not, and the
+// reason is worth writing down because the argument is otherwise sound: that
+// commit exists only on an unmerged feature branch. It never ran against a
+// database, so no stored fingerprint was ever computed with the intermediate
+// encoding, and a CODE-BEARING request could not have existed before the feature
+// that introduced codes.
+//
+// What must hold is that a code-LESS request still hashes exactly as it did
+// before this ticket — which is what the golden literals above assert. Every
+// claim already in a database is code-less by construction.
+func TestOnlyCodeLessFingerprintsNeedBackwardCompatibility(t *testing.T) {
+	org := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	slot := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	tt := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	// Same inputs, no code: byte-identical to the pre-TKT-239 algorithm. This is
+	// the only class of fingerprint that can already exist in a database.
+	const goldenWithChannel = "27ba9d12ad92b46f7f200784cd338b843fdbc10d8ffd779578a74de579a6af23"
+	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", ""); got != goldenWithChannel {
+		t.Fatalf("code-less fingerprint drifted: got %s want %s", got, goldenWithChannel)
+	}
+}
+
 // Two holds sharing an idempotency key but presenting DIFFERENT codes are
 // different requests — including when the difference hides in the delimiter.
 //
