@@ -1,8 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
 
+// Every scan and reconciliation needs an enrolled device (ai-review S1). The
+// suites below are about SCAN behaviour, so they pair once here — otherwise each
+// of them would be re-asserting the pairing screen and its own subject not at
+// all. The pairing screen has its own tests, in App.test.tsx.
+beforeEach(() => {
+  localStorage.setItem('scanner.device-token', 'paired-device-token')
+})
+
 afterEach(() => {
+  localStorage.clear()
   cleanup()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -277,5 +286,73 @@ describe('App', () => {
 
     await waitFor(() => expect(stop).toHaveBeenCalledOnce())
     expect(await screen.findByText(/Camera access was unavailable/)).toBeDefined()
+  })
+})
+
+// ai-review S1. The scan routes now require an enrolled device, so the app has to
+// have somewhere to keep one and something to do when it does not.
+describe('device pairing', () => {
+  it('asks to be paired instead of scanning, and never sends a scan unpaired', async () => {
+    localStorage.clear()
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Pair this device' })).toBeDefined()
+    // The scan form is not merely disabled — it is not there. A gate operator
+    // cannot paste a credential into a scanner that has no credential itself.
+    expect(screen.queryByLabelText('Ticket credential')).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('pairs, keeps the token across a reload, and sends it on every scan', async () => {
+    localStorage.clear()
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-08-10T12:00:00Z' }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { unmount } = render(<App />)
+    fireEvent.change(await screen.findByLabelText('Pairing token'), { target: { value: '  gate-token  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+
+    // Trimmed on the way in: a token pasted from a terminal carries whitespace,
+    // and an untrimmed one is refused in a way that reads as "revoked device".
+    expect(localStorage.getItem('scanner.device-token')).toBe('gate-token')
+
+    pasteCredential()
+    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>
+    expect(headers['X-Scanner-Token']).toBe('gate-token')
+
+    // Survives a reload — a gate device is paired once, not once per page load.
+    unmount()
+    cleanup()
+    render(<App />)
+    expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
+  })
+
+  it('treats a 401 as "pair the device", not as a rejected ticket, and keeps the scan queued', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'scanner device is not enrolled' }), { status: 401 }),
+    ))
+
+    render(<App />)
+    pasteCredential()
+
+    // The distinction that matters at a turnstile: the person in front of the
+    // operator has a perfectly good ticket, and "Rejected" is the wrong
+    // instruction. They land on the one screen they can act on, with the reason.
+    expect(await screen.findByRole('heading', { name: 'Pair this device' })).toBeDefined()
+    expect(screen.queryByRole('heading', { name: 'Rejected' })).toBeNull()
+    expect(await screen.findByText(/the ticket was not checked/i)).toBeDefined()
+
+    // The stale token is gone, so a reload does not retry it forever.
+    expect(localStorage.getItem('scanner.device-token')).toBeNull()
+
+    // And the occurrence is not lost. It was never recorded anywhere upstream,
+    // so discarding it would silently drop a real entry.
+    expect(await screen.findByText(/offline scan/i)).toBeDefined()
   })
 })

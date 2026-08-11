@@ -9,6 +9,10 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+const (
+	ScannerDeviceTokenScopes scannerDeviceTokenContextKey = "ScannerDeviceToken.Scopes"
+)
+
 // Defines values for ReconcileResultResult.
 const (
 	ReconcileResultResultConflict ReconcileResultResult = "conflict"
@@ -184,6 +188,18 @@ type TicketRefundCreate struct {
 
 // Ref defines model for Ref.
 type Ref = openapi_types.UUID
+
+// scannerDeviceTokenContextKey is the context key for ScannerDeviceToken security scheme
+type scannerDeviceTokenContextKey string
+
+// GetTicketQRParams defines parameters for GetTicketQR.
+type GetTicketQRParams struct {
+	// Exp Signature expiry, as Unix seconds.
+	Exp string `form:"exp" json:"exp"`
+
+	// Sig base64url HMAC over the order ref, the ticket id and the expiry.
+	Sig string `form:"sig" json:"sig"`
+}
 
 // RefundTicketsJSONRequestBody defines body for RefundTickets for application/json ContentType.
 type RefundTicketsJSONRequestBody = TicketRefundCreate

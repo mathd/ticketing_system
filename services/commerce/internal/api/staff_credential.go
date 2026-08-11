@@ -1,8 +1,9 @@
 package api
 
 import (
-	"crypto/subtle"
 	"net/http"
+
+	"ticketing/shared/httpx"
 )
 
 // staffWriteHeader carries the back office's commerce credential (TKT-194).
@@ -45,9 +46,9 @@ func (s *Server) staffOrInternal(r *http.Request) bool {
 		credentialMatches(r.Header.Get(staffWriteHeader), s.staffWriteToken)
 }
 
+// The body moved to shared/go/httpx (ai-review S9): five services were comparing
+// this same class of credential with `==`, and the fix was to give them all the
+// one implementation that was already right rather than a sixth copy of it.
 func credentialMatches(presented, configured string) bool {
-	if configured == "" || presented == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(presented), []byte(configured)) == 1
+	return httpx.CredentialMatches(presented, configured)
 }

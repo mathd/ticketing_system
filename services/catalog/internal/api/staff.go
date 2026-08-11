@@ -25,11 +25,19 @@ const invalidStaffCredentials = "invalid credentials"
 // without locking it — while handing the public-facing back-office process the
 // shared credential that also opens commerce's refunds and inventory's
 // operational holds. ADR-042 records the trade and names TKT-195 (rate limiting)
-// as the control that actually addresses submission volume.
+// as the control that actually addresses submission volume — installed in
+// ratelimit.go, and until ai-review S4 caught it, named here and nowhere else.
 func (s *Server) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
 	var in StaffCredentials
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid request body"})
+		return
+	}
+
+	// After the decode, because the identifier is the subject key; before the
+	// store call, because a bucket that fills only for accounts that EXIST turns
+	// the 429 into the account oracle the shared 401 exists to prevent.
+	if !s.allowStaffAuth(w, r, in.Identifier) {
 		return
 	}
 

@@ -189,9 +189,18 @@ func statusReplayRetention(fallback time.Duration) (time.Duration, error) {
 // Fail-fast, like every other config reader here: a malformed ring refuses startup
 // rather than surfacing as a verification failure long after the fact.
 func signingConfig() (*paymentstore.Keyring, error) {
-	id, secret := os.Getenv("JOURNAL_KEY_ID"), os.Getenv("JOURNAL_SIGNING_KEY")
-	if id == "" || secret == "" {
+	id := os.Getenv("JOURNAL_KEY_ID")
+	if id == "" {
 		return nil, errors.New("JOURNAL_KEY_ID and JOURNAL_SIGNING_KEY (>=16 bytes) required")
+	}
+	// The checked-in "local-development-journal-key" was an ACTIVE compose
+	// default until ai-review S5, so a stack with no env signed its money journal
+	// under a key that is in the repository — and the comment below already knew
+	// it was "exactly the low-entropy kind" an oracle would enjoy. Refused
+	// forever now, the same way the bearer tokens are (TKT-83).
+	secret, err := runtimecfg.RequiredCredential("JOURNAL_SIGNING_KEY", runtimecfg.RetiredJournalSigningKey)
+	if err != nil {
+		return nil, err
 	}
 	return paymentstore.NewKeyring(id, []byte(secret), os.Getenv("JOURNAL_HISTORICAL_KEYS"))
 }
@@ -250,7 +259,11 @@ func port() string {
 }
 
 func run() error {
-	internalToken, err := runtimecfg.InternalTokenFromEnv()
+	// Payments has its OWN credential (ai-review S8). It used to authenticate on
+	// INTERNAL_SERVICE_TOKEN, the one value every service holds — so a compromise
+	// of any of them opened charge, void, refund and partial refund. Commerce is
+	// the only caller and holds both; nothing else needs to reach this surface.
+	internalToken, err := runtimecfg.PaymentsTokenFromEnv()
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
 
@@ -6,7 +6,16 @@ import App from './App'
 // before the request, replay surfaced distinctly, offline scans queue and
 // reconcile, conflicts go to the operator — never the gate.
 
+// Every scan and reconciliation needs an enrolled device (ai-review S1). The
+// suites below are about SCAN behaviour, so they pair once here — otherwise each
+// of them would be re-asserting the pairing screen and its own subject not at
+// all. The pairing screen has its own tests, in App.test.tsx.
+beforeEach(() => {
+  localStorage.setItem('scanner.device-token', 'paired-device-token')
+})
+
 afterEach(() => {
+  localStorage.clear()
   cleanup()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()

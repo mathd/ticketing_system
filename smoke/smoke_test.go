@@ -43,6 +43,30 @@ var (
 	project    = env("SMOKE_COMPOSE_PROJECT", "ticketing-smoke")
 )
 
+// dsn builds a connection string for one service role against the stack's
+// PostgreSQL.
+//
+// The password comes from the environment because the roles no longer have one
+// equal to their name (ai-review S11). scripts/stack-env.sh generates a distinct
+// password per role per run and exports it as SMOKE_DB_<ROLE>_PASSWORD; the
+// default keeps a hand-run `go test -tags smoke` against a `make up` stack
+// working, since that stack's password lives in .env rather than in the shell.
+//
+// One helper rather than thirty-one format strings: the point of per-role
+// passwords is that they differ, and thirty-one literals is thirty-one places for
+// one of them to be wrong in a way that reads as "the database is down".
+func dsn(role, database string) string {
+	password := env("SMOKE_DB_"+strings.ToUpper(role)+"_PASSWORD", role)
+	return fmt.Sprintf("postgres://%s:%s@%s/%s", role, password, pgHostPort, database)
+}
+
+// containerDSN is dsn for a process running INSIDE the compose network, where
+// PostgreSQL answers on its service name rather than a published loopback port.
+func containerDSN(role, database string) string {
+	return fmt.Sprintf("postgres://%s:%s@postgres:5432/%s", role,
+		env("SMOKE_DB_"+strings.ToUpper(role)+"_PASSWORD", role), database)
+}
+
 // retry polls fn until it returns nil or the deadline passes.
 func retry(t *testing.T, d time.Duration, fn func() error) {
 	t.Helper()
@@ -215,13 +239,13 @@ func TestDBCredentialIsolation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	own, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/catalog", pgHostPort))
+	own, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
 	if err != nil {
 		t.Fatalf("catalog creds must reach catalog db: %v", err)
 	}
 	_ = own.Close(ctx)
 
-	cross, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/inventory", pgHostPort))
+	cross, err := pgx.Connect(ctx, dsn("catalog", "inventory"))
 	if err == nil {
 		_ = cross.Close(ctx)
 		t.Fatal("catalog creds connected to inventory db — boundary not enforced")
@@ -284,8 +308,10 @@ func TestMigrationsAppliedOutOfBand(t *testing.T) {
 		t.Run(service, func(t *testing.T) {
 			want := latestMigrationVersion(t, service)
 
-			conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://%s:%s@%s/%s",
-				service, service, pgHostPort, service))
+			// One database per service, connected as that service's own role
+			// (ADR-007). The password is no longer the role name (ai-review S11),
+			// so it comes through dsn like every other connection here.
+			conn, err := pgx.Connect(ctx, dsn(service, service))
 			if err != nil {
 				t.Fatalf("connect %s db: %v", service, err)
 			}
@@ -618,10 +644,14 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 	_ = exec.Command("docker", "rm", "-f", probe).Run()
 	out, err := exec.Command("docker", "run", "-d", "--name", probe,
 		"--network", project+"_default",
-		"-e", fmt.Sprintf("DATABASE_URL=postgres://catalog:catalog@postgres:5432/%s", probeDB),
+		"-e", "DATABASE_URL="+containerDSN("catalog", probeDB),
 		"-e", "NATS_URL=nats://nats:4222",
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		// The money surface has its own credential since ai-review S8. Supplied to
+		// every probe rather than only to commerce's: a probe exists to test one
+		// thing, and failing at configuration tests nothing.
+		"-e", "PAYMENTS_INTERNAL_TOKEN="+os.Getenv("SMOKE_PAYMENTS_INTERNAL_TOKEN"),
 		// TKT-191: catalog refuses to start without its staff-write credential.
 		// Supplied here so this probe still tests what it is about (that the
 		// server path does not migrate) rather than failing at configuration.
@@ -642,7 +672,7 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
-	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/%s", pgHostPort, probeDB))
+	conn, err := pgx.Connect(ctx, dsn("catalog", probeDB))
 	if err != nil {
 		t.Fatalf("connect %s: %v", probeDB, err)
 	}
@@ -690,10 +720,14 @@ func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
 	_ = exec.Command("docker", "rm", "-f", probe).Run()
 	out, err := exec.Command("docker", "run", "-d", "--name", probe,
 		"--network", project+"_default",
-		"-e", fmt.Sprintf("DATABASE_URL=postgres://commerce:commerce@postgres:5432/%s", probeDB),
+		"-e", "DATABASE_URL="+containerDSN("commerce", probeDB),
 		"-e", "NATS_URL=nats://nats:4222",
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		// The money surface has its own credential since ai-review S8. Supplied to
+		// every probe rather than only to commerce's: a probe exists to test one
+		// thing, and failing at configuration tests nothing.
+		"-e", "PAYMENTS_INTERNAL_TOKEN="+os.Getenv("SMOKE_PAYMENTS_INTERNAL_TOKEN"),
 		// TKT-194: commerce refuses to start without its staff-write credential,
 		// for the same reason catalog does — a commerce started without it
 		// answers every refund 404, which is indistinguishable from "no such
@@ -757,12 +791,12 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 	// migrate subcommand (ADR-022), never the server path.
 	if out, err := exec.Command("docker", "run", "--rm",
 		"--network", project+"_default",
-		"-e", fmt.Sprintf("DATABASE_URL=postgres://commerce:commerce@postgres:5432/%s", probeDB),
+		"-e", "DATABASE_URL="+containerDSN("commerce", probeDB),
 		project+"-commerce", "migrate").CombinedOutput(); err != nil {
 		t.Fatalf("migrate probe DB: %v: %s", err, out)
 	}
 
-	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/%s", pgHostPort, probeDB))
+	conn, err := pgx.Connect(ctx, dsn("commerce", probeDB))
 	if err != nil {
 		t.Fatalf("connect %s: %v", probeDB, err)
 	}
@@ -795,10 +829,14 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 	_ = exec.Command("docker", "rm", "-f", probe).Run()
 	out, err := exec.Command("docker", "run", "-d", "--name", probe,
 		"--network", project+"_default",
-		"-e", fmt.Sprintf("DATABASE_URL=postgres://commerce:commerce@postgres:5432/%s", probeDB),
+		"-e", "DATABASE_URL="+containerDSN("commerce", probeDB),
 		"-e", "NATS_URL=nats://nats:4222",
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
+		// The money surface has its own credential since ai-review S8. Supplied to
+		// every probe rather than only to commerce's: a probe exists to test one
+		// thing, and failing at configuration tests nothing.
+		"-e", "PAYMENTS_INTERNAL_TOKEN="+os.Getenv("SMOKE_PAYMENTS_INTERNAL_TOKEN"),
 		// TKT-194: commerce refuses to start without its staff-write credential,
 		// for the same reason catalog does — a commerce started without it
 		// answers every refund 404, which is indistinguishable from "no such
@@ -877,17 +915,35 @@ func TestMetricsIngested(t *testing.T) {
 }
 
 // TestServerRefusesToStartWithoutARealCredential: every service image fails
-// fast — before any dependency init — when INTERNAL_SERVICE_TOKEN is absent or
+// fast — before any dependency init — when its inbound credential is absent or
 // is the retired checked-in default (TKT-83). Black-box on the built images so
 // a service whose entrypoint stops calling the shared validator fails here, not
 // in a code-review comment. No DB/NATS env is provided on purpose: an error
 // mentioning anything but the credential means validation ran too late.
+//
+// Payments authenticates on PAYMENTS_INTERNAL_TOKEN rather than the shared value
+// since ai-review S8, and its own name in the refusal is the assertion: a
+// payments image that still accepted INTERNAL_SERVICE_TOKEN would pass a test
+// that only looked for "a credential error" and would have given the split back.
 func TestServerRefusesToStartWithoutARealCredential(t *testing.T) {
-	cases := []struct{ name, tokenEnv string }{
-		{"absent", ""},
-		{"retired-default", "INTERNAL_SERVICE_TOKEN=local-service-token"},
+	// The credential each image validates FIRST, and the retired literal it must
+	// refuse forever ("" where there is none to refuse).
+	credential := map[string]struct{ env, retired string }{
+		"catalog":   {"INTERNAL_SERVICE_TOKEN", "local-service-token"},
+		"inventory": {"INTERNAL_SERVICE_TOKEN", "local-service-token"},
+		"commerce":  {"INTERNAL_SERVICE_TOKEN", "local-service-token"},
+		"access":    {"INTERNAL_SERVICE_TOKEN", "local-service-token"},
+		"payments":  {"PAYMENTS_INTERNAL_TOKEN", ""},
 	}
 	for _, service := range migratedServices {
+		want, ok := credential[service]
+		if !ok {
+			t.Fatalf("%s has no declared startup credential — add it here rather than skipping it", service)
+		}
+		cases := []struct{ name, tokenEnv string }{{"absent", ""}}
+		if want.retired != "" {
+			cases = append(cases, struct{ name, tokenEnv string }{"retired-default", want.env + "=" + want.retired})
+		}
 		for _, tc := range cases {
 			t.Run(service+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
@@ -905,8 +961,8 @@ func TestServerRefusesToStartWithoutARealCredential(t *testing.T) {
 				if err == nil {
 					t.Fatalf("started without a real credential: %s", out)
 				}
-				if !strings.Contains(string(out), "INTERNAL_SERVICE_TOKEN") {
-					t.Fatalf("exit was not the credential error (validation ran too late?): %v: %s", err, out)
+				if !strings.Contains(string(out), want.env) {
+					t.Fatalf("exit was not %s's credential error (validation ran too late?): %v: %s", want.env, err, out)
 				}
 			})
 		}

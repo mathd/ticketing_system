@@ -66,6 +66,89 @@ func denyEncodedSeparators(next http.Handler) http.Handler {
 	})
 }
 
+// securityHeaders sets the response headers every page and every API answer
+// should carry, at the one place all of them pass through (ai-review S6).
+//
+// The gateway is the single public entry point (ADR-002), so this is the only
+// hop that sees the storefront, the back office, the scanner shell and all five
+// APIs — one middleware here beats the same three lines in two Astro
+// middlewares, an nginx.conf and five services, each free to drift.
+//
+// What is set, and why only this much:
+//
+//   - nosniff — the QR route serves attacker-influenced bytes as image/png and
+//     the JSON routes serve caller-supplied strings; content sniffing is what
+//     turns either into an executable document.
+//   - X-Frame-Options + CSP frame-ancestors — the seat picker and every staff
+//     form were frameable. Both are sent because the CSP directive obsoletes the
+//     header only for browsers that implement it.
+//
+// Deliberately NOT set here:
+//
+//   - A script/style CSP. It is the real defence-in-depth against the storefront
+//     XSS that web/storefront/src/lib/session.ts names as the assertion-theft
+//     path, and it cannot be added blind: Astro emits inline styles and hydration
+//     scripts, so a starter policy has to be verified per app with `make browser`
+//     before it stops being a way to break the storefront on deploy.
+//   - Referrer-Policy. The browser default is already strict-origin-when-cross-
+//     origin everywhere that matters, and setting it here would collide with the
+//     one page that sets its own. TKT-226 is the standing warning: `no-referrer`
+//     on the reset-password page 403'd every reset, because the origin gate reads
+//     that header. A gateway-wide referrer policy needs the browser gate, not a
+//     one-line guess.
+//   - HSTS. There is no TLS to pin to yet, and an HSTS header over plain HTTP is
+//     ignored by browsers — it belongs with the TLS termination that adds it.
+//
+// The values are filled in at WriteHeader time and only where the response has
+// none, which is what makes them DEFAULTS rather than an override. Setting them
+// up front instead looks simpler and is wrong: ReverseProxy ADDS the upstream's
+// headers to this same map, so an app answering `X-Frame-Options: SAMEORIGIN`
+// would ship both values and leave the browser to pick — the test pins this.
+var securityHeaderDefaults = []struct{ name, value string }{
+	{"X-Content-Type-Options", "nosniff"},
+	{"X-Frame-Options", "DENY"},
+	{"Content-Security-Policy", "frame-ancestors 'none'"},
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&securedWriter{ResponseWriter: w}, r)
+	})
+}
+
+type securedWriter struct {
+	http.ResponseWriter
+	applied bool
+}
+
+// Unwrap is what keeps http.ResponseController working through this wrapper —
+// the reverse proxy flushes streamed responses and hijacks upgrades through it,
+// and a wrapper without Unwrap silently turns both into errors.
+func (w *securedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *securedWriter) apply() {
+	if w.applied {
+		return
+	}
+	w.applied = true
+	h := w.Header()
+	for _, d := range securityHeaderDefaults {
+		if h.Get(d.name) == "" {
+			h.Set(d.name, d.value)
+		}
+	}
+}
+
+func (w *securedWriter) WriteHeader(code int) {
+	w.apply()
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *securedWriter) Write(b []byte) (int, error) {
+	w.apply()
+	return w.ResponseWriter.Write(b)
+}
+
 // edgeDeniedBody is the gateway's own refusal. It is deliberately distinguishable from
 // `http.NotFound`'s generic "404 page not found", which chi and the services also emit:
 // a test that wants to prove WHICH layer refused cannot do it with a body every layer
@@ -155,7 +238,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
-		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, denyEncodedSeparators(mux))),
+		Handler: obs.Middleware(serviceName, obs.RequestLogger(log, securityHeaders(denyEncodedSeparators(mux)))),
 	}
 	httpConfig.Apply(srv)
 

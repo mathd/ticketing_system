@@ -29,7 +29,7 @@ import (
 // Callers get the flag from runtimecfg.ResponseValidationFromEnv, which
 // defaults it on (TKT-125).
 func RequestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool) (http.Handler, error) {
-	return requestValidator(spec, next, log, validateResponses, nil)
+	return requestValidator(spec, next, log, validateResponses, nil, nil)
 }
 
 // RequestValidatorWithErrorHandler lets a service preserve an established
@@ -42,7 +42,24 @@ func RequestValidator(spec []byte, next http.Handler, log *slog.Logger, validate
 // 422 — an undeclared status, which is precisely the drift the response validator
 // exists to catch, reached through the one path that runs before it (TKT-157 ai-review).
 func RequestValidatorWithErrorHandler(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int)) (http.Handler, error) {
-	return requestValidator(spec, next, log, validateResponses, errorHandler)
+	return requestValidator(spec, next, log, validateResponses, errorHandler, nil)
+}
+
+// RequestValidatorWithSecurity adds an AuthenticationFunc for the contract's
+// declared security schemes.
+//
+// It exists because a `security:` declaration is only a claim until something
+// enforces it, and the enforcement belongs where the declaration is (ADR-009 §3):
+// a scheme declared in the document and checked only inside a handler is a scheme
+// a NEW operation can inherit without inheriting the check. Catalog already does
+// this with its own validator (openapi3filter.Options.AuthenticationFunc); this
+// exposes the same seam to the services that use the shared helper.
+//
+// The func returns an error to refuse. The refusal reaches errorHandler with
+// status 401, so a service decides its own representation there — access answers
+// a scanner device's 401 differently from a bad ticket's 422, deliberately.
+func RequestValidatorWithSecurity(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int), authenticate openapi3filter.AuthenticationFunc) (http.Handler, error) {
+	return requestValidator(spec, next, log, validateResponses, errorHandler, authenticate)
 }
 
 // ResponseValidator wraps next in response-drift enforcement only, for routers
@@ -135,7 +152,7 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 	})
 }
 
-func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int)) (http.Handler, error) {
+func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int), authenticate openapi3filter.AuthenticationFunc) (http.Handler, error) {
 	doc, router, err := load(spec)
 	if err != nil {
 		return nil, err
@@ -152,6 +169,9 @@ func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validate
 	// service that asks for a request-aware handler gets the newer one, and owns the
 	// difference.
 	options := &oapimiddleware.Options{}
+	if authenticate != nil {
+		options.Options.AuthenticationFunc = authenticate
+	}
 	if errorHandler != nil {
 		options.ErrorHandlerWithOpts = func(_ context.Context, err error, w http.ResponseWriter, r *http.Request, opts oapimiddleware.ErrorHandlerOpts) {
 			errorHandler(w, r, err.Error(), opts.StatusCode)

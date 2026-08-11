@@ -78,8 +78,26 @@ func write(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func (s *Server) authorized(r *http.Request) bool {
-	return s.credential != "" && r.Header.Get("X-Internal-Token") == s.credential
+	return httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.credential)
 }
+
+// refused answers a rejection whose cause the caller is entitled to read, and
+// otherwise a 500 with a static body.
+//
+// The arms that call it used to echo err.Error() unconditionally. Down each of
+// those paths the store returns BOTH hand-written refusals and, from any failing
+// statement, a wrapped pgx error naming tables and constraints — so the classifier
+// has to live here rather than in a comment claiming only sentinels arrive
+// (ai-review S10). store.IsRefusal is the mark; everything else is ours to log.
+func refused(w http.ResponseWriter, code int, err error) {
+	if store.IsRefusal(err) {
+		write(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	slog.Error("payments store error", "error", err)
+	write(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+}
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	if httpx.DecodeJSON(w, r, v, 1<<20) != nil {
 		write(w, 400, map[string]string{"error": "invalid body"})
@@ -141,7 +159,7 @@ func (s *Server) fact(w http.ResponseWriter, r *http.Request) {
 	}
 	e, replay, err := s.journal.Append(r.Context(), f)
 	if err != nil {
-		write(w, 400, map[string]string{"error": err.Error()})
+		refused(w, 400, err)
 		return
 	}
 	write(w, 200, map[string]any{"sequence": e.Sequence, "hash": store.Hex(e.EntryHash), "replay": replay})
@@ -215,7 +233,11 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.OrderID == uuid.Nil || in.OrganizerID == uuid.Nil || in.BuyerID == uuid.Nil || in.Amount < 0 || in.Currency != "EUR" {
+	// One idea of which currencies exist, shared with the journal
+	// (store.SupportedCurrencies). It was a hard-coded "EUR" here against a
+	// three-letter check in the journal, so the boundary and the durable record
+	// disagreed about the assumption they both rest on (ai-review S13).
+	if in.OrderID == uuid.Nil || in.OrganizerID == uuid.Nil || in.BuyerID == uuid.Nil || in.Amount < 0 || !store.SupportedCurrencies[in.Currency] {
 		write(w, 400, map[string]string{"error": "invalid charge"})
 		return
 	}
@@ -282,7 +304,7 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		SettlementDigest: store.PlanDigest(plan),
 	})
 	if err != nil {
-		write(w, 409, map[string]string{"error": err.Error()})
+		refused(w, 409, err)
 		return
 	}
 	if replay {

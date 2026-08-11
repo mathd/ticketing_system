@@ -5,9 +5,12 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -63,7 +66,41 @@ func subcommands() map[string]func([]string) error {
 		"verify-lifecycle":     func([]string) error { return verifyLifecycle() },
 		"seal-lifecycle-epoch": func([]string) error { return sealLifecycleEpoch() },
 		"set-lifecycle-mode":   setLifecycleMode,
+		"keygen":               func([]string) error { return keygen(os.Stdout) },
+		// Scanner device enrolment (ai-review S1). See scanner_devices.go for why
+		// this is a CLI rather than an HTTP endpoint.
+		"enrol-scanner":  enrolScanner,
+		"revoke-scanner": revokeScanner,
+		"list-scanners":  listScanners,
 	}
+}
+
+// keygen prints one fresh Ed25519 key pair as "<seed> <public key>", both in the
+// raw-standard base64 the key loaders and keyrings already read.
+//
+// It exists because the three signing keys shipped as ACTIVE Compose defaults
+// until ai-review S5, and removing a default is only half a fix: something has to
+// mint the replacement, in the same env-bootstrap loop that already mints the
+// bearer tokens (Makefile) and in the isolated smoke/browser stacks
+// (scripts/stack-env.sh). Neither is a place that can derive a public key from a
+// seed on its own, and `openssl genpkey -algorithm ED25519` is not portable
+// enough to be the platform's key generator — Go is already required to build
+// anything here.
+//
+// It serves both ACCESS_QR_* and ACCESS_LIFECYCLE_*: same algorithm, same
+// encoding, and the namespaces that must stay distinct live in the KID, which the
+// caller supplies. It deliberately prints only the pair and never touches the
+// environment or a file — what to name the key and where to put it is the
+// caller's decision, not this subcommand's.
+func keygen(out io.Writer) error {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s %s\n",
+		base64.RawStdEncoding.EncodeToString(priv.Seed()),
+		base64.RawStdEncoding.EncodeToString(pub))
+	return err
 }
 
 // signalContext cancels on interrupt, so a long backfill stops cleanly and
@@ -163,7 +200,26 @@ func run() error {
 	if commerceURL == "" {
 		return errors.New("COMMERCE_URL required")
 	}
-	signer, err := ticket.New(os.Getenv("ACCESS_QR_PRIVATE_KEY"), os.Getenv("ACCESS_QR_KID"))
+	// Required, with the checked-in dev seed refused forever (ai-review S5). It
+	// shipped as an ACTIVE compose default — an all-zero Ed25519 seed, in the
+	// repository — so any stack whose env was unset issued and verified QR codes
+	// under key material an attacker already has.
+	qrSeed, err := runtimecfg.RequiredCredential("ACCESS_QR_PRIVATE_KEY", runtimecfg.RetiredAccessQRSeed)
+	if err != nil {
+		return err
+	}
+	signer, err := ticket.New(qrSeed, os.Getenv("ACCESS_QR_KID"))
+	if err != nil {
+		return err
+	}
+	// The HMAC key for short-lived QR image links (ai-review S2). A DISTINCT
+	// value from the QR signing seed above, and not an optional one: this key
+	// proves "this URL was minted by us recently", the seed proves "this
+	// credential admits at a gate", and a service that let one key make both
+	// claims would spend a leak of the cheap one at the price of the expensive
+	// one. Required so a deployment cannot silently fall back to unsigned links,
+	// which is the state this finding is about.
+	qrLinkKey, err := runtimecfg.RequiredCredential("ACCESS_TICKET_LINK_KEY", "")
 	if err != nil {
 		return err
 	}
@@ -307,7 +363,7 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
-	r.Mount("/", accessapi.New(st, verifier, token).Router(log, validateResponses))
+	r.Mount("/", accessapi.New(st, verifier, token).WithQRLinkKey(qrLinkKey).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

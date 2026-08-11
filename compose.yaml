@@ -63,9 +63,20 @@ services:
     image: postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
     restart: unless-stopped
     environment:
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      # No committed password (ai-review S11). The superuser's was the literal
+      # "postgres" and each service role's was its own NAME, so every process on
+      # the developer's machine had superuser on the published port by typing the
+      # obvious thing. `make up` generates all six; the isolated stacks generate
+      # their own per run.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?no default is shipped - run 'make up' once to generate local database passwords}
+      # Read by deploy/postgres-init/01-databases.sh on first boot. The entrypoint
+      # runs *.sh with the environment available and *.sql without it, which is
+      # why that file is a script now.
+      CATALOG_DB_PASSWORD: ${CATALOG_DB_PASSWORD:?run 'make up' once to generate local database passwords}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:?run 'make up' once to generate local database passwords}
+      COMMERCE_DB_PASSWORD: ${COMMERCE_DB_PASSWORD:?run 'make up' once to generate local database passwords}
+      PAYMENTS_DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:?run 'make up' once to generate local database passwords}
+      ACCESS_DB_PASSWORD: ${ACCESS_DB_PASSWORD:?run 'make up' once to generate local database passwords}
     volumes:
       - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql
@@ -87,8 +98,6 @@ services:
     # file-backed JetStream store on a named volume: streams survive
     # container recreation (ADR-007 durability)
     command: ["-js", "-sd", "/data", "-m", "8222"]
-    ports:
-      - "127.0.0.1:${NATS_PORT:-4222}:4222"
     volumes:
       - natsdata:/data
     healthcheck:
@@ -128,10 +137,6 @@ services:
   lgtm:
     image: grafana/otel-lgtm:0.30.0@sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"   # Grafana UI
-      - "127.0.0.1:${OTLP_PORT:-4318}:4318"      # OTLP http (for local debugging)
-      - "127.0.0.1:${PROM_PORT:-9090}:9090"      # Prometheus query API (smoke asserts metrics)
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
       interval: 10s
@@ -143,7 +148,7 @@ services:
     <<: *migrate-job
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/catalog/cmd/catalog } }
     environment:
-      DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
+      DATABASE_URL: postgres://catalog:${CATALOG_DB_PASSWORD}@postgres:5432/catalog
 
   catalog:
     <<: *go-service
@@ -154,23 +159,19 @@ services:
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/catalog/cmd/catalog } }
     environment:
       <<: *go-env
-      DATABASE_URL: postgres://catalog:catalog@postgres:5432/catalog
+      DATABASE_URL: postgres://catalog:${CATALOG_DB_PASSWORD}@postgres:5432/catalog
       # TKT-191: the credential catalog checks on every unsafe contract operation.
       # Held by catalog and the back office and nothing else — deliberately NOT in
       # the shared &go-env anchor, which every service inherits.
       CATALOG_STAFF_WRITE_TOKEN: ${CATALOG_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
     # Catalog's internal surface is deliberately not routed through the gateway
     # (public edge), same as inventory's. Since TKT-210 that surface includes the
-    # cache kill-switch, which an operator and the smoke suite must reach, so
-    # catalog gets the loopback port every other service already publishes.
-    # 127.0.0.1 only: no new external exposure, no new credential.
-    ports: ["127.0.0.1:${CATALOG_PORT:-8090}:8080"]
 
   inventory-migrate:
     <<: *migrate-job
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/inventory/cmd/inventory } }
     environment:
-      DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
+      DATABASE_URL: postgres://inventory:${INVENTORY_DB_PASSWORD}@postgres:5432/inventory
 
   inventory:
     <<: *go-service
@@ -182,10 +183,14 @@ services:
     # The staff/internal surface (operational holds, staff availability) is deliberately
     # not routed through the gateway (public edge); localhost is the box-office/ops
     # access path in this testbed, and the smoke suite drives it here.
-    ports: ["127.0.0.1:${INVENTORY_PORT:-8091}:8080"]
+    #
+    # The MAPPING that provides that access moved to compose.direct-ports.yaml
+    # (ai-review S11). This file publishes the gateway and nothing else, so a
+    # deployment built from it does not inherit a loopback door into every
+    # internal surface; `make up` and both gate scripts add the overlay back.
     environment:
       <<: *go-env
-      DATABASE_URL: postgres://inventory:inventory@postgres:5432/inventory
+      DATABASE_URL: postgres://inventory:${INVENTORY_DB_PASSWORD}@postgres:5432/inventory
       HOLD_TTL: ${HOLD_TTL:-10m}
       CATALOG_URL: http://catalog:8080
 
@@ -193,7 +198,7 @@ services:
     <<: *migrate-job
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/commerce/cmd/commerce } }
     environment:
-      DATABASE_URL: postgres://commerce:commerce@postgres:5432/commerce
+      DATABASE_URL: postgres://commerce:${COMMERCE_DB_PASSWORD}@postgres:5432/commerce
 
   commerce:
     <<: *go-service
@@ -202,11 +207,13 @@ services:
       commerce-migrate:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/commerce/cmd/commerce } }
-    # Staff conversion entry point (see inventory ports note).
-    ports: ["127.0.0.1:${COMMERCE_PORT:-8092}:8080"]
     environment:
       <<: *go-env
-      DATABASE_URL: postgres://commerce:commerce@postgres:5432/commerce
+      DATABASE_URL: postgres://commerce:${COMMERCE_DB_PASSWORD}@postgres:5432/commerce
+      # Commerce is payments' one caller, so it is the one service that holds the
+      # money credential alongside the shared one (ai-review S8). It refuses to
+      # start if any two of its four credentials are equal.
+      PAYMENTS_INTERNAL_TOKEN: ${PAYMENTS_INTERNAL_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
       # TKT-194: the back office's credential, checked on the staff refund and on
       # nothing else. Held by commerce and the back office only — deliberately NOT
       # in the shared &go-env anchor.
@@ -235,7 +242,7 @@ services:
     <<: *migrate-job
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/payments/cmd/payments } }
     environment:
-      DATABASE_URL: postgres://payments:payments@postgres:5432/payments
+      DATABASE_URL: postgres://payments:${PAYMENTS_DB_PASSWORD}@postgres:5432/payments
 
   payments:
     <<: *go-service
@@ -244,14 +251,20 @@ services:
       payments-migrate:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/payments/cmd/payments } }
-    # Internal money surface, off the gateway by design (see inventory ports
-    # note): loopback is the ops/smoke access path in this testbed.
-    ports: ["127.0.0.1:${PAYMENTS_PORT:-8093}:8080"]
     environment:
       <<: *go-env
-      DATABASE_URL: postgres://payments:payments@postgres:5432/payments
+      DATABASE_URL: postgres://payments:${PAYMENTS_DB_PASSWORD}@postgres:5432/payments
+      # Payments authenticates its internal surface on THIS, not on the shared
+      # INTERNAL_SERVICE_TOKEN every service holds (ai-review S8). Commerce is the
+      # only caller and holds both; nothing else needs the money surface.
+      PAYMENTS_INTERNAL_TOKEN: ${PAYMENTS_INTERNAL_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
       JOURNAL_KEY_ID: local-v1
-      JOURNAL_SIGNING_KEY: ${JOURNAL_SIGNING_KEY:-local-development-journal-key}
+      # No default, and `make up` generates it (ai-review S5). It shipped as an
+      # ACTIVE checked-in default until then, so a stack with no env signed its
+      # money journal under a key that is public in this repository — and the
+      # binary now refuses that literal forever, the way it refuses the retired
+      # bearer token (TKT-83).
+      JOURNAL_SIGNING_KEY: ${JOURNAL_SIGNING_KEY:?run `make up` once to generate local signing keys}
       # Retired journal signing keys, "kid=<base64.RawStdEncoding secret>,..." — kept so
       # entries signed before a rotation stay verifiable (ADR-016 §Decision 8). Empty is
       # the single-key configuration this stack has always run. These are SECRETS, not
@@ -284,7 +297,7 @@ services:
     environment:
       # DDL only, so no lifecycle key material here: migrate cannot sign, and
       # giving it the seed would imply it could.
-      DATABASE_URL: postgres://access:access@postgres:5432/access
+      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access
 
   # Adopts pre-0003 lifecycle history into the signed chain (ADR-021 §D9).
   #
@@ -305,10 +318,10 @@ services:
       access-migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgres://access:access@postgres:5432/access
-      ACCESS_LIFECYCLE_PRIVATE_KEY: ${ACCESS_LIFECYCLE_PRIVATE_KEY:-AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA}
+      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access
+      ACCESS_LIFECYCLE_PRIVATE_KEY: ${ACCESS_LIFECYCLE_PRIVATE_KEY:?run `make up` once to generate local signing keys}
       ACCESS_LIFECYCLE_KID: ${ACCESS_LIFECYCLE_KID:-access-lifecycle/local-v1}
-      ACCESS_LIFECYCLE_PUBLIC_KEYS: ${ACCESS_LIFECYCLE_PUBLIC_KEYS:-access-lifecycle/local-v1=ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ}
+      ACCESS_LIFECYCLE_PUBLIC_KEYS: ${ACCESS_LIFECYCLE_PUBLIC_KEYS:?run `make up` once to generate local signing keys}
 
   access:
     <<: *go-service
@@ -321,30 +334,39 @@ services:
       access-lifecycle-backfill:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
-    # Internal refund surface, off the gateway by design (see inventory ports note):
-    # loopback is the ops/smoke access path in this testbed (TKT-157).
-    ports: ["127.0.0.1:${ACCESS_PORT:-8094}:8080"]
     environment:
       <<: *go-env
-      DATABASE_URL: postgres://access:access@postgres:5432/access
+      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access
       COMMERCE_URL: http://commerce:8080
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
-      # Development-only deterministic seed. Deployments must inject a distinct
-      # 32-byte Ed25519 seed through secret configuration.
-      ACCESS_QR_PRIVATE_KEY: ${ACCESS_QR_PRIVATE_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}
+      # No default: `make up` mints this pair per clone (ai-review S5). Until
+      # then an all-zero Ed25519 seed shipped as an ACTIVE default, so anyone
+      # could mint a QR payload that passed ed25519.Verify at the gate — which is
+      # what made the unauthenticated scan route (S1) redeem-anything rather than
+      # merely open. The PUBLIC keyring carries no default either, and that is not
+      # symmetry for its own sake: leaving the matching public key behind would
+      # keep the compromised seed a valid signer no matter how fresh the private
+      # one is.
+      ACCESS_QR_PRIVATE_KEY: ${ACCESS_QR_PRIVATE_KEY:?run `make up` once to generate local signing keys}
       ACCESS_QR_KID: ${ACCESS_QR_KID:-access-qr/local-v1}
-      # Comma-separated access-qr/<kid>=raw-base64-public-key entries. This
-      # development public key corresponds only to the all-zero local seed.
-      ACCESS_QR_PUBLIC_KEYS: ${ACCESS_QR_PUBLIC_KEYS:-access-qr/local-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik}
+      # Signs the short-lived QR IMAGE links the ticket bundle hands out
+      # (ai-review S2). Distinct from the QR seed on purpose — it proves a URL is
+      # fresh, not that a credential admits at a gate.
+      ACCESS_TICKET_LINK_KEY: ${ACCESS_TICKET_LINK_KEY:?no default is shipped - run 'make up' once to generate a local credential}
+      # Comma-separated access-qr/<kid>=raw-base64-public-key entries.
+      ACCESS_QR_PUBLIC_KEYS: ${ACCESS_QR_PUBLIC_KEYS:?run `make up` once to generate local signing keys}
       # Lifecycle trail signing (ADR-021 §D4). Distinct key MATERIAL from the QR
       # keys above, not merely a distinct name: the point is that leaking the
       # credential-signing key must not also authorize rewriting history. The
       # access-lifecycle/ namespace is enforced in code, so these can never be
       # crossed by configuration alone. Development-only seed; deployments inject
-      # their own.
-      ACCESS_LIFECYCLE_PRIVATE_KEY: ${ACCESS_LIFECYCLE_PRIVATE_KEY:-AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA}
+      # their own. No defaults since ai-review S5: the 0x01..0x20 counter seed
+      # that used to sit here made every "tamper-evident" claim in ADR-021 void
+      # against anyone holding this repository, because a forged checkpoint
+      # verified clean under `access verify-lifecycle`.
+      ACCESS_LIFECYCLE_PRIVATE_KEY: ${ACCESS_LIFECYCLE_PRIVATE_KEY:?run `make up` once to generate local signing keys}
       ACCESS_LIFECYCLE_KID: ${ACCESS_LIFECYCLE_KID:-access-lifecycle/local-v1}
-      ACCESS_LIFECYCLE_PUBLIC_KEYS: ${ACCESS_LIFECYCLE_PUBLIC_KEYS:-access-lifecycle/local-v1=ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ}
+      ACCESS_LIFECYCLE_PUBLIC_KEYS: ${ACCESS_LIFECYCLE_PUBLIC_KEYS:?run `make up` once to generate local signing keys}
       ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL: ${ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL:-60s}
       ACCESS_LIFECYCLE_FAILURE_THRESHOLD: ${ACCESS_LIFECYCLE_FAILURE_THRESHOLD:-3}
       ACCESS_LIFECYCLE_FAILURE_WINDOW: ${ACCESS_LIFECYCLE_FAILURE_WINDOW:-60s}

@@ -156,6 +156,17 @@ func problem(w http.ResponseWriter, err error) {
 		// Empty/oversized/whitespace seat set that slipped past the shape checks — a 400.
 		code = 400
 	}
+	// Only a MAPPED error may speak. Everything reaching the default is an
+	// unrecognized error on a public, credential-free route (/holds is reachable
+	// through the gateway by anyone), and in this store that is a wrapped pgx
+	// error — table, column and constraint names handed to the caller. The
+	// sentinels above are hand-written text and stay verbatim; the rest gets
+	// catalog's answer (writeStoreError): a static body, the real error logged.
+	if code == http.StatusInternalServerError {
+		slog.Error("inventory store error", "error", err)
+		write(w, code, map[string]string{"error": "internal error"})
+		return
+	}
 	write(w, code, map[string]string{"error": err.Error()})
 }
 func parseUUID(v string) (uuid.UUID, error) { return uuid.Parse(strings.TrimSpace(v)) }

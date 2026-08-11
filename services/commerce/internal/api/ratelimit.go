@@ -17,12 +17,11 @@ package api
 // else.
 
 import (
-	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
+	"ticketing/shared/httpx"
 	"ticketing/shared/ratelimit"
 
 	commercestore "ticketing/services/commerce/internal/store"
@@ -76,18 +75,66 @@ const (
 	customerSourceKeyCap  = 50_000
 )
 
+// The on-sale write budget (ai-review S7). POST /reservations and POST /orders
+// had no limit at all, so an unauthenticated caller scripting the gateway could
+// churn reservations at line rate — each one holding stock for HOLD_TTL. That is
+// inventory hoarding / denial of sale, the canonical on-sale bot, and for a
+// platform whose domain is high-contention on-sales it is the attack that
+// matters.
+//
+// Say what this is NOT before quoting it as the control. It is a token bucket,
+// not a queue: it bounds a scripted client against one replica, gives every
+// source its own budget by definition, and empties on restart. A real on-sale
+// defence is a waiting room plus per-buyer concurrency, and this repo has not
+// built one — ADR-054 records that, and the per-buyer hold cap below is the half
+// of it that does not need a queue.
+//
+// A SEPARATE budget from the customer-credential one, not a shared bucket. The
+// traffic shapes have nothing in common: a buyer signs in a handful of times and
+// reserves a handful of times, but the two are independent, and a shared bucket
+// would let checkout traffic lock people out of signing in — the same mistake
+// the credential/recovery split (below) already had to correct once.
+//
+// Sized for AGGREGATE traffic for the same structural reason the customer source
+// budget is: the storefront calls commerce server-side through the gateway, so
+// every buyer using the forms shares ONE source key (the storefront container).
+// What this really bounds is a caller scripting the gateway DIRECTLY, who gets
+// their own key. It must sit well above what a busy on-sale sends through the
+// storefront and well below what a bot needs to hoard an allocation.
+const (
+	checkoutSourceBurst  = 1200
+	checkoutSourceWindow = 15 * time.Minute
+	checkoutSourceKeyCap = 50_000
+)
+
 // customerLimiters is the enforcement state. Held on the Server so a test gets a
 // fresh one per case, and so the clock seam is injectable.
 type customerLimiters struct {
-	subject *ratelimit.Limiter
-	source  *ratelimit.Limiter
+	subject  *ratelimit.Limiter
+	source   *ratelimit.Limiter
+	checkout *ratelimit.Limiter
 }
 
 func newCustomerLimiters(now func() time.Time) *customerLimiters {
 	return &customerLimiters{
-		subject: ratelimit.New(customerSubjectBurst, customerSubjectWindow, customerSubjectKeyCap, now),
-		source:  ratelimit.New(customerSourceBurst, customerSourceWindow, customerSourceKeyCap, now),
+		subject:  ratelimit.New(customerSubjectBurst, customerSubjectWindow, customerSubjectKeyCap, now),
+		source:   ratelimit.New(customerSourceBurst, customerSourceWindow, customerSourceKeyCap, now),
+		checkout: ratelimit.New(checkoutSourceBurst, checkoutSourceWindow, checkoutSourceKeyCap, now),
 	}
+}
+
+// limitCheckoutSource is middleware for the on-sale write path. Source-keyed
+// only: neither operation has a subject that exists before the body is decoded,
+// and the per-BUYER bound these two really need is a concurrency cap on live
+// holds rather than a rate — see reserveConcurrencyCap.
+func (s *Server) limitCheckoutSource(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.lim().checkout.Allow(clientIP(r)) {
+			writeTooManyRequests(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // limitSource is middleware for the public customer routes. It keys on the client
@@ -157,36 +204,8 @@ func writeTooManyRequests(w http.ResponseWriter) {
 // two — advertising the looser one would send a buyer back too early.
 var retryAfterSeconds = strconv.Itoa(int(customerSubjectWindow.Seconds()) / customerSubjectBurst)
 
-// clientIP is the source key.
-//
-// X-Forwarded-For is trustworthy here, and only because of how it arrives: the
-// gateway's reverse proxy uses the Rewrite hook, which STRIPS the inbound
-// X-Forwarded-* headers before the hook runs, and SetXForwarded then writes the
-// connecting peer's address. A caller who forges the header through the gateway
-// has it discarded, not appended to — verified against the real proxy in
-// gateway/cmd/gateway/main_test.go.
-//
-// The last element is taken rather than the first, which matters if a future
-// ingress ever APPENDS instead of replacing: the earlier entries are then
-// caller-supplied and the last one is the only one the nearest proxy wrote.
-// Taking the first is the classic bypass.
-//
-// The residual, stated: this is only as good as the gateway being the sole
-// ingress. Commerce's own port is published in the Compose profiles, so anyone
-// who can reach it directly sets this header freely. That is a deployment
-// property, not something this function can enforce.
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		parts := strings.Split(fwd, ",")
-		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-			return last
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		// Not a host:port — use it whole rather than collapsing every such caller
-		// into one shared bucket, which would let one of them refuse the others.
-		return r.RemoteAddr
-	}
-	return host
-}
+// clientIP is the source key. The body moved to shared/go/httpx when catalog's
+// staff login needed the same key (ai-review S4); everything that made it correct
+// — the gateway strips inbound X-Forwarded-*, the LAST element is the one the
+// nearest proxy wrote — is documented there, along with the residual.
+func clientIP(r *http.Request) string { return httpx.ClientIP(r) }

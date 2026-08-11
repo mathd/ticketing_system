@@ -1,0 +1,56 @@
+# Direct loopback access to everything BEHIND the gateway (ai-review S11).
+#
+# Overlay, not the base file, and that is the whole point. compose.yaml is the
+# artifact a deployment starts from, and it used to publish PostgreSQL, NATS,
+# Grafana, Prometheus and all five services — so any process on the host reached
+# every `/internal/` surface directly, bypassing the gateway's edge-deny and
+# forging X-Forwarded-For for the rate limiters. Nothing about the platform
+# requires that: the gateway is the single public entry point (ADR-002), and it
+# is the only port compose.yaml publishes now.
+#
+# The access is still wanted for LOCAL work — psql, Grafana, and the smoke and
+# browser suites all drive the staff and internal surfaces directly, which is
+# deliberate (see the ports notes in compose.yaml). So it lives here and is opted
+# into by the three places that need it:
+#
+#   make up                 (dev convenience)
+#   scripts/smoke.sh        (the gate)
+#   scripts/browser.sh      (the browser-submit gate)
+#
+# Every mapping binds 127.0.0.1 exactly as before. The residual this does NOT
+# close is stated plainly: with this overlay on, a process on the developer's
+# machine still reaches every internal surface, and the database passwords in
+# .env are what stand between it and the data. What changed is that a deployment
+# built from compose.yaml no longer inherits the arrangement by default.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+  nats:
+    ports:
+      - "127.0.0.1:${NATS_PORT:-4222}:4222"
+
+  lgtm:
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"   # Grafana UI
+      - "127.0.0.1:${OTLP_PORT:-4318}:4318"      # OTLP http (for local debugging)
+      - "127.0.0.1:${PROM_PORT:-9090}:9090"      # Prometheus query API (smoke asserts metrics)
+
+  # The four staff/internal surfaces deliberately kept off the public edge, plus
+  # catalog's cache kill-switch. An operator and the smoke suite must reach them,
+  # and the gateway will not route them — so loopback is the access path.
+  catalog:
+    ports: ["127.0.0.1:${CATALOG_PORT:-8090}:8080"]
+
+  inventory:
+    ports: ["127.0.0.1:${INVENTORY_PORT:-8091}:8080"]
+
+  commerce:
+    ports: ["127.0.0.1:${COMMERCE_PORT:-8092}:8080"]
+
+  payments:
+    ports: ["127.0.0.1:${PAYMENTS_PORT:-8093}:8080"]
+
+  access:
+    ports: ["127.0.0.1:${ACCESS_PORT:-8094}:8080"]

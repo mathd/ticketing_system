@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -31,11 +32,41 @@ type Stripe struct {
 const stripeCallTimeout = 15 * time.Second
 
 // NewStripe builds the adapter. secretKey is the Basic-auth username (password empty).
+//
+// The scheme is checked here rather than trusted from the caller: the secret key
+// travels on EVERY request as Basic auth, so an http:// base URL puts a live
+// credential on the wire in cleartext. Production hard-codes https://api.stripe.com
+// today — this makes a later config change fail at boot instead of silently
+// downgrading. Loopback is exempt because that is where httptest serves from, and
+// nowhere else. A panic rather than an error: it is a boot-time misconfiguration
+// with no recovery, and the alternative is a running payments service.
 func NewStripe(secretKey, baseURL string, client *http.Client) *Stripe {
+	if !secureBaseURL(baseURL) {
+		panic("psp: Stripe base URL must be https:// (loopback http is allowed for tests); got " + baseURL)
+	}
 	if client == nil {
 		client = &http.Client{Timeout: stripeCallTimeout}
 	}
 	return &Stripe{secretKey: secretKey, baseURL: strings.TrimRight(baseURL, "/"), client: client}
+}
+
+// secureBaseURL reports whether baseURL may carry the secret key. Parsed rather
+// than prefix-matched: "https://evil@..." and a bare host both have to resolve to a
+// host before the loopback exemption can be judged, and net.ParseIP is what decides
+// loopback — not a string test for "localhost" that 127.0.0.1 fails.
+func secureBaseURL(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || net.ParseIP(host).IsLoopback()
 }
 
 // stripePI is the subset of a PaymentIntent we read. Unknown fields are ignored by

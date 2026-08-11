@@ -116,7 +116,7 @@ func TestGroupReservationDrawDownAndCheckout(t *testing.T) {
 	// Lazy give-back at expiry: force the deadline into the past (equivalent to waiting),
 	// then the unconverted 140 are publicly sellable — the confirmed 60 are not.
 	ctx := t.Context()
-	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	db, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,12 +168,12 @@ func TestGroupReservationDrawDownRacesPublicHolds(t *testing.T) {
 	}
 
 	ctx := t.Context()
-	blocker, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	blocker, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = blocker.Close(ctx) }()
-	monitor, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	monitor, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -140,3 +140,73 @@ func TestAuthenticateStaffRejectsOverlongPasswordAtTheContract(t *testing.T) {
 			e.store.staffAuthCalls)
 	}
 }
+
+// TKT-195 / ai-review S4. ADR-042 accepted a public login endpoint on the
+// explicit promise that submission volume would be bounded here. It was not:
+// shared/go/ratelimit documented itself as existing for this endpoint, the
+// handler comment named the ticket, and catalog installed no limiter at all.
+//
+// Three properties, and the second is the one worth the test:
+//
+//  1. the budget is finite — the 11th attempt on one identifier is refused;
+//  2. the refusal happens BEFORE the store lookup, so a 429 cannot be read as
+//     "this account exists". The fake counts calls, which is the only way to see
+//     the ordering from out here;
+//  3. it is keyed on the SUBJECT, so exhausting one identifier does not lock
+//     every other staff member out of the back office.
+func TestAuthenticateStaffIsRateLimitedPerIdentifier(t *testing.T) {
+	e := newEnv(t)
+	e.store.staffAccounts["ada@example.test"] = staffAuthResult{
+		account:  store.StaffAccount{ID: uuid.New(), OrganizerID: uuid.New(), Identifier: "ada@example.test", Role: "admin"},
+		password: "correct horse",
+	}
+
+	// An identifier that does NOT exist: the budget must fill for it exactly as
+	// it would for a real account.
+	const victim = "grind@example.test"
+	for i := range staffAuthSubjectBurst {
+		if rec := e.do("POST", "/staff/authenticate", StaffCredentials{Identifier: victim, Password: "guess"}); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status %d, want 401 while the budget holds", i+1, rec.Code)
+		}
+	}
+	spent := e.store.staffAuthCalls
+
+	rec := e.do("POST", "/staff/authenticate", StaffCredentials{Identifier: victim, Password: "guess"})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("attempt %d: status %d, want 429 — the budget is not bounded", staffAuthSubjectBurst+1, rec.Code)
+	}
+	if e.store.staffAuthCalls != spent {
+		t.Errorf("the store was consulted %d times past the budget: a 429 that costs a lookup is an account oracle",
+			e.store.staffAuthCalls-spent)
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Error("no Retry-After: a refused staff member is told nothing about when to come back")
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if body := decode[Error](t, rec); !strings.Contains(body.Error, "too many requests") {
+		t.Errorf("refusal body = %q", body.Error)
+	}
+
+	// A different subject is unaffected — the limiter must not be a lockout on
+	// the whole endpoint.
+	if rec := e.do("POST", "/staff/authenticate", StaffCredentials{
+		Identifier: "ada@example.test", Password: "correct horse"}); rec.Code != http.StatusOK {
+		t.Fatalf("a second identifier got status %d: the budget is not subject-scoped", rec.Code)
+	}
+}
+
+// Case is not a budget. The store's lookup key lowercases and trims, so a
+// limiter with its own idea of normalization would hand "Grind" and "grind" a
+// bucket each and an attacker would simply vary the case.
+func TestStaffAuthLimitIsCaseInsensitive(t *testing.T) {
+	e := newEnv(t)
+	for range staffAuthSubjectBurst {
+		e.do("POST", "/staff/authenticate", StaffCredentials{Identifier: "grind@example.test", Password: "guess"})
+	}
+	if rec := e.do("POST", "/staff/authenticate", StaffCredentials{
+		Identifier: "  GRIND@Example.TEST ", Password: "guess"}); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d, want 429 — a case variant bought a fresh budget", rec.Code)
+	}
+}

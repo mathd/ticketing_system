@@ -43,6 +43,15 @@ type Server struct {
 	catalogURL, inventoryURL, paymentsURL, token string
 	// The back office's commerce credential (TKT-194); see staff_credential.go.
 	staffWriteToken string
+	// paymentsToken opens payments' internal surface, and ONLY payments'
+	// (ai-review S8). `token` above still opens catalog's and inventory's; the
+	// money surface was split off it because one value shared by five services
+	// meant a compromise anywhere reached charge, void and refund.
+	//
+	// Empty falls back to `token`, which keeps every existing New caller and every
+	// test construction working unchanged. main.go never leaves it empty — a
+	// deployment that did would simply be back where it started, not broken.
+	paymentsToken string
 	// The HMAC key for customer checkout assertions (TKT-221); see assertion.go.
 	// Commerce-only, and main.go refuses to start when it equals either other
 	// credential.
@@ -82,6 +91,33 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 	s := &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
 	s.refunds = refunds.New(db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 	s.limiters = newCustomerLimiters(nil)
+	return s
+}
+
+// internalTokenFor picks the credential the destination accepts.
+//
+// Decided from the URL rather than at the call site, and that is deliberate:
+// `call` has seventeen callers across four files, several of which reach two
+// different services from adjacent lines. A per-call-site choice would be
+// seventeen chances to send the wrong credential, and the failure — the shared
+// token presented to payments — is a 401 on the money path, discovered in
+// production. One rule, applied once, cannot drift.
+//
+// Prefix match against the CONFIGURED payments base URL, which is the same
+// trimmed string every payments call is built from (s.paymentsURL + "/internal/…"),
+// so the match and the request cannot disagree.
+func (s *Server) internalTokenFor(url string) string {
+	if s.paymentsToken != "" && s.paymentsURL != "" && strings.HasPrefix(url, s.paymentsURL) {
+		return s.paymentsToken
+	}
+	return s.token
+}
+
+// WithPaymentsToken supplies the payments-only credential (ai-review S8). An
+// option rather than a New parameter for the same reason WithStaffWriteCredential
+// is one: New already takes six positional strings.
+func (s *Server) WithPaymentsToken(token string) *Server {
+	s.paymentsToken = token
 	return s
 }
 
@@ -129,8 +165,15 @@ func (s *Server) WithAccess(access string) *Server {
 // knowledge of which operations exist, and a hand-maintained list cannot detect
 // a route added after it was written.
 func (s *Server) registerRoutes(r chi.Router) {
-	r.Post("/reservations", s.reserve)
-	r.Post("/orders", s.checkout)
+	// The on-sale write path (ai-review S7). Grouped for the same reason the
+	// customer surface below is: a limiter attached route-by-route is a list
+	// someone has to remember to extend, and the next write added here would
+	// silently be the unlimited one.
+	r.Group(func(r chi.Router) {
+		r.Use(s.limitCheckoutSource)
+		r.Post("/reservations", s.reserve)
+		r.Post("/orders", s.checkout)
+	})
 	r.Get("/orders/{id}", s.getOrder)
 	// Public, credential-free, and deliberately NOT under /internal/ (TKT-220,
 	// ADR-049): the storefront that renders these forms holds no service token,
@@ -220,7 +263,7 @@ func (s *Server) call(ctx context.Context, method, url, key string, in any, inte
 		req.Header.Set("Idempotency-Key", key)
 	}
 	if internal {
-		req.Header.Set("X-Internal-Token", s.token)
+		req.Header.Set("X-Internal-Token", s.internalTokenFor(url))
 	}
 	resp, e := s.client.Do(req)
 	if e != nil {
@@ -1399,7 +1442,7 @@ func (s *Server) drawDownGroupReservation(w http.ResponseWriter, r *http.Request
 
 func (s *Server) staffSale(w http.ResponseWriter, r *http.Request, invPrefix, invAction, ns string) {
 	// Fail closed on an unconfigured token; a bad token reads as 404 like deliveryEmail.
-	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.token) {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
@@ -1517,7 +1560,7 @@ func (s *Server) staffSale(w http.ResponseWriter, r *http.Request, invPrefix, in
 }
 
 func (s *Server) deliveryEmail(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Internal-Token") != s.token {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.token) {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
@@ -1541,8 +1584,14 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var status string
-	var customer uuid.NullUUID
-	e = s.db.QueryRowContext(r.Context(), `SELECT status,customer_id FROM orders WHERE id=$1`, id).Scan(&status, &customer)
+	// customer_id is deliberately NOT selected, not merely omitted from the
+	// response: this read is public and answers for any order id, and order ids
+	// are derived from the organizer plus the checkout idempotency key, so the
+	// field told anyone who could recompute an id whether that order has an
+	// account behind it (ai-review S3). Nothing consumed it. The endpoint's
+	// remaining disclosure — status, for a guessed id — is TKT-222's, which
+	// makes the whole read authenticated and ownership-scoped.
+	e = s.db.QueryRowContext(r.Context(), `SELECT status FROM orders WHERE id=$1`, id).Scan(&status)
 	if e != nil {
 		code, message := persistenceReadProblem(e)
 		if code != http.StatusNotFound {
@@ -1551,12 +1600,5 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": message})
 		return
 	}
-	// `customer_id` is informational, NOT an ownership check: this read is public
-	// and answers for any order id. TKT-222 builds the authenticated,
-	// ownership-scoped read; do not mistake this field's presence for one.
-	out := map[string]any{"order_id": id, "status": status, "customer_id": nil}
-	if customer.Valid {
-		out["customer_id"] = customer.UUID
-	}
-	write(w, 200, out)
+	write(w, 200, map[string]any{"order_id": id, "status": status})
 }

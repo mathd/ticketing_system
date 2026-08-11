@@ -2720,6 +2720,21 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /**
+             * @description Rate limited (TKT-195, ADR-042). This status is what the description above promised and did not have: until ai-review S4 the control was named in two comments and installed nowhere, so an unauthenticated caller had an unbounded credential-submission channel.
+             *     Discloses nothing about the submitted identifier. The budget is spent BEFORE the account lookup, so the answer is identical for an identifier that exists and one that does not — a 429 that arrived only for real accounts would be a sharper oracle than the shared 401 this operation goes to some trouble to build.
+             */
+            429: {
+                headers: {
+                    "Cache-Control": components["headers"]["NeverCacheControl"];
+                    /** @description Seconds to wait before retrying */
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             500: components["responses"]["InternalError"];
         };
     };

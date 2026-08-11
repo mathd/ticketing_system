@@ -4,6 +4,12 @@ paths:
   /scans:
     post:
       operationId: scanTicket
+      # Requires an enrolled device (ai-review S1): X-Scanner-Token, issued by
+      # `access enrol-scanner` and held by ONE gate device. The scanner is a
+      # static SPA, so a credential shared by every phone would ship inside a
+      # public JavaScript bundle — and a lost phone has to be revocable on its
+      # own, not by rotating a secret every door depends on.
+      security: [{ScannerDeviceToken: []}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRequest'}}}}
       responses:
         # A 200 may also be ADR-021 §D6's degraded admission: a ticket whose
@@ -16,6 +22,17 @@ paths:
         # took its one degraded admission) | integrity_operator_controlled (an
         # organizer a human has flipped to deny).
         '409': {description: 'Rejected: already redeemed, or refused by the integrity degraded mode', content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
+        '401':
+          description: >
+            The scanner device is not enrolled, or its enrolment was revoked
+            (ai-review S1). Deliberately a DIFFERENT status from the 422 an
+            invalid ticket credential gets: a gate app has to tell "this phone is
+            not paired" from "turn this person away", and collapsing them sends an
+            operator to the wrong problem at the worst possible moment.
+
+            Unenrolled and revoked are one answer, though — that difference is for
+            an operator reading a log, not for whoever is holding the phone.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
         '422': {description: Invalid credential, content: {application/json: {schema: {$ref: '#/components/schemas/ScanRejected'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
@@ -25,9 +42,23 @@ paths:
       # not deciding: never a live admit/deny, always a per-occurrence result —
       # one bad occurrence never fails the batch.
       operationId: reconcileScans
+      # Same enrolment requirement as /scans, and this route needed it more: it
+      # rewrites a night's admission history in bulk (ai-review S1).
+      security: [{ScannerDeviceToken: []}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ReconcileRequest'}}}}
       responses:
         '200': {description: Per-occurrence reconciliation results, content: {application/json: {schema: {$ref: '#/components/schemas/ReconcileResponse'}}}}
+        '401':
+          description: >
+            The scanner device is not enrolled, or its enrolment was revoked
+            (ai-review S1). Deliberately a DIFFERENT status from the 422 an
+            invalid ticket credential gets: a gate app has to tell "this phone is
+            not paired" from "turn this person away", and collapsing them sends an
+            operator to the wrong problem at the worst possible moment.
+
+            Unenrolled and revoked are one answer, though — that difference is for
+            an operator reading a log, not for whoever is holding the phone.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
         '422': {description: Malformed envelope, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
@@ -60,15 +91,48 @@ paths:
   /orders/{ref}/tickets/{ticket}/qr.png:
     get:
       operationId: getTicketQR
+      description: >
+        Requires a live signature minted by GET /orders/{ref}/tickets (ai-review
+        S2). The bundle hands out a fresh, short-lived URL per ticket on every
+        load; a link that outlives its page answers 404, and so does a forged one.
+        The two are deliberately indistinguishable — a distinct status would tell
+        someone holding a dead link that the ticket behind it exists.
+
+        The order ref itself remains the bundle's bearer credential. Forwarding
+        "here are your tickets" is a feature; what this bounds is the IMAGE URL,
+        which is what ends up in a screenshot, a referrer header or a proxy log.
       parameters:
         - {$ref: '#/components/parameters/Ref'}
         - {name: ticket, in: path, required: true, schema: {type: string, format: uuid}}
+        - name: exp
+          in: query
+          required: true
+          description: Signature expiry, as Unix seconds.
+          schema: {type: string}
+        - name: sig
+          in: query
+          required: true
+          description: base64url HMAC over the order ref, the ticket id and the expiry.
+          schema: {type: string}
       responses:
         '200': {description: PNG QR artwork, content: {image/png: {schema: {type: string, format: binary}}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
 components:
+  securitySchemes:
+    # Declared so the contract says what the handlers enforce; the CHECK itself is
+    # inline in the handler rather than in a validator AuthenticationFunc, because
+    # it is a database lookup against enrolled devices rather than a comparison
+    # with a configured value (contrast catalog's staff-write scheme, ADR-043).
+    ScannerDeviceToken:
+      type: apiKey
+      in: header
+      name: X-Scanner-Token
+      description: >
+        One enrolled gate device's token. Issued once by `access enrol-scanner`,
+        stored hashed, and revocable per device — because the thing that goes
+        wrong is a phone walking out of the venue, not a secret expiring.
   parameters:
     Ref: {name: ref, in: path, required: true, schema: {type: string, format: uuid}}
   responses:

@@ -74,7 +74,7 @@ func loadExistingFact(ctx context.Context, tx *sql.Tx, f Fact) (Entry, bool, err
 	want, _ := canonical(f, existing.Sequence)
 	got, _ := canonical(existing.Fact, existing.Sequence)
 	if !hmac.Equal(want, got) {
-		return Entry{}, false, errors.New("fact id reused with different content")
+		return Entry{}, false, refuse("fact id reused with different content")
 	}
 	return existing, true, nil
 }
@@ -111,9 +111,80 @@ func sign(key, sum []byte) []byte {
 	return h.Sum(nil)
 }
 
+// Refusal marks an error whose TEXT is safe to hand back to the caller: it was
+// written here, in Go, and names nothing about the database.
+//
+// The handlers used to echo `err.Error()` on every 400 and 409 arm. Most of those
+// arms are reached by hand-written refusals, but not all of them — `Append` and
+// `BindRefundLeg` return a wrapped pgx error from any failing statement down the
+// same path, and that error carries table, column and constraint names. Marking
+// the safe ones is what lets a handler tell the two apart without also flattening
+// a useful refusal into "internal error" (ai-review S10).
+//
+// A wrapper rather than a sentinel to wrap WITH, so the message the caller reads
+// is unchanged from before.
+type Refusal struct{ error }
+
+// Unwrap keeps errors.Is working through the marker for anything ever wrapped in one.
+func (r Refusal) Unwrap() error { return r.error }
+
+func refuse(msg string) error { return Refusal{errors.New(msg)} }
+
+// IsRefusal reports whether err's text may be shown to the caller.
+func IsRefusal(err error) bool {
+	var r Refusal
+	return errors.As(err, &r)
+}
+
+// SupportedCurrencies is the set the money paths are proven for.
+//
+// A SET rather than a bare `== "EUR"` because the shape is what makes adding one
+// a decision instead of an edit: every code here has exponent 2 — one minor unit
+// is 1/100 — and this platform's integer minor units assume that everywhere,
+// silently. JPY has exponent 0 and KWD has 3, so admitting either without first
+// carrying a per-currency exponent through pricing, fees, splits, settlement and
+// every formatter is a 100x or 1000x error in the ledger, not a validation gap
+// (ai-review S13).
+//
+// The journal is where this is enforced because the journal is what has to be
+// true. The charge boundary hard-coded EUR while this accepted any three-letter
+// code, so the assumption was pinned at the outer edge and open at the durable
+// one — exactly backwards for an append-only trail nothing can go back and fix.
+var SupportedCurrencies = map[string]bool{"EUR": true}
+
+// moneyMovingTypes are the facts that assert money actually moved. They must
+// carry a POSITIVE amount: a zero-amount capture or refund is not a fact about
+// money, it is a caller-side quantity guard that failed open, and the journal is
+// append-only so it cannot be taken back (ai-review S13).
+//
+// Deliberately NOT every type. `order.created`, `order.completed` and
+// `order.failed` are legitimately zero — a comp ticket is a real order that moves
+// no money — and `payment.declined` / `payment.timeout` carry the amount that was
+// ATTEMPTED, which says nothing about what moved. Requiring positivity there
+// would refuse honest facts, and a journal that refuses honest facts gets worked
+// around.
+//
+// `order.exchange.reversed` / `.sold` are excluded for the same reason, and one
+// more. They are legitimately zero — exchange a comp, or exchange down to a
+// zero-price replacement with no retained fee, and one leg carries 0 — and they
+// are a PAIR that commerce writes SEQUENTIALLY (exchanges.go exchangeFacts).
+// Refusing the second leg after the first is already appended does not prevent a
+// bad trail, it CREATES one: a permanent unmatched reversal in an append-only
+// journal, which is worse than the zero it refused.
+var moneyMovingTypes = map[string]bool{
+	"payment.authorized": true,
+	"payment.captured":   true,
+	"payment.voided":     true,
+	"payment.refunded":   true,
+	"order.refunded":     true,
+}
+
 func validate(f Fact) error {
-	if f.ID == uuid.Nil || f.OrganizerID == uuid.Nil || f.BuyerID == uuid.Nil || f.Amount < 0 || len(f.Currency) != 3 {
-		return errors.New("invalid journal fact")
+	if f.ID == uuid.Nil || f.OrganizerID == uuid.Nil || f.BuyerID == uuid.Nil || f.Amount < 0 {
+		return refuse("invalid journal fact")
+	}
+	if !SupportedCurrencies[f.Currency] {
+		return refuse(fmt.Sprintf("currency %q is not supported: this platform's integer minor units assume exponent 2 (see store.SupportedCurrencies)", f.Currency))
 	}
 	// payment.voided / payment.refunded are compensating facts (ADR-016 §Decision 4): a
 	// void or refund is an appended entry, never a mutation of the authorize/capture it
@@ -128,19 +199,22 @@ func validate(f Fact) error {
 	// the provider does and what the trail records are not the same fact (ADR-039 §1).
 	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "order.refunded": true, "order.exchange.reversed": true, "order.exchange.sold": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
 	if !allowedTypes[f.Type] {
-		return errors.New("unsupported journal fact type")
+		return refuse("unsupported journal fact type")
 	}
 	for k := range f.Payload {
 		l := strings.ToLower(k)
 		if strings.Contains(l, "email") || strings.Contains(l, "name") || strings.Contains(l, "pan") || strings.Contains(l, "cvv") {
-			return fmt.Errorf("PII/payment field %q forbidden in journal", k)
+			return refuse(fmt.Sprintf("PII/payment field %q forbidden in journal", k))
 		}
 		if k != "order_id" {
-			return fmt.Errorf("payload field %q is not allowed", k)
+			return refuse(fmt.Sprintf("payload field %q is not allowed", k))
 		}
 	}
 	if _, err := uuid.Parse(f.Payload["order_id"]); err != nil {
-		return errors.New("valid order_id payload required")
+		return refuse("valid order_id payload required")
+	}
+	if moneyMovingTypes[f.Type] && f.Amount <= 0 {
+		return refuse(fmt.Sprintf("%s must carry a positive amount", f.Type))
 	}
 	return nil
 }
@@ -339,7 +413,7 @@ func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerp
 		return "", uuid.Nil, time.Time{}, false, err
 	}
 	if stored != fingerprint {
-		return "", uuid.Nil, time.Time{}, false, errors.New("idempotency key reused with different request")
+		return "", uuid.Nil, time.Time{}, false, refuse("idempotency key reused with different request")
 	}
 	inserted, _ := result.RowsAffected()
 	if inserted == 0 && !status.Valid {
@@ -354,7 +428,7 @@ func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerp
 		// to compare against and nothing to recover it from, so the retry's plan is
 		// adopted below -- the behaviour that preceded this check, and no worse.
 		if storedDigest.Valid && storedDigest.String != req.SettlementDigest {
-			return "", uuid.Nil, time.Time{}, false, errors.New("idempotency key reused with a different settlement plan")
+			return "", uuid.Nil, time.Time{}, false, refuse("idempotency key reused with a different settlement plan")
 		}
 		taken, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET lease_until=now()+interval '30 seconds', settlement_digest=COALESCE(settlement_digest,$3) WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL AND lease_until<=now()`, org, key, nullableDigest(req.SettlementDigest))
 		if err != nil {
@@ -362,7 +436,7 @@ func (j *Journal) BindOperation(ctx context.Context, org uuid.UUID, key, fingerp
 		}
 		rows, _ := taken.RowsAffected()
 		if rows == 0 {
-			return "", uuid.Nil, time.Time{}, false, errors.New("payment operation in progress")
+			return "", uuid.Nil, time.Time{}, false, refuse("payment operation in progress")
 		}
 	}
 	return status.String, factID.UUID, occurredAt.UTC().Truncate(time.Microsecond), status.Valid, nil

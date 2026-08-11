@@ -69,7 +69,7 @@ type RefundLeg struct {
 // provider outage becomes a database outage.
 func (j *Journal) BindRefundLeg(ctx context.Context, org uuid.UUID, sourceKey, refundKey string, amount int64, currency string) (RefundLeg, error) {
 	if amount <= 0 {
-		return RefundLeg{}, errors.New("refund amount must be positive")
+		return RefundLeg{}, refuse("refund amount must be positive")
 	}
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -100,10 +100,10 @@ func (j *Journal) BindRefundLeg(ctx context.Context, org uuid.UUID, sourceKey, r
 	}
 
 	if state.String != "captured" || captured.Int64 <= 0 {
-		return RefundLeg{}, errors.New("refund requires captured money")
+		return RefundLeg{}, refuse("refund requires captured money")
 	}
 	if opCurrency.String != currency {
-		return RefundLeg{}, errors.New("refund currency does not match the captured currency")
+		return RefundLeg{}, refuse("refund currency does not match the captured currency")
 	}
 	var whole int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind='refund'`, org, sourceKey).Scan(&whole); err != nil {

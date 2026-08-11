@@ -23,6 +23,36 @@ declare global {
 const scanURL = '/api/access/scans'
 const reconcileURL = '/api/access/scans/reconciliations'
 
+// The enrolled device's credential (ai-review S1).
+//
+// Held per DEVICE, in this browser's storage, and never compiled into the bundle:
+// this app is static and served to every phone that loads /scanner/, so a shared
+// token baked in at build time would be published, not secret. An operator enrols
+// a gate with `access enrol-scanner` and pairs it once, here.
+//
+// localStorage rather than the IndexedDB queue: it is read synchronously on every
+// request, it must survive a reload, and it is one string. Same origin, same
+// device-loss exposure as the queue itself — a lost phone is answered by revoking
+// that device, which is the whole reason the credential is per device.
+const deviceTokenKey = 'scanner.device-token'
+const scannerTokenHeader = 'X-Scanner-Token'
+
+function readDeviceToken(): string {
+  try {
+    return localStorage.getItem(deviceTokenKey)?.trim() ?? ''
+  } catch {
+    // Private-mode browsers can throw on access. An unpaired scanner is a
+    // legible state; a crashed one is not.
+    return ''
+  }
+}
+
+// scanHeaders is the ONE place the credential is attached, so a new call to the
+// access API cannot forget it and discover the omission as a 401 at a live door.
+function scanHeaders(token: string): HeadersInit {
+  return { 'Content-Type': 'application/json', [scannerTokenHeader]: token }
+}
+
 // Opened once per page: the durable occurrence queue (ADR-025 §D3). Every scan
 // commits its PENDING record here before the request leaves the device.
 const storePromise: Promise<OccurrenceStore> = openOccurrenceStore()
@@ -39,6 +69,8 @@ function App() {
   const [syncNote, setSyncNote] = useState('')
   const [cameraMessage, setCameraMessage] = useState('')
   const [cameraActive, setCameraActive] = useState(false)
+  const [deviceToken, setDeviceToken] = useState(readDeviceToken)
+  const [pairingInput, setPairingInput] = useState('')
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
@@ -88,7 +120,7 @@ function App() {
     try {
       const response = await fetch(scanURL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: scanHeaders(deviceToken),
         body: JSON.stringify({ qr_payload: record.qrPayload, occurrence_id: record.occurrenceId, occurred_at: record.occurredAt }),
       })
       const result: { decision?: string; reason?: string; scanned_at?: string; original_scan_at?: string; replay?: boolean } = await response.json()
@@ -103,6 +135,19 @@ function App() {
         } else {
           setOutcome({ kind: 'duplicate-response' })
         }
+      } else if (response.status === 401) {
+        // Not the ticket's fault, so not a rejection: the person at the turnstile
+        // has a perfectly good ticket and "Rejected" is the wrong instruction.
+        // Clearing the token drops straight to the pairing screen, which is the
+        // one thing the operator can act on, and the note says why they landed
+        // there.
+        //
+        // The occurrence stays QUEUED rather than marked synced — it was never
+        // recorded anywhere upstream, and discarding it because this device was
+        // unpaired would silently drop a real entry.
+        await store.markQueued(record.occurrenceId)
+        clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.')
+        await refreshQueued()
       } else {
         await store.markSynced(record.occurrenceId, result.reason ?? 'scan_failed')
         setOutcome({ kind: 'rejected', reason: result.reason ?? 'scan_failed', originalScanAt: result.original_scan_at })
@@ -124,11 +169,17 @@ function App() {
     try {
       const response = await fetch(reconcileURL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: scanHeaders(deviceToken),
         body: JSON.stringify({
           occurrences: queue.map((r) => ({ qr_payload: r.qrPayload, occurrence_id: r.occurrenceId, occurred_at: r.occurredAt })),
         }),
       })
+      if (response.status === 401) {
+        // The queue is untouched: an unpaired device must not discard a night of
+        // offline scans. Pair and sync again.
+        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.')
+        return
+      }
       if (!response.ok) return
       const data: { results?: Array<{ occurrence_id: string; result: string }> } = await response.json()
       let conflicts = 0
@@ -238,6 +289,68 @@ function App() {
       frame.current = requestAnimationFrame(() => { void detect() })
     }
     void detect()
+  }
+
+  // clearPairing sends the operator to the pairing screen with the reason they
+  // are seeing it. One destination for every "this device is not enrolled"
+  // answer, because two would eventually disagree about what to tell them.
+  const clearPairing = (reason: string) => {
+    try {
+      localStorage.removeItem(deviceTokenKey)
+    } catch {
+      // Storage unavailable; the in-memory clear below is what matters.
+    }
+    setDeviceToken('')
+    setSyncNote(reason)
+  }
+
+  const pairDevice = (event: React.FormEvent) => {
+    event.preventDefault()
+    const token = pairingInput.trim()
+    if (!token) return
+    try {
+      localStorage.setItem(deviceTokenKey, token)
+    } catch {
+      // Storage unavailable: pair for this session rather than refusing to work.
+      // The alternative is a gate that cannot open because a browser setting.
+    }
+    setDeviceToken(token)
+    setPairingInput('')
+  }
+
+  if (!deviceToken) {
+    return (
+      <main className="scanner">
+        <h1>Gate scanner</h1>
+        <section aria-label="Device pairing">
+          <h2>Pair this device</h2>
+          <p>
+            This scanner is not paired yet. An operator enrols it once with{' '}
+            <code>access enrol-scanner</code> and reads out the token it prints.
+          </p>
+          <form onSubmit={pairDevice}>
+            <label htmlFor="pairing-token">Pairing token</label>
+            <input
+              id="pairing-token"
+              type="password"
+              value={pairingInput}
+              onChange={(event) => setPairingInput(event.target.value)}
+              autoComplete="off"
+              placeholder="Paste the token from access enrol-scanner"
+            />
+            <div className="scanner-actions">
+              <button type="submit" disabled={!pairingInput.trim()}>Pair device</button>
+            </div>
+          </form>
+          {queuedCount > 0 && (
+            <p className="queue-note" role="status">
+              {`${queuedCount} offline scan${queuedCount > 1 ? 's' : ''} are still saved on this device and will sync once it is paired.`}
+            </p>
+          )}
+          {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
+        </section>
+      </main>
+    )
   }
 
   return (

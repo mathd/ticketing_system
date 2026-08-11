@@ -19,17 +19,23 @@ func TestCredentialsAreDistinctRefusesEveryCollidingPair(t *testing.T) {
 	const shared = "the-same-value"
 
 	for _, tc := range []struct {
-		name                              string
-		internal, staffWrite, assertion   string
-		wantMentions                      []string
+		name                                      string
+		internal, staffWrite, assertion, payments string
+		wantMentions                              []string
 	}{
-		{"staff write == internal", shared, shared, "assertion", []string{"COMMERCE_STAFF_WRITE_TOKEN", "INTERNAL_SERVICE_TOKEN"}},
-		{"assertion key == internal", shared, "staff", shared, []string{"COMMERCE_CUSTOMER_ASSERTION_KEY", "INTERNAL_SERVICE_TOKEN"}},
-		{"assertion key == staff write", "internal", shared, shared, []string{"COMMERCE_CUSTOMER_ASSERTION_KEY", "COMMERCE_STAFF_WRITE_TOKEN"}},
-		{"all three the same", shared, shared, shared, []string{"INTERNAL_SERVICE_TOKEN"}},
+		{"staff write == internal", shared, shared, "assertion", "payments", []string{"COMMERCE_STAFF_WRITE_TOKEN", "INTERNAL_SERVICE_TOKEN"}},
+		{"assertion key == internal", shared, "staff", shared, "payments", []string{"COMMERCE_CUSTOMER_ASSERTION_KEY", "INTERNAL_SERVICE_TOKEN"}},
+		{"assertion key == staff write", "internal", shared, shared, "payments", []string{"COMMERCE_CUSTOMER_ASSERTION_KEY", "COMMERCE_STAFF_WRITE_TOKEN"}},
+		// The fourth credential's three pairs (ai-review S8). Enumerated for the
+		// same reason the others are: the one left out of this table is the one
+		// whose separation is never verified.
+		{"payments == internal", shared, "staff", "assertion", shared, []string{"PAYMENTS_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"}},
+		{"payments == staff write", "internal", shared, "assertion", shared, []string{"PAYMENTS_INTERNAL_TOKEN", "COMMERCE_STAFF_WRITE_TOKEN"}},
+		{"payments == assertion key", "internal", "staff", shared, shared, []string{"PAYMENTS_INTERNAL_TOKEN", "COMMERCE_CUSTOMER_ASSERTION_KEY"}},
+		{"all four the same", shared, shared, shared, shared, []string{"INTERNAL_SERVICE_TOKEN"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := credentialsAreDistinct(tc.internal, tc.staffWrite, tc.assertion)
+			err := credentialsAreDistinct(tc.internal, tc.staffWrite, tc.assertion, tc.payments)
 			if err == nil {
 				t.Fatal("a colliding pair was accepted — the separation boundary is gone while looking configured")
 			}
@@ -46,8 +52,8 @@ func TestCredentialsAreDistinctRefusesEveryCollidingPair(t *testing.T) {
 	}
 }
 
-func TestCredentialsAreDistinctAcceptsThreeDifferentValues(t *testing.T) {
-	if err := credentialsAreDistinct("internal", "staff-write", "assertion-key"); err != nil {
-		t.Fatalf("three distinct credentials must be accepted: %v", err)
+func TestCredentialsAreDistinctAcceptsFourDifferentValues(t *testing.T) {
+	if err := credentialsAreDistinct("internal", "staff-write", "assertion-key", "payments"); err != nil {
+		t.Fatalf("four distinct credentials must be accepted: %v", err)
 	}
 }

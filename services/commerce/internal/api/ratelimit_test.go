@@ -371,3 +371,33 @@ func TestTheRecoveryBudgetStillLimitsOnItsOwn(t *testing.T) {
 		t.Fatalf("status = %d after spending the recovery budget, want 429 — one address can be mail bombed", rec.Code)
 	}
 }
+
+// ai-review S7 / ADR-055. The on-sale writes had no budget at all, so a caller
+// scripting the gateway could churn reservations at line rate — each holding
+// stock for HOLD_TTL. That is denial of sale, and for this domain it is the
+// attack that matters.
+//
+// Two properties. The budget is finite, and it is SEPARATE from the
+// customer-credential budget: sharing one bucket would let checkout traffic lock
+// buyers out of signing in, which is the mistake ADR-051 already had to correct
+// once between credential and recovery.
+func TestOnSaleWritesAreRateLimitedSeparatelyFromSignIn(t *testing.T) {
+	s := &Server{}
+	s.WithClock(func() time.Time { return time.Unix(0, 0) })
+
+	ip := "203.0.113.7"
+	for i := range checkoutSourceBurst {
+		if !s.lim().checkout.Allow(ip) {
+			t.Fatalf("attempt %d refused while the budget holds", i+1)
+		}
+	}
+	if s.lim().checkout.Allow(ip) {
+		t.Fatal("the checkout budget is not bounded")
+	}
+
+	// The credential surface is untouched by an exhausted checkout budget. A
+	// buyer whose reservations were throttled must still be able to sign in.
+	if !s.lim().source.Allow(ip) {
+		t.Error("an exhausted checkout budget also refused the customer-credential surface")
+	}
+}

@@ -445,8 +445,10 @@ The key **id** only, never anything derived from the key. An earlier draft of th
 truncated HMAC of the key as a "fingerprint" so operators could compare it; that was withdrawn
 because a deterministic tag over a fixed public message is an **offline oracle** for guessing a
 symmetric secret — anyone who can read logs could test candidate keys — and nothing here requires
-`JOURNAL_SIGNING_KEY` to be high-entropy (the development default is a readable string). Do not
-reintroduce a key-derived value into logs or metrics.
+`JOURNAL_SIGNING_KEY` to be high-entropy. Do not reintroduce a key-derived value into logs or
+metrics. (The readable development default this once warned about is gone: ai-review S5 removed
+every checked-in signing-key default, `make up` generates one per clone, and the binary refuses
+the retired literal forever.)
 
 **To retire** a key, drop its entry from `JOURNAL_HISTORICAL_KEYS` — but only once **no retained
 entry references it**, including backups and archives expected to stay auditable. Retiring a key
@@ -867,6 +869,40 @@ both per checkout).
   list is one entry.
 - The token authenticates a **shared machine credential**. There is no operator identity here and no
   durable record of who toggled what.
+
+## Scanner device enrolment (ai-review S1)
+
+`POST /api/access/scans` and `/scans/reconciliations` admit only **enrolled gate
+devices**. Each device holds its own token; there is no shared scanner secret, because
+the scanner is a static SPA and anything baked into it ships to every phone that loads
+`/scanner/`.
+
+```
+access enrol-scanner <organizer-id> "north gate"   # prints the token ONCE
+access list-scanners <organizer-id>                # live + revoked, with last-seen
+access revoke-scanner <device-id>                  # the answer to a lost phone
+```
+
+Run them in the access container: `docker compose exec access /app enrol-scanner …`.
+
+The token is printed once and stored **hashed** (SHA-256), so it cannot be read back
+out of the database. An operator who loses it revokes the device and enrols a new one —
+which is the correct workflow anyway, and the reason the credential is per device.
+
+**Pairing.** Open `/scanner/` on the device; an unpaired scanner shows a pairing screen
+instead of the scan form. Paste the token. It is kept in that browser's `localStorage`
+and survives reloads.
+
+**What an operator sees when it goes wrong.** A revoked or unpaired device gets `401`
+and the app returns to the pairing screen with the reason — never the ticket-rejection
+screen. That distinction is deliberate: the person at the turnstile has a perfectly good
+ticket, and "Rejected" would be the wrong instruction. Offline scans already queued on
+the device are **kept**, not discarded, and sync once it is paired again.
+
+**What this does and does not constrain** (ADR-021 — name the adversary). It stops a
+caller who does not hold an enrolled device's token from admitting, redeeming or
+rewriting scan history. It constrains nobody with write access to the access database,
+who can enrol their own device.
 
 ## Conventions
 

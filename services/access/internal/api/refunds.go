@@ -26,7 +26,7 @@ type ticketRefundRequest struct {
 }
 
 func (s *Server) refundTickets(w http.ResponseWriter, r *http.Request) {
-	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.token) {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}

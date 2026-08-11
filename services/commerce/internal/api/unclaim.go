@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 
 	commercestore "ticketing/services/commerce/internal/store"
+
+	"ticketing/shared/httpx"
 )
 
 // unclaimOrder detaches a completed order from the account that claimed it
@@ -27,7 +29,7 @@ import (
 // 404 rather than 401 for a bad credential, matching every other internal
 // operation here: the service does not confirm the route exists.
 func (s *Server) unclaimOrder(w http.ResponseWriter, r *http.Request) {
-	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.token) {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}

@@ -90,6 +90,27 @@ func (c Database) Apply(db *sql.DB) {
 // refuses it forever so stale automation cannot keep authenticating with it.
 const retiredInternalToken = "local-service-token"
 
+// The signing keys that shipped as ACTIVE Compose defaults until ai-review S5.
+// TKT-83 solved exactly this problem for the bearer tokens — no default, fail
+// fast, refuse the retired literal forever — and these three were left out of
+// that fix, so a stack whose env was unset booted silently on key material that
+// is in the repository:
+//
+//   - a forged QR passed ed25519.Verify at the gate, which is what made the
+//     unauthenticated scan route (S1) trivially exploitable rather than merely
+//     open;
+//   - a forged lifecycle checkpoint passed `access verify-lifecycle`, so the
+//     integrity claim ADR-021 makes verified against an attacker's own chain.
+//
+// They are refused here rather than deleted quietly: a .env written before this
+// change still holds them, and a value that is public in git history must never
+// silently keep working. Each is the exact literal that was in compose.yaml.
+const (
+	RetiredJournalSigningKey   = "local-development-journal-key"
+	RetiredAccessQRSeed        = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	RetiredAccessLifecycleSeed = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+)
+
 // RequiredCredential validates one startup credential: present, and not the
 // retired checked-in literal it replaced. Entrypoints call it before touching
 // any dependency so a misconfigured deployment fails fast instead of timing
@@ -133,6 +154,37 @@ func RequiredCredential(envVar, retiredDefault string) (string, error) {
 		// every outbound authenticated request at runtime, which is precisely the
 		// fail-fast contract this function exists to keep (ai-review pass 3).
 		return "", fmt.Errorf("%s contains a character that cannot appear in an HTTP header value", envVar)
+	}
+	return token, nil
+}
+
+// PaymentsTokenEnv is the credential that opens the payments service's internal
+// surface — every charge, void, refund and partial refund.
+//
+// Split from INTERNAL_SERVICE_TOKEN by ai-review S8. That one value is held by
+// all five services from one Compose anchor, so a compromise anywhere — a service
+// process, a smoke-suite config, a shell history — yielded the whole platform's
+// MONEY surface with no per-organizer scoping. The staff write tokens (TKT-191,
+// TKT-194) had already established the shape: one credential, one thing it opens.
+//
+// This is a reduction, not a solution. Commerce still holds both values, so
+// compromising commerce still reaches payments; what changes is that compromising
+// catalog, inventory, access or the gateway no longer does. Per-caller credentials
+// or mTLS is the finish, and it is not this.
+const PaymentsTokenEnv = "PAYMENTS_INTERNAL_TOKEN"
+
+// PaymentsTokenFromEnv validates the payments-only credential and refuses a value
+// equal to the shared one — a configuration where they match looks configured and
+// restores exactly the coupling the split removed.
+func PaymentsTokenFromEnv() (string, error) {
+	token, err := RequiredCredential(PaymentsTokenEnv, "")
+	if err != nil {
+		return "", err
+	}
+	if shared := os.Getenv("INTERNAL_SERVICE_TOKEN"); shared != "" && token == shared {
+		return "", fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
+			"so a compromise elsewhere does not reach the money surface, and an identical value removes "+
+			"that boundary while looking configured", PaymentsTokenEnv)
 	}
 	return token, nil
 }

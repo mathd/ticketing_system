@@ -32,7 +32,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # `make up`: the in-Docker scanner build is broken (TKT-227), and this gate must
 # not be blocked on it. Same images, same wiring, same gateway — only the build
 # source differs, and none of what this gate checks lives in the build.
-COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.onsale-load.yaml" -f "$ROOT/compose.smoke.yaml")
+# compose.direct-ports.yaml: see the note in scripts/smoke.sh (ai-review S11).
+COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.direct-ports.yaml" -f "$ROOT/compose.onsale-load.yaml" -f "$ROOT/compose.smoke.yaml")
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 
 require_artifacts() {

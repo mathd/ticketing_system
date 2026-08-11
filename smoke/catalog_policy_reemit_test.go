@@ -71,7 +71,7 @@ func runReemitPolicies(t *testing.T) {
 	t.Helper()
 	out, err := exec.Command("docker", "run", "--rm",
 		"--network", project+"_default",
-		"-e", "DATABASE_URL=postgres://catalog:catalog@postgres:5432/catalog",
+		"-e", "DATABASE_URL="+containerDSN("catalog", "catalog"),
 		"-e", "NATS_URL=nats://nats:4222",
 		project+"-catalog", "reemit-policies").CombinedOutput()
 	if err != nil {
@@ -81,7 +81,7 @@ func runReemitPolicies(t *testing.T) {
 
 func accessConn(t *testing.T, ctx context.Context) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://access:access@%s/access", pgHostPort))
+	conn, err := pgx.Connect(ctx, dsn("access", "access"))
 	if err != nil {
 		t.Fatalf("connect access db: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestPolicyReemitDoesNotReprovisionInventory(t *testing.T) {
 	defer cancel()
 
 	slotID := publishMultiSlot(t)
-	inv, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	inv, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatalf("connect inventory db: %v", err)
 	}

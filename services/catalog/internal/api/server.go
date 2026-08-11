@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -32,6 +33,8 @@ import (
 	apispec "ticketing/services/catalog/api"
 	"ticketing/services/catalog/internal/events"
 	"ticketing/services/catalog/internal/store"
+
+	"ticketing/shared/httpx"
 )
 
 // SupportedLocales is the platform's live locale set — data, not schema
@@ -105,6 +108,11 @@ type Server struct {
 	// (TKT-191). Deliberately a different, catalog-only value — see the
 	// CatalogStaffWriteCredential security scheme and ADR-042.
 	staffWriteCredential string
+	// limiters bound the public staff-login surface (TKT-195). Reached through
+	// lim(), never directly: a nil here must mean "build the real ones", not
+	// "allow everything". See ratelimit.go.
+	limiters *staffAuthLimiters
+	limOnce  sync.Once
 }
 
 // staffWriteSecurityScheme is the name in the contract; staffWriteHeader is the
@@ -263,7 +271,7 @@ func guardInternalSurface(s *Server, next http.Handler) http.Handler {
 // of the guard so a second accepted credential can be expressed as an OR without
 // duplicating the comparison.
 func (s *Server) internalAuthorizedRequest(r *http.Request) bool {
-	return s.internalCredential != "" && r.Header.Get("X-Internal-Token") == s.internalCredential
+	return httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.internalCredential)
 }
 
 // staffMayReadOperatorChannels is TKT-236's single, deliberately narrow
@@ -348,7 +356,7 @@ func (s *Server) staffMayReadOperatorChannels(r *http.Request) bool {
 }
 
 func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.internalCredential) {
 		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return
 	}
@@ -369,7 +377,7 @@ func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.internalCredential) {
 		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return
 	}
@@ -396,7 +404,7 @@ func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request)
 // the published-only lookup above 404s those by design), or a festival capacity
 // group, which inventory skips rather than mistakes for a dead slot.
 func (s *Server) getPoolOfferState(w http.ResponseWriter, r *http.Request) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.internalCredential) {
 		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return
 	}
@@ -430,7 +438,7 @@ const reconcileDefaultPinPage = 100
 // cursor-driven so an operator run drains it without ever holding the whole table. Returns
 // EVERY pin namespace — the reconciler decides what `hold:*` means, catalog does not.
 func (s *Server) listSeatMapPins(w http.ResponseWriter, r *http.Request) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.internalCredential) {
 		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return
 	}
@@ -475,7 +483,7 @@ type batchPinRequest struct {
 }
 
 func (s *Server) decodeBatchPin(w http.ResponseWriter, r *http.Request) (store.BatchPinInput, bool) {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.internalCredential) {
 		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return store.BatchPinInput{}, false
 	}

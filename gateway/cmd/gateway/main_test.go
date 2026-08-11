@@ -175,3 +175,53 @@ func TestAForgedXForwardedForDoesNotReachTheUpstream(t *testing.T) {
 		})
 	}
 }
+
+// The headers must reach BOTH a proxied answer and the gateway's own refusal —
+// a middleware installed inside the mux would cover only one of them, and the
+// refusal path is exactly where a framed page would be served from a 404.
+//
+// The upstream here sets one of the three itself, which pins the override
+// direction: what the application says wins over the blanket default, because a
+// page that needs SAMEORIGIN framing must be able to say so without editing the
+// gateway.
+func TestSecurityHeadersOnEveryAnswer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/inventory/internal/", http.HandlerFunc(edgeDenied))
+	mux.Handle("/api/inventory/", apiProxy(upstreamURL, "/api/inventory/", true))
+	handler := securityHeaders(denyEncodedSeparators(mux))
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	for _, tc := range []struct{ name, path, wantFrame string }{
+		{"proxied answer", "/api/inventory/holds", "SAMEORIGIN"},
+		{"edge refusal", "/api/inventory/internal/holds", "DENY"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := srv.Client().Get(srv.URL + tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+			if got := resp.Header.Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+				t.Errorf("Content-Security-Policy = %q, want frame-ancestors 'none'", got)
+			}
+			if got := resp.Header.Values("X-Frame-Options"); len(got) != 1 || got[0] != tc.wantFrame {
+				t.Errorf("X-Frame-Options = %v, want [%s]", got, tc.wantFrame)
+			}
+		})
+	}
+}

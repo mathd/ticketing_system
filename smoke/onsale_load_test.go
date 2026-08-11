@@ -183,7 +183,7 @@ func checkoutAttempt(t *testing.T, runID, slot string, quantity int) func(loadte
 
 func inventoryAdminConn(t *testing.T) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(t.Context(), fmt.Sprintf("postgres://postgres:postgres@%s/inventory", pgHostPort))
+	conn, err := pgx.Connect(t.Context(), dsn("postgres", "inventory"))
 	if err != nil {
 		t.Fatalf("admin connect: %v", err)
 	}

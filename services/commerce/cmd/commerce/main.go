@@ -134,6 +134,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The payments-only credential (ai-review S8). Commerce is payments' one
+	// caller, so this is where the split is spent: commerce holds both values and
+	// nothing else holds this one, which means a compromise of catalog, inventory,
+	// access or the gateway no longer reaches charge, void or refund. Required
+	// rather than optional-with-fallback — a fallback is how a deployment ends up
+	// back on the shared token without anyone noticing.
+	paymentsToken, err := runtimecfg.RequiredCredential(runtimecfg.PaymentsTokenEnv, "")
+	if err != nil {
+		return err
+	}
 	// Three credentials with three blast radii are only three credentials if they
 	// hold three different values, and nothing else in the system compares them.
 	//
@@ -148,7 +158,7 @@ func run() error {
 	// that, " secret " and "secret" would be one credential on the wire while
 	// differing here (TKT-191 ai-review pass 2). The narrow claim is the true
 	// one — no two DISTINCT accepted values arrive identical at a server.
-	if err := credentialsAreDistinct(token, staffWriteToken, assertionKey); err != nil {
+	if err := credentialsAreDistinct(token, staffWriteToken, assertionKey, paymentsToken); err != nil {
 		return err
 	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
@@ -222,6 +232,7 @@ func run() error {
 	// refunds through this server's own refund unit, so both callers share one money path.
 	publicURL := os.Getenv("PUBLIC_BASE_URL")
 	srvHandler := commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
+		WithPaymentsToken(paymentsToken).
 		WithStaffWriteCredential(staffWriteToken).
 		WithCustomerAssertionKey(assertionKey).
 		WithAccess(os.Getenv("ACCESS_URL")).
@@ -294,11 +305,13 @@ func run() error {
 		InventoryURL: inventoryURL,
 		PaymentsURL:  paymentsURL,
 		Token:        token,
+		// The money surface takes its own credential (ai-review S8).
+		PaymentsToken: paymentsToken,
 	}
 	journal := recovery.JournalFact{
 		Client:      recoveryClients.Client,
 		PaymentsURL: paymentsURL,
-		Token:       token,
+		Token:       paymentsToken,
 		DB:          recovery.StoreFactDB{DB: db},
 	}
 	recoverer := recovery.New(recovery.DBStore{DB: db}, recoveryClients, recoveryClients, journal,
@@ -440,11 +453,18 @@ func cancellationBatch() int {
 // Extracted from run() so it can actually be tested: a fail-closed startup check
 // that nothing exercises is a check nobody knows is broken. run() opens databases
 // and listens, so it is not a unit-test seam.
-func credentialsAreDistinct(internal, staffWrite, assertion string) error {
+func credentialsAreDistinct(internal, staffWrite, assertion, payments string) error {
 	for _, pair := range []struct{ aName, a, bName, b string }{
 		{staffWriteTokenEnv, staffWrite, "INTERNAL_SERVICE_TOKEN", internal},
 		{assertionKeyEnv, assertion, "INTERNAL_SERVICE_TOKEN", internal},
 		{assertionKeyEnv, assertion, staffWriteTokenEnv, staffWrite},
+		// The fourth (ai-review S8). Its pairs are added HERE, with the others,
+		// because the comment above is only true if someone actually does it:
+		// a credential wired in but left out of this check is the one credential
+		// whose separation is never verified.
+		{runtimecfg.PaymentsTokenEnv, payments, "INTERNAL_SERVICE_TOKEN", internal},
+		{runtimecfg.PaymentsTokenEnv, payments, staffWriteTokenEnv, staffWrite},
+		{runtimecfg.PaymentsTokenEnv, payments, assertionKeyEnv, assertion},
 	} {
 		if pair.a == pair.b {
 			return fmt.Errorf("%s must not equal %s: the separate credentials exist so one leaking "+

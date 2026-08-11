@@ -91,7 +91,10 @@ func TestStatusReplayRetentionOverride(t *testing.T) {
 // Table cases are hand-written env literals, not values produced by the parser under
 // test — a fixture built from the parser could only express rings it already accepts.
 func TestSigningConfigKeyring(t *testing.T) {
-	const active = "local-development-journal-key"
+	// NOT the checked-in "local-development-journal-key": signingConfig refuses
+	// that literal forever now (ai-review S5), and a fixture carrying it would
+	// test the refusal instead of the ring it means to build.
+	const active = "an-ordinary-active-journal-key"
 	// base64.RawStdEncoding of two distinct >=16-byte secrets.
 	const v1b64 = "cmV0aXJlZC1qb3VybmFsLWtleS12MQ"
 	const v0b64 = "cmV0aXJlZC1qb3VybmFsLWtleS12MA"

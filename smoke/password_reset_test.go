@@ -5,7 +5,6 @@ package smoke_test
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"testing"
@@ -43,7 +42,7 @@ var resetLinkToken = regexp.MustCompile(`[?&]token=([A-Za-z0-9_-]+)`)
 func awaitEnqueuedResetMail(t *testing.T, recipient string) (token string, sent bool) {
 	t.Helper()
 	ctx := t.Context()
-	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/commerce", pgHostPort))
+	db, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
 	if err != nil {
 		t.Fatalf("connect to commerce: %v", err)
 	}

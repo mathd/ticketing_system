@@ -28,6 +28,9 @@ var (
 	// No fallback: the harness (scripts/smoke.sh) generates and exports the
 	// credential per invocation (TKT-83).
 	internalToken = os.Getenv("SMOKE_INTERNAL_TOKEN")
+	// Payments has its own credential (ai-review S8): the shared token no longer
+	// opens charge, void or refund.
+	paymentsInternalToken = os.Getenv("SMOKE_PAYMENTS_INTERNAL_TOKEN")
 )
 
 // internalJSON performs an internal (off-gateway) service request and contract-validates
@@ -35,6 +38,17 @@ var (
 // helper for the suite: TKT-95 folded group_reservations_test.go's identical
 // internalValidated into it (that one took the service name explicitly; directService
 // resolves it from the base URL, and it was only ever called with inventory and commerce).
+// internalTokenFor picks the credential the destination accepts, from the URL —
+// the same rule commerce applies in production (ai-review S8). Chosen here rather
+// than at each call site for the same reason: the call site that forgets sends the
+// shared token to the money surface and gets a 401 that reads as a broken stack.
+func internalTokenFor(url string) string {
+	if strings.HasPrefix(url, paymentsURL) {
+		return paymentsInternalToken
+	}
+	return internalToken
+}
+
 func internalJSON(t *testing.T, method, url, key string, body any) (int, []byte) {
 	t.Helper()
 	return internalRequest(t, t.Fatalf, method, url, key, body)
@@ -60,7 +74,7 @@ func internalRequest(t *testing.T, fail func(string, ...any), method, url, key s
 		return 0, []byte(err.Error())
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", internalToken)
+	req.Header.Set("X-Internal-Token", internalTokenFor(url))
 	if key != "" {
 		req.Header.Set("Idempotency-Key", key)
 	}

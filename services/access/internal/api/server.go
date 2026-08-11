@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	qrcode "github.com/skip2/go-qrcode"
@@ -20,20 +22,83 @@ import (
 	"ticketing/shared/httpx"
 )
 
+// scannerDeviceStore is the enrolment-check port, kept narrow on purpose: the
+// scan path needs to resolve a token to a live device and to note that the device
+// was seen, and nothing else. Enrolment and revocation are the operator CLI's, so
+// they are deliberately absent — a handler that cannot enrol a device cannot be
+// talked into enrolling one.
+//
+// It is an interface so the contract tests can drive the scan routes without a
+// database. The interface is NOT where the guarantee lives: a fake enforces
+// revocation in Go while the shipped predicate is a SQL WHERE clause, so the
+// revocation and enrolment assertions belong in a smoke test against real
+// PostgreSQL (scanner_devices_smoke_test.go) — AGENTS.md, "a test must live at
+// the tier its mechanism does".
+type scannerDeviceStore interface {
+	AuthenticateScannerDevice(ctx context.Context, token string) (store.ScannerDevice, error)
+	TouchScannerDevice(ctx context.Context, id uuid.UUID)
+}
+
 type Server struct {
-	st       *store.Postgres
+	st *store.Postgres
+	// devices resolves scanner enrolment (ai-review S1). Nil means "cannot
+	// check", which the authentication func treats as REFUSE — a server that
+	// cannot verify enrolment must not admit everyone.
+	devices  scannerDeviceStore
 	verifier *ticket.Verifier
 	// token authenticates service-to-service callers. Access had no inbound internal
 	// surface before TKT-157 — it only ever used this token outbound, from its
 	// consumer — so the whole auth path here is new.
 	token string
+	// qrLinks signs the short-lived image URLs the bundle hands out (ai-review
+	// S2). See qrlink.go for what that bounds and what it deliberately does not.
+	qrLinks qrLinkSigner
+	// now is the clock seam. Tests inject one; production leaves it nil and gets
+	// time.Now. Without it every expiry test is a sleep.
+	now func() time.Time
+}
+
+// WithQRLinkKey supplies the HMAC key for signed QR image links. An option rather
+// than a New parameter: New's variadic token argument is already carrying one
+// optional value, and a second positional string next to it is exactly the kind
+// of call site that gets the two the wrong way round.
+func (s *Server) WithQRLinkKey(key string) *Server {
+	s.qrLinks = qrLinkSigner{key: []byte(key)}
+	return s
+}
+
+// WithClock replaces the link signer's time source. Tests only.
+func (s *Server) WithClock(now func() time.Time) *Server {
+	s.now = now
+	return s
+}
+
+func (s *Server) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 func New(st *store.Postgres, verifier *ticket.Verifier, token ...string) *Server {
 	s := &Server{st: st, verifier: verifier}
+	// A typed nil in an interface is not nil, so the assignment is guarded rather
+	// than unconditional: `Server{devices: (*store.Postgres)(nil)}` would pass a
+	// `!= nil` check and then panic inside the auth path, which is the worst of
+	// both — a guard that looks present and fails open on the way to failing hard.
+	if st != nil {
+		s.devices = st
+	}
 	if len(token) > 0 {
 		s.token = token[0]
 	}
+	return s
+}
+
+// WithScannerDevices injects the enrolment-check port. Tests only: production
+// passes the store to New and gets it from there.
+func (s *Server) WithScannerDevices(devices scannerDeviceStore) *Server {
+	s.devices = devices
 	return s
 }
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
@@ -48,7 +113,19 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/scans", s.scan)
 	r.Post("/scans/reconciliations", s.reconcile)
 	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
-	validated, err := contract.RequestValidatorWithErrorHandler(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
+	validated, err := contract.RequestValidatorWithSecurity(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
+		// A refused scanner device (ai-review S1). It arrives here rather than from
+		// a handler because the contract DECLARES the requirement and the validator
+		// enforces it — which is what stops a newly added scan-shaped operation
+		// inheriting the declaration without the check.
+		//
+		// Its own status and its own body: a gate app has to tell "this phone is
+		// not paired" from "turn this person away", and the scan-shaped 422 below
+		// would say the second about the first.
+		if status == http.StatusUnauthorized {
+			write(w, http.StatusUnauthorized, map[string]string{"error": "scanner device is not enrolled"})
+			return
+		}
 		// The scan-shaped 422 is the gate's established representation and stays that
 		// way — but it is not this whole service's, and applying it to the internal
 		// refund route emitted a status that route does not declare (ai-review F4).
@@ -72,11 +149,16 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 			return
 		}
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
-	})
+	}, s.authenticateScannerDevice)
 	if err != nil {
 		panic(err)
 	}
-	return validated
+	// The slot the authentication func fills (see scannerOrganizerKey). It is
+	// installed outside the validator because the validator runs before any
+	// middleware the chi router could carry.
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		validated.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), scannerOrganizerKey{}, new(uuid.UUID))))
+	})
 }
 func write(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -113,7 +195,12 @@ func (s *Server) tickets(w http.ResponseWriter, r *http.Request) {
 			write(w, 500, map[string]string{"error": "load ticket history"})
 			return
 		}
-		out = append(out, map[string]any{"ticket_id": t.ID, "qr_payload": t.Payload, "issued_at": t.IssuedAt, "history": history, "qr_url": "/api/access/orders/" + ref.String() + "/tickets/" + t.ID.String() + "/qr.png"})
+		// Minted fresh on every load, and short-lived (ai-review S2). The bundle
+		// page is the renewal mechanism, so a buyer never meets the expiry — only a
+		// link that outlived its page does, which is the link that leaked.
+		qrURL := "/api/access/orders/" + ref.String() + "/tickets/" + t.ID.String() + "/qr.png" +
+			s.qrLinks.mint(ref, t.ID, s.clock())
+		out = append(out, map[string]any{"ticket_id": t.ID, "qr_payload": t.Payload, "issued_at": t.IssuedAt, "history": history, "qr_url": qrURL})
 	}
 	write(w, 200, map[string]any{"order_ref": ref, "tickets": out})
 }
@@ -125,6 +212,14 @@ func (s *Server) qr(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "ticket"))
 	if err != nil {
 		write(w, 400, map[string]string{"error": "invalid ticket"})
+		return
+	}
+	// A live signature from this service, or nothing (ai-review S2). 404 rather
+	// than 401/403 and identical to the not-found answer on purpose: a distinct
+	// status would tell a caller holding a dead link that the ticket behind it is
+	// real, which is the one fact the link was protecting.
+	if !s.qrLinks.verify(r, ref, id, s.clock()) {
+		write(w, 404, map[string]string{"error": "not found"})
 		return
 	}
 	payload, err := s.st.TicketForQR(r.Context(), ref, id)
@@ -169,6 +264,90 @@ func parseOccurrence(occurrenceID, occurredAt string) (uuid.UUID, time.Time, err
 	return occ, at, nil
 }
 
+// scannerDeviceHeader carries an enrolled gate device's token (ai-review S1).
+//
+// Distinct from X-Internal-Token, which every service holds and which the
+// scanner — a static SPA served to phones — must never be given. Distinct from
+// the staff write tokens too: this credential admits and reconciles at a door,
+// which is nobody else's authority.
+const scannerDeviceHeader = "X-Scanner-Token"
+
+// scannerDeviceScheme is the name in the contract; scannerDeviceHeader is the
+// header it declares. A scheme naming a header nobody reads is documentation, not
+// a guard, so both are read from one place.
+const scannerDeviceScheme = "ScannerDeviceToken"
+
+// authenticateScannerDevice is the contract's ScannerDeviceToken scheme.
+//
+// It runs inside the request validator, so it answers BEFORE the body is decoded
+// and long before a ticket is touched: an unenrolled caller learns nothing about
+// a payload it submits, not even whether it parsed.
+//
+// Fail closed on a server with no enrolment port (a construction that skipped
+// New, or a store-less unit test) rather
+// than open: a Server that cannot check enrolment must refuse scans, because the
+// alternative is that the one configuration nobody exercises is the one that
+// admits everybody.
+//
+// The device is touched on a best-effort basis so an operator can tell a live
+// gate from a forgotten enrolment. That write is never part of a scan's success
+// (see TouchScannerDevice) — a turnstile must not refuse a valid ticket because
+// a bookkeeping UPDATE lost a race.
+func (s *Server) authenticateScannerDevice(ctx context.Context, input *openapi3filter.AuthenticationInput) error {
+	if input.SecuritySchemeName != scannerDeviceScheme {
+		// An unknown scheme must not be silently treated as satisfied: that is how
+		// a renamed or mistyped scheme becomes an open door.
+		return errors.New("unauthorized")
+	}
+	if s.devices == nil {
+		return errors.New("unauthorized")
+	}
+	device, err := s.devices.AuthenticateScannerDevice(ctx, input.RequestValidationInput.Request.Header.Get(scannerDeviceHeader))
+	if err != nil {
+		return errors.New("unauthorized")
+	}
+	s.devices.TouchScannerDevice(ctx, device.ID)
+	// Hand the device's organizer to the handler. Resolving a device and then
+	// discarding what it is enrolled FOR is what made enrolment platform-wide.
+	if slot, ok := input.RequestValidationInput.Request.Context().Value(scannerOrganizerKey{}).(*uuid.UUID); ok && slot != nil {
+		*slot = device.OrganizerID
+	}
+	return nil
+}
+
+// scannerOrganizerKey carries the authenticated device's organizer from the
+// request validator to the handler.
+//
+// The value behind it is a POINTER to a slot rather than the organizer itself,
+// because an AuthenticationFunc is handed the request, not the chain: a context
+// is immutable, and the func has no way to replace the request the handler will
+// later see. So Router installs an empty slot on the way in and the auth func
+// fills it — one slot per request, so two gates scanning at once cannot read
+// each other's device.
+type scannerOrganizerKey struct{}
+
+// scannerScopeAllows answers whether the authenticated device may act on a
+// ticket belonging to organizer.
+//
+// Enrolment is per-organizer — scanner_devices carries organizer_id, the CLI
+// demands one, and an operator's device list is scoped by it — but until this
+// comparison existed that was true only on paper: every enrolled device could
+// redeem, and so BURN, any organizer's ticket at its own door, and the victim
+// had no device to revoke because the offending one was never enrolled under
+// them.
+//
+// Fails CLOSED when no device organizer is present. A request that reached a
+// scan handler without the validator resolving a device is a route that lost
+// its `security:` declaration, and the safe reading of "no device" is "not this
+// organizer's device", not "everyone's".
+func scannerScopeAllows(ctx context.Context, organizer uuid.UUID) bool {
+	slot, ok := ctx.Value(scannerOrganizerKey{}).(*uuid.UUID)
+	if !ok || slot == nil || *slot == uuid.Nil {
+		return false
+	}
+	return *slot == organizer
+}
+
 func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	if s.verifier == nil {
 		write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner unavailable"})
@@ -199,6 +378,16 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	}
 	claims, err := s.verifier.Verify(input.QRPayload)
 	if err != nil {
+		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
+		return
+	}
+	// The device is enrolled, but not necessarily for THIS organizer. Rejected
+	// with the same reason and status as an unverifiable payload, deliberately:
+	// a distinct answer would tell a device pointed at someone else's event that
+	// the ticket it just read is real. And NOT a 401 — the phone is validly
+	// paired, and the scanner unpairs itself on 401, which would turn one
+	// misdirected scan into a gate device that has to be re-enrolled.
+	if !scannerScopeAllows(r.Context(), claims.OrganizerID) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 		return
 	}
@@ -315,6 +504,15 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 		}
 		claims, err := s.verifier.Verify(entry.QRPayload)
 		if err != nil {
+			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
+		// Same scope check as a live scan, and the same reason it matters more
+		// here: reconcile REWRITES a night's admission history, so an unscoped
+		// batch lets one organizer's device rewrite another's. Per-occurrence,
+		// following the batch posture — one out-of-scope entry is one rejected
+		// result, not a failure for the whole queue.
+		if !scannerScopeAllows(r.Context(), claims.OrganizerID) {
 			results = append(results, rejected(entry.OccurrenceID))
 			continue
 		}

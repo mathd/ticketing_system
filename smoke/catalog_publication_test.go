@@ -41,6 +41,16 @@ func staffWriteToken() string { return os.Getenv("SMOKE_CATALOG_STAFF_WRITE_TOKE
 
 func isCatalogURL(url string) bool { return strings.Contains(url, "/api/catalog/") }
 
+// The enrolled gate device's credential (ai-review S1). scripts/smoke.sh enrols
+// one per run with `access enrol-scanner` and exports the token it prints.
+func scannerToken() string { return os.Getenv("SMOKE_SCANNER_TOKEN") }
+
+// isScanURL selects the two routes that require an enrolled device. Matched on
+// the URL for the same reason the catalog staff-write header is: the alternative
+// is remembering the header at every call site, and the one that forgets is a 401
+// that reads as a broken deployment.
+func isScanURL(url string) bool { return strings.Contains(url, "/api/access/scans") }
+
 func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	t.Helper()
 	b, err := json.Marshal(body)
@@ -54,6 +64,10 @@ func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	req.Header.Set("Content-Type", "application/json")
 	if isCatalogURL(url) {
 		req.Header.Set(staffWriteHeader, staffWriteToken())
+	}
+	// ai-review S1: the scan routes admit only enrolled devices.
+	if isScanURL(url) {
+		req.Header.Set("X-Scanner-Token", scannerToken())
 	}
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
@@ -581,7 +595,7 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	}
 
 	// -- inventory provisions the GA pool but NOT the seated one (COS-4) --
-	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	db, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +747,7 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	if err := json.Unmarshal(hbody, &held); err != nil || held.HoldID == "" || len(held.Seats) != 1 {
 		t.Fatalf("seat hold response: %v (%s)", err, hbody)
 	}
-	catDB, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/catalog", pgHostPort))
+	catDB, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1091,7 +1105,7 @@ func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
 
 	// The two real publication events are consumed by inventory and converge on
 	// exactly one pool keyed by the festival id.
-	db, err := pgx.Connect(t.Context(), fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	db, err := pgx.Connect(t.Context(), dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatal(err)
 	}

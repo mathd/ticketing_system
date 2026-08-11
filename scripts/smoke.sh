@@ -19,7 +19,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # The load-proof override (pg_stat_statements preload, TKT-82) applies to every
 # smoke stack — hermetic or fast path — so the gate's on-sale profile can always
 # report the claim_history INSERT overhead.
-COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.onsale-load.yaml")
+# compose.direct-ports.yaml republishes what compose.yaml stopped publishing
+# (ai-review S11): this suite drives the staff and internal surfaces directly,
+# and connects to PostgreSQL, NATS and Prometheus from the host.
+COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.direct-ports.yaml" -f "$ROOT/compose.onsale-load.yaml")
 if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
   for b in catalog inventory commerce payments access gateway; do
     [ -x "$ROOT/bin/gate/$b" ] || { echo "smoke: missing bin/gate/$b — run 'make smoke' (or 'make build-gate-linux')" >&2; exit 1; }
@@ -91,10 +94,10 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 # run while the gate stayed green — the allowlist defect this file already records three
 # times. Nothing lives there for commerce yet; the widening closes the hole before it is
 # dug (TKT-156).
-COMMERCE_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_store_smoke" \
-COMMERCE_BULKREFUND_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_bulkrefund_smoke" \
-COMMERCE_MAILER_TEST_DATABASE_URL="postgres://commerce:commerce@localhost:${POSTGRES_PORT}/commerce_mailer_smoke" \
-COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
+COMMERCE_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_store_smoke" \
+COMMERCE_BULKREFUND_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_bulkrefund_smoke" \
+COMMERCE_MAILER_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_mailer_smoke" \
+COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/access"
@@ -102,7 +105,7 @@ cd "$ROOT/services/access"
 # means a newly added test silently never runs while the gate still passes green.
 # This block carried one until TKT-67, and it was the last one left — lines 48
 # and 59 above had already recorded the defect twice.
-ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
+ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/catalog"
@@ -111,7 +114,7 @@ cd "$ROOT/services/catalog"
 # carry one, and it had already stranded two tests that never ran once merged —
 # TestDirectArchiveRacingFestivalPublishCannotDesync and
 # TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically (TKT-53's scoped-read test).
-CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
+CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/store
 
 cd "$ROOT/services/inventory"
@@ -121,7 +124,7 @@ cd "$ROOT/services/inventory"
 # ./internal/... (not just ./internal/store): the seat-hold handler's DB-backed smoke
 # tests live in ./internal/api (TKT-80), and scoping to ./internal/store would silently
 # skip them — the exact allowlist defect the notes above warn about.
-INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:${POSTGRES_PORT}/postgres" \
+INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/payments"
@@ -152,10 +155,10 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "CREATE DATABASE payments_legacy_smoke OWNER payments" \
   -c "DROP DATABASE IF EXISTS payments_legacy_malformed_smoke" \
   -c "CREATE DATABASE payments_legacy_malformed_smoke OWNER payments" >/dev/null
-PAYMENTS_LEGACY_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_legacy_smoke" \
-PAYMENTS_LEGACY_MALFORMED_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_legacy_malformed_smoke" \
-PAYMENTS_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_store_smoke" \
-PAYMENTS_API_TEST_DATABASE_URL="postgres://payments:payments@localhost:${POSTGRES_PORT}/payments_api_smoke" \
+PAYMENTS_LEGACY_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_legacy_smoke" \
+PAYMENTS_LEGACY_MALFORMED_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_legacy_malformed_smoke" \
+PAYMENTS_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_store_smoke" \
+PAYMENTS_API_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_api_smoke" \
 go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT"
@@ -188,7 +191,7 @@ fi
 # mixed-kid journal this verifies. TestSmokeJournalKeyLiteralsMatchScript reads this file
 # and fails if the two sets drift, so edit both or neither (TKT-117).
 compose exec -T \
-  -e DATABASE_URL=postgres://payments:payments@postgres:5432/payments_store_smoke \
+  -e DATABASE_URL=postgres://payments:${PAYMENTS_DB_PASSWORD}@postgres:5432/payments_store_smoke \
   -e JOURNAL_KEY_ID=smoke-v2 \
   -e JOURNAL_SIGNING_KEY=smoke-journal-key-v2-0123456789 \
   -e JOURNAL_HISTORICAL_KEYS=smoke-v1=c21va2Utam91cm5hbC1rZXktdjEtMDEyMzQ1Njc4OQ \
@@ -202,7 +205,7 @@ compose exec -T \
 # corruption — every one of which would let this check pass while proving nothing about
 # retirement. Only the unknown-key message proves the retired key is why.
 retired_out=$(compose exec -T \
-  -e DATABASE_URL=postgres://payments:payments@postgres:5432/payments_store_smoke \
+  -e DATABASE_URL=postgres://payments:${PAYMENTS_DB_PASSWORD}@postgres:5432/payments_store_smoke \
   -e JOURNAL_KEY_ID=smoke-v2 \
   -e JOURNAL_SIGNING_KEY=smoke-journal-key-v2-0123456789 \
   payments /app verify-journal 2>&1) && {
@@ -241,6 +244,19 @@ provision_staff "$SMOKE_STAFF_IDENTIFIER"     "$SMOKE_STAFF_PASSWORD"     admin
 provision_staff "$SMOKE_BOXOFFICE_IDENTIFIER" "$SMOKE_BOXOFFICE_PASSWORD" box_office
 provision_staff "$SMOKE_FINANCE_IDENTIFIER"   "$SMOKE_FINANCE_PASSWORD"   finance
 
+# ai-review S1: the scan routes admit only ENROLLED devices, so the suite pairs
+# one gate per run exactly as an operator would — through the CLI, reading the
+# token off its output. It is printed once and never recoverable, which is the
+# property being exercised as much as it is a constraint on this script.
+SMOKE_SCANNER_TOKEN=$(compose exec -T access /app enrol-scanner \
+  00000000-0000-0000-0000-000000000001 "smoke gate" \
+  | sed -n 's/^  X-Scanner-Token: //p' | tr -d '\r')
+if [ -z "$SMOKE_SCANNER_TOKEN" ]; then
+  echo "smoke: could not enrol a scanner device — every scan would 401" >&2
+  exit 1
+fi
+export SMOKE_SCANNER_TOKEN
+
 cd "$ROOT/smoke"
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
@@ -251,6 +267,9 @@ SMOKE_FINANCE_PASSWORD="$SMOKE_FINANCE_PASSWORD" \
 SMOKE_CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN" \
 SMOKE_COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN" \
 SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY" \
+SMOKE_ACCESS_QR_SEED="$SMOKE_ACCESS_QR_SEED" \
+SMOKE_SCANNER_TOKEN="$SMOKE_SCANNER_TOKEN" \
+SMOKE_PAYMENTS_INTERNAL_TOKEN="$SMOKE_PAYMENTS_INTERNAL_TOKEN" \
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \
 SMOKE_PG=localhost:${POSTGRES_PORT} \

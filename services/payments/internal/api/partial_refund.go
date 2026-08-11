@@ -72,8 +72,9 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		// Eligibility failures (no captured money, currency mismatch) land here as 409:
-		// the request is coherent, the operation's evidence does not support it.
-		write(w, 409, map[string]string{"error": err.Error()})
+		// the request is coherent, the operation's evidence does not support it. A
+		// failing statement lands here too, and that one does not get to speak.
+		refused(w, 409, err)
 		return
 	}
 	if leg.Completed {

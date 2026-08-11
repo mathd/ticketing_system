@@ -377,3 +377,65 @@ func TestStatusRejectsContradictoryEvidence(t *testing.T) {
 		})
 	}
 }
+
+// ai-review S8. The money surface has its own credential now, and this runner
+// talks to BOTH inventory and payments — so "which token" is a real decision made
+// on every call. It is made once, from the destination, because the alternative
+// (choosing at each of the six call sites) is six chances to send the shared
+// token to payments and discover it as a 401 in background work nobody watches.
+//
+// Both directions are asserted. Sending the payments token to inventory would be
+// just as wrong and far quieter: inventory would refuse a confirm, and a hold
+// would leak instead of being confirmed.
+func TestRecoveryClientsSendTheCredentialTheDestinationAccepts(t *testing.T) {
+	var payments, inventory *httptest.Server
+	seen := map[string]string{}
+	record := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			seen[name] = r.Header.Get("X-Internal-Token")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"outcome":"captured","captured":true,"authorized":true,"authorized_amount":1,"captured_amount":1,"currency":"EUR","status":"confirmed"}`))
+		}
+	}
+	payments = httptest.NewServer(record("payments"))
+	defer payments.Close()
+	inventory = httptest.NewServer(record("inventory"))
+	defer inventory.Close()
+
+	c := HTTPClients{
+		Client: payments.Client(), PaymentsURL: payments.URL, InventoryURL: inventory.URL,
+		Token: "shared-token", PaymentsToken: "payments-only-token",
+	}
+	if _, err := c.Status(context.Background(), uuid.New(), "k1"); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if err := c.Confirm(context.Background(), uuid.New(), uuid.New()); err != nil {
+		t.Fatalf("confirm hold: %v", err)
+	}
+	if seen["payments"] != "payments-only-token" {
+		t.Errorf("payments received %q, want the payments-only credential", seen["payments"])
+	}
+	if seen["inventory"] != "shared-token" {
+		t.Errorf("inventory received %q, want the shared credential", seen["inventory"])
+	}
+}
+
+// An unset PaymentsToken must behave as it did before the split rather than
+// sending an empty credential, which payments fails closed on — a total outage
+// presented as an authentication bug.
+func TestRecoveryClientsFallBackToTheSharedTokenWhenUnsplit(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Internal-Token")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcome":"captured","captured":true,"authorized":true,"authorized_amount":1,"captured_amount":1,"currency":"EUR"}`))
+	}))
+	defer srv.Close()
+	c := HTTPClients{Client: srv.Client(), PaymentsURL: srv.URL, Token: "shared-token"}
+	if _, err := c.Status(context.Background(), uuid.New(), "k1"); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if got != "shared-token" {
+		t.Errorf("payments received %q, want the shared credential as the fallback", got)
+	}
+}

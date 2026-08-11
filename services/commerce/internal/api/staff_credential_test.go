@@ -234,3 +234,43 @@ func TestAnUnconfiguredStaffCredentialOpensNothing(t *testing.T) {
 		t.Errorf("an empty configured credential admitted an empty header: status=%d", res.Code)
 	}
 }
+
+// ai-review S8. `call` reaches catalog, inventory AND payments, and since the
+// money surface took its own credential the right one has to be picked per
+// destination. It is picked from the URL, once, rather than at each of the
+// seventeen call sites — so this asserts the rule, not a call site.
+//
+// The inventory direction matters as much as the payments one: leaking the
+// payments credential to catalog or inventory would hand the money key to
+// services that have no business holding it, which is the exact coupling the
+// split removed.
+func TestInternalTokenIsChosenByDestination(t *testing.T) {
+	s := &Server{
+		catalogURL:   "http://catalog:8080",
+		inventoryURL: "http://inventory:8080",
+		paymentsURL:  "http://payments:8080",
+		token:        "shared",
+	}
+	s.WithPaymentsToken("payments-only")
+
+	for url, want := range map[string]string{
+		"http://payments:8080/internal/charges":       "payments-only",
+		"http://payments:8080/internal/psp/refund":    "payments-only",
+		"http://catalog:8080/internal/ticket-types/1": "shared",
+		"http://inventory:8080/internal/holds":        "shared",
+		// A host that merely starts with the same letters is not payments.
+		"http://payments-lookalike:8080/internal/x": "shared",
+	} {
+		if got := s.internalTokenFor(url); got != want {
+			t.Errorf("internalTokenFor(%q) = %q, want %q", url, got, want)
+		}
+	}
+
+	// Unconfigured falls back rather than sending an empty credential: payments
+	// fails closed on empty, so the failure would read as an outage instead of a
+	// missing environment variable.
+	unsplit := &Server{paymentsURL: "http://payments:8080", token: "shared"}
+	if got := unsplit.internalTokenFor("http://payments:8080/internal/charges"); got != "shared" {
+		t.Errorf("unsplit server sent %q, want the shared credential", got)
+	}
+}

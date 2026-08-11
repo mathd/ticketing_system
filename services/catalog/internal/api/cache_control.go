@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"ticketing/shared/httpx"
 )
 
 // The ADR-004 incident kill-switch for catalog's public-read cache (TKT-210).
@@ -67,7 +69,7 @@ func (s *Server) cacheControlSet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) internalAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	if s.internalCredential == "" || r.Header.Get("X-Internal-Token") != s.internalCredential {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.internalCredential) {
 		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return false
 	}

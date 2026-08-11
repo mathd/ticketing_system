@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 
 	commercestore "ticketing/services/commerce/internal/store"
+
+	"ticketing/shared/httpx"
 )
 
 // Exchanges (TKT-158, ADR-039). Staff-facing and internal, 404 on a bad token like every
@@ -53,7 +55,7 @@ func exchangeProblem(err error) (int, string) {
 }
 
 func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
-	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.token) {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
@@ -584,7 +586,7 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 // internal token can call inventory's refund-capacity directly and skip all of this. The
 // adversary being defended against here is a crash, not a writer.
 func (s *Server) exchangeTicketsSwitched(w http.ResponseWriter, r *http.Request) {
-	if s.token == "" || r.Header.Get("X-Internal-Token") != s.token {
+	if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.token) {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}

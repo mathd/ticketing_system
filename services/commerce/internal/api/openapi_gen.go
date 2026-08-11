@@ -447,13 +447,11 @@ type OrderResult struct {
 // OrderResultStatus defines model for OrderResult.Status.
 type OrderResultStatus string
 
-// OrderState defines model for OrderState.
+// OrderState The public order read. It answers for ANY order id and carries no credential, so it says as little as an order can say.
+// customer_id was here until the security review (ai-review S3, TKT-221 added it). It carried the account an order belongs to — and because order ids are DERIVED (uuid.NewSHA1 over organizer + idempotency key), anyone who watched a buyer's own checkout can recompute the id and read the field back, which makes it an account-existence oracle over a value the caller already had. It was informational and nothing consumed it, so it is gone rather than caveated. TKT-222 still owns the real fix for the rest of this endpoint: an authenticated, ownership-scoped read that 404s on mismatch, the way listCustomerOrders already does.
 type OrderState struct {
-	// CustomerId The customer account this order belongs to, or null for a guest purchase (TKT-221). REQUIRED and nullable rather than optional: an absent field and an explicit null read the same to a careless client, and "we did not tell you" is not the same fact as "there is no account". Guest is the default and is first-class.
-	// Informational only. This read is PUBLIC and answers for any order id, so the presence of this field is not an ownership check — TKT-222 owns the authenticated, ownership-scoped read.
-	CustomerId *openapi_types.UUID `json:"customer_id"`
-	OrderId    openapi_types.UUID  `json:"order_id"`
-	Status     string              `json:"status"`
+	OrderId openapi_types.UUID `json:"order_id"`
+	Status  string             `json:"status"`
 }
 
 // OrderUnclaim defines model for OrderUnclaim.

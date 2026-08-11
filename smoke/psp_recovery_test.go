@@ -23,7 +23,7 @@ import (
 
 func commerceDB(t *testing.T, ctx context.Context) *pgx.Conn {
 	t.Helper()
-	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/commerce", pgHostPort))
+	db, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
 	if err != nil {
 		t.Fatalf("connect commerce db: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestStatusReplayWindowExpiryAnswers409(t *testing.T) {
 	}
 
 	// Expire it: backdate the durable bind time past the 24h retention.
-	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://payments:payments@%s/payments", pgHostPort))
+	db, err := pgx.Connect(ctx, dsn("payments", "payments"))
 	if err != nil {
 		t.Fatalf("connect payments db: %v", err)
 	}

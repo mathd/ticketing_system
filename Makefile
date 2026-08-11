@@ -145,40 +145,22 @@ onsale-load-full: build-gate-linux build-ts
 	./scripts/smoke.sh
 
 ## ---- dev conveniences ----
-# One-time local credential bootstrap (TKT-83): no default ships in the repo.
-# Preserves unrelated .env entries, replaces only a missing/retired token,
-# never prints the value. Compose reads .env natively, so bare
-# `docker compose up` keeps working after the first `make up`.
-# TKT-191 added a second, independent credential; TKT-194 a third; TKT-221 a
-# fourth. Each is generated separately so no two ever share a value:
-# CATALOG_STAFF_WRITE_TOKEN opens catalog writes, COMMERCE_STAFF_WRITE_TOKEN opens
-# exactly one commerce operation (the staff refund), COMMERCE_CUSTOMER_ASSERTION_KEY
-# signs proofs that a checkout belongs to a customer, INTERNAL_SERVICE_TOKEN opens
-# every service's internal surface — and one leaking must not imply any other.
-# Generating them in one loop from separate /dev/urandom reads is what keeps that
-# true without anyone having to remember it; commerce refuses to start if any two
-# of its three arrive equal.
+# One-time local credential bootstrap: no secret ships in this repo with a
+# working default (TKT-83, extended to the three signing keys by ai-review S5).
+# The logic moved to a script when it grew Ed25519 pairs — see
+# scripts/env-bootstrap.sh for what is generated and why each value gets its own
+# draw.
 env-bootstrap:
-	@set -e; umask 077; \
-	for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY; do \
-		token=$$(grep -E "^$$var[[:space:]]*=" .env 2>/dev/null | tail -n1 \
-			| sed -e 's/^[^=]*=[[:space:]]*//' | tr -d '\r' \
-			| sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//"); \
-		if [ -z "$$token" ] || [ "$$token" = "local-service-token" ]; then \
-			new=$$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n'); \
-			rm -f .env.tmp; \
-			{ grep -vE "^$$var[[:space:]]*=" .env 2>/dev/null || true; printf '%s=%s\n' "$$var" "$$new"; } > .env.tmp; \
-			mv .env.tmp .env; \
-			echo "generated $$var in .env"; \
-		fi; \
-	done; \
-	[ ! -f .env ] || chmod 600 .env
+	@./scripts/env-bootstrap.sh
 
+# The direct-ports overlay is a DEV convenience (ai-review S11): compose.yaml
+# publishes only the gateway, and local work wants psql, Grafana and the staff
+# surfaces on loopback. A deployment starting from compose.yaml gets neither.
 up: env-bootstrap
-	docker compose up -d --build --wait
+	docker compose -f compose.yaml -f compose.direct-ports.yaml up -d --build --wait
 
 down:
-	docker compose down -v
+	docker compose -f compose.yaml -f compose.direct-ports.yaml down -v
 
 clean: down
 	rm -rf bin web/scanner/dist web/storefront/dist web/backoffice/dist

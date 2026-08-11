@@ -18,7 +18,7 @@ import (
 
 func (s *Server) internalOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.credential == "" || r.Header.Get("X-Internal-Token") != s.credential {
+		if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.credential) {
 			write(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}

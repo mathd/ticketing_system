@@ -296,7 +296,10 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	if err != nil || current != 8 || target != 8 {
+	// 0009 added scanner device enrolment (ai-review S1). Pinned rather than
+	// derived: this assertion exists so that adding a migration is a decision
+	// someone states here, not a number that drifts.
+	if err != nil || current != 9 || target != 9 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 

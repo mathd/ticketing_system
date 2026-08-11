@@ -96,6 +96,11 @@ var wantDeclarations = []string{
 	"catalog#StaffWriteUnauthorized",
 	"catalog/authenticateStaff 200",
 	"catalog/authenticateStaff 401",
+	// The staff-login rate limit (TKT-195, ai-review S4). Never tier: a 429 is
+	// computed from a per-identifier budget, so a shared cache holding one would
+	// refuse a staff member whose budget has since refilled — and serve the
+	// refusal to everyone behind it.
+	"catalog/authenticateStaff 429",
 	"catalog/getPublicEvent 200",
 	"catalog/getPublicFestival 200",
 	"catalog/getPublicSeatMapGeometry 200",

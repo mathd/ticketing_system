@@ -47,6 +47,10 @@ func postWithKey(t *testing.T, url, key string, body any) (int, []byte) {
 	if isCatalogURL(url) {
 		req.Header.Set(staffWriteHeader, staffWriteToken())
 	}
+	// ai-review S1: the scan routes admit only enrolled devices.
+	if isScanURL(url) {
+		req.Header.Set("X-Scanner-Token", scannerToken())
+	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
@@ -77,6 +81,10 @@ func postWithKeyAsync(t *testing.T, url, key string, body any) (int, []byte) {
 	// must never see it.
 	if isCatalogURL(url) {
 		req.Header.Set(staffWriteHeader, staffWriteToken())
+	}
+	// ai-review S1: the scan routes admit only enrolled devices.
+	if isScanURL(url) {
+		req.Header.Set("X-Scanner-Token", scannerToken())
 	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
@@ -132,7 +140,7 @@ func expireInventoryHold(t *testing.T, holdID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	db, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatalf("connect inventory db: %v", err)
 	}
@@ -253,9 +261,14 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded := parts[0] + "." + base64.RawURLEncoding.EncodeToString(claimBytes)
-	seed, err := base64.RawStdEncoding.DecodeString("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-	if err != nil {
-		t.Fatal(err)
+	// The stack's own issuing seed, minted per run by scripts/stack-env.sh. It was
+	// the all-zero literal until ai-review S5 removed the checked-in compose
+	// defaults — and a hard-coded seed here would now sign under a key the gate
+	// does not know, turning this claim-mismatch case into a signature-failure
+	// case that passes for the wrong reason.
+	seed, err := base64.RawStdEncoding.DecodeString(os.Getenv("SMOKE_ACCESS_QR_SEED"))
+	if err != nil || len(seed) != ed25519.SeedSize {
+		t.Fatalf("SMOKE_ACCESS_QR_SEED must be the stack's raw-base64 Ed25519 seed: %v", err)
 	}
 	mismatched := encoded + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(ed25519.NewKeyFromSeed(seed), []byte(encoded)))
 	if code, body := postJSON(t, gatewayURL+"/api/access/scans", map[string]string{"qr_payload": mismatched}); code != http.StatusUnprocessableEntity {
@@ -516,7 +529,7 @@ func assertRedeemedOccurrence(t *testing.T, qrPayload, winningOccurrence string,
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	db, err := pgx.Connect(ctx, fmt.Sprintf("postgres://access:access@%s/access", pgHostPort))
+	db, err := pgx.Connect(ctx, dsn("access", "access"))
 	if err != nil {
 		t.Fatalf("connect access db: %v", err)
 	}
@@ -575,7 +588,7 @@ func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cat, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/catalog", pgHostPort))
+	cat, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +629,7 @@ func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
 
 	// The reservation records WHY it was priced that way, as a snapshot rather
 	// than a pointer: closing the rule below must not rewrite it.
-	com, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/commerce", pgHostPort))
+	com, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -856,7 +869,7 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cat, err := pgx.Connect(ctx, fmt.Sprintf("postgres://catalog:catalog@%s/catalog", pgHostPort))
+	cat, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -953,7 +966,7 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pay, err := pgx.Connect(ctx, fmt.Sprintf("postgres://payments:payments@%s/payments", pgHostPort))
+	pay, err := pgx.Connect(ctx, dsn("payments", "payments"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -971,7 +984,7 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 	}
 
 	// And the commerce row agrees with what was captured.
-	com, err := pgx.Connect(ctx, fmt.Sprintf("postgres://commerce:commerce@%s/commerce", pgHostPort))
+	com, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
 	if err != nil {
 		t.Fatal(err)
 	}

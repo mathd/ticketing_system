@@ -82,3 +82,59 @@ func TestCompensationKeyDeterministic(t *testing.T) {
 		t.Fatal("separator collision between source key and kind")
 	}
 }
+
+// ai-review S13. Two assumptions the journal rested on without stating: that
+// every currency has exponent 2, and that a fact claiming money moved actually
+// moved some.
+//
+// Both are enforced HERE, at the durable boundary, and that placement is the
+// point. The charge handler already hard-coded EUR while this accepted any
+// three-letter code — so the assumption was checked where it could be bypassed
+// and unchecked where it becomes permanent. The journal is append-only: a JPY
+// amount written as if it were centimes is off by 100x and cannot be corrected,
+// only compensated.
+func TestValidateRefusesUnsupportedCurrencyAndZeroMoney(t *testing.T) {
+	base := func() Fact {
+		return Fact{
+			ID: uuid.New(), OrganizerID: uuid.New(), BuyerID: uuid.New(),
+			Type: "payment.captured", Amount: 1000, Currency: "EUR",
+			Payload: map[string]string{"order_id": uuid.NewString()},
+		}
+	}
+	if err := validate(base()); err != nil {
+		t.Fatalf("an ordinary EUR capture must validate: %v", err)
+	}
+
+	// JPY is exponent 0 and KWD is 3. Admitting either without a per-currency
+	// exponent is a ledger error, not a formatting one.
+	for _, currency := range []string{"JPY", "KWD", "USD", "eur", "EU", "EURO", ""} {
+		f := base()
+		f.Currency = currency
+		if err := validate(f); err == nil {
+			t.Errorf("currency %q was accepted", currency)
+		}
+	}
+
+	// A fact asserting money MOVED must carry some. The journal is the last place
+	// a caller-side quantity guard that failed open can still be caught.
+	for _, factType := range []string{"payment.authorized", "payment.captured", "payment.voided", "payment.refunded", "order.refunded"} {
+		f := base()
+		f.Type, f.Amount = factType, 0
+		if err := validate(f); err == nil {
+			t.Errorf("%s was accepted with a zero amount", factType)
+		}
+	}
+
+	// ...and the types that are legitimately zero stay legitimate. A comp ticket
+	// is a real order that moves no money, and a decline carries the amount that
+	// was attempted rather than one that moved. Both exchange legs belong here:
+	// exchanging a comp gives a zero reversal, and commerce writes the pair one
+	// after the other — refusing the second leaves the first stranded forever.
+	for _, factType := range []string{"order.created", "order.completed", "order.failed", "payment.declined", "payment.timeout", "order.exchange.reversed", "order.exchange.sold"} {
+		f := base()
+		f.Type, f.Amount = factType, 0
+		if err := validate(f); err != nil {
+			t.Errorf("%s must accept a zero amount: %v", factType, err)
+		}
+	}
+}

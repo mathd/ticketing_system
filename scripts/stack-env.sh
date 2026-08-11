@@ -66,3 +66,54 @@ export COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN"
 SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY
 export COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"
+# ai-review S11: database passwords. The roles' passwords used to equal their
+# names, committed. One draw per role, and exported TWICE: the compose stack reads
+# <ROLE>_DB_PASSWORD, and the smoke test process reads SMOKE_DB_<ROLE>_PASSWORD to
+# build its own connections (smoke/smoke_test.go: dsn).
+export POSTGRES_PASSWORD="$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
+# The superuser under the same SMOKE_DB_<ROLE>_PASSWORD convention: the load and
+# read-proof suites connect as `postgres` for pg_stat_statements, through the same
+# dsn() helper, so it needs the alias or it silently falls back to the old literal.
+export SMOKE_DB_POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
+for role in CATALOG INVENTORY COMMERCE PAYMENTS ACCESS; do
+	password=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+	export "${role}_DB_PASSWORD=$password"
+	export "SMOKE_DB_${role}_PASSWORD=$password"
+done
+unset password
+
+# ai-review S8: payments' own credential. A FIFTH independent /dev/urandom read —
+# commerce refuses to start when it equals any of its other three, so deriving it
+# from one of them here would make the smoke suite the one place that guard is
+# never exercised honestly.
+SMOKE_PAYMENTS_INTERNAL_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_PAYMENTS_INTERNAL_TOKEN
+export PAYMENTS_INTERNAL_TOKEN="$SMOKE_PAYMENTS_INTERNAL_TOKEN"
+# ai-review S2: the QR image-link key. Its own draw — it proves a URL is fresh,
+# which is a different claim from the QR credential's, and one key making both
+# claims spends a cheap leak at an expensive price.
+export ACCESS_TICKET_LINK_KEY="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+# ai-review S5: the three signing keys. They used to arrive as compose defaults —
+# a readable journal key and two Ed25519 seeds committed to this repository — and
+# the stack now refuses to start without them, so the isolated stacks mint their
+# own here for the same reason they mint the tokens: never depend on a
+# developer's .env, and give CI no secret to hold.
+#
+# The QR seed is exported for the TEST PROCESS as well as the stack. smoke's
+# forged-payload cases sign a QR the gate must reject for reasons other than the
+# signature — a claim mismatch, a wrong organizer — and that needs the same key
+# the stack issues under. It is a per-run throwaway; the point of removing the
+# default was that the OLD one was permanent and public.
+export JOURNAL_SIGNING_KEY="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+read -r SMOKE_ACCESS_QR_SEED SMOKE_ACCESS_QR_PUB < <(cd "$ROOT/services/access" && go run ./cmd/access keygen)
+export SMOKE_ACCESS_QR_SEED
+export ACCESS_QR_KID="access-qr/local-v1"
+export ACCESS_QR_PRIVATE_KEY="$SMOKE_ACCESS_QR_SEED"
+export ACCESS_QR_PUBLIC_KEYS="$ACCESS_QR_KID=$SMOKE_ACCESS_QR_PUB"
+# An INDEPENDENT pair, not a copy: ADR-021 §D4 separates credential signing from
+# history signing, and a run where one key served both would pass while proving
+# nothing about the separation the namespaces exist to enforce.
+read -r SMOKE_ACCESS_LIFECYCLE_SEED SMOKE_ACCESS_LIFECYCLE_PUB < <(cd "$ROOT/services/access" && go run ./cmd/access keygen)
+export ACCESS_LIFECYCLE_KID="access-lifecycle/local-v1"
+export ACCESS_LIFECYCLE_PRIVATE_KEY="$SMOKE_ACCESS_LIFECYCLE_SEED"
+export ACCESS_LIFECYCLE_PUBLIC_KEYS="$ACCESS_LIFECYCLE_KID=$SMOKE_ACCESS_LIFECYCLE_PUB"

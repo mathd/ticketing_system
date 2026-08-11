@@ -407,6 +407,28 @@ func TestNewStripeDefaultClientIsBounded(t *testing.T) {
 	}
 }
 
+// The secret key rides on every request as Basic auth, so a plaintext base URL is a
+// credential on the wire. The loopback exemption is what lets every other test in this
+// file point at httptest — it must not stretch to a routable host.
+func TestNewStripeRefusesPlaintextBaseURL(t *testing.T) {
+	for _, allowed := range []string{"https://api.stripe.com", "http://127.0.0.1:9999", "http://localhost:9999", "http://[::1]:9999"} {
+		if !secureBaseURL(allowed) {
+			t.Errorf("secureBaseURL(%q) = false, want true", allowed)
+		}
+	}
+	for _, refused := range []string{"http://api.stripe.com", "http://192.168.1.10:9999", "http://localhost.evil.test", "ftp://api.stripe.com", "://nonsense"} {
+		if secureBaseURL(refused) {
+			t.Errorf("secureBaseURL(%q) = true, want false", refused)
+		}
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewStripe accepted a plaintext base URL")
+		}
+	}()
+	NewStripe("sk_test_dummy", "http://api.stripe.com", nil)
+}
+
 // A refund still pending must NOT be reported as Refunded (the journal is append-only; a
 // later 'failed' can't be retracted — plan-final A7). Pending surfaces as a non-terminal
 // error so the caller keeps the compensation bound and retries.

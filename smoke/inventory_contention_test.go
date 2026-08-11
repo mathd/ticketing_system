@@ -180,12 +180,12 @@ func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	}
 
 	ctx := t.Context()
-	blocker, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	blocker, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = blocker.Close(ctx) }()
-	monitor, err := pgx.Connect(ctx, fmt.Sprintf("postgres://inventory:inventory@%s/inventory", pgHostPort))
+	monitor, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
 		t.Fatal(err)
 	}

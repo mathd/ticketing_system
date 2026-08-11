@@ -13,6 +13,7 @@ import (
 	"ticketing/services/access/internal/lifecycle"
 	"ticketing/services/access/internal/lifecyclejob"
 	accessstore "ticketing/services/access/internal/store"
+	"ticketing/shared/runtimecfg"
 )
 
 // Lifecycle trail configuration (ADR-021). The key material is deliberately
@@ -82,7 +83,17 @@ func lifecycleKeyring() (*lifecycle.Keyring, error) {
 // what it signs — a typo that left issuance signing under a key nothing can
 // verify would otherwise surface only at the next audit.
 func lifecycleSigner(keyring *lifecycle.Keyring) (*lifecycle.Signer, error) {
-	signer, err := lifecycle.NewSigner(os.Getenv(envLifecycleSeed), os.Getenv(envLifecycleKID))
+	// Required, with the checked-in dev seed refused forever (ai-review S5). It
+	// was an ACTIVE compose default — a 0x01..0x20 counter seed, in the
+	// repository — so a stack with no env signed heads and checkpoints under key
+	// material anyone can reproduce, and `access verify-lifecycle` then verified
+	// an attacker's chain as clean. Nothing about ADR-021's tamper-evidence
+	// survives a signing key the adversary holds.
+	seed, err := runtimecfg.RequiredCredential(envLifecycleSeed, runtimecfg.RetiredAccessLifecycleSeed)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := lifecycle.NewSigner(seed, os.Getenv(envLifecycleKID))
 	if err != nil {
 		return nil, err
 	}

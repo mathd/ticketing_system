@@ -114,6 +114,13 @@ type staffLookup interface {
 // two organizers holding "admin@example.com" would make "who is signing in?"
 // ambiguous, and v1 has a single organizer anyway. Multi-organizer sign-in needs
 // an organizer selector at the login form, which is out of scope here.
+// NormalizeStaffIdentifier exposes the lookup key to the API layer, which needs
+// to rate-limit per identifier (TKT-195). It delegates rather than duplicating,
+// and that is the point: a limiter keyed on its OWN idea of normalization would
+// give "Ada" and "ada" separate budgets, so an attacker grinding one account
+// would simply vary the case. Two normalizers is the bypass.
+func NormalizeStaffIdentifier(identifier string) string { return staffIdentifierKey(identifier) }
+
 func staffIdentifierKey(identifier string) string {
 	return strings.ToLower(strings.TrimSpace(identifier))
 }

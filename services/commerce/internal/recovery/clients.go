@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,7 +28,29 @@ import (
 type HTTPClients struct {
 	Client                    *http.Client
 	InventoryURL, PaymentsURL string
-	Token                     string
+	// Token opens inventory's internal surface; PaymentsToken opens payments'.
+	// Two values since ai-review S8 split the money surface off the shared
+	// credential. Chosen by DESTINATION in tokenFor rather than at the six call
+	// sites — a per-call-site choice is a per-call-site chance to send the wrong
+	// one, and sending the shared token to payments is a silent 401 in a
+	// background runner nobody is watching.
+	Token         string
+	PaymentsToken string
+}
+
+// tokenFor picks the credential a destination accepts. Prefix match on the
+// configured payments base URL: it is the same string the callers build their
+// URLs from, so the two cannot disagree.
+// An empty PaymentsToken falls back to Token, which keeps every construction
+// that predates the split working. main.go never leaves it empty; the fallback is
+// so a caller that has not been updated behaves as it did rather than sending an
+// empty credential, which payments fails closed on and would read as an outage
+// rather than a misconfiguration.
+func (c HTTPClients) tokenFor(url string) string {
+	if c.PaymentsToken != "" && c.PaymentsURL != "" && strings.HasPrefix(url, c.PaymentsURL) {
+		return c.PaymentsToken
+	}
+	return c.Token
 }
 
 func (c HTTPClients) do(ctx context.Context, method, url string, out any) (int, error) {
@@ -52,7 +75,7 @@ func (c HTTPClients) doBody(ctx context.Context, method, url string, body, out a
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("X-Internal-Token", c.Token)
+	req.Header.Set("X-Internal-Token", c.tokenFor(url))
 	resp, err := c.Client.Do(req)
 	if err != nil {
 		return 0, err
@@ -295,8 +318,10 @@ func (c StoreCompleter) Complete(ctx context.Context, s store.StuckOrder) error 
 type JournalFact struct {
 	Client      *http.Client
 	PaymentsURL string
-	Token       string
-	DB          FactDB
+	// Token is the PAYMENTS credential (ai-review S8): this client posts to
+	// payments' journal and nowhere else.
+	Token string
+	DB    FactDB
 }
 
 // FactDB is the commerce-side fact table write the journal submission is derived from.

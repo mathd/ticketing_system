@@ -98,7 +98,7 @@ func readEndpoints(slot, organizer string) []readEndpoint {
 
 func catalogAdminConn(t *testing.T) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(t.Context(), fmt.Sprintf("postgres://postgres:postgres@%s/catalog", pgHostPort))
+	conn, err := pgx.Connect(t.Context(), dsn("postgres", "catalog"))
 	if err != nil {
 		t.Fatalf("catalog admin connect: %v", err)
 	}

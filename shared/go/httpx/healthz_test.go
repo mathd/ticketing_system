@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ticketing/shared/httpx"
@@ -58,8 +59,15 @@ func TestHealthzFailingCheckReturns503(t *testing.T) {
 	if body.Status != "degraded" {
 		t.Errorf("status = %q, want degraded", body.Status)
 	}
-	if body.Checks["nats"] != "connection refused" {
-		t.Errorf("nats check = %q, want the error message", body.Checks["nats"])
+	// The check is NAMED but the reason is not: /healthz answers unauthenticated
+	// callers, and a driver error carries DSN and schema detail. Asserting on the
+	// substring rather than only on the replacement is what makes this fail if the
+	// error text is ever appended to the static word.
+	if body.Checks["nats"] != "unhealthy" {
+		t.Errorf("nats check = %q, want the static reason", body.Checks["nats"])
+	}
+	if strings.Contains(rec.Body.String(), "connection refused") {
+		t.Errorf("body leaks the probe error: %s", rec.Body.String())
 	}
 }
 

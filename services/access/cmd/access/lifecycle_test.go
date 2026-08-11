@@ -8,15 +8,19 @@ import (
 	accessstore "ticketing/services/access/internal/store"
 )
 
-// The compose defaults, which are also what a deployment inherits if it sets
-// nothing. Distinct key MATERIAL from the QR keys is the point of ADR-021 §D4,
-// not merely a distinct name.
+// An ordinary, valid pair of each kind — NOT the values compose used to default
+// to. Those three are refused forever now (ai-review S5: they were active
+// checked-in defaults, so they are published key material), and a fixture
+// carrying one would prove the refusal rather than the loading it names.
+//
+// Distinct key MATERIAL between the two kinds is the point of ADR-021 §D4, not
+// merely a distinct name — so these are two independent pairs, as production is.
 const (
-	localLifecycleSeed = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
-	localLifecyclePub  = "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"
+	localLifecycleSeed = "TSyq2Zhw6/F/ObLtFOzj85YnEFOjepo/inZ+qOwHn8I"
+	localLifecyclePub  = "p63Q9dOq9cAoWHHxRGpPGcJTddQkucFxagmDcplkJ7s"
 	localLifecycleKID  = "access-lifecycle/local-v1"
-	localQRSeed        = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	localQRPub         = "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik"
+	localQRSeed        = "J/K6Ehl7hRVonf7ggcuiCizcIA8vy3lU8y2wWWFCmBY"
+	localQRPub         = "IV1JHVOcYJjnZZtSo3WIjGBbh6a9mWskqy6UchI+6/E"
 )
 
 func setLifecycleEnv(t *testing.T) {
