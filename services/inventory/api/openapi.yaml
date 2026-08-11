@@ -375,7 +375,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [slot_archived, slot_closed, channel_window_closed, seat_taken, seat_unavailable, pin_unavailable, orphaned_seats], description: 'Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out.'}
+        code: {type: string, enum: [slot_archived, slot_closed, channel_window_closed, presale_code_invalid, seat_taken, seat_unavailable, pin_unavailable, orphaned_seats], description: 'Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout.'}
         seat_identities:
           type: array
           description: >
@@ -427,6 +427,16 @@ components:
         unit_amount: {type: integer, format: int64, minimum: 0}
         currency: {type: string, pattern: '^[A-Z]{3}$'}
         channel: {type: string, minLength: 1, maxLength: 100, description: 'Opaque sales channel code; omitted means the default/public channel'}
+        presale_code:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >
+            Presale unlock code for a gated channel (TKT-239). EXACT and
+            case-sensitive like the channel code — nothing trims or folds it.
+            Required only when the channel's allocation sets requires_code;
+            ignored (and not recorded) otherwise. A missing or unusable code is
+            refused with the uniform `presale_code_invalid`.
     Hold:
       type: object
       additionalProperties: false
@@ -568,6 +578,14 @@ components:
         counterparty: {type: string, minLength: 1, maxLength: 200}
         expires_at: {type: string, format: date-time, description: 'Explicit reservation expiry — must be in the future by DB time; never derived from the cart TTL'}
         channel: {type: string, minLength: 1, maxLength: 100, description: 'Optional sales channel; the reservation consumes that allocation and draw-down children inherit it'}
+        presale_code:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >
+            Presale unlock code, when the channel is gated (TKT-239). Redeemed
+            ONCE, by this placement; draw-down children deliberately do not cite
+            it, so drawing down never consumes another redemption.
         actor: {type: string, minLength: 1, maxLength: 200}
         reason: {type: string, minLength: 1, maxLength: 500}
     GroupReservation:
@@ -620,6 +638,14 @@ components:
           type: string
           format: date-time
           description: 'End of the sales window, EXCLUSIVE. Omit for never-closes. A reversed window is refused by the schema constraint.'
+        requires_code:
+          type: boolean
+          default: false
+          description: >
+            Gate this allocation behind a presale unlock code (TKT-239 /
+            ADR-055). Defaults false, so an allocation that omits it sells
+            exactly as before. Orthogonal to the window: a window says WHEN the
+            channel may sell, this says WHO may, and both must admit a claim.
     ChannelAllocationSet:
       type: object
       additionalProperties: false

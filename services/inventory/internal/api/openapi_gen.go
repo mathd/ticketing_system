@@ -53,6 +53,7 @@ const (
 	ChannelWindowClosed ErrorCode = "channel_window_closed"
 	OrphanedSeats       ErrorCode = "orphaned_seats"
 	PinUnavailable      ErrorCode = "pin_unavailable"
+	PresaleCodeInvalid  ErrorCode = "presale_code_invalid"
 	SeatTaken           ErrorCode = "seat_taken"
 	SeatUnavailable     ErrorCode = "seat_unavailable"
 	SlotArchived        ErrorCode = "slot_archived"
@@ -67,6 +68,8 @@ func (e ErrorCode) Valid() bool {
 	case OrphanedSeats:
 		return true
 	case PinUnavailable:
+		return true
+	case PresaleCodeInvalid:
 		return true
 	case SeatTaken:
 		return true
@@ -214,6 +217,9 @@ type ChannelAllocation struct {
 
 	// ReleaseAt When the unsold allocation returns to the public channel; omitted means never
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
+
+	// RequiresCode Gate this allocation behind a presale unlock code (TKT-239 / ADR-055). Defaults false, so an allocation that omits it sells exactly as before. Orthogonal to the window: a window says WHEN the channel may sell, this says WHO may, and both must admit a claim.
+	RequiresCode *bool `json:"requires_code,omitempty"`
 }
 
 // ChannelAllocationSet defines model for ChannelAllocationSet.
@@ -259,7 +265,7 @@ type ConvertResult struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out.
+	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout.
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -267,7 +273,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out.
+// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout.
 type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.
@@ -294,6 +300,9 @@ type GroupReservationCreate struct {
 	// ExpiresAt Explicit reservation expiry — must be in the future by DB time; never derived from the cart TTL
 	ExpiresAt   time.Time          `json:"expires_at"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// PresaleCode Presale unlock code, when the channel is gated (TKT-239). Redeemed ONCE, by this placement; draw-down children deliberately do not cite it, so drawing down never consumes another redemption.
+	PresaleCode *string            `json:"presale_code,omitempty"`
 	Quantity    int                `json:"quantity"`
 	Reason      string             `json:"reason"`
 	SlotId      openapi_types.UUID `json:"slot_id"`
@@ -332,9 +341,12 @@ type Hold struct {
 // HoldCreate defines model for HoldCreate.
 type HoldCreate struct {
 	// Channel Opaque sales channel code; omitted means the default/public channel
-	Channel      *string             `json:"channel,omitempty"`
-	Currency     *string             `json:"currency,omitempty"`
-	OrganizerId  openapi_types.UUID  `json:"organizer_id"`
+	Channel     *string            `json:"channel,omitempty"`
+	Currency    *string            `json:"currency,omitempty"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// PresaleCode Presale unlock code for a gated channel (TKT-239). EXACT and case-sensitive like the channel code — nothing trims or folds it. Required only when the channel's allocation sets requires_code; ignored (and not recorded) otherwise. A missing or unusable code is refused with the uniform `presale_code_invalid`.
+	PresaleCode  *string             `json:"presale_code,omitempty"`
 	Quantity     int                 `json:"quantity"`
 	SlotId       openapi_types.UUID  `json:"slot_id"`
 	TicketTypeId *openapi_types.UUID `json:"ticket_type_id,omitempty"`

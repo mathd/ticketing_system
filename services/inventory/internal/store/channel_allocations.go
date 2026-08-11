@@ -43,10 +43,40 @@ const activeAllocation = `(release_at IS NULL OR release_at > clock_timestamp())
 const windowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
 	AND (closes_at IS NULL OR closes_at > clock_timestamp())`
 
+// codeWindowOpen is TKT-239's validity predicate for a presale code (ADR-055). Same
+// half-open [opens_at, closes_at) convention and the same clock_timestamp() reasoning as
+// windowOpen above — it is a separate const only because it reads presale_codes columns
+// rather than channel_allocations ones, and inlining either into the other's query would
+// be the hand-copy consumedQuantity's comment warns about.
+//
+// A code's window and its CHANNEL's window are independent and BOTH must admit the
+// instant. A code valid all week on a channel that opens Friday sells Friday.
+const codeWindowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
+	AND (closes_at IS NULL OR closes_at > clock_timestamp())`
+
 // consumingClaims is what counts against a channel's cap: confirmed consumption is
 // permanent, live holds are temporary. Built on liveClaims so expiry semantics can never
 // fork between pool and channel accounting.
 const consumingClaims = `(status='confirmed' OR ` + liveClaims + `)`
+
+// codeRedeemedQuantity is HOW MUCH of a presale code has been redeemed: the same
+// consumed-quantity sum that counts against a channel cap, scoped to the code instead of
+// the pool.
+//
+// Built from consumedQuantity and consumingClaims deliberately — a code's redemption count
+// must mean exactly what a channel's consumption means, or a refund would return channel
+// capacity while leaving a redemption burnt, and a hold expiry would free a seat while
+// keeping its code spent. Derived, never a counter: a counter cannot be decremented by
+// LAZY hold expiry without a sweeper, and ADR-010 forbids requiring one for correctness.
+//
+// NOT SCOPED BY pool_id, and that is the whole difficulty of this ticket. A channel
+// allocation is PRIMARY KEY (pool_id, channel_code), so every other derived count in this
+// file is pool-scoped and the pool row lock serializes it. A presale code is
+// (organizer_id, channel_code, code) and spans every slot in the presale, so this sum
+// reads rows the pool lock does not cover. The presale_codes ROW LOCK is what serializes
+// it — see redeemPresaleCode.
+const codeRedeemedQuantity = `SELECT COALESCE(sum(` + consumedQuantity + `),0)::bigint FROM claims
+	WHERE organizer_id=$1 AND channel_code=$2 AND presale_code=$3 AND ` + consumingClaims
 
 // consumedQuantity is HOW MUCH a counted claim consumes — net of anything a refund gave
 // back (TKT-161). Confirmed capacity is no longer permanent: a refund returns part of it,
@@ -79,6 +109,11 @@ type ChannelAllocation struct {
 	// window is unrepresentable — the migration's CHECK refuses it.
 	OpensAt  *time.Time `json:"opens_at,omitempty"`
 	ClosesAt *time.Time `json:"closes_at,omitempty"`
+	// RequiresCode gates the channel behind a presale unlock code (TKT-239 /
+	// ADR-055). False by default, so an allocation that predates this field sells
+	// exactly as it did. Orthogonal to the window: a window says WHEN, this says
+	// WHO, and both must admit a claim.
+	RequiresCode bool `json:"requires_code,omitempty"`
 }
 
 type ChannelAvailability struct {
@@ -147,8 +182,8 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 		return nil, err
 	}
 	for _, a := range allocs {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO channel_allocations(pool_id,channel_code,cap,release_at,opens_at,closes_at) VALUES($1,$2,$3,$4,$5,$6)`,
-			slot, a.Channel, a.Cap, a.ReleaseAt, a.OpensAt, a.ClosesAt); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO channel_allocations(pool_id,channel_code,cap,release_at,opens_at,closes_at,requires_code) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+			slot, a.Channel, a.Cap, a.ReleaseAt, a.OpensAt, a.ClosesAt, a.RequiresCode); err != nil {
 			return nil, err
 		}
 	}
