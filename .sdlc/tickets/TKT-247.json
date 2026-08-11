@@ -2,10 +2,8 @@
   "key": "TKT-247",
   "type": "Bug",
   "summary": "A 1-in-16 flake: the scanner-device negative fixture can reconstruct the correct token",
-  "status": "Backlog",
-  "labels": [
-    "risk:low"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": null,
   "pr": null,
   "parent": null,
