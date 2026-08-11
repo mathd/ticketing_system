@@ -2,10 +2,8 @@
   "key": "TKT-240",
   "type": "Story",
   "summary": "US-CH6: Reseller API — an external partner sells from shared inventory",
-  "status": "PO Review",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 201,
