@@ -13,5 +13,11 @@
   "readiness": null,
   "context": null,
   "links": [],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=backlog kind=blocker -->\n### Correction to this ticket'''s evidence (the conclusion stands, the reasoning did not)\n\nThe original description argued the flake from the token in the failure log — `3572…0250` ends in `0`, therefore `token[:len-1]+\"0\"` reconstructed it. **That inference is invalid.**\n\nLine 63 logs `bad`, not the enrolled token, and `bad` **always** ends in `0` by construction. So the logged value is the same whether the test failed for this reason or any other, and it is not evidence. A second gate run then produced `da86…ba60` — also ending in `0`, which looked like a 1-in-256 coincidence and briefly made the whole theory look wrong. It was not a coincidence: it was guaranteed.\n\n**What actually confirms it:** running the test 8 times in isolation produced 1 failure, consistent with p = 1/16 (the enrolled token ending in `0`). Six earlier clean runs plus this gives ~1 failure in 14 observed.\n\nThe conclusion is unchanged — the fixture can reconstruct the correct token and then asserts it is refused — but the fix should be verified by *forcing* the case (enrol a token ending in `0`, or seed the RNG) rather than by re-running and hoping, which is what misled the diagnosis here.\n"
+    }
+  ]
 }
