@@ -1,0 +1,17 @@
+{
+  "key": "TKT-247",
+  "type": "Bug",
+  "summary": "A 1-in-16 flake: the scanner-device negative fixture can reconstruct the correct token",
+  "status": "Backlog",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "parent": null,
+  "description": "`TestScannerDeviceEnrolmentAndRevocation` (services/access/internal/store/scanner_devices_smoke_test.go:61) fails roughly **1 run in 16**, and it has nothing to do with whatever branch is being gated.\n\nThe negative-case table builds a wrong token as `token[:len(token)-1] + \"0\"` — the correct token with its last character replaced by `0`. Enrolment tokens are 32 random bytes hex-encoded, so **whenever the token already ends in `0`, that expression reconstructs the token itself**, and the test then asserts that a CORRECT token is refused. It is not.\n\nObserved on the TKT-240 gate run: token `3572…0250` (ends in `0`) → `token \"3572…0250\" authenticated (err=<nil>)`. Re-running the test six times immediately afterwards passed six times, which is the signature of a 1-in-16 draw rather than a defect in the code under test.\n\n**The code is correct; the fixture is wrong.** `AuthenticateScannerDevice` behaves exactly as intended in both cases.\n\nFix: derive the wrong token so it can never coincide with the right one — flip the last character to something it is not (e.g. `0`→`1`), or append rather than substitute, or assert `bad != token` before using it. The same shape should be checked anywhere else this table idiom appears (a quick grep for `[:len(` in test files).\n\nFound during TKT-240 gating; not TKT-240 s to fix and not caused by it (that branch touches no access file).",
+  "readiness": null,
+  "context": null,
+  "links": [],
+  "comments": []
+}
