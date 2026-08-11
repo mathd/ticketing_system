@@ -193,13 +193,17 @@ func TestChannelScopeIsExactAndNeverFolded(t *testing.T) {
 	_ = cred
 }
 
-// Rotation is enrol-then-revoke, and the live-uniqueness index must not block it.
+// Zero-downtime rotation: the replacement is issued WHILE the original still works.
 //
-// Written from the requirement ("a partner can be re-issued a credential after a
-// leak") rather than from what the index happens to do: an index that also
-// counted revoked rows would make a leaked credential permanently unreplaceable
-// for that (organizer, channel, reseller).
-func TestARevokedCredentialDoesNotBlockItsReplacement(t *testing.T) {
+// This asserts the documented workflow rather than whatever the schema happens to
+// allow -- which is the distinction that mattered here. The previous version of
+// this test revoked FIRST and then enrolled, so it passed against a unique index
+// that made the documented enrol-then-revoke workflow impossible. It agreed with
+// the code and disagreed with the requirement, and ai-review caught it.
+//
+// The requirement, stated without naming the mechanism: a partner can be handed a
+// new credential and keep selling on the old one until it has deployed the new.
+func TestAReplacementIsIssuedWhileTheOriginalStillWorks(t *testing.T) {
 	ctx := context.Background()
 	db := migratedDB(t, ctx)
 	org, reseller := uuid.New(), uuid.New()
@@ -208,43 +212,36 @@ func TestARevokedCredentialDoesNotBlockItsReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The replacement is issued with the original STILL LIVE. This is the step the
+	// unique index refused.
+	second, secondToken, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-acme", "ACME rotated")
+	if err != nil {
+		t.Fatalf("a replacement could not be issued while the original was live, so rotation "+
+			"requires taking the partner offline first: %v", err)
+	}
+	if second.ID == first.ID || secondToken == firstToken {
+		t.Fatal("rotation returned the same credential; the replacement is not a new secret")
+	}
+
+	// BOTH work during the handover, and both carry the same scope.
+	for name, token := range map[string]string{"original": firstToken, "replacement": secondToken} {
+		got, err := AuthenticateResellerCredential(ctx, db, token)
+		if err != nil {
+			t.Fatalf("the %s credential must authenticate during the handover: %v", name, err)
+		}
+		if got.OrganizerID != org || got.ChannelCode != "reseller-acme" || got.ResellerID != reseller {
+			t.Fatalf("the %s credential resolved to a different scope: %+v", name, got)
+		}
+	}
+
+	// Retiring the predecessor ends the handover and leaves the replacement working.
 	if err := RevokeResellerCredential(ctx, db, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	second, secondToken, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-acme", "ACME rotated")
-	if err != nil {
-		t.Fatalf("a revoked credential must not block re-issuing one for the same scope: %v", err)
-	}
-	if second.ID == first.ID {
-		t.Fatal("rotation returned the same credential id")
-	}
-	if secondToken == firstToken {
-		t.Fatal("rotation returned the same token; the replacement is not a new secret")
+	if _, err := AuthenticateResellerCredential(ctx, db, firstToken); !errors.Is(err, ErrResellerCredentialUnknown) {
+		t.Fatal("the retired credential still authenticates after rotation completed")
 	}
 	if _, err := AuthenticateResellerCredential(ctx, db, secondToken); err != nil {
-		t.Fatalf("the replacement credential must authenticate: %v", err)
-	}
-	if _, err := AuthenticateResellerCredential(ctx, db, firstToken); !errors.Is(err, ErrResellerCredentialUnknown) {
-		t.Fatal("the revoked credential still authenticates after rotation")
-	}
-}
-
-// Two live credentials for the same (organizer, channel, reseller) are refused —
-// the other half of the partial index, without which "one live credential" is a
-// comment rather than a constraint.
-func TestASecondLiveCredentialForTheSameScopeIsRefused(t *testing.T) {
-	ctx := context.Background()
-	db := migratedDB(t, ctx)
-	org, reseller := uuid.New(), uuid.New()
-
-	if _, _, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-acme", "ACME"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-acme", "ACME again"); err == nil {
-		t.Fatal("a second LIVE credential for the same organizer+channel+reseller was accepted")
-	}
-	// A different reseller on the same channel is a different partner and is allowed.
-	if _, _, err := EnrolResellerCredential(ctx, db, org, uuid.New(), "reseller-acme", "Other partner"); err != nil {
-		t.Fatalf("a different reseller on the same channel must be allowed: %v", err)
+		t.Fatalf("the replacement stopped working when its predecessor was revoked: %v", err)
 	}
 }

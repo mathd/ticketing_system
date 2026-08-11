@@ -865,7 +865,7 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 // which is precisely the confusion a build that treats incidence as a display
 // flag would produce.
 func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
-	slot, ticketType := setupCheckoutOffer(t, "tkt215")
+	_, ticketType := setupCheckoutOffer(t, "tkt215")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -906,23 +906,6 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 	// sell. That is not a workaround for the test — it is the new requirement, and
 	// the same one every fee-only channel in a real deployment must satisfy before
 	// this ships.
-	// BOTH allocations in ONE call: the endpoint REPLACES the pool's full set
-	// under the pool lock (ReplaceChannelAllocations), so two sequential calls
-	// would leave only the second channel allocated and the first sale would fail
-	// for a reason that looks like the bug this fixture exists to avoid.
-	//
-	// The venue is provisioned with a GA capacity of 5 and caps must fit it, so
-	// each channel takes 2 -- enough for the quantity-2 reserve each performs, and
-	// summing under the pool's capacity.
-	if code, body := internalJSON(t, http.MethodPut,
-		fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot), "",
-		map[string]any{"organizer_id": organizerID, "allocations": []map[string]any{
-			{"channel": "tkt215-passed", "cap": 2},
-			{"channel": "tkt215-absorbed", "cap": 2},
-		}}); code != http.StatusOK {
-		t.Fatalf("allocate the fee-rule channels: %d %s", code, body)
-	}
-
 	reserveIn := func(channel, key string) map[string]any {
 		t.Helper()
 		code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", key,

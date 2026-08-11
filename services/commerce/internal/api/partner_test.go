@@ -129,6 +129,46 @@ func TestEveryPartnerOperationDeclaresTheCredential(t *testing.T) {
 	}
 }
 
+// A wrong METHOD on a pre-existing operation still answers 405.
+//
+// This test exists because its predecessor could not fail. That one sent a
+// malformed POST and asserted the body shape, while its comment claimed to pin the
+// 405-vs-404 behaviour -- so the regression it named shipped underneath it and was
+// caught by ai-review instead. Confirmed by running both revisions: origin/main
+// answered 405, the branch answered 404.
+//
+// The mechanism is that supplying any error handler switches the shared validator
+// to ErrorHandlerWithOpts, which hard-codes 404 for every route-lookup failure.
+// Deleting the restoration in server.go must turn this red.
+func TestWrongMethodStillAnswers405(t *testing.T) {
+	for _, tc := range []struct{ name, method, path string }{
+		{"GET on a POST-only operation", http.MethodGet, "/reservations"},
+		{"DELETE on a POST-only operation", http.MethodDelete, "/orders"},
+		{"POST on a GET-only operation", http.MethodPost, "/orders/00000000-0000-0000-0000-000000000001"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			partnerServer().ServeHTTP(res, httptest.NewRequest(tc.method, tc.path, nil))
+			if res.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s = %d, want 405. A wrong method reported as 404 is the platform-wide "+
+					"regression that adding a validator error handler introduces (body %s)",
+					tc.method, tc.path, res.Code, res.Body)
+			}
+		})
+	}
+}
+
+// An UNKNOWN path still answers 404 -- the restoration above must not turn every
+// miss into a 405.
+func TestAnUnknownPathStillAnswers404(t *testing.T) {
+	res := httptest.NewRecorder()
+	partnerServer().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/no-such-operation", nil))
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("an unknown path = %d, want 404: the 405 restoration is too broad and is now "+
+			"answering 405 for paths that do not exist (body %s)", res.Code, res.Body)
+	}
+}
+
 // Validation errors OUTSIDE the partner surface keep the representation they had
 // before this ticket.
 //

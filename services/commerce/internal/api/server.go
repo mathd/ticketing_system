@@ -250,14 +250,28 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 				write(w, http.StatusUnauthorized, map[string]string{"error": "partner credential is not recognised"})
 				return
 			}
+			// Restore 405 for a wrong method. Supplying ANY error handler switches
+			// the shared helper from its legacy hook to ErrorHandlerWithOpts, and
+			// that hook hard-codes 404 for EVERY route-lookup failure where the
+			// legacy one distinguishes routers.ErrMethodNotAllowed as 405
+			// (shared/go/contract/http.go documents the trap; this ticket walked
+			// into it anyway). Without this, adding the partner surface silently
+			// changed wrong-method responses on every pre-existing commerce
+			// operation -- a platform-wide regression, found by ai-review and
+			// confirmed by running both revisions: GET /reservations answered 405
+			// on origin/main and 404 here.
+			//
+			// Matched on the validator's message rather than a sentinel because the
+			// message is what the hook passes through; TestWrongMethodStillAnswers405
+			// executes the real router, so a message change breaks the test rather
+			// than silently restoring the regression.
+			if status == http.StatusNotFound && strings.Contains(msg, "method not allowed") {
+				write(w, http.StatusMethodNotAllowed, map[string]string{"error": msg})
+				return
+			}
 			// Everything else keeps the shape the shared helper's own default
-			// produces, byte for byte — {"error": <validator message>} with
-			// Cache-Control: no-store. Supplying ANY handler switches the helper
-			// from its legacy hook to ErrorHandlerWithOpts, and that is a real
-			// behaviour change this ticket must not smuggle in: the newer hook
-			// reports every route-lookup failure as 404 where the legacy one
-			// distinguishes a wrong method as 405. Pinned by
-			// TestNonPartnerValidationErrorsAreUnchanged.
+			// produces, byte for byte -- {"error": <validator message>} with
+			// Cache-Control: no-store.
 			write(w, status, map[string]string{"error": msg})
 		}, s.authenticatePartner)
 	if err != nil {
@@ -334,17 +348,22 @@ type reserveRequest struct {
 	// channel-agnostic rules are eligible, and that is NOT the same as a caller
 	// sending an empty channel. Omitting it is not a wildcard.
 	//
-	// It reaches catalog's fee resolution AND, since TKT-240, inventory — as
-	// `channel` on the GA hold. Inventory's channel_code is what
-	// channel_allocations cap consumption against (ADR-024), so a channelled sale
-	// consumes its own channel's allocation and returns 409 once that allocation
-	// is exhausted. Before TKT-240 it stopped at catalog, which meant a
-	// reseller-channel sale took reseller fees while eating public inventory.
+	// It reaches catalog's fee resolution and STOPS THERE. Inventory's channel_code
+	// is what channel_allocations cap consumption against (ADR-024), so a
+	// reseller-channel sale still takes that channel's fees while consuming public
+	// inventory. That is a known, open defect.
 	//
-	// The SEATED half is deliberately still open and belongs to TKT-176:
-	// SeatHoldCreate has no channel field at all, so a seated claim ignores
-	// allocations entirely. Forwarding a channel the seat path does not read
-	// would be a half-fix that reads as done — see channel_seam_test.go.
+	// TKT-240 closed this by forwarding the channel here, and the closure was
+	// REVERTED after its own adversarial review. Forwarding is necessary but not
+	// sufficient: this route is UNAUTHENTICATED and takes channel_code from the
+	// request body, so forwarding alone lets any caller name a reseller's channel
+	// and consume its allocation with no credential — executed and confirmed, not
+	// theorised. Closing the seam is therefore an AUTHORIZATION change, not a
+	// plumbing change: the allocation has to say who may sell it, judged where the
+	// stock is, under the pool row lock (the shape ADR-055 gave requires_code).
+	//
+	// TKT-246 owns that. Do not re-add the forward on its own — see
+	// channel_seam_test.go, which pins this route as channel-free until then.
 	ChannelCode *string `json:"channel_code,omitempty"`
 }
 
@@ -687,26 +706,6 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	holdURL, holdBody := s.inventoryURL+"/holds", map[string]any{"organizer_id": in.OrganizerID,
 		"slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity,
 		"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
-	// The channel reaches inventory for a GA sale (TKT-240), closing the seam
-	// documented on reserveRequest.ChannelCode. Inventory's channel_code is what
-	// channel_allocations cap consumption against (ADR-024), so a channelled sale
-	// now consumes ITS OWN channel's allocation instead of public stock — and
-	// starts returning 409 when that allocation is exhausted. That refusal is the
-	// intended behaviour change; before it, a reseller-channel sale took reseller
-	// fees while eating the public pool.
-	//
-	// The key is `channel`, which is what inventory's HoldCreate declares — NOT
-	// `channel_code`, commerce's own spelling. Sending the wrong one is a silent
-	// no-op: inventory ignores the unknown field, consults no allocation, and
-	// succeeds, leaving the seam open while every test stays green.
-	//
-	// Nil is omitted rather than sent as "": the pointer exists so that the
-	// default/public context is distinguishable from a caller naming an empty
-	// channel, and an empty string would send every public sale looking for an
-	// allocation that does not exist.
-	if in.ChannelCode != nil {
-		holdBody["channel"] = *in.ChannelCode
-	}
 	if in.seated() {
 		holdURL = s.inventoryURL + "/holds/seats"
 		holdBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID,

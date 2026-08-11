@@ -198,30 +198,26 @@ func TestAPartnerCannotNameAnotherOrganizer(t *testing.T) {
 	}
 }
 
-// The no-oversell guarantee holds WITH A RESELLER PARTICIPATING.
+// The pool's no-oversell guarantee holds with a partner competing for it.
 //
-// The counts are DERIVED from the capacity and the cap rather than written as
-// literals, and the invariant is asserted alongside them. A test that pinned "6"
-// and "4" would pin the behaviour; what the requirement actually says is that the
-// pool never grants more than its capacity and the channel never grants more than
-// its cap, and that is what fails if either bound breaks.
+// WHAT THIS PROVES AND WHAT IT DOES NOT. The partner's holds go through the same
+// pool row lock as everyone else's, so the POOL never grants more than its
+// capacity -- that is asserted here and it is real.
 //
-// One slot is sufficient here BECAUSE this design adds no per-reseller quota and
-// no cross-slot counter: every count the decision reads is pool-scoped, which is
-// what makes the single pool row lock enough (ADR-055 § presale codes). If a
-// per-reseller quota is ever added, this fixture stops being adequate and the
-// proof needs three slots.
-func TestNoOversellWithAResellerParticipating(t *testing.T) {
-	const capacity, cap = 10, 6
+// It does NOT prove the partner is confined to its channel's allocation, because
+// TKT-240 does not do that: the channel still stops at catalog's fee resolution
+// and never reaches inventory, so no allocation is consulted for any sale. The
+// allocation created below is therefore deliberately IGNORED by the claim path,
+// and asserting a 6/4 split here would assert a guarantee this branch does not
+// ship. TKT-246 closes that, and the cap assertion belongs with it.
+//
+// Written this way on purpose: the previous version of this test asserted the
+// channel cap and passed only because the forward existed. Keeping it would have
+// left a green test making a claim the code had stopped honouring -- which is the
+// failure this epic has now paid for twice.
+func TestThePoolIsNotOversoldWithAPartnerCompeting(t *testing.T) {
+	const capacity = 10
 	slot, tt := publishedSlot(t, "Partner Contention Hall", capacity)
-
-	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
-	if code, body := internalJSON(t, http.MethodPut, allocURL, "", map[string]any{
-		"organizer_id": organizerID,
-		"allocations":  []map[string]any{{"channel": partnerChannel(), "cap": cap}},
-	}); code != http.StatusOK {
-		t.Fatalf("allocate: %d %s", code, body)
-	}
 
 	var partnerGranted, publicGranted atomic.Int32
 	var wg sync.WaitGroup
@@ -253,24 +249,16 @@ func TestNoOversellWithAResellerParticipating(t *testing.T) {
 	wg.Wait()
 
 	partner, public := int(partnerGranted.Load()), int(publicGranted.Load())
-
-	// The invariants, said without naming the implementation.
-	if partner > cap {
-		t.Errorf("the reseller channel granted %d claims against a cap of %d: a channel sold past "+
-			"its own allocation", partner, cap)
-	}
 	if partner+public > capacity {
 		t.Errorf("the pool granted %d claims against a capacity of %d: the no-oversell guarantee "+
-			"does not hold with a reseller participating", partner+public, capacity)
+			"does not hold with a partner competing", partner+public, capacity)
 	}
-	// And the allocation really is RESERVED for the channel — the public share is
-	// bounded by what the allocation does not hold. Without this, a run that
-	// granted nothing to the partner would satisfy every bound above.
-	if public > capacity-cap {
-		t.Errorf("public claims took %d of a pool whose channel allocation reserves %d of %d: "+
-			"unchannelled demand ate capacity held for a channel", public, cap, capacity)
+	if partner+public != capacity {
+		t.Errorf("the pool granted %d of %d: under 30 concurrent claimants for 10 units the pool "+
+			"should be exhausted exactly, and anything less means claims were lost rather than "+
+			"refused", partner+public, capacity)
 	}
 	if partner == 0 {
-		t.Error("the reseller was granted nothing; this run proves no bound at all")
+		t.Error("the partner was granted nothing; this run proves no bound at all")
 	}
 }

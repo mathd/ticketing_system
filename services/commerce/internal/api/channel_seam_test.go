@@ -10,28 +10,32 @@ import (
 	"testing"
 )
 
-// The commerce -> inventory channel seam, closed for GA pools (TKT-240).
+// The commerce -> inventory channel seam: STILL OPEN, and pinned open on purpose
+// (TKT-240, reverted; TKT-246 owns the closure).
 //
-// Before this ticket, `channel_code` reached catalog's fee resolution and stopped
-// there: a reseller-channel sale took reseller fees while consuming PUBLIC
-// inventory, because inventory's channel_code is what channel_allocations cap
-// consumption against (ADR-024). Closing the seam is the ticket's intended
-// breaking change — a channelled sale now consumes its own channel's allocation
-// and starts returning 409 when that allocation is exhausted, on ticket types
-// this ticket never touched.
+// `channel_code` reaches catalog's fee resolution and stops there. Inventory's
+// channel_code is what channel_allocations cap consumption against (ADR-024), so a
+// reseller-channel sale takes that channel's fees while eating PUBLIC inventory.
+// That is a real defect and it is not fixed here.
 //
-// WHY THIS TEST ASSERTS THE OUTBOUND BODY AND NOT THE STATUS. The failure mode
-// this closure invites is silent and green: inventory's hold takes a field named
-// `channel` (HoldCreate in services/inventory/api/openapi.yaml), while commerce's
-// request field is `channel_code`. Forwarding the wrong key makes inventory ignore
-// it, consult no allocation, and succeed — the seam still open, every test still
-// passing, the 409 never observed because it never fires. A status assertion
-// against a stub cannot tell that apart from a correct forward. So the assertion
-// is on the KEY commerce actually puts on the wire.
+// TKT-240 did close it, by adding `channel` to the GA hold body, and the closure
+// was reverted after its own adversarial review. The forward is necessary and NOT
+// sufficient: `POST /reservations` is unauthenticated and takes channel_code from
+// the request body, so with the forward in place an unauthenticated caller could
+// name a reseller`s channel and consume its allocation. That was executed against
+// the code, not argued: the probe reached inventory with channel=reseller-acme and
+// no credential.
 //
-// The end-to-end proof that the forwarded channel really engages allocation
-// capacity lives in the smoke suite against real inventory SQL; this test pins the
-// wire contract that the smoke test would otherwise be the only thing protecting.
+// So closing the seam is an AUTHORIZATION change. The allocation must say who may
+// sell it and inventory must judge that under the pool row lock -- the shape
+// ADR-055 gave requires_code -- and every hold path (first attempt, persisted
+// replay, exchange target) must carry the channel or be refused. TKT-246.
+//
+// THESE TESTS PIN THE PRESENT, NOT THE PAST. They assert the GA hold carries no
+// channel today. That is not an endorsement: it is a tripwire, so that re-adding
+// the forward on its own -- the tempting one-line "fix" -- fails loudly here and
+// sends the author to TKT-246 instead of shipping a bypassable guard. When TKT-246
+// lands, these assertions INVERT; do not delete them.
 
 // capturedHold is the inventory hold body commerce sent.
 type capturedHold struct {
@@ -81,13 +85,13 @@ func reserveThroughCommerce(t *testing.T, channel *string, requestBody string) c
 	return got
 }
 
-// A channelled GA sale forwards its channel to inventory, under the key inventory
-// actually reads.
+// A channelled GA sale does NOT forward its channel to inventory -- yet.
 //
-// The `channel` spelling is asserted explicitly, and `channel_code` is asserted
-// ABSENT, because sending the latter is the silent no-op described above: it looks
-// identical in a diff and leaves the seam open.
-func TestAChannelledGASaleForwardsItsChannelToInventory(t *testing.T) {
+// The tripwire. If this fails, someone re-added the forward without the
+// authorization half, and the result is worse than the defect it fixes: a
+// reseller`s allocation becomes consumable by any unauthenticated caller who knows
+// the channel code. Read TKT-246 before changing this test.
+func TestAChannelledGASaleDoesNotYetForwardItsChannel(t *testing.T) {
 	reseller := "reseller-acme"
 	got := reserveThroughCommerce(t, &reseller, `{"organizer_id":"`+pricingOrg+`","ticket_type_id":"`+pricingTT+
 		`","quantity":2,"channel_code":"reseller-acme"}`)
@@ -98,17 +102,16 @@ func TestAChannelledGASaleForwardsItsChannelToInventory(t *testing.T) {
 	if strings.Contains(got.path, "/holds/seats") {
 		t.Fatalf("a quantity sale took the seated hold path (%s)", got.path)
 	}
-	v, ok := got.body["channel"]
-	if !ok {
-		t.Fatalf("the inventory hold body carries no `channel`: the seam is still open and a "+
-			"reseller-channel sale is consuming public inventory. body=%v", got.body)
-	}
-	if v != "reseller-acme" {
-		t.Fatalf("forwarded channel = %v, want %q", v, "reseller-acme")
+	if v, present := got.body["channel"]; present {
+		t.Fatalf("the GA hold now forwards channel=%v. If that is deliberate, the AUTHORIZATION "+
+			"half must land with it: POST /reservations is unauthenticated and takes channel_code "+
+			"from the body, so forwarding alone lets any caller consume a reseller's allocation "+
+			"without a credential. That was executed and confirmed. TKT-246 owns the closure; "+
+			"do not re-add the forward on its own.", v)
 	}
 	if _, wrong := got.body["channel_code"]; wrong {
-		t.Fatalf("the hold body uses `channel_code`; inventory reads `channel` and ignores this, "+
-			"so no allocation is consulted and the sale succeeds against public stock. body=%v", got.body)
+		t.Fatalf("the hold body carries `channel_code`, which inventory does not read: a forward "+
+			"that consults no allocation and silently succeeds. body=%v", got.body)
 	}
 }
 

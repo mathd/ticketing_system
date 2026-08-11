@@ -49,10 +49,29 @@ CREATE TABLE reseller_credentials (
     revoked_at   timestamptz
 );
 
--- One live credential per (organizer, channel, reseller). Rotation is enrol-then-
--- revoke, so the partial index counts only live rows: a revoked credential must not
--- block issuing its replacement.
-CREATE UNIQUE INDEX reseller_credentials_one_live
+-- NO uniqueness constraint on (organizer, channel, reseller), deliberately.
+--
+-- The first version of this migration had a partial unique index over live rows and
+-- a comment claiming "rotation is enrol-then-revoke". Those two contradict each
+-- other, and ai-review caught it: the index makes enrol-then-revoke impossible,
+-- because issuing the replacement while the old credential is still live raises a
+-- unique violation. The only workflow it permits is revoke-THEN-enrol, which takes
+-- the partner offline between the two statements -- and if the enrol then fails,
+-- the partner has no working credential at all.
+--
+-- Zero-downtime rotation is the requirement: issue the replacement, hand it to the
+-- partner, let them deploy it, then revoke the predecessor. That needs two live
+-- credentials to coexist for as long as the handover takes, so the constraint has
+-- to go rather than the workflow.
+--
+-- What is NOT lost by dropping it: token_hash is already UNIQUE, so two credentials
+-- can never collide on the value that authenticates, and each row still carries its
+-- own scope. Multiple live credentials for one partner is a deliberate state, not an
+-- accident to be prevented -- it is what a rotation looks like while it is happening.
+--
+-- A test asserts an operator can enrol a replacement while the original is still
+-- live, and that both authenticate to the same scope until the old one is revoked.
+CREATE INDEX reseller_credentials_by_scope
     ON reseller_credentials (organizer_id, channel_code, reseller_id)
     WHERE revoked_at IS NULL;
 
