@@ -4,7 +4,7 @@
   "summary": "US-CH5: Presale unlock codes — who may sell on a gated channel",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": "https://github.com/mathd/ticketing_system/pull/200",
