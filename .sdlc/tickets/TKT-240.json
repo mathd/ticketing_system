@@ -2,15 +2,15 @@
   "key": "TKT-240",
   "type": "Story",
   "summary": "US-CH6: Reseller API — an external partner sells from shared inventory",
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 201,
     "url": "https://github.com/mathd/ticketing_system/pull/201",
-    "state": "open"
+    "state": "merged"
   },
   "parent": "TKT-17",
   "description": "The last and largest slice: an external reseller sells from the same inventory as everyone else, with the same no-oversell guarantee and per-reseller attribution. This introduces a **third identity class** — a machine-to-machine partner credential, alongside staff sessions (ADR-042), internal tokens (ADR-043) and customer sessions (ADR-049) — and closes the known commerce→inventory channel seam.\n\n**Conditions of Success:**\n- A partner credential class exists: per-reseller API credentials, scoped to one organizer and one channel from the registry (US-CH1). Credentials are stored hashed, never recoverable, and are revocable. **An ADR records this identity class** and its relationship to the three existing ones.\n- The reseller surface is a **contract operation, not an internal route** — per ADR-043's line, it declares `security:` in the OpenAPI document and is validator-enforced, not header-compared in a handler. It is reachable from the edge (unlike `/internal/`), so the gateway gains an external partner route.\n- The partner may: read availability for its channel, hold, and confirm a sale. It may **not** read anything scoped outside its organizer+channel.\n- **The commerce→inventory channel seam is closed for GA pools**: a sale naming a channel consumes *that channel's* allocation. Today `services/commerce/internal/api/server.go:260-263` documents that channel is deliberately not forwarded to inventory, with the consequence that a reseller-channel sale takes reseller fees while eating public inventory. **Closing this will make some currently-succeeding reserves return 409** — that behavior change is intended, must be called out in the PR, and must be covered by a test that asserts the new refusal.\n- **The seated half of the same seam stays with TKT-176 and is an explicit non-goal here.** `CreateSeatHold` admits against capacity alone and `SeatHoldCreate` has no `channel` field at all, so a seated claim ignores allocations entirely — a separate defect with its own display consequences, already ticketed. This story must not silently half-fix it: if the reseller surface is offered on a seated pool, it refuses rather than overselling the channel, and the refusal cites TKT-176.\n- Per-reseller attribution: the claim and the order carry the channel and the reseller identity, so settlement (TKT-217/ADR-048) can already split by it.\n- Rate limiting per ADR-051's per-subject/per-source discipline applies to the partner surface.\n- Tests: an unauthenticated call is refused by the validator (not the handler); a credential scoped to channel A cannot hold on channel B; the no-oversell contention proof holds with a reseller participating; the seam-closure 409; and a revoked credential is refused immediately.\n\nQuality gates: `make check` green; contention smoke extended with a partner participant; OpenAPI regenerated and committed before the gate; the identity-class ADR merged with the code.\n\nParent: TKT-17. Depends on US-CH1 (channel registry), US-CH3 (per-channel price — a reseller with its own price is the point) and US-CH4 (windows). Non-goals: reseller settlement reports (TKT-23), partner self-service onboarding UI, OAuth flows beyond a credential.",
