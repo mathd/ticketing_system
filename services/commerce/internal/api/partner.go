@@ -2,20 +2,24 @@ package api
 
 // The partner (reseller) surface (TKT-240 / ADR-056).
 //
-// Three operations: read availability for your own channel, hold GA stock against
-// your own channel's allocation, confirm that hold into a sale. The credential
-// decides which organizer and which channel "your own" means, and these handlers
-// never take either from the request body.
+// ONE operation in this slice: read availability for your own channel. The
+// credential decides which organizer and which channel "your own" means, and the
+// handler never takes either from the request body.
+//
+// There is deliberately no partner WRITE here. A hold has to consume the
+// credential's channel allocation to mean anything, and inventory does not yet
+// enforce that -- the channel stops at catalog's fee resolution and never reaches
+// the claim path. A write shipped now would be a hold that silently consumes
+// PUBLIC stock while the contract, the ADR and this comment all claimed the
+// partner was confined to its channel. It was written, reviewed, and removed for
+// exactly that reason; TKT-246 adds it back together with the enforcement.
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 
 	"github.com/google/uuid"
-
 )
 
 // partnerRefusal writes a refusal carrying a machine-readable code. The codes are
@@ -141,62 +145,4 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 		ChannelCode: scope.ChannelCode,
 		Available:   available,
 	})
-}
-
-// partnerReserve holds GA stock against the credential's channel allocation.
-//
-// It reuses the ordinary reserve path deliberately: pricing, fee composition,
-// idempotency and the inventory hold are the same operations a customer sale
-// performs, and a second implementation of them would be a second place for the
-// no-oversell guarantee to be wrong. What differs is only WHERE the channel comes
-// from — the credential, not the body.
-func (s *Server) partnerReserve(w http.ResponseWriter, r *http.Request) {
-	scope, ok := requirePartnerScope(w, r)
-	if !ok {
-		return
-	}
-	if !s.limitPartner(w, scope) {
-		return
-	}
-	var in PartnerReservationCreate
-	if !decode(w, r, &in) {
-		return
-	}
-	if !partnerOrganizerMatches(w, scope, in.OrganizerId) {
-		return
-	}
-	// A seated pool is refused with `seated_pool_unsupported` citing TKT-176. That
-	// translation lives in the reserve path itself (server.go, at the inventory
-	// refusal), not here: the slot is only resolved from the ticket type INSIDE
-	// reserve, and inventory is the thing that actually knows the pool kind --
-	// it refuses under the pool row lock. A pre-check here would be a second,
-	// weaker copy of a guard that already exists at the right tier.
-	// Delegate to the ordinary reserve by REWRITING the body with the credential's
-	// channel, rather than re-implementing the path or threading a parameter
-	// through it. Two reasons, both about keeping one implementation of the
-	// no-oversell guarantee: `reserve` decodes, prices, composes fees, derives the
-	// idempotent reservation id and calls inventory, and a partner copy of that
-	// would be a second place for any of it to be wrong; and the channel arrives
-	// here the same way a customer's does, so the seam closure committed earlier
-	// carries it to inventory with no partner-specific branch.
-	//
-	// The rewrite is the SCOPE being applied, not the request being trusted: the
-	// body is rebuilt from fields already validated against the contract plus the
-	// channel from the credential, and a `channel_code` the caller sent could not
-	// have survived, because PartnerReservationCreate is additionalProperties:false
-	// and declares no such field.
-	body, err := json.Marshal(map[string]any{
-		"organizer_id":   in.OrganizerId,
-		"ticket_type_id": in.TicketTypeId,
-		"quantity":       in.Quantity,
-		"channel_code":   scope.ChannelCode,
-	})
-	if err != nil {
-		write(w, http.StatusInternalServerError, map[string]string{"error": "could not build reservation"})
-		return
-	}
-	inner := r.Clone(r.Context())
-	inner.Body = io.NopCloser(bytes.NewReader(body))
-	inner.ContentLength = int64(len(body))
-	s.reserve(w, inner)
 }

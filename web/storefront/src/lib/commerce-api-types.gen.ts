@@ -214,26 +214,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/partners/reservations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Hold GA stock against the partner's own channel allocation.
-         * @description Consumes the credential's channel allocation, so a partner cannot oversell its channel and cannot reach anybody else's. Quantity only: SeatHoldCreate carries no channel and a seated claim ignores allocations entirely, so a seated pool is REFUSED here (409, code `seated_pool_unsupported`) rather than half-served — TKT-176 owns the seated seam.
-         */
-        post: operations["createPartnerReservation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/internal/operational-holds/{id}/convert": {
         parameters: {
             query?: never;
@@ -399,17 +379,6 @@ export interface components {
             code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported" | "partner_scope_mismatch";
             /** @description With `seat_taken`: the requested seats another buyer already holds, sorted — a SUBSET of the request, forwarded verbatim from the inventory transaction that arbitrated. With `orphaned_seats`: the FREE seats the selection would strand — seats the buyer did NOT request, so the subset rule deliberately does not apply to them and a picker must keep them selectable, since adding one is the repair. Never synthesised by commerce: a refusal without a usable identity list is a 502, not a guess. */
             seat_identities?: string[];
-        };
-        /**
-         * @description A partner's GA hold. `organizer_id` IS required and IS compared against the credential's — not because it is trusted, but because a partner integration that names the wrong organizer should be told so (403) rather than silently served its own. The authority is always the credential.
-         *     No `seat_identities`: a seated pool is refused here (TKT-176 owns the seated seam), and offering the field would imply otherwise.
-         */
-        PartnerReservationCreate: {
-            /** Format: uuid */
-            organizer_id: string;
-            /** Format: uuid */
-            ticket_type_id: string;
-            quantity: number;
         };
         /** @description What the partner's own channel has left on this slot. `channel_code` is echoed so an integration can assert it is talking about the channel it believes it holds — it is an answer, never a question. */
         PartnerAvailability: {
@@ -1199,39 +1168,6 @@ export interface operations {
             400: components["responses"]["Error"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["Error"];
-            429: components["responses"]["TooManyRequests"];
-            500: components["responses"]["Error"];
-            502: components["responses"]["Error"];
-        };
-    };
-    createPartnerReservation: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PartnerReservationCreate"];
-            };
-        };
-        responses: {
-            /** @description Reserved against the partner's channel */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Reservation"];
-                };
-            };
-            400: components["responses"]["Error"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            409: components["responses"]["Error"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
             502: components["responses"]["Error"];

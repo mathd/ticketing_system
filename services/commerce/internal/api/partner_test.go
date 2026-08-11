@@ -46,7 +46,6 @@ func partnerRequest(method, path, body string) *http.Request {
 func TestPartnerRequestWithoutACredentialIsRefusedByTheValidator(t *testing.T) {
 	for _, tc := range []struct{ name, method, path, body string }{
 		{"availability", http.MethodGet, "/partners/availability?slot_id=00000000-0000-0000-0000-000000000009", ""},
-		{"reservation", http.MethodPost, "/partners/reservations", `{"organizer_id":"` + pricingOrg + `","ticket_type_id":"` + pricingTT + `","quantity":2}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := httptest.NewRecorder()

@@ -265,8 +265,18 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
-  # The partner (reseller) surface (TKT-240 / ADR-056). Unlike /internal/, these
-  # ARE reachable from the edge: the gateway 404s /api/commerce/internal/* by
+  # The partner (reseller) surface (TKT-240 / ADR-056). READ-ONLY in this slice.
+  #
+  # A partner WRITE (holding stock) is deliberately absent, and its absence is the
+  # honest position rather than an unfinished one. A hold would have to consume the
+  # credential's channel allocation to mean anything, and inventory does not yet
+  # enforce that: the channel stops at catalog's fee resolution and never reaches
+  # the claim path. Exposing the write before TKT-246 lands would ship an operation
+  # whose stated security property -- a partner is confined to its own channel --
+  # is simply false, and a caller would consume public stock while believing
+  # otherwise. TKT-246 adds the write with the enforcement.
+  #
+  # Unlike /internal/, these ARE reachable from the edge: the gateway 404s /api/commerce/internal/* by
   # construction, and a reseller is an external caller. What guards them is the
   # declared `security:` below, enforced by the OpenAPI validator rather than by a
   # header comparison inside a handler — ADR-043's line for a contract operation.
@@ -291,28 +301,6 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '404': {$ref: '#/components/responses/Error'}
-        '429': {$ref: '#/components/responses/TooManyRequests'}
-        '500': {$ref: '#/components/responses/Error'}
-        '502': {$ref: '#/components/responses/Error'}
-  /partners/reservations:
-    post:
-      operationId: createPartnerReservation
-      summary: Hold GA stock against the partner's own channel allocation.
-      description: >
-        Consumes the credential's channel allocation, so a partner cannot oversell
-        its channel and cannot reach anybody else's. Quantity only: SeatHoldCreate
-        carries no channel and a seated claim ignores allocations entirely, so a
-        seated pool is REFUSED here (409, code `seated_pool_unsupported`) rather
-        than half-served — TKT-176 owns the seated seam.
-      security: [{PartnerCredential: []}]
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
-      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PartnerReservationCreate'}}}}
-      responses:
-        '201': {description: Reserved against the partner's channel, content: {application/json: {schema: {$ref: '#/components/schemas/Reservation'}}}}
-        '400': {$ref: '#/components/responses/Error'}
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '409': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
@@ -580,22 +568,6 @@ components:
     # The partner request bodies (TKT-240). Note what is ABSENT from all three:
     # there is no `channel_code` field anywhere. The channel is the credential's,
     # and a field a partner could fill would be a field the handler might trust.
-    PartnerReservationCreate:
-      type: object
-      additionalProperties: false
-      description: >
-        A partner's GA hold. `organizer_id` IS required and IS compared against
-        the credential's — not because it is trusted, but because a partner
-        integration that names the wrong organizer should be told so (403) rather
-        than silently served its own. The authority is always the credential.
-
-        No `seat_identities`: a seated pool is refused here (TKT-176 owns the
-        seated seam), and offering the field would imply otherwise.
-      required: [organizer_id, ticket_type_id, quantity]
-      properties:
-        organizer_id: {type: string, format: uuid}
-        ticket_type_id: {type: string, format: uuid}
-        quantity: {type: integer, minimum: 1, maximum: 50}
     PartnerAvailability:
       type: object
       additionalProperties: false

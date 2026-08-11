@@ -212,7 +212,6 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// guard is a declared `security:` the validator enforces rather than a header
 	// compared in a handler (ADR-043).
 	r.Get("/partners/availability", s.partnerAvailability)
-	r.Post("/partners/reservations", s.partnerReserve)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)
@@ -261,10 +260,25 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 			// confirmed by running both revisions: GET /reservations answered 405
 			// on origin/main and 404 here.
 			//
-			// Matched on the validator's message rather than a sentinel because the
-			// message is what the hook passes through; TestWrongMethodStillAnswers405
-			// executes the real router, so a message change breaks the test rather
-			// than silently restoring the regression.
+			// Matched on the MESSAGE rather than on routers.ErrMethodNotAllowed,
+			// and that is a limitation of the shared helper rather than a choice:
+			// contract.RequestValidatorWithSecurity flattens the error to
+			// err.Error() before this callback sees it (shared/go/contract/http.go),
+			// so errors.Is is not available here. The upstream cause is
+			// nethttp-middleware's performRequestValidationForErrorHandlerWithOpts,
+			// which hard-codes StatusNotFound whenever the route is nil and thereby
+			// discards the ErrMethodNotAllowed the router did report.
+			//
+			// The string is kin-openapi's routers.ErrMethodNotAllowed.Error(), a
+			// package-level sentinel rather than a formatted message, so it is as
+			// stable as that dependency's public API. It is still a string compare,
+			// and the honest mitigation is that TestWrongMethodStillAnswers405
+			// drives the REAL router: a dependency bump that changes the text turns
+			// that test red rather than silently restoring the 404 regression.
+			//
+			// The better fix is to widen the helper to pass the error through, so
+			// every service can use errors.Is. That is a shared-package change and
+			// does not belong in this ticket.
 			if status == http.StatusNotFound && strings.Contains(msg, "method not allowed") {
 				write(w, http.StatusMethodNotAllowed, map[string]string{"error": msg})
 				return

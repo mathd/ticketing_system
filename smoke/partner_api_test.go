@@ -18,9 +18,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -74,7 +71,8 @@ func partnerDoAs(t *testing.T, token, method, path, key string, body any) (int, 
 	return resp.StatusCode, out
 }
 
-// A partner reads its own availability and holds against its own allocation.
+// A partner reads availability for its own channel. That is the whole write-free
+// surface this slice ships.
 //
 // CONFIRM IS NOT HERE, and its absence is the ticket's scope boundary rather than
 // an omission: settling a reseller sale needs a settlement leg for a sale that was
@@ -89,11 +87,11 @@ func partnerDoAs(t *testing.T, token, method, path, key string, body any) (int, 
 // The coverage gate (smoke/coverage_test.go) fails the entire suite for any
 // documented 2xx operation nothing exercises, and its allowlist is empty; a real
 // driver was written rather than the first allowlist entry since it was drained.
-func TestAPartnerReadsAndHoldsOnItsOwnChannel(t *testing.T) {
+func TestAPartnerReadsAvailabilityForItsOwnChannel(t *testing.T) {
 	if partnerToken() == "" {
 		t.Fatal("SMOKE_PARTNER_TOKEN is not set: the partner suite would silently prove nothing")
 	}
-	slot, tt := publishedSlot(t, "Partner Hall", 10)
+	slot, _ := publishedSlot(t, "Partner Hall", 10)
 
 	// The channel needs an allocation, or the partner's sale is refused for want
 	// of one rather than served. Set through the internal surface, as an operator
@@ -128,21 +126,6 @@ func TestAPartnerReadsAndHoldsOnItsOwnChannel(t *testing.T) {
 		t.Fatalf("availability = %d on a fresh allocation of 4", avail.Available)
 	}
 
-	// 2. Hold against the partner's own channel allocation.
-	code, body = partnerDo(t, http.MethodPost, "/api/commerce/partners/reservations", "partner-res-"+slot,
-		map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 2})
-	if code != http.StatusCreated {
-		t.Fatalf("partner reservation: %d %s", code, body)
-	}
-	var res struct {
-		ID string `json:"reservation_id"`
-	}
-	if err := json.Unmarshal(body, &res); err != nil {
-		t.Fatal(err)
-	}
-	if res.ID == "" {
-		t.Fatalf("partner reservation carried no id: %s", body)
-	}
 }
 
 // An unauthenticated partner call is refused AT THE EDGE, by the validator.
@@ -152,14 +135,12 @@ func TestAPartnerReadsAndHoldsOnItsOwnChannel(t *testing.T) {
 // behind it — which is the configuration where a mis-wired scope slot or a
 // forgotten declaration would actually show up.
 func TestPartnerRoutesAreClosedWithoutACredentialThroughTheGateway(t *testing.T) {
-	slot, tt := publishedSlot(t, "Partner Closed Hall", 4)
+	slot, _ := publishedSlot(t, "Partner Closed Hall", 4)
 	for _, tc := range []struct {
 		name, method, path string
 		body               any
 	}{
 		{"availability", http.MethodGet, "/api/commerce/partners/availability?slot_id=" + slot, nil},
-		{"reservation", http.MethodPost, "/api/commerce/partners/reservations",
-			map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, body := partnerDoAs(t, "", tc.method, tc.path, "no-cred-"+tc.name+slot, tc.body)
@@ -174,91 +155,5 @@ func TestPartnerRoutesAreClosedWithoutACredentialThroughTheGateway(t *testing.T)
 					code, body, unknownCode, unknownBody)
 			}
 		})
-	}
-}
-
-// A partner naming SOMEBODY ELSE'S organizer is refused, and the refusal comes
-// from comparing against the credential rather than from the row not existing.
-//
-// The fixture uses a real, valid organizer id that is simply not the credential's
-// — not a nonsense uuid — because a nonsense one would also fail for want of a
-// ticket type, and the test would pass without the comparison existing at all.
-func TestAPartnerCannotNameAnotherOrganizer(t *testing.T) {
-	slot, tt := publishedSlot(t, "Partner Scope Hall", 4)
-	_ = slot
-	other := "00000000-0000-0000-0000-0000000000ff"
-	code, body := partnerDo(t, http.MethodPost, "/api/commerce/partners/reservations", "partner-scope-"+slot,
-		map[string]any{"organizer_id": other, "ticket_type_id": tt, "quantity": 1})
-	if code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 when the request names an organizer the credential was "+
-			"not issued for: %s", code, body)
-	}
-	if !strings.Contains(string(body), "partner_scope_mismatch") {
-		t.Fatalf("the refusal carries no machine-readable code: %s", body)
-	}
-}
-
-// The pool's no-oversell guarantee holds with a partner competing for it.
-//
-// WHAT THIS PROVES AND WHAT IT DOES NOT. The partner's holds go through the same
-// pool row lock as everyone else's, so the POOL never grants more than its
-// capacity -- that is asserted here and it is real.
-//
-// It does NOT prove the partner is confined to its channel's allocation, because
-// TKT-240 does not do that: the channel still stops at catalog's fee resolution
-// and never reaches inventory, so no allocation is consulted for any sale. The
-// allocation created below is therefore deliberately IGNORED by the claim path,
-// and asserting a 6/4 split here would assert a guarantee this branch does not
-// ship. TKT-246 closes that, and the cap assertion belongs with it.
-//
-// Written this way on purpose: the previous version of this test asserted the
-// channel cap and passed only because the forward existed. Keeping it would have
-// left a green test making a claim the code had stopped honouring -- which is the
-// failure this epic has now paid for twice.
-func TestThePoolIsNotOversoldWithAPartnerCompeting(t *testing.T) {
-	const capacity = 10
-	slot, tt := publishedSlot(t, "Partner Contention Hall", capacity)
-
-	var partnerGranted, publicGranted atomic.Int32
-	var wg sync.WaitGroup
-	for i := 0; i < 30; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if i%2 == 0 {
-				code, _ := partnerDo(t, http.MethodPost, "/api/commerce/partners/reservations",
-					fmt.Sprintf("cont-partner-%s-%d", slot, i),
-					map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 1})
-				if code == http.StatusCreated {
-					partnerGranted.Add(1)
-				} else if code != http.StatusConflict {
-					t.Errorf("partner reserve %d: unexpected status %d", i, code)
-				}
-				return
-			}
-			code, _ := postWithKeyAsync(t, gatewayURL+"/api/inventory/holds",
-				fmt.Sprintf("cont-public-%s-%d", slot, i),
-				map[string]any{"organizer_id": organizerID, "slot_id": slot, "quantity": 1})
-			if code == http.StatusCreated {
-				publicGranted.Add(1)
-			} else if code != http.StatusConflict {
-				t.Errorf("public hold %d: unexpected status %d", i, code)
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	partner, public := int(partnerGranted.Load()), int(publicGranted.Load())
-	if partner+public > capacity {
-		t.Errorf("the pool granted %d claims against a capacity of %d: the no-oversell guarantee "+
-			"does not hold with a partner competing", partner+public, capacity)
-	}
-	if partner+public != capacity {
-		t.Errorf("the pool granted %d of %d: under 30 concurrent claimants for 10 units the pool "+
-			"should be exhausted exactly, and anything less means claims were lost rather than "+
-			"refused", partner+public, capacity)
-	}
-	if partner == 0 {
-		t.Error("the partner was granted nothing; this run proves no bound at all")
 	}
 }
