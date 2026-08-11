@@ -2,9 +2,9 @@
   "key": "TKT-240",
   "type": "Story",
   "summary": "US-CH6: Reseller API — an external partner sells from shared inventory",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "needs:human"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
