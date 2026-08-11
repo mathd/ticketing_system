@@ -265,6 +265,78 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
+  # The partner (reseller) surface (TKT-240 / ADR-056). Unlike /internal/, these
+  # ARE reachable from the edge: the gateway 404s /api/commerce/internal/* by
+  # construction, and a reseller is an external caller. What guards them is the
+  # declared `security:` below, enforced by the OpenAPI validator rather than by a
+  # header comparison inside a handler — ADR-043's line for a contract operation.
+  #
+  # Every one of these declares `security: [PartnerCredential: []]` explicitly.
+  # There is no document-level default in this spec, deliberately: adding one
+  # would silently place a requirement on the twenty existing operations, and the
+  # customer surface's guard is an assertion header, not this credential.
+  /partners/availability:
+    get:
+      operationId: getPartnerAvailability
+      summary: Availability for the partner's own channel on one slot.
+      description: >
+        The organizer and channel are NOT parameters — they are read from the
+        credential (ADR-056). A partner asks "what is available to me on this
+        slot", and cannot phrase a question about anybody else's channel.
+      security: [{PartnerCredential: []}]
+      parameters:
+        - {name: slot_id, in: query, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Availability for the credential's channel, content: {application/json: {schema: {$ref: '#/components/schemas/PartnerAvailability'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /partners/reservations:
+    post:
+      operationId: createPartnerReservation
+      summary: Hold GA stock against the partner's own channel allocation.
+      description: >
+        Consumes the credential's channel allocation, so a partner cannot oversell
+        its channel and cannot reach anybody else's. Quantity only: SeatHoldCreate
+        carries no channel and a seated claim ignores allocations entirely, so a
+        seated pool is REFUSED here (409, code `seated_pool_unsupported`) rather
+        than half-served — TKT-176 owns the seated seam.
+      security: [{PartnerCredential: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PartnerReservationCreate'}}}}
+      responses:
+        '201': {description: Reserved against the partner's channel, content: {application/json: {schema: {$ref: '#/components/schemas/Reservation'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /partners/orders:
+    post:
+      operationId: confirmPartnerSale
+      summary: Confirm a partner reservation into a sale.
+      description: >
+        The reservation is resolved by a predicate that includes the credential's
+        organizer, channel AND reseller, so a partner cannot confirm a reservation
+        it did not create. A reservation belonging to someone else is reported as
+        404, not 403: answering "forbidden" would confirm the reservation exists.
+      security: [{PartnerCredential: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PartnerOrderCreate'}}}}
+      responses:
+        '201': {description: Sold, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
   /internal/operational-holds/{id}/convert:
     post:
       operationId: convertOperationalHold
@@ -445,6 +517,25 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
 components:
+  securitySchemes:
+    PartnerCredential:
+      description: >
+        A reseller's API credential (TKT-240, ADR-056) — the platform's THIRD
+        machine identity class, beside staff sessions (ADR-042), the shared
+        internal service token (ADR-043) and customer sessions (ADR-049).
+
+        Deliberately NOT the shared INTERNAL_SERVICE_TOKEN: that one value opens
+        every service's internal surface, and this one opens one reseller's sales
+        on one organizer's one channel. It is also not a static configured secret
+        at all — it is a per-reseller database row, issued once, stored as a hash
+        and revocable on the next request.
+
+        The credential CARRIES ITS SCOPE. Organizer and channel are read from the
+        row, never from the request, which is what keeps a partner inside its own
+        tenant; ADR-053 records what the other arrangement costs.
+      type: apiKey
+      in: header
+      name: X-Partner-Credential
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
@@ -455,6 +546,26 @@ components:
     AfterOrderId: {name: after_order_id, in: query, required: false, schema: {type: string, format: uuid}}
   responses:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    # TKT-240. Declared because ADR-028's response validation is fail-closed: an
+    # undeclared status is rewritten to 500, which would turn every refused
+    # partner credential into an apparent commerce outage.
+    #
+    # The description is uniform on purpose. A refused credential says nothing
+    # about WHY — unknown, revoked, malformed and absent are one answer, because a
+    # partner integration that can tell them apart can enumerate.
+    Unauthorized:
+      description: >
+        The partner credential is absent, unknown, malformed or revoked. These are
+        deliberately indistinguishable.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    # Reserved for a credential that authenticated but asked about a scope it was
+    # not issued for. Distinct from 401 (who are you) and from 404 (which hides
+    # existence): 403 answers "you are known, and this is not yours to name".
+    Forbidden:
+      description: >
+        The credential is valid but the request names an organizer or channel it
+        was not issued for.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     # TKT-224 / ADR-051. Declared on every operation the limiter guards, and ONLY
     # those — an undeclared status is rewritten to 500 by the response validator,
     # which is how this was found: the limiter worked and the buyer saw an outage.
@@ -475,7 +586,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken, orphaned_seats], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).'}
+        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, partner_scope_mismatch], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).'}
         seat_identities:
           type: array
           description: >
@@ -487,6 +598,44 @@ components:
             selectable, since adding one is the repair. Never synthesised by
             commerce: a refusal without a usable identity list is a 502, not a guess.
           items: {type: string, minLength: 1, maxLength: 200}
+    # The partner request bodies (TKT-240). Note what is ABSENT from all three:
+    # there is no `channel_code` field anywhere. The channel is the credential's,
+    # and a field a partner could fill would be a field the handler might trust.
+    PartnerReservationCreate:
+      type: object
+      additionalProperties: false
+      description: >
+        A partner's GA hold. `organizer_id` IS required and IS compared against
+        the credential's — not because it is trusted, but because a partner
+        integration that names the wrong organizer should be told so (403) rather
+        than silently served its own. The authority is always the credential.
+
+        No `seat_identities`: a seated pool is refused here (TKT-176 owns the
+        seated seam), and offering the field would imply otherwise.
+      required: [organizer_id, ticket_type_id, quantity]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        ticket_type_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+    PartnerOrderCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, reservation_id]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        reservation_id: {type: string, format: uuid}
+    PartnerAvailability:
+      type: object
+      additionalProperties: false
+      description: >
+        What the partner's own channel has left on this slot. `channel_code` is
+        echoed so an integration can assert it is talking about the channel it
+        believes it holds — it is an answer, never a question.
+      required: [slot_id, channel_code, available]
+      properties:
+        slot_id: {type: string, format: uuid}
+        channel_code: {type: string, minLength: 1, maxLength: 100}
+        available: {type: integer, minimum: 0, description: 'Units the credential''s channel may still sell on this slot.'}
     ReservationCreate:
       type: object
       additionalProperties: false

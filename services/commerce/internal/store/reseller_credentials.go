@@ -161,3 +161,33 @@ func ListResellerCredentials(ctx context.Context, db *sql.DB, organizer uuid.UUI
 	}
 	return out, nil
 }
+
+// ReservationBelongsToReseller answers whether a reservation is THIS partner's.
+//
+// The predicate is the point, and it is deliberately a SQL predicate rather than
+// a load-then-compare in Go. All four terms are bound together in the WHERE
+// clause: a caller that knows another partner's reservation id cannot confirm it
+// by naming its own organizer, because the row must match the organizer, the
+// channel AND the reseller at once.
+//
+// ADR-053 is why this is written this way. There, both the list's organizer and
+// the update's are caller-supplied, so a stolen credential enumerates a victim's
+// channels and then mutates the ids it just learned — every individual statement
+// correct, the composition wrong. Here the scope terms come from the credential
+// row (see AuthenticateResellerCredential) and only the reservation id comes from
+// the caller.
+//
+// A missing row and a row belonging to someone else are the SAME answer: false.
+// Distinguishing them would let a partner probe for the existence of other
+// partners' reservations.
+func ReservationBelongsToReseller(ctx context.Context, db *sql.DB, reservation, organizer uuid.UUID, channel string, reseller uuid.UUID) (bool, error) {
+	var exists bool
+	err := db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM reservations
+		 WHERE id = $1 AND organizer_id = $2 AND channel_code = $3 AND reseller_id = $4)`,
+		reservation, organizer, channel, reseller).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("resolve partner reservation: %w", err)
+	}
+	return exists, nil
+}

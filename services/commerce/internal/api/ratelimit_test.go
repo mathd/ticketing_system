@@ -401,3 +401,64 @@ func TestOnSaleWritesAreRateLimitedSeparatelyFromSignIn(t *testing.T) {
 		t.Error("an exhausted checkout budget also refused the customer-credential surface")
 	}
 }
+
+// The partner budget is finite, per-reseller, and its own bucket (TKT-240).
+//
+// Three claims, because the first alone is nearly worthless: a limiter that
+// refuses everything is also "bounded". What makes this surface's limiting
+// correct is that one partner exhausting its budget affects neither another
+// partner nor the customer surface.
+func TestPartnerBudgetIsFiniteAndPerResellerAndSeparate(t *testing.T) {
+	s := &Server{}
+	s.WithClock(func() time.Time { return time.Unix(0, 0) })
+
+	acme, globex := uuid.New().String(), uuid.New().String()
+	for i := range partnerSubjectBurst {
+		if !s.lim().partner.Allow(acme) {
+			t.Fatalf("attempt %d refused while the budget holds", i+1)
+		}
+	}
+	if s.lim().partner.Allow(acme) {
+		t.Fatal("the partner budget is not bounded: a runaway retry loop or a compromised " +
+			"credential can send without limit")
+	}
+
+	// A SECOND reseller is unaffected. Keyed per reseller, so one partner's burst
+	// cannot deny another partner's sales -- which is what a shared bucket, or a
+	// bucket keyed on a value every partner shares, would do.
+	if !s.lim().partner.Allow(globex) {
+		t.Error("one reseller exhausting its budget refused a different reseller: the partner " +
+			"limiter is not keyed per reseller")
+	}
+
+	// The KEY the handler path actually uses is the reseller's. The assertions
+	// above drive the limiter directly, so they would all still pass if
+	// limitPartner keyed on a constant and gave every partner one shared budget --
+	// a mutant that survived the first version of this test. Spending through
+	// limitPartner itself is what closes that.
+	fresh := &Server{}
+	fresh.WithClock(func() time.Time { return time.Unix(0, 0) })
+	one := partnerScope{ResellerID: uuid.New(), OrganizerID: uuid.New(), ChannelCode: "a", CredentialID: uuid.New()}
+	two := partnerScope{ResellerID: uuid.New(), OrganizerID: uuid.New(), ChannelCode: "b", CredentialID: uuid.New()}
+	for i := range partnerSubjectBurst {
+		if !fresh.limitPartner(httptest.NewRecorder(), one) {
+			t.Fatalf("limitPartner refused attempt %d while the budget holds", i+1)
+		}
+	}
+	if fresh.limitPartner(httptest.NewRecorder(), one) {
+		t.Fatal("limitPartner does not bound one reseller's budget")
+	}
+	if !fresh.limitPartner(httptest.NewRecorder(), two) {
+		t.Fatal("limitPartner refused a DIFFERENT reseller after the first exhausted its budget: " +
+			"the budget is not keyed per reseller, so any partner can deny every other partner")
+	}
+
+	// And the customer surfaces are untouched. A partner hammering the API must not
+	// be able to take the storefront down with it.
+	if !s.lim().checkout.Allow("203.0.113.9") {
+		t.Error("an exhausted partner budget also refused the on-sale write surface")
+	}
+	if !s.lim().source.Allow("203.0.113.9") {
+		t.Error("an exhausted partner budget also refused the customer-credential surface")
+	}
+}

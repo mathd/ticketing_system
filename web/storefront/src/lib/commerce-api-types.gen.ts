@@ -194,6 +194,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/partners/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Availability for the partner's own channel on one slot.
+         * @description The organizer and channel are NOT parameters — they are read from the credential (ADR-056). A partner asks "what is available to me on this slot", and cannot phrase a question about anybody else's channel.
+         */
+        get: operations["getPartnerAvailability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/partners/reservations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hold GA stock against the partner's own channel allocation.
+         * @description Consumes the credential's channel allocation, so a partner cannot oversell its channel and cannot reach anybody else's. Quantity only: SeatHoldCreate carries no channel and a seated claim ignores allocations entirely, so a seated pool is REFUSED here (409, code `seated_pool_unsupported`) rather than half-served — TKT-176 owns the seated seam.
+         */
+        post: operations["createPartnerReservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/partners/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a partner reservation into a sale.
+         * @description The reservation is resolved by a predicate that includes the credential's organizer, channel AND reseller, so a partner cannot confirm a reservation it did not create. A reservation belonging to someone else is reported as 404, not 403: answering "forbidden" would confirm the reservation exists.
+         */
+        post: operations["confirmPartnerSale"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/operational-holds/{id}/convert": {
         parameters: {
             query?: never;
@@ -353,12 +413,37 @@ export interface components {
         Error: {
             error: string;
             /**
-             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
+             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).
              * @enum {string}
              */
-            code?: "seat_taken" | "orphaned_seats";
+            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported" | "partner_scope_mismatch";
             /** @description With `seat_taken`: the requested seats another buyer already holds, sorted — a SUBSET of the request, forwarded verbatim from the inventory transaction that arbitrated. With `orphaned_seats`: the FREE seats the selection would strand — seats the buyer did NOT request, so the subset rule deliberately does not apply to them and a picker must keep them selectable, since adding one is the repair. Never synthesised by commerce: a refusal without a usable identity list is a 502, not a guess. */
             seat_identities?: string[];
+        };
+        /**
+         * @description A partner's GA hold. `organizer_id` IS required and IS compared against the credential's — not because it is trusted, but because a partner integration that names the wrong organizer should be told so (403) rather than silently served its own. The authority is always the credential.
+         *     No `seat_identities`: a seated pool is refused here (TKT-176 owns the seated seam), and offering the field would imply otherwise.
+         */
+        PartnerReservationCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            ticket_type_id: string;
+            quantity: number;
+        };
+        PartnerOrderCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            reservation_id: string;
+        };
+        /** @description What the partner's own channel has left on this slot. `channel_code` is echoed so an integration can assert it is talking about the channel it believes it holds — it is an answer, never a question. */
+        PartnerAvailability: {
+            /** Format: uuid */
+            slot_id: string;
+            channel_code: string;
+            /** @description Units the credential's channel may still sell on this slot. */
+            available: number;
         };
         /** @description Exactly one of `quantity` (general admission) or `seat_identities` (reserved seating, TKT-173) — never both, never neither. That XOR is expressed by the property counts rather than a top-level `oneOf`: with two required properties, two optional ones and no additional properties allowed, `minProperties: 3` / `maxProperties: 3` admits exactly one of the alternatives. `oneOf` would be the obvious spelling and is avoided deliberately — the generator turns a top-level union into a json.RawMessage with As…/From… accessors instead of a usable request struct, which is a worse contract bought with a worse API. The handler enforces the same XOR independently; a caller invoking it directly must not be able to slip past the schema. */
         ReservationCreate: {
@@ -707,6 +792,24 @@ export interface components {
     responses: {
         /** @description Error */
         Error: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The partner credential is absent, unknown, malformed or revoked. These are deliberately indistinguishable. */
+        Unauthorized: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The credential is valid but the request names an organizer or channel it was not issued for. */
+        Forbidden: {
             headers: {
                 [name: string]: unknown;
             };
@@ -1096,6 +1199,100 @@ export interface operations {
             400: components["responses"]["Error"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
+        };
+    };
+    getPartnerAvailability: {
+        parameters: {
+            query: {
+                slot_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Availability for the credential's channel */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartnerAvailability"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["Error"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Error"];
+            502: components["responses"]["Error"];
+        };
+    };
+    createPartnerReservation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartnerReservationCreate"];
+            };
+        };
+        responses: {
+            /** @description Reserved against the partner's channel */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Reservation"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Error"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Error"];
+            502: components["responses"]["Error"];
+        };
+    };
+    confirmPartnerSale: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartnerOrderCreate"];
+            };
+        };
+        responses: {
+            /** @description Sold */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Error"];
+            502: components["responses"]["Error"];
         };
     };
     convertOperationalHold: {

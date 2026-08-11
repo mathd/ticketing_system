@@ -11,6 +11,10 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+const (
+	PartnerCredentialScopes partnerCredentialContextKey = "PartnerCredential.Scopes"
+)
+
 // Defines values for CancellationRefundFailureCode.
 const (
 	CeilingMoved        CancellationRefundFailureCode = "ceiling_moved"
@@ -88,8 +92,10 @@ func (e CancellationRefundRunStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	OrphanedSeats ErrorCode = "orphaned_seats"
-	SeatTaken     ErrorCode = "seat_taken"
+	OrphanedSeats         ErrorCode = "orphaned_seats"
+	PartnerScopeMismatch  ErrorCode = "partner_scope_mismatch"
+	SeatTaken             ErrorCode = "seat_taken"
+	SeatedPoolUnsupported ErrorCode = "seated_pool_unsupported"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -97,7 +103,11 @@ func (e ErrorCode) Valid() bool {
 	switch e {
 	case OrphanedSeats:
 		return true
+	case PartnerScopeMismatch:
+		return true
 	case SeatTaken:
+		return true
+	case SeatedPoolUnsupported:
 		return true
 	default:
 		return false
@@ -333,7 +343,7 @@ type DeliveryEmail struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
+	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -341,7 +351,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
+// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).
 type ErrorCode string
 
 // Exchange defines model for Exchange.
@@ -466,6 +476,28 @@ type OrderUnclaimed struct {
 	OrderId            openapi_types.UUID `json:"order_id"`
 }
 
+// PartnerAvailability What the partner's own channel has left on this slot. `channel_code` is echoed so an integration can assert it is talking about the channel it believes it holds — it is an answer, never a question.
+type PartnerAvailability struct {
+	// Available Units the credential's channel may still sell on this slot.
+	Available   int                `json:"available"`
+	ChannelCode string             `json:"channel_code"`
+	SlotId      openapi_types.UUID `json:"slot_id"`
+}
+
+// PartnerOrderCreate defines model for PartnerOrderCreate.
+type PartnerOrderCreate struct {
+	OrganizerId   openapi_types.UUID `json:"organizer_id"`
+	ReservationId openapi_types.UUID `json:"reservation_id"`
+}
+
+// PartnerReservationCreate A partner's GA hold. `organizer_id` IS required and IS compared against the credential's — not because it is trusted, but because a partner integration that names the wrong organizer should be told so (403) rather than silently served its own. The authority is always the credential.
+// No `seat_identities`: a seated pool is refused here (TKT-176 owns the seated seam), and offering the field would imply otherwise.
+type PartnerReservationCreate struct {
+	OrganizerId  openapi_types.UUID `json:"organizer_id"`
+	Quantity     int                `json:"quantity"`
+	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
+}
+
 // PasswordResetCompletion A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.
 // The password floor is 8 here and not 1, unlike sign-in. Sign-in verifies an existing credential and must not refuse a short one differently from a wrong one; this operation SETS a credential, so it is where the policy belongs — the same place registration puts it.
 type PasswordResetCompletion struct {
@@ -583,8 +615,17 @@ type OrganizerIdQuery = openapi_types.UUID
 // ReportLimit defines model for ReportLimit.
 type ReportLimit = int
 
+// Forbidden defines model for Forbidden.
+type Forbidden = Error
+
 // TooManyRequests defines model for TooManyRequests.
 type TooManyRequests = Error
+
+// Unauthorized defines model for Unauthorized.
+type Unauthorized = Error
+
+// partnerCredentialContextKey is the context key for PartnerCredential security scheme
+type partnerCredentialContextKey string
 
 // ListCustomerOrdersParams defines parameters for ListCustomerOrders.
 type ListCustomerOrdersParams struct {
@@ -644,6 +685,21 @@ type ClaimGuestOrderParams struct {
 	XCustomerAssertion *CustomerAssertion `json:"X-Customer-Assertion,omitempty"`
 }
 
+// GetPartnerAvailabilityParams defines parameters for GetPartnerAvailability.
+type GetPartnerAvailabilityParams struct {
+	SlotId openapi_types.UUID `form:"slot_id" json:"slot_id"`
+}
+
+// ConfirmPartnerSaleParams defines parameters for ConfirmPartnerSale.
+type ConfirmPartnerSaleParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// CreatePartnerReservationParams defines parameters for CreatePartnerReservation.
+type CreatePartnerReservationParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CreateReservationParams defines parameters for CreateReservation.
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -687,6 +743,12 @@ type CheckoutJSONRequestBody = Checkout
 
 // ClaimGuestOrderJSONRequestBody defines body for ClaimGuestOrder for application/json ContentType.
 type ClaimGuestOrderJSONRequestBody = OrderClaim
+
+// ConfirmPartnerSaleJSONRequestBody defines body for ConfirmPartnerSale for application/json ContentType.
+type ConfirmPartnerSaleJSONRequestBody = PartnerOrderCreate
+
+// CreatePartnerReservationJSONRequestBody defines body for CreatePartnerReservation for application/json ContentType.
+type CreatePartnerReservationJSONRequestBody = PartnerReservationCreate
 
 // CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
 type CreateReservationJSONRequestBody = ReservationCreate

@@ -56,6 +56,34 @@ CREATE UNIQUE INDEX reseller_credentials_one_live
     ON reseller_credentials (organizer_id, channel_code, reseller_id)
     WHERE revoked_at IS NULL;
 
+-- Per-reseller attribution on the sale (TKT-240). Both columns are NULLABLE and
+-- not backfilled: NULL is "not a partner sale", which is exactly what every
+-- pre-existing reservation and order was.
+--
+-- No foreign key to reseller_credentials. Attribution is HISTORICAL -- who sold
+-- this, at the time -- and an FK would let revoking or rotating a credential
+-- rewrite or block the record of past sales. Same reasoning ADR-024 applies to
+-- channel codes on claims, and the same reasoning behind the channel_code column
+-- these sit beside.
+--
+-- reseller_id, not credential_id: a partner that rotates its credential after a
+-- leak is the same partner, and settlement (ADR-048) splits by the partner.
+ALTER TABLE reservations
+    ADD COLUMN reseller_id uuid,
+    -- A reseller sale is a CHANNELLED sale by construction: the credential is
+    -- issued for one channel and the handler takes the channel from it. Without
+    -- this, a row could claim a reseller with no channel, and settlement would
+    -- have a sale it cannot attribute to an allocation.
+    ADD CONSTRAINT reservations_reseller_implies_channel
+        CHECK (reseller_id IS NULL OR channel_code IS NOT NULL);
+
+ALTER TABLE orders
+    ADD COLUMN channel_code text
+        CHECK (channel_code IS NULL OR length(channel_code) BETWEEN 1 AND 100),
+    ADD COLUMN reseller_id uuid,
+    ADD CONSTRAINT orders_reseller_implies_channel
+        CHECK (reseller_id IS NULL OR channel_code IS NOT NULL);
+
 -- +goose Down
 -- +goose StatementBegin
 DO $$
@@ -69,3 +97,19 @@ BEGIN
 END $$;
 -- +goose StatementEnd
 DROP TABLE reseller_credentials;
+
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM orders WHERE reseller_id IS NOT NULL)
+       OR EXISTS (SELECT 1 FROM reservations WHERE reseller_id IS NOT NULL) THEN
+        RAISE EXCEPTION 'refusing to drop reseller attribution: partner sales exist. '
+            'Dropping these columns would destroy the record of which reseller sold '
+            'what, which settlement splits by (ADR-048).';
+    END IF;
+END $$;
+-- +goose StatementEnd
+ALTER TABLE orders DROP CONSTRAINT orders_reseller_implies_channel,
+    DROP COLUMN reseller_id, DROP COLUMN channel_code;
+ALTER TABLE reservations DROP CONSTRAINT reservations_reseller_implies_channel,
+    DROP COLUMN reseller_id;
