@@ -83,6 +83,24 @@ experiment stays valid.
   a value. Nothing local catches this: types, tests, mutants and the gate are all downstream of the
   author's model of correctness, which is why cross-model review is a prerequisite, not an option.
   ([a green test can bless the defect](docs/learnings/2026-08-10-a-green-test-can-bless-the-defect.md))
+- **Making a request field load-bearing is an AUTHORIZATION change, not plumbing.** Before something
+  starts *deciding* on a value — capacity, permission, price, routing — enumerate **every producer of
+  that value and ask which are authenticated**, not just the path you are editing. TKT-240 forwarded
+  `channel_code` to inventory so a channelled sale would consume its channel's allocation: one key in
+  one map, tested to the wire key, mutation-checked. But `POST /reservations` is unauthenticated and
+  takes that field from the request body, so any caller could then drain a reseller's allocation with
+  no credential — executed, not argued — and the same ticket's whole point was a credential confining
+  partners to their own channel. Two sibling paths (the persisted replay, the exchange target) were
+  missed for the identical reason: every layer reasoned about the path being changed. The guard
+  belongs where the decision is (inventory, under the pool lock — ADR-055's `requires_code` shape),
+  because a check in the calling service binds only callers who go through it. Cost: a full
+  build-review-revert cycle, and the revert then exposed a second defect that only a second review
+  pass caught. ([forwarding a value is an authorization change](docs/learnings/2026-08-11-forwarding-a-value-is-an-authorization-change.md))
+- **Never edit a tracked file while the gate is running.** The gate reads the working tree as it
+  goes, so an edit mid-run is read half-written and fails for a reason that does not exist. TKT-240
+  edited `scripts/smoke.sh` at 23:01:47 during a run that ended 23:02:33 and spent a full cycle
+  diagnosing it. The neighbouring rule — never chain a command onto the gate — already exists; this
+  is its twin.
 - **Specs before code.** Prefer writing/refining a spec or PRD before implementing. Ground work in
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`

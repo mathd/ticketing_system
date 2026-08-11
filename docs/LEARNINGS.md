@@ -260,3 +260,17 @@ exists are in *Historical* at the bottom; their files are kept.
   types, tests, mutants and the gate are all downstream of the author's model of correctness — which
   is why cross-model review is a prerequisite, not an option. Derive expected values from the
   requirement, never from a run, and prefer an invariant to a number.
+
+## 2026-08-11 — Making a value load-bearing is an authorization change (TKT-240)
+
+Commerce forwarded `channel_code` to inventory so a channelled sale would consume its own channel's
+allocation. One key in one map, with a test asserting the exact wire key and a mutation check proving
+the wrong key turned it red. All correct, and none of it the problem: `POST /reservations` is
+**unauthenticated** and takes that field from the request body, so once inventory decided on it, any
+caller could drain a reseller's allocation with no credential — in the same ticket that built a
+credential class whose central claim was that partners are confined to their own channel. Two sibling
+hold paths (persisted replay, exchange target) were missed identically, because every layer reasoned
+about *the path being changed* rather than *every producer of the value*. Enumerate the producers, ask
+which are authenticated, and put the guard where the decision is. Caught by cross-model review; the
+fix then exposed a second defect that only the second pass caught.
+[full note](learnings/2026-08-11-forwarding-a-value-is-an-authorization-change.md)
