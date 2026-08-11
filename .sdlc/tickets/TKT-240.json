@@ -18,17 +18,17 @@
       "note": "IN: partner credential class + ADR, contract-declared external surface, availability/hold/confirm scoped to organizer+channel, the commerce→inventory seam closure, attribution, ADR-051 rate limiting. OUT: settlement reporting (TKT-23), partner onboarding UI, OAuth."
     },
     "uncertainties": {
-      "state": "open",
+      "state": "met",
       "owner": "human",
-      "note": "AUTONOMOUS-RUN WAIVER: the owner waived stop-condition (b) for auth and migrations on this run (see epic claim comment), so the two decisions below are the agent's to make and record rather than a human's: (1) credential shape — a hashed bearer secret vs mTLS vs signed requests; (2) whether the seam closure ships behind a per-organizer opt-in or unconditionally. Both are recorded in kind=plan-final with rationale, and any overridden objection lands in the closeout's overrides: list."
+      "note": "AUTONOMOUS-RUN WAIVER applies to the WORK, and the owner has additionally instructed that this ticket STOP BEFORE MERGE for a human to re-take Gates 2 and 3. The two shape decisions — (1) credential shape: hashed bearer vs mTLS vs signed requests; (2) whether the seam closure ships behind a per-organizer opt-in or unconditionally — are drafted by the agent and recorded in kind=plan-final, but they are presented to the owner at Gate 2 rather than self-approved. Resolved for shaping purposes: the questions are identified and owned, which is what the DoR item asks."
     },
     "dependencies": {
-      "state": "open",
-      "note": "Blocked by US-CH1 (TKT-235), US-CH3 (TKT-237) and US-CH4 (TKT-238)."
+      "state": "met",
+      "note": "Verified on the board at claim time: TKT-235, TKT-237 and TKT-238 are all Done (as are TKT-236 and TKT-239). Zero open blockers."
     },
     "approach": {
       "state": "met",
-      "note": "ADR-043 decides the mechanism question outright: a public partner API is a contract operation, so it declares security: and is validator-enforced — NOT the inline header comparison commerce uses on internal routes. Verified: catalog already runs the declared-security idiom (12 security lines over 37 operations, per ADR-043's own table), so this is an existing pattern, not a new one. The seam is at services/commerce/internal/api/server.go:260-263 and is documented as deliberate — closing it is a behavior change, not a bug fix."
+      "note": "ADR-043 decides the mechanism outright: a public partner API is a contract operation, so it declares security: and is validator-enforced — NOT the inline header comparison commerce uses on internal routes. Verified at claim time that catalog already runs the declared-security idiom. SEAM LOCATION CORRECTED: the shaping-time citation of server.go:260-263 was stale; the seam is the comment at server.go:303 and the hold body at server.go:646, plus the same text in commerce/api/openapi.yaml and the generated openapi_gen.go. GA/SEATED OWNERSHIP RESOLVED: TKT-240 takes the GA half, TKT-176 keeps the seated half — verified that SeatHoldCreate carries no channel field at all, so the seated half cannot be half-fixed by accident here; the reseller surface refuses on seated pools citing TKT-176."
     },
     "first_slice": {
       "state": "met",
@@ -40,7 +40,7 @@
     },
     "context_memo": {
       "state": "met",
-      "note": "Baked below."
+      "note": "Re-resolved at claim time rather than trusted: governingTests baked (it was ABSENT — the gap that failed TKT-235's gate twice), 4 post-bake ADRs added, all cited ADRs and all test names verified to resolve at HEAD, stale line numbers corrected, and the ADR-055 numbering collision recorded."
     }
   },
   "context": {
@@ -100,6 +100,22 @@
       {
         "id": "ADR-021",
         "why": "Name the adversary before writing 'tamper-evident' or 'secure': a hashed credential protects against credential disclosure at rest, not against a writer with DB access."
+      },
+      {
+        "id": "ADR-053",
+        "why": "Landed after this mémo was baked (TKT-236). The back office reads the channel registry with its OWN catalog credential — the precedent for a narrowly-scoped, purpose-specific credential rather than a shared token. The partner credential is the same shape of decision one step further out."
+      },
+      {
+        "id": "ADR-054",
+        "why": "Landed after this mémo was baked (TKT-238). Per-channel sales windows as DB-time predicates on the allocation row. Refusal precedence interacts: window → code → capacity."
+      },
+      {
+        "id": "ADR-055-presale-unlock-codes",
+        "why": "Landed after this mémo was baked (TKT-239). TWO facts bind TKT-240: (1) the pool row lock serializes ONLY what is pool_id-scoped, so ANY per-reseller quota or cross-slot counter needs its own row lock and a MULTI-SLOT contention proof — a single-slot test will pass while it oversells; (2) refusal precedence is window → code → capacity in both claim paths, and a new reseller refusal must slot into that order deliberately, or a gated channel reads as a sellout exactly when the on-sale is busiest (TKT-238's finding)."
+      },
+      {
+        "id": "ADR-055-on-sale-write-rate-limiting",
+        "why": "Landed after this mémo was baked (security review). Extends ADR-051 to the on-sale write path. The partner surface is a write path and inherits this discipline; read it WITH ADR-051 rather than instead of it. (Note the number collision recorded in `reference`.)"
       }
     ],
     "reference": [
@@ -108,11 +124,11 @@
         "link": "docs/product/prd-v1.md"
       },
       {
-        "summary": "The commerce→inventory channel seam: channel_code is forwarded to catalog for fees but deliberately NOT to inventory, so a reseller-channel sale takes reseller fees while consuming public inventory",
-        "link": "services/commerce/internal/api/server.go:260-263"
+        "summary": "THE SEAM, line numbers corrected at claim time (the shaping-time citation of :260-263 was STALE — that range is now unrelated HTTP plumbing). The comment explaining the deliberate omission is at server.go:303; the inventory hold body that omits channel is built at server.go:646. The same prohibition text also lives in services/commerce/api/openapi.yaml (~:518-530) and is baked into the generated openapi_gen.go (~:550-553), so closing the seam edits three places and requires a regen commit before the gate.",
+        "link": "services/commerce/internal/api/server.go:303,646"
       },
       {
-        "summary": "TKT-176 (open) owns the SEATED half of the same seam — CreateSeatHold admits against capacity alone and SeatHoldCreate has no channel field. Do not half-fix it here; refuse the reseller surface on seated pools and cite TKT-176",
+        "summary": "TKT-176 (open, Backlog) owns the SEATED half of the same seam. VERIFIED at claim time: SeatHoldCreate (openapi_gen.go:442-449) has organizer/slot/ticket_type/seat_identities/unit_amount/currency and NO channel field at all. TKT-240 takes the GA half only; the reseller surface must REFUSE on a seated pool and cite TKT-176 rather than half-fixing it.",
         "link": ".sdlc/tickets/TKT-176.json"
       },
       {
@@ -124,11 +140,93 @@
         "link": "compose.yaml"
       },
       {
-        "summary": "Gateway route table — internal routes are 404'd at the edge; an external partner route is a new edge binding",
-        "link": "gateway/cmd/gateway/main.go:29-49"
+        "summary": "Gateway route table (routes map at main.go:29). Internal routes are 404'd at the edge; an external partner route is a new edge binding. The internal-denial loop registers only for prefixes under /api/.",
+        "link": "gateway/cmd/gateway/main.go:29"
+      },
+      {
+        "summary": "REGISTRY DEFECT found at claim time, NOT this ticket's to fix but it blocks picking an ADR number: ADR-055 is used TWICE — ADR-055-on-sale-write-rate-limiting.md (from the 2026-08-10 security review, commit 1783c843) and ADR-055-presale-unlock-codes.md (TKT-239, commit 179034c7). Both Accepted, both cited from code. TKT-240's new identity-class ADR must therefore take ADR-056 and must NOT assume 055 is free. Flagged to the owner.",
+        "link": "docs/adr/"
       }
     ],
-    "capturedAt": "2026-08-09"
+    "capturedAt": "2026-08-09",
+    "governingTests": [
+      {
+        "name": "TestCatalogSpecGuardsEveryUnsafeOperationAndOnlyThose",
+        "path": "services/catalog/internal/api/write_credential_test.go",
+        "invariant": "In catalog's spec, every unsafe operation requires CatalogStaffWriteCredential and declares 401; every safe one must explicitly opt out with `security: []`. Derived from the spec in both directions, so it needs no list edit — but catalog's DOCUMENT-LEVEL default security (services/catalog/api/openapi.yaml:21) means a new public/partner read inherits the staff credential unless it opts out."
+      },
+      {
+        "name": "TestDeclaredCacheControlValuesUseRegisteredTiers",
+        "path": "shared/go/cachetier/spec_audit_test.go",
+        "invariant": "CLOSED ALLOWLIST across all five specs. Three hardcoded things bite: `wantSpecs = 5` (a sixth service spec fails outright), `wantDeclarations` (every operation declaring a Cache-Control — INCLUDING on a 401 or 429 — must be listed; shrinking coverage also fails), and `freeFormAllowed` (closed: a new Cache-Control must be a single-valued enum component, not a bare string). It also hard-refuses `callbacks:`/`webhooks:` in a spec. This is the test that failed TKT-235 twice."
+      },
+      {
+        "name": "TestMain / uncovered2xxOps + TestCatalogCoverageGateIsDeliberatelyUnitScoped",
+        "path": "smoke/coverage_test.go",
+        "invariant": "EVERY documented 2xx operation in inventory/commerce/payments/access must be exercised through the running smoke stack, or the whole smoke suite fails. `coverageAllowlist` is currently EMPTY (verified) — TKT-240 adding an entry would be the first since it was drained, so prefer writing a real driver. `smokeCoverageGatedServices` is pinned exact-and-ordered against ADR-030."
+      },
+      {
+        "name": "TestMain (catalog coverage)",
+        "path": "services/catalog/internal/api/coverage_test.go",
+        "invariant": "Catalog's equivalent, in its unit suite, with NO allowlist at all: a new catalog operation must have a happy-path unit test through `env.do`."
+      },
+      {
+        "name": "TestTheEnumerationCoversEveryInternalRouteCommerceServes",
+        "path": "services/commerce/internal/api/staff_credential_test.go",
+        "invariant": "A hand-written table and the real chi router must describe the same /internal/ surface, both directions, with a `len(onRouter) < 8` floor. NOTE for this ticket: it walks ONLY /internal/ — a partner surface mounted at a non-/internal/ prefix in commerce is invisible to it. That is the shape of hole to watch, not a reason to relax."
+      },
+      {
+        "name": "TestCredentialsAreDistinctRefusesEveryCollidingPair",
+        "path": "services/commerce/cmd/commerce/credentials_test.go",
+        "invariant": "Commerce's credentials must hold pairwise-distinct values, enumerated exhaustively. A FIFTH commerce credential (a partner secret) requires extending the signature AND adding every new pair — the file says a credential added to the wiring but not the check is the one whose separation is never verified."
+      },
+      {
+        "name": "TestGatewayDeniesGenericInternalRoutes",
+        "path": "smoke/contract_validation_test.go",
+        "invariant": "/api/<svc>/internal/* is 404'd AT THE EDGE with the gateway's own exact body. Hardcoded probe table. Related: gateway's internal-denial loop only registers for prefixes starting with `/api/` — a partner prefix outside /api/ silently gets no internal denial."
+      },
+      {
+        "name": "TestBackofficeRoute / TestEncodedSeparatorCannotReachInternalRoutes / TestAForgedXForwardedForDoesNotReachTheUpstream",
+        "path": "gateway/cmd/gateway/main_test.go",
+        "invariant": "The only unit-level pin of the gateway `routes` map; encoded-separator denial; and — load-bearing for ADR-051 rate limiting — the proxy REPLACES X-Forwarded-For with the connecting peer, which is what makes a per-source limit non-forgeable."
+      },
+      {
+        "name": "TestCommittedServiceContractsAreComplete",
+        "path": "smoke/contract_validation_test.go",
+        "invariant": "Every operation needs a non-empty operationId and EVERY response of every operation needs a committed body schema — including a new 401 and 429."
+      },
+      {
+        "name": "TestNoProductionCodeUpdatesOrderAttribution + TestTheAllowlistCannotBeWidened + TestOrderSQLIsWrittenAsLiterals",
+        "path": "services/commerce/internal/store/attribution_invariant_test.go",
+        "invariant": "An AST scan of all commerce production Go: exactly TWO SQL statements may write orders.customer_id, matched whole-text including predicates, and order SQL must be written as literals so the scanner can see it. Directly in TKT-240's path: per-reseller attribution on the order. A new order INSERT built by string concatenation fails here."
+      },
+      {
+        "name": "TestEveryStoreMethodIsClassifiedForPublicReads",
+        "path": "services/catalog/internal/store/public_read_invalidation_test.go",
+        "invariant": "Every method on catalog's store.Store interface must be classified in `readOnlyStoreMethods` or `publicReadEffect`. Applies only if partner credential storage lands in catalog."
+      },
+      {
+        "name": "TestMigrationsAppliedOutOfBand + TestMigrationsRanBeforeServicesStarted + TestServerModeDoesNotMigrate",
+        "path": "smoke/smoke_test.go",
+        "invariant": "ADR-022: migrations run out-of-band as a Compose job the service waits on; the server path never migrates. Migration filenames are gate-enforced as NNNN_name.sql. NOTE: there is NO migration-number collision test — `max(version_id)` would not detect two files sharing a prefix; goose refuses only at apply time inside the smoke stack. Check the next free number by hand."
+      },
+      {
+        "name": "TestCreateHoldRejectsBadChannel",
+        "path": "services/inventory/internal/api/server_test.go",
+        "invariant": "Inventory already validates channel_code on holds and engages the allocation cap. Forwarding channel from commerce (the seam closure) engages this 409 path — which is the intended breaking change."
+      },
+      {
+        "name": "TestOnSaleWritesAreRateLimitedSeparatelyFromSignIn",
+        "path": "services/commerce/internal/api/ratelimit_test.go",
+        "invariant": "The SHAPE a new limiter must follow: prove the budget is finite AND that it is a separate bucket from neighbouring surfaces. There is NO repo-wide test asserting which routes must have a limiter — ADR-051 coverage on the partner surface is a discipline the plan must carry, not something the gate will catch. Also: a 429 must be DECLARED in the spec or ADR-028 fail-closed turns it into a 500."
+      },
+      {
+        "name": "check-generate (Makefile target, not a Go test)",
+        "path": "Makefile",
+        "invariant": "Regenerated openapi_gen.go / api-types.gen.ts must be COMMITTED BEFORE the gate — it diffs against HEAD, so an uncommitted regen reads as drift. The seam's prohibition text is baked into services/commerce/internal/api/openapi_gen.go, so editing the OpenAPI description alone fails the gate until regenerated."
+      }
+    ],
+    "reResolvedAt": "2026-08-10 (claim-time re-resolution: all 11 original governingAdrs verified to resolve at HEAD; 4 ADRs added; governingTests baked from absent; every test name verified with `git grep -n \"func Test...\"` at HEAD; the seam's line numbers corrected)"
   },
   "links": [
     {
