@@ -277,16 +277,30 @@ var planProbeSeq atomic.Uint64
 // parameter surviving as `$1` in the output, which is what the guard below checks.
 // PREPARE, SET and EXECUTE share one transaction so the setting and the statement
 // cannot land on different pooled connections.
-func explainGenericPlan(t *testing.T, db *sql.DB, query string, scopes ...uuid.UUID) string {
+// scopes accepts uuid.UUID and string. Text params were added for TKT-239, whose
+// redemption count is scoped by (organizer_id uuid, channel_code text,
+// presale_code text) — generalized here rather than forked, so one helper keeps
+// deciding what "the generic plan" means.
+func explainGenericPlan(t *testing.T, db *sql.DB, query string, scopes ...any) string {
 	t.Helper()
 	if len(scopes) == 0 {
 		t.Fatal("explainGenericPlan: a query with no parameters has no generic plan to assert")
 	}
 	types := make([]string, 0, len(scopes))
 	literals := make([]string, 0, len(scopes))
-	for _, s := range scopes {
-		types = append(types, "uuid")
-		literals = append(literals, "'"+s.String()+"'::uuid")
+	for i, scope := range scopes {
+		switch v := scope.(type) {
+		case uuid.UUID:
+			types = append(types, "uuid")
+			literals = append(literals, "'"+v.String()+"'::uuid")
+		case string:
+			types = append(types, "text")
+			// Single quotes doubled: a scope value is test-controlled, but a helper
+			// that silently mangles one would produce a plan for a DIFFERENT query.
+			literals = append(literals, "'"+strings.ReplaceAll(v, "'", "''")+"'::text")
+		default:
+			t.Fatalf("explainGenericPlan: unsupported scope type %T at $%d", scope, i+1)
+		}
 	}
 	stmt := "plan_probe_" + strconv.FormatUint(planProbeSeq.Add(1), 10)
 

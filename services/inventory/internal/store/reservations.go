@@ -30,7 +30,12 @@ type GroupReservation struct {
 	ServerTime   time.Time  `json:"server_time"`
 }
 
-func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUID, qty int32, counterparty string, expiresAt time.Time, channel, actor, reason, key string) (GroupReservation, bool, error) {
+func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUID, qty int32, counterparty string, expiresAt time.Time, channel, actor, reason, key string, opts ...HoldOption) (GroupReservation, bool, error) {
+	var o holdOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	presaleCode := o.presaleCode
 	if qty <= 0 {
 		return GroupReservation{}, false, fmt.Errorf("quantity must be positive")
 	}
@@ -102,9 +107,10 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	// was granted inside the window.
 	var chCap int32
 	var haveAllocation bool
+	var requiresCode bool
 	if channel != "" {
 		var windowIsOpen bool
-		err = tx.QueryRowContext(ctx, `SELECT cap, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap, &windowIsOpen)
+		err = tx.QueryRowContext(ctx, `SELECT cap, requires_code, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap, &requiresCode, &windowIsOpen)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// No active allocation: the code-less capacity refusal, as before.
@@ -117,7 +123,21 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 			if !windowIsOpen {
 				return GroupReservation{}, false, ErrChannelWindowClosed
 			}
+			// The unlock code, after the window and before capacity — the same
+			// precedence CreateHold documents (TKT-239 / ADR-055).
+			//
+			// Placement IS gated for the same reason it is window-gated: it creates
+			// NEW consumption. Draw-down is not, and must not be: a draw-down is
+			// quantity-neutral, so it redeems nothing new either.
+			if requiresCode {
+				if err = redeemPresaleCode(ctx, tx, org, channel, presaleCode, qty); err != nil {
+					return GroupReservation{}, false, err
+				}
+			}
 		}
+	}
+	if !requiresCode {
+		presaleCode = ""
 	}
 
 	var held int32
@@ -153,9 +173,13 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 		}
 	}
 	h := GroupReservation{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Counterparty: counterparty, Channel: channel, Status: "held"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty)
-		VALUES($1,$2,$3,$4,'held',$5,$6,$7,'reservation',NULLIF($8,''),$9) RETURNING expires_at,now()`,
-		h.ID, org, slot, qty, expiresAt, "grp-place:"+key, fp, channel, counterparty).Scan(&h.ExpiresAt, &h.ServerTime)
+	// The SOURCE reservation cites the code; its draw-down children deliberately do
+	// NOT (ADR-055). consumingClaims counts a live source AND its live children, so
+	// a code cited on both would have the same units counted twice and a code capped
+	// at 10 would exhaust at 5. The redemption happened here, once.
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty,presale_code)
+		VALUES($1,$2,$3,$4,'held',$5,$6,$7,'reservation',NULLIF($8,''),$9,NULLIF($10,'')) RETURNING expires_at,now()`,
+		h.ID, org, slot, qty, expiresAt, "grp-place:"+key, fp, channel, counterparty, presaleCode).Scan(&h.ExpiresAt, &h.ServerTime)
 	if err != nil {
 		return GroupReservation{}, false, err
 	}

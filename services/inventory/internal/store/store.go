@@ -32,7 +32,24 @@ var (
 	// is exactly what COS-3 forbids, and it is what would happen by default,
 	// because ErrUnavailable is the natural thing to return.
 	ErrChannelWindowClosed = errors.New("channel sales window closed")
-	ErrIdempotency         = errors.New("idempotency key reused with different request")
+	// ErrPresaleCodeInvalid: the allocation requires an unlock code and the one
+	// presented will not do (TKT-239 / ADR-055).
+	//
+	// DELIBERATELY UNIFORM across five distinct causes — no code, unknown code, a
+	// code issued on another channel, an exhausted code, and a code outside its
+	// validity window. A refusal that distinguished them would be an ENUMERATION
+	// ORACLE: an attacker submitting candidates learns "that code exists but is
+	// spent" versus "no such code", which is how presale codes get scraped. The
+	// message and the wire body are identical for all five; only the internal
+	// operator read tells them apart.
+	//
+	// Name the adversary (ADR-021): this defeats a scraper reading response
+	// bodies. It does NOT defeat one measuring latency — an exhausted-code
+	// refusal costs a usage aggregation an unknown-code refusal does not — nor
+	// one who simply observes that a channel is gated. Rate limiting is ADR-051's
+	// and is not claimed here.
+	ErrPresaleCodeInvalid = errors.New("invalid presale code")
+	ErrIdempotency        = errors.New("idempotency key reused with different request")
 )
 
 func Migrate(ctx context.Context, db *sql.DB) error {
@@ -185,15 +202,49 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 
 // fingerprint stays byte-identical to the pre-channel format when channel is empty, so
 // idempotency records created before the channel migration keep replaying (ADR-009).
-func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel string) string {
+func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, presaleCode string) string {
 	s := fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency)
 	if channel != "" {
 		s += ":" + channel
 	}
+	// Appended ONLY when non-empty, for exactly the reason the channel above is:
+	// an unconditional append rehashes EVERY claim in the database, so every
+	// in-flight retry stops replaying and re-executes instead — a double-sell on
+	// retry, system-wide, from what looks like adding a field (TKT-239
+	// plan-review). TestFingerprintStaysByteIdenticalWithoutAPresaleCode pins it.
+	//
+	// It must be IN the fingerprint though: two holds sharing an idempotency key
+	// but presenting different codes are different requests, and replaying one as
+	// the other would grant the second the first's redemption.
+	if presaleCode != "" {
+		s += ":" + presaleCode
+	}
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
 }
 
-func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string) (Claim, bool, error) {
+// HoldOption carries the optional, rarely-set inputs to CreateHold.
+//
+// A variadic option rather than a tenth positional parameter, and that is a
+// safety choice, not a style one: the signature already ends in FOUR adjacent
+// bare strings (currency, channel, key) across 70 call sites, and a fifth would
+// be transposable with any of them while still compiling. `WithPresaleCode(x)`
+// cannot be passed in the wrong slot.
+type HoldOption func(*holdOptions)
+
+type holdOptions struct{ presaleCode string }
+
+// WithPresaleCode supplies the unlock code for a gated channel (TKT-239).
+// Absent, or on an ungated allocation, it is ignored.
+func WithPresaleCode(code string) HoldOption {
+	return func(o *holdOptions) { o.presaleCode = code }
+}
+
+func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string, opts ...HoldOption) (Claim, bool, error) {
+	var o holdOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	presaleCode := o.presaleCode
 	if qty <= 0 {
 		return Claim{}, false, fmt.Errorf("quantity must be positive")
 	}
@@ -232,7 +283,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel) {
+		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode) {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {
@@ -280,10 +331,11 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	var channelWindowOpen = true
 	var chCap int32
 	var haveAllocation bool
+	var requiresCode bool
 	if channel != "" {
 		err = tx.QueryRowContext(ctx,
-			`SELECT cap, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
-			slot, channel).Scan(&chCap, &channelWindowOpen)
+			`SELECT cap, requires_code, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
+			slot, channel).Scan(&chCap, &requiresCode, &channelWindowOpen)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// No ACTIVE allocation for this channel — released, or never
@@ -297,7 +349,32 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 			if !channelWindowOpen {
 				return Claim{}, false, ErrChannelWindowClosed
 			}
+			// The unlock code is judged AFTER the channel's window and BEFORE any
+			// capacity arithmetic (TKT-239 / ADR-055).
+			//
+			// Window first: a closed channel is not selling to anyone, so "wrong
+			// code" would be a misleading answer to a request that a valid code
+			// would also have refused. Capacity last, for the reason TKT-238's
+			// ai-review established — a channel-property refusal must not be
+			// masked by a full pool, or a gated presale reads as a sellout exactly
+			// when the on-sale is busiest.
+			//
+			// redeemPresaleCode takes the presale_codes ROW LOCK. The pool lock
+			// above does NOT serialize a code: a code spans slots, so two holds on
+			// different pools take different pool locks. See its comment.
+			if requiresCode {
+				if err := redeemPresaleCode(ctx, tx, org, channel, presaleCode, qty); err != nil {
+					return Claim{}, false, err
+				}
+			}
 		}
+	}
+	if !requiresCode {
+		// A code presented to an ungated allocation is NOT an error — it is
+		// ignored, and deliberately not recorded. Recording it would let a caller
+		// write arbitrary strings into an attribution column that reporting reads,
+		// on a path where nothing validates them.
+		presaleCode = ""
 	}
 
 	var held int32
@@ -339,8 +416,8 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		}
 	}
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,'')) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel), channel).Scan(&c.ExpiresAt, &c.ServerTime)
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,'')) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode), channel, presaleCode).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}

@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ticketing/services/inventory/internal/store"
 	"ticketing/shared/httpx"
 )
 
@@ -22,8 +23,10 @@ func (s *Server) grpPlace(w http.ResponseWriter, r *http.Request) {
 		Counterparty string    `json:"counterparty"`
 		ExpiresAt    time.Time `json:"expires_at"`
 		Channel      string    `json:"channel"`
-		Actor        string    `json:"actor"`
-		Reason       string    `json:"reason"`
+		// Exact, unnormalized, like the hold path's (ADR-055).
+		PresaleCode string `json:"presale_code"`
+		Actor       string `json:"actor"`
+		Reason      string `json:"reason"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in, 1<<20); err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.ExpiresAt.IsZero() {
 		write(w, 400, map[string]string{"error": "invalid group reservation request"})
@@ -33,7 +36,7 @@ func (s *Server) grpPlace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h, replay, err := s.st.PlaceGroupReservation(r.Context(), in.OrganizerID, in.SlotID, in.Quantity, in.Counterparty, in.ExpiresAt, in.Channel, in.Actor, in.Reason, key)
+	h, replay, err := s.st.PlaceGroupReservation(r.Context(), in.OrganizerID, in.SlotID, in.Quantity, in.Counterparty, in.ExpiresAt, in.Channel, in.Actor, in.Reason, key, store.WithPresaleCode(in.PresaleCode))
 	if err != nil {
 		problem(w, err)
 		return

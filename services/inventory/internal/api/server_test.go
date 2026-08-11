@@ -301,6 +301,13 @@ func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
 		// and the two would be indistinguishable — which is the default outcome,
 		// not a hypothetical one.
 		{store.ErrChannelWindowClosed, 409, `{"code":"channel_window_closed","error":"channel sales window closed"}`},
+		// TKT-239. Same argument, one step further: a gated channel refusing for a
+		// code must be distinguishable from a sellout (prompt for a code, do not
+		// report sold out), while the five CAUSES stay indistinguishable from each
+		// other. This asserts the exact body, which is what an attacker sees — and
+		// the value is in the CLOSED Error.code enum, so a drifting body is a 500 in
+		// production under ADR-028, not a cosmetic difference.
+		{store.ErrPresaleCodeInvalid, 409, `{"code":"presale_code_invalid","error":"invalid presale code"}`},
 		{store.ErrUnavailable, 409, `{"error":"insufficient capacity"}`},
 		{store.ErrIdempotency, 409, `{"error":"idempotency key reused with different request"}`},
 		{store.ErrNotFound, 404, `{"error":"not found"}`},

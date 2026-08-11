@@ -265,6 +265,11 @@ func TestClassifyHold409(t *testing.T) {
 		// than be counted as a rejection. Pinned by name so a future exemption is
 		// a deliberate edit here rather than a quiet reclassification.
 		"channel window closed": {`{"error":"channel sales window closed","code":"channel_window_closed"}`, KindServerError},
+		// TKT-239: a gated channel refusing for a missing/invalid code is NOT
+		// capacity evidence. Every request fails identically regardless of load, so
+		// blessing it would let a misconfigured on-sale proof report a clean sellout
+		// curve while selling nothing.
+		"presale code invalid": {`{"error":"invalid presale code","code":"presale_code_invalid"}`, KindServerError},
 		"unknown code":          {`{"error":"x","code":"something_new"}`, KindServerError},
 		"not json":              {`not json`, KindServerError},
 		"empty object":          {`{}`, KindServerError},

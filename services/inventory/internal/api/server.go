@@ -148,6 +148,14 @@ func problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrChannelWindowClosed):
 		write(w, 409, map[string]string{"error": err.Error(), "code": "channel_window_closed"})
 		return
+	// A missing or unusable presale code (TKT-239 / ADR-055). Coded, so a client
+	// can prompt for a code instead of reporting a sellout — and UNIFORM, so the
+	// body cannot tell an attacker which of the five causes applied. The store
+	// already collapsed them into one sentinel with one message; this must not
+	// re-expand them.
+	case errors.Is(err, store.ErrPresaleCodeInvalid):
+		write(w, 409, map[string]string{"error": err.Error(), "code": "presale_code_invalid"})
+		return
 	case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrIdempotency), errors.Is(err, store.ErrPoolKindMismatch):
 		// ErrPoolKindMismatch: a quantity claim hit a seated pool (or a seat claim a GA
 		// pool) — a 409 conflict, not a 500.
@@ -168,10 +176,15 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		UnitAmount   int64     `json:"unit_amount"`
 		Currency     string    `json:"currency"`
 		Channel      string    `json:"channel"`
+		// Decoded as-is: no TrimSpace, no case folding. A presale code is an exact
+		// opaque string (ADR-024/ADR-055), and normalizing here would disagree with
+		// the exact-match lookup in the store — a code issuable but never
+		// redeemable.
+		PresaleCode string `json:"presale_code"`
 	}
 	err := httpx.DecodeJSON(w, r, &in, 1<<20)
 	legacy := in.TicketTypeID == uuid.Nil && in.Currency == ""
-	if err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 || in.UnitAmount < 0 || len(in.Channel) > 100 || (!legacy && (in.TicketTypeID == uuid.Nil || in.Currency != "EUR")) {
+	if err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 || in.UnitAmount < 0 || len(in.Channel) > 100 || len(in.PresaleCode) > 100 || (!legacy && (in.TicketTypeID == uuid.Nil || in.Currency != "EUR")) {
 		write(w, 400, map[string]string{"error": "invalid hold request"})
 		return
 	}
@@ -180,7 +193,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
 		return
 	}
-	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Channel, key)
+	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Channel, key, store.WithPresaleCode(in.PresaleCode))
 	if err != nil {
 		problem(w, err)
 		return
