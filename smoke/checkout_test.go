@@ -894,6 +894,18 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 		}
 	}
 
+	// Both channels need an INVENTORY ALLOCATION, not only a fee rule (TKT-240).
+	// Before the commerce->inventory seam was closed, a channelled sale never told
+	// inventory which channel it was for, so a channel that existed purely for fee
+	// rules sold out of public stock. It no longer does: CreateHold refuses a
+	// channel with no active allocation outright (`!haveAllocation` ->
+	// ErrUnavailable), which is the intended breaking change and a WIDER rule than
+	// "an exhausted allocation is refused".
+	//
+	// So this fixture now has to describe a channel that is genuinely set up to
+	// sell. That is not a workaround for the test — it is the new requirement, and
+	// the same one every fee-only channel in a real deployment must satisfy before
+	// this ships.
 	reserveIn := func(channel, key string) map[string]any {
 		t.Helper()
 		code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", key,

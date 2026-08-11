@@ -207,6 +207,11 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// The wallet (TKT-222). Public surface, identified by the assertion — the
 	// storefront still holds no service credential.
 	r.Get("/customers/{id}/orders", s.listCustomerOrders)
+	// The partner surface (TKT-240). NOT under /internal/: a reseller is an
+	// external caller and reaches these from the edge, which is exactly why the
+	// guard is a declared `security:` the validator enforces rather than a header
+	// compared in a handler (ADR-043).
+	r.Get("/partners/availability", s.partnerAvailability)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)
@@ -226,11 +231,69 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 		_, _ = w.Write(apispec.Spec)
 	})
 	s.registerRoutes(r)
-	validated, err := contract.RequestValidator(apispec.Spec, r, log, validateResponses)
+	// WithSecurity, because the partner surface's guard is DECLARED in the
+	// contract and enforced here rather than compared in a handler (ADR-043,
+	// TKT-240). The customer surface is unaffected: it declares no security, so
+	// the authentication func is never consulted for it.
+	validated, err := contract.RequestValidatorWithSecurity(apispec.Spec, r, log, validateResponses,
+		func(w http.ResponseWriter, req *http.Request, msg string, status int) {
+			// A refused partner credential gets the 401 the contract declares, with
+			// a body that says nothing about which failure it was. Everything else
+			// keeps the shared helper's representation.
+			//
+			// Matching on the PATH rather than on the status alone: 401 is also the
+			// customer assertion's refusal on /orders, and that operation declares
+			// its own meaning for it (a forged assertion is not a missing partner
+			// credential). Only the partner surface is rewritten here.
+			if status == http.StatusUnauthorized && strings.HasPrefix(req.URL.Path, "/partners/") {
+				write(w, http.StatusUnauthorized, map[string]string{"error": "partner credential is not recognised"})
+				return
+			}
+			// Restore 405 for a wrong method. Supplying ANY error handler switches
+			// the shared helper from its legacy hook to ErrorHandlerWithOpts, and
+			// that hook hard-codes 404 for EVERY route-lookup failure where the
+			// legacy one distinguishes routers.ErrMethodNotAllowed as 405
+			// (shared/go/contract/http.go documents the trap; this ticket walked
+			// into it anyway). Without this, adding the partner surface silently
+			// changed wrong-method responses on every pre-existing commerce
+			// operation -- a platform-wide regression, found by ai-review and
+			// confirmed by running both revisions: GET /reservations answered 405
+			// on origin/main and 404 here.
+			//
+			// Matched on the MESSAGE rather than on routers.ErrMethodNotAllowed,
+			// and that is a limitation of the shared helper rather than a choice:
+			// contract.RequestValidatorWithSecurity flattens the error to
+			// err.Error() before this callback sees it (shared/go/contract/http.go),
+			// so errors.Is is not available here. The upstream cause is
+			// nethttp-middleware's performRequestValidationForErrorHandlerWithOpts,
+			// which hard-codes StatusNotFound whenever the route is nil and thereby
+			// discards the ErrMethodNotAllowed the router did report.
+			//
+			// The string is kin-openapi's routers.ErrMethodNotAllowed.Error(), a
+			// package-level sentinel rather than a formatted message, so it is as
+			// stable as that dependency's public API. It is still a string compare,
+			// and the honest mitigation is that TestWrongMethodStillAnswers405
+			// drives the REAL router: a dependency bump that changes the text turns
+			// that test red rather than silently restoring the 404 regression.
+			//
+			// The better fix is to widen the helper to pass the error through, so
+			// every service can use errors.Is. That is a shared-package change and
+			// does not belong in this ticket.
+			if status == http.StatusNotFound && strings.Contains(msg, "method not allowed") {
+				write(w, http.StatusMethodNotAllowed, map[string]string{"error": msg})
+				return
+			}
+			// Everything else keeps the shape the shared helper's own default
+			// produces, byte for byte -- {"error": <validator message>} with
+			// Cache-Control: no-store.
+			write(w, status, map[string]string{"error": msg})
+		}, s.authenticatePartner)
 	if err != nil {
 		panic(err)
 	}
-	return validated
+	// The slot the authentication func fills. Installed OUTSIDE the validator
+	// because the validator runs before any middleware the chi router carries.
+	return withPartnerScopeSlot(validated)
 }
 func write(w http.ResponseWriter, c int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -299,11 +362,22 @@ type reserveRequest struct {
 	// channel-agnostic rules are eligible, and that is NOT the same as a caller
 	// sending an empty channel. Omitting it is not a wildcard.
 	//
-	// It reaches catalog's fee resolution and stops there. It is deliberately
-	// NOT forwarded to inventory: inventory's channel_code is what
-	// channel_allocations cap consumption against (ADR-024), so propagating it
-	// would make a sale start failing with 409 when an allocation is exhausted,
-	// on ticket types this ticket never touched. TKT-176 owns that question.
+	// It reaches catalog's fee resolution and STOPS THERE. Inventory's channel_code
+	// is what channel_allocations cap consumption against (ADR-024), so a
+	// reseller-channel sale still takes that channel's fees while consuming public
+	// inventory. That is a known, open defect.
+	//
+	// TKT-240 closed this by forwarding the channel here, and the closure was
+	// REVERTED after its own adversarial review. Forwarding is necessary but not
+	// sufficient: this route is UNAUTHENTICATED and takes channel_code from the
+	// request body, so forwarding alone lets any caller name a reseller's channel
+	// and consume its allocation with no credential — executed and confirmed, not
+	// theorised. Closing the seam is therefore an AUTHORIZATION change, not a
+	// plumbing change: the allocation has to say who may sell it, judged where the
+	// stock is, under the pool row lock (the shape ADR-055 gave requires_code).
+	//
+	// TKT-246 owns that. Do not re-add the forward on its own — see
+	// channel_seam_test.go, which pins this route as channel-free until then.
 	ChannelCode *string `json:"channel_code,omitempty"`
 }
 
@@ -658,6 +732,25 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			seatedInventoryRefusal(w, code, body, in.canonicalSeatSet())
 			return
 		}
+		// A GA quantity claim against a SEATED pool is refused by inventory under
+		// the pool row lock (store.go: kind == "seated" -> ErrPoolKindMismatch),
+		// and that refusal is worth keeping distinguishable here (TKT-240).
+		// Flattening it into "inventory unavailable" tells a caller to retry, and
+		// this is the one 409 that will never succeed however long they wait: the
+		// pool sells seat by seat and a quantity claim can never fit it.
+		//
+		// It matters most on the partner surface, where the caller is a machine
+		// with a retry loop, and where the honest answer also has to say that a
+		// seated claim carries no channel at all -- so this refusal cites TKT-176
+		// rather than implying the partner could hold seats some other way.
+		if bytes.Contains(body, []byte("claim kind does not match pool kind")) {
+			write(w, 409, map[string]string{
+				"error": "this slot is seated and cannot be sold by quantity. A seated claim carries " +
+					"no channel and does not consume a channel allocation -- TKT-176 owns that seam.",
+				"code": "seated_pool_unsupported",
+			})
+			return
+		}
 		write(w, 409, map[string]string{"error": "inventory unavailable"})
 		return
 	}
@@ -739,8 +832,16 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		}
 		seatsColumn = encoded
 	}
-	res, err := s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,seat_identities,fee_resolution_snapshot,channel_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'held',$12,$13,$14,$15) ON CONFLICT(id) DO NOTHING`,
-		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, quantity, o.Price.Amount, total, faceValue, o.Price.Currency, []byte(resolution.raw), seatsColumn, feeSnapshot, in.ChannelCode)
+	// Per-reseller attribution (TKT-240). NULL for every non-partner sale, which is
+	// what a customer sale is. It comes from the authenticated credential in the
+	// request context -- never from the body -- so a customer cannot claim to be a
+	// reseller by sending a field.
+	var resellerColumn any
+	if scope, ok := partnerScopeFrom(r.Context()); ok {
+		resellerColumn = scope.ResellerID
+	}
+	res, err := s.db.ExecContext(r.Context(), `INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,seat_identities,fee_resolution_snapshot,channel_code,reseller_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'held',$12,$13,$14,$15,$16) ON CONFLICT(id) DO NOTHING`,
+		id, in.OrganizerID, hold.ID, o.PerformanceID, in.TicketTypeID, buyer, quantity, o.Price.Amount, total, faceValue, o.Price.Currency, []byte(resolution.raw), seatsColumn, feeSnapshot, in.ChannelCode, resellerColumn)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist reservation"})
 		return
@@ -1003,7 +1104,12 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		Scan(&id, &storedKey, &storedFingerprint, &status, &recoveryClaim, &recoveryLease, &recoveryParked)
 	if errors.Is(err, sql.ErrNoRows) {
 		id = uuid.NewSHA1(uuid.NameSpaceOID, []byte("order:"+x.OrganizerID.String()+":"+key))
-		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id) VALUES($1,$2,'created',$3,$4,$5)`, id, x.ID, key, fingerprint, customer)
+		// Channel and reseller attribution are COPIED FROM THE RESERVATION rather
+		// than from the request (TKT-240). The reservation is where the credential's
+		// scope was applied, so this survives a replay and a recovery identically --
+		// and there is no request field a caller could set to attribute a sale to a
+		// reseller that did not make it. Settlement (ADR-048) splits by these.
+		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id,channel_code,reseller_id) SELECT $1,$2,'created',$3,$4,$5,r.channel_code,r.reseller_id FROM reservations r WHERE r.id=$2`, id, x.ID, key, fingerprint, customer)
 		status = "created"
 	} else if err == nil {
 		if storedKey != key || storedFingerprint != fingerprint {

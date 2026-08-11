@@ -265,6 +265,45 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
+  # The partner (reseller) surface (TKT-240 / ADR-056). READ-ONLY in this slice.
+  #
+  # A partner WRITE (holding stock) is deliberately absent, and its absence is the
+  # honest position rather than an unfinished one. A hold would have to consume the
+  # credential's channel allocation to mean anything, and inventory does not yet
+  # enforce that: the channel stops at catalog's fee resolution and never reaches
+  # the claim path. Exposing the write before TKT-246 lands would ship an operation
+  # whose stated security property -- a partner is confined to its own channel --
+  # is simply false, and a caller would consume public stock while believing
+  # otherwise. TKT-246 adds the write with the enforcement.
+  #
+  # Unlike /internal/, these ARE reachable from the edge: the gateway 404s /api/commerce/internal/* by
+  # construction, and a reseller is an external caller. What guards them is the
+  # declared `security:` below, enforced by the OpenAPI validator rather than by a
+  # header comparison inside a handler — ADR-043's line for a contract operation.
+  #
+  # Every one of these declares `security: [PartnerCredential: []]` explicitly.
+  # There is no document-level default in this spec, deliberately: adding one
+  # would silently place a requirement on the twenty existing operations, and the
+  # customer surface's guard is an assertion header, not this credential.
+  /partners/availability:
+    get:
+      operationId: getPartnerAvailability
+      summary: Availability for the partner's own channel on one slot.
+      description: >
+        The organizer and channel are NOT parameters — they are read from the
+        credential (ADR-056). A partner asks "what is available to me on this
+        slot", and cannot phrase a question about anybody else's channel.
+      security: [{PartnerCredential: []}]
+      parameters:
+        - {name: slot_id, in: query, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Availability for the credential's channel, content: {application/json: {schema: {$ref: '#/components/schemas/PartnerAvailability'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
   /internal/operational-holds/{id}/convert:
     post:
       operationId: convertOperationalHold
@@ -445,6 +484,25 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
 components:
+  securitySchemes:
+    PartnerCredential:
+      description: >
+        A reseller's API credential (TKT-240, ADR-056) — the platform's THIRD
+        machine identity class, beside staff sessions (ADR-042), the shared
+        internal service token (ADR-043) and customer sessions (ADR-049).
+
+        Deliberately NOT the shared INTERNAL_SERVICE_TOKEN: that one value opens
+        every service's internal surface, and this one opens one reseller's sales
+        on one organizer's one channel. It is also not a static configured secret
+        at all — it is a per-reseller database row, issued once, stored as a hash
+        and revocable on the next request.
+
+        The credential CARRIES ITS SCOPE. Organizer and channel are read from the
+        row, never from the request, which is what keeps a partner inside its own
+        tenant; ADR-053 records what the other arrangement costs.
+      type: apiKey
+      in: header
+      name: X-Partner-Credential
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
@@ -455,6 +513,18 @@ components:
     AfterOrderId: {name: after_order_id, in: query, required: false, schema: {type: string, format: uuid}}
   responses:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    # TKT-240. Declared because ADR-028's response validation is fail-closed: an
+    # undeclared status is rewritten to 500, which would turn every refused
+    # partner credential into an apparent commerce outage.
+    #
+    # The description is uniform on purpose. A refused credential says nothing
+    # about WHY — unknown, revoked, malformed and absent are one answer, because a
+    # partner integration that can tell them apart can enumerate.
+    Unauthorized:
+      description: >
+        The partner credential is absent, unknown, malformed or revoked. These are
+        deliberately indistinguishable.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     # TKT-224 / ADR-051. Declared on every operation the limiter guards, and ONLY
     # those — an undeclared status is rewritten to 500 by the response validator,
     # which is how this was found: the limiter worked and the buyer saw an outage.
@@ -475,7 +545,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken, orphaned_seats], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).'}
+        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.'}
         seat_identities:
           type: array
           description: >
@@ -487,6 +557,21 @@ components:
             selectable, since adding one is the repair. Never synthesised by
             commerce: a refusal without a usable identity list is a 502, not a guess.
           items: {type: string, minLength: 1, maxLength: 200}
+    # The partner request bodies (TKT-240). Note what is ABSENT from all three:
+    # there is no `channel_code` field anywhere. The channel is the credential's,
+    # and a field a partner could fill would be a field the handler might trust.
+    PartnerAvailability:
+      type: object
+      additionalProperties: false
+      description: >
+        What the partner's own channel has left on this slot. `channel_code` is
+        echoed so an integration can assert it is talking about the channel it
+        believes it holds — it is an answer, never a question.
+      required: [slot_id, channel_code, available]
+      properties:
+        slot_id: {type: string, format: uuid}
+        channel_code: {type: string, minLength: 1, maxLength: 100}
+        available: {type: integer, minimum: 0, description: 'Units the credential''s channel may still sell on this slot.'}
     ReservationCreate:
       type: object
       additionalProperties: false
@@ -526,11 +611,19 @@ components:
             channel-agnostic fee rules are eligible. It is NOT a wildcard: a
             channel-specific rule never applies to a sale that named no channel.
 
-            It reaches catalog's fee resolution and stops there. It is
-            deliberately NOT forwarded to inventory, whose own channel_code is
-            what channel allocations cap consumption against -- propagating it
-            would make a sale start failing with 409 when an allocation is
-            exhausted, on ticket types this change never touched.
+            It reaches catalog's fee resolution and STOPS THERE. Inventory's own
+            channel_code is what channel allocations cap consumption against, so a
+            channelled sale still takes that channel's fees while consuming public
+            inventory. That is a known, open defect and TKT-246 owns it.
+
+            Forwarding this field to inventory is necessary but NOT sufficient, and
+            must not be done alone: this operation is unauthenticated and takes the
+            channel from the request body, so forwarding without an authorization
+            rule would let any caller consume a reseller's allocation. Closing the
+            seam means the allocation itself says who may sell it.
+
+            The SEATED half of this remains open and belongs to TKT-176: a seated
+            claim carries no channel and ignores allocations entirely.
           type: string
           minLength: 1
           maxLength: 100

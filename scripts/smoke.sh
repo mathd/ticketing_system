@@ -257,6 +257,22 @@ if [ -z "$SMOKE_SCANNER_TOKEN" ]; then
 fi
 export SMOKE_SCANNER_TOKEN
 
+# TKT-240: enrol one reseller through the REAL CLI, the same path an operator
+# follows. The token is printed once on stdout (everything else goes to stderr)
+# and is not recoverable, which is the property being exercised as much as it is
+# a constraint on this script. The channel matches the allocation the partner
+# smoke tests create.
+SMOKE_PARTNER_RESELLER_ID="00000000-0000-0000-0000-000000000240"
+SMOKE_PARTNER_CHANNEL="reseller-smoke"
+SMOKE_PARTNER_TOKEN=$(compose exec -T commerce /app enrol-reseller \
+  00000000-0000-0000-0000-000000000001 "$SMOKE_PARTNER_RESELLER_ID" \
+  "$SMOKE_PARTNER_CHANNEL" "smoke reseller" 2>/dev/null | tr -d '\r')
+if [ -z "$SMOKE_PARTNER_TOKEN" ]; then
+  echo "smoke: could not enrol a reseller credential — every partner call would 401" >&2
+  exit 1
+fi
+export SMOKE_PARTNER_TOKEN SMOKE_PARTNER_CHANNEL SMOKE_PARTNER_RESELLER_ID
+
 cd "$ROOT/smoke"
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
@@ -269,6 +285,9 @@ SMOKE_COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN" \
 SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY" \
 SMOKE_ACCESS_QR_SEED="$SMOKE_ACCESS_QR_SEED" \
 SMOKE_SCANNER_TOKEN="$SMOKE_SCANNER_TOKEN" \
+SMOKE_PARTNER_TOKEN="$SMOKE_PARTNER_TOKEN" \
+SMOKE_PARTNER_CHANNEL="$SMOKE_PARTNER_CHANNEL" \
+SMOKE_PARTNER_RESELLER_ID="$SMOKE_PARTNER_RESELLER_ID" \
 SMOKE_PAYMENTS_INTERNAL_TOKEN="$SMOKE_PAYMENTS_INTERNAL_TOKEN" \
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL=nats://localhost:${NATS_PORT} \

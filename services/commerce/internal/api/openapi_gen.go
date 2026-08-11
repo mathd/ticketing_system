@@ -11,6 +11,10 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+const (
+	PartnerCredentialScopes partnerCredentialContextKey = "PartnerCredential.Scopes"
+)
+
 // Defines values for CancellationRefundFailureCode.
 const (
 	CeilingMoved        CancellationRefundFailureCode = "ceiling_moved"
@@ -88,8 +92,9 @@ func (e CancellationRefundRunStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	OrphanedSeats ErrorCode = "orphaned_seats"
-	SeatTaken     ErrorCode = "seat_taken"
+	OrphanedSeats         ErrorCode = "orphaned_seats"
+	SeatTaken             ErrorCode = "seat_taken"
+	SeatedPoolUnsupported ErrorCode = "seated_pool_unsupported"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -98,6 +103,8 @@ func (e ErrorCode) Valid() bool {
 	case OrphanedSeats:
 		return true
 	case SeatTaken:
+		return true
+	case SeatedPoolUnsupported:
 		return true
 	default:
 		return false
@@ -333,7 +340,7 @@ type DeliveryEmail struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
+	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -341,7 +348,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
+// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
 type ErrorCode string
 
 // Exchange defines model for Exchange.
@@ -466,6 +473,14 @@ type OrderUnclaimed struct {
 	OrderId            openapi_types.UUID `json:"order_id"`
 }
 
+// PartnerAvailability What the partner's own channel has left on this slot. `channel_code` is echoed so an integration can assert it is talking about the channel it believes it holds — it is an answer, never a question.
+type PartnerAvailability struct {
+	// Available Units the credential's channel may still sell on this slot.
+	Available   int                `json:"available"`
+	ChannelCode string             `json:"channel_code"`
+	SlotId      openapi_types.UUID `json:"slot_id"`
+}
+
 // PasswordResetCompletion A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.
 // The password floor is 8 here and not 1, unlike sign-in. Sign-in verifies an existing credential and must not refuse a short one differently from a wrong one; this operation SETS a credential, so it is where the policy belongs — the same place registration puts it.
 type PasswordResetCompletion struct {
@@ -549,7 +564,9 @@ type ReservationFeeBreakdownIncidence string
 type ReservationCreate struct {
 	// ChannelCode The sales channel this purchase is made through, selecting which fee rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) -- there is no channel registry, and inventing one here would decide TKT-17's story.
 	// OMITTING it is the default/public context, in which only channel-agnostic fee rules are eligible. It is NOT a wildcard: a channel-specific rule never applies to a sale that named no channel.
-	// It reaches catalog's fee resolution and stops there. It is deliberately NOT forwarded to inventory, whose own channel_code is what channel allocations cap consumption against -- propagating it would make a sale start failing with 409 when an allocation is exhausted, on ticket types this change never touched.
+	// It reaches catalog's fee resolution and STOPS THERE. Inventory's own channel_code is what channel allocations cap consumption against, so a channelled sale still takes that channel's fees while consuming public inventory. That is a known, open defect and TKT-246 owns it.
+	// Forwarding this field to inventory is necessary but NOT sufficient, and must not be done alone: this operation is unauthenticated and takes the channel from the request body, so forwarding without an authorization rule would let any caller consume a reseller's allocation. Closing the seam means the allocation itself says who may sell it.
+	// The SEATED half of this remains open and belongs to TKT-176: a seated claim carries no channel and ignores allocations entirely.
 	ChannelCode *string            `json:"channel_code,omitempty"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 
@@ -584,6 +601,12 @@ type ReportLimit = int
 
 // TooManyRequests defines model for TooManyRequests.
 type TooManyRequests = Error
+
+// Unauthorized defines model for Unauthorized.
+type Unauthorized = Error
+
+// partnerCredentialContextKey is the context key for PartnerCredential security scheme
+type partnerCredentialContextKey string
 
 // ListCustomerOrdersParams defines parameters for ListCustomerOrders.
 type ListCustomerOrdersParams struct {
@@ -641,6 +664,11 @@ type CheckoutParams struct {
 // ClaimGuestOrderParams defines parameters for ClaimGuestOrder.
 type ClaimGuestOrderParams struct {
 	XCustomerAssertion *CustomerAssertion `json:"X-Customer-Assertion,omitempty"`
+}
+
+// GetPartnerAvailabilityParams defines parameters for GetPartnerAvailability.
+type GetPartnerAvailabilityParams struct {
+	SlotId openapi_types.UUID `form:"slot_id" json:"slot_id"`
 }
 
 // CreateReservationParams defines parameters for CreateReservation.

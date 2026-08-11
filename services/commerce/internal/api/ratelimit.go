@@ -107,12 +107,35 @@ const (
 	checkoutSourceKeyCap = 50_000
 )
 
+// The partner budget (TKT-240). Sized well above a working integration's steady
+// rate and well below what a runaway retry loop or a compromised credential can
+// send: a reseller sells continuously during an on-sale, so the bound is per
+// minute rather than per quarter-hour, and it is per RESELLER, so one partner's
+// burst cannot exhaust another's budget.
+const (
+	partnerSubjectBurst  = 600
+	partnerSubjectWindow = time.Minute
+	partnerSubjectKeyCap = 10_000
+)
+
 // customerLimiters is the enforcement state. Held on the Server so a test gets a
 // fresh one per case, and so the clock seam is injectable.
 type customerLimiters struct {
 	subject  *ratelimit.Limiter
 	source   *ratelimit.Limiter
 	checkout *ratelimit.Limiter
+	// The partner surface (TKT-240 / ADR-056), keyed on the RESELLER rather than
+	// the source address.
+	//
+	// This surface is the one place ADR-051's per-subject half is fully available:
+	// the credential is resolved by the validator BEFORE the body is decoded, so a
+	// partner has a stable identity at limiting time -- unlike the checkout writes
+	// above, whose comment records that they have no subject that early and are
+	// source-keyed for that reason. Per-source would also be the weaker choice
+	// here on its own: a partner is a server with a fixed address that legitimately
+	// sends volume, so an address budget must be loose enough to be useless as a
+	// per-partner bound.
+	partner *ratelimit.Limiter
 }
 
 func newCustomerLimiters(now func() time.Time) *customerLimiters {
@@ -120,6 +143,7 @@ func newCustomerLimiters(now func() time.Time) *customerLimiters {
 		subject:  ratelimit.New(customerSubjectBurst, customerSubjectWindow, customerSubjectKeyCap, now),
 		source:   ratelimit.New(customerSourceBurst, customerSourceWindow, customerSourceKeyCap, now),
 		checkout: ratelimit.New(checkoutSourceBurst, checkoutSourceWindow, checkoutSourceKeyCap, now),
+		partner:  ratelimit.New(partnerSubjectBurst, partnerSubjectWindow, partnerSubjectKeyCap, now),
 	}
 }
 

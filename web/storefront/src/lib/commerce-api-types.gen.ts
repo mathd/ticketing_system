@@ -194,6 +194,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/partners/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Availability for the partner's own channel on one slot.
+         * @description The organizer and channel are NOT parameters — they are read from the credential (ADR-056). A partner asks "what is available to me on this slot", and cannot phrase a question about anybody else's channel.
+         */
+        get: operations["getPartnerAvailability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/operational-holds/{id}/convert": {
         parameters: {
             query?: never;
@@ -353,12 +373,20 @@ export interface components {
         Error: {
             error: string;
             /**
-             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182).
+             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
              * @enum {string}
              */
-            code?: "seat_taken" | "orphaned_seats";
+            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported";
             /** @description With `seat_taken`: the requested seats another buyer already holds, sorted — a SUBSET of the request, forwarded verbatim from the inventory transaction that arbitrated. With `orphaned_seats`: the FREE seats the selection would strand — seats the buyer did NOT request, so the subset rule deliberately does not apply to them and a picker must keep them selectable, since adding one is the repair. Never synthesised by commerce: a refusal without a usable identity list is a 502, not a guess. */
             seat_identities?: string[];
+        };
+        /** @description What the partner's own channel has left on this slot. `channel_code` is echoed so an integration can assert it is talking about the channel it believes it holds — it is an answer, never a question. */
+        PartnerAvailability: {
+            /** Format: uuid */
+            slot_id: string;
+            channel_code: string;
+            /** @description Units the credential's channel may still sell on this slot. */
+            available: number;
         };
         /** @description Exactly one of `quantity` (general admission) or `seat_identities` (reserved seating, TKT-173) — never both, never neither. That XOR is expressed by the property counts rather than a top-level `oneOf`: with two required properties, two optional ones and no additional properties allowed, `minProperties: 3` / `maxProperties: 3` admits exactly one of the alternatives. `oneOf` would be the obvious spelling and is avoided deliberately — the generator turns a top-level union into a json.RawMessage with As…/From… accessors instead of a usable request struct, which is a worse contract bought with a worse API. The handler enforces the same XOR independently; a caller invoking it directly must not be able to slip past the schema. */
         ReservationCreate: {
@@ -369,7 +397,9 @@ export interface components {
             /**
              * @description The sales channel this purchase is made through, selecting which fee rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) -- there is no channel registry, and inventing one here would decide TKT-17's story.
              *     OMITTING it is the default/public context, in which only channel-agnostic fee rules are eligible. It is NOT a wildcard: a channel-specific rule never applies to a sale that named no channel.
-             *     It reaches catalog's fee resolution and stops there. It is deliberately NOT forwarded to inventory, whose own channel_code is what channel allocations cap consumption against -- propagating it would make a sale start failing with 409 when an allocation is exhausted, on ticket types this change never touched.
+             *     It reaches catalog's fee resolution and STOPS THERE. Inventory's own channel_code is what channel allocations cap consumption against, so a channelled sale still takes that channel's fees while consuming public inventory. That is a known, open defect and TKT-246 owns it.
+             *     Forwarding this field to inventory is necessary but NOT sufficient, and must not be done alone: this operation is unauthenticated and takes the channel from the request body, so forwarding without an authorization rule would let any caller consume a reseller's allocation. Closing the seam means the allocation itself says who may sell it.
+             *     The SEATED half of this remains open and belongs to TKT-176: a seated claim carries no channel and ignores allocations entirely.
              */
             channel_code?: string;
             /** @description General admission: how many. Mutually exclusive with seat_identities. */
@@ -706,6 +736,15 @@ export interface components {
     responses: {
         /** @description Error */
         Error: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The partner credential is absent, unknown, malformed or revoked. These are deliberately indistinguishable. */
+        Unauthorized: {
             headers: {
                 [name: string]: unknown;
             };
@@ -1095,6 +1134,34 @@ export interface operations {
             400: components["responses"]["Error"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
+        };
+    };
+    getPartnerAvailability: {
+        parameters: {
+            query: {
+                slot_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Availability for the credential's channel */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartnerAvailability"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["Error"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Error"];
+            502: components["responses"]["Error"];
         };
     };
     convertOperationalHold: {
