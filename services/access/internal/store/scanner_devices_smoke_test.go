@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +59,26 @@ func TestScannerDeviceEnrolmentAndRevocation(t *testing.T) {
 	}
 
 	// A token that is not enrolled, and one that differs by a byte.
-	for _, bad := range []string{"", " ", "not-enrolled", token[:len(token)-1] + "0"} {
+	//
+	// The near-miss is derived so it can NEVER coincide with the real token
+	// (TKT-247). Substituting a fixed character -- `token[:len-1] + "0"` -- was a
+	// 1-in-16 self-inflicted failure: when the enrolled token already ended in
+	// "0" the expression reconstructed it, and the test then asserted that a
+	// CORRECT token must be refused. Flipping the last character to something it
+	// is not keeps the "differs by one byte" property with no coincidence to hit.
+	//
+	// It misled the diagnosis too: the failure log prints `bad`, which always
+	// ended in "0" by construction, so the log looked like evidence for the cause
+	// while being identical whatever the cause was.
+	lastDifferent := "0"
+	if strings.HasSuffix(token, "0") {
+		lastDifferent = "1"
+	}
+	nearMiss := token[:len(token)-1] + lastDifferent
+	if nearMiss == token {
+		t.Fatal("the near-miss fixture equals the real token; it can no longer prove a refusal")
+	}
+	for _, bad := range []string{"", " ", "not-enrolled", nearMiss} {
 		if _, err := st.AuthenticateScannerDevice(ctx, bad); !errors.Is(err, ErrScannerDeviceUnknown) {
 			t.Errorf("token %q authenticated (err=%v)", bad, err)
 		}
