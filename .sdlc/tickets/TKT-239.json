@@ -2,10 +2,8 @@
   "key": "TKT-239",
   "type": "Story",
   "summary": "US-CH5: Presale unlock codes — who may sell on a gated channel",
-  "status": "Building",
-  "labels": [
-    "needs:human"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": "https://github.com/mathd/ticketing_system/pull/200",
   "parent": "TKT-17",
