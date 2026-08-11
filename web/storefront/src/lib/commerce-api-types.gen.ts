@@ -373,10 +373,10 @@ export interface components {
         Error: {
             error: string;
             /**
-             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).
+             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
              * @enum {string}
              */
-            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported" | "partner_scope_mismatch";
+            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported";
             /** @description With `seat_taken`: the requested seats another buyer already holds, sorted — a SUBSET of the request, forwarded verbatim from the inventory transaction that arbitrated. With `orphaned_seats`: the FREE seats the selection would strand — seats the buyer did NOT request, so the subset rule deliberately does not apply to them and a picker must keep them selectable, since adding one is the repair. Never synthesised by commerce: a refusal without a usable identity list is a 502, not a guess. */
             seat_identities?: string[];
         };
@@ -745,15 +745,6 @@ export interface components {
         };
         /** @description The partner credential is absent, unknown, malformed or revoked. These are deliberately indistinguishable. */
         Unauthorized: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["Error"];
-            };
-        };
-        /** @description The credential is valid but the request names an organizer or channel it was not issued for. */
-        Forbidden: {
             headers: {
                 [name: string]: unknown;
             };

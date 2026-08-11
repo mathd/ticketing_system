@@ -93,7 +93,6 @@ func (e CancellationRefundRunStatus) Valid() bool {
 // Defines values for ErrorCode.
 const (
 	OrphanedSeats         ErrorCode = "orphaned_seats"
-	PartnerScopeMismatch  ErrorCode = "partner_scope_mismatch"
 	SeatTaken             ErrorCode = "seat_taken"
 	SeatedPoolUnsupported ErrorCode = "seated_pool_unsupported"
 )
@@ -102,8 +101,6 @@ const (
 func (e ErrorCode) Valid() bool {
 	switch e {
 	case OrphanedSeats:
-		return true
-	case PartnerScopeMismatch:
 		return true
 	case SeatTaken:
 		return true
@@ -343,7 +340,7 @@ type DeliveryEmail struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).
+	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -351,7 +348,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).
+// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
 type ErrorCode string
 
 // Exchange defines model for Exchange.

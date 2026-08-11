@@ -525,14 +525,6 @@ components:
         The partner credential is absent, unknown, malformed or revoked. These are
         deliberately indistinguishable.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
-    # Reserved for a credential that authenticated but asked about a scope it was
-    # not issued for. Distinct from 401 (who are you) and from 404 (which hides
-    # existence): 403 answers "you are known, and this is not yours to name".
-    Forbidden:
-      description: >
-        The credential is valid but the request names an organizer or channel it
-        was not issued for.
-      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     # TKT-224 / ADR-051. Declared on every operation the limiter guards, and ONLY
     # those — an undeclared status is rewritten to 500 by the response validator,
     # which is how this was found: the limiter worked and the buyer saw an outage.
@@ -553,7 +545,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, partner_scope_mismatch], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: the partner surface was offered a seated pool, whose claims ignore channel allocations entirely — refused rather than overselling the channel (TKT-240; TKT-176 owns the seated seam). `partner_scope_mismatch`: the request named an organizer or channel the credential was not issued for (TKT-240).'}
+        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.'}
         seat_identities:
           type: array
           description: >

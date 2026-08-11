@@ -22,13 +22,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// partnerRefusal writes a refusal carrying a machine-readable code. The codes are
-// a closed enum in the contract, so a new one is a contract change and not a
-// string a handler can invent.
-func partnerRefusal(w http.ResponseWriter, status int, code, message string) {
-	write(w, status, map[string]string{"error": message, "code": code})
-}
-
 // requirePartnerScope resolves the authenticated scope, refusing when there is
 // none.
 //
@@ -62,27 +55,6 @@ func requirePartnerScope(w http.ResponseWriter, r *http.Request) (partnerScope, 
 func (s *Server) limitPartner(w http.ResponseWriter, scope partnerScope) bool {
 	if !s.lim().partner.Allow(scope.ResellerID.String()) {
 		writeTooManyRequests(w)
-		return false
-	}
-	return true
-}
-
-// partnerOrganizerMatches compares a request-supplied organizer against the
-// credential's.
-//
-// The request's value is NEVER the authority — the credential's is. This exists
-// so that a partner integration naming the wrong organizer is TOLD (403) instead
-// of being silently served its own data, which would leave a real integration bug
-// undiagnosed for as long as the two happened to agree.
-//
-// The comparison direction matters: this must not become "use whichever the
-// request supplied". ADR-053 records what that costs — catalog's staff credential
-// can enumerate and mutate across tenants precisely because the organizer arrives
-// in the request and nothing compares it to anything.
-func partnerOrganizerMatches(w http.ResponseWriter, scope partnerScope, requested uuid.UUID) bool {
-	if requested != scope.OrganizerID {
-		partnerRefusal(w, http.StatusForbidden, "partner_scope_mismatch",
-			"the credential is not issued for the organizer named in this request")
 		return false
 	}
 	return true
