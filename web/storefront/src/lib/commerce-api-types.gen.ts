@@ -369,7 +369,8 @@ export interface components {
             /**
              * @description The sales channel this purchase is made through, selecting which fee rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) -- there is no channel registry, and inventing one here would decide TKT-17's story.
              *     OMITTING it is the default/public context, in which only channel-agnostic fee rules are eligible. It is NOT a wildcard: a channel-specific rule never applies to a sale that named no channel.
-             *     It reaches catalog's fee resolution and stops there. It is deliberately NOT forwarded to inventory, whose own channel_code is what channel allocations cap consumption against -- propagating it would make a sale start failing with 409 when an allocation is exhausted, on ticket types this change never touched.
+             *     It reaches catalog's fee resolution AND, since TKT-240, inventory, whose own channel_code is what channel allocations cap consumption against. A channelled sale therefore consumes THAT channel's allocation and is refused with 409 once it is exhausted, rather than taking the channel's fees while eating public stock.
+             *     The SEATED half of this remains open and belongs to TKT-176: a seated claim carries no channel and ignores allocations entirely.
              */
             channel_code?: string;
             /** @description General admission: how many. Mutually exclusive with seat_identities. */

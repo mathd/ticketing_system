@@ -299,11 +299,17 @@ type reserveRequest struct {
 	// channel-agnostic rules are eligible, and that is NOT the same as a caller
 	// sending an empty channel. Omitting it is not a wildcard.
 	//
-	// It reaches catalog's fee resolution and stops there. It is deliberately
-	// NOT forwarded to inventory: inventory's channel_code is what
-	// channel_allocations cap consumption against (ADR-024), so propagating it
-	// would make a sale start failing with 409 when an allocation is exhausted,
-	// on ticket types this ticket never touched. TKT-176 owns that question.
+	// It reaches catalog's fee resolution AND, since TKT-240, inventory — as
+	// `channel` on the GA hold. Inventory's channel_code is what
+	// channel_allocations cap consumption against (ADR-024), so a channelled sale
+	// consumes its own channel's allocation and returns 409 once that allocation
+	// is exhausted. Before TKT-240 it stopped at catalog, which meant a
+	// reseller-channel sale took reseller fees while eating public inventory.
+	//
+	// The SEATED half is deliberately still open and belongs to TKT-176:
+	// SeatHoldCreate has no channel field at all, so a seated claim ignores
+	// allocations entirely. Forwarding a channel the seat path does not read
+	// would be a half-fix that reads as done — see channel_seam_test.go.
 	ChannelCode *string `json:"channel_code,omitempty"`
 }
 
@@ -646,6 +652,26 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	holdURL, holdBody := s.inventoryURL+"/holds", map[string]any{"organizer_id": in.OrganizerID,
 		"slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity,
 		"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
+	// The channel reaches inventory for a GA sale (TKT-240), closing the seam
+	// documented on reserveRequest.ChannelCode. Inventory's channel_code is what
+	// channel_allocations cap consumption against (ADR-024), so a channelled sale
+	// now consumes ITS OWN channel's allocation instead of public stock — and
+	// starts returning 409 when that allocation is exhausted. That refusal is the
+	// intended behaviour change; before it, a reseller-channel sale took reseller
+	// fees while eating the public pool.
+	//
+	// The key is `channel`, which is what inventory's HoldCreate declares — NOT
+	// `channel_code`, commerce's own spelling. Sending the wrong one is a silent
+	// no-op: inventory ignores the unknown field, consults no allocation, and
+	// succeeds, leaving the seam open while every test stays green.
+	//
+	// Nil is omitted rather than sent as "": the pointer exists so that the
+	// default/public context is distinguishable from a caller naming an empty
+	// channel, and an empty string would send every public sale looking for an
+	// allocation that does not exist.
+	if in.ChannelCode != nil {
+		holdBody["channel"] = *in.ChannelCode
+	}
 	if in.seated() {
 		holdURL = s.inventoryURL + "/holds/seats"
 		holdBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID,
