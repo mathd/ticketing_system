@@ -16,7 +16,6 @@ import (
 
 	"github.com/google/uuid"
 
-	store "ticketing/services/commerce/internal/store"
 )
 
 // partnerRefusal writes a refusal carrying a machine-readable code. The codes are
@@ -200,58 +199,4 @@ func (s *Server) partnerReserve(w http.ResponseWriter, r *http.Request) {
 	inner.Body = io.NopCloser(bytes.NewReader(body))
 	inner.ContentLength = int64(len(body))
 	s.reserve(w, inner)
-}
-
-// partnerConfirm turns the partner's own reservation into a sale.
-//
-// Scope is enforced twice, and both are load-bearing. Here, the organizer named
-// in the request is compared against the credential's. In the store, the
-// reservation is resolved by a predicate that also includes the channel and the
-// reseller — which is the one that actually holds, because it is the only check a
-// caller cannot route around by naming its own organizer and someone else's
-// reservation id.
-func (s *Server) partnerConfirm(w http.ResponseWriter, r *http.Request) {
-	scope, ok := requirePartnerScope(w, r)
-	if !ok {
-		return
-	}
-	if !s.limitPartner(w, scope) {
-		return
-	}
-	var in PartnerOrderCreate
-	if !decode(w, r, &in) {
-		return
-	}
-	if !partnerOrganizerMatches(w, scope, in.OrganizerId) {
-		return
-	}
-	// The reservation must belong to THIS partner. Answered as 404 rather than
-	// 403: a reservation belonging to someone else must not be confirmed as
-	// existing, and "forbidden" would confirm it.
-	if s.db != nil {
-		owned, err := store.ReservationBelongsToReseller(r.Context(), s.db,
-			in.ReservationId, scope.OrganizerID, scope.ChannelCode, scope.ResellerID)
-		if err != nil {
-			write(w, http.StatusInternalServerError, map[string]string{"error": "could not resolve reservation"})
-			return
-		}
-		if !owned {
-			write(w, http.StatusNotFound, map[string]string{"error": "not found"})
-			return
-		}
-	}
-	// Delegate to the ordinary checkout for the same reason the reserve does: one
-	// implementation of completion, payment and the order write.
-	body, err := json.Marshal(map[string]any{
-		"organizer_id":   in.OrganizerId,
-		"reservation_id": in.ReservationId,
-	})
-	if err != nil {
-		write(w, http.StatusInternalServerError, map[string]string{"error": "could not build order"})
-		return
-	}
-	inner := r.Clone(r.Context())
-	inner.Body = io.NopCloser(bytes.NewReader(body))
-	inner.ContentLength = int64(len(body))
-	s.checkout(w, inner)
 }

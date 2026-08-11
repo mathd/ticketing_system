@@ -74,13 +74,22 @@ func partnerDoAs(t *testing.T, token, method, path, key string, body any) (int, 
 	return resp.StatusCode, out
 }
 
-// A partner sells: availability, hold, confirm — the whole COS path, end to end.
+// A partner reads its own availability and holds against its own allocation.
 //
-// This is also the smoke DRIVER for all three documented 2xx partner operations.
+// CONFIRM IS NOT HERE, and its absence is the ticket's scope boundary rather than
+// an omission: settling a reseller sale needs a settlement leg for a sale that was
+// never captured, and ADR-048 writes ledger entries in the `payment.captured`
+// transaction and requires `fact_type = 'payment.captured'`. A partner order with
+// no capture would therefore produce NO settlement entry, and the attribution
+// columns this ticket adds would be written and never read — the opposite of the
+// COS's "a shape settlement can already split by". Confirm and its settlement
+// design are TKT-23's.
+//
+// This is also the smoke DRIVER for both documented 2xx partner operations.
 // The coverage gate (smoke/coverage_test.go) fails the entire suite for any
 // documented 2xx operation nothing exercises, and its allowlist is empty; a real
 // driver was written rather than the first allowlist entry since it was drained.
-func TestAPartnerSellsThroughItsOwnChannel(t *testing.T) {
+func TestAPartnerReadsAndHoldsOnItsOwnChannel(t *testing.T) {
 	if partnerToken() == "" {
 		t.Fatal("SMOKE_PARTNER_TOKEN is not set: the partner suite would silently prove nothing")
 	}
@@ -134,13 +143,6 @@ func TestAPartnerSellsThroughItsOwnChannel(t *testing.T) {
 	if res.ID == "" {
 		t.Fatalf("partner reservation carried no id: %s", body)
 	}
-
-	// 3. Confirm it into a sale.
-	code, body = partnerDo(t, http.MethodPost, "/api/commerce/partners/orders", "partner-ord-"+slot,
-		map[string]any{"organizer_id": organizerID, "reservation_id": res.ID})
-	if code != http.StatusCreated && code != http.StatusOK {
-		t.Fatalf("partner order: %d %s", code, body)
-	}
 }
 
 // An unauthenticated partner call is refused AT THE EDGE, by the validator.
@@ -158,8 +160,6 @@ func TestPartnerRoutesAreClosedWithoutACredentialThroughTheGateway(t *testing.T)
 		{"availability", http.MethodGet, "/api/commerce/partners/availability?slot_id=" + slot, nil},
 		{"reservation", http.MethodPost, "/api/commerce/partners/reservations",
 			map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": 1}},
-		{"order", http.MethodPost, "/api/commerce/partners/orders",
-			map[string]any{"organizer_id": organizerID, "reservation_id": slot}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, body := partnerDoAs(t, "", tc.method, tc.path, "no-cred-"+tc.name+slot, tc.body)

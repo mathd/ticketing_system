@@ -213,7 +213,6 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// compared in a handler (ADR-043).
 	r.Get("/partners/availability", s.partnerAvailability)
 	r.Post("/partners/reservations", s.partnerReserve)
-	r.Post("/partners/orders", s.partnerConfirm)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)

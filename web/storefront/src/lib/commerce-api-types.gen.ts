@@ -234,26 +234,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/partners/orders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Confirm a partner reservation into a sale.
-         * @description The reservation is resolved by a predicate that includes the credential's organizer, channel AND reseller, so a partner cannot confirm a reservation it did not create. A reservation belonging to someone else is reported as 404, not 403: answering "forbidden" would confirm the reservation exists.
-         */
-        post: operations["confirmPartnerSale"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/internal/operational-holds/{id}/convert": {
         parameters: {
             query?: never;
@@ -430,12 +410,6 @@ export interface components {
             /** Format: uuid */
             ticket_type_id: string;
             quantity: number;
-        };
-        PartnerOrderCreate: {
-            /** Format: uuid */
-            organizer_id: string;
-            /** Format: uuid */
-            reservation_id: string;
         };
         /** @description What the partner's own channel has left on this slot. `channel_code` is echoed so an integration can assert it is talking about the channel it believes it holds — it is an answer, never a question. */
         PartnerAvailability: {
@@ -1256,39 +1230,6 @@ export interface operations {
             400: components["responses"]["Error"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
-            409: components["responses"]["Error"];
-            429: components["responses"]["TooManyRequests"];
-            500: components["responses"]["Error"];
-            502: components["responses"]["Error"];
-        };
-    };
-    confirmPartnerSale: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PartnerOrderCreate"];
-            };
-        };
-        responses: {
-            /** @description Sold */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderResult"];
-                };
-            };
-            400: components["responses"]["Error"];
-            401: components["responses"]["Unauthorized"];
-            404: components["responses"]["Error"];
             409: components["responses"]["Error"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];

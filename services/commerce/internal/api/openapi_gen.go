@@ -484,12 +484,6 @@ type PartnerAvailability struct {
 	SlotId      openapi_types.UUID `json:"slot_id"`
 }
 
-// PartnerOrderCreate defines model for PartnerOrderCreate.
-type PartnerOrderCreate struct {
-	OrganizerId   openapi_types.UUID `json:"organizer_id"`
-	ReservationId openapi_types.UUID `json:"reservation_id"`
-}
-
 // PartnerReservationCreate A partner's GA hold. `organizer_id` IS required and IS compared against the credential's — not because it is trusted, but because a partner integration that names the wrong organizer should be told so (403) rather than silently served its own. The authority is always the credential.
 // No `seat_identities`: a seated pool is refused here (TKT-176 owns the seated seam), and offering the field would imply otherwise.
 type PartnerReservationCreate struct {
@@ -690,11 +684,6 @@ type GetPartnerAvailabilityParams struct {
 	SlotId openapi_types.UUID `form:"slot_id" json:"slot_id"`
 }
 
-// ConfirmPartnerSaleParams defines parameters for ConfirmPartnerSale.
-type ConfirmPartnerSaleParams struct {
-	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
-
 // CreatePartnerReservationParams defines parameters for CreatePartnerReservation.
 type CreatePartnerReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -743,9 +732,6 @@ type CheckoutJSONRequestBody = Checkout
 
 // ClaimGuestOrderJSONRequestBody defines body for ClaimGuestOrder for application/json ContentType.
 type ClaimGuestOrderJSONRequestBody = OrderClaim
-
-// ConfirmPartnerSaleJSONRequestBody defines body for ConfirmPartnerSale for application/json ContentType.
-type ConfirmPartnerSaleJSONRequestBody = PartnerOrderCreate
 
 // CreatePartnerReservationJSONRequestBody defines body for CreatePartnerReservation for application/json ContentType.
 type CreatePartnerReservationJSONRequestBody = PartnerReservationCreate
