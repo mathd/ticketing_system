@@ -192,6 +192,15 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		// the exact-match lookup in the store — a code issuable but never
 		// redeemable.
 		PresaleCode string `json:"presale_code"`
+		// The AUTHENTICATED reseller, compared against the allocation's sold_by
+		// (TKT-246). uuid.Nil means none was proven, which is what every caller
+		// predating this field sends -- and it is not a wildcard: an absent identity
+		// may consume only an unbound allocation.
+		//
+		// Inventory does not authenticate this and cannot: it trusts its internal
+		// caller (commerce, which takes it from the partner credential -- ADR-056).
+		// Honest-writer authorization, not tamper-evidence (ADR-021).
+		ResellerID uuid.UUID `json:"reseller_id"`
 	}
 	err := httpx.DecodeJSON(w, r, &in, 1<<20)
 	legacy := in.TicketTypeID == uuid.Nil && in.Currency == ""
@@ -204,7 +213,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
 		return
 	}
-	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Channel, key, store.WithPresaleCode(in.PresaleCode))
+	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Channel, key, store.WithPresaleCode(in.PresaleCode), store.WithReseller(in.ResellerID))
 	if err != nil {
 		problem(w, err)
 		return

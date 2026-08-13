@@ -174,6 +174,14 @@ type ExchangeSource struct {
 	// would silently change what the buyer owes on the difference, and the
 	// change would look like a pricing bug rather than a lost field.
 	ChannelCode *string
+	// ResellerID is WHO sold the source, nil for a public sale (TKT-246).
+	//
+	// Read for two distinct purposes, and both were defects before this ticket:
+	// the target hold must present it so a channelled exchange consumes the SAME
+	// allocation the source came from rather than public stock, and the replacement
+	// must inherit it or exchanging a reseller-attributed order silently produces an
+	// unattributed one — irreversibly, since nothing else records who sold it.
+	ResellerID *uuid.UUID
 }
 
 // LoadExchangeSource reads the source order's line for eligibility checks.
@@ -187,11 +195,11 @@ func LoadExchangeSource(ctx context.Context, db *sql.DB, org, order uuid.UUID) (
 	var out ExchangeSource
 	var status string
 	err := db.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.face_value_amount, r.total_amount, r.currency, r.channel_code
+		SELECT o.status, o.idempotency_key, r.id, r.hold_id, r.buyer_id, r.slot_id, r.quantity, r.face_value_amount, r.total_amount, r.currency, r.channel_code, r.reseller_id
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
 		Scan(&status, &out.PaymentSourceKey, &out.ReservationID, &out.HoldID, &out.BuyerID, &out.SlotID,
-			&out.Quantity, &out.Total, &out.GrossTotal, &out.Currency, &out.ChannelCode)
+			&out.Quantity, &out.Total, &out.GrossTotal, &out.Currency, &out.ChannelCode, &out.ResellerID)
 	if err != nil {
 		return ExchangeSource{}, err
 	}

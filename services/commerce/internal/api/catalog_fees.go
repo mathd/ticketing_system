@@ -526,6 +526,20 @@ func sameChannel(a, b *string) bool {
 // The seat SET is compared, not its size: [1,2] and [2,3] are both two seats,
 // and matching on count would replay someone else's seats back to a caller who
 // asked for different ones.
+//
+// The RESELLER is deliberately not a parameter here (TKT-246), and that is a
+// statement about where the separation lives rather than an omission. Two resellers
+// on one organizer sharing an idempotency key are separated EARLIER, by the
+// reservation id derivation: a partner's id includes its reseller, so the second
+// caller derives a different id, misses the first one's row entirely and never
+// reaches this comparison. Separating them here instead would be strictly worse --
+// they would collide on the id, find each other's reservation and be refused with a
+// 409 "key reused with different terms", which is a confusing answer to a caller who
+// did nothing wrong and whose key is theirs to choose.
+//
+// What this function still owes the partner path is the CHANNEL comparison below,
+// and it gets it for free: reserveWithScope overwrites in.ChannelCode from the
+// credential before any of this runs, so a partner's terms carry its channel.
 func sameTerms(in reserveRequest, qty int32, ticketType uuid.UUID, channel *string, seats []string) bool {
 	switch {
 	case qty != in.units() || ticketType != in.TicketTypeID:

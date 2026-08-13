@@ -244,12 +244,48 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 // cannot be passed in the wrong slot.
 type HoldOption func(*holdOptions)
 
-type holdOptions struct{ presaleCode string }
+type holdOptions struct {
+	presaleCode string
+	reseller    uuid.UUID
+}
 
 // WithPresaleCode supplies the unlock code for a gated channel (TKT-239).
 // Absent, or on an ungated allocation, it is ignored.
 func WithPresaleCode(code string) HoldOption {
 	return func(o *holdOptions) { o.presaleCode = code }
+}
+
+// WithReseller supplies the AUTHENTICATED reseller identity of the caller (TKT-246).
+//
+// Absent (uuid.Nil) means "no reseller identity was proven", which is what every
+// pre-existing caller passes and what an unauthenticated request is. It is not a
+// wildcard: an absent identity may consume only an UNBOUND allocation.
+//
+// The value must come from a verified credential (commerce's partner scope, ADR-056),
+// never from a request body. Inventory cannot check that for itself — it trusts its
+// internal caller — so this is honest-writer authorization, not tamper-evidence
+// (ADR-021). Naming it here because the option is the exact place a future caller
+// would be tempted to pass a body field.
+func WithReseller(reseller uuid.UUID) HoldOption {
+	return func(o *holdOptions) { o.reseller = reseller }
+}
+
+// sellerAdmits answers whether a caller may consume this allocation.
+//
+// One predicate, two call sites (CreateHold and PlaceGroupReservation). It is a
+// function rather than two inline conditions for the reason consumedQuantity's comment
+// gives about copied SQL: a rule duplicated across claim paths forks, and the fork is
+// invisible until a hold succeeds where it should not have.
+//
+// NULL sold_by = unbound = anyone, which is every allocation that predates TKT-246.
+// A bound allocation requires an exact match, so a DIFFERENT reseller is refused as
+// firmly as an anonymous caller — a bare "is bound" boolean would have let reseller B
+// consume reseller A's stock.
+func sellerAdmits(soldBy uuid.NullUUID, caller uuid.UUID) bool {
+	if !soldBy.Valid {
+		return true
+	}
+	return caller != uuid.Nil && soldBy.UUID == caller
 }
 
 func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string, opts ...HoldOption) (Claim, bool, error) {
@@ -345,10 +381,11 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	var chCap int32
 	var haveAllocation bool
 	var requiresCode bool
+	var soldBy uuid.NullUUID
 	if channel != "" {
 		err = tx.QueryRowContext(ctx,
-			`SELECT cap, requires_code, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
-			slot, channel).Scan(&chCap, &requiresCode, &channelWindowOpen)
+			`SELECT cap, requires_code, sold_by, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
+			slot, channel).Scan(&chCap, &requiresCode, &soldBy, &channelWindowOpen)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// No ACTIVE allocation for this channel — released, or never
@@ -361,6 +398,35 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 			haveAllocation = true
 			if !channelWindowOpen {
 				return Claim{}, false, ErrChannelWindowClosed
+			}
+			// WHO may sell this, judged after the window and before the code and
+			// the capacity arithmetic (TKT-246, amending ADR-024).
+			//
+			// The order is the whole point, and each boundary was argued:
+			//
+			//   window -> seller -> code -> capacity
+			//
+			// Before capacity, for TKT-238's reason: authorization is a property of
+			// the requested channel and capacity is a property of the pool, so a
+			// gated channel must not read as a sellout precisely when the on-sale is
+			// busiest. After the window, because a closed channel is selling to
+			// nobody -- answering "you are not the seller" to a request a valid
+			// seller would also have been refused is both misleading AND an oracle:
+			// it tells an unauthorized caller that the channel is bound rather than
+			// closed. Before the code for the same reason the window precedes the
+			// code: no point redeeming a scarce unlock code against an allocation
+			// the caller may not consume at all -- redeemPresaleCode MUTATES, and a
+			// refusal after it would burn a redemption on a caller who was never
+			// eligible.
+			//
+			// The refusal is ErrUnavailable, deliberately NOT a distinct sentinel.
+			// A "seller mismatch" code would tell an unauthenticated prober that
+			// this channel exists and is bound to someone else -- the enumeration
+			// oracle that presale_code_invalid was made uniform to prevent
+			// (openapi.yaml, TKT-239). sold_by is not guessable and must not become
+			// discoverable through a refusal.
+			if !sellerAdmits(soldBy, o.reseller) {
+				return Claim{}, false, ErrUnavailable
 			}
 			// The unlock code is judged AFTER the channel's window and BEFORE any
 			// capacity arithmetic (TKT-239 / ADR-055).

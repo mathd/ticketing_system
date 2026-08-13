@@ -36,6 +36,26 @@ import (
 // the forward on its own -- the tempting one-line "fix" -- fails loudly here and
 // sends the author to TKT-246 instead of shipping a bypassable guard. When TKT-246
 // lands, these assertions INVERT; do not delete them.
+//
+// TKT-246 UPDATE -- the tripwire did NOT invert, and that is the ticket's finding.
+//
+// The closure shipped, and the PUBLIC route still forwards no channel. Inverting
+// this test would have meant forwarding a body-supplied channel from an
+// unauthenticated route, which is the bypass the revert exists for; a per-allocation
+// binding does not save it, because every allocation that exists today is UNBOUND
+// and therefore consumable by anyone who names its channel. So the seam is closed
+// where a channel can be AUTHORIZED -- the authenticated partner route, which takes
+// the channel from its credential and never from a body -- and the public route is
+// kept unable to reach the decision at all.
+//
+// What survives is the fee-attribution half of the original defect: a public sale
+// naming a reseller channel still prices under that channel's fee rules while
+// consuming public stock. It no longer moves anyone's INVENTORY without a
+// credential. See TKT-247 for the remainder and ADR-024 for the reasoning.
+//
+// These three tests therefore stay EXACTLY as they were, and the tripwire keeps
+// guarding the thing it was left to guard. TestAPartnerGASaleForwardsItsChannel
+// below is the positive half.
 
 // capturedHold is the inventory hold body commerce sent.
 type capturedHold struct {

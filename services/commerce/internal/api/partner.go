@@ -6,13 +6,17 @@ package api
 // credential decides which organizer and which channel "your own" means, and the
 // handler never takes either from the request body.
 //
-// There is deliberately no partner WRITE here. A hold has to consume the
-// credential's channel allocation to mean anything, and inventory does not yet
-// enforce that -- the channel stops at catalog's fee resolution and never reaches
-// the claim path. A write shipped now would be a hold that silently consumes
-// PUBLIC stock while the contract, the ADR and this comment all claimed the
-// partner was confined to its channel. It was written, reviewed, and removed for
-// exactly that reason; TKT-246 adds it back together with the enforcement.
+// TKT-246 added the WRITE, together with the enforcement its absence was waiting
+// for. The note that stood here said a partner write could not ship until inventory
+// enforced the channel allocation, because a hold that silently consumed PUBLIC
+// stock would make the contract, the ADR and this comment all liars. Inventory now
+// judges it: an allocation may bind to a seller (sold_by) and the guard runs under
+// the pool row lock, before capacity, so a partner hold either consumes its own
+// channel's allocation or is refused.
+//
+// Both partner operations take organizer and channel from the credential and from
+// nowhere else. partnerReserve additionally compares the body's organizer_id against
+// the scope rather than trusting it -- see reserveWithScope.
 
 import (
 	"encoding/json"
@@ -58,6 +62,24 @@ func (s *Server) limitPartner(w http.ResponseWriter, scope partnerScope) bool {
 		return false
 	}
 	return true
+}
+
+// partnerReserve holds stock against the credential's own channel allocation
+// (TKT-246).
+//
+// A thin wrapper: the reserve path is shared with the public route so that pricing,
+// fees, idempotency and seat handling have ONE implementation. What the scope adds is
+// the authorization -- the channel and reseller inventory decides on, taken from the
+// credential and never from the body.
+func (s *Server) partnerReserve(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requirePartnerScope(w, r)
+	if !ok {
+		return
+	}
+	if !s.limitPartner(w, scope) {
+		return
+	}
+	s.reserveWithScope(w, r, &scope)
 }
 
 // partnerAvailability answers what the credential's own channel has left.

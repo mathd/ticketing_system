@@ -214,6 +214,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/partners/reservations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hold stock against the partner's own channel allocation.
+         * @description The reserve a reseller makes on its own channel (TKT-246). Like the availability read above, the channel and the reseller identity are NOT parameters — they are read from the credential (ADR-056) and forwarded to inventory, which judges them against the allocation's `sold_by` under the pool row lock. A partner cannot phrase a request that consumes anybody else's allocation.
+         *
+         *     `organizer_id` IS in the body, because the shared reserve path needs it, and the handler COMPARES it against the credential's rather than trusting it — a mismatch is 403, never a silent rewrite.
+         *
+         *     GA only: `quantity`, no `seat_identities`. Seated pools do not consult channel allocations at all (TKT-176 owns that seam), so a seated partner sale would claim an authorization this contract cannot deliver.
+         *
+         *     409 is inventory's refusal, and it is deliberately uniform across "sold out", "not your allocation" and "no allocation configured". A distinguishing code would tell a caller which channels exist and who owns them — the enumeration oracle `presale_code_invalid` was made uniform to prevent.
+         */
+        post: operations["createPartnerReservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/operational-holds/{id}/convert": {
         parameters: {
             query?: never;
@@ -387,6 +413,21 @@ export interface components {
             channel_code: string;
             /** @description Units the credential's channel may still sell on this slot. */
             available: number;
+        };
+        /**
+         * @description A partner GA reserve (TKT-246). Deliberately NOT a variant of ReservationCreate: it omits `channel_code` and has no `reseller_id`, so the two fields inventory authorizes on cannot be named by the caller at all. `additionalProperties: false` makes that a 400 at the edge rather than a field the handler has to remember to ignore — the guard is the absence of the field, not a check.
+         *
+         *     No `seat_identities`, so no XOR to express and none of ReservationCreate's minProperties/maxProperties/not machinery: GA is the only shape.
+         */
+        PartnerReservationCreate: {
+            /**
+             * Format: uuid
+             * @description Must equal the credential's organizer; a mismatch is 403. Present because the shared reserve path needs it, not because the caller is trusted with it.
+             */
+            organizer_id: string;
+            /** Format: uuid */
+            ticket_type_id: string;
+            quantity: number;
         };
         /** @description Exactly one of `quantity` (general admission) or `seat_identities` (reserved seating, TKT-173) — never both, never neither. That XOR is expressed by the property counts rather than a top-level `oneOf`: with two required properties, two optional ones and no additional properties allowed, `minProperties: 3` / `maxProperties: 3` admits exactly one of the alternatives. `oneOf` would be the obvious spelling and is avoided deliberately — the generator turns a top-level union into a json.RawMessage with As…/From… accessors instead of a usable request struct, which is a worse contract bought with a worse API. The handler enforces the same XOR independently; a caller invoking it directly must not be able to slip past the schema. */
         ReservationCreate: {
@@ -1159,6 +1200,39 @@ export interface operations {
             400: components["responses"]["Error"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["Error"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Error"];
+            502: components["responses"]["Error"];
+        };
+    };
+    createPartnerReservation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartnerReservationCreate"];
+            };
+        };
+        responses: {
+            /** @description Reserved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Reservation"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
             502: components["responses"]["Error"];
