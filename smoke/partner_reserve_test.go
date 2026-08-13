@@ -110,6 +110,63 @@ func TestAPartnerSellsFromItsOwnBoundAllocation(t *testing.T) {
 	}
 }
 
+// Inventory's internal hold consumes a BOUND allocation for its own seller, and
+// refuses every other caller (TKT-246, ai-review pass 3).
+//
+// Driven service-direct rather than through commerce, for two reasons. It is the smoke
+// DRIVER for `createInternalHold` — the coverage gate observes the operation being
+// called, and a request that reaches inventory via commerce records commerce's
+// operation, not inventory's. And it is the only place the route's own contract is
+// exercised: through commerce, a bug in inventory's guard and a bug in commerce's
+// forwarding look identical.
+//
+// The three callers mirror the store-tier test one layer up, because the store test
+// cannot see the route: it drives the store directly, which is exactly how the
+// [critical] in pass 3 survived a green suite.
+func TestTheInternalHoldRouteEnforcesTheSellerBinding(t *testing.T) {
+	if partnerReseller() == "" {
+		t.Fatal("SMOKE_PARTNER_RESELLER_ID is not set: the binding could not be asserted")
+	}
+	slot, ticketType := publishedSlot(t, "Internal Hold Hall", 20)
+
+	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
+	if code, body := internalJSON(t, http.MethodPut, allocURL, "", map[string]any{
+		"organizer_id": organizerID,
+		"allocations": []map[string]any{
+			{"channel": partnerChannel(), "cap": 6, "sold_by": partnerReseller()},
+		},
+	}); code != http.StatusOK {
+		t.Fatalf("allocate bound: %d %s", code, body)
+	}
+
+	hold := func(key string, reseller any) (int, []byte) {
+		t.Helper()
+		body := map[string]any{
+			"organizer_id": organizerID, "slot_id": slot, "ticket_type_id": ticketType,
+			"quantity": 2, "unit_amount": 2500, "currency": "EUR", "channel": partnerChannel(),
+		}
+		if reseller != nil {
+			body["reseller_id"] = reseller
+		}
+		return internalJSON(t, http.MethodPost, inventoryURL+"/internal/holds", key, body)
+	}
+
+	// The bound seller sells.
+	if code, body := hold("internal-own", partnerReseller()); code != http.StatusCreated {
+		t.Fatalf("the bound reseller was refused its own allocation through /internal/holds: %d %s",
+			code, body)
+	}
+	// A different reseller does not.
+	if code, body := hold("internal-other", "00000000-0000-0000-0000-0000000009e9"); code != http.StatusConflict {
+		t.Fatalf("a DIFFERENT reseller consumed the allocation: %d %s — want 409", code, body)
+	}
+	// And a caller presenting no reseller at all does not.
+	if code, body := hold("internal-anon", nil); code != http.StatusConflict {
+		t.Fatalf("a caller with NO reseller identity consumed a bound allocation: %d %s — want 409",
+			code, body)
+	}
+}
+
 // THE BYPASS PROBE. An unauthenticated caller cannot consume a bound allocation.
 //
 // Executed, not asserted. AGENTS.md: a security claim is a hypothesis until it is
@@ -159,6 +216,38 @@ func TestAnUnauthenticatedCallerCannotConsumeABoundAllocation(t *testing.T) {
 			"for: forwarding a body-supplied channel from an unauthenticated route lets any "+
 			"caller drain a reseller's stock with no credential.",
 			partnerChannel(), before, after, code, body)
+	}
+}
+
+// The reseller-bearing hold is refused AT THE EDGE (TKT-246, ai-review pass 3).
+//
+// The first of the two guards, executed rather than asserted from the route table. The
+// [critical] this closes was that `reseller_id` was reachable from the internet on the
+// PUBLIC hold; the fix moves it behind /internal/, and this is the test that the move
+// actually put it somewhere the gateway refuses.
+//
+// Both halves matter: the internal path must be edge-denied, and the public path must
+// still work — a fix that closed the hole by breaking public holds would pass the first
+// assertion alone.
+func TestTheInternalHoldRouteIsUnreachableFromTheEdge(t *testing.T) {
+	slot, ticketType := publishedSlot(t, "Edge Denial Hall", 10)
+	body := map[string]any{
+		"organizer_id": organizerID, "slot_id": slot, "ticket_type_id": ticketType,
+		"quantity": 1, "unit_amount": 2500, "currency": "EUR",
+	}
+
+	code, out := postWithKey(t, gatewayURL+"/api/inventory/internal/holds", "edge-internal-hold", body)
+	if code != http.StatusNotFound {
+		t.Fatalf("POST /api/inventory/internal/holds answered %d %s, want 404 — the route that "+
+			"accepts a reseller identity is reachable from the edge, which is the [critical] "+
+			"this ticket closed", code, out)
+	}
+
+	// The PUBLIC hold still works through the gateway, so the assertion above is about
+	// the /internal/ prefix and not about inventory being unreachable.
+	if code, out := postWithKey(t, gatewayURL+"/api/inventory/holds", "edge-public-hold", body); code != http.StatusCreated {
+		t.Fatalf("the public hold answered %d %s through the gateway, want 201 — if this is also "+
+			"refused, the edge-denial assertion above proves nothing", code, out)
 	}
 }
 
