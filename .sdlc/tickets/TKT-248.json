@@ -1,0 +1,13 @@
+{
+  "key": "TKT-248",
+  "type": "Story",
+  "summary": "A public sale still prices on a reseller's channel while consuming public stock (TKT-246 residual)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": "TKT-17",
+  "links": [],
+  "comments": [],
+  "description": "**The half of the channel seam TKT-246 deliberately did not close, recorded so it is a\ndecision rather than an oversight.**\n\n`POST /reservations` is unauthenticated and takes `channel_code` from the request body. That value\nreaches **catalog's fee resolution** — so a public buyer naming `reseller-acme` is priced under that\nchannel's fee rules — and TKT-246 deliberately stops it from reaching **inventory**, so the sale\nconsumes PUBLIC stock.\n\nTKT-246 could not close this half. Forwarding a body-supplied channel from an unauthenticated route\nis the bypass TKT-240 was reverted for, and binding allocations to a seller does not rescue it\nbecause an unbound allocation admits anyone and **every allocation in existence is unbound**. The\nresidual is therefore a **fee-attribution** defect, not an inventory-theft one: moving inventory now\nrequires a credential.\n\n**Conditions of Success:**\n- A public sale cannot be priced under a channel it is not entitled to. The likely shape is that\n  channel-scoped fee/price rules require the same authorization inventory now requires — which makes\n  this catalog's version of the ADR-024 question, not a repeat of it.\n- Whatever is chosen, the ADR says which channels a public caller may name and why. \"Any string\"\n  is a valid answer if it is argued: the registry is a lookup, not a constraint (ADR-024/TKT-235),\n  and a channel code is not a secret.\n- A test executes a public sale naming a reseller channel and asserts the resulting fee basis.\n\nParent: TKT-17. Non-goals: re-opening TKT-246's inventory decision; the seated seam (TKT-176)."
+}
