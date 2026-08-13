@@ -202,7 +202,7 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 
 // fingerprint stays byte-identical to the pre-channel format when channel is empty, so
 // idempotency records created before the channel migration keep replaying (ADR-009).
-func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, presaleCode string) string {
+func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, presaleCode string, reseller uuid.UUID) string {
 	s := fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency)
 	if channel != "" {
 		s += ":" + channel
@@ -231,6 +231,24 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 	// collision needs a non-empty code to be reachable at all.
 	if presaleCode != "" {
 		s += fmt.Sprintf(":c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode)
+	}
+	// The RESELLER is part of the request identity (TKT-246 ai-review [high] F1).
+	//
+	// Two reseller credentials may legally share an organizer, and inventory's claims
+	// are unique on (organizer_id, idempotency_key) alone. Without the reseller here,
+	// reseller B reusing A's key with identical terms matched A's fingerprint and was
+	// REPLAYED A's authorized hold -- returned before the sold_by check runs at all,
+	// so the seller guard was bypassed by an idempotency collision rather than beaten.
+	// Commerce separating its own reservation ids was not enough: it forwards the
+	// caller's key to inventory unchanged.
+	//
+	// Appended ONLY when non-empty, and framed, for the two reasons above it: an
+	// unconditional append rehashes every claim in the database and stops every
+	// in-flight retry from replaying, and a bare join is ambiguous between adjacent
+	// opaque fields. uuid.Nil (no reseller proven) is the pre-TKT-246 caller and must
+	// hash byte-identically to before.
+	if reseller != uuid.Nil {
+		s += fmt.Sprintf(":r%d:%s", len(reseller.String()), reseller)
 	}
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
 }
@@ -270,6 +288,34 @@ func WithReseller(reseller uuid.UUID) HoldOption {
 	return func(o *holdOptions) { o.reseller = reseller }
 }
 
+// scopedKey namespaces an idempotency key by the AUTHENTICATED reseller (TKT-246
+// ai-review [high] F1).
+//
+// claims are UNIQUE (organizer_id, idempotency_key), and two reseller credentials may
+// legally share an organizer. Keys are caller-chosen and frequently sequential, so
+// reseller A and reseller B both sending "1" collided on one row.
+//
+// That was not merely a collision, it was an AUTHORIZATION BYPASS: CreateHold looks the
+// claim up by (organizer, key) and returns a fingerprint-matching row as a replay
+// BEFORE it reads sold_by. So B, reusing A's key with identical terms, was handed A's
+// authorized hold on A's bound allocation without the seller guard ever running. The
+// guard was not beaten, it was skipped. Commerce namespacing its own reservation ids
+// did not help: it forwards the caller's key to inventory unchanged.
+//
+// Fixing the FINGERPRINT alone would close the bypass but leave B refused with
+// ErrIdempotency on a key that is legitimately B's -- a confusing hard failure for a
+// partner that did nothing wrong. Namespacing the key means the two never meet.
+//
+// uuid.Nil (no reseller proven) returns the key UNCHANGED, byte for byte. Every claim
+// in every database was written under the bare key, so any transformation of the
+// public path would strand every in-flight retry -- a double-sell on retry, system-wide.
+func scopedKey(key string, reseller uuid.UUID) string {
+	if reseller == uuid.Nil {
+		return key
+	}
+	return "r:" + reseller.String() + ":" + key
+}
+
 // sellerAdmits answers whether a caller may consume this allocation.
 //
 // One predicate, two call sites (CreateHold and PlaceGroupReservation). It is a
@@ -294,6 +340,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		opt(&o)
 	}
 	presaleCode := o.presaleCode
+	key = scopedKey(key, o.reseller)
 	if qty <= 0 {
 		return Claim{}, false, fmt.Errorf("quantity must be positive")
 	}
@@ -332,7 +379,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode) {
+		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller) {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {
@@ -496,7 +543,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	}
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,'')) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode), channel, presaleCode).Scan(&c.ExpiresAt, &c.ServerTime)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,'')) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}

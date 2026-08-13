@@ -116,13 +116,34 @@ func TestSellerIsJudgedBeforeCapacityAndAfterTheWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// An unauthorized caller on an exhausted pool is still refused for being
-	// unauthorized. Both are ErrUnavailable by design (a distinct seller-mismatch code
-	// would be an enumeration oracle on sold_by), so what this pins is that the guard
-	// RAN: the claim must not exist.
+	// The discriminating assertion (ai-review [medium] F3).
+	//
+	// "Unauthorized on an exhausted pool answers ErrUnavailable" is NOT evidence of
+	// precedence: a capacity refusal produces the identical error and the identical
+	// state, so that assertion stays green with the seller guard deleted outright. The
+	// first version of this test made exactly that mistake, and its own comment
+	// claimed it "pins that the guard RAN".
+	//
+	// What discriminates is the AUTHORIZED caller on the same exhausted pool. If the
+	// seller check runs before capacity, the authorized and unauthorized callers get
+	// the same answer here (both ErrUnavailable, for different reasons) — but the
+	// UNAUTHORIZED one must be refused even when the pool has room, which the earlier
+	// half of this test established, AND the authorized one must be refused only for
+	// capacity. Pair that with the code-precedence assertion below, which is
+	// observable: a gated allocation must NOT redeem a code for a caller who fails the
+	// seller check, because redeemPresaleCode mutates and the redemption is countable.
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "reseller-acme", "seller-exhausted",
 		WithReseller(uuid.New())); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("got %v want ErrUnavailable", err)
+	}
+	// The bound seller on the SAME exhausted pool is also refused — for capacity. If
+	// this ever succeeds, the pool exhaustion in this fixture is not real and every
+	// assertion above it is measuring nothing.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "reseller-acme", "seller-exhausted-ok",
+		WithReseller(acme)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("the BOUND seller on an exhausted pool: got %v want ErrUnavailable — if this "+
+			"succeeded the pool is not actually exhausted and the unauthorized case above proved "+
+			"nothing", err)
 	}
 
 	// The window still wins over the seller: a closed window refuses as a window even
@@ -138,6 +159,70 @@ func TestSellerIsJudgedBeforeCapacityAndAfterTheWindow(t *testing.T) {
 		t.Fatalf("a closed window on a bound allocation: got %v want ErrChannelWindowClosed — "+
 			"the window is judged first, and an unauthorized caller must not learn that the "+
 			"channel is bound rather than closed", err)
+	}
+}
+
+// The seller is judged BEFORE the presale code, and that is OBSERVABLE.
+//
+// The one precedence claim in this ticket that leaves physical evidence, which is why
+// it carries the weight (ai-review [medium] F3): a refusal ordering assertion between
+// two paths that both answer ErrUnavailable cannot discriminate, but a REDEMPTION can —
+// redeemPresaleCode mutates, and its usage count is readable afterwards.
+//
+// So: a gated AND bound allocation, approached by a caller with a valid code and the
+// WRONG reseller. If the seller check runs first the code is untouched. If the code
+// check runs first, an unauthorized caller has consumed one of a scarce code's
+// redemptions — a denial-of-service on a presale by anyone who learns a code, and the
+// refusal they get back tells them the code was real.
+func TestAnUnauthorizedSellerDoesNotBurnAPresaleRedemption(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	acme := uuid.New()
+
+	mustReplace(t, ctx, st, org, slot,
+		[]ChannelAllocation{{Channel: "reseller-acme", Cap: 10, RequiresCode: true}})
+	bindSeller(t, ctx, db, slot, "reseller-acme", acme)
+	maxRedemptions := int32(5)
+	if _, err := st.IssuePresaleCode(ctx, PresaleCode{
+		OrganizerID: org, Channel: "reseller-acme", Code: "VIP", MaxRedemptions: &maxRedemptions,
+	}); err != nil {
+		t.Fatalf("seed presale code: %v", err)
+	}
+
+	used := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COALESCE(sum(quantity),0) FROM claims WHERE organizer_id=$1 AND channel_code=$2 AND presale_code=$3`,
+			org, "reseller-acme", "VIP").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := used()
+
+	// A VALID code, the WRONG reseller.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", "code-precedence",
+		WithPresaleCode("VIP"), WithReseller(uuid.New())); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("an unauthorized seller with a valid code: got %v want ErrUnavailable", err)
+	}
+	if after := used(); after != before {
+		t.Fatalf("presale redemption moved %d -> %d for a caller who failed the SELLER check — "+
+			"the code is being judged before the seller, so anyone holding a code can burn a "+
+			"scarce presale's redemptions against an allocation they may not consume, and the "+
+			"refusal confirms the code was valid", before, after)
+	}
+
+	// And the bound seller with the same code still sells, so the fixture is capable of
+	// reaching the success state rather than refusing everything.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", "code-precedence-ok",
+		WithPresaleCode("VIP"), WithReseller(acme)); err != nil {
+		t.Fatalf("the BOUND seller with a valid code was refused: %v — the fixture admits no "+
+			"allowed input and the negative above proves nothing", err)
+	}
+	if after := used(); after == before {
+		t.Fatal("an AUTHORIZED sale did not move the redemption count — this fixture cannot " +
+			"observe redemptions at all, so the assertion above is vacuous")
 	}
 }
 

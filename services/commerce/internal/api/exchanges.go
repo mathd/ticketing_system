@@ -380,10 +380,24 @@ func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType
 	// reseller that sold it is a historical fact of that row. That also makes the
 	// hold's authorization reproducible on a retry, which a caller-supplied identity
 	// would not be.
-	if src.ChannelCode != nil {
+	// BOTH or NEITHER, gated on the RESELLER (ai-review [high] F2).
+	//
+	// Forwarding the channel whenever the source had one re-opens the bypass this
+	// ticket exists to close, one step removed in time. A PUBLIC reserve still
+	// persists whatever channel_code its unauthenticated body named -- it is used for
+	// fee resolution and reporting, and only the inventory forward was withheld. So a
+	// public buyer could name a reseller's channel, and a later exchange of that order
+	// would present the channel to inventory with no reseller identity, consuming an
+	// unbound allocation that nobody authorized them to touch. Every allocation is
+	// unbound today, so it would have been reachable on day one.
+	//
+	// The reseller is the authority, not the channel: a source with no reseller was
+	// never an authorized channelled sale, whatever its channel_code says. Gating on
+	// src.ResellerID means the exchange inherits authorization only where
+	// authorization actually existed, and a public source's target stays public --
+	// which is exactly what its ORIGINAL hold did.
+	if src.ResellerID != nil && src.ChannelCode != nil {
 		body["channel"] = *src.ChannelCode
-	}
-	if src.ResellerID != nil {
 		body["reseller_id"] = *src.ResellerID
 	}
 	// Keyed on the EXCHANGE identity, which is derivable from (organizer, idempotency key)

@@ -101,3 +101,40 @@ func TestAPublicExchangeSourceProjectsNoAttribution(t *testing.T) {
 			"than becoming a zero uuid that looks like an identity", *src.ResellerID)
 	}
 }
+
+// THE STATE THE FIRST VERSION OF THIS FILE COULD NOT REACH (ai-review [high] F2).
+//
+// A public reserve is UNAUTHENTICATED and still persists whatever channel_code its body
+// named — the field feeds fee resolution and reporting, and only the inventory forward
+// was withheld. So `channel_code != NULL AND reseller_id IS NULL` is a perfectly legal,
+// routinely-produced row, and it is the dangerous one: an exchange of that order would
+// have presented the channel to inventory with no reseller identity and consumed an
+// allocation nobody authorized. Every allocation is unbound today, so it was reachable
+// immediately.
+//
+// The original public-source test defined "public" as BOTH fields NULL, so its fixture
+// could not construct this state at all — a test that names the right case and is
+// structurally incapable of failing (AGENTS.md). This is the missing half.
+func TestAPublicSourceWithAChannelStillProjectsNoSeller(t *testing.T) {
+	db, ctx := outboxDB(t)
+	channel := "reseller-acme" // a channel the BUYER typed; no credential was involved
+	c, order := seedAttributedCompleted(t, db, ctx, "attr-channel-no-reseller", &channel, nil)
+
+	src, err := LoadExchangeSource(ctx, db, c.OrganizerID, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The channel is projected — it is real, and repricing needs it.
+	if src.ChannelCode == nil || *src.ChannelCode != channel {
+		t.Fatalf("source channel = %v, want %q", src.ChannelCode, channel)
+	}
+	// But there is NO seller, and that is what the exchange must key on. The forward
+	// decision lives in holdExchangeTarget and is asserted there; what this pins is
+	// that the projection keeps the two facts INDEPENDENT, so a caller cannot infer
+	// authorization from the presence of a channel.
+	if src.ResellerID != nil {
+		t.Fatalf("an unauthenticated public sale projected reseller %v — a channel in a request "+
+			"body is not evidence of a seller, and treating it as one is the bypass TKT-240 was "+
+			"reverted for, arriving one exchange later", *src.ResellerID)
+	}
+}
