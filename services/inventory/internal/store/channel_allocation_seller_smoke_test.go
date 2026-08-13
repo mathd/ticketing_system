@@ -257,6 +257,97 @@ func TestGroupPlacementObeysTheSellerBinding(t *testing.T) {
 	}
 }
 
+// Two resellers sharing an idempotency key do not replay each other's holds
+// (ai-review [high] F1).
+//
+// The bypass this closes did not beat the seller guard, it SKIPPED it. claims are
+// UNIQUE (organizer_id, idempotency_key) and CreateHold returns a fingerprint-matching
+// row as a replay before it ever reads sold_by. Two reseller credentials may legally
+// share an organizer, and keys are caller-chosen and frequently sequential — so
+// reseller B sending A's key with identical terms was handed A's authorized hold on
+// A's bound allocation, with the guard never running.
+//
+// Three assertions, because each covers a different way the fix can rot:
+//   - B does not receive A's claim (the bypass itself)
+//   - B is refused by the SELLER guard rather than by an idempotency conflict, which
+//     is what tells us B reached the guard at all
+//   - A's own retry still replays, so the namespacing did not break idempotency for
+//     the reseller it belongs to
+func TestTwoResellersSharingAKeyDoNotReplayEachOthersHolds(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	acme, globex := uuid.New(), uuid.New()
+	const shared = "1" // the kind of key a partner actually sends
+
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "reseller-acme", Cap: 10}})
+	bindSeller(t, ctx, db, slot, "reseller-acme", acme)
+
+	// A sells, legitimately.
+	first, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", shared,
+		WithReseller(acme))
+	if err != nil {
+		t.Fatalf("the bound reseller was refused its own allocation: %v", err)
+	}
+
+	// B sends the SAME key with IDENTICAL terms against A's bound allocation.
+	got, replayed, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", shared,
+		WithReseller(globex))
+	if err == nil {
+		t.Fatalf("reseller B was granted a hold (%s, replay=%v) on an allocation bound to A by "+
+			"reusing A's idempotency key — the seller guard was never reached", got.ID, replayed)
+	}
+	if got.ID == first.ID {
+		t.Fatalf("reseller B received A's claim %s — another reseller's hold, handed over by an "+
+			"idempotency collision", first.ID)
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("reseller B was refused with %v, want ErrUnavailable from the SELLER guard. An "+
+			"ErrIdempotency here would mean B collided with A's row instead of being judged on "+
+			"its own — the bypass would be closed by accident, and would reopen the moment the "+
+			"terms differed", err)
+	}
+
+	// A's own retry still replays. The namespacing must not break idempotency for the
+	// reseller the key belongs to.
+	again, wasReplay, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", shared,
+		WithReseller(acme))
+	if err != nil {
+		t.Fatalf("A's own retry was refused: %v", err)
+	}
+	if !wasReplay || again.ID != first.ID {
+		t.Fatalf("A's retry produced claim %s (replay=%v), want a replay of %s — a partner "+
+			"retrying a timeout would place a SECOND hold", again.ID, wasReplay, first.ID)
+	}
+}
+
+// A public caller's idempotency key is untouched, byte for byte.
+//
+// The compatibility half of the namespacing. Every claim in every database was written
+// under the bare key, so any transformation of the public path strands in-flight
+// retries — they would derive a new key, miss the persisted claim and hold twice. This
+// asserts on the STORED key rather than on replay behaviour, because a replay could
+// succeed for the wrong reason if both writes were transformed identically.
+func TestAPublicHoldStoresItsIdempotencyKeyUnchanged(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	const key = "legacy-key-1"
+
+	claim, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := db.QueryRowContext(ctx, `SELECT idempotency_key FROM claims WHERE id=$1`, claim.ID).
+		Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != key {
+		t.Fatalf("a public hold stored idempotency_key %q, want %q verbatim — every claim that "+
+			"already exists was written under the bare key, so transforming it strands every "+
+			"in-flight retry into a second hold", stored, key)
+	}
+}
+
 // A replace that omits sold_by UNBINDS, and that is worth knowing rather than
 // discovering.
 //
