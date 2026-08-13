@@ -112,6 +112,17 @@ We adopt allocation rows with derived usage. Specifics:
   keys remained arbitrary strings in the same column, so a public caller could send that exact
   string, take the row first, and permanently deny that reseller that key. The namespace has to be
   a field the caller does not supply. The stored key stays the caller's, verbatim, on both paths.
+- **Where a reseller identity may ENTER inventory (TKT-246).** Only through
+  `POST /internal/holds`. The public `POST /holds` does not accept `reseller_id` — the field is
+  absent from its schema, so `additionalProperties: false` refuses it at the validator.
+  **Inventory has no authenticated notion of a caller**, so any identity it accepts is exactly as
+  trustworthy as the least-guarded route that supplies it. `POST /holds` is not under `/internal/`,
+  the gateway proxies it, and the first version of this change accepted `reseller_id` there — an
+  authorization input from an unauthenticated body, which is the defect TKT-240 was reverted for,
+  recreated one service down. Two independent guards now: the gateway 404s every `/internal/` path
+  (ADR-002) and the handler requires the service credential. Neither is trusted alone.
+  Inventory authenticates the **caller**, not the reseller, and trusts that caller to have
+  authenticated the reseller (commerce, from the partner credential — ADR-056).
 - **Who may name a channel (TKT-246).** A channel only reaches this decision from an
   *authenticated* caller. Commerce's public `POST /reservations` is unauthenticated and takes
   `channel_code` from the request body, so it forwards **no channel to inventory at all**;

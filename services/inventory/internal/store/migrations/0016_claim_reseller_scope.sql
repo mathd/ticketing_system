@@ -1,4 +1,27 @@
 -- +goose Up
+-- DEPLOY NOTE — this migration is NOT online, and NOT expand/contract (ai-review pass 3).
+--
+-- goose runs it in one transaction. ADD COLUMN takes ACCESS EXCLUSIVE and holds it to
+-- commit, and the two index builds happen inside that lock, so READERS of claims block
+-- for the whole thing — not just writers. On a large claims table that can exceed
+-- ADR-008's 30s migration bound and fail the deploy.
+--
+-- And the binaries are not compatible in either direction across it:
+--   * new binary on schema 0015  -> every hold 500s (it selects reseller_scope)
+--   * previous binary on 0016    -> writes NULL scope and decorates the key itself, so a
+--                                   partner retry misses its row and places a SECOND hold
+--
+-- So this requires a QUIESCED CUTOVER of inventory, not a rolling one: stop inventory,
+-- migrate, start the new binary. That is acceptable today because the partner write path
+-- is new in this same ticket -- there are no partner claims in any database yet, so the
+-- second-hold window has nothing to act on, and the table is small enough on every
+-- current deployment for the lock to be brief.
+--
+-- It is NOT acceptable once partner sales are live at volume. Making it online means
+-- splitting the column-add from the index builds, building them CONCURRENTLY outside a
+-- transaction, and giving the binary a schema-tolerant read for one release. ADR-020's
+-- preconditions for CONCURRENTLY are still not met, so that is a ticket, not a tweak.
+-- Recorded here rather than discovered during an incident.
 -- Idempotency keys are scoped to the RESELLER, structurally (TKT-246 ai-review pass 2).
 --
 -- claims were UNIQUE (organizer_id, idempotency_key). Two reseller credentials may

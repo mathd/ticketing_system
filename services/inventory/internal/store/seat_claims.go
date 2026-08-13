@@ -458,8 +458,22 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	// covers the canonical seat set so [A,B]/[B,A] retries do not conflict.
 	var existing Claim
 	var existingFP string
+	// Scoped to the PUBLIC namespace explicitly (TKT-246, ai-review pass 3).
+	//
+	// Migration 0016 deliberately made (organizer_id, idempotency_key) non-unique across
+	// reseller scopes, so an unscoped lookup here can match a RESELLER's GA claim: a
+	// public seated request reusing that key would be refused ErrIdempotency by a row it
+	// has nothing to do with, and with several such rows QueryRow picks an unspecified
+	// one. That is the cross-namespace denial 0016 exists to prevent, surviving in the
+	// reader that was not audited when the constraint changed.
+	//
+	// Seated holds are public-only today — there is no seated partner surface (TKT-176
+	// owns that seam) — so the scope is a literal NULL rather than a parameter. When a
+	// seated partner sale arrives, this becomes the same IS NOT DISTINCT FROM predicate
+	// CreateHold uses, and the compiler will not remind anyone: that is what this
+	// comment is for.
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
-		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL`, org, key).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if existingFP != fp {

@@ -353,6 +353,29 @@ type HoldCreate struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 
 	// PresaleCode Presale unlock code for a gated channel (TKT-239). EXACT and case-sensitive like the channel code — nothing trims or folds it. Required only when the channel's allocation sets requires_code; ignored (and not recorded) otherwise. A missing or unusable code is refused with the uniform `presale_code_invalid`.
+	PresaleCode  *string             `json:"presale_code,omitempty"`
+	Quantity     int                 `json:"quantity"`
+	SlotId       openapi_types.UUID  `json:"slot_id"`
+	TicketTypeId *openapi_types.UUID `json:"ticket_type_id,omitempty"`
+	UnitAmount   *int64              `json:"unit_amount,omitempty"`
+}
+
+// HoldSeating defines model for HoldSeating.
+type HoldSeating struct {
+	HoldId openapi_types.UUID `json:"hold_id"`
+	Seated bool               `json:"seated"`
+}
+
+// InternalHoldCreate HoldCreate plus the authenticated seller. A SEPARATE schema rather than an optional field on HoldCreate, deliberately: `additionalProperties: false` then makes `reseller_id` a 400 on the PUBLIC route at the validator, before any handler runs. The guard is that the field does not exist there.
+//
+// The shared properties are spelled out rather than `allOf`-composed with HoldCreate: `additionalProperties: false` is evaluated per-schema, so a composed schema would reject every inherited field as unknown. Duplication is the correct shape here, and the drift it risks is bounded — a field added to HoldCreate and not here is refused on the internal route, which fails loudly rather than silently widening the public one.
+type InternalHoldCreate struct {
+	// Channel Opaque sales channel code; omitted means the default/public channel
+	Channel     *string            `json:"channel,omitempty"`
+	Currency    *string            `json:"currency,omitempty"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// PresaleCode Presale unlock code for a gated channel (TKT-239); see HoldCreate.
 	PresaleCode *string `json:"presale_code,omitempty"`
 	Quantity    int     `json:"quantity"`
 
@@ -365,12 +388,6 @@ type HoldCreate struct {
 	SlotId       openapi_types.UUID  `json:"slot_id"`
 	TicketTypeId *openapi_types.UUID `json:"ticket_type_id,omitempty"`
 	UnitAmount   *int64              `json:"unit_amount,omitempty"`
-}
-
-// HoldSeating defines model for HoldSeating.
-type HoldSeating struct {
-	HoldId openapi_types.UUID `json:"hold_id"`
-	Seated bool               `json:"seated"`
 }
 
 // OperationalConvert defines model for OperationalConvert.
@@ -541,6 +558,11 @@ type GetGroupReservationHistoryParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 
+// CreateInternalHoldParams defines parameters for CreateInternalHold.
+type CreateInternalHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // ConfirmHoldParams defines parameters for ConfirmHold.
 type ConfirmHoldParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
@@ -623,6 +645,9 @@ type PlaceGroupReservationJSONRequestBody = GroupReservationCreate
 
 // DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
 type DrawDownGroupReservationJSONRequestBody = OperationalConvert
+
+// CreateInternalHoldJSONRequestBody defines body for CreateInternalHold for application/json ContentType.
+type CreateInternalHoldJSONRequestBody = InternalHoldCreate
 
 // ReturnRefundedCapacityJSONRequestBody defines body for ReturnRefundedCapacity for application/json ContentType.
 type ReturnRefundedCapacityJSONRequestBody = RefundCapacityReturnCreate

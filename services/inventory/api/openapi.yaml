@@ -14,6 +14,34 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/holds:
+    post:
+      operationId: createInternalHold
+      summary: Hold capacity on behalf of an AUTHENTICATED seller (TKT-246)
+      description: >
+        The same hold as `POST /holds`, for a caller that has already authenticated the
+        seller. It is the only operation that may name a `reseller_id`, and it is under
+        `/internal/` for exactly that reason: the gateway 404s every `/internal/` path
+        (ADR-002) and the handler requires the service credential, so an authorization
+        input cannot arrive from an unauthenticated request body.
+
+
+        That the public `POST /holds` must NOT take this field is the whole point.
+        Accepting it there would let any caller who knows a reseller's id consume that
+        reseller's bound allocation — the defect TKT-240 was reverted for, one service
+        further down. Inventory does not authenticate the RESELLER; it authenticates the
+        CALLER and trusts it (commerce takes the value from the partner credential,
+        ADR-056). Honest-writer authorization, not tamper-evidence (ADR-021).
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/InternalHoldCreate'}}}}
+      responses:
+        '200': {$ref: '#/components/responses/Hold'}
+        '201': {$ref: '#/components/responses/Hold'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /holds/seats:
     post:
       operationId: createSeatHold
@@ -437,6 +465,32 @@ components:
             Required only when the channel's allocation sets requires_code;
             ignored (and not recorded) otherwise. A missing or unusable code is
             refused with the uniform `presale_code_invalid`.
+    InternalHoldCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, slot_id, quantity]
+      description: >
+        HoldCreate plus the authenticated seller. A SEPARATE schema rather than an
+        optional field on HoldCreate, deliberately: `additionalProperties: false` then
+        makes `reseller_id` a 400 on the PUBLIC route at the validator, before any
+        handler runs. The guard is that the field does not exist there.
+
+
+        The shared properties are spelled out rather than `allOf`-composed with
+        HoldCreate: `additionalProperties: false` is evaluated per-schema, so a
+        composed schema would reject every inherited field as unknown. Duplication is
+        the correct shape here, and the drift it risks is bounded — a field added to
+        HoldCreate and not here is refused on the internal route, which fails loudly
+        rather than silently widening the public one.
+      properties:
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+        ticket_type_id: {type: string, format: uuid}
+        unit_amount: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        channel: {type: string, minLength: 1, maxLength: 100, description: 'Opaque sales channel code; omitted means the default/public channel'}
+        presale_code: {type: string, minLength: 1, maxLength: 100, description: 'Presale unlock code for a gated channel (TKT-239); see HoldCreate.'}
         reseller_id:
           type: string
           format: uuid

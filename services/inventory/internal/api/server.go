@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -91,6 +93,8 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 		_, _ = w.Write(apispec.Spec)
 	})
 	r.Post("/holds", s.create)
+	// The reseller-bearing hold, behind /internal/ so the edge refuses it (TKT-246).
+	r.Post("/internal/holds", s.internalOnly(s.createInternalHold))
 	r.Post("/holds/seats", s.createSeatHold)
 	r.Get("/slots/{id}/availability", s.availability)
 	r.Get("/slots/{id}/seat-occupancy", s.seatOccupancy)
@@ -178,7 +182,50 @@ func problem(w http.ResponseWriter, err error) {
 	write(w, code, map[string]string{"error": err.Error()})
 }
 func parseUUID(v string) (uuid.UUID, error) { return uuid.Parse(strings.TrimSpace(v)) }
+// create is the PUBLIC hold. It cannot name a reseller (TKT-246, ai-review pass 3).
+//
+// `POST /holds` is NOT under /internal/, so the gateway proxies it and any caller on
+// the internet reaches it. A reseller identity accepted here would be an authorization
+// input taken from an unauthenticated request body — which is precisely the defect
+// TKT-240 was reverted for, one service further down. The field does not exist on this
+// route: not ignored, not validated, absent, so there is nothing to forget to check.
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
+	s.createHold(w, r, uuid.Nil)
+}
+
+// createInternalHold is the same hold, for a caller the edge has already refused
+// (TKT-246). It is the ONLY route that may name a reseller.
+//
+// Two independent guards, and both are load-bearing: the gateway 404s every
+// /api/<svc>/internal/ path (gateway route table, ADR-002), and internalOnly requires
+// the shared service credential. Neither alone is trusted — the route table is one edit
+// from exposing a prefix, and a token is one leak from being presented.
+//
+// Inventory still does not AUTHENTICATE the reseller: it authenticates the CALLER, and
+// trusts that caller to have done so. Commerce takes the value from the partner
+// credential (ADR-056) and never from a request body. Per ADR-021 that makes this
+// honest-writer authorization, not tamper-evidence — what changed in pass 3 is that the
+// set of honest writers no longer includes the entire internet.
+func (s *Server) createInternalHold(w http.ResponseWriter, r *http.Request) {
+	var scope struct {
+		ResellerID uuid.UUID `json:"reseller_id"`
+	}
+	// Peek at the reseller without consuming the body: createHold decodes the whole
+	// request itself, and a second full decode here would be a second definition of
+	// what the request means.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		write(w, 400, map[string]string{"error": "invalid hold request"})
+		return
+	}
+	_ = json.Unmarshal(body, &scope)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	s.createHold(w, r, scope.ResellerID)
+}
+
+// createHold is the one implementation. `reseller` comes from the ROUTE, never from the
+// body of a request the route did not authenticate.
+func (s *Server) createHold(w http.ResponseWriter, r *http.Request, reseller uuid.UUID) {
 	var in struct {
 		OrganizerID  uuid.UUID `json:"organizer_id"`
 		SlotID       uuid.UUID `json:"slot_id"`
@@ -192,14 +239,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		// the exact-match lookup in the store — a code issuable but never
 		// redeemable.
 		PresaleCode string `json:"presale_code"`
-		// The AUTHENTICATED reseller, compared against the allocation's sold_by
-		// (TKT-246). uuid.Nil means none was proven, which is what every caller
-		// predating this field sends -- and it is not a wildcard: an absent identity
-		// may consume only an unbound allocation.
-		//
-		// Inventory does not authenticate this and cannot: it trusts its internal
-		// caller (commerce, which takes it from the partner credential -- ADR-056).
-		// Honest-writer authorization, not tamper-evidence (ADR-021).
+		// Present on the struct so the strict decoder ACCEPTS the field on the
+		// internal route, which sends it. Its value is deliberately ignored here and
+		// the parameter is used instead: on the public route it is uuid.Nil whatever
+		// the body said, and that must not depend on remembering to zero it.
 		ResellerID uuid.UUID `json:"reseller_id"`
 	}
 	err := httpx.DecodeJSON(w, r, &in, 1<<20)
@@ -213,7 +256,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
 		return
 	}
-	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Channel, key, store.WithPresaleCode(in.PresaleCode), store.WithReseller(in.ResellerID))
+	c, replay, err := s.st.CreateHold(r.Context(), in.OrganizerID, in.SlotID, in.TicketTypeID, in.Quantity, in.UnitAmount, in.Currency, in.Channel, key, store.WithPresaleCode(in.PresaleCode), store.WithReseller(reseller))
 	if err != nil {
 		problem(w, err)
 		return

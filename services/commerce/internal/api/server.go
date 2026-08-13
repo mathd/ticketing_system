@@ -544,6 +544,25 @@ func addSellerScope(body map[string]any, scope *partnerScope) {
 	body["reseller_id"] = scope.ResellerID
 }
 
+// holdEndpoint picks WHICH inventory hold route a request goes to, and returns whether
+// it must be called as an internal service (TKT-246, ai-review pass 3).
+//
+// A hold naming a reseller goes to `/internal/holds`, with the service credential. The
+// public `POST /holds` does not accept `reseller_id` at all — its contract refuses the
+// field and its handler passes uuid.Nil regardless — because that route is proxied to
+// the edge, and an authorization input taken from an unauthenticated body is the exact
+// defect TKT-240 was reverted for.
+//
+// Returned as a pair rather than set at each call site: there are three GA hold paths
+// (first attempt, persisted replay, exchange target), and the previous two rounds of
+// this ticket were both defects of one path being updated and the others not.
+func holdEndpoint(base string, body map[string]any) (string, bool) {
+	if _, named := body["reseller_id"]; named {
+		return base + "/internal/holds", true
+	}
+	return base + "/holds", false
+}
+
 // reservationID derives the reservation a given idempotency key names.
 //
 // organizer + key for a public sale, and organizer + RESELLER + key for a partner one
@@ -676,7 +695,8 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 			// would be rejected as a conflicting request. Replaying with the
 			// pinned amount returns the same hold, and its expiry is what the
 			// caller actually needs on a retry.
-			replayURL, replayBody := s.inventoryURL+"/holds", map[string]any{
+			seatedReplayURL := s.inventoryURL + "/holds/seats"
+			replayBody := map[string]any{
 				"organizer_id": in.OrganizerID, "slot_id": pin.slot, "ticket_type_id": pin.ticket,
 				"quantity": pin.qty, "unit_amount": pin.unit, "currency": pin.currency}
 			// The replay carries the same seller scope as the first attempt (TKT-246).
@@ -699,12 +719,15 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 				// retry land on the original claim instead of being refused as a
 				// conflicting request. This is the only reader of the column, which is
 				// why a write-only text[] would have looked fine until it mattered.
-				replayURL = s.inventoryURL + "/holds/seats"
 				replayBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": pin.slot,
 					"ticket_type_id": pin.ticket, "seat_identities": pinnedSeats,
 					"unit_amount": pin.unit, "currency": pin.currency}
 			}
-			code, body, err := s.call(r.Context(), http.MethodPost, replayURL, key, replayBody, false)
+			replayURL, replayInternal := holdEndpoint(s.inventoryURL, replayBody)
+			if len(pinnedSeats) > 0 {
+				replayURL, replayInternal = seatedReplayURL, false
+			}
+			code, body, err := s.call(r.Context(), http.MethodPost, replayURL, key, replayBody, replayInternal)
 			if err != nil || (code != 200 && code != 201) {
 				if len(pinnedSeats) > 0 {
 					seatedInventoryRefusal(w, code, body, pinnedSeats)
@@ -824,13 +847,18 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 		"slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity,
 		"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
 	addSellerScope(holdBody, scope)
+	seatedHoldURL := s.inventoryURL + "/holds/seats"
 	if in.seated() {
-		holdURL = s.inventoryURL + "/holds/seats"
 		holdBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID,
 			"ticket_type_id": in.TicketTypeID, "seat_identities": in.SeatIdentities,
 			"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
 	}
-	code, body, err := s.call(r.Context(), http.MethodPost, holdURL, key, holdBody, false)
+	// A reseller-bearing hold goes to the INTERNAL route, with the service credential.
+	holdURL, holdInternal := holdEndpoint(s.inventoryURL, holdBody)
+	if in.seated() {
+		holdURL, holdInternal = seatedHoldURL, false
+	}
+	code, body, err := s.call(r.Context(), http.MethodPost, holdURL, key, holdBody, holdInternal)
 	if err != nil || (code != 200 && code != 201) {
 		if in.seated() {
 			seatedInventoryRefusal(w, code, body, in.canonicalSeatSet())
