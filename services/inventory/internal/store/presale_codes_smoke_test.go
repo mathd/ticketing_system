@@ -696,7 +696,8 @@ func TestRedemptionCountIsIndexBacked(t *testing.T) {
 	//
 	// "No Seq Scan" is too weak and a mutation check proved it: with
 	// claims_presale_usage DROPPED, the planner still avoided a seq scan by using
-	// claims_organizer_id_idempotency_key_key, then filtered channel_code and
+	// the organizer+key unique index (claims_public_idempotency since TKT-246's
+	// migration 0016 split it by reseller_scope), then filtered channel_code and
 	// presale_code in the heap. That is O(all this organizer's claims) per
 	// redemption — under two locks — and the weaker assertion called it a pass.
 	//

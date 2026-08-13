@@ -162,19 +162,28 @@ func TestSellerIsJudgedBeforeCapacityAndAfterTheWindow(t *testing.T) {
 	}
 }
 
-// The seller is judged BEFORE the presale code, and that is OBSERVABLE.
+// The seller is judged BEFORE the presale code, and the WHICH-ERROR is the evidence.
 //
-// The one precedence claim in this ticket that leaves physical evidence, which is why
-// it carries the weight (ai-review [medium] F3): a refusal ordering assertion between
-// two paths that both answer ErrUnavailable cannot discriminate, but a REDEMPTION can —
-// redeemPresaleCode mutates, and its usage count is readable afterwards.
+// This test's first version tried to prove the ordering by counting redemptions, and
+// could not fail (ai-review pass 2 [medium]): redemption is DERIVED from committed
+// claims (`PresaleCodeStatuses`, consumingClaims), so a refusal at either check rolls
+// the transaction back, inserts no claim, and leaves the count identical. It measured
+// nothing while naming the right case — the exact shape AGENTS.md warns about, written
+// by me while fixing a finding about a test that could not fail.
 //
-// So: a gated AND bound allocation, approached by a caller with a valid code and the
-// WRONG reseller. If the seller check runs first the code is untouched. If the code
-// check runs first, an unauthorized caller has consumed one of a scarce code's
-// redemptions — a denial-of-service on a presale by anyone who learns a code, and the
-// refusal they get back tells them the code was real.
-func TestAnUnauthorizedSellerDoesNotBurnAPresaleRedemption(t *testing.T) {
+// What discriminates is giving the two checks DIFFERENT answers and seeing which one
+// speaks. A wrong reseller AND a bad code:
+//
+//	seller first -> ErrUnavailable        (uniform, tells an attacker nothing)
+//	code first   -> ErrPresaleCodeInvalid (tells an unauthorized caller the code was
+//	                                       wrong, which is an oracle they should never
+//	                                       have reached)
+//
+// Two distinct sentinels, so the mutation is visible. Ordering matters beyond the
+// oracle: redeemPresaleCode takes the presale_codes ROW LOCK, and a caller who may not
+// consume the allocation must not be able to serialize every other holder of that code
+// behind them.
+func TestTheSellerIsJudgedBeforeThePresaleCode(t *testing.T) {
 	ctx, st, db := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 100)
 	acme := uuid.New()
@@ -189,40 +198,36 @@ func TestAnUnauthorizedSellerDoesNotBurnAPresaleRedemption(t *testing.T) {
 		t.Fatalf("seed presale code: %v", err)
 	}
 
-	used := func() int {
-		t.Helper()
-		var n int
-		if err := db.QueryRowContext(ctx,
-			`SELECT COALESCE(sum(quantity),0) FROM claims WHERE organizer_id=$1 AND channel_code=$2 AND presale_code=$3`,
-			org, "reseller-acme", "VIP").Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
+	// Wrong reseller, and a code that does not exist. Both checks would refuse; only
+	// the FIRST one to run decides which error comes back.
+	_, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", "order-both-bad",
+		WithPresaleCode("NOT-A-CODE"), WithReseller(uuid.New()))
+	if errors.Is(err, ErrPresaleCodeInvalid) {
+		t.Fatal("an unauthorized seller was told its CODE was invalid — the code is being judged " +
+			"before the seller. That hands a caller who may not consume this allocation an " +
+			"oracle on presale codes, and lets them take the presale_codes row lock, " +
+			"serializing every legitimate holder of that code behind a request that was " +
+			"never eligible")
 	}
-	before := used()
-
-	// A VALID code, the WRONG reseller.
-	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", "code-precedence",
-		WithPresaleCode("VIP"), WithReseller(uuid.New())); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("an unauthorized seller with a valid code: got %v want ErrUnavailable", err)
-	}
-	if after := used(); after != before {
-		t.Fatalf("presale redemption moved %d -> %d for a caller who failed the SELLER check — "+
-			"the code is being judged before the seller, so anyone holding a code can burn a "+
-			"scarce presale's redemptions against an allocation they may not consume, and the "+
-			"refusal confirms the code was valid", before, after)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("got %v, want ErrUnavailable — the uniform seller refusal", err)
 	}
 
-	// And the bound seller with the same code still sells, so the fixture is capable of
-	// reaching the success state rather than refusing everything.
-	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", "code-precedence-ok",
+	// The fixture can reach the OTHER answers too, or the assertion above would be
+	// vacuous — a fixture that refuses everything for one reason proves nothing about
+	// which reason won.
+	//
+	// The AUTHORIZED seller with a bad code must hear about the code:
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", "order-bad-code",
+		WithPresaleCode("NOT-A-CODE"), WithReseller(acme)); !errors.Is(err, ErrPresaleCodeInvalid) {
+		t.Fatalf("the bound seller with an invalid code: got %v want ErrPresaleCodeInvalid — if "+
+			"this is not reachable, the negative above cannot distinguish the two checks", err)
+	}
+	// And with a good code, sells:
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 2, 0, "", "reseller-acme", "order-ok",
 		WithPresaleCode("VIP"), WithReseller(acme)); err != nil {
-		t.Fatalf("the BOUND seller with a valid code was refused: %v — the fixture admits no "+
-			"allowed input and the negative above proves nothing", err)
-	}
-	if after := used(); after == before {
-		t.Fatal("an AUTHORIZED sale did not move the redemption count — this fixture cannot " +
-			"observe redemptions at all, so the assertion above is vacuous")
+		t.Fatalf("the bound seller with a valid code was refused: %v — the fixture admits no "+
+			"allowed input", err)
 	}
 }
 
@@ -320,31 +325,117 @@ func TestTwoResellersSharingAKeyDoNotReplayEachOthersHolds(t *testing.T) {
 	}
 }
 
-// A public caller's idempotency key is untouched, byte for byte.
+// A public caller's idempotency key is stored VERBATIM, on both paths.
 //
-// The compatibility half of the namespacing. Every claim in every database was written
-// under the bare key, so any transformation of the public path strands in-flight
-// retries — they would derive a new key, miss the persisted claim and hold twice. This
-// asserts on the STORED key rather than on replay behaviour, because a replay could
-// succeed for the wrong reason if both writes were transformed identically.
-func TestAPublicHoldStoresItsIdempotencyKeyUnchanged(t *testing.T) {
+// The compatibility half. Every claim in every database was written under the bare key,
+// so transforming it strands in-flight retries — they would derive a new key, miss the
+// persisted claim and hold twice. Asserted on the STORED value rather than on replay
+// behaviour, because a replay can succeed for the wrong reason if both the write and
+// the lookup are transformed identically.
+//
+// A partner's key is stored verbatim too: the namespace is the reseller_scope COLUMN,
+// not a decoration on the key (see below).
+func TestIdempotencyKeysAreStoredVerbatimOnBothPaths(t *testing.T) {
 	ctx, st, db := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 100)
+	acme := uuid.New()
 	const key = "legacy-key-1"
 
-	claim, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", key)
+	public, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stored string
-	if err := db.QueryRowContext(ctx, `SELECT idempotency_key FROM claims WHERE id=$1`, claim.ID).
-		Scan(&stored); err != nil {
+	partner, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", key, WithReseller(acme))
+	if err != nil {
+		t.Fatalf("a partner reusing a public caller's key was refused: %v — the two namespaces "+
+			"must not meet", err)
+	}
+	if partner.ID == public.ID {
+		t.Fatal("a partner received the PUBLIC caller's claim for the same key")
+	}
+
+	for _, tc := range []struct {
+		name  string
+		id    uuid.UUID
+		scope any
+	}{
+		{"public", public.ID, nil},
+		{"partner", partner.ID, acme},
+	} {
+		var stored string
+		var scope *uuid.UUID
+		if err := db.QueryRowContext(ctx,
+			`SELECT idempotency_key, reseller_scope FROM claims WHERE id=$1`, tc.id).
+			Scan(&stored, &scope); err != nil {
+			t.Fatal(err)
+		}
+		if stored != key {
+			t.Fatalf("%s hold stored idempotency_key %q, want %q verbatim — the namespace is the "+
+				"reseller_scope column, never a decoration on the caller's key", tc.name, stored, key)
+		}
+		switch want := tc.scope.(type) {
+		case nil:
+			if scope != nil {
+				t.Fatalf("public hold stored reseller_scope %v, want NULL", *scope)
+			}
+		case uuid.UUID:
+			if scope == nil || *scope != want {
+				t.Fatalf("partner hold stored reseller_scope %v, want %s", scope, want)
+			}
+		}
+	}
+}
+
+// A PUBLIC caller cannot forge its way into a reseller's namespace (ai-review pass 2
+// [high] F4).
+//
+// The defect that made the first fix wrong. That version derived the partner's key as
+// the string "r:<uuid>:<key>" while public keys stayed arbitrary raw strings IN THE SAME
+// COLUMN — so a public caller could send that exact derived string, take the row first,
+// and permanently deny the reseller that key. Predictable keys ("1") plus a known
+// reseller id make it targeted rather than theoretical.
+//
+// The namespace is now a column the caller does not supply, so this test sends the most
+// hostile string available — the old derived form — and asserts it cannot touch the
+// partner's row. It would have failed against the string-prefix implementation, which is
+// the point of writing it this way rather than asserting on the column directly.
+func TestAPublicCallerCannotForgeAResellerNamespace(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	acme := uuid.New()
+	const key = "1"
+	forged := "r:" + acme.String() + ":" + key
+
+	// The attacker gets there first, with the string the old scheme would have derived.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", forged); err != nil {
 		t.Fatal(err)
 	}
-	if stored != key {
-		t.Fatalf("a public hold stored idempotency_key %q, want %q verbatim — every claim that "+
-			"already exists was written under the bare key, so transforming it strands every "+
-			"in-flight retry into a second hold", stored, key)
+	// And a second public claim on the bare key, because a public caller may use that too.
+	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", key); err != nil {
+		t.Fatal(err)
+	}
+
+	// The reseller's own key is unaffected: it sells, and it is a NEW claim.
+	claim, replayed, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", key, WithReseller(acme))
+	if err != nil {
+		t.Fatalf("a public caller poisoned reseller %s's idempotency key %q: %v — this is a "+
+			"targeted denial of service against one partner, and it is what a string prefix "+
+			"inside a shared namespace buys you", acme, key, err)
+	}
+	if replayed {
+		t.Fatal("the reseller REPLAYED a public caller's claim — the two namespaces are still one")
+	}
+
+	// And its own retry replays, so the scope is a real namespace rather than a way of
+	// never matching anything.
+	again, wasReplay, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "", key, WithReseller(acme))
+	if err != nil {
+		t.Fatalf("the reseller's own retry: %v", err)
+	}
+	if !wasReplay || again.ID != claim.ID {
+		t.Fatalf("the reseller's retry produced %s (replay=%v), want a replay of %s — scoping "+
+			"that never matches is not idempotency, it is a second hold on every retry",
+			again.ID, wasReplay, claim.ID)
 	}
 }
 

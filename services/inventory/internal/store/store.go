@@ -288,32 +288,35 @@ func WithReseller(reseller uuid.UUID) HoldOption {
 	return func(o *holdOptions) { o.reseller = reseller }
 }
 
-// scopedKey namespaces an idempotency key by the AUTHENTICATED reseller (TKT-246
-// ai-review [high] F1).
+// resellerScope is the idempotency namespace a caller writes and reads in (TKT-246
+// ai-review [high] F1, restructured after pass 2's [high] F4).
 //
-// claims are UNIQUE (organizer_id, idempotency_key), and two reseller credentials may
-// legally share an organizer. Keys are caller-chosen and frequently sequential, so
-// reseller A and reseller B both sending "1" collided on one row.
+// NULL for a public caller, the reseller's id for a partner. Migration 0016 makes
+// uniqueness cover it, so the two namespaces cannot name the same row.
 //
-// That was not merely a collision, it was an AUTHORIZATION BYPASS: CreateHold looks the
-// claim up by (organizer, key) and returns a fingerprint-matching row as a replay
-// BEFORE it reads sold_by. So B, reusing A's key with identical terms, was handed A's
-// authorized hold on A's bound allocation without the seller guard ever running. The
-// guard was not beaten, it was skipped. Commerce namespacing its own reservation ids
-// did not help: it forwards the caller's key to inventory unchanged.
+// WHY A COLUMN AND NOT A KEY PREFIX. claims were UNIQUE (organizer_id,
+// idempotency_key), and two reseller credentials may legally share an organizer, so
+// reseller A and reseller B both sending "1" landed on one row. That was an
+// AUTHORIZATION BYPASS rather than a mere collision: CreateHold looks a claim up by
+// that key and returns a fingerprint-matching row as a REPLAY before it reads sold_by,
+// so B was handed A's authorized hold on A's bound allocation with the seller guard
+// never running.
 //
-// Fixing the FINGERPRINT alone would close the bypass but leave B refused with
-// ErrIdempotency on a key that is legitimately B's -- a confusing hard failure for a
-// partner that did nothing wrong. Namespacing the key means the two never meet.
+// The first fix derived "r:<uuid>:<key>" in Go. It closed the handover and opened a
+// denial of service: public keys are arbitrary raw strings in the SAME column, so a
+// public caller can send that exact derived string first, take the row, and permanently
+// deny that reseller that key -- targeted, given a predictable key and a known reseller
+// id. A prefix inside a shared namespace is a naming convention, and an attacker gets
+// to use it too. The namespace has to be a field the caller does not supply.
 //
-// uuid.Nil (no reseller proven) returns the key UNCHANGED, byte for byte. Every claim
-// in every database was written under the bare key, so any transformation of the
-// public path would strand every in-flight retry -- a double-sell on retry, system-wide.
-func scopedKey(key string, reseller uuid.UUID) string {
+// The stored idempotency_key is therefore the caller's, VERBATIM, on both paths. Every
+// claim in every database was written under the bare key, and transforming it would
+// strand in-flight retries into second holds.
+func resellerScope(reseller uuid.UUID) any {
 	if reseller == uuid.Nil {
-		return key
+		return nil
 	}
-	return "r:" + reseller.String() + ":" + key
+	return reseller
 }
 
 // sellerAdmits answers whether a caller may consume this allocation.
@@ -340,7 +343,6 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		opt(&o)
 	}
 	presaleCode := o.presaleCode
-	key = scopedKey(key, o.reseller)
 	if qty <= 0 {
 		return Claim{}, false, fmt.Errorf("quantity must be positive")
 	}
@@ -376,7 +378,12 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	}
 	var existing Claim
 	var fp string
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+	// Scoped by reseller_scope, matching migration 0016's two partial unique indexes:
+	// `IS NOT DISTINCT FROM` rather than `=` because the public scope is NULL and NULL
+	// = NULL is unknown, which would find nothing and place a second hold on every
+	// public retry. The lookup and the uniqueness must agree exactly or a replay
+	// becomes a duplicate claim.
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3`, org, key, resellerScope(o.reseller)).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller) {
@@ -542,8 +549,8 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		}
 	}
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,'')) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode).Scan(&c.ExpiresAt, &c.ServerTime)
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code,reseller_scope)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}

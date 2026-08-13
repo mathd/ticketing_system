@@ -98,6 +98,20 @@ We adopt allocation rows with derived usage. Specifics:
     - **A full-set PUT that omits `sold_by` unbinds**, consistent with every other field in
       this replace-set contract. An editor that round-trips the set must carry it, or it
       performs an authorization change by omission (TKT-236's shape). Pinned by a test.
+- **Idempotency is scoped to the seller, structurally (TKT-246).** `claims` was
+  `UNIQUE (organizer_id, idempotency_key)`. Two reseller credentials may share an organizer and
+  keys are caller-chosen, so two partners sending `"1"` landed on one row — and because
+  `CreateHold` returns a fingerprint-matching row as a **replay before it reads `sold_by`**, the
+  second partner was handed the first's authorized hold with the seller guard never running. The
+  guard was not beaten, it was *skipped*.
+  Migration `0016` adds a nullable `claims.reseller_scope` and splits the constraint into two
+  partial unique indexes — `(organizer_id, idempotency_key) WHERE reseller_scope IS NULL` and
+  `(organizer_id, reseller_scope, idempotency_key) WHERE NOT NULL`. Existing rows all have NULL and
+  keep the identical constraint.
+  **A key prefix is not a namespace.** The first attempt derived `r:<uuid>:<key>` in Go; public
+  keys remained arbitrary strings in the same column, so a public caller could send that exact
+  string, take the row first, and permanently deny that reseller that key. The namespace has to be
+  a field the caller does not supply. The stored key stays the caller's, verbatim, on both paths.
 - **Who may name a channel (TKT-246).** A channel only reaches this decision from an
   *authenticated* caller. Commerce's public `POST /reservations` is unauthenticated and takes
   `channel_code` from the request body, so it forwards **no channel to inventory at all**;
