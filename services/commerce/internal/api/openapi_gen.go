@@ -481,6 +481,16 @@ type PartnerAvailability struct {
 	SlotId      openapi_types.UUID `json:"slot_id"`
 }
 
+// PartnerReservationCreate A partner GA reserve (TKT-246). Deliberately NOT a variant of ReservationCreate: it omits `channel_code` and has no `reseller_id`, so the two fields inventory authorizes on cannot be named by the caller at all. `additionalProperties: false` makes that a 400 at the edge rather than a field the handler has to remember to ignore — the guard is the absence of the field, not a check.
+//
+// No `seat_identities`, so no XOR to express and none of ReservationCreate's minProperties/maxProperties/not machinery: GA is the only shape.
+type PartnerReservationCreate struct {
+	// OrganizerId Must equal the credential's organizer; a mismatch is 403. Present because the shared reserve path needs it, not because the caller is trusted with it.
+	OrganizerId  openapi_types.UUID `json:"organizer_id"`
+	Quantity     int                `json:"quantity"`
+	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
+}
+
 // PasswordResetCompletion A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.
 // The password floor is 8 here and not 1, unlike sign-in. Sign-in verifies an existing credential and must not refuse a short one differently from a wrong one; this operation SETS a credential, so it is where the policy belongs — the same place registration puts it.
 type PasswordResetCompletion struct {
@@ -671,6 +681,11 @@ type GetPartnerAvailabilityParams struct {
 	SlotId openapi_types.UUID `form:"slot_id" json:"slot_id"`
 }
 
+// CreatePartnerReservationParams defines parameters for CreatePartnerReservation.
+type CreatePartnerReservationParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CreateReservationParams defines parameters for CreateReservation.
 type CreateReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -714,6 +729,9 @@ type CheckoutJSONRequestBody = Checkout
 
 // ClaimGuestOrderJSONRequestBody defines body for ClaimGuestOrder for application/json ContentType.
 type ClaimGuestOrderJSONRequestBody = OrderClaim
+
+// CreatePartnerReservationJSONRequestBody defines body for CreatePartnerReservation for application/json ContentType.
+type CreatePartnerReservationJSONRequestBody = PartnerReservationCreate
 
 // CreateReservationJSONRequestBody defines body for CreateReservation for application/json ContentType.
 type CreateReservationJSONRequestBody = ReservationCreate

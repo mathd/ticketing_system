@@ -220,6 +220,13 @@ type ChannelAllocation struct {
 
 	// RequiresCode Gate this allocation behind a presale unlock code (TKT-239 / ADR-055). Defaults false, so an allocation that omits it sells exactly as before. Orthogonal to the window: a window says WHEN the channel may sell, this says WHO may, and both must admit a claim.
 	RequiresCode *bool `json:"requires_code,omitempty"`
+
+	// SoldBy Bind this allocation to ONE reseller (TKT-246, amending ADR-024). Only that reseller may consume it; omitted means unbound, which is public and is every allocation that predates this field.
+	//
+	// A uuid rather than a boolean, deliberately: "this allocation is spoken for" would let reseller B consume reseller A's stock — the same class of bug one layer in. Judged in inventory under the pool row lock, before capacity, so a bound allocation never reads as a sellout to the partner it belongs to.
+	//
+	// Honest-writer authorization, not tamper-evidence (ADR-021): it constrains a caller arriving through the hold path, and nobody with write access to this table.
+	SoldBy *openapi_types.UUID `json:"sold_by,omitempty"`
 }
 
 // ChannelAllocationSet defines model for ChannelAllocationSet.
@@ -357,6 +364,30 @@ type HoldCreate struct {
 type HoldSeating struct {
 	HoldId openapi_types.UUID `json:"hold_id"`
 	Seated bool               `json:"seated"`
+}
+
+// InternalHoldCreate HoldCreate plus the authenticated seller. A SEPARATE schema rather than an optional field on HoldCreate, deliberately: `additionalProperties: false` then makes `reseller_id` a 400 on the PUBLIC route at the validator, before any handler runs. The guard is that the field does not exist there.
+//
+// The shared properties are spelled out rather than `allOf`-composed with HoldCreate: `additionalProperties: false` is evaluated per-schema, so a composed schema would reject every inherited field as unknown. Duplication is the correct shape here, and the drift it risks is bounded — a field added to HoldCreate and not here is refused on the internal route, which fails loudly rather than silently widening the public one.
+type InternalHoldCreate struct {
+	// Channel Opaque sales channel code; omitted means the default/public channel
+	Channel     *string            `json:"channel,omitempty"`
+	Currency    *string            `json:"currency,omitempty"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// PresaleCode Presale unlock code for a gated channel (TKT-239); see HoldCreate.
+	PresaleCode *string `json:"presale_code,omitempty"`
+	Quantity    int     `json:"quantity"`
+
+	// ResellerId WHO is selling (TKT-246, amending ADR-024). Compared against the allocation's `sold_by` under the pool row lock: an allocation with `sold_by` set admits only that reseller, and one without it (every allocation predating TKT-246) admits anyone.
+	//
+	// This must be an AUTHENTICATED identity. Commerce takes it from the partner credential (ADR-056) and never from a request body; inventory trusts its internal caller and cannot verify it itself. Per ADR-021 that makes this honest-writer authorization, NOT tamper-evidence — anyone who can call `/internal/` or write inventory's database can present any reseller they like.
+	//
+	// Omitted means no seller identity was proven, which is what every pre-TKT-246 caller sends. It is not a wildcard: an absent identity may consume only an unbound allocation.
+	ResellerId   *openapi_types.UUID `json:"reseller_id,omitempty"`
+	SlotId       openapi_types.UUID  `json:"slot_id"`
+	TicketTypeId *openapi_types.UUID `json:"ticket_type_id,omitempty"`
+	UnitAmount   *int64              `json:"unit_amount,omitempty"`
 }
 
 // OperationalConvert defines model for OperationalConvert.
@@ -527,6 +558,11 @@ type GetGroupReservationHistoryParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
 }
 
+// CreateInternalHoldParams defines parameters for CreateInternalHold.
+type CreateInternalHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // ConfirmHoldParams defines parameters for ConfirmHold.
 type ConfirmHoldParams struct {
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
@@ -609,6 +645,9 @@ type PlaceGroupReservationJSONRequestBody = GroupReservationCreate
 
 // DrawDownGroupReservationJSONRequestBody defines body for DrawDownGroupReservation for application/json ContentType.
 type DrawDownGroupReservationJSONRequestBody = OperationalConvert
+
+// CreateInternalHoldJSONRequestBody defines body for CreateInternalHold for application/json ContentType.
+type CreateInternalHoldJSONRequestBody = InternalHoldCreate
 
 // ReturnRefundedCapacityJSONRequestBody defines body for ReturnRefundedCapacity for application/json ContentType.
 type ReturnRefundedCapacityJSONRequestBody = RefundCapacityReturnCreate

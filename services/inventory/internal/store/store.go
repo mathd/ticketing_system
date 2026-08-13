@@ -202,7 +202,7 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 
 // fingerprint stays byte-identical to the pre-channel format when channel is empty, so
 // idempotency records created before the channel migration keep replaying (ADR-009).
-func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, presaleCode string) string {
+func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, presaleCode string, reseller uuid.UUID) string {
 	s := fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency)
 	if channel != "" {
 		s += ":" + channel
@@ -232,6 +232,24 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 	if presaleCode != "" {
 		s += fmt.Sprintf(":c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode)
 	}
+	// The RESELLER is part of the request identity (TKT-246 ai-review [high] F1).
+	//
+	// Two reseller credentials may legally share an organizer, and inventory's claims
+	// are unique on (organizer_id, idempotency_key) alone. Without the reseller here,
+	// reseller B reusing A's key with identical terms matched A's fingerprint and was
+	// REPLAYED A's authorized hold -- returned before the sold_by check runs at all,
+	// so the seller guard was bypassed by an idempotency collision rather than beaten.
+	// Commerce separating its own reservation ids was not enough: it forwards the
+	// caller's key to inventory unchanged.
+	//
+	// Appended ONLY when non-empty, and framed, for the two reasons above it: an
+	// unconditional append rehashes every claim in the database and stops every
+	// in-flight retry from replaying, and a bare join is ambiguous between adjacent
+	// opaque fields. uuid.Nil (no reseller proven) is the pre-TKT-246 caller and must
+	// hash byte-identically to before.
+	if reseller != uuid.Nil {
+		s += fmt.Sprintf(":r%d:%s", len(reseller.String()), reseller)
+	}
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
 }
 
@@ -244,12 +262,79 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 // cannot be passed in the wrong slot.
 type HoldOption func(*holdOptions)
 
-type holdOptions struct{ presaleCode string }
+type holdOptions struct {
+	presaleCode string
+	reseller    uuid.UUID
+}
 
 // WithPresaleCode supplies the unlock code for a gated channel (TKT-239).
 // Absent, or on an ungated allocation, it is ignored.
 func WithPresaleCode(code string) HoldOption {
 	return func(o *holdOptions) { o.presaleCode = code }
+}
+
+// WithReseller supplies the AUTHENTICATED reseller identity of the caller (TKT-246).
+//
+// Absent (uuid.Nil) means "no reseller identity was proven", which is what every
+// pre-existing caller passes and what an unauthenticated request is. It is not a
+// wildcard: an absent identity may consume only an UNBOUND allocation.
+//
+// The value must come from a verified credential (commerce's partner scope, ADR-056),
+// never from a request body. Inventory cannot check that for itself — it trusts its
+// internal caller — so this is honest-writer authorization, not tamper-evidence
+// (ADR-021). Naming it here because the option is the exact place a future caller
+// would be tempted to pass a body field.
+func WithReseller(reseller uuid.UUID) HoldOption {
+	return func(o *holdOptions) { o.reseller = reseller }
+}
+
+// resellerScope is the idempotency namespace a caller writes and reads in (TKT-246
+// ai-review [high] F1, restructured after pass 2's [high] F4).
+//
+// NULL for a public caller, the reseller's id for a partner. Migration 0016 makes
+// uniqueness cover it, so the two namespaces cannot name the same row.
+//
+// WHY A COLUMN AND NOT A KEY PREFIX. claims were UNIQUE (organizer_id,
+// idempotency_key), and two reseller credentials may legally share an organizer, so
+// reseller A and reseller B both sending "1" landed on one row. That was an
+// AUTHORIZATION BYPASS rather than a mere collision: CreateHold looks a claim up by
+// that key and returns a fingerprint-matching row as a REPLAY before it reads sold_by,
+// so B was handed A's authorized hold on A's bound allocation with the seller guard
+// never running.
+//
+// The first fix derived "r:<uuid>:<key>" in Go. It closed the handover and opened a
+// denial of service: public keys are arbitrary raw strings in the SAME column, so a
+// public caller can send that exact derived string first, take the row, and permanently
+// deny that reseller that key -- targeted, given a predictable key and a known reseller
+// id. A prefix inside a shared namespace is a naming convention, and an attacker gets
+// to use it too. The namespace has to be a field the caller does not supply.
+//
+// The stored idempotency_key is therefore the caller's, VERBATIM, on both paths. Every
+// claim in every database was written under the bare key, and transforming it would
+// strand in-flight retries into second holds.
+func resellerScope(reseller uuid.UUID) any {
+	if reseller == uuid.Nil {
+		return nil
+	}
+	return reseller
+}
+
+// sellerAdmits answers whether a caller may consume this allocation.
+//
+// One predicate, two call sites (CreateHold and PlaceGroupReservation). It is a
+// function rather than two inline conditions for the reason consumedQuantity's comment
+// gives about copied SQL: a rule duplicated across claim paths forks, and the fork is
+// invisible until a hold succeeds where it should not have.
+//
+// NULL sold_by = unbound = anyone, which is every allocation that predates TKT-246.
+// A bound allocation requires an exact match, so a DIFFERENT reseller is refused as
+// firmly as an anonymous caller — a bare "is bound" boolean would have let reseller B
+// consume reseller A's stock.
+func sellerAdmits(soldBy uuid.NullUUID, caller uuid.UUID) bool {
+	if !soldBy.Valid {
+		return true
+	}
+	return caller != uuid.Nil && soldBy.UUID == caller
 }
 
 func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string, opts ...HoldOption) (Claim, bool, error) {
@@ -293,10 +378,15 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	}
 	var existing Claim
 	var fp string
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+	// Scoped by reseller_scope, matching migration 0016's two partial unique indexes:
+	// `IS NOT DISTINCT FROM` rather than `=` because the public scope is NULL and NULL
+	// = NULL is unknown, which would find nothing and place a second hold on every
+	// public retry. The lookup and the uniqueness must agree exactly or a replay
+	// becomes a duplicate claim.
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3`, org, key, resellerScope(o.reseller)).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode) {
+		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller) {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {
@@ -345,10 +435,11 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	var chCap int32
 	var haveAllocation bool
 	var requiresCode bool
+	var soldBy uuid.NullUUID
 	if channel != "" {
 		err = tx.QueryRowContext(ctx,
-			`SELECT cap, requires_code, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
-			slot, channel).Scan(&chCap, &requiresCode, &channelWindowOpen)
+			`SELECT cap, requires_code, sold_by, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation,
+			slot, channel).Scan(&chCap, &requiresCode, &soldBy, &channelWindowOpen)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// No ACTIVE allocation for this channel — released, or never
@@ -361,6 +452,35 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 			haveAllocation = true
 			if !channelWindowOpen {
 				return Claim{}, false, ErrChannelWindowClosed
+			}
+			// WHO may sell this, judged after the window and before the code and
+			// the capacity arithmetic (TKT-246, amending ADR-024).
+			//
+			// The order is the whole point, and each boundary was argued:
+			//
+			//   window -> seller -> code -> capacity
+			//
+			// Before capacity, for TKT-238's reason: authorization is a property of
+			// the requested channel and capacity is a property of the pool, so a
+			// gated channel must not read as a sellout precisely when the on-sale is
+			// busiest. After the window, because a closed channel is selling to
+			// nobody -- answering "you are not the seller" to a request a valid
+			// seller would also have been refused is both misleading AND an oracle:
+			// it tells an unauthorized caller that the channel is bound rather than
+			// closed. Before the code for the same reason the window precedes the
+			// code: no point redeeming a scarce unlock code against an allocation
+			// the caller may not consume at all -- redeemPresaleCode MUTATES, and a
+			// refusal after it would burn a redemption on a caller who was never
+			// eligible.
+			//
+			// The refusal is ErrUnavailable, deliberately NOT a distinct sentinel.
+			// A "seller mismatch" code would tell an unauthenticated prober that
+			// this channel exists and is bound to someone else -- the enumeration
+			// oracle that presale_code_invalid was made uniform to prevent
+			// (openapi.yaml, TKT-239). sold_by is not guessable and must not become
+			// discoverable through a refusal.
+			if !sellerAdmits(soldBy, o.reseller) {
+				return Claim{}, false, ErrUnavailable
 			}
 			// The unlock code is judged AFTER the channel's window and BEFORE any
 			// capacity arithmetic (TKT-239 / ADR-055).
@@ -429,8 +549,8 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		}
 	}
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,'')) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode), channel, presaleCode).Scan(&c.ExpiresAt, &c.ServerTime)
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code,reseller_scope)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}

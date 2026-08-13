@@ -121,9 +121,10 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	var chCap int32
 	var haveAllocation bool
 	var requiresCode bool
+	var soldBy uuid.NullUUID
 	if channel != "" {
 		var windowIsOpen bool
-		err = tx.QueryRowContext(ctx, `SELECT cap, requires_code, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap, &requiresCode, &windowIsOpen)
+		err = tx.QueryRowContext(ctx, `SELECT cap, requires_code, sold_by, (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2 AND `+activeAllocation, slot, channel).Scan(&chCap, &requiresCode, &soldBy, &windowIsOpen)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// No active allocation: the code-less capacity refusal, as before.
@@ -135,6 +136,21 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 			haveAllocation = true
 			if !windowIsOpen {
 				return GroupReservation{}, false, ErrChannelWindowClosed
+			}
+			// WHO may sell this — the same predicate, in the same slot in the same
+			// order, as CreateHold (TKT-246). See sellerAdmits and CreateHold's
+			// comment for why window -> seller -> code -> capacity.
+			//
+			// This path is here BECAUSE it is the one nobody was going to change.
+			// TKT-240's post-mortem named the failure exactly: "every layer reasoned
+			// about the path being changed", and two sibling paths shipped a hole for
+			// that reason alone. A group placement takes a channel and carries no
+			// credential, so without this it would consume a bound allocation freely
+			// — the guard would bind only the caller that happened to be under
+			// review. Placement is gated because it creates NEW consumption;
+			// draw-down is not, for the reason stated above it.
+			if !sellerAdmits(soldBy, o.reseller) {
+				return GroupReservation{}, false, ErrUnavailable
 			}
 			// The unlock code, after the window and before capacity — the same
 			// precedence CreateHold documents (TKT-239 / ADR-055).

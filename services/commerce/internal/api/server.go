@@ -212,6 +212,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// guard is a declared `security:` the validator enforces rather than a header
 	// compared in a handler (ADR-043).
 	r.Get("/partners/availability", s.partnerAvailability)
+	r.Post("/partners/reservations", s.partnerReserve)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)
@@ -515,7 +516,98 @@ func validReservationShape(in reserveRequest) bool {
 	return in.Quantity >= 1 && in.Quantity <= 50
 }
 
+// addSellerScope puts the AUTHENTICATED channel and reseller on an inventory hold
+// body, and is the single place a channel may reach inventory (TKT-246).
+//
+// It takes a *partnerScope, not a channel string, and that signature is the guard.
+// The channel inventory acts on can only come from a credential, because that is the
+// only thing this function accepts -- there is no argument to pass a body field in.
+//
+// WHY THE PUBLIC ROUTE FORWARDS NOTHING. `POST /reservations` is unauthenticated and
+// takes channel_code from the request body. TKT-240 forwarded that value and was
+// reverted: any caller could then name a reseller's channel and consume its
+// allocation with no credential (executed, not argued). Binding allocations to a
+// seller does not rescue the public forward either, because every allocation that
+// exists today is UNBOUND and an unbound allocation admits anyone -- so on the day
+// this ships the bypass would be live for exactly the allocations it is meant to
+// protect. The public route is therefore kept unable to reach the decision at all.
+//
+// The residual: a public sale naming a reseller channel still PRICES under that
+// channel's fee rules while consuming public stock. That is a fee-attribution defect,
+// not an inventory-theft one, and it is TKT-247's. Moving inventory now requires a
+// credential.
+func addSellerScope(body map[string]any, scope *partnerScope) {
+	if scope == nil {
+		return
+	}
+	body["channel"] = scope.ChannelCode
+	body["reseller_id"] = scope.ResellerID
+}
+
+// holdEndpoint picks WHICH inventory hold route a request goes to, and returns whether
+// it must be called as an internal service (TKT-246, ai-review pass 3).
+//
+// A hold naming a reseller goes to `/internal/holds`, with the service credential. The
+// public `POST /holds` does not accept `reseller_id` at all — its contract refuses the
+// field and its handler passes uuid.Nil regardless — because that route is proxied to
+// the edge, and an authorization input taken from an unauthenticated body is the exact
+// defect TKT-240 was reverted for.
+//
+// Returned as a pair rather than set at each call site: there are three GA hold paths
+// (first attempt, persisted replay, exchange target), and the previous two rounds of
+// this ticket were both defects of one path being updated and the others not.
+func holdEndpoint(base string, body map[string]any) (string, bool) {
+	if _, named := body["reseller_id"]; named {
+		return base + "/internal/holds", true
+	}
+	return base + "/holds", false
+}
+
+// reservationID derives the reservation a given idempotency key names.
+//
+// organizer + key for a public sale, and organizer + RESELLER + key for a partner one
+// (TKT-246). Without the reseller segment, two partners of the same organizer that
+// happened to choose the same key derived the SAME id, and the second received the
+// first's reservation -- another reseller's buyer, seats and money, attributed to
+// them. Keys are caller-chosen and frequently sequential ("1", "order-1"), so that is
+// a collision waiting rather than an attack.
+//
+// The public basis is unchanged BYTE FOR BYTE, and must stay so: every reservation
+// that exists was written under it, so a caller mid-retry would otherwise derive a new
+// id, miss its persisted row and place a SECOND hold. The reseller segment is only
+// ever added for a scope that did not exist before this ticket, so no existing row
+// changes identity.
+//
+// A function rather than an expression at the call site so the test asserts THIS
+// derivation instead of re-implementing it — a test that recomputes the rule it is
+// checking passes whatever the code does (AGENTS.md).
+func reservationID(org uuid.UUID, key string, scope *partnerScope) uuid.UUID {
+	basis := "reservation:" + org.String() + ":" + key
+	if scope != nil {
+		basis = "reservation:" + org.String() + ":" + scope.ResellerID.String() + ":" + key
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(basis))
+}
+
+// reserve is the PUBLIC, unauthenticated reserve. It carries no seller identity,
+// and therefore forwards no channel to inventory -- see reserveWithScope.
 func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
+	s.reserveWithScope(w, r, nil)
+}
+
+// reserveWithScope is the one reserve implementation. `scope` is nil for the public
+// route and the authenticated reseller for the partner route (TKT-246).
+//
+// ONE implementation, deliberately. The alternative -- a second partner-shaped
+// reserve beside this one -- is how the replay path and the exchange target came to
+// omit the channel in the first place: TKT-240's post-mortem named "every layer
+// reasoned about the path being changed" as the root cause. A fork here would mean
+// every future fix to pricing, fees, idempotency or seat handling has two homes and
+// one of them will be missed.
+//
+// The scope is the ONLY source of channel and reseller for a partner sale. Nothing
+// downstream reads in.ChannelCode for the inventory hold; see sellerIdentity.
+func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope *partnerScope) {
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if key == "" || len(key) > 200 {
 		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
@@ -524,6 +616,23 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	var in reserveRequest
 	if !decode(w, r, &in) {
 		return
+	}
+	if scope != nil {
+		// The credential is scoped to ONE organizer (ADR-056). organizer_id stays in
+		// the body because the shared path needs it, so it is COMPARED here rather
+		// than trusted -- the same reasoning as the channel, one tenant up. Refusing
+		// rather than overwriting: silently rewriting the caller's organizer would
+		// answer a question they did not ask.
+		if in.OrganizerID != scope.OrganizerID {
+			write(w, 403, map[string]string{"error": "credential is not scoped to this organizer"})
+			return
+		}
+		// A partner's channel comes from its credential and NOTHING else. Overwriting
+		// rather than rejecting a body value because the contract already refuses the
+		// field (additionalProperties: false) -- this is the second line of defence
+		// for the day that contract is edited, and it must not depend on the first.
+		channel := scope.ChannelCode
+		in.ChannelCode = &channel
 	}
 	if !validReservationShape(in) {
 		write(w, 400, map[string]string{"error": "invalid reservation"})
@@ -539,7 +648,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 	// So: look for the reservation BEFORE pricing anything. If it exists, answer
 	// from what was persisted and never call catalog. That is what makes "the
 	// price you were quoted is the price you are charged" true across a retry.
-	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("reservation:"+in.OrganizerID.String()+":"+key))
+	id := reservationID(in.OrganizerID, key, scope)
 	if s.db != nil {
 		var pin struct {
 			hold, buyer, slot, ticket uuid.UUID
@@ -586,9 +695,23 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 			// would be rejected as a conflicting request. Replaying with the
 			// pinned amount returns the same hold, and its expiry is what the
 			// caller actually needs on a retry.
-			replayURL, replayBody := s.inventoryURL+"/holds", map[string]any{
+			seatedReplayURL := s.inventoryURL + "/holds/seats"
+			replayBody := map[string]any{
 				"organizer_id": in.OrganizerID, "slot_id": pin.slot, "ticket_type_id": pin.ticket,
 				"quantity": pin.qty, "unit_amount": pin.unit, "currency": pin.currency}
+			// The replay carries the same seller scope as the first attempt (TKT-246).
+			//
+			// Inventory fingerprints idempotency over the request, so a replay that
+			// omits the channel the first attempt sent is a DIFFERENT request: it is
+			// refused with a 409 rather than replayed, and a partner retrying a
+			// timeout gets a hard failure on a hold it already owns. One of the two
+			// sibling paths TKT-240 missed, and missed for the reason its post-mortem
+			// names -- every layer reasoned about the path it was changing.
+			//
+			// From the SCOPE, not from the persisted row, and the two agree by
+			// construction: the id derivation includes the reseller, so a scope that
+			// found this row is the scope that wrote it.
+			addSellerScope(replayBody, scope)
 			if len(pinnedSeats) > 0 {
 				// Replay with the PERSISTED seat set, not the incoming one. Inventory
 				// fingerprints seat-hold idempotency over the canonical set, and the
@@ -596,12 +719,15 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 				// retry land on the original claim instead of being refused as a
 				// conflicting request. This is the only reader of the column, which is
 				// why a write-only text[] would have looked fine until it mattered.
-				replayURL = s.inventoryURL + "/holds/seats"
 				replayBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": pin.slot,
 					"ticket_type_id": pin.ticket, "seat_identities": pinnedSeats,
 					"unit_amount": pin.unit, "currency": pin.currency}
 			}
-			code, body, err := s.call(r.Context(), http.MethodPost, replayURL, key, replayBody, false)
+			replayURL, replayInternal := holdEndpoint(s.inventoryURL, replayBody)
+			if len(pinnedSeats) > 0 {
+				replayURL, replayInternal = seatedReplayURL, false
+			}
+			code, body, err := s.call(r.Context(), http.MethodPost, replayURL, key, replayBody, replayInternal)
 			if err != nil || (code != 200 && code != 201) {
 				if len(pinnedSeats) > 0 {
 					seatedInventoryRefusal(w, code, body, pinnedSeats)
@@ -717,16 +843,22 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "order total out of range"})
 		return
 	}
-	holdURL, holdBody := s.inventoryURL+"/holds", map[string]any{"organizer_id": in.OrganizerID,
+	holdBody := map[string]any{"organizer_id": in.OrganizerID,
 		"slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity,
 		"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
+	addSellerScope(holdBody, scope)
+	seatedHoldURL := s.inventoryURL + "/holds/seats"
 	if in.seated() {
-		holdURL = s.inventoryURL + "/holds/seats"
 		holdBody = map[string]any{"organizer_id": in.OrganizerID, "slot_id": o.PerformanceID,
 			"ticket_type_id": in.TicketTypeID, "seat_identities": in.SeatIdentities,
 			"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
 	}
-	code, body, err := s.call(r.Context(), http.MethodPost, holdURL, key, holdBody, false)
+	// A reseller-bearing hold goes to the INTERNAL route, with the service credential.
+	holdURL, holdInternal := holdEndpoint(s.inventoryURL, holdBody)
+	if in.seated() {
+		holdURL, holdInternal = seatedHoldURL, false
+	}
+	code, body, err := s.call(r.Context(), http.MethodPost, holdURL, key, holdBody, holdInternal)
 	if err != nil || (code != 200 && code != 201) {
 		if in.seated() {
 			seatedInventoryRefusal(w, code, body, in.canonicalSeatSet())

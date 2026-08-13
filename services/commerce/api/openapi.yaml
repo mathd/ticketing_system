@@ -304,6 +304,49 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
+  /partners/reservations:
+    post:
+      operationId: createPartnerReservation
+      summary: Hold stock against the partner's own channel allocation.
+      description: >
+        The reserve a reseller makes on its own channel (TKT-246). Like the
+        availability read above, the channel and the reseller identity are NOT
+        parameters — they are read from the credential (ADR-056) and forwarded to
+        inventory, which judges them against the allocation's `sold_by` under the
+        pool row lock. A partner cannot phrase a request that consumes anybody
+        else's allocation.
+
+
+        `organizer_id` IS in the body, because the shared reserve path needs it, and
+        the handler COMPARES it against the credential's rather than trusting it — a
+        mismatch is 403, never a silent rewrite.
+
+
+        GA only: `quantity`, no `seat_identities`. Seated pools do not consult channel
+        allocations at all (TKT-176 owns that seam), so a seated partner sale would
+        claim an authorization this contract cannot deliver.
+
+
+        409 is inventory's refusal, and it is deliberately uniform across "sold out",
+        "not your allocation" and "no allocation configured". A distinguishing code
+        would tell a caller which channels exist and who owns them — the enumeration
+        oracle `presale_code_invalid` was made uniform to prevent.
+      security: [{PartnerCredential: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PartnerReservationCreate'}
+      responses:
+        '201': {description: Reserved, content: {application/json: {schema: {$ref: '#/components/schemas/Reservation'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
   /internal/operational-holds/{id}/convert:
     post:
       operationId: convertOperationalHold
@@ -572,6 +615,31 @@ components:
         slot_id: {type: string, format: uuid}
         channel_code: {type: string, minLength: 1, maxLength: 100}
         available: {type: integer, minimum: 0, description: 'Units the credential''s channel may still sell on this slot.'}
+    PartnerReservationCreate:
+      type: object
+      additionalProperties: false
+      description: >
+        A partner GA reserve (TKT-246). Deliberately NOT a variant of
+        ReservationCreate: it omits `channel_code` and has no `reseller_id`, so the
+        two fields inventory authorizes on cannot be named by the caller at all.
+        `additionalProperties: false` makes that a 400 at the edge rather than a
+        field the handler has to remember to ignore — the guard is the absence of
+        the field, not a check.
+
+
+        No `seat_identities`, so no XOR to express and none of ReservationCreate's
+        minProperties/maxProperties/not machinery: GA is the only shape.
+      required: [organizer_id, ticket_type_id, quantity]
+      properties:
+        organizer_id:
+          type: string
+          format: uuid
+          description: >
+            Must equal the credential's organizer; a mismatch is 403. Present
+            because the shared reserve path needs it, not because the caller is
+            trusted with it.
+        ticket_type_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
     ReservationCreate:
       type: object
       additionalProperties: false

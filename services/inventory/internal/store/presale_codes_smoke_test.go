@@ -398,12 +398,12 @@ func TestFingerprintStaysByteIdenticalWithoutAPresaleCode(t *testing.T) {
 	slot := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	tt := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 
-	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "", ""); got != goldenBare {
+	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "", "", uuid.Nil); got != goldenBare {
 		t.Fatalf("the no-channel no-code fingerprint CHANGED:\n got %s\nwant %s\n"+
 			"Every pre-TKT-239 idempotency record just stopped replaying — an in-flight "+
 			"retry now re-executes instead, which is a double-sell.", got, goldenBare)
 	}
-	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", ""); got != goldenWithChannel {
+	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "", uuid.Nil); got != goldenWithChannel {
 		t.Fatalf("the channel-only fingerprint CHANGED:\n got %s\nwant %s\n"+
 			"The presale code is being appended even when absent.", got, goldenWithChannel)
 	}
@@ -411,11 +411,11 @@ func TestFingerprintStaysByteIdenticalWithoutAPresaleCode(t *testing.T) {
 	// And a code MUST change it: two holds sharing an idempotency key but
 	// presenting different codes are different requests, and replaying one as the
 	// other would grant the second the first's redemption.
-	withCode := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "VIP")
+	withCode := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "VIP", uuid.Nil)
 	if withCode == goldenWithChannel {
 		t.Fatal("the presale code does not enter the fingerprint at all")
 	}
-	if other := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "OTHER"); other == withCode {
+	if other := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "OTHER", uuid.Nil); other == withCode {
 		t.Fatal("two different codes hash identically")
 	}
 }
@@ -531,7 +531,7 @@ func TestOnlyCodeLessFingerprintsNeedBackwardCompatibility(t *testing.T) {
 	// Same inputs, no code: byte-identical to the pre-TKT-239 algorithm. This is
 	// the only class of fingerprint that can already exist in a database.
 	const goldenWithChannel = "27ba9d12ad92b46f7f200784cd338b843fdbc10d8ffd779578a74de579a6af23"
-	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", ""); got != goldenWithChannel {
+	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "", uuid.Nil); got != goldenWithChannel {
 		t.Fatalf("code-less fingerprint drifted: got %s want %s", got, goldenWithChannel)
 	}
 }
@@ -545,14 +545,14 @@ func TestOnlyCodeLessFingerprintsNeedBackwardCompatibility(t *testing.T) {
 // its allocation or code was checked.
 func TestFingerprintCannotBeConfusedByADelimiterInTheCode(t *testing.T) {
 	org, slot, tt := uuid.New(), uuid.New(), uuid.New()
-	if x, y := fingerprint(org, slot, tt, 1, 100, "EUR", "a", "b:c"),
-		fingerprint(org, slot, tt, 1, 100, "EUR", "a:b", "c"); x == y {
+	if x, y := fingerprint(org, slot, tt, 1, 100, "EUR", "a", "b:c", uuid.Nil),
+		fingerprint(org, slot, tt, 1, 100, "EUR", "a:b", "c", uuid.Nil); x == y {
 		t.Fatalf("(channel=a, code=b:c) and (channel=a:b, code=c) hash identically (%s) — "+
 			"one replays as the other", x)
 	}
 	// The plain different-code case too.
-	if x, y := fingerprint(org, slot, tt, 1, 100, "EUR", "presale", "AAA"),
-		fingerprint(org, slot, tt, 1, 100, "EUR", "presale", "BBB"); x == y {
+	if x, y := fingerprint(org, slot, tt, 1, 100, "EUR", "presale", "AAA", uuid.Nil),
+		fingerprint(org, slot, tt, 1, 100, "EUR", "presale", "BBB", uuid.Nil); x == y {
 		t.Fatal("two different codes hash identically")
 	}
 }
@@ -696,7 +696,8 @@ func TestRedemptionCountIsIndexBacked(t *testing.T) {
 	//
 	// "No Seq Scan" is too weak and a mutation check proved it: with
 	// claims_presale_usage DROPPED, the planner still avoided a seq scan by using
-	// claims_organizer_id_idempotency_key_key, then filtered channel_code and
+	// the organizer+key unique index (claims_public_idempotency since TKT-246's
+	// migration 0016 split it by reseller_scope), then filtered channel_code and
 	// presale_code in the heap. That is O(all this organizer's claims) per
 	// redemption — under two locks — and the weaker assertion called it a pass.
 	//

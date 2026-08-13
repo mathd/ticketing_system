@@ -161,7 +161,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	// after the bind meant a sold-out target left an exchange row behind and locked the
 	// order exactly as a typo did. A hold that is never used simply expires; a durable row
 	// does not.
-	hold, err := s.holdExchangeTarget(r, exchangeID, in.OrganizerID, in.TargetTicketTypeID, src.Quantity, resolution)
+	hold, err := s.holdExchangeTarget(r, exchangeID, in.OrganizerID, in.TargetTicketTypeID, src.Quantity, resolution, src)
 	if err != nil {
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 		return
@@ -360,19 +360,64 @@ func (s *Server) claimIsSeated(r *http.Request, org, hold uuid.UUID) (bool, erro
 	return out.Seated, nil
 }
 
-func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType uuid.UUID, quantity int32, res priceResolution) (uuid.UUID, error) {
+func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType uuid.UUID, quantity int32, res priceResolution, src commercestore.ExchangeSource) (uuid.UUID, error) {
 	body := map[string]any{
 		"organizer_id": org, "slot_id": res.PerformanceID,
 		"ticket_type_id": ticketType, "quantity": quantity,
 		"unit_amount": res.ResolvedPrice.Amount, "currency": res.ResolvedPrice.Currency,
+	}
+	// The target hold consumes the SOURCE's channel and presents its reseller
+	// (TKT-246). The second of the two sibling paths TKT-240 missed.
+	//
+	// Before this, the exchange target sent no channel at all while the target was
+	// REPRICED on the source's channel (TKT-237) -- so a channelled exchange took
+	// that channel's prices out of PUBLIC stock, and the channel's own allocation
+	// never moved. The two facts have to travel together or the money and the
+	// inventory describe different sales.
+	//
+	// Both come from the PERSISTED source reservation, not from a request or a
+	// session: an exchange is a staff or buyer action on an existing order, and the
+	// reseller that sold it is a historical fact of that row. That also makes the
+	// hold's authorization reproducible on a retry, which a caller-supplied identity
+	// would not be.
+	// BOTH or NEITHER, gated on the RESELLER (ai-review [high] F2).
+	//
+	// Forwarding the channel whenever the source had one re-opens the bypass this
+	// ticket exists to close, one step removed in time. A PUBLIC reserve still
+	// persists whatever channel_code its unauthenticated body named -- it is used for
+	// fee resolution and reporting, and only the inventory forward was withheld. So a
+	// public buyer could name a reseller's channel, and a later exchange of that order
+	// would present the channel to inventory with no reseller identity, consuming an
+	// unbound allocation that nobody authorized them to touch. Every allocation is
+	// unbound today, so it would have been reachable on day one.
+	//
+	// The reseller is the authority, not the channel: a source with no reseller was
+	// never an authorized channelled sale, whatever its channel_code says. Gating on
+	// src.ResellerID means the exchange inherits authorization only where
+	// authorization actually existed, and a public source's target stays public --
+	// which is exactly what its ORIGINAL hold did.
+	if src.ResellerID != nil && src.ChannelCode != nil {
+		body["channel"] = *src.ChannelCode
+		body["reseller_id"] = *src.ResellerID
 	}
 	// Keyed on the EXCHANGE identity, which is derivable from (organizer, idempotency key)
 	// before the exchange row exists — that is what lets the hold precede the bind (P2-1)
 	// without two different exchanges sharing a hold. Keying it on organizer+ticket type
 	// did exactly that: a second exchange onto the same type replayed the first one's hold
 	// and then collided persisting its replacement.
-	code, out, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds",
-		"exchange-target:"+exchangeID.String(), body, false)
+	// Through holdEndpoint like the other two GA paths (ai-review pass 4). A
+	// reseller-bearing body must go to /internal/holds with the service token: the
+	// public HoldCreate schema now REFUSES reseller_id as an additional property, so
+	// posting it here failed the validator before reaching the store — and had it got
+	// through, the public handler passes uuid.Nil and a bound allocation would have
+	// refused it anyway.
+	//
+	// This is the THIRD time this ticket left the exchange target behind, which is what
+	// the comment above holdEndpoint is about: the fix belongs in the shared helper, and
+	// every caller has to use it rather than spelling the URL out.
+	targetURL, targetInternal := holdEndpoint(s.inventoryURL, body)
+	code, out, err := s.call(r.Context(), http.MethodPost, targetURL,
+		"exchange-target:"+exchangeID.String(), body, targetInternal)
 	if err != nil || (code != 200 && code != 201) {
 		return uuid.Nil, fmt.Errorf("target hold: status %d: %w", code, err)
 	}
@@ -540,11 +585,26 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 	}
 	reservation := ex.ReplacementReservationID
 	replacement := uuid.NewSHA1(uuid.NameSpaceOID, []byte("exchange-order:"+ex.ID.String()))
+	// The replacement inherits the source's SALES ATTRIBUTION -- channel_code and
+	// reseller_id -- copied in the INSERT from the source reservation (TKT-246).
+	//
+	// Without this, exchanging a reseller-attributed order produced a public,
+	// unattributed one. Irreversible in the strict sense: nothing else records who
+	// sold a ticket, so once the replacement is written the fact is gone, and
+	// settlement (TKT-23) would pay the wrong party or nobody. The source row is the
+	// authority rather than any request field, so a retry reproduces it exactly.
+	//
+	// The same reasoning the customer_id copy below already applies, extended to the
+	// two columns it did not cover. That comment says an exchange is "the same
+	// purchase in a different seat" -- who sold that purchase does not change either.
 	if _, err := s.db.ExecContext(r.Context(), `
-		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'completed',$12) ON CONFLICT(id) DO NOTHING`,
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,channel_code,reseller_id)
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'completed',$12,src.channel_code,src.reseller_id
+		FROM reservations src WHERE src.id=$13
+		ON CONFLICT(id) DO NOTHING`,
 		reservation, ex.OrganizerID, ex.TargetHoldID, ex.TargetSlotID, ex.TargetTicketTypeID, ex.BuyerID,
-		ex.Quantity, ex.TargetUnitAmount, gross, ex.TargetTotal, ex.Currency, ex.TargetPriceSnapshot); err != nil {
+		ex.Quantity, ex.TargetUnitAmount, gross, ex.TargetTotal, ex.Currency, ex.TargetPriceSnapshot,
+		ex.SourceReservation); err != nil {
 		return uuid.Nil, err
 	}
 	// The replacement INHERITS the source order's attribution (TKT-221). An
@@ -556,9 +616,21 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 	// the source could change (an exchange holds its own order), and a second
 	// round trip to fetch one column is work for nothing. A guest source selects
 	// NULL, which is exactly right.
+	// The order inherits customer_id from the SOURCE ORDER and its sales attribution
+	// from the REPLACEMENT RESERVATION written just above (TKT-246).
+	//
+	// Two sources, deliberately, because the columns mean different things and live
+	// in different places: customer_id is a property of the order (who bought), while
+	// channel_code and reseller_id were just copied onto the replacement reservation
+	// (who sold). Reading the attribution back from the row this function authored
+	// keeps the order and its reservation in agreement by construction -- the normal
+	// checkout path does the same thing (server.go: SELECT r.channel_code,
+	// r.reseller_id FROM reservations r), so both writers of an order derive
+	// attribution the same way rather than two ways that must be kept in step.
 	if _, err := s.db.ExecContext(r.Context(), `
-		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id)
-		SELECT $1,$2,'completed',$3,'exchange',customer_id FROM orders WHERE id=$4
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id,channel_code,reseller_id)
+		SELECT $1,$2,'completed',$3,'exchange',src.customer_id,rep.channel_code,rep.reseller_id
+		FROM orders src, reservations rep WHERE src.id=$4 AND rep.id=$2
 		ON CONFLICT(id) DO NOTHING`,
 		replacement, reservation, "exchange:"+ex.ID.String(), ex.SourceOrderID); err != nil {
 		return uuid.Nil, err

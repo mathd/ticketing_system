@@ -114,6 +114,13 @@ type ChannelAllocation struct {
 	// exactly as it did. Orthogonal to the window: a window says WHEN, this says
 	// WHO, and both must admit a claim.
 	RequiresCode bool `json:"requires_code,omitempty"`
+	// SoldBy binds the allocation to ONE reseller (TKT-246, amending ADR-024).
+	// Unset means unbound = public, which is every allocation predating this field.
+	//
+	// A uuid rather than a bool for the same reason RequiresCode is not enough on
+	// its own: "spoken for" would let reseller B consume reseller A's stock. Judged
+	// in the claim paths under the pool row lock (see sellerAdmits), never here.
+	SoldBy *uuid.UUID `json:"sold_by,omitempty"`
 }
 
 type ChannelAvailability struct {
@@ -182,8 +189,8 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 		return nil, err
 	}
 	for _, a := range allocs {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO channel_allocations(pool_id,channel_code,cap,release_at,opens_at,closes_at,requires_code) VALUES($1,$2,$3,$4,$5,$6,$7)`,
-			slot, a.Channel, a.Cap, a.ReleaseAt, a.OpensAt, a.ClosesAt, a.RequiresCode); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO channel_allocations(pool_id,channel_code,cap,release_at,opens_at,closes_at,requires_code,sold_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+			slot, a.Channel, a.Cap, a.ReleaseAt, a.OpensAt, a.ClosesAt, a.RequiresCode, a.SoldBy); err != nil {
 			return nil, err
 		}
 	}
