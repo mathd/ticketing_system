@@ -33,9 +33,17 @@ ALTER TABLE claims
 -- constraint in every respect that matters: same columns, same order, same semantics for
 -- every row that exists today (all of them have NULL). Nothing is re-keyed, and no
 -- in-flight retry changes which row it finds.
-DROP INDEX IF EXISTS claims_organizer_id_idempotency_key_key;
+-- DROP CONSTRAINT, not DROP INDEX. The unnamed `UNIQUE (organizer_id,
+-- idempotency_key)` in 0001 is a CONSTRAINT whose backing index Postgres owns, and it
+-- refuses to drop the index out from under it:
+--
+--   ERROR: cannot drop index claims_organizer_id_idempotency_key_key because constraint
+--          claims_organizer_id_idempotency_key_key on table claims requires it
+--
+-- Both spellings were here at first, the DROP INDEX ran first, and the migration failed
+-- exactly there. Only the constraint form works; dropping it takes the index with it.
 ALTER TABLE claims
-    DROP CONSTRAINT IF EXISTS claims_organizer_id_idempotency_key_key;
+    DROP CONSTRAINT claims_organizer_id_idempotency_key_key;
 
 CREATE UNIQUE INDEX claims_public_idempotency
     ON claims(organizer_id, idempotency_key)
