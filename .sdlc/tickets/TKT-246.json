@@ -4,7 +4,7 @@
   "summary": "Closing the channel seam is an authorization change: an allocation binds to its seller",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": {
