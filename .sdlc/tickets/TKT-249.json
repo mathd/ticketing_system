@@ -1,0 +1,13 @@
+{
+  "key": "TKT-249",
+  "type": "Task",
+  "summary": "Make inventory migration 0016 online — it needs a quiesced cutover today (TKT-246)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "parent": null,
+  "links": [],
+  "comments": [],
+  "description": "**The accepted cost of TKT-246's `claims.reseller_scope` migration, recorded so it is\nfindable before it becomes an incident.**\n\n`0016_claim_reseller_scope.sql` is **not online and not expand/contract** (ADR-022). goose runs it in\none transaction: `ADD COLUMN` takes ACCESS EXCLUSIVE and holds it to commit, and two full unique\nindex builds happen inside that lock — so **readers** of `claims` block for the duration, not just\nwriters, against ADR-008's 30s bound.\n\nThe binaries are also incompatible in both directions across it:\n- new binary on schema 0015 → every hold 500s (it selects `reseller_scope`)\n- previous binary on 0016 → writes NULL scope and decorates the key itself, so a partner retry\n  misses its row and places a **second hold**\n\n**This was accepted for TKT-246 only because the partner write path shipped in that same ticket** —\nthere are no partner claims in any database yet, so the second-hold window has nothing to act on,\nand every current `claims` table is small. Neither condition survives contact with production\npartner volume.\n\n**Conditions of Success:**\n- The column add is separated from the index builds, and the indexes are built outside a\n  transaction. Note **ADR-020's preconditions for `CREATE INDEX CONCURRENTLY` are still not met** —\n  that ADR has to be revisited or the approach has to avoid it, and either is a decision this ticket\n  owns rather than inherits.\n- One release where the binary tolerates both schemas, so a rolling deploy is possible.\n- The deploy note at the top of `0016` is updated or deleted — it currently says a quiesced cutover\n  is required, and that statement must not outlive the constraint.\n- Measured against a representative populated `claims` table, not asserted.\n\nSurfaced by TKT-246's ai-review pass 3 [high]. Non-goals: changing the namespace semantics."
+}
