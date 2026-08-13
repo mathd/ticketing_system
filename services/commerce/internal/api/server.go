@@ -843,7 +843,7 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 		write(w, 400, map[string]string{"error": "order total out of range"})
 		return
 	}
-	holdURL, holdBody := s.inventoryURL+"/holds", map[string]any{"organizer_id": in.OrganizerID,
+	holdBody := map[string]any{"organizer_id": in.OrganizerID,
 		"slot_id": o.PerformanceID, "ticket_type_id": in.TicketTypeID, "quantity": in.Quantity,
 		"unit_amount": o.Price.Amount, "currency": o.Price.Currency}
 	addSellerScope(holdBody, scope)
