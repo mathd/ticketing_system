@@ -8,8 +8,114 @@
   "pr": null,
   "parent": "TKT-17",
   "description": "The commerce→inventory channel seam is open: `channel_code` reaches catalog's fee resolution and stops there, so a **reseller-channel sale takes that channel's fees while consuming public inventory**. TKT-240 closed it by forwarding the channel on the GA hold, and **that closure was reverted after its own adversarial review**.\n\n**Why the one-line forward is not the fix.** `POST /reservations` is unauthenticated and takes `channel_code` from the request body. With the forward in place, an unauthenticated caller can name a reseller's channel and consume its allocation with no credential. This was **executed against the code, not theorised** — the probe reached inventory with `channel=reseller-acme` and no credential presented.\n\nSo closing the seam is an **authorization change, not plumbing**: the allocation must say who may sell it, and inventory must judge that where the stock is, under the pool row lock. ADR-055 already set that shape for `requires_code`.\n\n**Conditions of Success:**\n- **A channel allocation can bind to a seller.** `channel_allocations` gains the binding (a nullable `sold_by` reseller identity is the recommended shape — a bare boolean would let reseller B sell reseller A's allocation, the same class of bug one layer in). An allocation with no binding stays public, which is every allocation that exists today.\n- **Inventory refuses an unauthorized claim under the pool row lock**, in the refusal order ADR-055 fixed: **window → credential → code → capacity**. Authorization precedes capacity so a gated channel never reads as a sellout (TKT-238's finding).\n- **Commerce forwards the authenticated reseller identity** alongside the channel, from the credential (ADR-056), never from the request body.\n- **Every GA hold path carries the channel or is refused** — first-attempt reserve, the persisted-reservation **replay** (which today omits it, so a retry of a channelled reserve 409s against inventory's fingerprint), and the **exchange target** (`holdExchangeTarget`, which today sends no channel at all, so exchanges consume public inventory while pricing under the source channel).\n- **Reservation idempotency is bound to the reseller.** The id is derived from `organizer + key` only, and `sameTerms` ignores the reseller, so two resellers on one organizer sharing an idempotency key collide and the second receives the first's reservation.\n- **Exchange replacements preserve attribution.** `persistExchangeReplacement` copies neither `channel_code` nor `reseller_id`, so exchanging a reseller-attributed order silently produces a public, unattributed one — irreversible.\n- **An ADR amends ADR-024** to record that an allocation may bind to a seller, and states the adversary (ADR-021).\n- Tests: the unauthenticated bypass is refused (execute it, do not assert it); a retry of a channelled reservation replays rather than 409s; an exchange of a channelled order consumes that channel's allocation; a reseller-attributed order survives an exchange with attribution intact; two resellers with the same idempotency key do not collide.\n\n**Deploy prerequisite inherited from TKT-240's analysis:** once the channel reaches inventory, a channel with **no active allocation** is refused outright (`!haveAllocation` → `ErrUnavailable`) — so a channel configured for fee rules but not for inventory stops selling entirely. Every channel in use needs an allocation before this ships.\n\nParent: TKT-17. Findings F1–F5 from TKT-240's ai-review (PR #201). Non-goals: the seated seam (TKT-176), reseller settlement (TKT-23).",
-  "readiness": null,
-  "context": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The commerce->inventory channel seam is open: a reseller-channel sale takes that channel's fees (catalog resolves them) while consuming PUBLIC inventory, because channel_code stops at catalog fee resolution and never reaches inventory's channel_allocations. Verified at HEAD: services/commerce/internal/api/server.go:365-380 documents the stop explicitly. TKT-240 closed it by forwarding and was REVERTED."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: sold_by binding on channel_allocations (migration); inventory refuses an unauthorized claim under the pool row lock in ADR-055(presale)'s order window->credential->code->capacity; commerce forwards the AUTHENTICATED reseller identity (scope.ResellerID, never the body) on all three GA hold paths (first reserve, persisted replay, holdExchangeTarget); reservation idempotency bound to reseller; persistExchangeReplacement preserves channel_code+reseller_id; ADR amending ADR-024. OUT: seated pools (TKT-176 owns that seam); per-channel pricing UI; the allocation editor UI (TKT-244); registry gating (TKT-241 pins its absence)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Three named, all resolved by reading at shaping rather than deferred. (1) DEPLOY PREREQUISITE, inherited from TKT-240 and confirmed as the sharpest risk: once channel reaches inventory, a channel with no active allocation is refused outright (!haveAllocation -> ErrUnavailable), so a channel configured for fee rules but not for inventory STOPS SELLING. This is a behaviour change on the money path and must be called out in the PR and the ADR, with the refusal distinguishable from a sellout. (2) Some currently-succeeding reserves will now 409 -- intended, must be asserted rather than discovered. (3) The revert left a PINNING TEST that must be deliberately rewritten, not deleted -- see governingTests."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Zero open blockers; links[] empty. ADR-056 already shipped the partner credential and scope.ResellerID, so the authenticated identity this ticket forwards EXISTS at HEAD (server.go:839-841). TKT-244 (allocation editor) and TKT-241 (lookup-not-constraint proof) are siblings under TKT-17, neither blocking: 244 provisions allocations through a UI this ticket does not need, 241 asserts an absence this ticket does not add."
+    },
+    "approach": {
+      "state": "met",
+      "owner": "agent",
+      "note": "Ticket text's proposed remedy VERIFIED against the code, not inherited -- and it survives, with two corrections the drafter must have. SURVIVES: 'nullable sold_by, not a boolean' is right; a bare boolean would let reseller B sell reseller A's allocation. Guard belongs in inventory under the pool lock (ADR-043's line: a check in the calling service binds only callers who go through it). CORRECTION 1: COS-5 says 'sameTerms ignores the reseller' -- accurate -- but implies it ignores the channel too. It does NOT: sameTerms (catalog_fees.go:529) already takes a channel param and calls sameChannel. Only the reseller is missing, and the id derivation (server.go:543) is organizer+key only. Narrower fix than the text suggests. CORRECTION 2: COS-3 says 'commerce forwards the authenticated reseller identity ... never from the request body'. Half of this already holds -- reseller_id is written from scope.ResellerID today. What is missing is forwarding it (and the channel) TO INVENTORY. Do not re-implement the credential; ADR-056 shipped it."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice. The six COS interlock and cannot be split without shipping a half-closed seam: the guard is meaningless without the migration, and the replay/exchange paths are the same seam reached by different callers -- TKT-240's post-mortem names 'every layer reasoned about the path being changed' as the root cause of missing them. Owner confirmed run-as-one-story 2026-08-12."
+    },
+    "success": {
+      "state": "met",
+      "note": "Six COS on the ticket, each with a test obligation. The load-bearing one is executable, not arguable: the unauthenticated bypass must be REFUSED BY EXECUTION (AGENTS.md -- a security claim is a hypothesis until it is executed; TKT-240's probe reached inventory with channel=reseller-acme and no credential)."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; all 8 governingAdrs resolve to real files at HEAD."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-024-channel-allocations.md",
+        "constrains": "Allocations are opaque per-channel caps carved out of a pool; the registry is a LOOKUP not a constraint. This ticket AMENDS it: an allocation may now bind to a seller. The amendment is a COS deliverable."
+      },
+      {
+        "adr": "ADR-055-presale-unlock-codes.md",
+        "constrains": "THE shape to follow. Fixes the refusal order window->credential->code->capacity and judges under the pool row lock. NOTE THE SLOT COLLISION: two ADR-055 files exist (on-sale-write-rate-limiting, presale-unlock-codes). TKT-246 means the PRESALE one -- it is the file that defines requires_code."
+      },
+      {
+        "adr": "ADR-054-per-channel-sales-windows.md",
+        "constrains": "windowOpen is the first refusal in the order; the new credential check slots in immediately after it and BEFORE capacity."
+      },
+      {
+        "adr": "ADR-056-partner-credential-identity.md",
+        "constrains": "Already shipped. Supplies scope.ResellerID from the authenticated credential. This ticket consumes it -- does not rebuild it."
+      },
+      {
+        "adr": "ADR-043-where-a-service-auth-guard-lives.md",
+        "constrains": "Why the guard goes in inventory, not commerce: a check in the calling service binds only callers who go through it."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "Name the adversary before claiming a guarantee. This is honest-writer authorization, NOT tamper-evidence: a writer with inventory DB access can set sold_by at will. The ADR must say so."
+      },
+      {
+        "adr": "ADR-042-staff-identity-and-backoffice-sessions.md",
+        "constrains": "One of the three pre-existing identity classes the new binding relates to."
+      },
+      {
+        "adr": "ADR-049-customer-identity-and-storefront-sessions.md",
+        "constrains": "Ditto -- the buyer class, which never carries a channel scope."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/api/channel_seam_test.go",
+        "why": "THE TRAP. The revert left three tests that PIN the route as channel-free: TestAChannelledGASaleDoesNotYetForwardItsChannel, TestAnUnchannelledSaleForwardsNoChannelAtAll, TestTheSeatedHoldStillCarriesNoChannel. This ticket's whole point is to invert the first. Rewrite it to assert the new behaviour and say why in the diff -- do NOT delete it. The third must STAY as-is: seated is explicitly out of scope (TKT-176)."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go",
+        "why": "TestAnUnregisteredChannelCodeStillSells -- registry is a lookup. An unregistered channel must keep selling; the new guard keys on the ALLOCATION's sold_by, never on a registry row."
+      },
+      {
+        "test": "services/catalog/internal/store/channels_smoke_test.go",
+        "why": "TestNothingReferencesTheChannelRegistry greps information_schema for FKs at channels. Do not add one."
+      },
+      {
+        "test": "make check -> check-generate",
+        "why": "Diffs regenerated code against HEAD. Commit openapi_gen.go / api-types.gen.ts BEFORE running the gate or the regen reads as drift (AGENTS.md; cost two runs on TKT-114)."
+      }
+    ],
+    "keyFiles": [
+      "services/commerce/internal/api/server.go:360-381 (the documented seam + ChannelCode field)",
+      "services/commerce/internal/api/server.go:528-545 (reservation id derivation: organizer+key only)",
+      "services/commerce/internal/api/server.go:839-844 (reseller_id written from scope.ResellerID)",
+      "services/commerce/internal/api/catalog_fees.go:529 (sameTerms -- has channel, lacks reseller)",
+      "services/commerce/internal/api/exchanges.go:363 (holdExchangeTarget -- sends no channel)",
+      "services/commerce/internal/api/exchanges.go:530 (persistExchangeReplacement -- drops attribution)",
+      "services/inventory/internal/store/channel_allocations.go (windowOpen, consumingClaims, pool lock)",
+      "services/inventory/internal/store/migrations/0014_presale_unlock_codes.sql (requires_code precedent to copy)"
+    ],
+    "deployPrerequisite": "Once channel reaches inventory, a channel with NO active allocation is refused outright (!haveAllocation -> ErrUnavailable). Every channel in use needs an allocation before this ships. Call it out in the PR body and the ADR.",
+    "shapedAt": "2026-08-12",
+    "shapedBy": "main-agent (Opus 5) during gateless run"
+  },
   "links": [],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Readiness verdict: READY — 8/8 met, 0 open, 0 deferred, 0 blockers.**\n\nShaped at claim time rather than earlier: the ticket was handed over as \"already in Ready\" but was\nactually in `Backlog` with `readiness: null` and no context-mémo. Entering at Ready would have\nskipped this pass silently (SKILL.md's verify-the-status rule, TKT-233). Flagged to the owner, who\nconfirmed run-as-one-story.\n\n**No spikes needed.** Every unknown resolved by reading the code — see `approach`.\n\n### The two corrections the ticket text needs\n\nA remedy in the ticket text is a hypothesis (shaping.md). Both survive, both are narrower than written:\n\n1. **`sameTerms` does NOT ignore the channel.** COS-5 reads as though channel and reseller are both\n   unchecked. `catalog_fees.go:529` already takes a `channel *string` and calls `sameChannel`. Only\n   the **reseller** is missing, alongside the id derivation at `server.go:543`\n   (`organizer + \":\" + key`, no reseller). Smaller fix than the text implies.\n2. **The authenticated reseller identity already reaches the database.** COS-3 says commerce must\n   forward it \"never from the request body\" — and `server.go:839-841` already writes\n   `reseller_id` from `scope.ResellerID` (ADR-056, shipped). What is missing is forwarding channel\n   **and** reseller **to inventory**. Do not rebuild the credential.\n\n### The trap this ticket walks into\n\nThe TKT-240 revert left **`services/commerce/internal/api/channel_seam_test.go`** — three tests that\n*pin the route as channel-free*, with a source comment reading *\"Do not re-add the forward on its own.\"*\n`TestAChannelledGASaleDoesNotYetForwardItsChannel` **must be inverted, not deleted**, and\n`TestTheSeatedHoldStillCarriesNoChannel` **must survive unchanged** (seated is TKT-176's).\n\n### ADR-055 slot collision\n\nTwo files claim ADR-055: `on-sale-write-rate-limiting` and `presale-unlock-codes`. The ticket's\n\"ADR-055's `requires_code` shape\" means the **presale** one. Recorded in the mémo so the drafter\ndoes not read the rate-limiting ADR and design against the wrong precedent. Not this ticket's to\nrenumber.\n\n### Risk\n\n**`risk:low` NOT claimed.** Authorization change on a money path, with a schema migration and a\ndocumented deploy prerequisite that can stop channels selling — three of the label's four explicit\ncarve-outs. The plan gate would be mandatory; on this run it is waived by owner instruction, which\nis recorded in the claim comment rather than silently absorbed.\n\n### Deploy prerequisite (carried into the plan)\n\nOnce channel reaches inventory, a channel with no active allocation is refused outright\n(`!haveAllocation → ErrUnavailable`). **Every channel in use needs an allocation before this ships.**\n"
+    }
+  ]
 }
