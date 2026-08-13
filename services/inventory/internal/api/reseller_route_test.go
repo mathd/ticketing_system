@@ -80,13 +80,18 @@ func TestTheResellerBearingHoldIsAnInternalOperation(t *testing.T) {
 	}
 }
 
-// An internal hold without the service credential is refused.
+// An internal hold without the service credential is refused, THROUGH THE ROUTER.
 //
 // The second of the two independent guards. The route table is one edit from exposing a
-// prefix, so the handler must not rely on the gateway alone — and this is the assertion
-// that fails if internalOnly is ever dropped from the registration.
+// prefix, so the handler must not rely on the gateway alone.
+//
+// Driven through `Router(...)` rather than by calling `internalOnly(createInternalHold)`
+// directly (ai-review pass 4): the direct call INSTALLS the guard it claims to verify,
+// so deleting internalOnly from the real registration left it green — while exposing a
+// reseller-bearing handler to anyone who can reach inventory on the network. The
+// registration is the thing under test, not the wrapper.
 func TestTheInternalHoldRouteRequiresTheServiceCredential(t *testing.T) {
-	srv := &Server{credential: "the-real-token"}
+	h := New(nil, "the-real-token", nil).Router(nil, true)
 	body := `{"organizer_id":"11111111-1111-1111-1111-111111111111",` +
 		`"slot_id":"22222222-2222-2222-2222-222222222222","quantity":1,` +
 		`"reseller_id":"33333333-3333-3333-3333-333333333333"}`
@@ -103,13 +108,26 @@ func TestTheInternalHoldRouteRequiresTheServiceCredential(t *testing.T) {
 				req.Header.Set("X-Internal-Token", tc.token)
 			}
 			rec := httptest.NewRecorder()
-			srv.internalOnly(srv.createInternalHold)(rec, req)
+			h.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("answered %d, want 401 — a route that accepts a reseller identity must "+
-					"not run for an unauthenticated caller even if the gateway let it through",
-					rec.Code)
+					"not run for an unauthenticated caller even if the gateway let it through. "+
+					"body=%s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+
+	// And the route EXISTS, so the 401s above are the credential guard refusing rather
+	// than the router having no such path — a 404 would satisfy neither assertion but a
+	// deleted route plus a catch-all could. Probed with a wrong METHOD, which the
+	// validator answers 405 for a registered path without ever reaching the handler:
+	// this server has a nil store, so a successful POST would panic in the handler
+	// rather than tell us anything about routing.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/holds", nil))
+	if rec.Code == http.StatusNotFound {
+		t.Fatal("GET /internal/holds answered 404 — the route is not registered at all, so the " +
+			"401s above prove nothing about the credential guard")
 	}
 }

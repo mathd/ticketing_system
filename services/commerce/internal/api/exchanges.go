@@ -405,8 +405,19 @@ func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType
 	// without two different exchanges sharing a hold. Keying it on organizer+ticket type
 	// did exactly that: a second exchange onto the same type replayed the first one's hold
 	// and then collided persisting its replacement.
-	code, out, err := s.call(r.Context(), http.MethodPost, s.inventoryURL+"/holds",
-		"exchange-target:"+exchangeID.String(), body, false)
+	// Through holdEndpoint like the other two GA paths (ai-review pass 4). A
+	// reseller-bearing body must go to /internal/holds with the service token: the
+	// public HoldCreate schema now REFUSES reseller_id as an additional property, so
+	// posting it here failed the validator before reaching the store — and had it got
+	// through, the public handler passes uuid.Nil and a bound allocation would have
+	// refused it anyway.
+	//
+	// This is the THIRD time this ticket left the exchange target behind, which is what
+	// the comment above holdEndpoint is about: the fix belongs in the shared helper, and
+	// every caller has to use it rather than spelling the URL out.
+	targetURL, targetInternal := holdEndpoint(s.inventoryURL, body)
+	code, out, err := s.call(r.Context(), http.MethodPost, targetURL,
+		"exchange-target:"+exchangeID.String(), body, targetInternal)
 	if err != nil || (code != 200 && code != 201) {
 		return uuid.Nil, fmt.Errorf("target hold: status %d: %w", code, err)
 	}
