@@ -2,8 +2,10 @@
   "key": "TKT-244",
   "type": "Story",
   "summary": "US-CH2b: Slot channel-allocation editor — and the inventory credential it needs",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent (Claude Opus 5)",
   "pr": null,
   "parent": "TKT-17",
