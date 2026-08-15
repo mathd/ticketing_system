@@ -79,50 +79,24 @@ const reseller = '33333333-3333-3333-3333-333333333333';
 
 provisionAdmin(identifier, password);
 
-// A pool to edit, seeded through the REAL catalog path (venue → event → performance →
-// ticket type → publish) rather than by INSERTing into inventory_pools. Inventory
-// provisions the pool from the published performance, and its slot_id IS the performance
-// id. Going through the API keeps this spec off inventory's private schema, where a
-// hand-written INSERT would have to track every column a migration adds.
-async function api(path, body) {
-  const res = await fetch(`${BASE}/api/catalog${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`catalog ${path}: ${res.status} ${await res.text()}`);
-  return res.json();
-}
-
-const venue = await api('/venues', { organizer_id: ORGANIZER, name: `Allocations ${stamp}`, ga_capacity: 100 });
-const event = await api('/events', {
-  organizer_id: ORGANIZER,
-  name: { fr: `Allocations ${stamp}`, en: `Allocations ${stamp}` },
-});
-const performance = await api('/performances', {
-  organizer_id: ORGANIZER,
-  event_id: event.id,
-  venue_id: venue.id,
-  starts_at: '2026-11-01T20:00:00Z',
-  timezone: 'UTC',
-});
-await api('/ticket-types', {
-  organizer_id: ORGANIZER,
-  performance_id: performance.id,
-  name: { fr: 'GA', en: 'GA' },
-  price: { amount: 2500, currency: 'EUR' },
-});
-await api(`/performances/${performance.id}/publish`, null);
-
-const slot = performance.id;
-
-// Inventory provisions the pool asynchronously off the published event.
-for (let i = 0; ; i++) {
-  const res = await fetch(`${BASE}/api/inventory/slots/${slot}/availability?organizer_id=${ORGANIZER}`);
-  if (res.ok) break;
-  if (i > 40) throw new Error('inventory never provisioned a pool for the published performance');
-  await new Promise((r) => setTimeout(r, 500));
-}
+// A pool to edit, seeded directly into inventory.
+//
+// NOT through the catalog API: every catalog write needs the staff-write credential
+// (TKT-191) and browser.sh deliberately hands specs the CONTAINERS rather than
+// credentials, so a spec that wrote through the API would need the runner to export a
+// secret it currently does not. Seeding the one table this page reads keeps the
+// dependency where it already is — the same `docker exec … psql` shape rate-limit.mjs
+// uses — rather than widening browser.sh's contract for one spec.
+//
+// The columns are inventory's own (0001 + 0009); a migration adding a NOT NULL without a
+// default would break this INSERT loudly, which is the right failure mode.
+const slot = sql(
+  'inventory',
+  `INSERT INTO inventory_pools (slot_id, organizer_id, capacity, source_event_id, inventory_kind)
+   VALUES (gen_random_uuid(), '${ORGANIZER}', 100, gen_random_uuid(), 'ga')
+   RETURNING slot_id`,
+);
+if (!slot) throw new Error('failed to seed an inventory pool');
 
 // Two allocations. The first carries EVERY optional field at a non-default value: a
 // fixture that left any at its zero value could not tell preservation from coincidence,
@@ -141,10 +115,10 @@ sql(
 // which is a different ticket's surface.
 sql(
   'inventory',
-  `INSERT INTO claims (id, pool_id, organizer_id, quantity, status, channel_code, expires_at,
-                       idempotency_key, request_fingerprint)
-   VALUES (gen_random_uuid(), '${slot}', '${ORGANIZER}', 12, 'confirmed', '${boundChannel}',
-           now() + interval '1 hour', 'browser-${stamp}', 'browser-${stamp}')`,
+  `INSERT INTO claims (id, organizer_id, pool_id, quantity, status, expires_at,
+                       idempotency_key, request_fingerprint, claim_kind, channel_code)
+   VALUES (gen_random_uuid(), '${ORGANIZER}', '${slot}', 12, 'confirmed',
+           now() + interval '1 hour', 'browser-${stamp}', 'browser-${stamp}', 'buyer', '${boundChannel}')`,
 );
 
 const browser = await chromium.launch({ channel: 'chrome' });
@@ -153,10 +127,11 @@ try {
   const context = await browser.newContext({ baseURL: BASE });
   const page = await context.newPage();
 
-  // Count the PUTs the page actually makes. One save must be one full-set replace.
-  let puts = 0;
+  // Count the form submits. The page saves the WHOLE set in one POST; the PUT to
+  // inventory is made server-side by the SSR handler and never appears here.
+  let posts = 0;
   page.on('request', (req) => {
-    if (req.method() === 'PUT') puts++;
+    if (req.method() === 'POST' && req.url().includes('/admin/slots/')) posts++;
   });
 
   // --- 1. Sign in. A real submit, so the session cookie is set by the server on the
@@ -187,7 +162,6 @@ try {
 
   // --- 3. A REFUSAL lands beside the row the server named. Lower the bound channel
   // below its 12 confirmed: inventory answers a coded 409 carrying the channel.
-  puts = 0;
   await page.fill(`input[data-cap-for="${boundChannel}"]`, '5');
   await page.click('button[data-action="save-allocations"]');
   await page.waitForLoadState('domcontentloaded');
@@ -217,7 +191,13 @@ try {
   );
 
   // --- 5. THE SAVE. A single valid edit to the bound channel's cap.
-  puts = 0;
+  //
+  // The page submits ONE form POST; the PUT to inventory happens server-side, inside the
+  // SSR handler, so it is not observable from the browser. What IS observable here — and
+  // what the per-row-save mistake would break — is that the whole set moves together:
+  // section 6 re-reads the database and finds the untouched row intact. A count of PUTs
+  // from the browser would always be zero and would prove nothing either way.
+  posts = 0;
   await page.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
   await page.fill(`input[data-cap-for="${boundChannel}"]`, '50');
   await Promise.all([
@@ -225,9 +205,13 @@ try {
     page.click('button[data-action="save-allocations"]'),
   ]);
   check(
-    'one save is ONE full-set replace',
-    puts === 1,
-    `observed ${puts} PUTs — per-row saves would round-trip a stale set`,
+    'one save is ONE form submit',
+    posts === 1,
+    `observed ${posts} POSTs — the whole set saves together, never per row`,
+  );
+  check(
+    'the save redirected (post/redirect/get), so a reload does not resubmit',
+    page.url().endsWith(`/admin/slots/${slot}`),
   );
   check(
     'the edit took',
@@ -237,10 +221,16 @@ try {
   // --- 6. THE assertion this spec exists for. Re-read the DATABASE: everything the
   // operator did not touch must be exactly as it was. The page cannot show this — a
   // dropped sold_by renders identically.
+  // Booleans are projected as explicit 'yes'/'no' rather than read raw: psql renders a
+  // bare boolean as `t`, but one concatenated with `||` is cast to text and renders as
+  // `true`, so an assertion against either spelling depends on how the query was written
+  // rather than on what the column holds.
   const after = sql(
     'inventory',
-    `SELECT cap || '|' || coalesce(sold_by::text,'NULL') || '|' || requires_code
-       || '|' || (opens_at IS NOT NULL) || '|' || (closes_at IS NOT NULL)
+    `SELECT cap || '|' || coalesce(sold_by::text,'NULL')
+       || '|' || CASE WHEN requires_code THEN 'yes' ELSE 'no' END
+       || '|' || CASE WHEN opens_at IS NOT NULL THEN 'yes' ELSE 'no' END
+       || '|' || CASE WHEN closes_at IS NOT NULL THEN 'yes' ELSE 'no' END
      FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${boundChannel}'`,
   );
   const [cap, soldBy, requiresCode, hasOpens, hasCloses] = after.split('|');
@@ -250,8 +240,16 @@ try {
     soldBy === reseller,
     `sold_by=${soldBy} — dropping it returns a reseller's stock to the public pool (TKT-246)`,
   );
-  check('the presale gate survived the save', requiresCode === 't', `requires_code=${requiresCode}`);
-  check('the sales window survived the save', hasOpens === 't' && hasCloses === 't');
+  check(
+    'the presale gate survived the save',
+    requiresCode === 'yes',
+    `requires_code=${requiresCode}`,
+  );
+  check(
+    'the sales window survived the save',
+    hasOpens === 'yes' && hasCloses === 'yes',
+    `opens_at set=${hasOpens} closes_at set=${hasCloses}`,
+  );
 
   // The untouched row is untouched.
   const other = sql(
