@@ -292,3 +292,21 @@ duplicates, capacity and consumption, and never `sold_by`. One of my own tests h
 defect as the requirement — green, well-named, and immune to mutation testing, because the mutant
 flips the mechanism the assertion was written to match.
 [full note](learnings/2026-08-15-make-it-unsubmittable-not-validated.md)
+
+## 2026-08-15 — A precondition that cannot fail is worse than none (TKT-250)
+
+Adding optimistic concurrency to the allocation editor meant carrying a revision from the page to
+the server. The editor has **two** reads of the same set, for opposite reasons: a *fresh* read taken
+during the POST — the only trustworthy source for the fields the form deliberately cannot carry
+(TKT-244) — and the revision the page held when it was **rendered**. Send the first as the
+precondition and the server compares its current value against itself, matches every time, and the
+protection is inert while the UI claims it works. Nothing local sees it: the store, API and wire
+tests all construct their own requests and pass honestly, and a mutation check passes too, because
+the *store* is correct — the defect is in which value the caller chose to send. Only the browser
+tier can, since the seam exists only in a real request. Corollaries: after a refusal re-render the
+**submitted** token, or the second click applies the set the refusal just stopped; and a fixture
+writing the guarded table directly does **not** move the counter, so the "stale" value still
+matches. Also: the ticket was filed as an authorization defect that the code does not have — the
+remedy survived, the justification did not, caught only because shaping verifies a proposed remedy
+against the code instead of inheriting it.
+[full note](learnings/2026-08-15-a-precondition-that-cannot-fail.md)

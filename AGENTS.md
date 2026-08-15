@@ -102,6 +102,18 @@ experiment stays valid.
   that should be and is not. Check what the downstream service actually validates before assuming it
   backstops you — inventory validates channel, cap, duplicates, capacity and consumption, and never
   `sold_by`. ([make it unsubmittable](docs/learnings/2026-08-15-make-it-unsubmittable-not-validated.md))
+- **A precondition that CANNOT FAIL is worse than none — ask where the compared value comes from.**
+  The tests-that-cannot-fail rule, one level up: not a test that cannot go red, but a *mechanism*
+  that cannot refuse, while every test around it passes honestly because they are right and the
+  thing they test is inert. If the value you compare against traces back to a read the **server**
+  took during the same request, it is being compared with itself and matches every time. An optimistic
+  token must originate from the state the client actually acted on — the rendered page — and travel
+  back unchanged. TKT-250's editor has two reads of one set for opposite reasons, and only the browser
+  tier can tell them apart, because the seam exists only in a real request. Two corollaries that each
+  cost a cycle: after a refusal re-render the **submitted** token (re-render the fresh one and the
+  second click applies the set the refusal just stopped), and a fixture that writes the guarded table
+  **directly** does not move the counter, so the "stale" value still matches and the spec proves
+  nothing. ([a precondition that cannot fail](docs/learnings/2026-08-15-a-precondition-that-cannot-fail.md))
 - **Making a request field load-bearing is an AUTHORIZATION change, not plumbing.** Before something
   starts *deciding* on a value — capacity, permission, price, routing — enumerate **every producer of
   that value and ask which are authenticated**, not just the path you are editing. TKT-240 forwarded
