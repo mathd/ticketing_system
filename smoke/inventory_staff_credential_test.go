@@ -19,9 +19,15 @@ func inventoryStaffToken() string { return os.Getenv("SMOKE_INVENTORY_STAFF_WRIT
 // else — deliberately NOT internalRequest, which always sets X-Internal-Token and so
 // could never show what a lone staff credential opens.
 //
+// `key` is the Idempotency-Key, sent when non-empty. It is NOT optional decoration on the
+// routes that declare it: the OpenAPI request validator runs BEFORE the handler, so a
+// probe missing a required header is refused 400 and the credential check never runs —
+// the fixture would prove nothing while looking like a passing negative test. Both
+// negative tests in this file failed exactly that way on their first gate run.
+//
 // It runs the same direct-service contract check internalRequest does, so a response that
 // violates inventory's document fails here rather than passing quietly.
-func credentialledRequest(t *testing.T, method, url, header, value string, body any) (int, []byte) {
+func credentialledRequest(t *testing.T, method, url, header, value, key string, body any) (int, []byte) {
 	t.Helper()
 	var rd io.Reader
 	if body != nil {
@@ -34,6 +40,9 @@ func credentialledRequest(t *testing.T, method, url, header, value string, body 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(header, value)
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
@@ -52,7 +61,7 @@ func credentialledRequest(t *testing.T, method, url, header, value string, body 
 // inventory credential — never the shared internal token.
 func staffCredentialRequest(t *testing.T, method, url string, body any) (int, []byte) {
 	t.Helper()
-	return credentialledRequest(t, method, url, "X-Inventory-Staff-Write-Token", inventoryStaffToken(), body)
+	return credentialledRequest(t, method, url, "X-Inventory-Staff-Write-Token", inventoryStaffToken(), "", body)
 }
 
 // TKT-244 / ADR-057. The back office's inventory credential, against the real service on
@@ -139,19 +148,24 @@ func TestBackOfficeInventoryCredentialIsRefusedElsewhereOnTheInternalSurface(t *
 
 	// Capacity adjustment sits one path segment away from the allocation route and is a
 	// far more powerful operation. It must refuse this credential.
+	//
+	// The request is OTHERWISE VALID — required body fields and the Idempotency-Key this
+	// operation declares — because the validator runs before the handler. Without the
+	// key this answers 400 and the credential check never runs, which is how this exact
+	// assertion passed vacuously on its first gate run.
 	code, body := credentialledRequest(t, http.MethodPost,
 		fmt.Sprintf("%s/internal/slots/%s/capacity-adjustments", inventoryURL, slot),
-		"X-Inventory-Staff-Write-Token", inventoryStaffToken(),
+		"X-Inventory-Staff-Write-Token", inventoryStaffToken(), "staff-cred-narrowness-probe",
 		map[string]any{"organizer_id": organizerID, "capacity": 10, "actor": "staff:amy", "reason": "probe"})
-	// 401, not 400: a 400 would mean the request validator refused the body and the
+	// 401, not 400: a 400 would mean the request validator refused the fixture and the
 	// credential check never ran, so the probe would prove nothing.
 	if code != http.StatusUnauthorized {
 		t.Fatalf("capacity adjustment with the inventory staff credential: %d %s, want 401", code, body)
 	}
 
-	// The availability CACHE kill-switch, likewise.
+	// The availability CACHE kill-switch, likewise. It declares no Idempotency-Key.
 	code, body = credentialledRequest(t, http.MethodPut, inventoryURL+"/internal/cache-control",
-		"X-Inventory-Staff-Write-Token", inventoryStaffToken(), map[string]any{"enabled": true})
+		"X-Inventory-Staff-Write-Token", inventoryStaffToken(), "", map[string]any{"enabled": true})
 	if code != http.StatusUnauthorized {
 		t.Fatalf("cache control with the inventory staff credential: %d %s, want 401", code, body)
 	}
@@ -220,9 +234,11 @@ func TestAllocationRefusalsAreCodedOnTheWire(t *testing.T) {
 	}); code != http.StatusOK {
 		t.Fatalf("seed allocation: %d %s", code, body)
 	}
-	if code, body = postJSON(t, gatewayURL+"/api/inventory/holds", map[string]any{
-		"organizer_id": organizerID, "slot_id": slot, "quantity": 6,
-		"unit_amount": 1000, "currency": "EUR", "channel": "consumed",
+	// A live hold on that channel, so the cap below is refused for the reason this test
+	// is about. `/holds` declares Idempotency-Key, so postWithKey rather than postJSON —
+	// without it the validator answers 400 and nothing is consumed.
+	if code, body = postWithKey(t, gatewayURL+"/api/inventory/holds", "alloc-refusal-"+slot, map[string]any{
+		"organizer_id": organizerID, "slot_id": slot, "quantity": 6, "channel": "consumed",
 	}); code != http.StatusCreated {
 		t.Fatalf("seed hold: %d %s", code, body)
 	}
