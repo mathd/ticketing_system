@@ -8,8 +8,109 @@
   "pr": null,
   "parent": "TKT-17",
   "description": "**Surfaced by TKT-244's ai-review (`gpt-5.6-luna`), finding 3 [high].** Not a defect that ticket\nintroduced — a pre-existing property that ADR-024 accepted explicitly, and whose justification\nTKT-244 has now weakened.\n\n`PUT /internal/slots/{id}/channel-allocations` replaces a slot's WHOLE allocation set and carries\n**no version or prior-state precondition** — only `organizer_id` and `allocations`. The pool row\nlock serializes the DELETE/re-INSERT, but a lock cannot detect that the *form* was populated\nbefore another writer committed. So a stale save:\n\n- **deletes rows added since the read** — an allocation created by another operator vanishes with\n  no error;\n- **overwrites caps, windows, `requires_code` and `sold_by`** with the values the stale form is\n  carrying.\n\nThe last of those is the sharp one. `sold_by` is load-bearing since TKT-246 — inventory refuses a\nclaim whose seller does not match, under the pool row lock — so a stale overwrite is an\n**authorization regression**, not a lost edit: a reseller's bound stock silently becomes public.\n\n**ADR-024 §Consequences already names this:**\n\n> Full-set PUT has no stale-write protection (`If-Match`); acceptable while allocation editing is\n> single-operator.\n\nThat premise is what changed. TKT-244 shipped the first UI for this endpoint, so allocation\nediting is no longer a deliberate one-person `curl` — it is a screen any admin can open, and two\nadmins on one slot is now an ordinary Tuesday rather than a hypothetical.\n\n**Conditions of Success:**\n- The allocation set carries a **revision** the caller must present to replace it, compared under\n  the pool lock (which is where the decision already happens — a check anywhere else binds only\n  callers who go through it).\n- A mismatch refuses with a **coded 409** in the shape TKT-244 established\n  (`allocation_caps_exceed_capacity`, `allocation_cap_below_consumption`), so the back office can\n  tell the operator their view is stale and reload rather than reporting a generic failure.\n- `X-Internal-Token` callers keep working: five smoke drivers and every service-to-service caller\n  use this route, so a hard precondition would break them. Decide and record whether the revision\n  is required or optional-but-honoured, and why.\n- **A test with two readers**: A and B both read; B commits a change to `sold_by` (or adds a row);\n  A submits its stale set and is refused. Assert against the DATABASE, not the response — the\n  regression is what survives the write.\n- ADR-024 amended to record that its single-operator premise no longer holds, and what replaced it.\n\nQuality gates: `make check` green; `make browser` green if the editor's refusal path changes.\n\nParent: TKT-17. Non-goals: locking the editor (a lock is not a precondition, and an abandoned tab\nwould strand the slot); real-time collaborative editing.\n",
-  "readiness": null,
-  "context": null,
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A full-set PUT with no precondition lets a stale save overwrite a concurrent edit. RE-AIMED during shaping: the sharpest claim in the ticket text (a stale save silently returns a reseller's bound stock to public by overwriting sold_by) is NOT reachable through the back office today - the page re-reads inventory's current set on the POST itself and sources sold_by/requires_code/opens_at/closes_at from that read, never from the form (allocation-form.ts toAllocationRequest, TKT-244 ai-review passes 2-4). What remains real is narrower and still worth closing: cap/release_at last-write-wins between two operators, and the unlocked gap between the back office's read and its write."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: a revision on the allocation SET, returned by the staff availability read, presented on the replace, compared under the pool lock; a coded 409 so the editor can say 'reload'; ADR-024 amended. OUT: locking the editor, real-time collaboration, per-row preconditions, extending the revision to any other inventory write."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading. (1) No If-Match/ETag precedent exists anywhere in the repo (git grep across services/ and web/ returns nothing), so this ticket INTRODUCES the pattern rather than copying one - that is what makes it an ADR decision, not plumbing. (2) The revision cannot live on channel_allocations rows: the write DELETEs and re-INSERTs them (ADR-024), so no row survives a replace and updated_at resets. It must live on the inventory_pools row, which is where the lock already is. (3) The residual race after this ticket is the back office's own read->write gap, which a revision detects but does not eliminate."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. Corrects the ticket text: catalog does NOT call this route - services/catalog/internal/api/server.go:328 only mentions channel-allocations in a comment explaining why ADR-053's allowlist reasoning does NOT generalize to it. There is no service-to-service caller at all. Non-browser callers are 4 smoke files (8 call sites), not the 'five smoke drivers' the ticket asserts: inventory_contention_test.go, partner_reserve_test.go(x3), partner_api_test.go, inventory_staff_credential_test.go(x3)."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "REQUIRED vs OPTIONAL-BUT-HONOURED is the one real decision, and shaping changed its terms. The ticket argued for optional because 'every service-to-service caller uses this route' - verified false above. The only real client is the back office; the rest are smoke tests this repo owns and can update. That removes the compatibility argument for optional and makes REQUIRED (for the staff credential) genuinely available. Note the shaping rule: approach:deferred does not pass on an auth-adjacent surface, and this one is - a missing precondition on a path that carries sold_by is an authorization question. Held at owner:human by design."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice: pool-row revision + return it on the staff read + compare under the existing pool lock in ReplaceChannelAllocations + coded 409 + editor round-trip + ADR-024 amendment. Fits one sprint; the lock and the refusal plumbing already exist."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS as filed, with the two-reader test tightened: assert against the DATABASE, and assert BOTH directions (a row that should not be there, and one that should be and is not). Per AGENTS.md, delete the comparison and re-run - a test that stays green is about something else."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; every governing ADR verified to resolve at HEAD."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-024-channel-allocations.md",
+        "constrains": "THE ticket's ADR. Allocations are derived-usage rows decided under the pool row lock; the write is a full-set atomic replace (DELETE + re-INSERT). Its Consequences say verbatim: 'Full-set PUT has no stale-write protection (If-Match); acceptable while allocation editing is single-operator.' That premise is what TKT-244 falsified. Amending this ADR is a deliverable, not a side effect. Also: channel codes are exact opaque strings - no normalization, no case folding."
+      },
+      {
+        "adr": "ADR-010-postgres-claim-transaction.md",
+        "constrains": "The single-lock proof shape. A revision check must happen INSIDE the existing pool lock in the same transaction, never as a read-then-write before it - a precondition compared outside the lock is exactly the race it claims to close."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "Name the adversary. This is honest-writer concurrency control, NOT tamper-evidence: anyone who can write inventory's DB or call /internal/ directly can set any revision they like. Say 'lost-update protection between two honest operators' and never 'prevents unauthorized allocation changes'."
+      },
+      {
+        "adr": "ADR-057-inventory-staff-write-credential.md",
+        "constrains": "What shipped in TKT-244: inventory's own staff-write credential, and the back office deliberately does NOT hold X-Internal-Token. The route is staffOrInternal, so any precondition must be decided against BOTH credential classes - and 'required for staff, optional for internal' is a coherent option precisely because they are distinguishable at the guard."
+      },
+      {
+        "adr": "ADR-054-per-channel-sales-windows.md",
+        "constrains": "opens_at/closes_at are fields a replace destroys if omitted; the editor preserves them from the server read."
+      },
+      {
+        "adr": "ADR-055-presale-unlock-codes.md",
+        "constrains": "requires_code is likewise preserve-or-destroy. NOTE: the ADR-055 number is claimed by TWO files in docs/adr/ (on-sale-write-rate-limiting and presale-unlock-codes) - a known, deliberately unresolved collision. Cite by filename, never by number alone."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "smoke/inventory_contention_test.go, smoke/partner_reserve_test.go, smoke/partner_api_test.go",
+        "enforces": "Eight call sites drive PUT channel-allocations with X-Internal-Token. A REQUIRED precondition for internal callers breaks all of them - this is the concrete cost of the approach decision, and it is a gate failure, not a review comment."
+      },
+      {
+        "test": "web/backoffice/test/api.test.ts",
+        "enforces": "Pins that the back office never sends X-Internal-Token to inventory (ADR-057)."
+      },
+      {
+        "test": "test/browser/slot-allocations.mjs",
+        "enforces": "A web-UI write is unverified until a browser SUBMITS the form. AGENTS.md: a browser spec cannot observe a server-side upstream call - assert the submit, the redirect, the rendered result, or re-read the DB EXACTLY (that spec's whole-minute seeding once hid a truncation)."
+      },
+      {
+        "test": "services/inventory/internal/api/staff_credential_test.go",
+        "enforces": "A negative auth probe must be otherwise VALID: the OpenAPI validator runs before the handler, so a probe missing a required field gets 400 and the credential check never runs. And inventory refuses its internal surface with 401, not commerce's 404."
+      }
+    ],
+    "codeMap": {
+      "endpoint": "services/inventory/internal/api/operational.go -> replaceAllocations (takes only organizer_id + allocations)",
+      "route": "services/inventory/internal/api/server.go:140 -> staffOrInternal",
+      "store": "services/inventory/internal/store/channel_allocations.go -> ReplaceChannelAllocations (pool lock at SELECT ... FOR UPDATE, then DELETE + re-INSERT)",
+      "read": "same file -> channelAvailabilities; StaffAvailability is what the editor round-trips",
+      "contract": "services/inventory/api/openapi.yaml:406 - Error.code is a CLOSED enum; a new code is a contract edit + regen",
+      "sentinels": "services/inventory/internal/store/store.go, mapped in api/server.go -> problem()",
+      "backoffice": "web/backoffice/src/lib/allocation-form.ts -> toAllocationRequest; page web/backoffice/src/pages/slots/[id].astro"
+    },
+    "traps": [
+      "Regen openapi_gen.go + api-types.gen.ts and COMMIT before running make check - check-generate diffs against HEAD (cost two gate runs on TKT-114).",
+      "Docker Desktop must be running on the Windows host or make check dies at the smoke stage.",
+      "govulncheck fails repo-wide on the pinned go 1.26.5 stdlib - pre-existing on main, unrelated to any diff.",
+      "Never edit a tracked file while the gate is running; judge a background gate by an EXIT sentinel file AND the log body.",
+      "make browser is not part of make check and needs the host's real Chrome."
+    ]
+  },
   "links": [],
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Shaping verdict: 7/8 met, 1 open (`approach`, `owner: human`). Gate 1 is hard-blocked until that one is answered.**\n\nShaping read the code first, and it changed the ticket in three ways worth stating before anyone plans against it.\n\n**1. The sharpest claim in the ticket is not reachable today.** The ticket's headline is that a stale save overwrites `sold_by` and silently returns a reseller's bound stock to the public pool. Through the back office, it cannot: `[id].astro` re-reads inventory's current set **on the POST request itself**, and `toAllocationRequest` sources `sold_by`, `requires_code`, `opens_at` and `closes_at` from that fresh read — never from the form. That is precisely what TKT-244's ai-review passes 2–4 built, and the learning note records it. The authorization framing is therefore **overstated**; the ticket is still real, but it is a **lost-update** ticket, not an authorization one.\n\n**2. What survives is narrower and still worth closing.**\n- Two operators editing caps: last write wins, silently. No error, no trace.\n- A row added between the editor's read and its write is still deleted by the replace.\n- The back office's own read→write gap is unlocked, so even the fresh-read merge is only as current as the moment it ran.\n\n**3. The compatibility argument for making the revision optional does not hold.** The ticket says a hard precondition would break \"every service-to-service caller\". Verified: **there is no service-to-service caller.** `services/catalog/internal/api/server.go:328` mentions this route only in a comment explaining why ADR-053's allowlist reasoning does *not* generalize to it. The non-browser callers are **4 smoke files / 8 call sites**, not five drivers — and this repo owns all of them.\n\nThat removes the stated reason to prefer optional, so the decision is now open on its merits rather than settled by compatibility. It stays `owner: \"human\"` and is **not** eligible for `deferred`: the shaping rule excludes `approach: deferred` on auth-adjacent surfaces, and a missing precondition on the path that carries `sold_by` qualifies.\n\n**Also verified:** no `If-Match`/`ETag` precedent exists anywhere in the repo, so this introduces the pattern (hence an ADR decision, not plumbing); and the revision **cannot** live on `channel_allocations` rows, because the write DELETEs and re-INSERTs them — it belongs on the `inventory_pools` row, where the lock already is.\n\n**Context-mémo baked** with 6 governing ADRs (each verified to resolve at HEAD) and 4 governing tests. Noted in the mémo: the **ADR-055 number is claimed by two files** — cite by filename, never by number."
+    }
+  ]
 }
