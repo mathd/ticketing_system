@@ -42,6 +42,12 @@ experiment stays valid.
   For any back-office/storefront/scanner ticket that adds or changes a write form, run
   **`make browser`** and add a spec to `test/browser/` that submits the write path, not just the
   render. It is not part of `make check` — it needs the host's real Chrome, so CI cannot run it.
+  **A browser spec cannot see a request the SSR handler makes.** The page submits a form POST and
+  the upstream call happens server-side, so counting it from Playwright observes zero — TKT-244's
+  "one save is one PUT" assertion was vacuous until it targeted the form submit instead. Assert what
+  the browser can see (the submit, the redirect, the rendered result) or what the write left behind
+  (re-read the database) — and re-read it **exactly**: that spec seeded whole-minute timestamps and
+  asserted non-null, so it stayed green through a truncation that moved a sales window.
   (Why: [browser-submit is the only checkOrigin catch](docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md), TKT-105;
   TKT-226 caught a `no-referrer` that 403'd every reset. Promoted from per-ticket throwaway
   scripts in TKT-228.)
@@ -82,7 +88,20 @@ experiment stays valid.
   implementation ("a draw-down moves a redemption, never creates or destroys one"), and prefer it to
   a value. Nothing local catches this: types, tests, mutants and the gate are all downstream of the
   author's model of correctness, which is why cross-model review is a prerequisite, not an option.
-  ([a green test can bless the defect](docs/learnings/2026-08-10-a-green-test-can-bless-the-defect.md))
+  The blessed value need not be a number: TKT-244's `takes a new row entirely from the form` blessed
+  an **authorization fallback**, green and well-named, and only cross-model review caught it.
+  ([a green test can bless the defect](docs/learnings/2026-08-10-a-green-test-can-bless-the-defect.md),
+  [make it unsubmittable](docs/learnings/2026-08-15-make-it-unsubmittable-not-validated.md))
+- **When a value must not be client-chosen, make it UNSUBMITTABLE — validating it is the slower way
+  to lose.** Every fix that *checks* a submitted value keeps the trust boundary in the client and
+  merely moves where it leaks. The tell is structural: if *"can the client influence this field?"*
+  still answers "yes, but only if it lies in a way I now check for", it is not fixed. TKT-244 took
+  three review passes to learn it — hidden inputs, then a server merge keyed on a client-supplied
+  key, then a refusal — before deleting the fields from the form's type entirely. And on a **full-set
+  replace, omission is deletion**: enumerate both directions, a row that should not be there and one
+  that should be and is not. Check what the downstream service actually validates before assuming it
+  backstops you — inventory validates channel, cap, duplicates, capacity and consumption, and never
+  `sold_by`. ([make it unsubmittable](docs/learnings/2026-08-15-make-it-unsubmittable-not-validated.md))
 - **Making a request field load-bearing is an AUTHORIZATION change, not plumbing.** Before something
   starts *deciding* on a value — capacity, permission, price, routing — enumerate **every producer of
   that value and ask which are authenticated**, not just the path you are editing. TKT-240 forwarded

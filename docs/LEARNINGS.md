@@ -274,3 +274,21 @@ about *the path being changed* rather than *every producer of the value*. Enumer
 which are authenticated, and put the guard where the decision is. Caught by cross-model review; the
 fix then exposed a second defect that only the second pass caught.
 [full note](learnings/2026-08-11-forwarding-a-value-is-an-authorization-change.md)
+
+## 2026-08-15 — Make it unsubmittable, don't validate it (TKT-244)
+
+A back-office form drove a **full-set replace**, so it had to submit rows it did not edit — including
+`sold_by`, which TKT-246 had just made load-bearing under the pool row lock. Three adversarial review
+passes found the same defect in three disguises, and each fix was locally reasonable: carry the true
+values in hidden inputs (both the value *and* the "was it edited?" evidence come from the POST body);
+merge them server-side keyed on the channel (the key is client-supplied too, so an unmatched row falls
+through to client values); refuse an unmatched row (a subset check is half a boundary — on a full-set
+replace, **omission is deletion**, and an empty submission clears everything). The tell was
+structural: after each fix, *"can the client influence this field?"* still answered **"yes, but only
+if it lies in a way I now check for."** What held was deleting the capability — the row type carries
+only what the screen renders, the parser ignores the rest, and the submitted set must match the
+current one in both directions. Inventory could not backstop any of it: it validates channel, cap,
+duplicates, capacity and consumption, and never `sold_by`. One of my own tests had asserted the
+defect as the requirement — green, well-named, and immune to mutation testing, because the mutant
+flips the mechanism the assertion was written to match.
+[full note](learnings/2026-08-15-make-it-unsubmittable-not-validated.md)
