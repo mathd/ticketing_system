@@ -5,6 +5,7 @@ import {
   parseAllocationForm,
   toAllocationRequest,
   toMinuteInput,
+  MissingAllocationChannel,
   UnknownAllocationChannel,
   type AllocationRow,
   type CurrentAllocation,
@@ -264,22 +265,36 @@ describe('the write takes unrendered fields from the server, never from the clie
   // duplicates, capacity and consumption — it never constrains sold_by — so a row that
   // could arrive unmatched is a row whose seller binding the client chooses.
   it('refuses a row naming a channel inventory does not hold', () => {
-    expect(() => build({ ...row(), channel: 'brand-new', cap: '10' }, [current()])).toThrow(
-      UnknownAllocationChannel,
-    );
+    // The current row IS submitted, so the omission check below is satisfied and this
+    // isolates the unknown-row rule.
+    expect(() =>
+      toAllocationRequest(
+        '11111111-1111-1111-1111-111111111111',
+        [row(), row({ channel: 'brand-new', cap: '10' })],
+        [current()],
+      ),
+    ).toThrow(UnknownAllocationChannel);
   });
 
   // The match is by EXACT channel code (ADR-024 opacity), so a whitespace variant is a
   // DIFFERENT channel — and therefore also refused rather than silently treated as new.
   it('refuses a whitespace variant of a known code', () => {
-    expect(() => build({ ...row(), channel: ' reseller-acme ' }, [current()])).toThrow(
-      UnknownAllocationChannel,
-    );
+    expect(() =>
+      toAllocationRequest(
+        '11111111-1111-1111-1111-111111111111',
+        [row(), row({ channel: ' reseller-acme ' })],
+        [current()],
+      ),
+    ).toThrow(UnknownAllocationChannel);
   });
 
   it('names the offending channel on the refusal, so the page can say which', () => {
     try {
-      build({ ...row(), channel: 'ghost' }, [current()]);
+      toAllocationRequest(
+        '11111111-1111-1111-1111-111111111111',
+        [row(), row({ channel: 'ghost' })],
+        [current()],
+      );
       expect.unreachable('should have thrown');
     } catch (e) {
       expect((e as UnknownAllocationChannel).channel).toBe('ghost');
@@ -302,4 +317,55 @@ describe('the channel code is opaque and never normalized', () => {
       expect(parseAllocationForm(form)[0].channel).toBe(code);
     },
   );
+});
+
+// ai-review pass 4, [high]. The mirror of the refusal above: checking that every SUBMITTED
+// row exists is only half a boundary, because the write is a full-set replace and omission
+// is therefore deletion.
+//
+// The requirement, without naming the implementation: THIS SCREEN CHANGES EXISTING
+// ALLOCATIONS — IT CREATES NONE AND DELETES NONE. A save that dropped rows would destroy
+// their seller bindings and presale gates while the page reported success.
+describe('a submitted set that omits a current allocation is refused', () => {
+  const two = [
+    { channel: 'reseller-acme', sold_by: '22222222-2222-2222-2222-222222222222' },
+    { channel: 'presale', requires_code: true },
+  ];
+
+  it('refuses an EMPTY submission against a non-empty current set', () => {
+    // The sharpest case: `channel.0` absent parses to no rows at all, and a full-set
+    // replace with an empty list clears every allocation the slot has.
+    expect(() => toAllocationRequest('11111111-1111-1111-1111-111111111111', [], two)).toThrow(
+      MissingAllocationChannel,
+    );
+  });
+
+  it('refuses a submission that drops one current channel', () => {
+    expect(() =>
+      toAllocationRequest('11111111-1111-1111-1111-111111111111', [row({ channel: 'reseller-acme' })], two),
+    ).toThrow(MissingAllocationChannel);
+  });
+
+  it('names the omitted channel, so the page can say which', () => {
+    try {
+      toAllocationRequest('11111111-1111-1111-1111-111111111111', [row({ channel: 'reseller-acme' })], two);
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect((e as MissingAllocationChannel).channel).toBe('presale');
+    }
+  });
+
+  it('accepts a submission covering exactly the current set', () => {
+    const req = toAllocationRequest(
+      '11111111-1111-1111-1111-111111111111',
+      [row({ channel: 'reseller-acme' }), row({ channel: 'presale' })],
+      two,
+    );
+    expect(req.allocations.map((a) => a.channel)).toEqual(['reseller-acme', 'presale']);
+  });
+
+  // An empty submission against an empty current set is not a deletion, so it is allowed.
+  it('allows an empty submission when the slot has no allocations', () => {
+    expect(toAllocationRequest('11111111-1111-1111-1111-111111111111', [], []).allocations).toEqual([]);
+  });
 });

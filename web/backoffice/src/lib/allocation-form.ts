@@ -173,6 +173,25 @@ export class UnknownAllocationChannel extends Error {
 }
 
 /**
+ * Thrown when a submitted set OMITS a channel inventory currently holds.
+ *
+ * The other half of the same rule (ai-review pass 4): checking that every submitted row
+ * exists is only half a boundary, because the write is a full-set replace and omission is
+ * therefore DELETION. A crafted submission could drop `channel.3`, or send nothing at all,
+ * and silently destroy those allocations — their seller bindings and presale gates with
+ * them — while the page redirected as though the save had succeeded.
+ *
+ * This screen edits existing allocations: it creates none and deletes none. Both
+ * directions of that sentence need enforcing.
+ */
+export class MissingAllocationChannel extends Error {
+  constructor(public readonly channel: string) {
+    super(`submitted set omits channel ${JSON.stringify(channel)}`);
+    this.name = 'MissingAllocationChannel';
+  }
+}
+
+/**
  * Build the full-set replace body.
  *
  * `current` is the allocation set as inventory reports it RIGHT NOW, and it is the ONLY
@@ -191,6 +210,15 @@ export function toAllocationRequest(
   current: CurrentAllocation[] = [],
 ): ChannelAllocationSet {
   const byChannel = new Map(current.map((c) => [c.channel, c]));
+  // Every current allocation must be present in the submission. Omission is DELETION on a
+  // full-set replace, so a sparse or empty form would silently destroy rows — and their
+  // seller bindings with them — while the page reported success (ai-review pass 4).
+  const submittedChannels = new Set(rows.map((r) => r.channel));
+  for (const c of current) {
+    if (!submittedChannels.has(c.channel)) {
+      throw new MissingAllocationChannel(c.channel);
+    }
+  }
   return {
     organizer_id: organizerId,
     allocations: rows.map((r) => {

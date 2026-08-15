@@ -39,6 +39,7 @@ import {
   parseAllocationForm,
   toAllocationRequest,
   toMinuteInput,
+  MissingAllocationChannel,
   UnknownAllocationChannel,
 } from '../../lib/allocation-form';
 import { type Channel, listChannelsForOperator } from '../../lib/catalog';
@@ -104,13 +105,15 @@ if (Astro.request.method === 'POST') {
       );
       return Astro.redirect(here, 303);
     } catch (e) {
-      if (e instanceof UnknownAllocationChannel) {
-        // The submitted set names a channel inventory does not hold. Either the
-        // allocation was removed while this page was open, or the request did not come
-        // from this form. Either way the safe answer is to refuse and re-read.
+      if (e instanceof UnknownAllocationChannel || e instanceof MissingAllocationChannel) {
+        // The submitted set does not match this slot's current allocations — it names one
+        // inventory does not hold, or omits one it does. Either the set changed while this
+        // page was open, or the request did not come from this form. Either way the safe
+        // answer is to refuse and re-read: this screen edits allocations, and creates and
+        // deletes none, so an omission would be a silent deletion on the full-set replace.
         errors = {
           rows: {},
-          form: `“${e.channel}” is not one of this slot’s current allocations, so nothing was saved. Reload to see the current set.`,
+          form: `This slot’s allocations changed since this page was loaded, so nothing was saved (“${e.channel}”). Reload to see the current set.`,
         };
       } else if (e instanceof InventoryApiError) {
         errors = allocationErrors({ error: e.message, code: e.code, channel: e.channel }, rows);
