@@ -34,6 +34,27 @@ export interface AllocationRow {
   /** The literal string 'true' or 'false' — never a checkbox's presence. */
   requiresCode: string;
   soldBy: string;
+  /**
+   * The timestamps EXACTLY as inventory returned them, carried beside the editable
+   * minute-precision values above (ai-review pass 1, [high]).
+   *
+   * A `datetime-local` input holds minutes, so re-deriving an instant from it discards
+   * seconds and fractions. These columns are `timestamptz` compared against
+   * `clock_timestamp()` (ADR-024's release predicate, ADR-054's window), so a cap edit
+   * that re-submitted a truncated boundary would move a release or a sales window up to
+   * a minute earlier — returning inventory to public sale, or opening admission, sooner
+   * than configured. An unrelated edit must not move a boundary at all.
+   *
+   * So each is submitted verbatim unless the operator actually changed that field, which
+   * is decided by comparing the rendered minute value against what was submitted.
+   */
+  originalReleaseAt?: string;
+  originalOpensAt?: string;
+  originalClosesAt?: string;
+  /** The rendered (minute-precision) values, to detect an actual edit. */
+  renderedReleaseAt?: string;
+  renderedOpensAt?: string;
+  renderedClosesAt?: string;
 }
 
 /** Errors keyed by channel code, plus the total and a form-level fallback. */
@@ -61,8 +82,19 @@ export function parseAllocationForm(form: FormData): AllocationRow[] {
   const rows: AllocationRow[] = [];
   for (let i = 0; form.has(`channel.${i}`); i++) {
     const at = (name: string) => String(form.get(`${name}.${i}`) ?? '').trim();
+    // The channel code is read VERBATIM — never trimmed (ai-review pass 1, [high]).
+    //
+    // ADR-024: channel codes are "exact opaque strings — no normalization, no case
+    // folding", and the contract permits any 1..100 characters, so `" reseller "` is a
+    // legal and DISTINCT code. Trimming it here would submit a different identity: the
+    // full-set replace would delete the original row and insert the trimmed one, while
+    // live claims keep the original code. The consumption check would then run against a
+    // code nothing has consumed — stranding that consumption, bypassing the
+    // below-consumption refusal, and detaching the allocation from fee and split rules
+    // keyed on the exact string.
+    const verbatim = (name: string) => String(form.get(`${name}.${i}`) ?? '');
     rows.push({
-      channel: at('channel'),
+      channel: verbatim('channel'),
       cap: at('cap'),
       releaseAt: at('releaseAt'),
       opensAt: at('opensAt'),
@@ -70,6 +102,14 @@ export function parseAllocationForm(form: FormData): AllocationRow[] {
       // The VALUE decides, not the key's presence — see the header.
       requiresCode: at('requiresCode') === 'true' ? 'true' : 'false',
       soldBy: at('soldBy'),
+      // The exact instants and the values that were rendered, so an untouched field can
+      // be submitted verbatim rather than re-derived from a minute-precision input.
+      originalReleaseAt: verbatim('originalReleaseAt'),
+      originalOpensAt: verbatim('originalOpensAt'),
+      originalClosesAt: verbatim('originalClosesAt'),
+      renderedReleaseAt: verbatim('renderedReleaseAt'),
+      renderedOpensAt: verbatim('renderedOpensAt'),
+      renderedClosesAt: verbatim('renderedClosesAt'),
     });
   }
   return rows;
@@ -85,6 +125,30 @@ function instant(value: string): string | undefined {
   if (!value) return undefined;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+/**
+ * The instant to submit for one timestamp field.
+ *
+ * An untouched field keeps its ORIGINAL value byte for byte — the operator did not edit
+ * it, so the save must not move it. Re-deriving from the `datetime-local` input would
+ * silently drop seconds and fractions, and these boundaries are compared against
+ * `clock_timestamp()`, so a cap edit could bring a release or a window forward by up to a
+ * minute (ai-review pass 1, [high]).
+ *
+ * "Untouched" is decided by comparing the submitted minute value against the one that was
+ * rendered. When they differ the operator moved it, and the new minute value is authoritative
+ * — including clearing the field.
+ */
+function timestampField(
+  submitted: string,
+  rendered: string | undefined,
+  original: string | undefined,
+): string | undefined {
+  if (rendered !== undefined && submitted === rendered && original) {
+    return original;
+  }
+  return instant(submitted);
 }
 
 /** Build the full-set replace body. Every field rides, including the unrendered ones. */
@@ -104,9 +168,9 @@ export function toAllocationRequest(
       };
       // The optional fields are OMITTED when unset rather than sent empty: the contract
       // types them as date-time/uuid, and "" fails request validation.
-      const release = instant(r.releaseAt);
-      const opens = instant(r.opensAt);
-      const closes = instant(r.closesAt);
+      const release = timestampField(r.releaseAt, r.renderedReleaseAt, r.originalReleaseAt);
+      const opens = timestampField(r.opensAt, r.renderedOpensAt, r.originalOpensAt);
+      const closes = timestampField(r.closesAt, r.renderedClosesAt, r.originalClosesAt);
       if (release) a.release_at = release;
       if (opens) a.opens_at = opens;
       if (closes) a.closes_at = closes;

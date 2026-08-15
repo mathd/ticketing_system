@@ -102,10 +102,17 @@ if (!slot) throw new Error('failed to seed an inventory pool');
 // fixture that left any at its zero value could not tell preservation from coincidence,
 // because the defaults are exactly what a dropping implementation produces. The second
 // names a channel with no registry row.
+// The window boundaries carry SECONDS and microseconds deliberately (ai-review pass 1):
+// a `datetime-local` input holds minutes, so a save that re-derived an untouched boundary
+// from the form would truncate them and move the boundary up to a minute earlier. These
+// are compared against clock_timestamp(), so that is a real change to when a channel
+// opens or returns to public sale. Asserting they are merely non-null cannot see it.
 sql(
   'inventory',
   `INSERT INTO channel_allocations (pool_id, channel_code, cap, opens_at, closes_at, requires_code, sold_by)
-   VALUES ('${slot}', '${boundChannel}', 40, now() - interval '1 hour', now() + interval '30 days', true, '${reseller}'),
+   VALUES ('${slot}', '${boundChannel}', 40,
+           timestamptz '2026-08-01 09:05:11.500000+00', timestamptz '2026-12-31 23:59:59.999999+00',
+           true, '${reseller}'),
           ('${slot}', '${plainChannel}', 20, NULL, NULL, false, NULL)`,
 );
 
@@ -225,15 +232,18 @@ try {
   // bare boolean as `t`, but one concatenated with `||` is cast to text and renders as
   // `true`, so an assertion against either spelling depends on how the query was written
   // rather than on what the column holds.
+  // The window boundaries are compared EXACTLY, to the microsecond — not merely for
+  // presence. A save that re-derived them from the minute-precision input would leave
+  // them non-null and still have moved them, which is the corruption ai-review found.
   const after = sql(
     'inventory',
     `SELECT cap || '|' || coalesce(sold_by::text,'NULL')
        || '|' || CASE WHEN requires_code THEN 'yes' ELSE 'no' END
-       || '|' || CASE WHEN opens_at IS NOT NULL THEN 'yes' ELSE 'no' END
-       || '|' || CASE WHEN closes_at IS NOT NULL THEN 'yes' ELSE 'no' END
+       || '|' || to_char(opens_at  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
+       || '|' || to_char(closes_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
      FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${boundChannel}'`,
   );
-  const [cap, soldBy, requiresCode, hasOpens, hasCloses] = after.split('|');
+  const [cap, soldBy, requiresCode, opensAt, closesAt] = after.split('|');
   check('the cap edit persisted', cap === '50', `cap=${cap}`);
   check(
     'the seller binding SURVIVED the save',
@@ -246,9 +256,10 @@ try {
     `requires_code=${requiresCode}`,
   );
   check(
-    'the sales window survived the save',
-    hasOpens === 'yes' && hasCloses === 'yes',
-    `opens_at set=${hasOpens} closes_at set=${hasCloses}`,
+    'the sales window survived the save TO THE MICROSECOND',
+    opensAt === '2026-08-01T09:05:11.500000' && closesAt === '2026-12-31T23:59:59.999999',
+    `opens_at=${opensAt} closes_at=${closesAt} — a truncated boundary is still non-null, ` +
+      'and moves when a channel opens or returns to public sale',
   );
 
   // The untouched row is untouched.

@@ -171,3 +171,96 @@ describe('client-side validation is presentation only', () => {
     expect(errs.rows['reseller-acme']).toMatch(/twice|duplicate/i);
   });
 });
+
+// ai-review pass 1, [high] × 2. Both findings were about the round trip CORRUPTING a
+// value rather than dropping it — a class the existing tests could not see, because they
+// asserted presence and not fidelity.
+describe('the round trip preserves values byte for byte, not just presence', () => {
+  // ADR-024: channel codes are "exact opaque strings — no normalization, no case
+  // folding", and the contract permits any 1..100 characters. So `" reseller "` is a
+  // legal and DISTINCT code. Trimming it submits a different identity: the full-set
+  // replace deletes the original row and inserts the trimmed one, while live claims keep
+  // the original code — stranding that consumption and detaching the allocation from fee
+  // and split rules keyed on the exact string.
+  it.each([
+    [' reseller-acme '],
+    ['reseller acme'],
+    ['  '],
+    ['présale'],
+    ['POS/Booth #2'],
+  ])('submits the channel code %o verbatim', (code) => {
+    const form = new FormData();
+    form.set('channel.0', code);
+    form.set('cap.0', '40');
+    form.set('requiresCode.0', 'false');
+    const [parsed] = parseAllocationForm(form);
+    expect(parsed.channel).toBe(code);
+    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
+      { ...row(), channel: parsed.channel },
+    ]).allocations;
+    expect(a.channel).toBe(code);
+  });
+
+  // A `datetime-local` input holds MINUTES. release_at/opens_at/closes_at are timestamptz
+  // compared against clock_timestamp(), so re-deriving an untouched boundary from the
+  // input would move it up to a minute earlier — returning inventory to public sale, or
+  // opening admission, sooner than configured. An unrelated cap edit must not move it.
+  it('keeps an untouched timestamp EXACTLY, seconds and all', () => {
+    const exact = '2026-09-01T10:17:43.123456Z';
+    const rendered = '2026-09-01T10:17'; // what the input showed, minutes only
+    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
+      {
+        ...row(),
+        releaseAt: rendered,
+        renderedReleaseAt: rendered,
+        originalReleaseAt: exact,
+      },
+    ]).allocations;
+    expect(a.release_at).toBe(exact);
+  });
+
+  it('takes the operator’s new value when they DID edit the field', () => {
+    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
+      {
+        ...row(),
+        releaseAt: '2026-09-02T08:00',
+        renderedReleaseAt: '2026-09-01T10:17',
+        originalReleaseAt: '2026-09-01T10:17:43.123456Z',
+      },
+    ]).allocations;
+    expect(new Date(a.release_at!).getTime()).toBe(new Date('2026-09-02T08:00').getTime());
+    expect(a.release_at).not.toBe('2026-09-01T10:17:43.123456Z');
+  });
+
+  it('lets the operator CLEAR a timestamp', () => {
+    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
+      {
+        ...row(),
+        releaseAt: '',
+        renderedReleaseAt: '2026-09-01T10:17',
+        originalReleaseAt: '2026-09-01T10:17:43.123456Z',
+      },
+    ]).allocations;
+    expect(a).not.toHaveProperty('release_at');
+  });
+
+  it('preserves all three boundaries independently', () => {
+    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
+      {
+        ...row(),
+        releaseAt: '2026-09-01T10:17',
+        opensAt: '2026-08-01T09:05',
+        closesAt: '2026-08-31T23:59',
+        renderedReleaseAt: '2026-09-01T10:17',
+        renderedOpensAt: '2026-08-01T09:05',
+        renderedClosesAt: '2026-08-31T23:59',
+        originalReleaseAt: '2026-09-01T10:17:43.123456Z',
+        originalOpensAt: '2026-08-01T09:05:11.500000Z',
+        originalClosesAt: '2026-08-31T23:59:59.999999Z',
+      },
+    ]).allocations;
+    expect(a.release_at).toBe('2026-09-01T10:17:43.123456Z');
+    expect(a.opens_at).toBe('2026-08-01T09:05:11.500000Z');
+    expect(a.closes_at).toBe('2026-08-31T23:59:59.999999Z');
+  });
+});

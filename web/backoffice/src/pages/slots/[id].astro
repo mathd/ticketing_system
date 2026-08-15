@@ -124,6 +124,16 @@ const rows: AllocationRow[] =
     closesAt: localInput(c.closes_at),
     requiresCode: c.requires_code ? 'true' : 'false',
     soldBy: c.sold_by ?? '',
+    // The exact instants, and the minute-precision values actually rendered. A field the
+    // operator does not touch is submitted verbatim from the former; `datetime-local`
+    // holds minutes, so re-deriving would drop seconds and move a boundary compared
+    // against clock_timestamp() (ai-review pass 1).
+    originalReleaseAt: c.release_at ?? '',
+    originalOpensAt: c.opens_at ?? '',
+    originalClosesAt: c.closes_at ?? '',
+    renderedReleaseAt: localInput(c.release_at),
+    renderedOpensAt: localInput(c.opens_at),
+    renderedClosesAt: localInput(c.closes_at),
   }));
 
 /** Live consumption for a row, by channel code — held plus confirmed. */
@@ -195,6 +205,16 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                       <input type="hidden" name={`closesAt.${i}`} value={row.closesAt} />
                       <input type="hidden" name={`requiresCode.${i}`} value={row.requiresCode} />
                       <input type="hidden" name={`soldBy.${i}`} value={row.soldBy} />
+                      {/* The exact stored instants, and what was rendered for them. An
+                          untouched boundary is submitted from the original rather than
+                          re-derived from a minute-precision input, which would silently
+                          move it earlier — these are compared against clock_timestamp(). */}
+                      <input type="hidden" name={`originalReleaseAt.${i}`} value={row.originalReleaseAt ?? ''} />
+                      <input type="hidden" name={`originalOpensAt.${i}`} value={row.originalOpensAt ?? ''} />
+                      <input type="hidden" name={`originalClosesAt.${i}`} value={row.originalClosesAt ?? ''} />
+                      <input type="hidden" name={`renderedReleaseAt.${i}`} value={row.renderedReleaseAt ?? ''} />
+                      <input type="hidden" name={`renderedOpensAt.${i}`} value={row.renderedOpensAt ?? ''} />
+                      <input type="hidden" name={`renderedClosesAt.${i}`} value={row.renderedClosesAt ?? ''} />
                     </td>
                     <td>
                       <label class="visually-hidden" for={`cap-${i}`}>Cap for {row.channel}</label>
