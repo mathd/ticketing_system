@@ -136,9 +136,19 @@ type ChannelAvailability struct {
 	OpensAt    *time.Time `json:"opens_at,omitempty"`
 	ClosesAt   *time.Time `json:"closes_at,omitempty"`
 	WindowOpen bool       `json:"window_open"`
-	Held       int32      `json:"held"`
-	Confirmed  int32      `json:"confirmed"`
-	Available  int32      `json:"available"`
+	// RequiresCode and SoldBy are configuration this read reports so an EDITOR can
+	// round-trip them (TKT-244). The allocation write is a full-set atomic replace
+	// that DELETEs and re-INSERTs (ADR-024), so a field the editor cannot read is a
+	// field it destroys on the next save. For SoldBy that is an authorization
+	// regression, not cosmetic: TKT-246 judges it under the pool row lock, so
+	// dropping it returns a reseller's bound stock to the public pool.
+	//
+	// Staff-only, like WindowOpen — the public availability read reports neither.
+	RequiresCode bool       `json:"requires_code,omitempty"`
+	SoldBy       *uuid.UUID `json:"sold_by,omitempty"`
+	Held         int32      `json:"held"`
+	Confirmed    int32      `json:"confirmed"`
+	Available    int32      `json:"available"`
 }
 
 // ReplaceChannelAllocations atomically replaces the pool's full allocation set under the
@@ -174,7 +184,7 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 		return nil, err
 	}
 	if total > int64(capacity) {
-		return nil, ErrUnavailable
+		return nil, ErrAllocationCapsExceedCapacity
 	}
 	for _, a := range allocs {
 		var consumed int64
@@ -182,7 +192,9 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 			return nil, err
 		}
 		if consumed > int64(a.Cap) {
-			return nil, ErrConflict
+			// Carries the channel so the editor can put the message beside THAT row's
+			// cap input (TKT-244). Still unwraps to ErrConflict for every existing caller.
+			return nil, AllocationCapBelowConsumption(a.Channel)
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM channel_allocations WHERE pool_id=$1`, slot); err != nil {
@@ -208,6 +220,7 @@ func channelAvailabilities(ctx context.Context, q interface {
 	rows, err := q.QueryContext(ctx, `SELECT a.channel_code, a.cap, a.release_at,
 			(a.release_at IS NOT NULL AND a.release_at <= clock_timestamp()),
 			a.opens_at, a.closes_at, (`+windowOpen+`),
+			a.requires_code, a.sold_by,
 			COALESCE(h.held,0), COALESCE(cf.confirmed,0)
 		FROM channel_allocations a
 		LEFT JOIN LATERAL (SELECT sum(quantity) AS held FROM claims WHERE pool_id=a.pool_id AND channel_code=a.channel_code AND `+liveClaims+`) h ON true
@@ -221,7 +234,8 @@ func channelAvailabilities(ctx context.Context, q interface {
 	for rows.Next() {
 		var c ChannelAvailability
 		if err = rows.Scan(&c.Channel, &c.Cap, &c.ReleaseAt, &c.Released,
-			&c.OpensAt, &c.ClosesAt, &c.WindowOpen, &c.Held, &c.Confirmed); err != nil {
+			&c.OpensAt, &c.ClosesAt, &c.WindowOpen, &c.RequiresCode, &c.SoldBy,
+			&c.Held, &c.Confirmed); err != nil {
 			return nil, err
 		}
 		// A released OR window-closed channel has nothing claimable, so both

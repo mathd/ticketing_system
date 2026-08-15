@@ -75,6 +75,11 @@ export const ROUTE_MATRIX: readonly RouteRule[] = [
   // reach the organizer — pricing, fees and capacity all key on these codes — so
   // it sits with the authoring surface rather than with the support one.
   { template: '/admin/channels', source: 'page', roles: ['admin'] },
+  // The slot channel-allocation editor (TKT-244). Admin-only for the same reason as
+  // the registry above, and a stronger one: this page decides how much of a slot each
+  // channel may sell, and it carries a reseller's seller binding (TKT-246) through
+  // every save. box_office does support work and finance has no surface here yet.
+  { template: '/admin/slots/[id]', source: 'page', roles: ['admin'] },
 
   // The order console (TKT-193) — the first box_office surface. Support work:
   // it reads an order's status and its tickets' lifecycle history and carries no

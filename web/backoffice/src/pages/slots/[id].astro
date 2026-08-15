@@ -1,0 +1,245 @@
+---
+// The slot channel-allocation editor (TKT-244 / US-CH2b): how much of a slot's capacity
+// each sales channel may sell, and until when.
+//
+// ONE FORM, ONE SAVE. `PUT /internal/slots/{id}/channel-allocations` replaces the slot's
+// COMPLETE allocation set atomically under the pool lock (ADR-024), so per-row saves are
+// not merely unidiomatic here — they would round-trip a stale set and silently delete
+// every allocation the operator was not looking at. Every row the page read is submitted
+// on every save, including rows nobody touched.
+//
+// THAT SAME PROPERTY MAKES UNRENDERED FIELDS DANGEROUS. The store DELETEs and re-INSERTs
+// from what arrives, so a field this page does not carry is a field the save destroys.
+// `sold_by` is the one that matters: TKT-246 judges it in the claim paths under the pool
+// row lock, so dropping it turns a reseller's bound stock into public stock — an
+// authorization change, invisible in a screenshot. It rides in a hidden input, as do the
+// sales window and the presale gate. allocation-form.ts owns that mapping and its tests.
+//
+// The organizer comes from the SESSION, never the URL: inventory authenticates this
+// process, not the staff member behind it (ADR-021/ADR-053), so it cannot tell a
+// legitimate organizer from one typed into the address bar. That check has to live here
+// to live anywhere. The slot id is a path parameter and is passed through — it is not an
+// authorization boundary, and inventory scopes the read and the write by organizer.
+//
+// Relative form action, like every other back-office write: an absolute one trips the
+// origin handling even same-origin (TKT-105; `checkOrigin` is off and gate.ts is
+// authoritative).
+import Layout from '../../layouts/Layout.astro';
+import {
+  type AllocationFormErrors,
+  type AllocationRow,
+  allocationErrors,
+  parseAllocationForm,
+  toAllocationRequest,
+} from '../../lib/allocation-form';
+import { type Channel, listChannelsForOperator } from '../../lib/catalog';
+import {
+  type ChannelAvailability,
+  InventoryApiError,
+  type StaffAvailability,
+  getStaffAvailability,
+  replaceChannelAllocations,
+} from '../../lib/inventory';
+
+const staff = Astro.locals.staff;
+if (!staff) throw new Error('unauthenticated request reached the slot allocations page');
+
+const slotId = Astro.params.id!;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const here = `${base}/slots/${encodeURIComponent(slotId)}`;
+
+let errors: AllocationFormErrors = { rows: {} };
+// The rows as submitted, so a refusal re-renders what the operator typed rather than
+// discarding it back to the stored values.
+let submitted: AllocationRow[] | null = null;
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const rows = parseAllocationForm(form);
+  submitted = rows;
+
+  // Presentation-only pre-checks. They never decide whether the write happens — the
+  // server refuses regardless — they just keep a submit the server would reject anyway
+  // from coming back as one opaque line.
+  const local = allocationErrors(null, rows);
+  if (Object.keys(local.rows).length > 0 || local.form) {
+    errors = local;
+  } else {
+    try {
+      await replaceChannelAllocations(slotId, toAllocationRequest(staff.organizerId, rows));
+      return Astro.redirect(here, 303);
+    } catch (e) {
+      errors =
+        e instanceof InventoryApiError
+          ? allocationErrors({ error: e.message, code: e.code, channel: e.channel }, rows)
+          : {
+              rows: {},
+              form: 'Inventory could not be reached. Nothing was saved — try again.',
+            };
+    }
+  }
+}
+
+// Both reads sit in their own error paths: a service failure must render this page's
+// readable message, not abort SSR into a 500 that says nothing.
+let availability: StaffAvailability | null = null;
+let readFailed = false;
+try {
+  availability = await getStaffAvailability(slotId, staff.organizerId);
+} catch {
+  readFailed = true;
+}
+
+// The registry is a LOOKUP, NOT A CONSTRAINT (TKT-235 / ADR-024): a channel code needs no
+// registry row to sell, and codes recorded on live claims may name channels that were
+// never registered. So a registry miss marks the row, and never hides or disables it.
+let registered = new Set<string>();
+try {
+  registered = new Set((await listChannelsForOperator(staff.organizerId)).map((c: Channel) => c.code));
+} catch {
+  // A registry outage costs the display names only. Editing must still work, so this is
+  // deliberately not `readFailed`.
+  registered = new Set();
+}
+
+const stored: ChannelAvailability[] = availability?.channels ?? [];
+
+/** Format an instant for a `datetime-local` input, which takes local wall time. */
+function localInput(value: string | undefined): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// What the form renders: the submitted rows after a refusal, otherwise the stored set.
+const rows: AllocationRow[] =
+  submitted ??
+  stored.map((c) => ({
+    channel: c.channel,
+    cap: String(c.cap),
+    releaseAt: localInput(c.release_at),
+    opensAt: localInput(c.opens_at),
+    closesAt: localInput(c.closes_at),
+    requiresCode: c.requires_code ? 'true' : 'false',
+    soldBy: c.sold_by ?? '',
+  }));
+
+/** Live consumption for a row, by channel code — held plus confirmed. */
+const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confirmed: c.confirmed }]));
+---
+
+<Layout title="Channel allocations">
+  <h1>Channel allocations</h1>
+  <p>
+    How much of this slot's capacity each sales channel may sell. Everything not allocated
+    stays available to the public channel.
+  </p>
+
+  {errors.form && <p class="error" role="alert" data-form-error>{errors.form}</p>}
+
+  {readFailed && (
+    <p class="error" role="alert">
+      Inventory is unavailable, so this slot's allocations cannot be shown or edited.
+    </p>
+  )}
+
+  {!readFailed && availability && (
+    <>
+      <p data-capacity={String(availability.capacity)}>
+        Slot capacity <strong>{availability.capacity}</strong>, of which
+        <strong> {availability.public_available}</strong> is currently available to the public.
+      </p>
+
+      {errors.total && <p class="error" role="alert" data-total-error>{errors.total}</p>}
+
+      <form method="post" action="">
+        {rows.length === 0 && <p data-empty>No channel allocations — the whole slot sells publicly.</p>}
+
+        {rows.length > 0 && (
+          <table>
+            <thead>
+              <tr>
+                <th>Channel</th>
+                <th>Cap</th>
+                <th>Sold or held</th>
+                <th>Returns to public</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => {
+                const used = consumption.get(row.channel);
+                const known = registered.has(row.channel);
+                return (
+                  <tr data-channel={row.channel} data-registered={String(known)}>
+                    <td>
+                      <code>{row.channel}</code>
+                      {/* The registry is a lookup, not a constraint: an unregistered
+                          code still sells and stays editable. Marked, never hidden. */}
+                      {!known && (
+                        <span data-unregistered title="No registry entry for this code">
+                          {' '}— not in the channel registry
+                        </span>
+                      )}
+                      {/* The channel code is the row's identity for the full-set
+                          replace, and it is immutable here: renaming one would delete
+                          an allocation and create another, silently discarding the
+                          consumption recorded against the old code. */}
+                      <input type="hidden" name={`channel.${i}`} value={row.channel} />
+                      {/* The three fields this screen does not edit, carried so the
+                          full-set replace does not destroy them. `requiresCode` is an
+                          EXPLICIT 'true'/'false' — a hidden input always submits, so
+                          the checkbox convention cannot apply here (TKT-236). */}
+                      <input type="hidden" name={`opensAt.${i}`} value={row.opensAt} />
+                      <input type="hidden" name={`closesAt.${i}`} value={row.closesAt} />
+                      <input type="hidden" name={`requiresCode.${i}`} value={row.requiresCode} />
+                      <input type="hidden" name={`soldBy.${i}`} value={row.soldBy} />
+                    </td>
+                    <td>
+                      <label class="visually-hidden" for={`cap-${i}`}>Cap for {row.channel}</label>
+                      <input
+                        id={`cap-${i}`}
+                        name={`cap.${i}`}
+                        type="number"
+                        min="1"
+                        value={row.cap}
+                        data-cap-for={row.channel}
+                        aria-invalid={errors.rows[row.channel] ? 'true' : undefined}
+                        required
+                      />
+                      {errors.rows[row.channel] && (
+                        <p class="error" role="alert" data-row-error={row.channel}>
+                          {errors.rows[row.channel]}
+                        </p>
+                      )}
+                    </td>
+                    <td data-consumption={row.channel}>
+                      {used ? used.held + used.confirmed : 0}
+                    </td>
+                    <td>
+                      <label class="visually-hidden" for={`release-${i}`}>
+                        Release time for {row.channel}
+                      </label>
+                      <input
+                        id={`release-${i}`}
+                        name={`releaseAt.${i}`}
+                        type="datetime-local"
+                        value={row.releaseAt}
+                        data-release-for={row.channel}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+
+        {rows.length > 0 && (
+          <button type="submit" data-action="save-allocations">Save allocations</button>
+        )}
+      </form>
+    </>
+  )}
+</Layout>

@@ -193,6 +193,12 @@ services:
       DATABASE_URL: postgres://inventory:${INVENTORY_DB_PASSWORD}@postgres:5432/inventory
       HOLD_TTL: ${HOLD_TTL:-10m}
       CATALOG_URL: http://catalog:8080
+      # The back office's channel-allocation editor (TKT-244, ADR-057). Opens exactly
+      # two operations — the staff availability read and the allocation replace — and
+      # is deliberately NOT the shared INTERNAL_SERVICE_TOKEN in the &go-env anchor:
+      # that one value opens every inventory operation, and the caller is a
+      # public-facing SSR process. Inventory refuses to start if the two are equal.
+      INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
 
   commerce-migrate:
     <<: *migrate-job
@@ -442,6 +448,23 @@ services:
       # INTERNAL_SERVICE_TOKEN: that one value opens every service's internal
       # surface, and this is a public-facing SSR process.
       CATALOG_URL: http://catalog:8080
+      # The channel-allocation editor (TKT-244). Direct to inventory, in-network, for
+      # the same reason the refund goes direct to commerce and the channel read direct
+      # to catalog: both operations live under /internal/, which the gateway
+      # edge-denies by construction (ADR-002). Publishing an exception would put
+      # capacity configuration on the internet to reach a service this process can
+      # already open a socket to.
+      #
+      # A NEW CREDENTIAL, unlike the catalog read above (ADR-053). That one reused
+      # CATALOG_STAFF_WRITE_TOKEN because the token could already create and update
+      # the very channels it was then allowed to list — the allowance added no new
+      # capability class. The back office holds NOTHING for inventory, so reusing a
+      # catalog credential here would grant power across a service boundary and make a
+      # catalog-token compromise an inventory-write compromise. Still deliberately NOT
+      # INTERNAL_SERVICE_TOKEN: that one value opens every service's internal surface,
+      # and this is a public-facing SSR process.
+      INVENTORY_URL: http://inventory:8080
+      INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
     healthcheck:
       # base:'/admin' means Astro serves healthz at /admin/healthz; the probe
       # hits the container directly (pre-gateway), so it targets the base path.

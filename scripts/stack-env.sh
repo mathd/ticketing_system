@@ -66,6 +66,15 @@ export COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN"
 SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY
 export COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"
+# TKT-244 / ADR-057: inventory's staff-write credential, for the back office's
+# channel-allocation editor. A FIFTH independent /dev/urandom read, not a copy —
+# inventory refuses to start when this equals INTERNAL_SERVICE_TOKEN, and the back
+# office refuses to boot when it equals either credential it already holds. Deriving
+# one from another here would make the smoke suite the one place those guards are
+# never exercised honestly.
+SMOKE_INVENTORY_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_INVENTORY_STAFF_WRITE_TOKEN
+export INVENTORY_STAFF_WRITE_TOKEN="$SMOKE_INVENTORY_STAFF_WRITE_TOKEN"
 # ai-review S11: database passwords. The roles' passwords used to equal their
 # names, committed. One draw per role, and exported TWICE: the compose stack reads
 # <ROLE>_DB_PASSWORD, and the smoke test process reads SMOKE_DB_<ROLE>_PASSWORD to
