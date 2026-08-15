@@ -181,7 +181,7 @@ func TestTheTwoAllocationRefusalsAreDistinguishableAndNameTheirChannel(t *testin
 	// Caps summing above pool capacity.
 	_, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{
 		{Channel: "presale", Cap: 60}, {Channel: "reseller-acme", Cap: 60},
-	})
+	}, nil)
 	if !errors.Is(err, ErrAllocationCapsExceedCapacity) {
 		t.Fatalf("over-capacity: got %v want ErrAllocationCapsExceedCapacity", err)
 	}
@@ -201,7 +201,7 @@ func TestTheTwoAllocationRefusalsAreDistinguishableAndNameTheirChannel(t *testin
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 10, 0, "", "presale", "editor-consume"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 5}})
+	_, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 5}}, nil)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("below-consumption: got %v want (wrapping) ErrConflict", err)
 	}
@@ -222,7 +222,7 @@ func TestTheTwoAllocationRefusalsAreDistinguishableAndNameTheirChannel(t *testin
 	}
 	_, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{
 		{Channel: "presale", Cap: 40}, {Channel: "reseller-acme", Cap: 5},
-	})
+	}, nil)
 	if !errors.As(err, &named) {
 		t.Fatalf("below-consumption on the second row: got %v, which names no channel", err)
 	}

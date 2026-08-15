@@ -115,6 +115,27 @@ export function parseAllocationForm(form: FormData): AllocationRow[] {
 }
 
 /**
+ * Read the allocation-set revision the page was rendered from (TKT-250).
+ *
+ * Returns undefined when the field is missing or is not a non-negative integer, and the
+ * page treats that as a refusal rather than as "replace unconditionally" — inventory
+ * would accept the omission from an internal caller, but the back office never holds
+ * that credential (ADR-057), so a missing revision here means a malformed submission,
+ * not a licence to overwrite.
+ *
+ * A hidden input is the right shape for this and the wrong shape for the fields TKT-244
+ * removed, which is worth stating because the two look identical in the HTML. Those
+ * fields were TRUSTED by the server (`sold_by` decides who may sell), so client control
+ * of them was the defect. This one is COMPARED by the server and grants nothing.
+ */
+export function parseAllocationRevision(form: FormData): number | undefined {
+  const raw = String(form.get('allocationRevision') ?? '').trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
+/**
  * A `datetime-local` value carries no zone. Inventory's contract types these as
  * `date-time`, so they are sent as an explicit UTC instant rather than a bare local
  * string — an unzoned value is not a valid date-time and would be refused by request
@@ -203,11 +224,26 @@ export class MissingAllocationChannel extends Error {
  * makes the merge trustworthy: the channel is client-supplied, so without it a row naming
  * an unknown code would fall through to client-chosen values for fields this screen never
  * shows.
+ *
+ * `revision` is the ONE field this module deliberately takes from the client (TKT-250),
+ * and it does not breach the rule above. The rule exists because a submitted value that
+ * the server TRUSTS is a value the client can forge — `sold_by` decides who may sell.
+ * A revision decides nothing: the server compares it against its own current value under
+ * the pool lock, so every possible client choice lands in exactly one of two outcomes —
+ * it matches and the save proceeds on its merits, or it does not and the save is refused.
+ * There is no third branch where a chosen value grants something. A forged revision can
+ * only cost its sender their own save.
+ *
+ * It must come from the page ORIGINALLY RENDERED, not from the fresh read taken during
+ * this POST. That is the entire mechanism: the fresh read is what makes the merge safe,
+ * and reusing it as the revision would compare the server's current value against itself
+ * and match every time — a precondition that cannot fail is not one.
  */
 export function toAllocationRequest(
   organizerId: string,
   rows: AllocationRow[],
   current: CurrentAllocation[] = [],
+  revision?: number,
 ): ChannelAllocationSet {
   const byChannel = new Map(current.map((c) => [c.channel, c]));
   // Every current allocation must be present in the submission. Omission is DELETION on a
@@ -221,6 +257,10 @@ export function toAllocationRequest(
   }
   return {
     organizer_id: organizerId,
+    // Omitted when undefined rather than sent as null: inventory distinguishes absent
+    // (replace unconditionally) from present (compare), and the back office is the
+    // caller that must always be in the second case.
+    ...(revision === undefined ? {} : { allocation_revision: revision }),
     allocations: rows.map((r) => {
       const held = byChannel.get(r.channel);
       if (!held) {
@@ -304,6 +344,14 @@ export function allocationErrors(
         : message;
       return errors;
     }
+    case 'allocation_revision_mismatch':
+      // Form-level, and phrased as an instruction rather than a diagnosis: no field the
+      // operator can see is wrong, so highlighting one would send them to fix a value
+      // that is fine. Someone else saved while this page was open, and the only remedy
+      // is to reload and re-apply — which is exactly what the message says.
+      errors.form =
+        'Someone else changed this slot’s allocations while this page was open, so nothing was saved. Reload to see the current set, then re-apply your change.';
+      return errors;
     default:
       // An unrecognised code still has to reach the operator verbatim.
       errors.form = message;

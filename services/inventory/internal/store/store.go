@@ -59,6 +59,27 @@ var (
 	// every row shares the blame equally and attributing it to one would point the
 	// operator at an arbitrary field.
 	ErrAllocationCapsExceedCapacity = fmt.Errorf("%w: channel allocations exceed pool capacity", ErrUnavailable)
+	// ErrAllocationRevisionMismatch: the caller presented an allocation-set revision
+	// that is not the one the pool currently holds (TKT-250, amending ADR-024).
+	//
+	// The form was populated before another writer committed. The pool row lock
+	// serializes the two transactions and cannot help: it orders the writes, and the
+	// staleness is in the READ that filled the form. Without this the second save
+	// silently overwrites the first operator's caps and deletes any row created since.
+	//
+	// WRAPS ErrConflict for the same additive reason as the two refusals above: every
+	// existing caller matching the sentinel keeps behaving exactly as it did, and the
+	// code is extra information rather than a re-classification.
+	//
+	// It names no channel, because staleness is a property of the whole SET rather than
+	// of any one row — the same reasoning that keeps ErrAllocationCapsExceedCapacity
+	// channel-less. The only useful remedy is to reload and re-apply.
+	//
+	// Name the adversary (ADR-021): this is honest-writer lost-update protection. It
+	// does not authenticate anyone and is not tamper-evidence — a caller who can write
+	// inventory's database, or who holds the shared internal token, can present or set
+	// any revision at all.
+	ErrAllocationRevisionMismatch = fmt.Errorf("%w: allocation set revision mismatch", ErrConflict)
 )
 
 // AllocationCapBelowConsumption is the refusal for a cap set below what that channel has

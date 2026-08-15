@@ -18,7 +18,7 @@ import (
 
 func mustReplace(t *testing.T, ctx context.Context, st *Postgres, org, slot uuid.UUID, allocs []ChannelAllocation) {
 	t.Helper()
-	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, allocs); err != nil {
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, allocs, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -30,7 +30,7 @@ func TestAllocationReplacementValidatesAndIsAtomic(t *testing.T) {
 	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 40}, {Channel: "reseller", Cap: 30}})
 
 	// Sum above pool capacity is rejected and the prior set survives.
-	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 60}, {Channel: "reseller", Cap: 60}}); !errors.Is(err, ErrUnavailable) {
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 60}, {Channel: "reseller", Cap: 60}}, nil); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("over-capacity sum: got %v want ErrUnavailable", err)
 	}
 	a, err := st.StaffAvailability(ctx, org, slot)
@@ -45,7 +45,7 @@ func TestAllocationReplacementValidatesAndIsAtomic(t *testing.T) {
 	if _, _, err := st.CreateHold(ctx, org, slot, uuid.Nil, 10, 0, "", "presale", "alloc-consume"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 5}}); !errors.Is(err, ErrConflict) {
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 5}}, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("cap below consumption: got %v want ErrConflict", err)
 	}
 
@@ -60,7 +60,7 @@ func TestAllocationReplacementValidatesAndIsAtomic(t *testing.T) {
 	}
 
 	// Unknown pool is not found.
-	if _, err := st.ReplaceChannelAllocations(ctx, org, uuid.New(), nil); !errors.Is(err, ErrNotFound) {
+	if _, err := st.ReplaceChannelAllocations(ctx, org, uuid.New(), nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown pool: got %v want ErrNotFound", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestAllocationSumValidationDoesNotWrapInt32(t *testing.T) {
 	org, slot := provisioned(t, ctx, st, math.MaxInt32)
 	// Two caps whose int32 sum wraps negative; int64 math must still reject the total.
 	over := []ChannelAllocation{{Channel: "a", Cap: math.MaxInt32 - 2}, {Channel: "b", Cap: math.MaxInt32 - 2}}
-	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, over); !errors.Is(err, ErrUnavailable) {
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, over, nil); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("wrapping sum: got %v want ErrUnavailable", err)
 	}
 }
@@ -451,10 +451,10 @@ func TestCapacityCutWithOversizedChannelAllocations(t *testing.T) {
 		t.Fatalf("hold within target: %v", err)
 	}
 	// A replacement set exceeding the requested capacity rejects.
-	if _, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 40}}); !errors.Is(err, ErrUnavailable) {
+	if _, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 40}}, nil); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("oversized replacement: %v", err)
 	}
-	if _, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 30}}); err != nil {
+	if _, err = st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 30}}, nil); err != nil {
 		t.Fatalf("fitting replacement: %v", err)
 	}
 	// Availability stays clamped, never negative.

@@ -273,6 +273,75 @@ try {
     other !== '',
     'a full-set replace that dropped unknown codes would delete it',
   );
+
+  // --- 7. THE STALE SAVE (TKT-250). Two operators, one slot: this page was rendered
+  // before someone else committed, and its save must be refused rather than silently
+  // overwriting them.
+  //
+  // Only a browser can check this end to end. The revision travels as a hidden input in
+  // the rendered HTML, and the comparison happens in inventory — so what is under test
+  // is that the SSR handler sends back the revision the PAGE carried and not the one its
+  // own fresh read just returned. A server-side unit test cannot see which of the two
+  // was put in the form, and the wrong one matches every time.
+  await page.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+  const staleRevision = await page.locator('input[data-allocation-revision]').inputValue();
+  check(
+    'the form carries the allocation-set revision',
+    staleRevision !== '' && Number.isInteger(Number(staleRevision)),
+    `data-allocation-revision=${JSON.stringify(staleRevision)}`,
+  );
+
+  // Someone else saves while this page sits open. Written as SQL because browser.sh
+  // hands specs containers rather than credentials — and the revision is bumped
+  // EXPLICITLY, because only ReplaceChannelAllocations moves it: a direct INSERT would
+  // leave the counter where it was, the stale revision would still match, the save would
+  // succeed and this test would pass while proving nothing.
+  sql(
+    'inventory',
+    `UPDATE channel_allocations SET cap=33 WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+  );
+  sql(
+    'inventory',
+    `UPDATE inventory_pools SET allocation_revision=allocation_revision+1 WHERE slot_id='${slot}'`,
+  );
+
+  // This page now submits its pre-existing form. Its revision is one behind.
+  await page.fill(`input[data-cap-for="${boundChannel}"]`, '44');
+  await page.click('button[data-action="save-allocations"]');
+  await page.waitForLoadState('domcontentloaded');
+
+  check(
+    'a stale save is refused with a reload instruction',
+    /reload/i.test(await page.locator('form').innerText()),
+    'the operator must be told their view is stale, not shown a generic failure',
+  );
+  check(
+    'a stale save does not redirect',
+    page.url().includes(`/admin/slots/${slot}`),
+    'a 303 would report success for a write that never happened',
+  );
+
+  // The database is the assertion, in BOTH directions — a full-set replace deletes as
+  // well as writes, so proving the stale cap is absent is only half of it.
+  const afterStale = sql(
+    'inventory',
+    `SELECT coalesce((SELECT cap::text FROM channel_allocations
+                       WHERE pool_id='${slot}' AND channel_code='${boundChannel}'), 'GONE')
+         || '|' ||
+            coalesce((SELECT cap::text FROM channel_allocations
+                       WHERE pool_id='${slot}' AND channel_code='${plainChannel}'), 'GONE')`,
+  );
+  const [boundCap, plainCap] = afterStale.split('|');
+  check(
+    'the stale edit was NOT applied',
+    boundCap === '50',
+    `cap=${boundCap}, want 50 — the value from before the stale submit`,
+  );
+  check(
+    "the other operator's committed change SURVIVED",
+    plainCap === '33',
+    `cap=${plainCap}, want 33 — the stale full-set replace would have overwritten it`,
+  );
 } finally {
   await browser.close();
   // Remove only what this spec wrote directly. The pool, performance and venue are left

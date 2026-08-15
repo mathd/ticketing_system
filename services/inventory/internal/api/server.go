@@ -211,6 +211,15 @@ func problem(w http.ResponseWriter, err error) {
 			"channel": e.Channel(),
 		})
 		return
+	// A stale allocation-set revision (TKT-250). Wraps ErrConflict, so it lands here
+	// for the same reason the two above do: matched BEFORE the generic branch, which
+	// would otherwise answer the code-less 409 and leave the editor unable to tell
+	// "your view is stale, reload" from "that cap is impossible".
+	//
+	// Names no channel — staleness is a property of the whole set, not of a row.
+	case errors.Is(err, store.ErrAllocationRevisionMismatch):
+		write(w, 409, map[string]string{"error": err.Error(), "code": "allocation_revision_mismatch"})
+		return
 	case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrIdempotency), errors.Is(err, store.ErrPoolKindMismatch):
 		// ErrPoolKindMismatch: a quantity claim hit a seated pool (or a seat claim a GA
 		// pool) — a 409 conflict, not a 500.
